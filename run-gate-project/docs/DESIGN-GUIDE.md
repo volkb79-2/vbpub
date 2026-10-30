@@ -925,11 +925,15 @@ bind and the unchanged path value. Run-Gate validates the spelling of that
 root but never stats or translates it: the value belongs to the host mount
 namespace, while the target process may run in a different one. The bind uses
 Docker's `--mount type=bind` form so a missing source is refused instead of
-silently created as an empty directory.
+silently created as an empty directory. Commas, colons, and newlines are
+refused in `MDT_COW_ROOT` and repository bind paths before any Docker call,
+because the mount arguments cannot safely represent them. Extra-mount paths
+reject commas and newlines; their colon remains the list separator.
 
 The fsync knob is owned by Run-Gate end to end. `strict` is the default and
 adds no preload. `durable` is lane-only and cannot be weakened by a lower
-scope or relaxed override. `relaxed` is limited to ephemeral lanes. The
+scope; every `--io-sync` override, including `strict`, is refused on a durable
+lane. `relaxed` is limited to ephemeral lanes. The
 selected image must carry `org.vbpub.tester.eatmydata-lib`; Run-Gate uses that
 image fact to write a lane-scoped preload file and mounts it read-only at
 `/etc/ld.so.preload`. This avoids accepting a caller-supplied library path,

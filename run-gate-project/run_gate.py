@@ -958,8 +958,12 @@ def _check_keys(table: dict, allowed: set, where: str) -> None:
              f"(allowed: {', '.join(sorted(allowed))})")
 
 
+RESOURCE_IO_SYNC_VALUES = frozenset({"durable", "strict", "relaxed"})
+RESOURCE_COWTREE_MODE_VALUES = frozenset({"auto", "off"})
+IO_SYNC_OVERRIDE_VALUES = frozenset({"strict", "relaxed"})
+COW_OVERRIDE_VALUES = frozenset({"off"})
 RESOURCE_CONSUMER_KEYS = {
-    "cowtree": {"mode": {"auto", "off"}},
+    "cowtree": {"mode": RESOURCE_COWTREE_MODE_VALUES},
     "vm": {"disk_cache": {"unsafe", "writeback"}},
 }
 RESOURCE_SETTING_KEYS = {"io_sync", "ram_target", "candidate_ram", *RESOURCE_CONSUMER_KEYS}
@@ -996,8 +1000,8 @@ def _validate_resource_table(table: object, where: str, scope: str,
     _check_keys(table, allowed, where)
     if "io_sync" in table:
         value = table["io_sync"]
-        choices = {"durable", "strict", "relaxed"}
-        if not isinstance(value, str) or value not in choices:
+        if (not isinstance(value, str)
+                or value not in RESOURCE_IO_SYNC_VALUES):
             fail(f"{where}: 'io_sync' must be one of durable, strict, relaxed "
                  f"(got {value!r})")
         if value == "durable" and scope != "lane":
@@ -1764,6 +1768,16 @@ def resolve_resource_settings(lane: dict, project: dict, central: dict,
                               cow_override: str | None = None
                               ) -> tuple[dict, dict]:
     """Resolve resources by CLI > lane > project > environment > central > defaults."""
+    if (io_sync_override is not None
+            and (not isinstance(io_sync_override, str)
+                 or io_sync_override not in IO_SYNC_OVERRIDE_VALUES)):
+        fail(f"invalid io_sync override {io_sync_override!r}: expected one of "
+             f"{', '.join(sorted(IO_SYNC_OVERRIDE_VALUES))}")
+    if (cow_override is not None
+            and (not isinstance(cow_override, str)
+                 or cow_override not in COW_OVERRIDE_VALUES)):
+        fail(f"invalid CoW override {cow_override!r}: expected one of "
+             f"{', '.join(sorted(COW_OVERRIDE_VALUES))}")
     effective = {"io_sync": "strict", "ram_target": "75%",
                  "cowtree": {"mode": "auto"}}
     sources = {"io_sync": "default", "ram_target": "default",
@@ -1802,14 +1816,45 @@ def resolve_resource_settings(lane: dict, project: dict, central: dict,
             fail("resources.vm.disk_cache requires a host or bare-host lane")
         effective.pop("vm", None)
         sources.pop("vm.disk_cache", None)
+    validate_resource_mount_inputs(effective, mode)
     return effective, sources
+
+
+def validate_docker_mount_path(path: Path | str, label: str) -> None:
+    """Refuse host paths that Docker's comma/colon mount grammars cannot encode."""
+    value = os.fspath(path)
+    if any(char in value for char in (",", ":", "\n", "\r", "\x00")):
+        fail(f"{label} {value!r} is invalid for Docker mount syntax: paths "
+             "cannot contain commas, colons, or newlines")
+
+
+def validate_resource_mount_inputs(settings: dict, mode: str,
+                                   repo: Path | None = None,
+                                   worktree: Path | None = None) -> None:
+    """Validate paths that resource translation or container binds will use."""
+    cowtree = settings.get("cowtree", {})
+    if isinstance(cowtree, dict) and cowtree.get("mode", "auto") == "auto":
+        root = os.environ.get(MDT_COW_ROOT_ENV_VAR)
+        if root is not None:
+            _validate_cow_root(root)
+    if mode == "ephemeral":
+        for label, path in (("repo path", repo), ("worktree path", worktree)):
+            if path is None:
+                continue
+            validate_docker_mount_path(path, label)
+            validate_docker_mount_path(physical_path(path),
+                                       f"{label} host source")
 
 
 def _validate_cow_root(root: str) -> None:
     if (not isinstance(root, str) or not root or not root.startswith("/")
             or "\x00" in root or os.path.normpath(root) != root
             or root == "/"):
-        fail("MDT_COW_ROOT must be an absolute normalized path other than '/'")
+        fail("MDT_COW_ROOT is invalid: must be an absolute normalized path "
+             "other than '/'")
+    if any(char in root for char in (",", ":", "\n", "\r")):
+        fail("MDT_COW_ROOT is invalid: Docker mount paths cannot contain "
+             "commas, colons, or newlines")
 
 
 def cowtree_mount_flags(settings: dict, mode: str) -> list[str]:
@@ -7730,6 +7775,10 @@ def extra_mount_flags() -> list[str]:
         source, target = spec.split("=", 1)
         if not source or not target:
             fail(f"invalid ${EXTRA_MOUNT_ENV_VAR} entry {spec!r}: empty path")
+        validate_docker_mount_path(source,
+                                  f"${EXTRA_MOUNT_ENV_VAR} source")
+        validate_docker_mount_path(target,
+                                  f"${EXTRA_MOUNT_ENV_VAR} target")
         flags += ["--mount", f"type=bind,source={source},target={target}"]
     return flags
 
@@ -7864,6 +7913,10 @@ def build_env_probe_argv(docker: str, env: dict, env_name: str, repo: Path,
     default next to production work (AGENTS "Host cgroup placement"). Their
     bind mounts and user also match the full ephemeral lane.
     """
+    validate_resource_mount_inputs(resource_settings or {},
+                                   env.get("mode", "host"), repo, worktree)
+    extra_flags = (extra_mount_flags()
+                   if env.get("mode") == "ephemeral" else [])
     if not env:
         # The built-in 'bare-host' environment IS this machine: there is no
         # container to enter, and the same script answers the same question.
@@ -7880,7 +7933,7 @@ def build_env_probe_argv(docker: str, env: dict, env_name: str, repo: Path,
                 "bash", "-c", script]
     argv = [docker, "run", "--rm", "--init", "--cgroup-parent", slice_name,
             *container_mount_flags(repo, worktree, env, with_state=True),
-            *extra_mount_flags(),
+            *extra_flags,
             *cowtree_mount_flags(resource_settings or {}, env.get("mode", "host"))]
     if env.get("user"):
         # A path probe must run as the same user as the real lane: image root
@@ -11522,6 +11575,8 @@ def dual_mount_flags(repo: Path, phys: Path,
     flags collapse would be a silent single mount diverging from the
     documented recipe, so the alias must be declared explicitly instead.
     """
+    validate_docker_mount_path(repo, "repo path")
+    validate_docker_mount_path(phys, "host mount source path")
     if phys != repo:
         return ["-v", f"{phys}:{phys}", "-v", f"{phys}:{repo}"]
     raw = os.environ.get(MOUNT_ALIAS_ENV_VAR, "").strip()
@@ -11537,11 +11592,15 @@ def dual_mount_flags(repo: Path, phys: Path,
     host, namespace = (part.strip() for part in raw.split("=", 1))
     if not host or not namespace:
         fail(f"invalid ${MOUNT_ALIAS_ENV_VAR} entry {raw!r}: empty path")
+    validate_docker_mount_path(host, f"${MOUNT_ALIAS_ENV_VAR} host path")
+    validate_docker_mount_path(namespace,
+                               f"${MOUNT_ALIAS_ENV_VAR} namespace path")
     root = alias_root if alias_root is not None else repo
     if Path(host) != root:
         fail(f"${MOUNT_ALIAS_ENV_VAR} declares host path {host!r} but this gate's "
              f"repo root is {root} — the alias names THIS repo's namespace view")
     if root == repo:
+        validate_docker_mount_path(namespace, "mount alias path")
         return ["-v", f"{phys}:{phys}", "-v", f"{phys}:{namespace}"]
     # RG-NARROW: a sub-path of the aliased root (the judged worktree, the git
     # directory) takes the same namespace prefix; anything outside the root has
@@ -11552,7 +11611,9 @@ def dual_mount_flags(repo: Path, phys: Path,
         fail(f"cannot dual-mount {repo}: it is outside the aliased root {root} "
              f"(${MOUNT_ALIAS_ENV_VAR}), so no namespace view is declared "
              f"for it")
-    return ["-v", f"{phys}:{phys}", "-v", f"{phys}:{Path(namespace) / relative}"]
+    target = Path(namespace) / relative
+    validate_docker_mount_path(target, "mount alias path")
+    return ["-v", f"{phys}:{phys}", "-v", f"{phys}:{target}"]
 
 
 # ---------------------------------------------------------------------------
@@ -11875,6 +11936,8 @@ def container_mount_flags(repo: Path, worktree: Path, env: dict | None = None,
       checkout is mounted as before, with a WARN, and the config overlay.
     `with_state` adds `<repo>/.run-gate` (durable assay state) unless the
     environment declares its own state_root."""
+    validate_docker_mount_path(repo, "repo path")
+    validate_docker_mount_path(worktree, "worktree path")
     plan = git_mount_plan(worktree, repo)
     if plan["kind"] == "plain":
         if not main_checkout_opted_in():
@@ -13463,6 +13526,10 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                        resource_settings: dict | None = None) -> int:
     # project_dir arrives already relocated into the judged worktree (RG-15):
     # pin verification, assay config, and artifacts all resolve there.
+    resource_settings = resource_settings or {}
+    validate_resource_mount_inputs(resource_settings, "ephemeral", repo,
+                                   worktree)
+    extra_flags = extra_mount_flags()
     docker = shutil.which("docker")
     if not docker:
         fail_infra("docker not found on PATH — container lanes need it")
@@ -13477,7 +13544,6 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
             run_record.get("image_selection") if run_record else None,
         )
         return attached
-    resource_settings = resource_settings or {}
     resource_env = resource_forwarded_env(resource_settings, "ephemeral")
     preload_file = None
     preload_flags = []
@@ -13496,7 +13562,7 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         repo, worktree, env, with_state=lane["kind"] == "assay",
         create_state=lane["kind"] == "assay" and not dry_run,
         plan_missing_state=lane["kind"] == "assay" and dry_run),
-        *extra_mount_flags(),
+        *extra_flags,
         *cowtree_mount_flags(resource_settings, "ephemeral"),
         *preload_flags,
         *resource_observer_docker_flags(lane, env)]
@@ -15963,6 +16029,8 @@ def _dispatch(argv: list[str] | None = None, *,
             lane, cfg, central, env_declaration,
             mode=env.get("mode", env_declaration.get("mode", "host")),
             io_sync_override=args.io_sync, cow_override=args.cow)
+        if env.get("mode") == "ephemeral":
+            extra_mount_flags()
         # RG-17/19: declared inputs verified BEFORE anything runs — presence
         # in the invoking environment for every kind; for container lanes
         # also that the names are on the forward_env allowlist at all.
@@ -15981,6 +16049,9 @@ def _dispatch(argv: list[str] | None = None, *,
         # pointer recipe embeds {worktree} into bash strings regardless of
         # what this particular lane does with it.
         check_worktree_charset(worktree)
+        validate_resource_mount_inputs(resource_settings,
+                                       env.get("mode", "host"), repo,
+                                       worktree)
         # RG-1: an override the lane cannot possibly honor is a silent
         # false-PASS machine — a container command lane whose argv carries no
         # {worktree} token would let sub-steps re-derive their own tree and

@@ -141,6 +141,7 @@ SPEC §9.
 | RG-121 | one a245908 R2 candidate exceeded the configured 900 s per-candidate budget without a final judgment | Medium | CLOSED 2026-10-29; current-source equivalent `377c0f5a5777` was killed with a clean process tree; see `docs/R2-MUTATION-TRIAGE-2026-10-29.md` |
 | RG-122 | `pytest-cov --cov-fail-under` can exit successfully while printing a raw coverage result below the floor because its exit check rounds to configured precision; a `kind = "command"` Run-Gate lane trusts that exit status | Medium | OPEN (filed 2026-10-29 from tnt TNT-53; consumer precision-2 workaround documented there) |
 | RG-123 | Assay's merged-baseline parallel-safety regression lane has a stale red-first premise after merge; consolidate the load-verdict docs and retire the lane | Low | OPEN; Assay B177 WP5 follow-up after WP2–WP4 |
+| RG-124 | `RUN_GATE_EXTRA_MOUNTS` used `-v`, which can create a missing bind source as an empty host directory | Minor | FIXED IN THIS BRANCH (CW4); see `extra_mount_flags()` and `TestExtraMounts::test_extra_mount_flags_use_mount_form_for_missing_source_refusal` |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -6697,3 +6698,15 @@ references. Acceptance runs the integrated tester and provisional
 qualification gates and checks every cross-document anchor. Do not change
 Assay files as part of this Run-Gate implementation; the lane remains until
 the stated trigger is met.
+
+## RG-124 — `RUN_GATE_EXTRA_MOUNTS` used `-v` for host bind sources
+
+**Status:** FIXED IN THIS BRANCH (CW4, 2026-10-30). Severity: minor.
+
+**Finding.** Docker's `-v host:container` form can create a missing host source
+as an empty directory. An operator typo in `RUN_GATE_EXTRA_MOUNTS` could
+therefore look like a successful mount while exposing an empty path.
+
+**Fix and oracle.** `run_gate.py::extra_mount_flags()` emits explicit Docker
+`--mount type=bind` entries, which refuse absent sources. The registered
+oracle is `tests/test_run_gate.py::TestExtraMounts::test_extra_mount_flags_use_mount_form_for_missing_source_refusal`.

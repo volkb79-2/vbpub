@@ -306,7 +306,8 @@ disk_cache = "unsafe"
 
 `io_sync` defaults to `strict`; it adds no preload. Mark any lane that checks
 fsync, crash consistency, or storage durability as `durable`. That value is
-lane-only and cannot be relaxed. `relaxed` is for ephemeral lanes and requires
+lane-only and rejects every `--io-sync` override, including `strict`.
+`relaxed` is for ephemeral lanes and requires
 an image carrying `org.vbpub.tester.eatmydata-lib`; Run-Gate creates and
 read-only binds `/etc/ld.so.preload` from that label. You can make a one-run
 comparison with `run-gate r2 --io-sync relaxed`; command-line I/O overrides
@@ -319,11 +320,13 @@ member and excludes its aggregate measurement.
 same path inside the container; Run-Gate does not stat or translate it. Use
 `run-gate r2 --cow off` for a one-run CoW opt-out. Set `disk_cache` only on a
 host-mode VM lane; the consumer default remains its own policy when the key
-is absent.
+is absent. `MDT_COW_ROOT` and repository paths used in bind mounts cannot
+contain commas, colons, or newlines; Run-Gate refuses them before Docker.
 
 `RUN_GATE_EXTRA_MOUNTS` uses explicit Docker `--mount type=bind` entries, so
 Docker refuses a missing host source instead of silently creating an empty
-directory.
+directory. Commas and newlines in either path are refused before Docker;
+colon separates the `host=container` entries.
 
 `ram_target` accepts a size or a percentage, and `candidate_ram` accepts a
 size on a lane. Run-Gate parses and validates these values as resource

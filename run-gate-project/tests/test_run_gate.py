@@ -3507,6 +3507,37 @@ class TestExtraMounts:
             "--mount",
             "type=bind,source=/missing/source,target=/container/source"]
 
+    @pytest.mark.parametrize("value", ("/a,readonly=/b", "/a=/b\nextra"))
+    def test_extra_mount_flags_refuse_mount_spec_delimiters(
+            self, monkeypatch, value):
+        monkeypatch.setenv(run_gate.EXTRA_MOUNT_ENV_VAR, value)
+        with pytest.raises(run_gate.GateError,
+                           match="RUN_GATE_EXTRA_MOUNTS.*invalid"):
+            run_gate.extra_mount_flags()
+
+    def test_container_runner_refuses_extra_mount_injection_before_docker(
+            self, tmp_path, monkeypatch):
+        monkeypatch.setenv(run_gate.EXTRA_MOUNT_ENV_VAR, "/a,readonly=/b")
+        docker_checks = []
+        lookups = []
+        monkeypatch.setattr(run_gate.shutil, "which",
+                            lambda name: lookups.append(name) or "/bin/docker")
+        monkeypatch.setattr(run_gate, "resolve_inflight",
+                            lambda *_args, **_kwargs:
+                            docker_checks.append("resolve_inflight"))
+
+        with pytest.raises(run_gate.GateError,
+                           match="RUN_GATE_EXTRA_MOUNTS.*invalid"):
+            run_gate.run_container_lane(
+                {"kind": "command", "argv": ["true"]}, "unit",
+                tmp_path, tmp_path, tmp_path,
+                {"mode": "ephemeral", "image": "runner:local"},
+                "fixture", "dev-gates.slice", "fixture", dry_run=True,
+                resource_settings={"io_sync": "strict",
+                                   "cowtree": {"mode": "off"}})
+        assert lookups == []
+        assert docker_checks == []
+
 
 class TestRG99LockFreeSafeDirectory:
     """RG-99: `safe.directory` reaches the lane's Git through the environment
@@ -35283,7 +35314,7 @@ class TestCowtreeAndIoSyncResources:
             "COWTREE_MODE": "auto", "MDT_COW_ROOT": root,
             "RUN_GATE_IO_SYNC": "strict"}
 
-    def test_cow_off_sets_disable_no_bind(self, monkeypatch):
+    def test_cow_off_sets_no_bind(self, monkeypatch):
         monkeypatch.setenv("MDT_COW_ROOT", "/mnt/cow/rg")
         settings = {"io_sync": "strict", "cowtree": {"mode": "off"}}
 
@@ -35299,6 +35330,98 @@ class TestCowtreeAndIoSyncResources:
                     match="MDT_COW_ROOT.*absolute.*normalized"):
                 run_gate.cowtree_mount_flags(
                     {"cowtree": {"mode": "auto"}}, "ephemeral")
+
+    def test_cow_refuses_mount_spec_delimiters(self, monkeypatch):
+        for value in ("/mnt/cow,readonly", "/mnt/cow:other",
+                      "/mnt/cow\nother", "/mnt/cow\rother"):
+            monkeypatch.setenv("MDT_COW_ROOT", value)
+            with pytest.raises(run_gate.GateError,
+                               match="MDT_COW_ROOT.*invalid"):
+                run_gate.cowtree_mount_flags(
+                    {"cowtree": {"mode": "auto"}}, "ephemeral")
+
+    def test_resource_resolution_rejects_invalid_cow_root_early(
+            self, monkeypatch):
+        monkeypatch.setenv("MDT_COW_ROOT", "/mnt/cow,readonly")
+        with pytest.raises(run_gate.GateError,
+                           match="MDT_COW_ROOT.*invalid"):
+            run_gate.resolve_resource_settings(
+                {}, {}, {}, {}, mode="ephemeral")
+
+    @pytest.mark.parametrize("dry_run", (True, False))
+    def test_container_runner_refuses_bad_cow_root_before_docker_lookup(
+            self, tmp_path, monkeypatch, dry_run):
+        monkeypatch.setenv("MDT_COW_ROOT", "/mnt/cow,readonly")
+        lookups = []
+        monkeypatch.setattr(run_gate.shutil, "which",
+                            lambda name: lookups.append(name) or "/bin/docker")
+
+        with pytest.raises(run_gate.GateError,
+                           match="MDT_COW_ROOT.*invalid"):
+            run_gate.run_container_lane(
+                {"kind": "command", "argv": ["true"]}, "unit",
+                tmp_path, tmp_path, tmp_path,
+                {"mode": "ephemeral", "image": "runner:local"},
+                "fixture", "dev-gates.slice", "fixture", dry_run=dry_run,
+                resource_settings={"io_sync": "strict",
+                                   "cowtree": {"mode": "auto"}})
+        assert lookups == []
+
+    @pytest.mark.parametrize("relative", ("repo,with-comma", "repo:with-colon",
+                                           "repo\nwith-newline"))
+    @pytest.mark.parametrize("dry_run", (True, False))
+    def test_container_runner_refuses_repo_mount_delimiters_before_docker(
+            self, tmp_path, monkeypatch, relative, dry_run):
+        docker_checks = []
+        monkeypatch.setattr(run_gate.shutil, "which", lambda _name: "/bin/docker")
+        monkeypatch.setattr(run_gate, "resolve_inflight",
+                            lambda *_args, **_kwargs:
+                            docker_checks.append("resolve_inflight"))
+
+        with pytest.raises(run_gate.GateError,
+                           match="repo path.*invalid"):
+            run_gate.run_container_lane(
+                {"kind": "command", "argv": ["true"]}, "unit",
+                tmp_path, tmp_path / relative, tmp_path,
+                {"mode": "ephemeral", "image": "runner:local"},
+                "fixture", "dev-gates.slice", "fixture", dry_run=dry_run,
+                resource_settings={"io_sync": "strict",
+                                   "cowtree": {"mode": "off"}})
+        assert docker_checks == []
+
+    def test_container_runner_refuses_translated_repo_mount_delimiter_early(
+            self, tmp_path, monkeypatch):
+        lookups = []
+        monkeypatch.setattr(run_gate.shutil, "which",
+                            lambda name: lookups.append(name) or "/bin/docker")
+        monkeypatch.setattr(run_gate, "physical_path",
+                            lambda *_args, **_kwargs: Path("/host,repo"))
+
+        with pytest.raises(run_gate.GateError,
+                           match="repo path host source.*invalid"):
+            run_gate.run_container_lane(
+                {"kind": "command", "argv": ["true"]}, "unit",
+                tmp_path, tmp_path, tmp_path,
+                {"mode": "ephemeral", "image": "runner:local"},
+                "fixture", "dev-gates.slice", "fixture", dry_run=True,
+                resource_settings={"io_sync": "strict",
+                                   "cowtree": {"mode": "off"}})
+        assert lookups == []
+
+    def test_resource_override_values_are_closed(self):
+        for kwargs, expected in (
+                ({"io_sync_override": "unknown"}, "io_sync override"),
+                ({"cow_override": "unknown"}, "CoW override")):
+            with pytest.raises(run_gate.GateError, match=expected):
+                run_gate.resolve_resource_settings(
+                    {}, {}, {}, {}, mode="ephemeral", **kwargs)
+
+    def test_durable_lane_refuses_even_strict_override(self):
+        with pytest.raises(run_gate.GateError,
+                           match="durable lane cannot be overridden"):
+            run_gate.resolve_resource_settings(
+                {"resources": {"io_sync": "durable"}}, {}, {}, {},
+                mode="ephemeral", io_sync_override="strict")
 
     def test_cow_no_stat_no_translate(self, monkeypatch):
         monkeypatch.setenv("MDT_COW_ROOT", "/mnt/cow/rg")
@@ -35581,7 +35704,7 @@ class TestCowtreeAndIoSyncResources:
                      "resources": resources},
                     Path("run-gate.toml"), central=False)
 
-    def test_vm_disk_cache_refuses_ephemeral_lane(self):
+    def test_vm_disk_cache_only_host_modes(self):
         with pytest.raises(run_gate.GateError, match="host or bare-host"):
             run_gate.resolve_resource_settings(
                 {"resources": {"vm": {"disk_cache": "unsafe"}}},

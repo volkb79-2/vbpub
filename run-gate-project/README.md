@@ -130,11 +130,16 @@ overrides. `io_sync` defaults to `strict`; `durable` is lane-only, and
 `relaxed` is allowed only for ephemeral lanes whose image advertises the
 eatmydata library label. Relaxed runs mount a generated, read-only
 `/etc/ld.so.preload` file and do not join history when selected by CLI
-override. CoW mode comes from `[resources.cowtree] mode` and maps to
+override. A durable lane refuses every `--io-sync` override, including
+`--io-sync strict`; its lane declaration is absolute. CoW mode comes from
+`[resources.cowtree] mode` and maps to
 `COWTREE_MODE`; `MDT_COW_ROOT`, when set, is bound at the same path for an
-ephemeral lane. `ram_target` and lane-level `candidate_ram` are accepted and
-validated as configuration metadata; they do not currently select worker
-counts or change container capacity. A mixed-mode sequence is stored per
+ephemeral lane. Run-Gate refuses commas, colons, or newlines in CoW and
+repository mount paths before any Docker call; extra-mount paths reject commas
+and newlines, with colon reserved as their list separator. `ram_target` and
+lane-level `candidate_ram` are accepted and validated as configuration
+metadata; they do not currently select worker counts or change container
+capacity. A mixed-mode sequence is stored per
 member and excluded as an aggregate history measurement. See the [resource settings design](docs/DESIGN-GUIDE.md#combined-resource-settings)
 and [consumer examples](CONSUMERS.md#combined-resource-settings).
 

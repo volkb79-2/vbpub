@@ -545,9 +545,11 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   separated list of `host=container` pairs appended as explicit
   `--mount type=bind` entries to ephemeral container lanes only. Docker
   refuses a missing host source instead of creating an empty directory;
-  malformed entries fail fast. This exists so projects
-  that need Docker-in-Docker can pass `/var/run/docker.sock=/var/run/docker.sock`
-  without hardcoding infrastructure in the TOML config.
+  malformed entries fail fast. Commas and newlines in either path are
+  refused before Docker; colon remains the list separator. This exists so
+  projects that need Docker-in-Docker can pass
+  `/var/run/docker.sock=/var/run/docker.sock` without hardcoding infrastructure
+  in the TOML config.
 
 - `R-14` **Clean tree:** unless `clean_tree = false` or `--allow-dirty`, the
   judged worktree must have zero `git status --porcelain` entries; refusal
@@ -760,24 +762,28 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   top-level keys, unknown consumer subtables, and unknown consumer keys.
   `[resources.cowtree] mode` accepts `auto|off` at each settings scope and is
   delivered as `COWTREE_MODE`. `auto` with `MDT_COW_ROOT` set requires an
-  absolute normalized non-root path; an ephemeral lane gets a same-path
-  `--mount type=bind` and the unchanged `MDT_COW_ROOT` value. `off` adds no
-  bind. The resolver never stats or applies `physical_path()` to this host
-  value. Container probes that use lane resources receive the same CoW bind
-  and consumer environment.
+  absolute normalized non-root path with no comma, colon, or newline; an
+  ephemeral lane gets a same-path `--mount type=bind` and the unchanged
+  `MDT_COW_ROOT` value. Repository paths used in Docker bind mounts reject the
+  same delimiters before any Docker call. `off` adds no bind. The resolver
+  never stats or applies `physical_path()` to this host value. Container
+  probes that use lane resources receive the same CoW bind and consumer
+  environment.
 
   `io_sync` accepts `strict|relaxed` at all defaults and `durable` on a lane
-  only; absent means `strict`. A durable lane cannot be relaxed by a lower
-  scope or `--io-sync relaxed`. `strict` adds no mount. `relaxed` requires an
+  only; absent means `strict`. A durable lane rejects every `--io-sync`
+  override, including `--io-sync strict`; its lane declaration is absolute.
+  `strict` adds no mount. `relaxed` requires an
   ephemeral lane and a non-empty, absolute
   `org.vbpub.tester.eatmydata-lib` image label. Docker inspection failures
   remain infrastructure errors; a missing or invalid label is a refusal.
   Run-Gate writes the label value to an owner-controlled generated file,
   flushes and fsyncs it, and bind-mounts it read-only at
   `/etc/ld.so.preload`. It also passes `RUN_GATE_IO_SYNC=<effective value>`
-  into the lane. `--io-sync strict|relaxed` is a per-invocation override and
-  any such override makes the run ineligible for history. History replacement
-  identity is `(lane, commit, io_sync)`; old entries without the field mean
+  into the lane. `--io-sync strict|relaxed` is a per-invocation override on
+  non-durable lanes and any such override makes the run ineligible for
+  history. History replacement identity is `(lane, commit, io_sync)`; old
+  entries without the field mean
   `strict`, and history JSON/human output separates statistics by mode.
   A sequence with members on different modes is excluded as an aggregate
   history measurement; its per-member records retain their respective modes.
