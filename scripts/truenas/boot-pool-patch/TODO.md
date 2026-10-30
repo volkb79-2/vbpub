@@ -33,9 +33,9 @@ Only v1001 was mutated. It now runs
   restored the prior adapter and `/usr` protection after a compile error.
 - [x] Re-ran `live-ui` Path A on the current v28 bundle after rollback; it
   passed and cleaned its generated UI tree.
-- [x] Final registered `unit-boot-pool-patch` gate: 310 tests and 45 subtests
+- [x] Final registered `unit-boot-pool-patch` gate: 311 tests and 45 subtests
   passed on this tree. External log:
-  `unit-boot-pool-patch-final-20261030.log`.
+  `unit-boot-pool-patch-final-20261030-r3.log`.
 - [ ] Recheck v28 when a later official nightly is installable. The official
   feed had no newer v28 build at the 2026-10-30 check; selecting a future
   build and deciding fresh-install versus upgrade remains open.

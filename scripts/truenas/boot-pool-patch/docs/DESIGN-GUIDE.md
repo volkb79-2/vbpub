@@ -118,12 +118,14 @@ Python hunk exercised both the inner stock-source rollback and outer
 prior-adapter restore on v1001. The current bundle SHA-256 is
 `b7dbb8ca95e62ed4fad6a15ff26310ceccc342e6d33c99a62cfd44d3fbb22d23`.
 
-The v27-to-v27-nightly update replaced the patch source files but left a stale
-install manifest. Exact RC.1 reapplication refused before mutation; the
-Path A marker bytes survived but the dataset booted unmounted until manually
-mounted. Therefore neither a surviving marker nor a stale manifest means the
-patch survived an update. No newer v28 nightly was available in the official
-feed on 2026-10-30. The
+The `27.0.0-MASTER+20261027-173422` result is update/reboot evidence only. The
+recorded full Path A/B API and PWMCP matrix is from `27.0.0-RC.1`; no separate
+full matrix was run on the nightly. The v27-to-v27-nightly update replaced the
+patch source files but left a stale install manifest. Exact RC.1 reapplication
+refused before mutation; the Path A marker bytes survived but the dataset
+booted unmounted until manually mounted. Therefore neither a surviving marker
+nor a stale manifest means the patch survived an update. No newer v28 nightly
+was available in the official feed on 2026-10-30. The
 [README status](../README.md#current-status) summarizes live outcomes; the
 [consumer guide](CONSUMERS.md#v28-20261027-live-acceptance-on-v1001) gives the
 registered external-host commands.

@@ -71,3 +71,15 @@ def test_current_v28_compatibility_build_is_synced_across_user_docs() -> None:
         assert version in markdown_source(path), (
             f"current v28 compatibility fact is stale in {path.relative_to(PATCH_ROOT)}"
         )
+
+
+def test_v27_nightly_update_is_not_reported_as_matrix_acceptance() -> None:
+    nightly = "27.0.0-MASTER+20261027-173422"
+    for path in USER_DOCS:
+        source = re.sub(r"\s+", " ", markdown_source(path))
+        assert nightly in source, f"v27 update evidence is missing from {path.name}"
+        assert "is update/reboot evidence only" in source
+        assert "no separate full matrix was run on the nightly" in source
+
+    combined = "\n".join(markdown_source(path) for path in USER_DOCS)
+    assert "The v27 nightly Path A/B API/UI matrix passed" not in combined

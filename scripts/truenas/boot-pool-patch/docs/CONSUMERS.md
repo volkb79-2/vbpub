@@ -1087,12 +1087,14 @@ unset TRUENAS_V28_PATCH_ACTION TRUENAS_TEST_ALLOW_PATCH_REPLACE \
   TRUENAS_V28_EXPECTED_PRIOR_BUNDLE_SHA256
 ```
 
-At the 2026-10-30 check, the official feed offered no newer v28 nightly to
-install. The v27 RC.1-to-nightly update replaced the patched middleware source
-but left the old manifest; reapply correctly refused before mutation. The
-Path A marker bytes survived the update but were unmounted until a manual
-mount. Do not treat either that marker or the stale manifest as patch
-survival. These observations are summarized in the
+The `27.0.0-MASTER+20261027-173422` result is update/reboot evidence only. The
+recorded full Path A/B API and PWMCP matrix is from `27.0.0-RC.1`; no separate
+full matrix was run on the nightly. At the 2026-10-30 check, the official feed
+offered no newer v28 nightly to install. The v27 RC.1-to-nightly update
+replaced the patched middleware source but left the old manifest; reapply
+correctly refused before mutation. The Path A marker bytes survived the update
+but were unmounted until a manual mount. Do not treat either that marker or
+the stale manifest as patch survival. These observations are summarized in the
 [README status](../README.md#current-status).
 
 ## Historical: apply the v28 2026-10-14 adapter
