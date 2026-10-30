@@ -1,5 +1,11 @@
 # TrueNAS storage and deployment work
 
+For the boot-disk storage patch's supported builds, Path A/Path B behavior,
+update and rollback workflow, and current acceptance status, see the
+[patch overview](docs/OVERVIEW.md). Its exact-build policy and adoption steps
+link to the [design guide](boot-pool-patch/docs/DESIGN-GUIDE.md#support-policy-and-update-state)
+and [consumer workflow](boot-pool-patch/docs/CONSUMERS.md#update-and-reapply-workflow).
+
 ## Why use the system disk
 
 TrueNAS installs its operating system in `boot-pool` and normally expects
@@ -63,12 +69,15 @@ the nearby dataset-only field sets `refquota`. The patch pins the required
 mountpoint and mount policy. The previous apparent quota submission defect
 was the UI test filling the dataset-only `refquota` field. The corrected
 PWMCP interaction captures the actual RPC payload and verifies the finite
-`quota`. On the latest v27 nightly, the full Path A/B API/UI matrix passed on
-v1001: the Path B `ui-wizard` route reserved the free-tail partition with the
-guarded partition-only lane, then the TrueNAS UI created `boot-disk-data` from
-that partition and completed dataset, container, and VM flows. The earlier
-diagnostic where `disk.query` omitted `/dev/vda4` is historical; the current
-shim supplies the eligible reserved partition to the wizard. The separate
+`quota`. The v27 Oct 27 nightly passed the full Path A/B API/UI matrix. The
+newer v27 bridge build `27.0.0-MASTER+20261029-173417` has exact-source and
+Path A update/reapply survival, adapter, and API checks; its latest UI lane
+correctly refused the survival fixture's existing VM record before changing
+the UI. A clean-target UI acceptance remains open. The Path B
+`ui-wizard` route reserves the free-tail partition with the guarded
+partition-only lane, then TrueNAS creates `boot-disk-data` from that partition.
+The earlier diagnostic where `disk.query` omitted `/dev/vda4` is historical;
+the current shim supplies the eligible reserved partition to the wizard. The separate
 `preprovisioned` mode tests downstream UI forms after the guarded provisioner
 creates/registers the pool; its registered unit gate passed on 2026-10-21
 with 170 tests and 45 subtests, but that separate mode has not had a fresh live
@@ -100,21 +109,22 @@ build, so there is no need to inventory this setting as missing from the UI.
 See the official [Preferences guide](https://www.truenas.com/docs/scale/27/toptoolbar/settings/)
 and [Advanced Settings guide](https://www.truenas.com/docs/scale/27/systemsettings/advanced/advancedsettings/).
 
-Current live acceptance on v1001 covers the latest checked v27 and v28
-nightlies. The v27 build `27.0.0-MASTER+20261027-173422` passed the full Path
-A/B API/UI matrix, including Path B wizard pool creation and dataset, zvol,
-container, VM, and share forms. After a repeat RC.1-to-nightly update,
-`reapply-after-update` validated the exact 19-target adapter, archived the
-stale RC.1 record, and mounted Path A root and eligible descendants at boot.
-The guarded v27 reboot/import check passed. The host then upgraded to
-`28.0.0-MASTER+20261027-175229`; boot-pool and Path B pool identity survived,
-the exact v28 adapter installed, and its reboot/import check passed. No newer
-v28 nightly was listed on the official feed on 2026-10-30. See the patch
-[design guide](boot-pool-patch/docs/DESIGN-GUIDE.md#v27-nightly-update-and-reapply)
-and [consumer procedure](boot-pool-patch/docs/CONSUMERS.md#reapply-v27-after-an-update)
-for the update boundary and guarded commands.
+The current exact-build registry contains v27 RC.1, the single v27
+pre-RC.2 bridge nightly `27.0.0-MASTER+20261029-173417`, and only the latest
+v28 rolling nightly `28.0.0-MASTER+20261029-175210`. The earlier v27 Oct 27
+build passed the full Path A/B API/UI matrix; this does not certify the Oct 29
+adapter's UI. The generated
+[acceptance index](docs/ACCEPTANCE-RESULTS.md) separates survival, API, UI,
+and adapter results by source state and target build. The updater creates a
+new stock `/usr`, copies a stale v27 record into the new BE's `/root`, leaves
+Path A data unmounted until reapply, and preserves Path B pool identity/data.
+The v27 fresh-install action refuses a pre-existing Path B pool; the runner
+uses the digest-bound `reapply-after-update` route. See the patch
+[design guide](boot-pool-patch/docs/DESIGN-GUIDE.md#support-policy-and-update-state)
+and [consumer update workflow](boot-pool-patch/docs/CONSUMERS.md#update-and-reapply-workflow)
+for the lifecycle and commands.
 
-The patch remains experimental. v1001 has no `/dev/kvm`, so VM API acceptance
+The patch remains experimental. The disposable acceptance host has no `/dev/kvm`, so VM API acceptance
 verified a QEMU TCG process start but did not boot a guest OS or exercise actual
 KVM selection. SMB/NFS UI and record workflows passed, but a share client could
 not connect from the devcontainer. The available Netcup controller exposes

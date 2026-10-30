@@ -1,0 +1,138 @@
+diff --git a/middlewared/plugins/disk_/availability.py b/middlewared/plugins/disk_/availability.py
+index 36f05de..ea5e98b 100644
+--- a/middlewared/plugins/disk_/availability.py
++++ b/middlewared/plugins/disk_/availability.py
+@@ -115,6 +115,10 @@ class DiskService(Service):
+                 j['name'] for j in serial_to_disk[(i['serial'], i['lunid'])] if j['name'] != i['name']
+             ]
+ 
++        # Boot-disk relaxation (Path B): offer each unused reserved partition as
++        # a pseudo-disk so the pool wizard can create a pool on it.
++        unused.extend(await self.middleware.call('boot_disk_partition.pseudo_disks', used + unused))
++
+         return {'used': used, 'unused': unused}
+ 
+     @private
+diff --git a/middlewared/plugins/pool_/export.py b/middlewared/plugins/pool_/export.py
+index 0183407..693f58c 100644
+--- a/middlewared/plugins/pool_/export.py
++++ b/middlewared/plugins/pool_/export.py
+@@ -85,6 +85,14 @@ class PoolService(Service):
+         be disabled before exporting the last zpool on the system.
+         """
+         pool = await self.middleware.call('pool.get_instance', oid)
++        if options['destroy'] and await self.middleware.call(
++            'boot_disk_partition.pool_uses_reserved_partition', pool['topology'],
++        ):
++            raise CallError(
++                f"Refusing destructive export of pool {pool['name']!r}: "
++                "its partition shares a parent disk with boot-pool; "
++                "use destroy=false to disconnect without wiping data."
++            )
+         audit_callback(pool['name'])
+         root_ds = [
+             pool_dataset_view(r) for r in await self.call2(
+diff --git a/middlewared/plugins/pool_/pool.py b/middlewared/plugins/pool_/pool.py
+index a551a63..471ed7f 100644
+--- a/middlewared/plugins/pool_/pool.py
++++ b/middlewared/plugins/pool_/pool.py
+@@ -1,6 +1,8 @@
++import asyncio
+ from datetime import datetime, timezone
+ import errno
+ import os
++import time
+ from types import MappingProxyType
+ 
+ from fenced.fence import ExitCode as FencedExitCodes
+@@ -20,7 +22,10 @@ from middlewared.api.current import (
+ )
+ from middlewared.plugins.zfs.encryption_keys import resolve_key_options
+ from middlewared.plugins.zfs_.validation_utils import validate_pool_name
+-from middlewared.service import CallError, CRUDService, ValidationErrors, job, private
++from middlewared.service import (
++    CallError, CRUDService, ValidationErrors, filterable_api_method, job, private,
++)
++from middlewared.utils.filter_list import filter_list
+ import middlewared.sqlalchemy as sa
+ from middlewared.utils.boot.pool import BOOT_POOL_NAME_VALID
+ from middlewared.utils.service.entitlement import validate_sed_license
+@@ -272,6 +277,50 @@ class PoolService(CRUDService):
+         )
+         return pool
+ 
++    # Boot-pool relaxation (Path A): the web UI gates the Shares, Storage and
++    # Data Protection pages on a non-empty `pool.query`. Boot-pool is never a
++    # `storage.volume` row, so externally originated queries (websocket/REST/
++    # midclt, i.e. `app` is set) additionally see ONE read-only synthetic
++    # boot-pool row while the user-data root is mounted. Internal callers
++    # (`app is None`, including pool.get_instance and every middleware.call)
++    # never see it. Its id is 0, which is not a datastore id, so every pool.*
++    # mutation that resolves the pool by id refuses it ("does not exist").
++    # The row is cached for a few seconds because the UI polls pool.query; it is
++    # not part of pool.query events/subscriptions.
++    BOOT_USER_DATA_MOUNT = '/mnt/boot-pool/user-data'
++    _boot_pool_row = (0.0, None)
++
++    async def _synthetic_boot_pool_row(self):
++        now = time.monotonic()
++        expires, row = self._boot_pool_row
++        if now < expires:
++            return row
++        row = None
++        try:
++            info = await self.middleware.call('pool.pool_normalize_info', 'boot-pool')
++            proc = await asyncio.create_subprocess_exec(
++                'zpool', 'get', '-H', '-o', 'value', 'guid', 'boot-pool',
++                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
++            )
++            guid = (await asyncio.wait_for(proc.communicate(), timeout=10))[0].decode().strip()
++            if not guid.isdigit():
++                raise CallError('boot-pool guid is unavailable')
++            row = info | {'id': 0, 'guid': guid, 'all_sed': False}
++        except Exception:
++            self.logger.warning('Could not build the synthetic boot-pool row', exc_info=True)
++        PoolService._boot_pool_row = (now + 5, row)
++        return row
++
++    @filterable_api_method(item=PoolEntry, roles=['POOL_READ'], pass_app=True)
++    async def query(self, app, filters, options):
++        options = dict(options or {})
++        rows = await super().query([], {'extra': options.get('extra') or {}})
++        if app is not None and await self.middleware.run_in_thread(os.path.ismount, self.BOOT_USER_DATA_MOUNT):
++            if not any(row['name'] == 'boot-pool' for row in rows):
++                if (row := await self._synthetic_boot_pool_row()) is not None:
++                    rows = rows + [row]
++        return await self.middleware.run_in_thread(filter_list, rows, filters or [], options)
++
+     async def __convert_topology_to_vdevs(self, topology):
+         # Gather all disks transversing the topology so we can
+         # format all disks in one pass, allowing it to be performed
+@@ -556,6 +605,27 @@ class PoolService(CRUDService):
+         elif not validate_pool_name(data['name']):
+             verrors.add('pool_create.name', 'Invalid pool name', errno.EINVAL)
+ 
++        # Boot-disk relaxation (Path B): a reserved partition is created with
++        # zpool by the private helper and adopted through middleware.
++        partition, partition_error = await self.middleware.call(
++            'boot_disk_partition.topology_match', data['topology'],
++        )
++        if partition_error:
++            verrors.add('pool_create.topology', partition_error, errno.EINVAL)
++        if partition is not None:
++            for option in await self.middleware.call(
++                'boot_disk_partition.unsupported_create_options', data,
++            ):
++                verrors.add(
++                    f'pool_create.{option}',
++                    f'{option} is not supported for reserved boot-disk partitions', errno.EINVAL,
++                )
++            verrors.check()
++            job.set_progress(10, f'Creating the pool on reserved partition {partition["path"]}')
++            await self.middleware.call('boot_disk_partition.create_pool', data['name'], partition)
++            job.set_progress(100, 'Pool created on the reserved partition')
++            return await self.middleware.call('pool.query', [['name', '=', data['name']]], {'get': True})
++
+         encryption_dict = resolve_key_options(verrors, {
+             'enabled': data.pop('encryption'), **data.pop('encryption_options'), 'key_file': False,
+         }, 'pool_create.encryption_options')

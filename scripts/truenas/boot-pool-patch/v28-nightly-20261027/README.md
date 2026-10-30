@@ -24,8 +24,8 @@ encryption-secret schema defaults normalize to `None`; Path A accepts an
 unused reserved partition elsewhere on the disk; and the Path B erase dialog
 requires clicking the visible label for its hidden checkbox, followed by a
 checked-state assertion. The full registered unit gate and text/DOM evidence
-are summarized in the repository [README](../README.md#current-status) and
-[consumer guide](../docs/CONSUMERS.md#v28-20261027-live-acceptance-on-v1001).
+are summarized in the repository [README](../README.md#supported-builds) and
+[consumer guide](../docs/CONSUMERS.md#v28-rolling-nightly-acceptance).
 Raw live evidence is kept outside the checkout at
 `/home/vscode/vbpub-release-program-20261027/evidence/truenas-live-20261029/`;
 no screenshots are committed.

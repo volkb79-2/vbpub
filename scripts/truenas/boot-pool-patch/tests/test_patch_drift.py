@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import io
 from pathlib import Path
 from types import SimpleNamespace
 import sys
+from urllib.error import HTTPError
 
 import pytest
 
@@ -29,9 +31,8 @@ def test_supported_build_manifest_covers_only_exact_registered_adapters() -> Non
 
     assert set(builds) == {
         "27.0.0-RC.1",
-        "27.0.0-MASTER+20261027-173422",
-        "28.0.0-MASTER+20261014-230204",
-        "28.0.0-MASTER+20261027-175229",
+        "27.0.0-MASTER+20261029-173417",
+        "28.0.0-MASTER+20261029-175210",
     }
     for version, build in builds.items():
         manifest = PATCH_ROOT / build["directory"] / "targets.sha256"
@@ -44,11 +45,14 @@ def test_supported_build_manifest_covers_only_exact_registered_adapters() -> Non
 def test_unknown_or_unlisted_build_fails_with_exact_supported_build_list() -> None:
     drift = load_script()
 
-    with pytest.raises(drift.DriftError, match=r"27.0.0-MASTER\+20261027-173422"):
+    with pytest.raises(drift.DriftError, match=r"27.0.0-MASTER\+20261029-173417"):
         drift.get_supported_build("27.0.0-RC.2")
 
-    with pytest.raises(drift.DriftError, match=r"28.0.0-MASTER\+20261027-175229"):
+    with pytest.raises(drift.DriftError, match=r"28.0.0-MASTER\+20261029-175210"):
         drift.get_supported_build("27.0.0-GA")
+
+    with pytest.raises(drift.DriftError, match=r"28.0.0-MASTER\+20261029-175210"):
+        drift.get_supported_build("28.0.0-MASTER+20261027-175229")
 
 
 def test_preimage_comparison_reports_every_changed_and_missing_target() -> None:
@@ -140,6 +144,64 @@ def test_official_directory_parser_selects_latest_exact_iso_and_ignores_checksum
     assert drift.latest_official_iso(html, series=27) == "TrueNAS-27.0.0-MASTER+20261027-173422.iso"
 
 
+def test_official_directory_parser_strips_storj_query_suffixes() -> None:
+    drift = load_script()
+    html = '''
+      <a href="./TrueNAS-27.0.0-MASTER+20261029-173417.iso?wrap=1">latest</a>
+      <a href="./TrueNAS-27.0.0-MASTER+20261029-173417.iso.sha256?download=1">checksum</a>
+    '''
+
+    assert drift.latest_official_iso(html, series=27) == "TrueNAS-27.0.0-MASTER+20261029-173417.iso"
+
+
+def test_official_updater_feed_selects_latest_valid_release(monkeypatch: pytest.MonkeyPatch) -> None:
+    drift = load_script()
+    rows = {
+        "27.0.0-MASTER+20261028-173400": {
+            "version": "27.0.0-MASTER+20261028-173400", "filename": "older.update",
+            "profile": "DEVELOPER", "checksum": "a" * 64, "filesize": 10,
+        },
+        "27.0.0-MASTER+20261029-173417": {
+            "version": "27.0.0-MASTER+20261029-173417", "filename": "latest.update",
+            "profile": "DEVELOPER", "checksum": "b" * 64, "filesize": 20,
+        },
+    }
+    observed: list[str] = []
+
+    def fake_fetch(url: str) -> bytes:
+        observed.append(url)
+        return __import__("json").dumps(rows).encode()
+
+    monkeypatch.setattr(drift, "fetch_url", fake_fetch)
+
+    latest = drift.official_latest_update("27-Nightlies")
+
+    assert latest["version"] == "27.0.0-MASTER+20261029-173417"
+    assert latest["train"] == "TrueNAS-27-Nightlies"
+    assert latest["checksum"] == "b" * 64
+    assert observed == ["https://auto-public.sys.truenas.net/TrueNAS-27-Nightlies/releases.json"]
+
+
+def test_fetch_url_retries_only_bounded_http_503(monkeypatch: pytest.MonkeyPatch) -> None:
+    drift = load_script()
+    calls = 0
+
+    def fake_urlopen(_request, timeout):
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            raise HTTPError("https://example.test/feed", 503, "Service Unavailable", {}, io.BytesIO(b""))
+        return io.BytesIO(b"ok")
+
+    sleeps: list[int] = []
+    monkeypatch.setattr(drift, "urlopen", fake_urlopen)
+    monkeypatch.setattr(drift.time, "sleep", sleeps.append)
+
+    assert drift.fetch_url("https://example.test/feed") == b"ok"
+    assert calls == 3
+    assert sleeps == [1, 2]
+
+
 def test_official_directory_parser_handles_rendered_storj_listing_text() -> None:
     drift = load_script()
     rendered_text = """
@@ -218,5 +280,5 @@ def test_rendered_official_directory_uses_configured_pwmcp(monkeypatch: pytest.M
     assert "--wait-until" in observed["argv"]
     assert "networkidle" in observed["argv"]
     assert "--wait-for" in observed["argv"]
-    assert 'a[href*=".iso"]' in observed["argv"]
+    assert "a[href]" in observed["argv"]
     assert observed["kwargs"]["timeout"] == 90

@@ -229,7 +229,8 @@ def test_v27_post_update_reapply_is_exact_and_transactional() -> None:
     recovery = PATCH_ROOT / "acceptance" / "reapply_v27_after_update_remote.sh"
     recovery_text = recovery.read_text()
     assert subprocess.run(["bash", "-n", str(recovery)], check=False).returncode == 0
-    assert '"target_count": 19' in recovery_text
+    assert '"target_count": len(targets)' in recovery_text
+    assert 'manifest != expected' in recovery_text
     assert 'mode=${3:?expected mode is required}' in recovery_text
     assert 'stale v27 install record' in recovery_text
     assert 'sha256sum --check' in recovery_text
@@ -323,7 +324,7 @@ def test_all_patch_installers_compare_every_target_hash_and_disable_fuzz() -> No
         PATCH_ROOT / "acceptance" / "apply_v27_patch_remote.sh",
         PATCH_ROOT / "acceptance" / "reapply_v27_after_update_remote.sh",
         PATCH_ROOT / "acceptance" / "apply_v28_patch_remote.sh",
-        PATCH_ROOT / "v28-nightly-20261027" / "apply_v28_patch_remote.sh",
+        PATCH_ROOT / "v28-nightly-20261029" / "apply_v28_patch_remote.sh",
     )
     for path in scripts:
         source = path.read_text()

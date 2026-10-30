@@ -40,3 +40,14 @@
              return flags
  
          cp = await run(['lscpu'], check=False)
+
+--- a/middlewared/plugins/boot.py
++++ b/middlewared/plugins/boot.py
+@@ -104,6 +104,7 @@
+         `expand` option will determine whether the new disk partition will be
+                  the maximum available or the same size as the current disk.
+         """
++        await self.middleware.call('boot_disk_partition.assert_boot_attach_allowed', dev)
+         await self.check_update_ashift_property()
+         disks = list(await self.get_disks())
+         if len(disks) > 1:

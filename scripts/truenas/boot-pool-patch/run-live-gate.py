@@ -60,7 +60,7 @@ RUNNER_LABEL = "org.vbpub.truenas.live-acceptance-run"
 TESTER_LATE_CREATE_GRACE_SECONDS = 180
 LIVE_LANES = frozenset({
     "live-storage", "live-boot", "live-update", "live-v27-patch", "live-v28-patch",
-    "live-path-b-provision", "live-path-b-partition", "live-ui", "live-vdev-topology",
+    "live-path-a-provision", "live-path-b-provision", "live-path-b-partition", "live-ui", "live-vdev-topology",
     "live-ui-workloads", "live-ui-auth", "live-ui-prepare-ssh", "live-ui-observed-v1001",
     "live-inspect", "live-api-probe", "live-update-survival-plant",
     "live-update-survival-update", "live-update-survival-verify",
@@ -74,7 +74,7 @@ UI_LANES = frozenset({
 })
 SSH_LANES = LIVE_LANES - {"live-ui-auth", "live-ui-prepare-ssh"}
 EXTERNAL_TARGET_LANES = frozenset({
-    "live-inspect", "live-storage", "live-boot", "live-v27-patch", "live-v28-patch", "live-path-b-provision", "live-ui-auth",
+    "live-inspect", "live-storage", "live-boot", "live-v27-patch", "live-v28-patch", "live-path-a-provision", "live-path-b-provision", "live-ui-auth",
     "live-ui-prepare-ssh", "live-path-b-partition", "live-ui", "live-ui-observed-v1001",
     "live-api-probe", *SURVIVAL_LANES,
 })
@@ -84,6 +84,7 @@ LIVE_LANE_TIMEOUT_SECONDS = {
     "live-update": 5400,
     "live-v27-patch": 2400,
     "live-v28-patch": 2400,
+    "live-path-a-provision": 900,
     "live-path-b-provision": 900,
     "live-path-b-partition": 900,
     "live-ui": 2700,
@@ -336,8 +337,12 @@ def required_live_environment(
         raise RunnerError("TRUENAS_EXPECTED_VERSION is required")
     profile = os.environ.get("TRUENAS_STORAGE_PROFILE", "")
     allowed_profiles = {"path-a", "path-b", "both"} if lane in SURVIVAL_LANES else {"path-a", "path-b"}
+    if lane == "live-v27-patch" and os.environ.get("TRUENAS_V27_PATCH_ACTION") in {
+        "reapply-after-update", "install-after-update", "uninstall-stale-record",
+    }:
+        allowed_profiles = {"path-a", "path-b", "both"}
     if profile not in allowed_profiles:
-        choices = "path-a, path-b, or both" if lane in SURVIVAL_LANES else "path-a or path-b"
+        choices = "path-a, path-b, or both" if allowed_profiles == {"path-a", "path-b", "both"} else "path-a or path-b"
         raise RunnerError(f"TRUENAS_STORAGE_PROFILE must be {choices}")
     if lane == "live-vdev-topology" and profile != "path-a":
         raise RunnerError("live-vdev-topology requires a fresh Path A guest with a UI-created boot-pool/user-data root")
@@ -398,7 +403,8 @@ def required_live_environment(
             raise RunnerError("set TRUENAS_TEST_ALLOW_MUTATIONS=1 only for disposable v1001")
         if not SURVIVAL_BUILD_RE.fullmatch(os.environ.get("TRUENAS_EXPECTED_VERSION", "")):
             raise RunnerError("TRUENAS_EXPECTED_VERSION must be one exact TrueNAS build string")
-        if not os.environ["TRUENAS_EXPECTED_VERSION"].startswith("27.0.0-"):
+        if (lane in {"live-update-survival-plant", "live-update-survival-update"}
+                and not os.environ["TRUENAS_EXPECTED_VERSION"].startswith("27.0.0-")):
             raise RunnerError("update-survival acceptance starts from an exact v27 build")
         survival_mode = os.environ.get("TRUENAS_SURVIVAL_MODE", "")
         survival_profile = os.environ.get("TRUENAS_SURVIVAL_PROFILE", "")
@@ -437,6 +443,8 @@ def required_live_environment(
             survival_target = os.environ.get("TRUENAS_SURVIVAL_EXPECTED_AFTER", "")
             if not SURVIVAL_BUILD_RE.fullmatch(survival_target):
                 raise RunnerError("TRUENAS_SURVIVAL_EXPECTED_AFTER must be one exact TrueNAS build string")
+            if os.environ["TRUENAS_EXPECTED_VERSION"] != survival_target:
+                raise RunnerError("verify target must match TRUENAS_EXPECTED_VERSION")
         if lane == "live-update-survival-plant":
             survival_public_key = repo_path_in_tester(
                 os.environ.get("TRUENAS_SURVIVAL_SSH_PUBLIC_KEY_FILE", ""), worktree_root,
@@ -458,7 +466,8 @@ def required_live_environment(
         v27_patch_action = os.environ.get("TRUENAS_V27_PATCH_ACTION", "install")
         if v27_patch_action not in {
             "install", "repair-root-create", "repair-root-parent-mountpoint",
-            "repair-zvol-blocksize", "reapply-after-update", "uninstall-stale-record",
+            "repair-zvol-blocksize", "reapply-after-update", "install-after-update",
+            "uninstall-stale-record",
         }:
             raise RunnerError("TRUENAS_V27_PATCH_ACTION is not a supported v27 patch action")
         v27_patch_repair_guard = os.environ.get("TRUENAS_TEST_ALLOW_PATCH_REPAIR", "")
@@ -470,25 +479,26 @@ def required_live_environment(
         )
         v27_patch_reapply_guard = os.environ.get("TRUENAS_TEST_ALLOW_PATCH_REAPPLY", "")
         v27_patch_uninstall_guard = os.environ.get("TRUENAS_TEST_ALLOW_PATCH_UNINSTALL", "")
-        if v27_patch_action in {"reapply-after-update", "uninstall-stale-record"}:
-            if profile != "path-a":
-                raise RunnerError("post-update v27 recovery requires TRUENAS_STORAGE_PROFILE=path-a")
+        if v27_patch_action in {"reapply-after-update", "install-after-update", "uninstall-stale-record"}:
+            if profile not in {"path-a", "path-b", "both"}:
+                raise RunnerError("post-update v27 recovery requires Path A, Path B, or both")
             if v27_patch_repair_guard:
                 raise RunnerError("TRUENAS_TEST_ALLOW_PATCH_REPAIR is only valid for a source repair action")
             if v27_prior_bundle or v27_prior_dataset_digest or v27_prior_dataset_info_digest:
                 raise RunnerError("post-update recovery binds its stale record by digest and does not upload an old bundle")
-            expected_guard = (
-                v27_patch_reapply_guard if v27_patch_action == "reapply-after-update"
-                else v27_patch_uninstall_guard
-            )
-            other_guard = (
-                v27_patch_uninstall_guard if v27_patch_action == "reapply-after-update"
-                else v27_patch_reapply_guard
-            )
+            uses_reapply_guard = v27_patch_action in {"reapply-after-update", "install-after-update"}
+            expected_guard = v27_patch_reapply_guard if uses_reapply_guard else v27_patch_uninstall_guard
+            other_guard = v27_patch_uninstall_guard if uses_reapply_guard else v27_patch_reapply_guard
             if expected_guard != "1" or other_guard:
                 raise RunnerError("set only the matching v27 post-update recovery guard to 1")
-            if not re.fullmatch(r"[0-9a-f]{64}", v27_prior_bundle_digest):
-                raise RunnerError("post-update recovery requires the exact prior RC.1 bundle SHA-256")
+            if v27_patch_action == "install-after-update" and v27_prior_bundle_digest:
+                raise RunnerError("install-after-update does not accept a stale prior bundle digest")
+            if v27_patch_action in {"reapply-after-update", "uninstall-stale-record"} and not re.fullmatch(
+                r"[0-9a-f]{64}", v27_prior_bundle_digest
+            ):
+                raise RunnerError("stale-record recovery requires the exact prior RC.1 bundle digest")
+            if v27_patch_action == "install-after-update" and v27_prior_bundle_digest:
+                raise RunnerError("install-after-update cannot name a stale bundle digest")
             acceptance_dir = worktree_root / "scripts" / "truenas" / "boot-pool-patch" / "acceptance"
             sys.path.insert(0, str(acceptance_dir))
             from v27_patch_state import adapter_for_version
@@ -499,7 +509,7 @@ def required_live_environment(
                 raise RunnerError(str(exc)) from exc
             if (
                 v27_adapter.reapply_from is None
-                or v27_prior_bundle_digest != v27_adapter.reapply_from_bundle_sha256
+                or v27_prior_bundle_digest not in v27_adapter.reapply_from_bundle_sha256s
             ):
                 raise RunnerError("post-update recovery digest does not match the exact selected adapter contract")
         elif v27_patch_action in {

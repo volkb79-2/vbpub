@@ -38,9 +38,9 @@ POOL_CREATE_SCHEMA_PATH = Path(__file__).resolve().parents[1] / "shared" / "pool
 POOL_CREATE_SCHEMA_PATHS = {
     "27.0.0-RC.1": POOL_CREATE_SCHEMA_PATH,
     "27.0.0-MASTER+20261027-173422": POOL_CREATE_SCHEMA_PATH,
-    "28.0.0-MASTER+20261014-230204": POOL_CREATE_SCHEMA_PATH,
-    "28.0.0-MASTER+20261027-175229": (
-        Path(__file__).resolve().parents[1] / "v28-nightly-20261027" / "pool_create_schema_v28.json"
+    "27.0.0-MASTER+20261029-173417": POOL_CREATE_SCHEMA_PATH,
+    "28.0.0-MASTER+20261029-175210": (
+        Path(__file__).resolve().parents[1] / "v28-nightly-20261029" / "pool_create_schema_v28.json"
     ),
 }
 IMPORT_LEAF_RE = re.compile(

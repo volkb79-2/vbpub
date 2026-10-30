@@ -23,15 +23,14 @@ import uuid
 from remote import RemoteError, Target, flatten_datasets
 
 
-EXPECTED_VERSION = "28.0.0-MASTER+20261014-230204"
+EXPECTED_VERSION = "28.0.0-MASTER+20261029-175210"
 SCRIPT_DIR = Path(__file__).resolve().parent
 TRUENAS_ROOT = SCRIPT_DIR.parents[1]
 PATCH_ROOT = TRUENAS_ROOT / "boot-pool-patch"
 ADAPTERS = {
-    EXPECTED_VERSION: PATCH_ROOT / "v28-nightly-20261014",
-    "28.0.0-MASTER+20261027-175229": PATCH_ROOT / "v28-nightly-20261027",
+    EXPECTED_VERSION: PATCH_ROOT / "v28-nightly-20261029",
 }
-TARGET_COUNTS = {EXPECTED_VERSION: 15, "28.0.0-MASTER+20261027-175229": 19}
+TARGET_COUNTS = {EXPECTED_VERSION: 19}
 PATCH_DIR = ADAPTERS[EXPECTED_VERSION]
 SHARED_DIR = TRUENAS_ROOT / "boot-pool-patch" / "shared"
 STORAGE_ROOTS = {
@@ -53,7 +52,12 @@ def adapter_directory(version: str) -> Path:
     try:
         return ADAPTERS[version]
     except KeyError as exc:
-        raise RemoteError(f"no v28 adapter is registered for {version!r}") from exc
+        raise RemoteError(
+            f"no v28 adapter is registered for {version!r}; the rolling v28 base is "
+            f"{EXPECTED_VERSION}. Update through TrueNAS to that exact build, verify the "
+            "reported version, then rerun the patch workflow. If the updater advertises "
+            "a newer build, stop until its adapter is registered."
+        ) from exc
 
 
 def read_target_hashes(
@@ -116,7 +120,9 @@ def deterministic_bundle(
     patch_dir = adapter_directory(version)
     target_hashes = read_target_hashes(version=version)
     paths_content = "".join(f"{name}\n" for name in target_hashes).encode()
-    versioned = version != EXPECTED_VERSION
+    # The sole supported v28 base carries its release-specific installer and
+    # Path B partition adapter in this directory.
+    versioned = True
     bundle_files = [
         ("patch/storage.patch", patch_dir / "storage.patch"),
         ("patch/middleware.patch", patch_dir / "middleware.patch"),
@@ -135,7 +141,7 @@ def deterministic_bundle(
         ("shared/boot_pool_user_data.py", SHARED_DIR / "boot_pool_user_data.py"),
         ("shared/virtualization_support.py", SHARED_DIR / "virtualization_support.py"),
     ]
-    if version == "28.0.0-MASTER+20261027-175229":
+    if version == EXPECTED_VERSION:
         bundle_files.extend((
             ("patch/ui-pools.patch", patch_dir / "ui-pools.patch"),
             ("shared/boot_disk_partition.py", patch_dir / "boot_disk_partition.py"),

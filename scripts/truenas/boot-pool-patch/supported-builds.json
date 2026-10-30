@@ -1,10 +1,30 @@
 {
   "schema_version": 1,
+  "acceptance_targets": [
+    "27.0.0-MASTER+20261029-173417",
+    "28.0.0-MASTER+20261029-175210"
+  ],
   "supported_builds": {
-    "27.0.0-MASTER+20261027-173422": {
-      "adapter_id": "v27-nightly-20261027",
-      "directory": "v27-nightly-20261027",
-      "install_bundle_sha256": "489be0c005e4e64cff1cf81077418546b8c9a03cd77bfafa2711048a52a1c0fe",
+    "27.0.0-RC.1": {
+      "adapter_id": "v27-rc1",
+      "directory": "v27",
+      "install_bundle_sha256": "50105fc127ab8a17e969d36eba5070efc76fbc0ef2a5dc52b27e2125d869e11c",
+      "patches": [
+        "boot-mount.patch",
+        "libvirt.patch",
+        "middleware.patch",
+        "storage.patch",
+        "ui-pools.patch",
+        "zvol-blocksize.patch"
+      ],
+      "target_count": 19,
+      "target_manifest_sha256": "a463dafe522264fd4ad7b2120d5b6d3b25180fe46d98a9ffc8ef1988b93d5d67",
+      "train": "TrueNAS-27-RC"
+    },
+    "27.0.0-MASTER+20261029-173417": {
+      "adapter_id": "v27-nightly-20261029",
+      "directory": "v27-nightly-20261029",
+      "install_bundle_sha256": "60b3696c44768f9c6958791e8b46c2a205d5daede9c8ab29b23228c141b58e76",
       "patches": [
         "boot-mount.patch",
         "libvirt.patch",
@@ -17,37 +37,10 @@
       "target_manifest_sha256": "0a7ab3fd05ac0471cda4f48904fbae5c3221de9fa5eb977dcfaecdb245ccf3c1",
       "train": "TrueNAS-27-Nightlies"
     },
-    "27.0.0-RC.1": {
-      "adapter_id": "v27-rc1",
-      "directory": "v27",
-      "install_bundle_sha256": "23e7667f4893f26f4861b17edc20e73f00ae2f8b797f9ff95cde446af1f25de1",
-      "patches": [
-        "boot-mount.patch",
-        "libvirt.patch",
-        "middleware.patch",
-        "storage.patch",
-        "ui-pools.patch",
-        "zvol-blocksize.patch"
-      ],
-      "target_count": 18,
-      "target_manifest_sha256": "00bcd535982cbc5a36718d7a216220118d3486865e57d446bb6c9d1b7e110768",
-      "train": "TrueNAS-27-RC"
-    },
-    "28.0.0-MASTER+20261014-230204": {
-      "adapter_id": "v28-nightly-20261014",
-      "directory": "v28-nightly-20261014",
-      "patches": [
-        "boot-mount.patch",
-        "middleware.patch",
-        "storage.patch"
-      ],
-      "target_count": 15,
-      "target_manifest_sha256": "9cca9aa37d06e92e5ffa1d0aa74f673599c72620860952a8f13508dfee73a22b",
-      "train": "TrueNAS-28-Nightlies"
-    },
-    "28.0.0-MASTER+20261027-175229": {
-      "adapter_id": "v28-nightly-20261027",
-      "directory": "v28-nightly-20261027",
+    "28.0.0-MASTER+20261029-175210": {
+      "adapter_id": "v28-nightly-20261029",
+      "directory": "v28-nightly-20261029",
+      "install_bundle_sha256": "5366a8029f34162515e2b6c0935cf9b19abe3c41cc214886428af583d6db069b",
       "patches": [
         "boot-mount.patch",
         "middleware.patch",
@@ -55,7 +48,7 @@
         "ui-pools.patch"
       ],
       "target_count": 19,
-      "target_manifest_sha256": "5fed1afd5acef4464d872e5b5dc068924f21ba33281eace18333501d754c5f3f",
+      "target_manifest_sha256": "8828c8dfd91617df0bb864c1c3e1687883db7176ea79ac459f6f2d39d7166acf",
       "train": "TrueNAS-28-Nightlies"
     }
   }

@@ -1,0 +1,86 @@
+--- a/middlewared/plugins/vm/info.py
++++ b/middlewared/plugins/vm/info.py
+@@ -2,6 +2,7 @@
+ import re
+ 
+ from truenas_pylibvirt.utils import kvm_supported
++from .virtualization_support import virtualization_backend
+ from truenas_pylibvirt.utils.cpu import get_cpu_model_choices
+ from truenas_pylicensed.features import LicenseFeature
+ 
+@@ -27,7 +28,7 @@
+         """
+         Returns "true" if system supports virtualization, "false" otherwise
+         """
+-        return kvm_supported()
++        return virtualization_backend() is not None
+ 
+     @private
+     async def license_active(self):
+@@ -41,9 +42,10 @@
+         """
+         Retrieve details if virtualization is supported on the system and in case why it's not supported if it isn't.
+         """
++        backend = virtualization_backend()
+         return {
+-            'supported': kvm_supported(),
+-            'error': None if kvm_supported() else 'Your CPU does not support KVM extensions',
++            'supported': backend is not None,
++            'error': None if backend else 'No KVM or QEMU TCG VM backend is available',
+         }
+ 
+     @api_method(VMMaximumSupportedVcpusArgs, VMMaximumSupportedVcpusResult, roles=['VM_READ'])
+@@ -64,8 +66,7 @@
+             'amd_rvi': False,
+             'amd_asids': False,
+         }
+-        supports_vm = await self.middleware.call('vm.supports_virtualization')
+-        if not supports_vm:
++        if not kvm_supported():
+             return flags
+ 
+         cp = await run(['lscpu'], check=False)
+--- a/middlewared/plugins/boot.py
++++ b/middlewared/plugins/boot.py
+@@ -87,40 +87,41 @@
+     @private
+     def get_boot_type(self):
+         """
+         Get the boot type of the boot pool.
+ 
+         Returns:
+             "BIOS", "EFI", None
+         """
+         # https://wiki.debian.org/UEFI
+         return 'EFI' if os.path.exists('/sys/firmware/efi') else 'BIOS'
+ 
+     @api_method(BootAttachArgs, BootAttachResult, roles=['DISK_WRITE'])
+     @job(lock=BOOT_ATTACH_REPLACE_LOCK)
+     async def attach(self, job, dev, options):
+         """
+         Attach a disk to the boot pool, turning a stripe into a mirror.
+ 
+         `expand` option will determine whether the new disk partition will be
+                  the maximum available or the same size as the current disk.
+         """
++        await self.middleware.call('boot_disk_partition.assert_boot_attach_allowed', dev)
+         await self.check_update_ashift_property()
+         disks = list(await self.get_disks())
+         if len(disks) > 1:
+             raise CallError('3-way mirror not supported')
+ 
+         format_opts = {}
+         if not options['expand']:
+             # Lets try to find out the size of the current ZFS or FreeBSD-ZFS (upgraded TrueNAS CORE installation)
+             # partition so the new partition is not bigger, preventing size mismatch if one of them fail later on.
+             zfs_part = await self.middleware.call(
+                 'disk.get_partition_with_uuids',
+                 disks[0],
+                 list(valid_zfs_partition_uuids()),
+             )
+             if zfs_part:
+                 format_opts['size'] = zfs_part['size']
+ 
+         format_opts['legacy_schema'] = await self.legacy_schema(disks[0])
+ 
+         await self.middleware.call('boot.format', dev, format_opts)

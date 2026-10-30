@@ -36,10 +36,6 @@ fi
 
 version=$(midclt call system.info | python3 -c 'import json,sys; print(json.load(sys.stdin).get("version", ""))')
 [ "$version" = "$expected_version" ] || fail "expected $expected_version, found $version"
-case "$expected_version" in
-    27.0.0-RC.1|27.0.0-MASTER+20261027-173422) ;;
-    *) fail "no exact v27 fresh-install adapter for $expected_version" ;;
-esac
 adapter_manifest="$patch_dir/adapter.json"
 [ -f "$adapter_manifest" ] && [ ! -L "$adapter_manifest" ] || fail 'exact-build adapter manifest is missing or unsafe'
 python3 - "$adapter_manifest" "$patch_dir/targets.sha256" "$expected_version" <<'PY'
@@ -52,24 +48,28 @@ import sys
 manifest_path, targets_path, version = sys.argv[1:]
 manifest = json.loads(Path(manifest_path).read_text())
 target_digest = hashlib.sha256(Path(targets_path).read_bytes()).hexdigest()
-expected = {
-    "27.0.0-RC.1": {
+targets = Path(targets_path).read_text().splitlines()
+if version == "27.0.0-RC.1":
+    expected = {
         "id": "v27-rc1", "version": version, "train": "TrueNAS-27-RC",
-        "target_count": 18, "target_manifest_sha256": target_digest,
-    },
-    "27.0.0-MASTER+20261027-173422": {
-        "id": "v27-nightly-20261027", "version": version,
+        "target_count": len(targets), "target_manifest_sha256": target_digest,
+    }
+elif re.fullmatch(r"27\.0\.0-MASTER\+(\d{8})-\d{6}", version):
+    day = version.split("+", 1)[1].split("-", 1)[0]
+    expected = {
+        "id": f"v27-nightly-{day}", "version": version,
         "train": "TrueNAS-27-Nightlies", "reapply_from": "27.0.0-RC.1",
-        "target_count": 19, "target_manifest_sha256": target_digest,
-    },
-}
-observed = dict(manifest)
-prior_bundle_digest = observed.pop("reapply_from_bundle_sha256", None)
-if version == "27.0.0-MASTER+20261027-173422" and not re.fullmatch(r"[0-9a-f]{64}", str(prior_bundle_digest)):
-    raise SystemExit("nightly adapter manifest has no valid RC.1 bundle digest")
-if version == "27.0.0-RC.1" and prior_bundle_digest is not None:
-    raise SystemExit("RC.1 adapter must not declare a prior bundle digest")
-if observed != expected[version]:
+        "reapply_from_bundle_sha256s": manifest.get("reapply_from_bundle_sha256s"),
+        "target_count": len(targets), "target_manifest_sha256": target_digest,
+    }
+    prior_digests = manifest.get("reapply_from_bundle_sha256s")
+    if (not isinstance(prior_digests, list) or not prior_digests
+            or not all(isinstance(item, str) and re.fullmatch(r"[0-9a-f]{64}", item)
+                       for item in prior_digests)):
+        raise SystemExit("nightly adapter manifest has no valid exact RC.1 bundle digest list")
+else:
+    raise SystemExit(f"no exact v27 fresh-install adapter for {version}")
+if manifest != expected:
     raise SystemExit(f"adapter manifest does not match the exact supported build: {manifest!r}")
 PY
 [ ! -e /dev/kvm ] || fail '/dev/kvm exists; this is not the intended TCG target'

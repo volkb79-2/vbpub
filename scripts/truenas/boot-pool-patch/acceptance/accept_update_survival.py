@@ -130,9 +130,9 @@ def expected_zvol_reservation_migration_paths(
     *, mode: str, before_version: str, expected_after: str,
     dataset_names: list[str], baseline: dict[str, Any] | None,
 ) -> set[str]:
-    """Allow only the observed RC.1→Oct27 patched boot-pool zvol default release."""
+    """Allow only the observed RC.1→latest registered v27 nightly zvol migration."""
     if (mode != "patched" or before_version != "27.0.0-RC.1"
-            or expected_after != "27.0.0-MASTER+20261027-173422" or not isinstance(baseline, dict)):
+            or expected_after != "27.0.0-MASTER+20261029-173417" or not isinstance(baseline, dict)):
         return set()
     rows = baseline.get("middleware", {}).get("datasets", {})
     if not isinstance(rows, dict):
@@ -168,17 +168,20 @@ def expected_differences(
     *, mode: str, profile: str, vm_ids: list[Any] | None = None,
     dataset_names: list[str] | None = None, before_version: str = "",
     expected_after: str = "", baseline: dict[str, Any] | None = None,
+    patched_target: str = "none",
 ) -> set[str]:
     if mode not in {"vanilla", "patched"}:
         raise SurvivalError(f"mode must be vanilla or patched, got {mode!r}")
     if profile not in {"path-a", "path-b", "both"}:
         raise SurvivalError(f"profile must be path-a, path-b, or both, got {profile!r}")
+    if patched_target not in {"none", "reapply"}:
+        raise SurvivalError(f"patched_target must be none or reapply, got {patched_target!r}")
     result = {"system.version", "boot_environment.active"}
     if profile in {"path-a", "both"}:
         result.add("storage.path_a.auto_mounted")
     if profile in {"path-b", "both"}:
         result.add("storage.path_b.auto_mounted")
-    if mode == "patched":
+    if patched_target == "reapply" and expected_after.startswith("27."):
         result.update({"patch.install_record.version", "patch.install_record.bundle_sha256"})
     result.update(expected_zvol_reservation_migration_paths(
         mode=mode, before_version=before_version, expected_after=expected_after,
@@ -192,6 +195,7 @@ def expected_differences(
 def expected_difference_values(manifest: dict[str, Any], expected_after: str) -> dict[str, Any]:
     """Bind accepted upgrade deltas to the requested build and fixture state."""
     mode, profile = manifest.get("mode"), manifest.get("profile")
+    patched_target = manifest.get("patched_target", "none")
     result: dict[str, Any] = {
         "system.version": expected_after,
         "boot_environment.active": expected_after.replace("+", "-"),
@@ -199,7 +203,7 @@ def expected_difference_values(manifest: dict[str, Any], expected_after: str) ->
     for role in ("path_a", "path_b"):
         selected = profile in ({"path-a", "both"} if role == "path_a" else {"path-b", "both"})
         if selected:
-            if mode == "patched" and expected_after.startswith("27."):
+            if patched_target == "reapply":
                 mounted = True
             elif expected_after.startswith("28.") and role == "path_a":
                 mounted = False
@@ -212,7 +216,24 @@ def expected_difference_values(manifest: dict[str, Any], expected_after: str) ->
             else:
                 mounted = False
             result[f"storage.{role}.auto_mounted"] = mounted
-    if mode == "patched":
+    if mode == "patched" and patched_target == "none":
+        baseline_record = (
+            manifest.get("baseline", {}).get("patch", {}).get("install_record")
+            if isinstance(manifest.get("baseline"), dict) else None
+        )
+        require(isinstance(baseline_record, dict),
+                "patched update manifest has no baseline install record")
+        result["patch.install_record.version"] = baseline_record.get("version")
+        result["patch.install_record.bundle_sha256"] = baseline_record.get("bundle_sha256")
+    elif patched_target == "reapply" and expected_after.startswith("27."):
+        registry = json.loads((Path(__file__).resolve().parents[1] / "supported-builds.json").read_text())
+        build = registry.get("supported_builds", {}).get(expected_after, {})
+        bundle = build.get("install_bundle_sha256") if isinstance(build, dict) else None
+        require(isinstance(bundle, str) and SHA256_RE.fullmatch(bundle) is not None,
+                f"supported-build manifest has no exact install bundle digest for {expected_after}")
+        result["patch.install_record.version"] = expected_after
+        result["patch.install_record.bundle_sha256"] = bundle
+    elif mode == "patched" and expected_after.startswith("28."):
         before_version = str(manifest.get("before_version", ""))
         baseline_record = (
             manifest.get("baseline", {}).get("patch", {}).get("install_record")
@@ -220,33 +241,22 @@ def expected_difference_values(manifest: dict[str, Any], expected_after: str) ->
         )
         require(isinstance(baseline_record, dict),
                 "patched update manifest has no baseline install record")
-        if expected_after.startswith("27."):
-            registry = json.loads((Path(__file__).resolve().parents[1] / "supported-builds.json").read_text())
-            build = registry.get("supported_builds", {}).get(expected_after, {})
-            bundle = build.get("install_bundle_sha256") if isinstance(build, dict) else None
-            require(isinstance(bundle, str) and SHA256_RE.fullmatch(bundle) is not None,
-                    f"supported-build manifest has no exact install bundle digest for {expected_after}")
-            result["patch.install_record.version"] = expected_after
-            result["patch.install_record.bundle_sha256"] = bundle
-        elif expected_after.startswith("28."):
-            require(baseline_record.get("version") == before_version,
-                    "patched cross-series update baseline marker does not match its source build")
-            require(isinstance(baseline_record.get("bundle_sha256"), str)
-                    and SHA256_RE.fullmatch(baseline_record["bundle_sha256"]) is not None,
-                    "patched cross-series update baseline marker has no bundle digest")
-            result["patch.install_record.version"] = before_version
-            result["patch.install_record.bundle_sha256"] = baseline_record["bundle_sha256"]
-        else:
-            raise SurvivalError(f"no patched update marker policy is registered for {expected_after!r}")
-        migration_paths = expected_zvol_reservation_migration_paths(
-            mode=mode,
-            before_version=str(manifest.get("before_version", "")),
-            expected_after=expected_after,
-            dataset_names=manifest.get("objects", {}).get("datasets", []),
-            baseline=manifest.get("baseline"),
-        )
-        for path in migration_paths:
-            result[path] = None if path.endswith(".parsed") else "0"
+        require(baseline_record.get("version") == before_version,
+                "patched cross-series update baseline marker does not match its source build")
+        require(isinstance(baseline_record.get("bundle_sha256"), str)
+                and SHA256_RE.fullmatch(baseline_record["bundle_sha256"]) is not None,
+                "patched cross-series update baseline marker has no bundle digest")
+        result["patch.install_record.version"] = before_version
+        result["patch.install_record.bundle_sha256"] = baseline_record["bundle_sha256"]
+    migration_paths = expected_zvol_reservation_migration_paths(
+        mode=mode,
+        before_version=str(manifest.get("before_version", "")),
+        expected_after=expected_after,
+        dataset_names=manifest.get("objects", {}).get("datasets", []),
+        baseline=manifest.get("baseline"),
+    )
+    for path in migration_paths:
+        result[path] = None if path.endswith(".parsed") else "0"
     vm_ids = manifest.get("objects", {}).get("records", {}).get("vm", [])
     for vm_id in vm_ids:
         result[f"middleware.records.selected.vms[id={json.dumps(vm_id)}].video_model"] = "VGA"
@@ -546,7 +556,7 @@ def method_record(target: Target, methods: set[str], method: str) -> dict[str, A
 
 
 def canonical_middleware_value(method: str, value: Any) -> Any:
-    """Remove generated replication timestamps while preserving task state."""
+    """Normalize runtime-only fields while preserving stored middleware settings."""
     if method == "replication.query" and isinstance(value, list):
         stable_rows = []
         for row in value:
@@ -566,6 +576,12 @@ def canonical_middleware_value(method: str, value: Any) -> Any:
         state = value.get("state")
         if isinstance(state, dict):
             state = dict(state)
+            # Gateway values under `state` are derived from the active route
+            # table by network_config_extend(); the persisted gateway settings
+            # remain at the top level and are still compared. A boot into a
+            # new BE can change live route state without changing user config.
+            state.pop("ipv4gateway", None)
+            state.pop("ipv6gateway", None)
             nameservers = sorted(
                 server for server in (state.get(f"nameserver{index}") for index in range(1, 4))
                 if isinstance(server, str) and server
@@ -655,6 +671,15 @@ def normalize_survival_snapshot(
                 for row in containers
             ]
     return stable
+
+
+def stock_updated_build_hides_path_a_from_middleware(manifest: dict[str, Any], expected_after: str) -> bool:
+    """Stock post-update middleware has no synthetic Path A pool/dataset view."""
+    return (
+        manifest.get("patched_target", "none") == "none"
+        and manifest.get("profile") in {"path-a", "both"}
+        and expected_after.startswith(("27.", "28."))
+    )
 
 
 def fixture_query(target: Target, methods: set[str], method: str, filters: list[Any] | None = None) -> list[dict[str, Any]]:
@@ -1040,47 +1065,62 @@ def plant_data(target: Target, fixture_id: str, required_profile: str) -> dict[s
 
 def plant_middleware_records(target: Target, fixture_id: str, objects: dict[str, Any], ssh_public_key_file: Path) -> None:
     methods = method_names(target)
-    for method in ("group.create", "user.create", "sharing.smb.create", "sharing.nfs.create",
-                   "vm.create", "vm.device.create", "api_key.create", "cronjob.create",
+    for method in ("vm.create", "vm.device.create", "api_key.create", "cronjob.create",
                    "pool.snapshottask.create", "replication.create"):
         require(method in methods, f"required v27 middleware method is unavailable: {method}")
-    key = ssh_public_key_file.read_text(encoding="utf-8").strip()
-    require(key.startswith(("ssh-ed25519 ", "ssh-rsa ", "ecdsa-sha2-")),
-            "SSH public-key file is not a recognized OpenSSH public key")
     suffix = fixture_id.split("-")[-1]
     primary_role = preferred_middleware_pool_role(objects["files"])
     require(primary_role is not None, "the selected Path A/Path B file fixture is missing")
     pool_rows = target.query("pool.query", timeout=120)
-    user_home = fixture_user_home(objects["files"], fixture_id, pool_rows)
-    target.shell(f"install -d -m 0700 {shlex.quote(user_home)}")
-    home_marker = f"{user_home}/home-survival-marker.txt"
-    home_digest = write_probe(target, home_marker, f"account home survives {fixture_id}\n".encode())
-    objects["files"].append({"path": home_marker, "sha256": home_digest, "role": "account-home"})
-    group_name = f"survival-{suffix}"
-    user_name = f"survival-{suffix}"
-    group = target.call("group.create", {"name": group_name, "smb": False})
-    group_id = group if isinstance(group, int) else group.get("id") if isinstance(group, dict) else None
-    require(isinstance(group_id, int), f"group.create returned no integer id: {group!r}")
-    password = uuid.uuid4().hex + "Aa!9"
-    user = target.call("user.create", {
-        "username": user_name, "full_name": f"Update survival {suffix}",
-        "group": group_id, "password": password, "sshpubkey": key, "smb": False,
-        "shell": "/usr/bin/bash", "home": user_home, "password_disabled": False,
-    })
-    user_id = user if isinstance(user, int) else user.get("id") if isinstance(user, dict) else None
-    require(isinstance(user_id, int), f"user.create returned no integer id: {user!r}")
-    observed_user = target.query("user.query", [["username", "=", user_name]], timeout=120)
-    require(len(observed_user) == 1 and observed_user[0].get("sshpubkey") == key,
-            f"created account did not retain its SSH public key: {observed_user!r}")
-    shadow = target.shell(
-        f"getent shadow {shlex.quote(user_name)} | cut -d: -f2",
-        timeout=45,
-    )
-    require(shadow not in {"", "!", "*"}, "created account does not have an active password hash")
-    objects["password_hash_sha256"] = {user_name: sha256_text(shadow)}
-    objects["record_names"].extend((group_name, user_name))
-    objects["records"].update({"group": [group_id], "user": [user_id]})
-    objects["coverage"]["accounts"] = "planted group, user, SSH key, and persistent password hash"
+    real_pool_rows = [
+        row for row in pool_rows
+        if isinstance(row, dict) and isinstance(row.get("name"), str)
+        and row.get("name") != "boot-pool" and isinstance(row.get("path"), str)
+        and row["path"].startswith("/mnt/")
+    ]
+    user_home = None
+    user_name = "root"
+    if real_pool_rows:
+        for method in ("group.create", "user.create", "sharing.smb.create", "sharing.nfs.create"):
+            require(method in methods, f"required v27 middleware method is unavailable: {method}")
+        key = ssh_public_key_file.read_text(encoding="utf-8").strip()
+        require(key.startswith(("ssh-ed25519 ", "ssh-rsa ", "ecdsa-sha2-")),
+                "SSH public-key file is not a recognized OpenSSH public key")
+        user_home = fixture_user_home(objects["files"], fixture_id, pool_rows)
+        target.shell(f"install -d -m 0700 {shlex.quote(user_home)}")
+        home_marker = f"{user_home}/home-survival-marker.txt"
+        home_digest = write_probe(target, home_marker, f"account home survives {fixture_id}\n".encode())
+        objects["files"].append({"path": home_marker, "sha256": home_digest, "role": "account-home"})
+        group_name = f"survival-{suffix}"
+        user_name = f"survival-{suffix}"
+        group = target.call("group.create", {"name": group_name, "smb": False})
+        group_id = group if isinstance(group, int) else group.get("id") if isinstance(group, dict) else None
+        require(isinstance(group_id, int), f"group.create returned no integer id: {group!r}")
+        password = uuid.uuid4().hex + "Aa!9"
+        user = target.call("user.create", {
+            "username": user_name, "full_name": f"Update survival {suffix}",
+            "group": group_id, "password": password, "sshpubkey": key, "smb": False,
+            "shell": "/usr/bin/bash", "home": user_home, "password_disabled": False,
+        })
+        user_id = user if isinstance(user, int) else user.get("id") if isinstance(user, dict) else None
+        require(isinstance(user_id, int), f"user.create returned no integer id: {user!r}")
+        observed_user = target.query("user.query", [["username", "=", user_name]], timeout=120)
+        require(len(observed_user) == 1 and observed_user[0].get("sshpubkey") == key,
+                f"created account did not retain its SSH public key: {observed_user!r}")
+        shadow = target.shell(
+            f"getent shadow {shlex.quote(user_name)} | cut -d: -f2",
+            timeout=45,
+        )
+        require(shadow not in {"", "!", "*"}, "created account does not have an active password hash")
+        objects["password_hash_sha256"] = {user_name: sha256_text(shadow)}
+        objects["record_names"].extend((group_name, user_name))
+        objects["records"].update({"group": [group_id], "user": [user_id]})
+        objects["coverage"]["accounts"] = "planted group, user, SSH key, and persistent password hash"
+    else:
+        objects["coverage"]["accounts"] = (
+            "unavailable: the selected root is the synthetic boot-pool row; TrueNAS account home "
+            "validation requires a real pool.query path"
+        )
     api_key = target.call("api_key.create", survival_api_key_data(fixture_id))
     api_key_id = api_key.get("id")
     api_key_value = api_key.get("key")
@@ -1100,49 +1140,56 @@ def plant_middleware_records(target: Target, fixture_id: str, objects: dict[str,
             f"disabled cron job was not retained as a disabled record: {cronjob!r}")
     objects["records"]["cronjob"] = [cronjob["id"]]
 
-    share_path = user_home
-    nfs = target.call("sharing.nfs.create", {
-        "path": share_path, "comment": "disabled update-survival test share",
-        "enabled": False, "ro": False, "maproot_user": "", "maproot_group": "",
-        "mapall_user": "", "mapall_group": "", "networks": [], "hosts": [], "security": [],
-    })
-    smb = target.call("sharing.smb.create", {
-        "purpose": "DEFAULT_SHARE", "name": f"survival-{suffix}", "path": share_path,
-        "enabled": False, "comment": "disabled update-survival test share", "readonly": False,
-        "browsable": True, "access_based_share_enumeration": False,
-        "audit": {"enable": False, "watch_list": [], "ignore_list": []},
-        "options": {"aapl_name_mangling": False, "hostsallow": [], "hostsdeny": []},
-    })
-    nfs_id, smb_id = nfs.get("id"), smb.get("id")
-    require(isinstance(nfs_id, int) and isinstance(smb_id, int),
-            "share create returned an invalid record id")
-    objects["records"]["nfs"].append(nfs_id)
-    objects["records"]["smb"].append(smb_id)
+    if user_home is not None:
+        share_path = user_home
+        nfs = target.call("sharing.nfs.create", {
+            "path": share_path, "comment": "disabled update-survival test share",
+            "enabled": False, "ro": False, "maproot_user": "", "maproot_group": "",
+            "mapall_user": "", "mapall_group": "", "networks": [], "hosts": [], "security": [],
+        })
+        smb = target.call("sharing.smb.create", {
+            "purpose": "DEFAULT_SHARE", "name": f"survival-{suffix}", "path": share_path,
+            "enabled": False, "comment": "disabled update-survival test share", "readonly": False,
+            "browsable": True, "access_based_share_enumeration": False,
+            "audit": {"enable": False, "watch_list": [], "ignore_list": []},
+            "options": {"aapl_name_mangling": False, "hostsallow": [], "hostsdeny": []},
+        })
+        nfs_id, smb_id = nfs.get("id"), smb.get("id")
+        require(isinstance(nfs_id, int) and isinstance(smb_id, int),
+                "share create returned an invalid record id")
+        objects["records"]["nfs"].append(nfs_id)
+        objects["records"]["smb"].append(smb_id)
+    else:
+        objects["coverage"]["shares"] = "unavailable: no real pool.query path is available for share validation"
 
-    root_dataset = middleware_root_dataset(objects["datasets"], pool_rows, fixture_id)
-    snapshot_task = target.call("pool.snapshottask.create", {
-        "dataset": root_dataset, "enabled": False, "recursive": True,
-        "naming_schema": f"survival-%Y-%m-%d_%H-%M-{suffix}",
-        "lifetime_unit": "DAY", "lifetime_value": 2,
-    })
-    snapshot_task_id = snapshot_task if isinstance(snapshot_task, int) else snapshot_task.get("id")
-    require(isinstance(snapshot_task_id, int), f"snapshot-task create returned no id: {snapshot_task!r}")
-    objects["records"]["snapshot_task"] = [snapshot_task_id]
-    pool_name = root_dataset.split("/", 1)[0]
-    replica = f"{pool_name}/update-survival-replica-{suffix}"
-    replica_mount = f"/mnt/{replica}"
-    create_dataset(target, replica, replica_mount, quota="512M", refquota="384M")
-    objects["datasets"].append(replica)
-    source_dataset = next(name for name in objects["datasets"] if name.endswith("/nested") and name.startswith(root_dataset))
-    replication = target.call(
-        "replication.create",
-        replication_create_data(fixture_id, source_dataset, replica, snapshot_task_id),
-    )
-    replication_id = replication.get("id") if isinstance(replication, dict) else replication
-    require(isinstance(replication_id, int), f"disabled local replication create returned no id: {replication!r}")
-    objects["records"]["replication"] = [replication_id]
-    objects["coverage"]["snapshot_task"] = "planted disabled"
-    objects["coverage"]["replication"] = "planted disabled local target"
+    if real_pool_rows:
+        root_dataset = middleware_root_dataset(objects["datasets"], pool_rows, fixture_id)
+        snapshot_task = target.call("pool.snapshottask.create", {
+            "dataset": root_dataset, "enabled": False, "recursive": True,
+            "naming_schema": f"survival-%Y-%m-%d_%H-%M-{suffix}",
+            "lifetime_unit": "DAY", "lifetime_value": 2,
+        })
+        snapshot_task_id = snapshot_task if isinstance(snapshot_task, int) else snapshot_task.get("id")
+        require(isinstance(snapshot_task_id, int), f"snapshot-task create returned no id: {snapshot_task!r}")
+        objects["records"]["snapshot_task"] = [snapshot_task_id]
+        pool_name = root_dataset.split("/", 1)[0]
+        replica = f"{pool_name}/update-survival-replica-{suffix}"
+        replica_mount = f"/mnt/{replica}"
+        create_dataset(target, replica, replica_mount, quota="512M", refquota="384M")
+        objects["datasets"].append(replica)
+        source_dataset = next(name for name in objects["datasets"] if name.endswith("/nested") and name.startswith(root_dataset))
+        replication = target.call(
+            "replication.create",
+            replication_create_data(fixture_id, source_dataset, replica, snapshot_task_id),
+        )
+        replication_id = replication.get("id") if isinstance(replication, dict) else replication
+        require(isinstance(replication_id, int), f"disabled local replication create returned no id: {replication!r}")
+        objects["records"]["replication"] = [replication_id]
+        objects["coverage"]["snapshot_task"] = "planted disabled"
+        objects["coverage"]["replication"] = "planted disabled local target"
+    else:
+        objects["coverage"]["snapshot_task"] = "unavailable: boot-pool is not a real middleware pool"
+        objects["coverage"]["replication"] = "unavailable: no real middleware pool can own the target"
     objects["coverage"]["cloudsync"] = "existing definitions captured; no external credentials created"
     objects["coverage"]["certificate"] = "existing records captured; no private-key import created"
     objects["coverage"]["network_system_config"] = "read-only canonical middleware dump; network access not changed"
@@ -1280,6 +1327,9 @@ def plant(target: Target, *, mode: str, profile: str, manifest_path: Path) -> di
                 "vanilla mode found a v27 patch install record; restore pristine RC.1 before planting")
     check_no_running_guests(target)
     fixture_id = time.strftime("%Y%m%d", time.gmtime()) + "-" + uuid.uuid4().hex[:10]
+    patched_target = os.environ.get("TRUENAS_SURVIVAL_PATCHED_TARGET", "none")
+    require(patched_target in {"none", "reapply"},
+            "TRUENAS_SURVIVAL_PATCHED_TARGET must be none or reapply")
     objects = plant_data(target, fixture_id, profile)
     key_path = Path(os.environ.get("TRUENAS_SURVIVAL_SSH_PUBLIC_KEY_FILE", ""))
     require(key_path.is_file(), "TRUENAS_SURVIVAL_SSH_PUBLIC_KEY_FILE must name a readable public key")
@@ -1287,6 +1337,7 @@ def plant(target: Target, *, mode: str, profile: str, manifest_path: Path) -> di
     manifest = {
         "schema_version": SCHEMA_VERSION, "fixture_id": fixture_id,
         "before_version": expected_before, "mode": mode, "profile": profile,
+        "patched_target": patched_target,
         "objects": objects,
         "created_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
@@ -1296,6 +1347,7 @@ def plant(target: Target, *, mode: str, profile: str, manifest_path: Path) -> di
         mode=mode, profile=profile, vm_ids=objects["records"].get("vm", []),
         dataset_names=objects.get("datasets", []), before_version=expected_before,
         expected_after=os.environ.get("TRUENAS_SURVIVAL_EXPECTED_AFTER", ""), baseline=baseline,
+        patched_target=patched_target,
     ))
     selected = baseline["middleware"]["records"]["selected"]
     for category in ("smb", "nfs", "vms", "containers"):
@@ -1304,9 +1356,10 @@ def plant(target: Target, *, mode: str, profile: str, manifest_path: Path) -> di
         require(set(expected_ids) <= seen_ids,
                 f"middleware baseline did not include planted {category} ids {expected_ids!r}: {seen_ids!r}")
     names = objects["record_names"]
-    require(any(row.get("username") in names for row in selected.get("users", []))
-            and any(row.get("name") in names for row in selected.get("groups", [])),
-            "middleware baseline did not include the planted user and group records")
+    if objects["records"].get("user") or objects["records"].get("group"):
+        require(any(row.get("username") in names for row in selected.get("users", []))
+                and any(row.get("name") in names for row in selected.get("groups", [])),
+                "middleware baseline did not include the planted user and group records")
     queryable_pool_names = {
         row["name"] for row in target.query("pool.query", timeout=120)
         if isinstance(row, dict) and isinstance(row.get("name"), str) and row.get("name") != "boot-pool"
@@ -1331,7 +1384,8 @@ def plant(target: Target, *, mode: str, profile: str, manifest_path: Path) -> di
     for method, record_key in (("api_key.query", "api_key"), ("cronjob.query", "cronjob"),
                                ("pool.snapshottask.query", "snapshot_task"), ("replication.query", "replication")):
         record = config_records.get(method, {"status": "unavailable"})
-        require(record.get("status") == "available", f"required middleware query is unavailable: {method}")
+        if objects["records"].get(record_key):
+            require(record.get("status") == "available", f"required middleware query is unavailable: {method}")
         record_ids = {row.get("id") for row in (record.get("value") or []) if isinstance(row, dict)}
         require(set(objects["records"].get(record_key, [])) <= record_ids,
                 f"middleware {method} did not include planted ids {objects['records'].get(record_key)!r}")
@@ -1384,12 +1438,21 @@ def verify(target: Target, manifest_path: Path, report_path: Path) -> dict[str, 
         str(manifest.get("before_version", "")).startswith("27.")
         and expected_after.startswith("28.")
     )
+    # A stock destination BE has no Path A middleware hooks. Compare its
+    # mount state, direct ZFS properties, snapshots, and data hashes below,
+    # while omitting only the middleware dataset rows that the stock BE cannot
+    # enumerate. The pre-update and post-update inventories use the same
+    # normalization so ordinary dataset changes remain visible elsewhere.
+    hide_path_a_middleware = (
+        cross_series_v27_v28
+        or stock_updated_build_hides_path_a_from_middleware(manifest, expected_after)
+    )
     before = normalize_survival_snapshot(
-        before, hide_path_a_middleware=cross_series_v27_v28,
+        before, hide_path_a_middleware=hide_path_a_middleware,
         normalize_container_model=cross_series_v27_v28,
     )
     after = normalize_survival_snapshot(
-        canonical_snapshot(target, manifest), hide_path_a_middleware=cross_series_v27_v28,
+        canonical_snapshot(target, manifest), hide_path_a_middleware=hide_path_a_middleware,
         normalize_container_model=cross_series_v27_v28,
     )
     if expected_after:
@@ -1400,7 +1463,12 @@ def verify(target: Target, manifest_path: Path, report_path: Path) -> dict[str, 
         vm_ids=manifest["objects"].get("records", {}).get("vm", []),
         dataset_names=manifest["objects"].get("datasets", []),
         before_version=str(manifest.get("before_version", "")),
-        expected_after=expected_after, baseline=before,
+        # Policy exceptions derive from the immutable plant-time snapshot.
+        # `before` may have normalized rows hidden by the stock target BE;
+        # that display normalization must not change which migrations are
+        # authorized for comparison.
+        expected_after=expected_after, baseline=manifest.get("baseline"),
+        patched_target=manifest.get("patched_target", "none"),
     )
     declared_allowed = set(manifest["expected_differences"])
     require(declared_allowed <= allowed,

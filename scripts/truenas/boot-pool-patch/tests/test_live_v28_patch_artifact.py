@@ -39,7 +39,7 @@ def load_live_api_probe():
 def test_v28_target_hash_manifest_is_closed_and_rejects_paths(tmp_path: Path) -> None:
     applicator = load_applicator()
     hashes = applicator.read_target_hashes()
-    assert len(hashes) == 15
+    assert len(hashes) == 19
     assert all(name.startswith(("middlewared/", "truenas_pylibvirt/")) for name in hashes)
 
     bad = tmp_path / "targets.sha256"
@@ -54,9 +54,9 @@ def test_v28_target_hash_manifest_is_closed_and_rejects_paths(tmp_path: Path) ->
 
 def test_v28_latest_nightly_has_its_own_exact_version_adapter() -> None:
     applicator = load_applicator()
-    version = "28.0.0-MASTER+20261027-175229"
+    version = "28.0.0-MASTER+20261029-175210"
     adapter_dir = applicator.adapter_directory(version)
-    assert adapter_dir == PATCH_ROOT / "v28-nightly-20261027"
+    assert adapter_dir == PATCH_ROOT / "v28-nightly-20261029"
     targets = applicator.read_target_hashes(version=version)
     assert len(targets) == 19
     assert {
@@ -84,23 +84,24 @@ def test_v28_latest_nightly_has_its_own_exact_version_adapter() -> None:
             replace_script = archive.extractfile("patch/replace_v28_patch_remote.sh")
             assert replace_script is not None
             replacement = replace_script.read()
-            assert b"28.0.0-MASTER+20261027-175229" in replacement
+            assert b"28.0.0-MASTER+20261029-175210" in replacement
             assert b"len(targets) != 19" in replacement
             assert b"len(previous_targets) not in {18, 19}" in replacement
             assert b'expected_extension = {"middlewared/plugins/pool_/dataset_query_utils.py"}' in replacement
             assert b"set(targets) - set(previous_targets) not in (set(), expected_extension)" in replacement
             assert b"middlewared/plugins/boot_disk_partition.py" in replacement
     try:
-        applicator.adapter_directory("28.0.0-MASTER+unknown")
+        applicator.adapter_directory("28.0.0-MASTER+20261027-175229")
     except applicator.RemoteError as exc:
-        assert "no v28 adapter is registered" in str(exc)
+        assert "rolling v28 base is 28.0.0-MASTER+20261029-175210" in str(exc)
+        assert "Update through TrueNAS" in str(exc)
     else:
-        raise AssertionError("an unregistered v28 build must not select an adapter")
+        raise AssertionError("a retired v28 nightly must not select the rolling adapter")
 
 
 def test_v28_path_a_install_uses_the_live_mount_as_backup_evidence() -> None:
     applicator = load_applicator()
-    version = "28.0.0-MASTER+20261027-175229"
+    version = "28.0.0-MASTER+20261029-175210"
 
     class Target:
         def __init__(self, statfs_source: str = "boot-pool/user-data") -> None:
@@ -145,7 +146,7 @@ def test_v28_path_a_install_uses_the_live_mount_as_backup_evidence() -> None:
 
 def test_v28_path_a_can_coexist_with_an_unused_reserved_partition() -> None:
     applicator = load_applicator()
-    version = "28.0.0-MASTER+20261027-175229"
+    version = "28.0.0-MASTER+20261029-175210"
 
     class Target:
         def call(self, method, *args, **kwargs):
@@ -172,7 +173,7 @@ def test_v28_path_a_can_coexist_with_an_unused_reserved_partition() -> None:
 
     applicator.check_target_preconditions(Target(), version, "path-a")
 
-    adapter = PATCH_ROOT / "v28-nightly-20261027"
+    adapter = PATCH_ROOT / "v28-nightly-20261029"
     for filename in ("apply_v28_patch_remote.sh", "replace_v28_patch_remote.sh"):
         source = (adapter / filename).read_text()
         assert "test ! -e /dev/vda4" not in source
@@ -181,7 +182,7 @@ def test_v28_path_a_can_coexist_with_an_unused_reserved_partition() -> None:
 
 
 def test_v28_latest_dataset_query_exposes_only_the_opted_in_boot_namespace() -> None:
-    patch = (PATCH_ROOT / "v28-nightly-20261027" / "storage.patch").read_text()
+    patch = (PATCH_ROOT / "v28-nightly-20261029" / "storage.patch").read_text()
     assert "--- a/middlewared/plugins/pool_/dataset_query_utils.py" in patch
     assert "from middlewared.plugins.boot_pool_user_data import is_user_data_namespace_path" in patch
     assert "if name in BOOT_POOL_NAME_VALID:" in patch
@@ -190,20 +191,20 @@ def test_v28_latest_dataset_query_exposes_only_the_opted_in_boot_namespace() -> 
 
 
 def test_v28_latest_install_manifest_records_both_partition_shim_helpers() -> None:
-    source = (PATCH_ROOT / "v28-nightly-20261027" / "apply_v28_patch_remote.sh").read_text()
+    source = (PATCH_ROOT / "v28-nightly-20261029" / "apply_v28_patch_remote.sh").read_text()
     assert source.count("\nhelpers = {") == 1
     record_block = source.rsplit("\nhelpers = {", 1)[1].split("}\nafter =", 1)[0]
     assert '"middlewared/plugins/boot_disk_partition.py"' in record_block
     assert '"middlewared/plugins/pool_create_schema_v28.json"' in record_block
     assert "helper_hashes = {name: hashlib.sha256((root_path / name).read_bytes()).hexdigest() for name in helpers}" in source
     assert "installed manifest and all patched/helper hashes verified" in source
-    replacement = (PATCH_ROOT / "v28-nightly-20261027" / "replace_v28_patch_remote.sh").read_text()
+    replacement = (PATCH_ROOT / "v28-nightly-20261029" / "replace_v28_patch_remote.sh").read_text()
     assert 'legacy_helpers = {' in replacement
     assert 'set(helper_hashes) not in (legacy_helpers, helpers)' in replacement
 
 
 def test_v28_20261027_replacement_restores_the_prior_adapter_after_apply_failure() -> None:
-    adapter = PATCH_ROOT / "v28-nightly-20261027"
+    adapter = PATCH_ROOT / "v28-nightly-20261029"
     apply_script = (adapter / "apply_v28_patch_remote.sh").read_text()
     replace_script = (adapter / "replace_v28_patch_remote.sh").read_text()
 
@@ -226,8 +227,8 @@ def test_v28_20261027_replacement_restores_the_prior_adapter_after_apply_failure
 
 def test_v28_partition_api_probe_uses_the_exact_build_schema() -> None:
     probe = load_live_api_probe()
-    version = "28.0.0-MASTER+20261027-175229"
-    assert probe.pool_create_schema_path(version) == PATCH_ROOT / "v28-nightly-20261027" / "pool_create_schema_v28.json"
+    version = "28.0.0-MASTER+20261029-175210"
+    assert probe.pool_create_schema_path(version) == PATCH_ROOT / "v28-nightly-20261029" / "pool_create_schema_v28.json"
     assert probe.pool_create_schema_path("27.0.0-MASTER+20261027-173422") == (
         PATCH_ROOT / "shared" / "pool_create_schema_v27.json"
     )
@@ -272,7 +273,7 @@ def test_v28_bundle_is_deterministic_and_contains_only_reviewed_members() -> Non
     second, second_hash, _ = applicator.deterministic_bundle()
     assert first == second
     assert first_hash == second_hash
-    assert len(targets) == 15
+    assert len(targets) == 19
 
     with gzip.GzipFile(fileobj=io.BytesIO(first), mode="rb") as compressed:
         with tarfile.open(fileobj=compressed, mode="r:") as archive:
@@ -287,7 +288,10 @@ def test_v28_bundle_is_deterministic_and_contains_only_reviewed_members() -> Non
         "patch/boot_pool_mount.py",
         "patch/apply_v28_patch_remote.sh",
         "patch/replace_v28_patch_remote.sh",
+        "patch/ui-pools.patch",
         "shared/boot_pool_user_data.py",
+        "shared/boot_disk_partition.py",
+        "shared/pool_create_schema_v28.json",
         "shared/virtualization_support.py",
     }
 

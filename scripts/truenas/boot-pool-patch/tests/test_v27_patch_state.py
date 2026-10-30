@@ -11,7 +11,7 @@ from v27_patch_state import (
 
 
 RC1 = "27.0.0-RC.1"
-NIGHTLY = "27.0.0-MASTER+20261027-173422"
+NIGHTLY = "27.0.0-MASTER+20261029-173417"
 OLD_BUNDLE = "a" * 64
 
 
@@ -36,7 +36,7 @@ def test_v27_adapters_are_selected_by_exact_build_version() -> None:
 
     assert rc1.directory == "v27"
     assert rc1.reapply_from is None
-    assert nightly.directory == "v27-nightly-20261027"
+    assert nightly.directory == "v27-nightly-20261029"
     assert nightly.reapply_from == RC1
 
 
@@ -56,7 +56,7 @@ def test_reapply_accepts_only_the_exact_stale_rc1_install_record() -> None:
 @pytest.mark.parametrize(
     ("changes", "prior_version", "prior_digest"),
     [
-        ({"version": "27.0.0-MASTER+20261027-173422"}, RC1, OLD_BUNDLE),
+        ({"version": "27.0.0-MASTER+20261029-173417"}, RC1, OLD_BUNDLE),
         ({}, NIGHTLY, OLD_BUNDLE),
         ({}, RC1, "b" * 64),
         ({"root_create_guard": "missing"}, RC1, OLD_BUNDLE),

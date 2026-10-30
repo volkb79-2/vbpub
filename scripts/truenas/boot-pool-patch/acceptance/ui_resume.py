@@ -7,11 +7,7 @@ import re
 
 _RESUMED_DATASET = re.compile(r"boot-pool/user-data/ui-acceptance-[0-9]{14}[0-9a-f]{6}")
 _V28_ROOT_PATCH_ENTRIES = {
-    "28.0.0-MASTER+20261014-230204": {
-        ".truenas-boot-pool-patch-v28.json",
-        ".truenas-boot-pool-patch-backups",
-    },
-    "28.0.0-MASTER+20261027-175229": {
+    "28.0.0-MASTER+20261029-175210": {
         ".truenas-boot-pool-patch-v28.json",
         ".truenas-boot-pool-patch-backups",
         ".truenas-boot-pool-patch-replacements",

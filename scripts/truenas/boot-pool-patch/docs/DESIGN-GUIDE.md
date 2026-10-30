@@ -1,12 +1,70 @@
 # Boot-pool patch design and evidence
 
-**Status: experimental. No v27+ patch is ready for general installation.**
+**Status: experimental. Exact-build adapters are registered for v27 RC.1, one
+v27 pre-RC.2 nightly, and one rolling v28 nightly. Do not treat an unregistered
+build as supported.**
 
-This work investigates using the unused space on a TrueNAS boot disk for
-VM/container storage and user data, and allowing VMs to run with QEMU TCG when
-KVM is unavailable. The existing [25.10.4 patch](../25.10.4/) is a proposal, not a
-working implementation. Its reported UI workflow failed and remains pending
-PWMCP-assisted reproduction.
+This work investigates using bounded unused boot-disk space for VM/container
+storage and user data while keeping TrueNAS boot environments and internal
+system datasets under stock control. The earlier 25.10.4 proposal is not a
+working implementation; its UI workflow failed and remains historical.
+
+## Support policy and update state
+
+The closed compatibility boundary is
+[`supported-builds.json`](../supported-builds.json). It currently contains
+`27.0.0-RC.1`, `27.0.0-MASTER+20261029-173417`, and
+`28.0.0-MASTER+20261029-175210`. v27 RC.1 remains the release base. We retain
+one latest v27 nightly as a pre-RC.2 bridge because the updater advertises it
+and its update/reapply path is needed for v27-to-v28 transitions; retire that
+entry when RC.2 is registered. v28 has one rolling base, the latest nightly
+only. A newer build replaces that row only after source capture, adapter
+review, exact-build checks, and live acceptance.
+
+An adapter binds one exact release string to its complete target list,
+preimage SHA-256 values, target-manifest digest, patch list, metadata, and
+install-bundle digest. Before changing `/usr`, its installer checks the exact
+source tree and runs every hunk through GNU `patch --dry-run --fuzz=0`. After
+apply it verifies compiled Python, API behavior, installed target/helper
+hashes, reverse zero-fuzz dry-runs, and `/usr` read-only state. Unknown builds
+are refused before mutation. The refusal names the registered target and the
+update/recheck workflow; it does not treat a version prefix as compatibility.
+
+The registered command is `acceptance/accept.py`; its public target actions include `install-after-update`, `reapply-after-update`, `uninstall-stale-record`, `repair-root-create`, `repair-root-parent-mountpoint`, and `repair-zvol-blocksize`. The external `live-boot` lane requires `TRUENAS_TEST_ALLOW_REBOOT=1`.
+
+Register a build by capturing the exact update metadata and installed
+middleware targets, saving the full target hashes, running
+`patch_drift.py diagnose`, adapting and reviewing each changed hunk, running
+registered API/UI and source-state update acceptance, and only then adding the
+new adapter and digests to the registry. `acceptance/accept.py matrix`
+regenerates the source-state/target index. A PASS in that index means the
+required plant/update/verify lanes passed; optional API and UI results remain
+separately visible.
+
+A TrueNAS update activates a new BE whose `/usr` comes from the stock update
+payload. The previous BE retains its own patched `/usr` and database for
+rollback. The Path A root and eligible descendants mounted at boot are limited to the
+managed user-data namespace. The v27 install record is stored in `/root` inside each BE. The
+updater copies that file to the new BE, but its previous version and bundle
+hash describe the old `/usr`; it is stale evidence. Path A data and Path B pool
+data survive outside the BE. Path A is unmounted after update until its
+matching adapter is reapplied. Path B stays on its reserved partition with the
+same pool identity and data. The active BE still needs the exact adapter for
+managed boot/import behavior.
+
+The v27 fresh `install` operation refuses an existing `boot-pool/user-data`
+root or `boot-disk-data` pool. It assumes there is no prior patch state. After
+update, the runner inspects the source record and selects digest-bound
+`reapply-after-update`; this is the correct operation when Path B already
+exists. It archives only a verified old record, checks the complete new source
+fingerprints, and then applies transactionally. If the record is missing or
+unrecognized, installation stops for explicit review instead of guessing.
+
+The v28 rolling policy refuses retired nightlies. The exact-build lane names
+the currently registered base and directs the operator to update through
+TrueNAS and verify the new reported build before attempting the patch. A v28
+adapter is not inferred from a close nightly, and a source manifest on Path A
+or Path B cannot certify the active BE's `/usr`.
 
 ## Test gates
 
@@ -32,9 +90,14 @@ SSH password authentication are disabled, then starts the service. It keeps
 other root authorized keys and preserves the automatic-start setting when
 already on. Following SSH lanes can then exercise the configured key-only
 account without enabling password logins.
-The registered external `live-boot` lane is allowed only with
+The registered live-boot gate and registered live-update gate are guarded,
+destructive acceptance flows. The external `live-boot` lane is allowed only with
 `TRUENAS_TEST_ALLOW_REBOOT=1`; it checks guest and pool state before reboot,
 then verifies the target version, Path A mount, and optional Path B reimport.
+The UI lanes accept `TRUENAS_TEST_RESUME_EXISTING_UI_ROOT=1` only when resuming
+an existing Path A root; `TRUENAS_TEST_RESUME_EXISTING_UI_DATASET` must name the
+exact existing UI-created dataset, and resume cannot be combined with root
+provisioning.
 The wrapper does not restore provider snapshots, so use it only when the
 external host is disposable and its reboot is planned. `live-update` and the
 wider workload and vdev lanes remain managed-guest only because the wrapper has
@@ -74,89 +137,84 @@ provider snapshot was restored afterward. This is an archived state; v1001 was
 later reinstalled from the operator's pristine v27 snapshot and re-tested as
 recorded in the current checkpoint below.
 
-## v28-20261027 pool shim design
+## v28 rolling-nightly adapter design
 
-The installed build is `28.0.0-MASTER+20261027-175229`. Its middleware files
-did not match the earlier 2026-10-14 adapter, so it has its own 19-target
-fingerprint manifest and a separately version-guarded adapter under
-[`v28-nightly-20261027/`](../v28-nightly-20261027/). Do not reuse either
-nightly adapter on another version string: the ISO does not publish a complete
-middleware Git commit, and the target hashes are the compatibility fact.
+The current v28 base is `28.0.0-MASTER+20261029-175210`, with the exact
+adapter in [`v28-nightly-20261029/`](../v28-nightly-20261029/). It has 19
+fingerprinted middleware targets and one build-bound Path B partition shim.
+The Oct 29 source capture differs from the prior Oct 27 adapter in three
+fingerprints: `middlewared/plugins/container/crud.py`,
+`middlewared/plugins/container/lifecycle.py`, and
+`middlewared/plugins/vm/crud.py`. All four patch files pass zero-fuzz dry-runs.
+The VM import hunk was narrowed to the changed `kvm_supported` import because
+Oct 29 reordered the API imports; the complete source preimage hash is checked
+before that one-line hunk can run. The old Oct 14 and Oct 27 adapter rows are
+retired from the support registry. The current deterministic bundle SHA-256 is
+`5366a8029f34162515e2b6c0935cf9b19abe3c41cc214886428af583d6db069b`.
 
-Path A's storage root lives on `boot-pool/user-data`; its preflight validates
-that exact dataset mount but does not require `/dev/vda4` to be absent. This
-lets the Path A test profile coexist with an unused reserved Path B partition
-without changing that partition. Path B exposes only an empty partition 4 or
-later named `boot-disk-data`, with the ZFS GPT type, on the boot-pool disk. It
-passes the partition by PARTUUID and only accepts one single-disk Stripe data
-vdev. It refuses mixed or mirrored topologies, non-default create options,
-boot attachment, and destructive export that would wipe the parent boot disk.
-The reason for the narrow topology is that middleware sees the parent whole
-disk during wipe; teaching every disk, replacement, and VDEV path about
-partitions would be a much larger and riskier change. See the
-[Path B wizard details](#path-b-pool-wizard-safety).
+Path A validates the mounted `boot-pool/user-data` root and permits an unused
+reserved partition elsewhere on the disk. Path B uses only the reserved free-
+tail partition labelled by PARTUUID and accepts a single Stripe data vdev. It
+refuses mixed or mirrored topologies, non-default create options, boot-pool
+attachment, and destructive export that could wipe the parent disk. The narrow
+partition topology keeps wipe behavior understandable: middleware otherwise
+sees the parent whole disk. The release-bound
+[`pool_create_schema_v28.json`](../v28-nightly-20261029/pool_create_schema_v28.json)
+records the exact `pool.create` fields and defaults from this build. Empty
+string encryption defaults normalize to `None`; only that observed default is
+accepted, while non-empty secrets and other non-default values remain
+refusals.
 
-Before Path B writes, the live API probe compares all required fields and
-defaults returned by `core.get_methods` with
-[`pool_create_schema_v28.json`](../v28-nightly-20261027/pool_create_schema_v28.json).
-Only `name` and the validated topology vary. The v28 schema records empty
-strings for nested encryption `key` and `passphrase`; middleware serializes
-these unset `SecretStr` values as `None`. The shim accepts `None` only when the
-recorded default is exactly the empty string, while non-empty secrets and
-other non-default options remain refusals. This models the installed loader's
-normalization without silently dropping a caller's encryption request.
+The UI wizard exposes the reserved partition only for the Path B profile. Its
+erase-confirm checkbox is a hidden input beside a visible label; PWMCP clicks
+only the matching visible label and verifies the checkbox state before
+continuing. The API and UI lanes verify Path A/B dataset, zvol, container, and
+VM operations against direct ZFS backing. They do not prove guest OS boot,
+share-client connectivity, or second-disk behavior.
 
-The Path B wizard renders its erase-confirm checkbox as a hidden input beside
-a visible label. PWMCP clicks exactly one visible same-text label when the
-checkbox is unchecked, then verifies it is checked before continuing. The
-Path A and B UI gates verify dataset, zvol, container, and VM wizard requests
-against direct ZFS backing, and the Path B gate verifies that the UI's pool
-request uses only the reserved PARTUUID. These are UI creation checks; they do
-not prove a guest OS boots or a share client can connect.
+A v28 install record binds exact build, storage profile, bundle digest, target
+preimages, patched target hashes, helper hashes, and the stock-source backup.
+Re-running the same build and bundle is a verified no-op. `replace` is for a
+same-build adapter replacement after verifying the currently installed patch;
+it is not a way to apply a retired nightly's adapter to another build. The
+current adapter registry refuses an older v28 nightly before connecting to a
+target and prints the supported base and update/recheck instructions.
 
-Install records bind the exact version, profile, bundle hash, target hashes,
-and helper hashes. Re-running the same bundle is a no-op after verification.
-Replacement snapshots the previously patched files and manifest before
-changing `/usr`; a failure restores the prior adapter, restarts middleware,
-and restores read-only protection. On 2026-10-30 an intentionally invalid
-Python hunk exercised both the inner stock-source rollback and outer
-prior-adapter restore on v1001. The current bundle SHA-256 is
-`b7dbb8ca95e62ed4fad6a15ff26310ceccc342e6d33c99a62cfd44d3fbb22d23`.
+The Oct 29 adapter's complete live acceptance and the prior build's historical
+Path A/B acceptance are kept separate in the generated
+[acceptance index](../../docs/ACCEPTANCE-RESULTS.md). Do not use Oct 27 live
+results as evidence for the Oct 29 adapter.
 
 ### v27 nightly update and reapply
 
-The last registered v27 nightly adapter is `27.0.0-MASTER+20261027-173422`. Its full
-Path A/B API/UI matrix passed on v1001. The first RC.1-to-nightly update
-created and activated a new boot environment. The new BE's `/usr` came from
-the shipped update payload; the patched RC.1 `/usr` remained in the inactive
-BE. The update also copied `/root/v27-boot-pool-patch-install.json` with the
-root dataset, so its RC.1 version and bundle digest stayed stale. Path A data
-survived outside the BE but `boot-pool/user-data` returned unmounted. A marker
-or install record alone therefore does not prove the active BE has the patch.
+The registered v27 bridge nightly is `27.0.0-MASTER+20261029-173417`. Its
+full 19-target source fingerprint and six patch dry-runs match the captured
+build. The Path A update/reapply survival and API lanes passed. The newer
+build's full UI lane has not passed after the Playwright pin was corrected;
+the Oct 27 Path A/B UI matrix is historical evidence for that earlier adapter,
+not a pass for the current nightly.
 
-The post-update recovery contract now binds the old record to the exact RC.1
-bundle digest, requires the complete 19-file pristine nightly fingerprint set,
-and checks the bounded Path A root before changing `/usr`. It archives only
-that matched stale record, applies the exact nightly adapter transactionally,
-verifies middleware, restores `/usr` read-only, and mounts eligible datasets.
-The live `reapply-after-update` action passed after a repeated RC.1-to-nightly
-update; Path A root and eligible descendants mounted at boot. A separate
-`uninstall-stale-record` action is guarded and digest-bound for operators who
-need to retire the exact stale record without applying a patch. The latter is
-covered by the unit contract; the live update/reapply path was the one used for
-acceptance.
+The RC.1-to-nightly update created and activated a new BE with stock `/usr`.
+It copied `/root/v27-boot-pool-patch-install.json` into the new BE, where the
+RC.1 version and bundle digest were stale. Path A data survived outside the BE
+but `boot-pool/user-data` was unmounted until the new adapter was reapplied.
+Path B pool identity and data stay on the reserved partition. A record alone
+does not prove that the active BE has the patch.
 
-The v27 `live-boot` lane then verified the marker and Path A mounts across a
-controlled reboot, checked boot-pool GUID/health/topology, and confirmed that
-`boot-disk-data` returned on the same reserved partition and PARTUUID. It also
-exported and re-imported Path B through middleware and compared the captured
-GUID and full partition table. On v28 build
-`28.0.0-MASTER+20261027-175229`, the v27-to-v28 update preserved both pool
-identities; after installing the exact v28 adapter, the same reboot/import
-proof passed. The updater now lists an Oct 29 v28 Nightly that has no adapter;
-the current data-survival check against it is in the [acceptance record](../../docs/UPDATE-AND-DRIFT.md#update-survival-acceptance-q4).
-See the [README status](../README.md#current-status) and the
-[consumer commands](CONSUMERS.md#reapply-v27-after-an-update).
+The post-update v27 recovery action validates the exact previous bundle
+digest, the complete current target fingerprint set, the selected root, and
+Path B's existing-pool state before modifying `/usr`. It archives only the
+verified stale record, applies transactionally, verifies middleware, restores
+`/usr` read-only, and mounts eligible Path A datasets. The older fresh `install`
+action refuses any pre-existing Path A root or `boot-disk-data` pool; that was
+the reason the previous Path B-to-v28 attempt stopped. The harness now uses
+`reapply-after-update` when the inspected source record identifies the patched
+v27 base, so the existing pool is handled through the supported operation.
+
+A separate guarded `uninstall-stale-record` action exists for retiring an
+exactly verified v27 record without applying a replacement; it does not infer
+that the current `/usr` is patched. The current matrix and each live result are
+in the [acceptance index](../../docs/ACCEPTANCE-RESULTS.md).
 
 `/usr` is a read-only ZFS dataset mounted from the active
 `boot-pool/ROOT/<BE>/usr`; it is not a live SquashFS mount. The ISO does carry a
@@ -203,17 +261,23 @@ host. The transition is printed in the evidence log.
 | 25.10.4 | `e36f4f8318` | Baseline for the retained patch. |
 | 25.10.7 | `8ede398839` | All seven files touched by the 25.10.4 patch match the 25.10.4 versions; the patch dry-run applies. |
 | 27.0.0-RC.1 | tag `TS-27.0.0-RC.1`, commit `d83c3bf89aa4226c8fd1ef25dd273bdf447eb777` | The old patch fails on changed Docker hunks, and `virt/global.py` no longer exists. v27 uses separate `vm.*` and `container.*` middleware. |
-| 28 nightly, `28.0.0-MASTER+20261014-230204` | candidate middleware source commit `95807c2309548ec72fc09742f323aadec7f6532e` | The old patch fails. Several Docker modules changed substantially; `docker/update.py` and `virt/global.py` are absent. All three v28 TCG adapter targets match the extracted ISO payload. |
-| 28 nightly, `28.0.0-MASTER+20261027-175229` | No complete middleware Git commit is published in the ISO; 19 installed targets are fingerprinted directly. | Has a separate exact-build adapter with the Path B reserved-partition shim; v1001 Path A/B API and UI acceptance passed. See the current design section above. |
+| 27 nightly, `27.0.0-MASTER+20261029-173417` | No complete middleware Git commit is published in the update feed or image metadata; 19 installed targets are fingerprinted directly. | Current exact-build adapter and single pre-RC.2 bridge. Its acceptance is build-specific; see the [generated results index](../../docs/ACCEPTANCE-RESULTS.md). |
+| 28 nightly, `28.0.0-MASTER+20261029-175210` | No complete middleware Git commit is published in the update feed or image metadata; 19 installed targets are fingerprinted directly. | Current sole rolling v28 adapter. Exact-source and live outcomes are separated in the [results index](../../docs/ACCEPTANCE-RESULTS.md). |
+| 28 nightly, `28.0.0-MASTER+20261027-175229` | Retired build; saved acceptance is historical. | This is not the rolling base. Its old UI/API evidence does not certify the Oct 29 adapter. |
+| 28 nightly, `28.0.0-MASTER+20261014-230204` | Candidate middleware source commit `95807c2309548ec72fc09742f323aadec7f6532e` | Historical adapter only. The old patch fails. Several Docker modules changed substantially; `docker/update.py` and `virt/global.py` are absent. |
 
-The v28 ISO's SHA-256 is
+The Oct 14 v28 ISO's SHA-256 is
 `9312f77d0a94f54dc0396050bd26bb31ea0e81d62b124e30a94075a006e7bc9a`. Its
 embedded `TrueNAS.update` manifest confirms the exact version, build time
 (`2026-10-15T06:04:44Z`), kernel (`6.18.55-production+truenas`), and rootfs
 checksum. Neither that manifest nor the ISO contains a middleware Git commit
 or `GITMANIFEST`. Therefore `95807c2…` is a candidate source snapshot, not a
-verified full ISO-to-source mapping. Eight middleware modules extracted from
-the nightly rootfs are byte-identical to the candidate snapshot:
+verified full ISO-to-source mapping. The Oct 29 v27 and v28 updater feeds also
+publish update identity and checksums without a middleware commit.
+`/etc/version`, package metadata, and inspected release metadata identify the
+build or package versions but do not supply a full source commit or manifest.
+Eight middleware modules extracted from the older v28 nightly rootfs were
+byte-identical to its candidate snapshot:
 `container/info.py`, `pool_/dataset.py`, `pool_/dataset_query_utils.py`,
 `vm/__init__.py`, `vm/crud.py`, `vm/info.py`, `zfs/utils.py`, and
 `zfs_/utils.py`. All three files targeted by the v28 TCG adapter match the ISO
@@ -221,7 +285,11 @@ payload exactly, and the patch dry-run, application, and syntax check pass
 against those extracted files. This verifies the inspected code paths and
 patch targets, but does not identify the full middleware checkout or every
 packaged module. Continue to fingerprint patch targets and fail closed on an
-unknown source shape.
+unknown source shape. The recurring `patch_drift.py upstream` comparison with
+GitHub `master` is advisory because master can advance independently of a
+released nightly. The authoritative check is the exact installed or extracted
+target SHA-256 set and zero-fuzz adapter verification; a master diff alone does
+not prove that a particular build changed.
 
 The patch dry-run was performed against source downloaded from the commits
 above, outside the repository. It passed for both 25.10.4 and 25.10.7. It
@@ -744,17 +812,16 @@ overlay so these originals remain intact.
 
 ## Remaining validation
 
-The last registered v27 nightly, `27.0.0-MASTER+20261027-173422`, passed the full Path
-A/B API/UI matrix on v1001. The matrix includes reserved-partition pool
-creation, API refusal checks, dataset and zvol operations, container and VM
-flows, PWMCP wizard submission, and share page actions. The v27 reboot/import
-lane passed after a repeat RC.1-to-nightly update and digest-bound
-`reapply-after-update`. The newer selected v28 build,
-`28.0.0-MASTER+20261027-175229`, was installed through the update API; its
-exact 19-target adapter and reboot/import lane passed. The updater now advertises
-`28.0.0-MASTER+20261029-175210`; it is not registered for patch installation.
-The user-data survival check against that stock v28 BE is recorded in
-`docs/UPDATE-AND-DRIFT.md`.
+The prior v27 nightly, `27.0.0-MASTER+20261027-173422`, passed its full Path
+A/B API/UI matrix; that result is historical and does not certify the current
+Oct 29 bridge. The current exact-build v27 adapter has Path A update/reapply,
+API, and boot passes; its latest UI result is shown separately in the
+[acceptance index](../../docs/ACCEPTANCE-RESULTS.md). The current v28 rolling
+adapter targets `28.0.0-MASTER+20261029-175210`. A Path A stock transition from
+the Oct 29 v27 nightly passed data checks; a separate RC.1-to-v28 patched run
+stopped before BE activation because the update reported 8.83 GiB available
+against a 9.36 GiB requirement. The v28 patch, API, and UI stages were not
+reached in that run. Older Oct 14 and Oct 27 v28 adapters are retired.
 
 The patch remains experimental because important boundaries still need direct
 evidence:
@@ -763,7 +830,7 @@ evidence:
    across update needs before/after content and record comparison. The update
    checks confirmed pool identity; Path A is unmounted after an update until
    the matching adapter is applied or re-applied.
-2. `/dev/kvm` was absent on v1001. API acceptance confirmed a QEMU TCG process
+2. `/dev/kvm` was absent on the disposable test system. API acceptance confirmed a QEMU TCG process
    start, but actual KVM selection and guest OS boot were not available.
 3. PWMCP share forms and API share records passed, but an SMB/NFS client could
    not connect from the devcontainer. Client protocol access remains open.
@@ -786,12 +853,12 @@ and is not evidence for either v27 or v28. See the
 The ordinary VM installer targets data pools. Separate experimental patches
 test two ways to use free space on a TrueNAS system disk: a bounded
 `boot-pool/user-data` namespace (Path A), and a separate `boot-disk-data` pool
-on a reserved GPT tail (Path B). On 2026-10-30, the registered Oct 27 v27 nightly passed
-the full Path A/B API/UI matrix on v1001. Path B UI pool creation passed
-through the wizard after the guarded partition-reservation lane; dataset,
-zvol, container, VM-form, and SMB/NFS-page checks passed on the selected pool.
-The exact v28 build `28.0.0-MASTER+20261027-175229` also has a passing Path A/B
-API/UI matrix and its own 19-target adapter. The 25.10.4 proposal changes
+on a reserved GPT tail (Path B). On 2026-10-30, the previous Oct 27 v27 nightly
+passed the full Path A/B API/UI matrix, and the previous Oct 27 v28 adapter had
+its own 19-target API/UI acceptance. Those results remain historical for their
+exact builds. The current registry contains the Oct 29 v27 bridge and Oct 29
+v28 rolling adapter; consult the [acceptance index](../../docs/ACCEPTANCE-RESULTS.md)
+for current-build results. The 25.10.4 proposal changes
 Docker and Virt middleware in ways that no longer apply cleanly to v27; v27
 also replaces the Virt middleware module with separate VM and container
 services. The v28 nightly changes those paths again, so each release needs

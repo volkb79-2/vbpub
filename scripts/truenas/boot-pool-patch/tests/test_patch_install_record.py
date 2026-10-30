@@ -19,7 +19,7 @@ def make_v28_record(version: str) -> dict:
         "middlewared/plugins/vm/virtualization_support.py",
         "middlewared/plugins/pool_/boot_pool_mount.py",
     }
-    if version == "28.0.0-MASTER+20261027-175229":
+    if version == "28.0.0-MASTER+20261029-175210":
         helpers |= {
             "middlewared/plugins/boot_disk_partition.py",
             "middlewared/plugins/pool_create_schema_v28.json",
@@ -41,14 +41,7 @@ def make_v28_record(version: str) -> dict:
     [
         ("27.0.0-RC.1", ("/root/v27-boot-pool-patch-install.json",)),
         (
-            "28.0.0-MASTER+20261014-230204",
-            (
-                "/mnt/boot-pool/user-data/.truenas-boot-pool-patch-v28.json",
-                "/mnt/boot-disk-data/.truenas-boot-pool-patch-v28.json",
-            ),
-        ),
-        (
-            "28.0.0-MASTER+20261027-175229",
+            "28.0.0-MASTER+20261029-175210",
             (
                 "/mnt/boot-pool/user-data/.truenas-boot-pool-patch-v28.json",
                 "/mnt/boot-disk-data/.truenas-boot-pool-patch-v28.json",
@@ -66,7 +59,7 @@ def test_unregistered_release_has_no_patch_record_fallback() -> None:
 
 
 def test_v28_record_selection_requires_one_exact_installed_profile_record() -> None:
-    version = "28.0.0-MASTER+20261027-175229"
+    version = "28.0.0-MASTER+20261029-175210"
     path_a, path_b = patch_install_record.manifest_paths(version)
     record = make_v28_record(version)
     assert patch_install_record.select_v28_record({path_a: json.dumps(record)}, version) == (path_a, record)
@@ -81,7 +74,7 @@ def test_v28_record_selection_requires_one_exact_installed_profile_record() -> N
 
 @pytest.mark.parametrize(
     "version",
-    ["28.0.0-MASTER+20261014-230204", "28.0.0-MASTER+20261027-175229"],
+    ["28.0.0-MASTER+20261029-175210"],
 )
 def test_v28_patch_record_requires_exact_version_profile_and_closed_hash_sets(version: str) -> None:
     record = make_v28_record(version)

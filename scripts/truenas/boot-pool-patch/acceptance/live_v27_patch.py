@@ -345,8 +345,8 @@ def main() -> int:
     if os.environ.get("TRUENAS_TEST_ALLOW_MUTATIONS") != "1":
         raise RemoteError("set TRUENAS_TEST_ALLOW_MUTATIONS=1 only for a disposable TrueNAS VM")
     profile = os.environ.get("TRUENAS_STORAGE_PROFILE", "")
-    if profile not in {"path-a", "path-b"}:
-        raise RemoteError("TRUENAS_STORAGE_PROFILE must be path-a or path-b")
+    if profile not in {"path-a", "path-b", "both"}:
+        raise RemoteError("TRUENAS_STORAGE_PROFILE must be path-a, path-b, or both")
     version = os.environ.get("TRUENAS_EXPECTED_VERSION", "")
     try:
         adapter = adapter_for_version(version)
@@ -357,7 +357,8 @@ def main() -> int:
     action = os.environ.get("TRUENAS_V27_PATCH_ACTION", "install")
     require(action in {
         "install", "repair-root-create", "repair-root-parent-mountpoint",
-        "repair-zvol-blocksize", "reapply-after-update", "uninstall-stale-record",
+        "repair-zvol-blocksize", "reapply-after-update", "install-after-update",
+        "uninstall-stale-record",
     },
             "TRUENAS_V27_PATCH_ACTION is not a supported v27 patch action")
     bundle, digest = bundle_from_environment()
@@ -384,21 +385,25 @@ def main() -> int:
             f"bash {shlex.quote(remote_dir + '/acceptance/apply_v27_patch_remote.sh')} "
             f"{shlex.quote(remote_dir)} {shlex.quote(adapter.version)}"
         )
-    elif action in {"reapply-after-update", "uninstall-stale-record"}:
-        require(profile == "path-a", "post-update v27 recovery requires TRUENAS_STORAGE_PROFILE=path-a")
+    elif action in {"reapply-after-update", "install-after-update", "uninstall-stale-record"}:
+        require(profile in {"path-a", "path-b", "both"}, "post-update v27 recovery requires a persistent Path A and/or Path B root")
         require(adapter.reapply_from is not None,
                 f"exact v27 adapter {adapter.version} has no post-update recovery contract")
         expected_prior = os.environ.get("TRUENAS_V27_EXPECTED_PRIOR_BUNDLE_SHA256", "")
-        require(expected_prior == adapter.reapply_from_bundle_sha256,
-                "TRUENAS_V27_EXPECTED_PRIOR_BUNDLE_SHA256 must match the exact observed stale RC.1 record")
+        if action in {"reapply-after-update", "uninstall-stale-record"}:
+            require(expected_prior in adapter.reapply_from_bundle_sha256s,
+                    "TRUENAS_V27_EXPECTED_PRIOR_BUNDLE_SHA256 must match an exact supported stale RC.1 adapter record")
+        else:
+            require(not expected_prior,
+                    "TRUENAS_V27_EXPECTED_PRIOR_BUNDLE_SHA256 is only valid when recovering a stale install record")
         guard_name = (
-            "TRUENAS_TEST_ALLOW_PATCH_REAPPLY" if action == "reapply-after-update"
-            else "TRUENAS_TEST_ALLOW_PATCH_UNINSTALL"
+            "TRUENAS_TEST_ALLOW_PATCH_UNINSTALL" if action == "uninstall-stale-record"
+            else "TRUENAS_TEST_ALLOW_PATCH_REAPPLY"
         )
         require(os.environ.get(guard_name) == "1", f"set {guard_name}=1 only for this disposable v27 recovery")
         other_guard = (
-            "TRUENAS_TEST_ALLOW_PATCH_UNINSTALL" if action == "reapply-after-update"
-            else "TRUENAS_TEST_ALLOW_PATCH_REAPPLY"
+            "TRUENAS_TEST_ALLOW_PATCH_REAPPLY" if action == "uninstall-stale-record"
+            else "TRUENAS_TEST_ALLOW_PATCH_UNINSTALL"
         )
         require(not os.environ.get(other_guard), f"{other_guard} is only valid for its matching recovery action")
         require(not os.environ.get("TRUENAS_TEST_ALLOW_PATCH_REPAIR"),
@@ -408,7 +413,7 @@ def main() -> int:
             f"tar -xzf {shlex.quote(remote_bundle)} -C {shlex.quote(remote_dir)}; "
             f"bash {shlex.quote(remote_dir + '/acceptance/reapply_v27_after_update_remote.sh')} "
             f"{shlex.quote(remote_dir)} {shlex.quote(adapter.version)} "
-            f"{shlex.quote(action)} {shlex.quote(expected_prior)}"
+            f"{shlex.quote(action)} {shlex.quote(expected_prior)} {shlex.quote(profile)}"
         )
     elif action in {
         "repair-root-create", "repair-root-parent-mountpoint", "repair-zvol-blocksize",
@@ -483,10 +488,15 @@ def main() -> int:
     if action == "uninstall-stale-record":
         require(target.shell("test ! -e /root/v27-boot-pool-patch-install.json", timeout=30) == "",
                 "stale v27 install record remains after guarded uninstall")
-        require(target.shell(
-            "findmnt -n -o SOURCE --target /mnt/boot-pool/user-data", timeout=30
-        ) == "boot-pool/user-data", "guarded uninstall did not mount the preserved Path A root")
-        report("result", f"PASS retired the stale RC.1 record on exact TrueNAS {adapter.version}; stock nightly sources and Path A data remain")
+        if profile in {"path-a", "both"}:
+            require(target.shell(
+                "findmnt -n -o SOURCE --target /mnt/boot-pool/user-data", timeout=30
+            ) == "boot-pool/user-data", "guarded uninstall did not mount the preserved Path A root")
+        if profile in {"path-b", "both"}:
+            require(target.shell(
+                "findmnt -n -o SOURCE --target /mnt/boot-disk-data", timeout=30
+            ) == "boot-disk-data", "guarded uninstall did not mount the preserved Path B root")
+        report("result", f"PASS retired the stale RC.1 record on exact TrueNAS {adapter.version}; stock nightly sources and {profile} data remain")
         report("bundle", f"{bundle.name} sha256={digest}")
         return 0
 
@@ -494,7 +504,7 @@ def main() -> int:
     require(record.get("supported") is True, f"patched TCG backend is not supported: {record!r}")
     require(target.shell("test ! -e /dev/kvm", timeout=30) == "",
             "/dev/kvm appeared after patch installation")
-    if action in {"repair-zvol-blocksize", "reapply-after-update"}:
+    if action in {"repair-zvol-blocksize", "reapply-after-update", "install-after-update"} and profile in {"path-a", "both"}:
         require(target.shell(
             "zfs get -H -p -o value quota,mountpoint,canmount boot-pool/user-data",
             timeout=45,
@@ -503,9 +513,13 @@ def main() -> int:
         require(target.shell(
             "findmnt -n -o SOURCE --target /mnt/boot-pool/user-data", timeout=30
         ) == "boot-pool/user-data", "v27 recovery did not mount the preserved Path A root")
-    else:
+    elif action != "reapply-after-update":
         require(target.shell("test ! -e /mnt/boot-pool/user-data", timeout=30) == "",
                 "patch install unexpectedly created the Path A user-data namespace")
+    if action in {"reapply-after-update", "install-after-update"} and profile in {"path-b", "both"}:
+        require(target.shell(
+            "findmnt -n -o SOURCE --target /mnt/boot-disk-data", timeout=30
+        ) == "boot-disk-data", "v27 recovery did not mount the preserved Path B root")
     try:
         install_record = json.loads(
             target.shell("cat /root/v27-boot-pool-patch-install.json", timeout=30)
@@ -526,8 +540,14 @@ def main() -> int:
         require(
             install_record.get("version") == adapter.version
             and install_record.get("reapplied_from_version") == adapter.reapply_from
-            and install_record.get("reapplied_from_bundle_sha256") == adapter.reapply_from_bundle_sha256,
+            and install_record.get("reapplied_from_bundle_sha256") in adapter.reapply_from_bundle_sha256s,
             f"reapply record does not bind the exact prior RC.1 install: {install_record!r}",
+        )
+    elif action == "install-after-update":
+        require(
+            install_record.get("version") == adapter.version
+            and install_record.get("installed_after_update") is True,
+            f"post-update install record does not identify the exact target build: {install_record!r}",
         )
     if action == "repair-root-create":
         require(
@@ -572,13 +592,13 @@ def main() -> int:
         require("boot-disk-data" not in pool_health,
                 "fresh-target patch action unexpectedly found Path B storage")
     storage_state = (
-        "the verified UI-created Path A root remains configured"
-        if action in {"repair-zvol-blocksize", "reapply-after-update"}
+        f"the configured {profile} data roots remain available"
+        if action in {"repair-zvol-blocksize", "reapply-after-update", "install-after-update"}
         else "Path A/B storage remains unconfigured"
     )
     report(
         "result",
-        f"PASS TrueNAS {adapter.version} Path {profile[-1:].upper()} has the v27 relaxation patch; "
+        f"PASS TrueNAS {adapter.version} storage={profile} has the v27 relaxation patch; "
         f"{storage_state}",
     )
     report("bundle", f"{bundle.name} sha256={digest}")

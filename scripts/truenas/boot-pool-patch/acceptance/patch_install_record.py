@@ -14,14 +14,10 @@ V28_PATHS = (
     f"/mnt/boot-pool/user-data/{V28_INSTALL_RECORD}",
     f"/mnt/boot-disk-data/{V28_INSTALL_RECORD}",
 )
-V27_RELEASES = frozenset({"27.0.0-RC.1", "27.0.0-MASTER+20261027-173422"})
-V28_RELEASE_TARGET_COUNTS = {
-    "28.0.0-MASTER+20261014-230204": 15,
-    "28.0.0-MASTER+20261027-175229": 19,
-}
+V27_RELEASES = frozenset({"27.0.0-RC.1", "27.0.0-MASTER+20261029-173417"})
+V28_RELEASE_TARGET_COUNTS = {"28.0.0-MASTER+20261029-175210": 19}
 V28_TARGET_MANIFESTS = {
-    "28.0.0-MASTER+20261014-230204": "v28-nightly-20261014/targets.sha256",
-    "28.0.0-MASTER+20261027-175229": "v28-nightly-20261027/targets.sha256",
+    "28.0.0-MASTER+20261029-175210": "v28-nightly-20261029/targets.sha256",
 }
 V28_BASE_HELPERS = frozenset({
     "middlewared/plugins/boot_pool_user_data.py",
@@ -95,7 +91,7 @@ def v28_record_matches(record: Any, version: str) -> bool:
         return False
 
     expected_helpers = V28_BASE_HELPERS
-    if version == "28.0.0-MASTER+20261027-175229":
+    if version == "28.0.0-MASTER+20261029-175210":
         expected_helpers |= V28_PARTITION_HELPERS
     helpers = record.get("helpers")
     return (

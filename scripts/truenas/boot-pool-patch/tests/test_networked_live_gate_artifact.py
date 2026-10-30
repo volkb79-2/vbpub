@@ -806,7 +806,7 @@ def test_path_a_resume_allows_only_exact_managed_v28_patch_storage() -> None:
     root_mountpoint = "/mnt/boot-pool/user-data"
     record_path = f"{root_mountpoint}/.truenas-boot-pool-patch-v28.json"
     record = {
-        "version": "28.0.0-MASTER+20261027-175229",
+        "version": "28.0.0-MASTER+20261029-175210",
         "storage_profile": "path-a",
         "backup": f"{root_mountpoint}/.truenas-boot-pool-patch-backups/v28.ClHQxL4Y",
     }
@@ -849,7 +849,7 @@ def test_read_only_inventory_lane_does_not_require_mutation_guard(tmp_path, monk
     known_hosts.chmod(0o600)
     for name, value in {
         "TRUENAS_TEST_ALLOW_MUTATIONS": "",
-        "TRUENAS_EXPECTED_VERSION": "28.0.0-MASTER+20261014-230204",
+        "TRUENAS_EXPECTED_VERSION": "28.0.0-MASTER+20261029-175210",
         "TRUENAS_STORAGE_PROFILE": "path-b",
         "TRUENAS_TEST_PORT": "2225",
         "TRUENAS_TEST_KEY": str(key),
@@ -1043,7 +1043,7 @@ def test_update_survival_runner_environment_is_guarded_and_uses_state_directory(
     public_key.write_text("ssh-ed25519 AAAATEST fixture\n")
     for name, value in {
         "TRUENAS_TEST_ALLOW_MUTATIONS": "1",
-        "TRUENAS_EXPECTED_VERSION": "27.0.0-MASTER+20261027-173422",
+        "TRUENAS_EXPECTED_VERSION": "27.0.0-MASTER+20261029-173417",
         "TRUENAS_STORAGE_PROFILE": "both",
         "TRUENAS_SURVIVAL_MODE": "patched",
         "TRUENAS_SURVIVAL_PROFILE": "both",
@@ -1065,7 +1065,7 @@ def test_update_survival_runner_environment_is_guarded_and_uses_state_directory(
     (artifact_dir / "manifest.json").write_text("{}")
     monkeypatch.setenv("TRUENAS_TEST_ALLOW_UPDATE", "1")
     monkeypatch.setenv("TRUENAS_TEST_ALLOW_REBOOT", "1")
-    monkeypatch.setenv("TRUENAS_UPDATE_EXPECTED_VERSION", "28.0.0-MASTER+20261027-175229")
+    monkeypatch.setenv("TRUENAS_UPDATE_EXPECTED_VERSION", "28.0.0-MASTER+20261029-175210")
     monkeypatch.setenv("TRUENAS_UPDATE_TRAIN", "TrueNAS-28-Nightlies")
     update = runner.required_live_environment(
         "live-update-survival-update", "v1001.vxxu.de", tmp_path,
@@ -1075,13 +1075,15 @@ def test_update_survival_runner_environment_is_guarded_and_uses_state_directory(
     assert update["TRUENAS_UPDATE_TRAIN"] == "TrueNAS-28-Nightlies"
     assert update["TRUENAS_SURVIVAL_UPDATE_RECORD"] == "/run/truenas-update-survival/update-job.json"
 
-    monkeypatch.setenv("TRUENAS_SURVIVAL_EXPECTED_AFTER", "28.0.0-MASTER+20261027-175229")
+    monkeypatch.setenv("TRUENAS_EXPECTED_VERSION", "28.0.0-MASTER+20261029-175210")
+    monkeypatch.setenv("TRUENAS_SURVIVAL_EXPECTED_AFTER", "28.0.0-MASTER+20261029-175210")
     verify = runner.required_live_environment(
         "live-update-survival-verify", "v1001.vxxu.de", tmp_path,
     )
-    assert verify["TRUENAS_SURVIVAL_EXPECTED_AFTER"] == "28.0.0-MASTER+20261027-175229"
+    assert verify["TRUENAS_SURVIVAL_EXPECTED_AFTER"] == "28.0.0-MASTER+20261029-175210"
     assert verify["TRUENAS_SURVIVAL_REPORT"] == "/run/truenas-update-survival/report.json"
 
+    monkeypatch.setenv("TRUENAS_EXPECTED_VERSION", "27.0.0-MASTER+20261029-173417")
     monkeypatch.setenv("TRUENAS_TEST_ALLOW_REBOOT", "0")
     try:
         runner.required_live_environment(
@@ -1724,7 +1726,7 @@ def test_live_update_requires_three_guards_and_verified_media_paths(tmp_path, mo
     monkeypatch.setenv("TRUENAS_TEST_ALLOW_REBOOT", "1")
     monkeypatch.setenv("TRUENAS_TEST_ALLOW_UPDATE", "1")
     monkeypatch.setenv("TRUENAS_EXPECTED_VERSION", "27.0.0-RC.1")
-    monkeypatch.setenv("TRUENAS_UPDATE_EXPECTED_VERSION", "28.0.0-MASTER+20261014-230204")
+    monkeypatch.setenv("TRUENAS_UPDATE_EXPECTED_VERSION", "28.0.0-MASTER+20261029-175210")
     monkeypatch.setenv("TRUENAS_STORAGE_PROFILE", "path-a")
     monkeypatch.setenv("TRUENAS_TEST_PORT", "2222")
     monkeypatch.setenv("TRUENAS_TEST_KEY", str(key))
@@ -1775,7 +1777,7 @@ def test_live_v28_patch_accepts_path_b_and_guards_replacement_with_prior_digest(
     known_hosts.write_text("truenas ssh host key")
     known_hosts.chmod(0o600)
     monkeypatch.setenv("TRUENAS_TEST_ALLOW_MUTATIONS", "1")
-    monkeypatch.setenv("TRUENAS_EXPECTED_VERSION", "28.0.0-MASTER+20261014-230204")
+    monkeypatch.setenv("TRUENAS_EXPECTED_VERSION", "28.0.0-MASTER+20261029-175210")
     monkeypatch.setenv("TRUENAS_STORAGE_PROFILE", "path-b")
     monkeypatch.setenv("TRUENAS_TEST_PORT", "2225")
     monkeypatch.setenv("TRUENAS_TEST_KEY", str(key))

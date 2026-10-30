@@ -1,0 +1,122 @@
+{
+  "completed_at_utc": "2026-10-30T13:23:52+00:00",
+  "from_source": "tn-v27rc1-path-a-patched-clean-20261030",
+  "from_version": "27.0.0-RC.1",
+  "official_update": {
+    "checksum": "e75221fc2170b37c1969ab73d2ef56c895bbe1eb32e3558db26523656089a6c2",
+    "filename": "TrueNAS-27.0.0-MASTER+20261029-173417.update",
+    "filesize": 2305646592,
+    "profile": "DEVELOPER",
+    "train": "TrueNAS-27-Nightlies",
+    "version": "27.0.0-MASTER+20261029-173417"
+  },
+  "patched_target": "reapply",
+  "restore_snapshot": "tn-v27rc1-path-a-patched-clean-20261030",
+  "result": "PASS",
+  "result_file": "scripts/truenas/docs/acceptance-results/20261030T131248Z-7fc7324d-path-a-to-27.0.0-MASTER+20261029-173417.json",
+  "run_directory": "scripts/truenas/boot-pool-patch/artifacts/acceptance-runs/20261030T131248Z-7fc7324d",
+  "run_id": "20261030T131248Z-7fc7324d",
+  "schema_version": 1,
+  "stage_results": [
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/workspaces/vbpub/.worktrees/truenas-restore-iso/scripts/truenas/boot-pool-patch/run-live-gate.py",
+        "live-inspect",
+        "--docker-network",
+        "dstdns-hox0ju-network",
+        "--allow-dirty",
+        "--allow-high-psi"
+      ],
+      "completed_at": "2026-10-30T13:14:50+00:00",
+      "exit_code": 0,
+      "log": "scripts/truenas/boot-pool-patch/artifacts/acceptance-runs/20261030T131248Z-7fc7324d/live-inspect.log",
+      "started_at": "2026-10-30T13:14:18+00:00"
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/workspaces/vbpub/.worktrees/truenas-restore-iso/scripts/truenas/boot-pool-patch/run-live-gate.py",
+        "live-update-survival-plant",
+        "--docker-network",
+        "dstdns-hox0ju-network",
+        "--allow-dirty",
+        "--allow-high-psi"
+      ],
+      "completed_at": "2026-10-30T13:17:07+00:00",
+      "exit_code": 0,
+      "log": "scripts/truenas/boot-pool-patch/artifacts/acceptance-runs/20261030T131248Z-7fc7324d/live-update-survival-plant.log",
+      "started_at": "2026-10-30T13:14:50+00:00"
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/workspaces/vbpub/.worktrees/truenas-restore-iso/scripts/truenas/boot-pool-patch/run-live-gate.py",
+        "live-update-survival-update",
+        "--docker-network",
+        "dstdns-hox0ju-network",
+        "--allow-dirty",
+        "--allow-high-psi"
+      ],
+      "completed_at": "2026-10-30T13:21:57+00:00",
+      "exit_code": 0,
+      "log": "scripts/truenas/boot-pool-patch/artifacts/acceptance-runs/20261030T131248Z-7fc7324d/live-update-survival-update.log",
+      "started_at": "2026-10-30T13:17:07+00:00"
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/workspaces/vbpub/.worktrees/truenas-restore-iso/scripts/truenas/boot-pool-patch/run-live-gate.py",
+        "live-v27-patch",
+        "--docker-network",
+        "dstdns-hox0ju-network",
+        "--allow-dirty",
+        "--allow-high-psi"
+      ],
+      "completed_at": "2026-10-30T13:22:30+00:00",
+      "exit_code": 0,
+      "log": "scripts/truenas/boot-pool-patch/artifacts/acceptance-runs/20261030T131248Z-7fc7324d/live-v27-patch.log",
+      "started_at": "2026-10-30T13:21:57+00:00"
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/workspaces/vbpub/.worktrees/truenas-restore-iso/scripts/truenas/boot-pool-patch/run-live-gate.py",
+        "live-update-survival-verify",
+        "--docker-network",
+        "dstdns-hox0ju-network",
+        "--allow-dirty",
+        "--allow-high-psi"
+      ],
+      "completed_at": "2026-10-30T13:23:52+00:00",
+      "exit_code": 0,
+      "log": "scripts/truenas/boot-pool-patch/artifacts/acceptance-runs/20261030T131248Z-7fc7324d/live-update-survival-verify.log",
+      "started_at": "2026-10-30T13:22:30+00:00"
+    }
+  ],
+  "start_inventory": {
+    "path_a": "present",
+    "path_b": "absent",
+    "start_state": "path-a",
+    "v27_patch_record": {
+      "bundle_sha256": "50105fc127ab8a17e969d36eba5070efc76fbc0ef2a5dc52b27e2125d869e11c",
+      "kvm_device": false,
+      "patch": "v27",
+      "recommended_zvol_blocksize_boot_pool": "boot-pool-defaults-to-16k-v1",
+      "root_create_guard": "root-excluded-from-descendant-readiness-v1",
+      "root_parent_mountpoint_guard": "root-create-skips-parent-mountpoint-none-v1",
+      "supported": true,
+      "version": "27.0.0-RC.1"
+    },
+    "version": "27.0.0-RC.1"
+  },
+  "start_state": "path-a",
+  "started_at_utc": "2026-10-30T13:12:48+00:00",
+  "steps": [
+    "plant",
+    "update",
+    "verify"
+  ],
+  "survival_state_directory": "scripts/truenas/boot-pool-patch/artifacts/.update-survival-20261030T131248Z-7fc7324d",
+  "to_version": "27.0.0-MASTER+20261029-173417"
+}

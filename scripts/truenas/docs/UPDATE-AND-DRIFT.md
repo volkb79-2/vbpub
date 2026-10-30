@@ -4,12 +4,12 @@ This record answers the update mechanics, compatibility, patch-size, survival,
 and automation questions for the boot-pool patch. Runtime evidence is text only
 under `/home/vscode/vbpub-release-program-20261027/evidence/truenas-live-20261030/`.
 The point-in-time host and official-feed evidence is
-`update-and-drift-20261030.txt` in that directory.
+`update-and-drift-20261030.txt` in that directory. No screenshots are used.
 
 ## Update mechanics (Q1)
 
 The installer changes middleware files inside the active boot environment's
-`/usr` dataset. On v1001, `/usr` was mounted from
+`/usr` dataset. On the disposable test system, `/usr` was mounted from
 `boot-pool/ROOT/<active-BE>/usr`, filesystem type `zfs`, with mount option `ro`;
 the adapter scripts temporarily clear the dataset's `readonly` property and
 restore it after their transactional apply. The patched Python targets are
@@ -47,8 +47,8 @@ update until the matching adapter was applied.
 | Fact | Evidence |
 |---|---|
 | `/usr` is per-BE read-only ZFS, not a live SquashFS mount | `v27-rc1-patched-be-before-update-20261030.txt` and `v27-new-be-before-reapply-20261030.txt` (dataset sources, mount properties, and per-BE MD5/SHA-256 inventories) |
-| Updater verifies/extracts `rootfs.squashfs` and creates a new BE | `v1001-rc1-to-v27-nightly-update-r2b.log`, `v1001-v27-to-v28-update-reboot-r2.log` |
-| Old v27 BE still boots with its patch and can be reactivated | `v1001-rc1-bootenv-rollback-readiness-r2.log` and `v1001-activate-rc1-and-reboot-r2.log` in `truenas-live-20261029/`; per-BE hashes in `v27-new-be-before-reapply-20261030.txt` |
+| Updater verifies/extracts `rootfs.squashfs` and creates a new BE | RC.1-to-v27 nightly and v27-to-v28 update logs in the retained `truenas-live-20261029/` evidence archive |
+| Old v27 BE still boots with its patch and can be reactivated | Boot-environment rollback and reactivation logs in the same archive; per-BE hashes in `v27-new-be-before-reapply-20261030.txt` |
 | `/root` marker is stale in the new BE; data DB is copied/migrated per BE | `v27-new-be-before-reapply-20261030.txt` and `v27-nightly-patched-be-after-reapply-20261030.txt` |
 | Path A/B pools survive but auto-mount depends on the active adapter | prior v27/v28 update logs; `live-boot` and reapply logs in the same evidence directory |
 
@@ -56,71 +56,103 @@ update until the matching adapter was applied.
 
 The explicit supported set is [`supported-builds.json`](../boot-pool-patch/supported-builds.json):
 
-| Build | Adapter directory | Fingerprinted targets |
-|---|---|---:|
-| `27.0.0-RC.1` | `v27` | 18 |
-| `27.0.0-MASTER+20261027-173422` | `v27-nightly-20261027` | 19 |
-| `28.0.0-MASTER+20261014-230204` | `v28-nightly-20261014` | 15 |
-| `28.0.0-MASTER+20261027-175229` | `v28-nightly-20261027` | 19 |
+| Build | Policy | Adapter | Targets | Evidence / status |
+|---|---|---|---:|---|
+| `27.0.0-RC.1` | v27 release base | `v27` | 19 | Registered exact-build adapter; Path A/B API and UI evidence predates this acceptance wave. |
+| `27.0.0-MASTER+20261029-173417` | Single pre-RC.2 bridge nightly | `v27-nightly-20261029` | 19 | Registered after exact-source checks; latest Path A update/reapply and API results are in the [acceptance index](ACCEPTANCE-RESULTS.md). The earlier Oct 27 nightly is retired. |
+| `28.0.0-MASTER+20261029-175210` | One rolling base: latest nightly only | `v28-nightly-20261029` | 19 | Registered after exact-source checks; live update/reapply and API/UI outcomes are in the [acceptance index](ACCEPTANCE-RESULTS.md). Oct 14 and Oct 27 rows are retired. |
+| v27 RC.2, GA/27.0.x | Add each exact release build after registration | — | — | No prefix support; each new release is independently fingerprinted and accepted. |
 
-The v27 entries also pin the installed bundle digests: RC.1
-`23e7667f4893f26f4861b17edc20e73f00ae2f8b797f9ff95cde446af1f25de1`, and
-Oct 27 Nightly
-`489be0c005e4e64cff1cf81077418546b8c9a03cd77bfafa2711048a52a1c0fe`.
+At the 2026-10-30 check, the updater's machine-readable
+[v27 Nightlies feed](https://auto-public.sys.truenas.net/TrueNAS-27-Nightlies/releases.json)
+advertised Oct 29 build `27.0.0-MASTER+20261029-173417` with update checksum
+`e75221fc2170b37c1969ab73d2ef56c895bbe1eb32e3558db26523656089a6c2`; the
+[v28 Nightlies feed](https://auto-public.sys.truenas.net/TrueNAS-28-Nightlies/releases.json)
+advertised `28.0.0-MASTER+20261029-175210` with checksum
+`b76989240fa038c2de86d33d434bd51eb963efe2a9088e14e6275b2dea34939d`. The v27
+nightly remains in scope as a single bridge until RC.2 is registered; the v28
+nightly moves as a single rolling base. Older v28 builds are refused with the
+current base and instructions to update and verify the exact reported version.
 
-There is no v27 RC.2, v27 GA, or later nightly adapter in that registry. Version
-prefix matching is not compatibility. Before apply, the remote installer
-checks the exact build and adapter metadata, checks the complete target list
-against SHA-256 preimages, and runs every patch through GNU `patch` with
-`--dry-run --fuzz=0`. It refuses missing paths, symlinks, hash changes, a
-manifest digest/count mismatch, or a patch anchor failure. Post-apply checks
-include compiled Python, API smoke calls, installed target/helper hashes, and
-reverse zero-fuzz patch dry-runs; the `/usr` dataset returns to read-only.
-These checks prevent GNU patch from silently applying a hunk at a nearby
-location in an unregistered source tree.
+To register a build, capture the exact update metadata and source tree, record
+all patch-target SHA-256 preimages and the adapter bundle digest, run
+`patch_drift.py diagnose`, adapt and review every changed hunk, require all
+zero-fuzz dry-runs and post-apply checks, run the selected update/API/UI
+acceptance scenarios, then replace the relevant registry row. v28 retires its
+previous row as part of that retarget. v27 keeps only RC.1 plus the newest
+nightly bridge while RC.2 is absent. Version-prefix matching is not
+compatibility. Installers refuse missing paths, symlinks, changed hashes,
+manifest digest/count mismatches, and patch-anchor failures before mutation.
+
+After apply, checks include compiled Python, API smoke calls, installed
+target/helper hashes, reverse zero-fuzz patch dry-runs, and `/usr` read-only
+state. These checks prevent GNU patch from silently applying a hunk at a
+nearby location in an unregistered source tree.
 
 Local read-only commands:
 
 ```bash
 cd scripts/truenas
 python3 boot-pool-patch/acceptance/patch_drift.py verify \
-  --version 27.0.0-MASTER+20261027-173422 \
+  --version 27.0.0-MASTER+20261029-173417 \
   --root /path/to/extracted/usr/lib/python3/dist-packages
 
 python3 boot-pool-patch/acceptance/patch_drift.py diagnose \
   --candidate-version 27.0.0-RC.2 \
-  --reference-build 27.0.0-MASTER+20261027-173422 \
+  --reference-build 27.0.0-MASTER+20261029-173417 \
   --root /path/to/rc2/usr/lib/python3/dist-packages
 
 python3 boot-pool-patch/acceptance/patch_drift.py upstream \
   --channel 27-Nightlies \
-  --reference-build 27.0.0-MASTER+20261027-173422
+  --reference-build 27.0.0-MASTER+20261029-173417
 ```
 
 `verify` accepts only an exact registered build. `diagnose` is for a candidate
 tree: it reports every `MISSING`/`HASH` target and each zero-fuzz anchor result,
 returns review-required for an unregistered version, and never edits the tree.
-`upstream` checks the official nightly/RC listing and compares middleware
-sources with the closest exact adapter. The TrueNAS download host renders its
-Storj listing in JavaScript; the checker uses PWMCP only when raw HTML contains
-no ISO names. It also checks `truenas_pylibvirt` in its own official source
-repository. These recurring checks do not install on v1001 or automatically
-register a new adapter.
+The recurring `upstream` command now reads TrueNAS's machine-readable
+`releases.json` updater feed directly; it does not need PWMCP to discover the
+latest build. The feed supplies exact build, `.update` filename, checksum,
+size, date, and profile, but does not identify the middleware Git commit.
 
-On 2026-10-30 the official 27 nightly listing later reported
-`TrueNAS-27.0.0-MASTER+20261029-173417.iso`, newer than the Oct 27 adapter and
-therefore unsupported. The TrueNAS v27 updater API advertised
-`28.0.0-MASTER+20261029-175210` as its latest v28 manifest; the live lane
-rejected the stale Oct 27 request and selected the Oct 29 build. Neither build
-is in the exact-build registry. PWMCP could not render the current v28
-Nightlies listing (503) or v27 RC listing (selector timeout), so the recurring
-check reports an error instead of inferring that either feed is empty. Prior
-feed evidence from earlier on Oct 30 listed v27 RC.1 only; RC.2/GA remain
-unregistered and were not re-inspected against a new image. The current
-middleware `master` and `truenas_pylibvirt` refs differ from the adapter
-fingerprints and produce anchor failures, so the correct result is
-`REVIEW_REQUIRED`; it is not evidence that the published image has that source
-commit.
+The earlier PWMCP failures had two different causes. The v28 Nightlies attempt
+failed while PWMCP's browser client was opening its WebSocket (`503 Service
+Unavailable`); this is PWMCP service availability, not a TrueNAS download-host
+503. The browser path now retries a 503 at most twice, with 1- and 2-second
+backoff, then fails explicitly. The v27 RC timeout waited for the old selector
+`a[href*=".iso"]`; the rendered Storj page exposed directory anchors that did
+not match it. The selector now waits for `a[href]`, while filename parsing
+still filters for exact ISO names. This was our selector bug, not a confirmed
+PWMCP product defect, so no PWMCP backlog item was filed. The recurring build
+check avoids both browser failure modes by using `releases.json`.
+
+The Oct 29 nightly payloads could not be tied to one complete middleware Git
+commit. The updater JSON contains no commit field. The extracted update
+manifest, `/etc/version`, package metadata and inspected release metadata
+identify the build or package versions but do not provide a full middleware
+commit or source manifest. The v28 manifest exposes version/build time, kernel,
+and rootfs checksum; it does not contain a middleware Git manifest. The
+`upstream` command's comparison to moving GitHub `master` is therefore an
+advisory signal only: a diff can mean that master has moved past the released
+build, and a match cannot certify the image. The authoritative check is the
+registered build's exact installed or extracted target SHA-256 set plus
+zero-fuzz patch verification. For an unknown candidate, use `diagnose` against
+the extracted update tree, adapt and review, and register only after exact
+build acceptance. `REVIEW_REQUIRED` from current `master` must not be described
+as proof of drift in a particular released image.
+
+The Oct 30 `patch_drift.py upstream` rerun against both registered Oct 29
+adapters returned `REVIEW_REQUIRED` (exit 2), which is expected for a moving
+source ref. Current middleware `master` was
+`1ec755e97800bda78e2cc4f19e375efc233e50d9`; `truenas_pylibvirt` `master` was
+`908f4b36e44f21e4dbe0c6c8858d2fcedd56df38`. Against v27, master has numerous
+hash/anchor differences and no longer contains three target paths
+(`boot.py`, `container/container.py`, and `vm/vm_devices.py`). Against v28,
+only `container/lifecycle.py` differs by hash; all four patch anchors still
+pass. These are source-head signals, not evidence that either published Oct 29
+update contains those changes. No adapter change is justified by this result;
+retarget only after capturing and diagnosing the exact next build from its
+update payload.
 
 ## Patch inventory and smaller variants (Q3)
 
@@ -230,23 +262,21 @@ the normalizer retains and compares `nic_attach` while excluding its new
 generated id/MAC. Other container devices remain compared. Any other canonical
 path, missing record, or data checksum change fails.
 
-Acceptance outcomes:
+Acceptance outcomes are tracked per source build and pool state in the
+[generated results index](ACCEPTANCE-RESULTS.md):
 
 | Scenario | Result | Evidence |
 |---|---|---|
-| Vanilla RC.1 → Oct 27 v27 Nightly | PASS; 7 file/zvol checksums; 4 expected differences. Path A plus ordinary `survival-data`; Path B unavailable. | `vanilla-plant-20261030.log`, `vanilla-update-20261030.log`, `vanilla-verify-20261030.log` |
-| Patched RC.1 → Oct 27 v27 Nightly → guarded reapply | PASS; 7 checksums; 9 expected differences; no unexpected changes. Path A + Path B. | `patched-survival-verify-20261030.log`, per-BE inventories listed in `update-and-drift-20261030.txt` |
-| Patched Oct 27 v27 Nightly → latest v28 Nightly `28.0.0-MASTER+20261029-175210` | PASS; 7 checksums; 3 expected differences; no unexpected changes. Path A rows hidden from middleware query but present in direct ZFS; Path A unmounted, Path B mounted, v27 marker remains stale. | `v27-to-v28-oct29-update-20261030.log`, `v28-survival-plant-20261030.log`, `v28-survival-verify-20261030.log`, `v28-survival-report-20261030.txt` |
+| Path A, RC.1 → Oct 29 v27 Nightly | Update, digest-bound reapply, and survival verification passed with three data checksums. API acceptance passed. The UI lane reached the fresh-target guard and refused the survival fixture's existing VM record before making UI changes. The PWMCP Playwright pin is corrected to the contract's 1.62.0. | `20261030T131248Z-7fc7324d` survival, `20261030T132509Z-0ff3449e` API, and `20261030T132400Z-ea02d1d1` UI in the [acceptance index](ACCEPTANCE-RESULTS.md) |
+| Path A, Oct 29 v27 Nightly → Oct 29 v28 Nightly, stock target | PASS; data checksums and expected cross-version differences verified. Path A rows are absent from the new BE's middleware query but direct ZFS state and checksums were compared. | `20261030T123347Z-64560e13` in [acceptance results](ACCEPTANCE-RESULTS.md) |
+| Path A, RC.1 → Oct 29 v28 Nightly, patched target | FAIL before BE activation. The update job refused at `boot-pool` free space 8.83 GiB; it requires 9.36 GiB. The v28 patch, API, and UI stages were not reached. | `20261030T124108Z-c21fc29b` and its update log in [acceptance results](ACCEPTANCE-RESULTS.md) |
+| Path B and Path A + Path B → Oct 29 targets | Not re-run in this wave. Provider inventory had no Path B start snapshot; both source states remain unverified in the matrix. The prior Path B→v28 refusal is covered by the archived acceptance log and the new digest-aware action-selection regression. | [Snapshot inventory and matrix](ACCEPTANCE-RESULTS.md) |
 
-The Oct 27 v28 update request was rejected because the update API advertised a
-newer Oct 29 build; see `v28-rejected-stale-oct27-target-20261030.log`. The
-Oct 29 v27 Nightly is also newer than the registered v27 adapter, so it has not
-been patched or run through a full survival fixture.
-
-The combined Path A + Path B + ordinary non-reserved pool case was not
-physically possible on this one-disk v1001: Path B consumes the remaining disk
-tail. Non-reserved pool coverage came from the separate vanilla run. Encryption
-escrow was unavailable; no VM guest was booted; SMB/NFS were records only.
+The Path A + Path B state can fit the inspected disk layout, but no such start
+snapshot was present in the provider inventory. A combined Path A + Path B +
+ordinary non-reserved third pool cannot fit that single-disk layout because
+Path B consumes the free tail. Encryption escrow was unavailable; no VM guest
+was booted; SMB/NFS were records only.
 Full logs and feed evidence are under
 `/home/vscode/vbpub-release-program-20261027/evidence/truenas-live-20261030/`.
 
@@ -256,13 +286,13 @@ Full logs and feed evidence are under
 |---|---|---|---|
 | `unit-boot-pool-patch` | `./run-gate.py` → `tester-unified` → pytest | Deterministic assertions, no host mutation. | None at run time; keep mutation/refusal oracles in unit tests. |
 | `patch_drift.py verify` / `diagnose` | Python hash/manifest checks plus GNU `patch --dry-run --fuzz=0` on an extracted source tree | Deterministic for the exact bytes. | None to report drift. Human must review semantic changes before creating a new registered adapter. |
-| `patch_drift.py upstream` | Python fetches official feed and source files; PWMCP renders Storj listings when raw HTML is only a shell | Deterministic for the fetched listing/commit; feed and `master` move over time. | Human decides whether source diffs affect the patch contract; the command reports each hash/missing target and anchor. |
+| `patch_drift.py upstream` | Python reads the machine-readable update feed and current source files directly; no browser is used for recurring build discovery. | Deterministic for the fetched feed/source; the feed and `master` move over time. | Human decides whether master diffs affect the patch contract; exact target verification remains authoritative. |
 | `live-inspect`, `live-api-probe`, `live-storage`, `live-boot`, `live-vdev-topology` | Python/SSH, `midclt` WebSocket JSON-RPC, ZFS/partition commands, explicit guards | Script assertions and exact inventory; host availability is external. | Guest OS boot/KVM and share-client checks need suitable hardware/network, not interpretation. Add deterministic lanes when those resources exist. |
 | `live-v27-patch`, `live-v28-patch`, Path B provision/partition lanes | Python/shell patch drivers, exact build/method schema/hash checks, direct ZFS evidence | Exact version, hashes, topology, and API records; host mutations guarded. | Unknown-build semantics still require source review. Never let review judgement add a build to the registry implicitly. |
 | `live-update-survival-{plant,update,verify}` | Python/SSH, `midclt`, `update.available_versions`/`update.run`, ZFS and SHA-256 | Exact latest train build, canonical snapshot paths, per-object hashes, explicit allowed-diff set. Update profile is selected from middleware choices by train. | Human only chooses which train to test. Missing pools, key escrow, or unavailable APIs are reported as coverage gaps. v27→v28 stock middleware omits Path A from `pool.dataset.query`; direct ZFS properties and checksums remain deterministic. |
-| `live-ui-auth`, `live-ui-prepare-ssh`, `live-ui`, `live-ui-observed-v1001`, `live-ui-workloads` | PWMCP browser selectors/ARIA snapshots plus captured middleware requests and direct storage checks | Selector counts, field values, payloads, and ZFS outcomes are asserted by scripts; no LLM participates in the lane. | When an upstream DOM changes, judgement selects the new semantic locator. Improve this by capturing accessible names/DOM context, requiring exactly one match, pinning target build, and comparing the UI request payload with the middleware schema; fail closed when ambiguous. |
+| `live-ui-auth`, `live-ui-prepare-ssh`, `live-ui`, archived observed-UI exploration, `live-ui-workloads` | PWMCP browser selectors/ARIA snapshots plus captured middleware requests and direct storage checks | Selector counts, field values, payloads, and ZFS outcomes are asserted by scripts; no LLM participates in the lane. | When an upstream DOM changes, judgement selects the new semantic locator. Improve this by capturing accessible names/DOM context, requiring exactly one match, pinning target build, and comparing the UI request payload with the middleware schema; fail closed when ambiguous. |
 
 The full automation list and current coverage are also linked from the
-[README feature surface](../boot-pool-patch/README.md#current-status), the
+[README feature surface](../boot-pool-patch/README.md#supported-builds), the
 [design rationale](../boot-pool-patch/docs/DESIGN-GUIDE.md#v27-nightly-update-and-reapply),
 and the [consumer workflow](../boot-pool-patch/docs/CONSUMERS.md#run-update-survival-acceptance).

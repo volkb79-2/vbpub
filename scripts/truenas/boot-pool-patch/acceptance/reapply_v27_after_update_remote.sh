@@ -1,24 +1,27 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-bundle_root=${1:?usage: reapply_v27_after_update_remote.sh BUNDLE_ROOT EXPECTED_VERSION MODE PRIOR_BUNDLE_SHA256}
+bundle_root=${1:?usage: reapply_v27_after_update_remote.sh BUNDLE_ROOT EXPECTED_VERSION MODE PRIOR_BUNDLE_SHA256 PROFILE}
 expected_version=${2:?expected TrueNAS build is required}
 mode=${3:?expected mode is required}
-prior_bundle_sha256=${4:?prior RC.1 bundle SHA-256 is required}
-required_version=27.0.0-MASTER+20261027-173422
+prior_bundle_sha256=${4-}
+profile=${5:?persistent storage profile is required}
 prior_version=27.0.0-RC.1
 install_root=/usr/lib/python3/dist-packages
 patch_dir="$bundle_root/v27"
 marker=/root/v27-boot-pool-patch-install.json
-verify_record="/root/v27-boot-pool-patch-verify-$required_version.json"
+verify_record="/root/v27-boot-pool-patch-verify-$expected_version.json"
 path_a_root=boot-pool/user-data
 path_a_mountpoint=/mnt/boot-pool/user-data
+path_b_root=boot-disk-data
+path_b_mountpoint=/mnt/boot-disk-data
 usr_dataset=
 usr_writable=0
 transaction_started=0
 transaction_committed=0
 transaction_dir=
 archive_record=
+had_prior_marker=0
 
 fail() {
     printf 'FAIL: %s\n' "$*" >&2
@@ -51,6 +54,46 @@ if values != ["filesystem", "2147483648", "/mnt/boot-pool/user-data", "on"]:
     done < <(zfs list -H -r -o name "$path_a_root")
 }
 
+mount_path_b_tree() {
+    pool_health=$(zpool list -H -o health boot-disk-data 2>/dev/null || true)
+    [ "$pool_health" = ONLINE ] || fail "Path B pool is not ONLINE: ${pool_health:-missing}"
+    props=$(zfs get -H -o value type,mountpoint,canmount,mounted boot-disk-data)
+    printf '%s\n' "$props" | python3 -c '
+import sys
+values = sys.stdin.read().splitlines()
+if values not in (["filesystem", "/mnt/boot-disk-data", "on", "yes"],
+                  ["filesystem", "/mnt/boot-disk-data", "on", "no"]):
+    raise SystemExit(f"Path B root properties are unsafe: {values!r}")
+'
+    mounted=$(zfs get -H -o value mounted boot-disk-data)
+    if [ "$mounted" = no ]; then
+        zfs mount boot-disk-data
+    fi
+    source=$(findmnt -n -o SOURCE --target "$path_b_mountpoint")
+    [ "$source" = "$path_b_root" ] || fail "Path B is not mounted from its ZFS source: $path_b_root -> $source"
+}
+
+verify_storage_state() {
+    case "$profile" in
+        path-a|path-b|path-a+b) ;;
+        *) fail "unsupported persistent storage profile: $profile" ;;
+    esac
+    has_a=0
+    has_b=0
+    if zfs list -H -o name "$path_a_root" >/dev/null 2>&1; then
+        has_a=1
+    fi
+    if zpool list -H -o name 2>/dev/null | grep -Fxq boot-disk-data; then
+        has_b=1
+    fi
+    case "$profile:$has_a:$has_b" in
+        path-a:1:0|path-b:0:1|path-a+b:1:1) ;;
+        *) fail "persistent storage does not match selected profile $profile (Path A=$has_a Path B=$has_b)" ;;
+    esac
+    [ "$has_a" = 0 ] || mount_path_a_tree
+    [ "$has_b" = 0 ] || mount_path_b_tree
+}
+
 restore_previous_source() {
     [ -n "$transaction_dir" ] || return 1
     printf '[rollback] restoring captured nightly sources and the stale RC.1 record\n' >&2
@@ -69,7 +112,11 @@ restore_previous_source() {
         middlewared/plugins/boot_pool_user_data.py \
         middlewared/plugins/boot_disk_partition.py \
         middlewared/plugins/pool_create_schema_v27.json || return 1
-    cp --archive -- "$transaction_dir/install-record-before.json" "$marker" || return 1
+    if [ "$had_prior_marker" = 1 ]; then
+        cp --archive -- "$transaction_dir/install-record-before.json" "$marker" || return 1
+    else
+        rm -f -- "$marker" || return 1
+    fi
     if [ -n "$archive_record" ]; then rm -f -- "$archive_record" || return 1; fi
     systemctl start middlewared.service || return 1
     zfs set readonly=on "$usr_dataset" || return 1
@@ -97,37 +144,54 @@ restore_usr_readonly() {
 }
 
 [ "$(id -u)" = 0 ] || fail 'run as root inside the disposable TrueNAS guest'
-[ "$expected_version" = "$required_version" ] || fail "unsupported exact v27 recovery build: $expected_version"
+[ -n "$expected_version" ] || fail 'an exact v27 recovery build is required'
 case "$mode" in
-    reapply-after-update|uninstall-stale-record) ;;
+    reapply-after-update|install-after-update|uninstall-stale-record) ;;
     *) fail "unsupported recovery mode: $mode" ;;
 esac
 [ -d "$patch_dir" ] && [ -f "$patch_dir/targets.sha256" ] || fail "adapter targets missing under $patch_dir"
 [ -f "$patch_dir/adapter.json" ] && [ ! -L "$patch_dir/adapter.json" ] || fail 'nightly adapter manifest is missing or unsafe'
-python3 - "$patch_dir/adapter.json" "$patch_dir/targets.sha256" "$expected_version" "$prior_bundle_sha256" <<'PY'
+python3 - "$patch_dir/adapter.json" "$patch_dir/targets.sha256" "$expected_version" "$prior_bundle_sha256" "$mode" <<'PY'
 import hashlib
 import json
 from pathlib import Path
+import re
 import sys
-manifest_path, targets_path, version, prior_digest = sys.argv[1:]
+manifest_path, targets_path, version, prior_digest, mode = sys.argv[1:]
 manifest = json.loads(Path(manifest_path).read_text())
+match = re.fullmatch(r"27\.0\.0-MASTER\+(\d{8})-\d{6}", version)
+targets = Path(targets_path).read_text().splitlines()
 expected = {
-    "id": "v27-nightly-20261027",
+    "id": f"v27-nightly-{match.group(1)}" if match else None,
     "version": version,
     "train": "TrueNAS-27-Nightlies",
     "reapply_from": "27.0.0-RC.1",
-    "reapply_from_bundle_sha256": prior_digest,
-    "target_count": 19,
+    "reapply_from_bundle_sha256s": manifest.get("reapply_from_bundle_sha256s"),
+    "target_count": len(targets),
     "target_manifest_sha256": hashlib.sha256(Path(targets_path).read_bytes()).hexdigest(),
 }
-if manifest != expected:
+prior_digests = manifest.get("reapply_from_bundle_sha256s")
+if (match is None or not isinstance(prior_digests, list)
+        or (mode in {"reapply-after-update", "uninstall-stale-record"} and prior_digest not in prior_digests)
+        or (mode == "install-after-update" and prior_digest)
+        or not all(isinstance(item, str) and re.fullmatch(r"[0-9a-f]{64}", item) for item in prior_digests)
+        or manifest != expected):
     raise SystemExit(f"adapter manifest does not match the exact recovery contract: {manifest!r}")
 PY
 version=$(midclt call system.info | python3 -c 'import json,sys; print(json.load(sys.stdin).get("version", ""))')
 [ "$version" = "$expected_version" ] || fail "expected $expected_version, found $version"
 [ ! -e /dev/kvm ] || fail '/dev/kvm appeared; the recorded TCG target changed'
-[ -f "$marker" ] && [ ! -L "$marker" ] || fail 'stale v27 install record is missing or unsafe'
+[ ! -L "$marker" ] || fail 'v27 install record must not be a symlink'
+if [ "$mode" = install-after-update ]; then
+    [ -z "$prior_bundle_sha256" ] || fail 'install-after-update must not name a stale bundle digest'
+    [ ! -e "$marker" ] || fail 'install-after-update requires no stale v27 install record'
+else
+    [[ "$prior_bundle_sha256" =~ ^[0-9a-f]{64}$ ]] || fail 'stale-record recovery requires the exact prior RC.1 bundle SHA-256'
+    [ -f "$marker" ] || fail 'stale v27 install record is missing or unsafe'
+    had_prior_marker=1
+fi
 [ ! -e "$verify_record" ] || fail "v27 target-build self-test record already exists: $verify_record"
+if [ "$had_prior_marker" = 1 ]; then
 python3 - "$marker" "$prior_version" "$prior_bundle_sha256" <<'PY'
 import json
 from pathlib import Path
@@ -146,6 +210,7 @@ expected = {
 if record != expected:
     raise SystemExit(f"stale v27 install record does not match the exact prior RC.1 install: {record!r}")
 PY
+fi
 for helper in middlewared/plugins/vm/virtualization_support.py \
     middlewared/plugins/boot_pool_user_data.py \
     middlewared/plugins/boot_disk_partition.py \
@@ -203,14 +268,14 @@ if issues:
 PY
 sha256sum --check --strict "$patch_dir/targets.sha256"
 if [ "$mode" = uninstall-stale-record ]; then
-    mount_path_a_tree
+    verify_storage_state
     archive_dir=/root/.truenas-v27-patch-records
     install -d -m 0700 "$archive_dir"
     archive_record="$archive_dir/rc1-stale-after-20261027-nightly-$(date -u +%Y%m%dT%H%M%SZ)-$$.json"
     cp --archive -- "$marker" "$archive_record"
     rm -- "$marker"
     [ ! -e "$marker" ] || fail 'stale v27 install record remains after guarded uninstall'
-    printf '[result] PASS retired only the exact stale RC.1 record; nightly sources stayed stock; Path A tree is mounted\n'
+    printf '[result] PASS retired only the exact stale RC.1 record; nightly sources stayed stock; configured data roots are mounted\n'
     printf '[record] archived at %s\n' "$archive_record"
     exit 0
 fi
@@ -230,7 +295,9 @@ while read -r _digest rel; do
     mkdir -p "$transaction_dir/source-before/$(dirname "$rel")"
     cp --archive -- "$install_root/$rel" "$transaction_dir/source-before/$rel"
 done < "$patch_dir/targets.sha256"
-cp --archive -- "$marker" "$transaction_dir/install-record-before.json"
+if [ "$had_prior_marker" = 1 ]; then
+    cp --archive -- "$marker" "$transaction_dir/install-record-before.json"
+fi
 transaction_started=1
 trap restore_usr_readonly EXIT
 
@@ -288,31 +355,36 @@ rows = json.loads(Path('/tmp/v27-update-reapply-datasets.json').read_text())
 if not isinstance(rows, list):
     raise SystemExit(f'pool.dataset.query returned a non-list result: {rows!r}')
 PY
-mount_path_a_tree
+verify_storage_state
 archive_dir=/root/.truenas-v27-patch-records
 install -d -m 0700 "$archive_dir"
-archive_record="$archive_dir/rc1-stale-after-20261027-nightly-$(date -u +%Y%m%dT%H%M%SZ)-$$.json"
-cp --archive -- "$marker" "$archive_record"
-python3 - "$expected_version" "$bundle_archive" "$prior_bundle_sha256" "$marker" <<'PY'
+if [ "$had_prior_marker" = 1 ]; then
+    archive_record="$archive_dir/rc1-stale-after-nightly-$(date -u +%Y%m%dT%H%M%SZ)-$$.json"
+    cp --archive -- "$marker" "$archive_record"
+fi
+python3 - "$expected_version" "$bundle_archive" "$prior_bundle_sha256" "$marker" "$mode" <<'PY'
 import hashlib
 import json
 import os
 from pathlib import Path
 import sys
 import tempfile
-version, bundle_path, prior_digest, marker = sys.argv[1:]
+version, bundle_path, prior_digest, marker, mode = sys.argv[1:]
 record = {
     "bundle_sha256": hashlib.sha256(Path(bundle_path).read_bytes()).hexdigest(),
     "kvm_device": False,
     "patch": "v27",
-    "reapplied_from_bundle_sha256": prior_digest,
-    "reapplied_from_version": "27.0.0-RC.1",
     "recommended_zvol_blocksize_boot_pool": "boot-pool-defaults-to-16k-v1",
     "root_create_guard": "root-excluded-from-descendant-readiness-v1",
     "root_parent_mountpoint_guard": "root-create-skips-parent-mountpoint-none-v1",
     "supported": True,
     "version": version,
 }
+if mode == "reapply-after-update":
+    record["reapplied_from_bundle_sha256"] = prior_digest
+    record["reapplied_from_version"] = "27.0.0-RC.1"
+else:
+    record["installed_after_update"] = True
 path = Path(marker)
 fd, temporary = tempfile.mkstemp(prefix=".v27-patch-install.", dir=path.parent)
 try:
@@ -369,7 +441,7 @@ os.chmod(temporary, 0o600)
 os.replace(temporary, destination)
 PY
 transaction_committed=1
-printf '[result] PASS re-applied exact v27 nightly adapter after update; archived RC.1 record; Path A root and eligible descendants are mounted\n'
+printf '[result] PASS re-applied exact v27 nightly adapter after update; archived RC.1 record; configured Path A/B roots and eligible descendants are mounted\n'
 printf '[record] archived at %s\n' "$archive_record"
 printf '[transaction] original nightly sources retained at %s\n' "$transaction_dir"
 printf '[self-test] exact post-apply source/helper hashes recorded at %s\n' "$verify_record"

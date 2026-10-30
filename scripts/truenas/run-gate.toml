@@ -48,6 +48,7 @@ forward_env = [
   "TRUENAS_UPDATE_PROOF_SHA256",
   "TRUENAS_SURVIVAL_MODE",
   "TRUENAS_SURVIVAL_PROFILE",
+  "TRUENAS_SURVIVAL_PATCHED_TARGET",
   "TRUENAS_SURVIVAL_MANIFEST",
   "TRUENAS_SURVIVAL_REPORT",
   "TRUENAS_SURVIVAL_UPDATE_RECORD",
@@ -135,7 +136,7 @@ kind = "command"
 environment = "networked-tester"
 argv = ["bash", "-c", "cd {worktree}/scripts/truenas && export PYTHONPATH=boot-pool-patch/acceptance:../../libraries/cli-extended/src${PYTHONPATH:+:$PYTHONPATH} && \"$TESTER_VENV/bin/python\" accept-update-survival.py plant"]
 budget = "35m"
-required_env = ["TRUENAS_TEST_HOST", "TRUENAS_TEST_PORT", "TRUENAS_TEST_KEY", "TRUENAS_TEST_KNOWN_HOSTS", "TRUENAS_EXPECTED_VERSION", "TRUENAS_TEST_ALLOW_MUTATIONS", "TRUENAS_SURVIVAL_MODE", "TRUENAS_SURVIVAL_PROFILE", "TRUENAS_SURVIVAL_MANIFEST", "TRUENAS_SURVIVAL_SSH_PUBLIC_KEY_FILE"]
+required_env = ["TRUENAS_TEST_HOST", "TRUENAS_TEST_PORT", "TRUENAS_TEST_KEY", "TRUENAS_TEST_KNOWN_HOSTS", "TRUENAS_EXPECTED_VERSION", "TRUENAS_TEST_ALLOW_MUTATIONS", "TRUENAS_SURVIVAL_MODE", "TRUENAS_SURVIVAL_PROFILE", "TRUENAS_SURVIVAL_PATCHED_TARGET", "TRUENAS_SURVIVAL_MANIFEST", "TRUENAS_SURVIVAL_SSH_PUBLIC_KEY_FILE"]
 description = "Plant account, storage, share, VM, scheduler, replication, API-key and certificate fixtures, then save a canonical midclt baseline"
 
 [lanes.live-update-survival-update]
@@ -143,7 +144,7 @@ kind = "command"
 environment = "networked-tester"
 argv = ["bash", "-c", "cd {worktree}/scripts/truenas && export PYTHONPATH=boot-pool-patch/acceptance:../../libraries/cli-extended/src${PYTHONPATH:+:$PYTHONPATH} && \"$TESTER_VENV/bin/python\" accept-update-survival.py update"]
 budget = "100m"
-required_env = ["TRUENAS_TEST_HOST", "TRUENAS_TEST_PORT", "TRUENAS_TEST_KEY", "TRUENAS_TEST_KNOWN_HOSTS", "TRUENAS_EXPECTED_VERSION", "TRUENAS_TEST_ALLOW_MUTATIONS", "TRUENAS_TEST_ALLOW_UPDATE", "TRUENAS_TEST_ALLOW_REBOOT", "TRUENAS_UPDATE_EXPECTED_VERSION", "TRUENAS_UPDATE_TRAIN", "TRUENAS_SURVIVAL_UPDATE_RECORD"]
+required_env = ["TRUENAS_TEST_HOST", "TRUENAS_TEST_PORT", "TRUENAS_TEST_KEY", "TRUENAS_TEST_KNOWN_HOSTS", "TRUENAS_EXPECTED_VERSION", "TRUENAS_TEST_ALLOW_MUTATIONS", "TRUENAS_TEST_ALLOW_UPDATE", "TRUENAS_TEST_ALLOW_REBOOT", "TRUENAS_UPDATE_EXPECTED_VERSION", "TRUENAS_UPDATE_TRAIN", "TRUENAS_SURVIVAL_PATCHED_TARGET", "TRUENAS_SURVIVAL_UPDATE_RECORD"]
 description = "Select the exact newest official update manifest on the named train, call update.run with that version, and reboot; resumes an already-recorded job"
 
 [lanes.live-update-survival-verify]
@@ -151,7 +152,7 @@ kind = "command"
 environment = "networked-tester"
 argv = ["bash", "-c", "cd {worktree}/scripts/truenas && export PYTHONPATH=boot-pool-patch/acceptance:../../libraries/cli-extended/src${PYTHONPATH:+:$PYTHONPATH} && \"$TESTER_VENV/bin/python\" accept-update-survival.py verify"]
 budget = "35m"
-required_env = ["TRUENAS_TEST_HOST", "TRUENAS_TEST_PORT", "TRUENAS_TEST_KEY", "TRUENAS_TEST_KNOWN_HOSTS", "TRUENAS_SURVIVAL_MANIFEST", "TRUENAS_SURVIVAL_REPORT", "TRUENAS_SURVIVAL_EXPECTED_AFTER"]
+required_env = ["TRUENAS_TEST_HOST", "TRUENAS_TEST_PORT", "TRUENAS_TEST_KEY", "TRUENAS_TEST_KNOWN_HOSTS", "TRUENAS_SURVIVAL_PATCHED_TARGET", "TRUENAS_SURVIVAL_MANIFEST", "TRUENAS_SURVIVAL_REPORT", "TRUENAS_SURVIVAL_EXPECTED_AFTER"]
 description = "Compare the post-update canonical midclt dump, account password hash, and Path A/B/non-reserved data checksums against the planted manifest"
 
 [lanes.live-v27-patch]
@@ -177,6 +178,14 @@ argv = ["bash", "-c", "cd {worktree}/scripts/truenas/boot-pool-patch/acceptance 
 budget = "20m"
 required_env = ["TRUENAS_TEST_HOST", "TRUENAS_TEST_PORT", "TRUENAS_TEST_KEY", "TRUENAS_TEST_KNOWN_HOSTS", "TRUENAS_STORAGE_PROFILE", "TRUENAS_EXPECTED_VERSION", "TRUENAS_TEST_ALLOW_MUTATIONS", "TRUENAS_TEST_ALLOW_DISK_PROVISION", "TRUENAS_DISK_DEVICE", "TRUENAS_BOOT_POOL_PARTITION"]
 description = "Create and middleware-register Path B only on an explicitly selected disposable TrueNAS boot-disk tail; repeat to verify idempotency"
+
+[lanes.live-path-a-provision]
+kind = "command"
+environment = "networked-tester"
+argv = ["bash", "-c", "cd {worktree}/scripts/truenas/boot-pool-patch/acceptance && \"$TESTER_VENV/bin/python\" live_path_a_provision.py"]
+budget = "15m"
+required_env = ["TRUENAS_TEST_HOST", "TRUENAS_TEST_PORT", "TRUENAS_TEST_KEY", "TRUENAS_TEST_KNOWN_HOSTS", "TRUENAS_STORAGE_PROFILE", "TRUENAS_EXPECTED_VERSION", "TRUENAS_TEST_ALLOW_MUTATIONS"]
+description = "Create and verify only the empty 2 GiB Path A root after the exact v27 patch is installed"
 
 [lanes.live-path-b-partition]
 kind = "command"

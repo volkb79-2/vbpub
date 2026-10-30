@@ -206,6 +206,27 @@ def test_runtime_network_nameserver_order_is_normalized_but_membership_is_not() 
         survival.canonical_middleware_value("network.configuration.config", changed)
 
 
+def test_network_runtime_gateway_is_ignored_but_persisted_gateway_remains_compared() -> None:
+    survival = load_script()
+    before = {
+        "ipv6gateway": "",
+        "state": {"ipv6gateway": "fe80::1"},
+    }
+    after = {
+        "ipv6gateway": "",
+        "state": {"ipv6gateway": ""},
+    }
+    changed_setting = {
+        "ipv6gateway": "2001:db8::1",
+        "state": {"ipv6gateway": ""},
+    }
+
+    assert survival.canonical_middleware_value("network.configuration.config", before) == \
+        survival.canonical_middleware_value("network.configuration.config", after)
+    assert survival.canonical_middleware_value("network.configuration.config", after) != \
+        survival.canonical_middleware_value("network.configuration.config", changed_setting)
+
+
 def test_container_default_network_migrates_to_a_generated_nic_without_losing_attachment() -> None:
     survival = load_script()
     v27 = {"id": 7, "name": "fixture", "default_network": "truenasbr0", "devices": []}
@@ -237,6 +258,38 @@ def test_cross_series_stock_v28_omits_only_path_a_middleware_dataset_rows() -> N
     }
 
     actual = survival.normalize_survival_snapshot(snapshot, hide_path_a_middleware=True)
+
+    assert "boot-pool/user-data/fixture" not in actual["middleware"]["datasets"]
+    assert "tank/fixture" in actual["middleware"]["datasets"]
+    assert actual["direct_zfs"] == snapshot["direct_zfs"]
+    assert actual["data_checksums"] == snapshot["data_checksums"]
+
+
+def test_stock_same_series_update_hides_path_a_middleware_but_keeps_direct_zfs_proof() -> None:
+    survival = load_script()
+    manifest = {"patched_target": "none", "profile": "path-a"}
+    snapshot = {
+        "middleware": {"datasets": {
+            "boot-pool/user-data/fixture": {"name": "boot-pool/user-data/fixture"},
+            "tank/fixture": {"name": "tank/fixture"},
+        }},
+        "direct_zfs": {"dataset_properties": {
+            "boot-pool/user-data/fixture": {"quota": "1G", "mountpoint": "/mnt/fixture"},
+        }},
+        "data_checksums": {"/mnt/boot-pool/user-data/fixture/probe": "b" * 64},
+    }
+
+    assert survival.stock_updated_build_hides_path_a_from_middleware(
+        manifest, "27.0.0-MASTER+20261029-173417",
+    )
+    assert not survival.stock_updated_build_hides_path_a_from_middleware(
+        {"patched_target": "reapply", "profile": "path-a"}, "27.0.0-MASTER+20261029-173417",
+    )
+    actual = survival.normalize_survival_snapshot(
+        snapshot, hide_path_a_middleware=survival.stock_updated_build_hides_path_a_from_middleware(
+            manifest, "27.0.0-MASTER+20261029-173417",
+        ),
+    )
 
     assert "boot-pool/user-data/fixture" not in actual["middleware"]["datasets"]
     assert "tank/fixture" in actual["middleware"]["datasets"]
@@ -325,12 +378,14 @@ def test_patched_rc1_to_registered_nightly_has_one_exact_reservation_migration()
             }},
         },
     }
+    manifest["patched_target"] = "reapply"
     expected = survival.expected_differences(
         mode="patched", profile="both", dataset_names=manifest["objects"]["datasets"],
-        before_version=manifest["before_version"], expected_after="27.0.0-MASTER+20261027-173422",
+        before_version=manifest["before_version"], expected_after="27.0.0-MASTER+20261029-173417",
         baseline=manifest["baseline"],
+        patched_target="reapply",
     )
-    values = survival.expected_difference_values(manifest, "27.0.0-MASTER+20261027-173422")
+    values = survival.expected_difference_values(manifest, "27.0.0-MASTER+20261029-173417")
 
     reservation_path = (
         'middleware.datasets.boot-pool/user-data/fixture.'
@@ -344,13 +399,13 @@ def test_patched_rc1_to_registered_nightly_has_one_exact_reservation_migration()
     assert direct_reservation_path in expected
     assert values[direct_reservation_path] == "0"
     assert not any(path.endswith("record-zvol.volsize.rawvalue") for path in expected)
-    assert values["patch.install_record.version"] == "27.0.0-MASTER+20261027-173422"
+    assert values["patch.install_record.version"] == "27.0.0-MASTER+20261029-173417"
     assert values["patch.install_record.bundle_sha256"] == \
-        "489be0c005e4e64cff1cf81077418546b8c9a03cd77bfafa2711048a52a1c0fe"
+        "60b3696c44768f9c6958791e8b46c2a205d5daede9c8ab29b23228c141b58e76"
 
     vanilla = survival.expected_differences(
         mode="vanilla", profile="both", dataset_names=manifest["objects"]["datasets"],
-        before_version=manifest["before_version"], expected_after="27.0.0-MASTER+20261027-173422",
+        before_version=manifest["before_version"], expected_after="27.0.0-MASTER+20261029-173417",
         baseline=manifest["baseline"],
     )
     assert not any("refreservation" in path for path in vanilla)
@@ -376,11 +431,11 @@ def test_patched_v27_to_v28_keeps_old_install_marker_and_expects_unpatched_mount
 
     expected = survival.expected_differences(
         mode="patched", profile="both", before_version=before_version,
-        expected_after="28.0.0-MASTER+20261027-175229", baseline=manifest["baseline"],
+        expected_after="28.0.0-MASTER+20261029-175210", baseline=manifest["baseline"],
     )
-    values = survival.expected_difference_values(manifest, "28.0.0-MASTER+20261027-175229")
+    values = survival.expected_difference_values(manifest, "28.0.0-MASTER+20261029-175210")
 
-    assert "patch.install_record.version" in expected
+    assert "patch.install_record.version" not in expected
     assert values["patch.install_record.version"] == before_version
     assert values["patch.install_record.bundle_sha256"] == before_bundle
     assert values["storage.path_a.auto_mounted"] is False
@@ -537,6 +592,10 @@ def test_known_expected_differences_are_explicit_by_update_mode() -> None:
 
     vanilla = survival.expected_differences(mode="vanilla", profile="path-a")
     patched = survival.expected_differences(mode="patched", profile="path-a")
+    reapplied = survival.expected_differences(
+        mode="patched", profile="path-a", expected_after="27.0.0-MASTER+20261029-173417",
+        patched_target="reapply",
+    )
 
     assert "system.version" in vanilla
     assert "boot_environment.active" in vanilla
@@ -544,8 +603,10 @@ def test_known_expected_differences_are_explicit_by_update_mode() -> None:
     assert "system.version" in patched
     assert "boot_environment.active" in patched
     assert "storage.path_a.auto_mounted" in patched
-    assert "patch.install_record.version" in patched
-    assert "patch.install_record.bundle_sha256" in patched
+    assert "patch.install_record.version" not in patched
+    assert "patch.install_record.bundle_sha256" not in patched
+    assert "patch.install_record.version" in reapplied
+    assert "patch.install_record.bundle_sha256" in reapplied
 
 
 def test_path_a_root_resolves_to_its_imported_pool() -> None:
@@ -777,8 +838,8 @@ def test_update_feed_selection_requires_exact_latest_build_and_manifest() -> Non
                          "filesize": 200, "checksum": "b" * 64},
         }},
         {"train": "TrueNAS-28-Nightlies", "version": {
-            "version": "28.0.0-MASTER+20261027-175229",
-            "manifest": {"version": "28.0.0-MASTER+20261027-175229", "filename": "v28.update",
+            "version": "28.0.0-MASTER+20261029-175210",
+            "manifest": {"version": "28.0.0-MASTER+20261029-175210", "filename": "v28.update",
                          "filesize": 300, "checksum": "c" * 64},
         }},
     ]

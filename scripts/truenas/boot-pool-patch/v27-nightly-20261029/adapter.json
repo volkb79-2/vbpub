@@ -1,0 +1,12 @@
+{
+  "id": "v27-nightly-20261029",
+  "reapply_from": "27.0.0-RC.1",
+  "reapply_from_bundle_sha256s": [
+    "23e7667f4893f26f4861b17edc20e73f00ae2f8b797f9ff95cde446af1f25de1",
+    "50105fc127ab8a17e969d36eba5070efc76fbc0ef2a5dc52b27e2125d869e11c"
+  ],
+  "target_count": 19,
+  "target_manifest_sha256": "0a7ab3fd05ac0471cda4f48904fbae5c3221de9fa5eb977dcfaecdb245ccf3c1",
+  "train": "TrueNAS-27-Nightlies",
+  "version": "27.0.0-MASTER+20261029-173417"
+}

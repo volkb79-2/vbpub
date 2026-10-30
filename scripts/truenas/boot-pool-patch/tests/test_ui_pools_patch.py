@@ -172,11 +172,11 @@ def load_helper(helper_path: Path | None = None):
 
 
 def test_v28_partition_helper_uses_only_the_recorded_20261027_schema() -> None:
-    helper_path = PATCH_ROOT / "v28-nightly-20261027" / "boot_disk_partition.py"
-    schema_path = PATCH_ROOT / "v28-nightly-20261027" / "pool_create_schema_v28.json"
+    helper_path = PATCH_ROOT / "v28-nightly-20261029" / "boot_disk_partition.py"
+    schema_path = PATCH_ROOT / "v28-nightly-20261029" / "pool_create_schema_v28.json"
     schema = json.loads(schema_path.read_text())
     helper = load_helper(helper_path)
-    assert schema["release"] == "28.0.0-MASTER+20261027-175229"
+    assert schema["release"] == "28.0.0-MASTER+20261029-175210"
     assert set(schema["fields"]) == helper.ALLOWED_CREATE_FIELDS | helper.REFUSED_CREATE_FIELDS
     assert schema["fields"]["encryption_options"]["nested_defaults"]["key"] == ""
     assert helper.unsupported_create_options({"name": "data", "topology": {"data": []}}) == []

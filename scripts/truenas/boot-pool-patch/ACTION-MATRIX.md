@@ -25,7 +25,11 @@ on stock and patched TrueNAS v27.0.0-RC.1 on the hosted Netcup test VM
 (2026-10-27/28, see `LIVE-V1001-RUN-LOG.md`). The version columns also record
 the exact v27 nightly and v28 2026-10-27 v1001 runs summarized in `TODO.md`:
 `works`, `blocked: <why>`,
-`refused`, `n/a`. `size` is the patch size: `done`, `S` (<50 lines), `M`
+`refused`, `n/a`. The latest v27 nightly bridge is
+`27.0.0-MASTER+20261029-173417`; v28 supports only the rolling latest nightly,
+currently `28.0.0-MASTER+20261029-175210`. The v27/v28 columns preserve the
+last recorded action evidence; the generated exact-build acceptance index is
+the current source-state result. `size` is the patch size: `done`, `S` (<50 lines), `M`
 (<300), `L` (more, with partition-aware disk handling). `verdict`: `works`,
 `patch-UI`, `API-TUI` (too large or unsafe for the product; use the API script
 or TUI), `n/a` (must stay refused), `pending decision`. `v27`/`v28` hold the
@@ -79,13 +83,16 @@ directories must appear here.
 | `v27/boot-mount.patch` | v27 | no |
 | `v27/zvol-blocksize.patch` | v27 | yes |
 | `v27/ui-pools.patch` | v27 | yes |
-| `v28-nightly-20261014/boot-mount.patch` | v28 | no |
-| `v28-nightly-20261014/middleware.patch` | v28 | yes |
-| `v28-nightly-20261014/storage.patch` | v28 | yes |
-| `v28-nightly-20261027/boot-mount.patch` | v28 | no |
-| `v28-nightly-20261027/middleware.patch` | v28 | yes |
-| `v28-nightly-20261027/storage.patch` | v28 | yes |
-| `v28-nightly-20261027/ui-pools.patch` | v28 | yes |
+| `v27-nightly-20261029/boot-mount.patch` | v27 | no |
+| `v27-nightly-20261029/middleware.patch` | v27 | no |
+| `v27-nightly-20261029/storage.patch` | v27 | yes |
+| `v27-nightly-20261029/libvirt.patch` | v27 | yes |
+| `v27-nightly-20261029/zvol-blocksize.patch` | v27 | yes |
+| `v27-nightly-20261029/ui-pools.patch` | v27 | yes |
+| `v28-nightly-20261029/boot-mount.patch` | v28 | no |
+| `v28-nightly-20261029/middleware.patch` | v28 | yes |
+| `v28-nightly-20261029/storage.patch` | v28 | yes |
+| `v28-nightly-20261029/ui-pools.patch` | v28 | yes |
 
 ## Notes and evidence
 

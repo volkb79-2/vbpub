@@ -8,8 +8,9 @@ from typing import Mapping
 
 
 RC1_VERSION = "27.0.0-RC.1"
-NIGHTLY_VERSION = "27.0.0-MASTER+20261027-173422"
-RC1_BUNDLE_SHA256 = "23e7667f4893f26f4861b17edc20e73f00ae2f8b797f9ff95cde446af1f25de1"
+NIGHTLY_VERSION = "27.0.0-MASTER+20261029-173417"
+RC1_BUNDLE_SHA256 = "50105fc127ab8a17e969d36eba5070efc76fbc0ef2a5dc52b27e2125d869e11c"
+RC1_PRIOR_BUNDLE_SHA256 = "23e7667f4893f26f4861b17edc20e73f00ae2f8b797f9ff95cde446af1f25de1"
 PATH_A_ROOT = "boot-pool/user-data"
 PATH_A_MOUNTPOINT = "/mnt/boot-pool/user-data"
 MIN_PATH_A_QUOTA = 1024**3
@@ -21,16 +22,16 @@ class V27Adapter:
     version: str
     directory: str
     reapply_from: str | None = None
-    reapply_from_bundle_sha256: str | None = None
+    reapply_from_bundle_sha256s: tuple[str, ...] = ()
 
 
 _ADAPTERS = {
     RC1_VERSION: V27Adapter(version=RC1_VERSION, directory="v27"),
     NIGHTLY_VERSION: V27Adapter(
         version=NIGHTLY_VERSION,
-        directory="v27-nightly-20261027",
+        directory="v27-nightly-20261029",
         reapply_from=RC1_VERSION,
-        reapply_from_bundle_sha256=RC1_BUNDLE_SHA256,
+        reapply_from_bundle_sha256s=(RC1_PRIOR_BUNDLE_SHA256, RC1_BUNDLE_SHA256),
     ),
 }
 

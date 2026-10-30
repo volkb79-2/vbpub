@@ -20,14 +20,17 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from typing import Any, Callable
-from urllib.parse import unquote
+from urllib.parse import unquote, urlsplit
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 
 PATCH_ROOT = Path(__file__).resolve().parents[1]
 REGISTRY_PATH = PATCH_ROOT / "supported-builds.json"
 DOWNLOAD_ROOT = "https://download.truenas.com"
+UPDATE_ROOT = "https://auto-public.sys.truenas.net"
 SOURCE_ROOTS = {
     "middleware": "https://raw.githubusercontent.com/truenas/middleware",
     "truenas_pylibvirt": "https://raw.githubusercontent.com/truenas/truenas_pylibvirt",
@@ -361,11 +364,13 @@ def latest_official_iso(html: str, series: int) -> str:
     parser = LinkParser()
     parser.feed(html)
     prefix = f"TrueNAS-{series}.0.0-"
-    names = {
-        Path(link).name for link in parser.links
-        if Path(link).name.startswith(prefix) and Path(link).name.endswith(".iso")
-        and not Path(link).name.endswith(".iso.sha256")
-    }
+    names: set[str] = set()
+    for link in parser.links:
+        # Storj wraps object links with ?wrap=1 or ?download=1. Compare the
+        # decoded path, never the query string, so valid .iso objects survive.
+        name = Path(unquote(urlsplit(link).path)).name
+        if name.startswith(prefix) and name.endswith(".iso") and not name.endswith(".iso.sha256"):
+            names.add(name)
     # download.truenas.com serves a Storj directory page. Raw HTML contains
     # the shell only; the managed browser renders object names as visible text.
     names.update(re.findall(
@@ -396,18 +401,28 @@ def rendered_official_directory(url: str) -> str:
         )
     with tempfile.TemporaryDirectory(prefix="truenas-official-listing-") as temporary:
         output = Path(temporary) / "listing.txt"
-        result = subprocess.run(
-            [pwmcp, "inspect", url, "--wait-until", "networkidle", "--wait-for", 'a[href*=".iso"]',
-             "--timeout-ms", "60000",
-             "--format", "text", "--output", str(output)],
-            text=True,
-            capture_output=True,
-            timeout=90,
-            check=False,
-        )
-        if result.returncode:
+        result = None
+        for attempt in range(3):
+            result = subprocess.run(
+                [pwmcp, "inspect", url, "--wait-until", "networkidle", "--wait-for", "a[href]",
+                 "--timeout-ms", "60000", "--format", "text", "--output", str(output)],
+                text=True,
+                capture_output=True,
+                timeout=90,
+                check=False,
+            )
+            if result.returncode == 0:
+                break
             detail = (result.stderr or result.stdout).strip()
-            raise DriftError(f"PWMCP could not render official download listing {url}: {detail}")
+            # A 503 from PWMCP's browser endpoint is transient service
+            # unavailability. Retry it with bounded exponential backoff;
+            # selector timeouts and page-layout changes fail immediately.
+            if "503" not in detail or attempt == 2:
+                raise DriftError(f"PWMCP could not render official download listing {url}: {detail}")
+            delay = 2 ** attempt
+            print(f"PWMCP returned 503 for {url}; retrying in {delay}s ({attempt + 1}/3)", file=sys.stderr)
+            time.sleep(delay)
+        assert result is not None
         try:
             rendered = output.read_text(encoding="utf-8")
         except OSError as exc:
@@ -448,6 +463,52 @@ def official_index_url(channel: str) -> tuple[str, int]:
     return f"{DOWNLOAD_ROOT}/{directory}/", series
 
 
+def build_order(version: str) -> tuple[int, int, int, int, int, int]:
+    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)-(?:RC\.(\d+)|MASTER\+(\d{8})-(\d{6}))", version)
+    if match is None:
+        raise DriftError(f"invalid TrueNAS build version in updater feed: {version!r}")
+    major, minor, patch, rc, date, clock = match.groups()
+    if rc is not None:
+        return int(major), int(minor), int(patch), 0, int(rc), 0
+    return int(major), int(minor), int(patch), 1, int(date), int(clock)
+
+
+def official_latest_update(channel: str) -> dict[str, Any]:
+    """Return the newest complete release row from TrueNAS's updater feed."""
+    match = re.fullmatch(r"(\d+)-(Nightlies|RC)", channel)
+    if match is None:
+        raise DriftError("channel must be like 27-Nightlies or 27-RC")
+    series, kind = int(match.group(1)), match.group(2)
+    train = f"TrueNAS-{series}-{'Nightlies' if kind == 'Nightlies' else 'RC'}"
+    url = f"{UPDATE_ROOT}/{train}/releases.json"
+    try:
+        rows = json.loads(fetch_url(url).decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise DriftError(f"TrueNAS updater feed is not valid JSON at {url}: {exc}") from exc
+    if not isinstance(rows, dict) or not rows:
+        raise DriftError(f"TrueNAS updater feed has no release rows for {train}: {url}")
+    candidates: list[tuple[str, dict[str, Any]]] = []
+    for key, row in rows.items():
+        if not isinstance(key, str) or not isinstance(row, dict):
+            raise DriftError(f"TrueNAS updater feed has a malformed release row for {train}: {key!r}")
+        if not key.startswith(f"{series}.0.0-"):
+            continue
+        if BUILD_RE.fullmatch(key) is None or row.get("version") != key:
+            raise DriftError(f"TrueNAS updater feed release key/version mismatch for {train}: {key!r}")
+        if (not isinstance(row.get("filename"), str) or Path(row["filename"]).name != row["filename"]
+                or not row["filename"].endswith(".update")
+                or not isinstance(row.get("profile"), str)
+                or not isinstance(row.get("checksum"), str)
+                or SHA256_RE.fullmatch(row["checksum"]) is None
+                or type(row.get("filesize")) is not int or row["filesize"] <= 0):
+            raise DriftError(f"TrueNAS updater feed release metadata is incomplete for {key}")
+        candidates.append((key, row))
+    if not candidates:
+        raise DriftError(f"TrueNAS updater feed has no exact {series}.0.0 builds for {train}")
+    version, row = max(candidates, key=lambda item: build_order(item[0]))
+    return {**row, "train": train, "version": version}
+
+
 def upstream_source_location(target: str) -> tuple[str, str]:
     if target.startswith("middlewared/"):
         return "middleware", f"src/middlewared/{target}"
@@ -456,13 +517,22 @@ def upstream_source_location(target: str) -> tuple[str, str]:
     raise DriftError(f"no official source repository mapping for adapter target {target!r}")
 
 
-def fetch_url(url: str, *, timeout: int = 30) -> bytes:
+def fetch_url(url: str, *, timeout: int = 30, retries_503: int = 2) -> bytes:
     request = Request(url, headers={"User-Agent": "vbpub-truenas-patch-drift/1"})
-    try:
-        with urlopen(request, timeout=timeout) as response:
-            return response.read()
-    except Exception as exc:
-        raise DriftError(f"official source fetch failed for {url}: {exc}") from exc
+    for attempt in range(retries_503 + 1):
+        try:
+            with urlopen(request, timeout=timeout) as response:
+                return response.read()
+        except HTTPError as exc:
+            if exc.code == 503 and attempt < retries_503:
+                delay = 2 ** attempt
+                print(f"Official host returned HTTP 503 for {url}; retrying in {delay}s ({attempt + 1}/{retries_503 + 1})", file=sys.stderr)
+                time.sleep(delay)
+                continue
+            raise DriftError(f"official source fetch failed for {url}: {exc}") from exc
+        except Exception as exc:
+            raise DriftError(f"official source fetch failed for {url}: {exc}") from exc
+    raise DriftError(f"official source fetch failed for {url}: exhausted HTTP 503 retries")
 
 
 def upstream_check(channel: str, reference_build: str, source_ref: str = "master") -> int:
@@ -470,8 +540,9 @@ def upstream_check(channel: str, reference_build: str, source_ref: str = "master
     index_url, series = official_index_url(channel)
     if not build["train"].startswith(f"TrueNAS-{series}-"):
         raise DriftError(f"reference build {reference_build} does not belong to channel {channel}")
-    latest_iso = official_latest_iso(channel, index_url, series)
-    print(f"official_channel={channel} latest_iso={latest_iso}")
+    latest = official_latest_update(channel)
+    print(f"official_channel={channel} latest_update={latest['version']} profile={latest['profile']} "
+          f"sha256={latest['checksum']}")
     source_repositories = sorted({upstream_source_location(name)[0] for name in build["targets"]})
     print(f"source_ref={source_ref}")
     for repository in source_repositories:

@@ -7,7 +7,7 @@ import subprocess
 import tomllib
 
 
-PATCH_DIR = Path(__file__).parents[1] / "v28-nightly-20261014"
+PATCH_DIR = Path(__file__).parents[1] / "v28-nightly-20261029"
 STORAGE_PATCH = PATCH_DIR / "storage.patch"
 MIDDLEWARE_PATCH = PATCH_DIR / "middleware.patch"
 BOOT_MOUNT_PATCH = PATCH_DIR / "boot-mount.patch"
@@ -22,7 +22,11 @@ def targets(patch: Path) -> set[str]:
 def section(text: str, target: str) -> str:
     marker = f"--- a/{target}\n"
     start = text.index(marker)
-    end = text.find("\n--- a/", start + len(marker))
+    boundaries = [
+        position for boundary in ("\ndiff --git ", "\n--- a/")
+        if (position := text.find(boundary, start + len(marker))) >= 0
+    ]
+    end = min(boundaries) if boundaries else -1
     return text[start:] if end < 0 else text[start:end]
 
 
@@ -40,7 +44,7 @@ def assert_unified_hunk_counts(text: str) -> None:
         expected_new = int(match.group(4) or 1)
         actual_old = actual_new = 0
         for line in lines[index + 1:]:
-            if line.startswith(("@@ ", "--- a/")):
+            if line.startswith(("@@ ", "--- a/", "diff --git ")):
                 break
             if line.startswith(" "):
                 actual_old += 1
@@ -79,8 +83,7 @@ def test_exact_v28_adapter_manifests_match_the_supported_build_registry() -> Non
     patch_root = PATCH_DIR.parent
     registry = json.loads((patch_root / "supported-builds.json").read_text())
     for directory, version in (
-        ("v28-nightly-20261014", "28.0.0-MASTER+20261014-230204"),
-        ("v28-nightly-20261027", "28.0.0-MASTER+20261027-175229"),
+        ("v28-nightly-20261029", "28.0.0-MASTER+20261029-175210"),
     ):
         adapter_dir = patch_root / directory
         adapter = json.loads((adapter_dir / "adapter.json").read_text())
@@ -97,10 +100,10 @@ def test_exact_v28_adapter_manifests_match_the_supported_build_registry() -> Non
         assert supported["directory"] == directory
 
 
-def test_stale_october_27_update_metadata_cannot_be_selected_for_october_27_adapter() -> None:
+def test_rolling_october_29_adapter_does_not_carry_stale_update_metadata() -> None:
     patch_root = PATCH_DIR.parent
-    metadata = patch_root / "v28-nightly-20261027" / "update-artifact.json"
-    assert not metadata.exists(), "Oct. 27 adapter directory must not carry stale Oct. 14 update metadata"
+    metadata = patch_root / "v28-nightly-20261029" / "update-artifact.json"
+    assert not metadata.exists(), "the rolling v28 adapter must not carry stale update metadata"
 
 
 def test_v28_unified_patch_hunk_counts_match_the_patch_bodies() -> None:
@@ -207,46 +210,34 @@ def test_v28_container_pool_choice_requires_a_finite_mounted_user_root() -> None
 
 def test_v28_keeps_the_namespace_root_managed_and_internal_children_hidden() -> None:
     patch_text = STORAGE_PATCH.read_text()
-    encryption = additions(section(patch_text, "middlewared/plugins/zfs/encryption_info.py"))
     zfs_utils = additions(section(patch_text, "middlewared/plugins/zfs/utils.py"))
     dataset = additions(section(patch_text, "middlewared/plugins/pool_/dataset.py"))
 
     assert "is_user_data_namespace_root" in zfs_utils
     assert "is_user_data_namespace_path" in zfs_utils
     assert "CONTAINER_DS_NAME" in zfs_utils
-    assert "is_user_data_namespace_path" in encryption
-    assert "if path in BOOT_POOL_NAME_VALID:\n        return False" in encryption
     assert "The boot-pool user-data namespace root is managed" in dataset
     assert "INTERNAL_PATHS" in dataset
 
 
 def test_v28_query_can_traverse_boot_pool_root_without_exposing_protected_children() -> None:
     patch_text = STORAGE_PATCH.read_text()
-    encryption = additions(section(patch_text, "middlewared/plugins/zfs/encryption_info.py"))
+    zfs_utils = additions(section(patch_text, "middlewared/plugins/zfs/utils.py"))
 
-    assert "if path in BOOT_POOL_NAME_VALID:\n        return False" in encryption
-    assert "return not is_user_data_namespace_path(" in encryption
-    assert "(*INTERNAL_PATHS, CONTAINER_DS_NAME)" in encryption
+    assert "is_user_data_namespace_root" in zfs_utils
+    assert "is_user_data_namespace_path" in zfs_utils
+    assert "(*INTERNAL_PATHS, CONTAINER_DS_NAME)" in zfs_utils
 
 
-def test_v28_container_image_pull_restores_all_internal_bypasses_only() -> None:
+def test_v28_container_paths_use_the_selected_pool_real_path() -> None:
     patch_text = STORAGE_PATCH.read_text()
-    image_cleanup = additions(section(patch_text, "middlewared/plugins/container/query_pull_images.py"))
-    destroy_calls = [
-        line.strip() for line in image_cleanup.splitlines()
-        if "context.s.zfs.resource.destroy_impl, dataset_name" in line
-    ]
-    assert len(destroy_calls) == 2
-    assert all(call.endswith("bypass=True)") for call in destroy_calls)
-    assert image_cleanup.count("bypass=True") == 3
-    assert (
-        "-                name='image'\n"
-        "+                name='image',\n"
-        "+                bypass=True,"
-    ) in section(patch_text, "middlewared/plugins/container/query_pull_images.py")
-
-    encryption = additions(section(patch_text, "middlewared/plugins/zfs/encryption_info.py"))
-    assert "(*INTERNAL_PATHS, CONTAINER_DS_NAME)" in encryption
+    image_pull = additions(section(patch_text, "middlewared/plugins/container/query_pull_images.py"))
+    lifecycle = additions(section(patch_text, "middlewared/plugins/container/lifecycle.py"))
+    assert "container_dataset_real_path" in image_pull
+    assert "os.path.join(container_dataset_real_path(pool), suffix)" in image_pull
+    assert "container_dataset_mountpoint(pool)" not in image_pull
+    assert "container_dataset_real_path(pool)" in lifecycle
+    assert "bypass=True" not in lifecycle
     assert "middlewared/plugins/zfs/resource_destroy.py" not in targets(STORAGE_PATCH)
 
 
@@ -266,24 +257,20 @@ def test_v28_public_zfs_guard_protects_container_datasets_on_every_pool() -> Non
         "+                path, BOOT_POOL_NAME_VALID, (*INTERNAL_PATHS, CONTAINER_DS_NAME)"
         in zfs_utils
     )
-    assert (
-        "+    return len(components) > 1 and "
-        "components[1] in (*INTERNAL_PATHS, CONTAINER_DS_NAME)"
-    ) in zfs_utils
+    assert "is_user_data_namespace_root(path, BOOT_POOL_NAME_VALID)" in zfs_utils
+    assert "is_user_data_namespace_path(" in zfs_utils
+    assert "path, BOOT_POOL_NAME_VALID, (*INTERNAL_PATHS, CONTAINER_DS_NAME)" in zfs_utils
+    assert "(*INTERNAL_PATHS, CONTAINER_DS_NAME)" in zfs_utils
     assert "middlewared/plugins/zfs/resource_destroy.py" not in targets(STORAGE_PATCH)
 
 
 def test_v28_container_same_pool_clone_uses_private_bypass_and_mount() -> None:
     patch_text = STORAGE_PATCH.read_text()
     clone_section = section(patch_text, "middlewared/plugins/container/crud.py")
-    clone_changes = additions(clone_section)
-
-    assert "ZFSResourceSnapshotCloneQuery" in clone_changes
-    assert "self.s.zfs.resource.snapshot.clone_impl" in clone_changes
-    assert "dataset=dataset" in clone_changes
-    assert "bypass=True" in clone_changes
-    assert "self.s.zfs.resource.mount, dataset" in clone_changes
-    assert 'self.middleware.call("pool.snapshot.clone"' not in clone_changes
+    assert "self.s.zfs.resource.mount, dataset" in additions(clone_section)
+    assert "ZFSResourceSnapshotCloneArgsData" in clone_section
+    assert "bypass=True" in clone_section
+    assert 'self.middleware.call("pool.snapshot.clone"' not in clone_section
     assert "middlewared/plugins/pool_/snapshot.py" not in targets(STORAGE_PATCH)
 
 
