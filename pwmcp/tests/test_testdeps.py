@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -111,6 +112,10 @@ def _pytest(tmp_path: Path, node: str, *, hide: str | None = None, env: dict[str
     full = {k: v for k, v in os.environ.items() if k not in {ALLOW_VAR, REQUIRE_TESSERACT_VAR}}
     full["PYTHONPATH"] = os.pathsep.join(paths)
     full["PYTHONDONTWRITEBYTECODE"] = "1"
+    git_executable = shutil.which("git")
+    if git_executable is None:
+        raise RuntimeError("the nested pytest session guard requires git")
+    full["PWMCP_TEST_GIT_EXECUTABLE"] = git_executable
     if path is not None:
         full["PATH"] = path
     full.update(env or {})

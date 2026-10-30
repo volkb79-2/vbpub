@@ -113,11 +113,30 @@ class Engine(Protocol):
 
     name: str
 
-    def available(self) -> bool: ...
-    def version(self) -> str | None: ...
-    def languages(self) -> list[str]: ...
-    def unavailable_reason(self) -> str | None: ...
-    def recognize(self, png: bytes, params: Params, timeout_s: float) -> list[Word]: ...
+    def available(self) -> bool:
+        raise NotImplementedError(
+            "Engine.available must be implemented by a concrete engine"
+        )
+
+    def version(self) -> str | None:
+        raise NotImplementedError(
+            "Engine.version must be implemented by a concrete engine"
+        )
+
+    def languages(self) -> list[str]:
+        raise NotImplementedError(
+            "Engine.languages must be implemented by a concrete engine"
+        )
+
+    def unavailable_reason(self) -> str | None:
+        raise NotImplementedError(
+            "Engine.unavailable_reason must be implemented by a concrete engine"
+        )
+
+    def recognize(self, png: bytes, params: Params, timeout_s: float) -> list[Word]:
+        raise NotImplementedError(
+            "Engine.recognize must be implemented by a concrete engine"
+        )
 
 
 class UnavailableEngine:
