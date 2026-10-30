@@ -1,5 +1,54 @@
 # wings-cgroups — TODO / backlog
 
+## CLOSED 2026-10-30 — rebuild v1.13.3 provenance and forward-port v1.13.4
+
+The running container `ptero-wings-patched-133-wings-1` still uses
+`wings-local:1.13.3-cgroup.6` (image ID
+`sha256:abd25f6ee6fadd865ba06d2b2192bfb466b5b5e0280751b78de76f273abf5468`).
+Its Wings binary reports `v1.13.3-cgroup.6`, SHA-256
+`8d41e704662c815c67ef3427dc92757a2c25c8685afb1db0346aca0e893a080f`. The
+original image has no OCI labels, so its original series digest is unknown.
+Using the current pinned v1.13.3 series, Go 1.24.11, the Dockerfile flags, and
+`VERSION=1.13.3-cgroup.6` reproduced that binary byte-for-byte.
+
+The provenance rebuild is local-only: `wings-local:1.13.3-cgroup.7` has image
+ID `sha256:eb10b720d51694acbfe8e777020ba83c65172caf3bdd710757e6f3f6a5797e97`,
+series digest `358e0116e1ceca1296daa156ea2b4e82ebf0719197d9731c6ee950523d028d66`,
+and binary SHA-256
+`0af71bce2de452a9a515b99ee5eac5318332c46e55fc5a542f2b15e106222941`. Its
+binary SHA differs from `.6` because the embedded version value changed from
+`.6` to `.7`.
+
+Official Wings `v1.13.4` is pinned to
+`747bc4393daf5d95fdf61d76382f5e23749cffe9`. The forward-port retains all 11
+original Change-Ids, with two v1.13.4-specific guard patches. The full
+build/vet/test workflow passed in the capped Go 1.27.2 container. An initial
+patched `server` test panic was absent on vanilla v1.13.4 and was fixed by the
+nil-configuration guard; the corrected suite passes.
+
+One later full rerun had a single failure in the SFTP per-account connection
+limit test. The vanilla `.4` SFTP tests and the immediate patched retry passed;
+the next full patched workflow also passed. The cause is undetermined; see the
+report if this test fails again.
+
+The local-only `wings-local:1.13.4-cgroup.1` image has ID
+`sha256:a4ceb4632f3e93b8c1c87b7e01d71211de590d27a90b5df954d5890cc4f554ec`,
+series digest `923d9296e08ab5dcbaaec6a722625c99f0e14a968f424685e8c48dfc452257c7`,
+and binary SHA-256
+`ff35d939a2986b7813a6c37c7f5acdf6406a4df14e08f7a8b3c513c3c0ccb54c`.
+
+**Deployment remains open and was not performed.** No production container,
+Compose stack, or remote image registry was changed. The later service update
+procedure is in [`wings-patchstack/CONSUMERS.md`](../wings-patchstack/CONSUMERS.md#rebuild-and-deploy-later); build, test, image labels, and patch-level results
+are in the [forward-port report](../wings-patchstack/reports/forward-port-v1.13.3-to-v1.13.4.md).
+
+The original `.6` OCI provenance cannot be recovered from the unlabeled image;
+binary reproducibility establishes the executable build inputs, not an
+original image digest. The existing Wings CI matrix still targets the `.3`
+series and needs a separate workflow update outside this patchstack-only task.
+
+---
+
 ## Design question: does the per-server `wings-<uuid>.slice` need to exist at all?
 
 Affects: `v1-legacy` patch 0004 (`docker.per_server_slices`, T3b in
@@ -136,7 +185,7 @@ container's init process launches, so the properties can only be applied **after
 only the tier's protection is known and deliberate, not a bug to be raced away.
 
 **What shipped:** the 0001–0009 series — see the table in
-`v1-legacy/patchstack/README.md`, which also argues the two retirements that came
+`../wings-patchstack/README.md`, which also argues the two retirements that came
 with this pass (the old 0005, `io_bfq_weight`; the old 0011,
 `WINGS_CG_RAMDISK_UNITS`). Deployment is `v1-legacy/SETUP.md`; the semantics are
 `CGROUP-SEMANTICS.md`; the decision record entry is `STRATEGY.md` §T3b's

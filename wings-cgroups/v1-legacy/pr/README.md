@@ -1,5 +1,9 @@
 # Upstream submission — prepared, NOT submitted
 
+> These drafts describe the earlier patch design. The Pelican series is
+> archived; current Pterodactyl patches are under
+> [`wings-patchstack/`](../../../wings-patchstack/README.md).
+
 The series was reordered so that every planned PR is a **contiguous range** of
 commits instead of a cherry-pick out of the middle. Current order (verified:
 applies cleanly onto bare upstream, resulting tree identical to before):
@@ -75,7 +79,7 @@ properly support BFQ through io.weight"). Until that lands, every BFQ node is
 silently mis-weighted, and Wings is the layer that can state the intent. Raise
 it as an RFC question rather than assuming the answer.
 
-The findings in `../patchstack/README.md` (on-demand slice loading, transient
+The findings in `../../../wings-patchstack/README.md` (on-demand slice loading, transient
 FragmentPath, the `memory_recursiveprot` mount-flag prerequisite, and the
 distroless `/var/run` D-Bus trap) are worth calling out for reviewers — the last
 two belong in the PR's deployment/README notes, since both make the feature
@@ -90,7 +94,7 @@ the fold.
 
 ## Mechanics
 
-1. Create the fork(s) on GitHub; set `FORK_REPO` in `../patchstack/stack.conf`.
+1. Create the fork(s) on GitHub; set `FORK_REPO` in `../../../wings-patchstack/stack.conf`.
 2. Pelican first (faster merge cadence, owns panel+wings):
    ```bash
    cd ../build/wings-pelican
@@ -104,7 +108,7 @@ the fold.
    ```
    Push one branch per PR, not the whole stack on one branch.
 3. Pterodactyl in parallel: rebase onto `develop` first
-   (`../patchstack/scripts/rebase.sh pterodactyl develop`), then the same
+   (`../../../wings-patchstack/scripts/forward-port.sh pterodactyl develop <sha>`), then the same
    `gh pr create` against `pterodactyl/wings` `develop` with
    `pterodactyl-wings-pr.md`.
 4. Strip/adjust the PR-draft headers (the "Status: DRAFT" blocks) — they are

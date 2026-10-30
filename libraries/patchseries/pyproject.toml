@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools==82.0.1", "wheel==0.47.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "patchseries"
+version = "0.1.0"
+description = "Internal stdlib-only parser and inspector for Git patch series"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest>=8", "pytest-cov>=6"]
+
+[project.scripts]
+patchseries = "patchseries.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.coverage.run]
+branch = true
+source = ["patchseries"]
+
+[tool.coverage.report]
+show_missing = true

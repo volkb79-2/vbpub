@@ -1,8 +1,11 @@
 # T1 — node-wide `docker.cgroup_parent` (patched Wings)
 
+> Historical T1 note. The current series and build workflow live in
+> [`wings-patchstack/`](../../../wings-patchstack/README.md).
+
 The Wings code lives in the patch stack:
-`../patchstack/patches/pterodactyl-v1.13.1/0001-*.patch` (and the Pelican
-port). This folder holds the host-side artifacts and explains *why the
+`../../../wings-patchstack/patches/pterodactyl-v1.13.3/0001-*.patch`. This
+folder holds the host-side artifacts and explains *why the
 mechanism works*. **The deployment procedure is in `../SETUP.md`** — one
 runbook for the whole 0001–0006 series, including the pieces T1 alone does not
 have (`per_server_slices`, the D-Bus socket mount, the current image tag).
@@ -11,11 +14,10 @@ T1 places **all** server + installer containers on a node under one named
 slice. Works on shared nodes (unlike T0b). On a single-game-server node this
 already delivers per-server floors — the node slice *is* the server slice.
 
-Build the image with an explicit suffix — the default is `cgroup.1`, three
-revisions stale:
+Build the image with a ledger-derived suffix:
 
 ```bash
-../patchstack/scripts/build-image.sh pterodactyl cgroup.4   # -> wings-local:1.13.1-cgroup.4
+../../../wings-patchstack/scripts/build-image.sh pterodactyl
 ```
 
 ## The mechanism

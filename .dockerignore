@@ -37,6 +37,12 @@ libraries/worktree/*
 !libraries/worktree/src
 libraries/worktree/src/*
 !libraries/worktree/src/worktree
+# tester-unified reads patchseries' test extra for its dependency closure. Its
+# lane imports the bound worktree source directly, so only the pyproject is
+# copied into the image build context.
+!libraries/patchseries
+libraries/patchseries/*
+!libraries/patchseries/pyproject.toml
 # tester-unified's requirements generator and cli-extended release fetcher (the
 # only files of that directory the image COPYs; the parent must be re-included first).
 !tester-unified

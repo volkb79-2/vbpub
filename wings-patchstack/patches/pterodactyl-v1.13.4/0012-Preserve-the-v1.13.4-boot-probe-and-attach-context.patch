@@ -1,0 +1,44 @@
+From fd0c601a9bbaa586fbf220bdff964bc8a609e6ec Mon Sep 17 00:00:00 2001
+From: nyxloom-carver <development@richtfest.tech>
+Date: Fri, 30 Oct 2026 12:44:40 +0000
+Subject: [PATCH 12/13] Preserve the v1.13.4 boot probe and attach context
+
+The v1.13.4 boot path uses containerd errdefs for not-found checks and
+attaches running environments with a per-server timeout context. Preserve
+both upstream contracts while adding the child-server restart snapshot.
+
+Co-Authored-By: Codex gpt-6-luna <noreply@openai.com>
+Change-Id: wings-dependent-startup-v1-13-4-boot-fix
+Capability: dependent-startup
+Role: guard
+Risk: medium
+Requires: wings-dependent-startup
+---
+ cmd/root.go | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/cmd/root.go b/cmd/root.go
+index f8186cd..78baddb 100644
+--- a/cmd/root.go
++++ b/cmd/root.go
+@@ -219,7 +219,7 @@ func rootCmdRun(cmd *cobra.Command, _ []string) {
+ 			// point. If we didn't do this, and you pruned all the images and then started wings you could
+ 			// end up waiting a long period of time for all the images to be re-pulled on Wings boot rather
+ 			// than when the server itself is started.
+-			if err != nil && !client.IsErrNotFound(err) {
++			if err != nil && !cerrdefs.IsNotFound(err) {
+ 				s.Log().WithField("error", err).Error("error checking server environment status")
+ 			}
+ 			liveMu.Lock()
+@@ -286,6 +286,8 @@ func rootCmdRun(cmd *cobra.Command, _ []string) {
+ 			//
+ 			// @see https://github.com/pterodactyl/panel/issues/2475
+ 			// @see https://github.com/pterodactyl/panel/issues/3358
++			ctx, cancel := context.WithTimeout(cmd.Context(), time.Second*30)
++			defer cancel()
+ 			r := liveState[s.ID()].running
+ 
+ 			// Check if the server was previously running. If so, attempt to start the server now so that Wings
+-- 
+2.55.0
+

@@ -1,151 +1,121 @@
-# wings-patchstack — the v2 Wings series
+# Wings patch series
 
-Four independent patch series over two upstream bases, exported as
-`git format-patch` files. The design lives in
-[`../wings-cgroups/shared-ramdisk-update-lifecycle-5-fable.md`](../wings-cgroups/shared-ramdisk-update-lifecycle-5-fable.md)
-(lifecycle + manager, the master plan) and
-[`../wings-cgroups/shared-ramdisk-update-lifecycle-cgroups-2-fable.md`](../wings-cgroups/shared-ramdisk-update-lifecycle-cgroups-2-fable.md)
-(resources). [`series.yaml`](series.yaml) is the normative metadata.
+`wings-patchstack/` is the canonical home for Wings patch files, metadata, and
+workflow scripts. The active Pterodactyl series targets `v1.13.4` in
+[`patches/pterodactyl-v1.13.4/`](patches/pterodactyl-v1.13.4/). The prior
+`v1.13.3` series remains available at
+[`patches/pterodactyl-v1.13.3/`](patches/pterodactyl-v1.13.3/) as the recorded
+base for the running image. The separate F1 filesystem series is under
+`patches/filesystem/pterodactyl-v1.13.1/`. Every patch carries `Change-Id`,
+`Capability`, `Role`, `Risk`, and `Requires` trailers checked by the shared
+[patchseries library](../libraries/patchseries/README.md).
 
-The v1 `cgroup` series is **not** here — it is frozen under
-`../wings-cgroups/v1-legacy/patchstack/` on the legacy layout, and production
-is moving off it.
+The former `wings-cgroups/v1-legacy/patchstack/` layout was consolidated here.
+The original deployed v1 patch bytes and configuration remain under
+[`archive/deployed-v1/`](archive/README.md). The stale Pelican series and earlier
+v2 proposal snapshot are also retained in the archive; active scripts refuse
+to build the stale Pelican series. The F1 filesystem series remains a proposal.
 
-## State
+The capability and role inventory below is rendered from patch trailers.
+Design decisions and the v1.13.4 forward-port are in the
+[design guide](DESIGN-GUIDE.md#forward-porting-and-image-builds); adopter
+commands and later deployment steps are in the
+[consumer guide](CONSUMERS.md#rebuild-and-deploy-later). The detailed comparison
+and build evidence are in the
+[forward-port report](reports/forward-port-v1.13.3-to-v1.13.4.md).
 
-| Series | Patches | Status |
-|---|---|---|
-| `filesystem` | F1 | **exported for pterodactyl-v1.13.1**; pelican export pending; `gofmt`/`build`/`test` green — see below; oracles 16–18 and pelican still open |
-| `lifecycle` | L1, L1b, L2, L3 | not started; **L2 (readiness) retired** — see below |
-| `resources` | R1–R8 | **superseded** — replaced by a single placement patch, see below |
-| `integration` | I1 | not started (combined branch only) |
+## Series inventory
 
-## Why `lifecycle`, `resources` and `integration` are still "not started"
+<!-- patchseries: inventory:start -->
+## Capabilities
 
-Not an oversight, and not blocking anything today. The master plan orders
-its own delivery in phases (§Kickoff plan): v1 ships on `host-bind` exposure
-with **F1 as the only Wings patch it needs** — `srdm`'s v1 packages (P01–P08b,
-`shared-ramdisk-depot-manager/nyxloom-trove/roadmap.md`) are what v1 is, and
-they are complete. `lifecycle` (L1/L1b/L2/L3) needs the provider **socket**
-D-025 confirmed does not exist in v1 at all — L1 is a start-attempt
-transaction keyed on a protocol request id, validated leases and a
-`docker.lifecycle_providers` socket config that has nothing to resolve
-against until v2. `resources`'s R-series is the companion cgroups redesign
-for that same provider-driven shape. `integration`'s I1 exists only to bind
-the two together on the combined branch.
+| Capability | pterodactyl-v1.13.3 | pterodactyl-v1.13.4 | filesystem-pterodactyl-v1.13.1 |
+| --- | --- | --- | --- |
+| configuration-diagnostics | 1 change (+135/-1) | 1 change (+122/-1) | — |
+| dependent-startup | 1 change (+665/-23) | 2 changes (+668/-28) | — |
+| node-placement | 2 changes (+233/-2) | 2 changes (+233/-2) | — |
+| readonly-volume-startup | — | — | 1 change (+40/-0) |
+| scope-resource-control | 2 changes (+2021/-34) | 2 changes (+2019/-32) | — |
+| server-placement | 1 change (+186/-9) | 1 change (+186/-9) | — |
+| sftp-log-hygiene | 2 changes (+244/-13) | 2 changes (+176/-4) | — |
+| startup-resource-staging | 2 changes (+2219/-63) | 3 changes (+2220/-65) | — |
 
-Building any of the three now would mean writing Wings patches against a
-protocol nothing on the srdm side speaks yet, and gating them would need
-fixtures for messages srdm cannot send — exactly the "no provider-less
-interim, no 0011 bridge" decision the wings-cgroups project memory records.
-**v2 (master-plan Phases 4–7) starts after v1 proves itself in production**
-(`srdm`'s P09: Soulmask profile, managed egg, migration rehearsal) — "the
-cutover is a config flip, not a migration," per the roadmap, precisely
-because nothing built for v1 gets thrown away.
+## Roles
 
-## Two of these series shrank or died — 2026-08-04
+| Role | pterodactyl-v1.13.3 | pterodactyl-v1.13.4 | filesystem-pterodactyl-v1.13.1 |
+| --- | --- | --- | --- |
+| enable | 5 changes (+5106/-110) | 5 changes (+5104/-111) | 1 change (+40/-0) |
+| guard | 5 changes (+532/-20) | 7 changes (+455/-15) | — |
+| plumbing | 1 change (+65/-15) | 1 change (+65/-15) | — |
+<!-- patchseries: inventory:end -->
 
-The authoritative plan is now `shared-ramdisk-depot-manager/nyxloom-trove/PLAN.md`
-(the `wings-cgroups/` documents linked above are superseded history). Two of
-its decisions land directly on this stack:
+Patch authoring uses the closed trailer vocabulary in `vocabulary.toml`:
+`Capability` is `configuration-diagnostics`, `dependent-startup`,
+`node-placement`, `readonly-volume-startup`, `scope-control`,
+`scope-resource-control`, `server-placement`, `sftp-log-hygiene`, or
+`startup-resource-staging`; `Role` is `enable`, `guard`, or `plumbing`; and
+`Risk` is `low`, `medium`, or `high`. Series statuses are `active`, `proposal`,
+and `archived`. The `upstream` values are `pterodactyl` and `pelican`; active
+scripts currently refuse the archived Pelican series.
 
-- **`resources` R1–R8 is superseded.** Placement and properties are
-  independent axes and **only placement needs Wings code**: setting
-  `memory.min`/`cpu.weight`/`io.weight` on a slice is host-side, and srdm
-  already does it for generation slices. So the eight-patch in-Wings resource
-  engine is replaced by **one** patch exposing `HostConfig.CgroupParent`.
-  PLAN.md §Direction 3; carved as srdm's P13.
-- **`lifecycle` L2 (readiness events) is retired.** srdm reads readiness from
-  the console log — the same mechanism Wings itself uses, since the egg's
-  `config.startup.done` is exactly such a match. A structured signal from
-  Wings would be *derived from* a log match, so emitting one buys nothing.
-  PLAN.md §Direction 2.
+## Pinned upstream and provenance
 
-Net: the v2 Wings contract is **one small patch**, not nine. That is a much
-easier upstream ask, and it means the design is far less hostage to review
-than when this stack was drawn. L1/L1b and `integration` I1 remain as
-written, still gated behind the provider socket, still unscheduled.
+The active target is the official [Pterodactyl Wings v1.13.4 release](https://github.com/pterodactyl/wings/releases), pinned in `stack.conf` to commit
+`747bc4393daf5d95fdf61d76382f5e23749cffe9`. The preceding `v1.13.3` series is
+pinned to `6987d5e6f0612133e031255a99655e822d30579a`. Clone, apply, and image
+build workflows verify a fetched ref against the corresponding full commit SHA.
 
-## F1 — the only patch on the MVP path
+`build-image.sh` assigns each successful image build a unique `cgroup.N` suffix
+for its upstream version, then records the source digest from the ordered patch
+bytes and pinned upstream commit, image ID, and build date in
+[`image-ledger.json`](image-ledger.json). Rebuilding unchanged source receives
+a new suffix so each suffix identifies one image. The digest excludes filenames,
+the `patchseries` version, and build time. The UTC build date and tool version
+are separate image labels. Before building, the script reserves a suffix in the
+ledger under a lock and consumes that reservation after a successful build.
+See the [design guide](DESIGN-GUIDE.md#series-digest-and-image-suffix) for the
+reservation and recovery rules.
 
-`srdm`'s v1 exposure driver (`host-bind`, `access: ro`) binds read-only
-generations under a server's volume path. Vanilla Wings' pre-boot chown walk
-calls `Lchownat` on every entry unconditionally, and a chown against a
-read-only mount is `EROFS` even when the ownership already matches — so
-without F1 a server with a read-only bind in its volume cannot start.
+The `.4` port retains all 11 original Change-Ids; two v1.13.4-specific guard
+patches preserve upstream boot and console behavior.
 
-The zero-patch alternative is `system.check_permissions_on_boot: false` in
-the node config, which is coarser: it also gives up Wings' ownership
-self-repair after manual or SFTP edits.
+## Images observed and built on 2026-10-30
 
-**The skip predicate is deliberately narrower than "uid and gid match."** A
-root chown with *identical* ids still strips setuid, setgid and file
-capabilities from non-directories — measured, not assumed:
+| Image | Image ID | Wings binary SHA-256 | Current source digest | Digest in existing image label |
+| --- | --- | --- | --- | --- |
+| Running `wings-local:1.13.3-cgroup.6` | `sha256:abd25f6ee6fadd865ba06d2b2192bfb466b5b5e0280751b78de76f273abf5468` | `8d41e704662c815c67ef3427dc92757a2c25c8685afb1db0346aca0e893a080f` | Unknown; original image has no provenance labels | Unknown |
+| Local `wings-local:1.13.3-cgroup.7` | `sha256:eb10b720d51694acbfe8e777020ba83c65172caf3bdd710757e6f3f6a5797e97` | `0af71bce2de452a9a515b99ee5eac5318332c46e55fc5a542f2b15e106222941` | `3f9df8045b72c0346a0a2bc9aeac7fa1af1fb033e3e395d7c568ab22fae2558b` | `358e0116e1ceca1296daa156ea2b4e82ebf0719197d9731c6ee950523d028d66` |
+| Local `wings-local:1.13.4-cgroup.1` | `sha256:a4ceb4632f3e93b8c1c87b7e01d71211de590d27a90b5df954d5890cc4f554ec` | `ff35d939a2986b7813a6c37c7f5acdf6406a4df14e08f7a8b3c513c3c0ccb54c` | `fbe1fcddd19c59127f45d3afb923c532a15d054dfdd23f7d3f6c398c48838dec` | `923d9296e08ab5dcbaaec6a722625c99f0e14a968f424685e8c48dfc452257c7` |
 
-```
-$ chmod 4755 f && chown 1000:1000 f   # f already owned 1000:1000
-4755 -> 755
-$ setcap cap_net_raw+ep c && chown 1000:1000 c
-cap_net_raw=ep -> (none)
-$ chmod 2755 d && chown 1000:1000 d   # directory
-2755 -> 2755   (unchanged — the kernel only clears these for non-directories)
-```
+The current source digests use the ordered patch-byte-plus-upstream-commit
+definition. Both built images retain labels written with the earlier digest
+definition; the ledger records those label values separately. The images were
+not rebuilt to change the labels. The running `.6` binary was reproduced
+byte-for-byte from the current `.3` patch series with Go 1.24.11 and the
+recorded Dockerfile recipe. The `.7` binary has a different SHA because its
+embedded version changed from `1.13.3-cgroup.6` to `1.13.3-cgroup.7`. The `.4.1`
+image was built locally and was not deployed or pushed. Full build settings,
+patch outcomes, and test results are in the
+[forward-port report](reports/forward-port-v1.13.3-to-v1.13.4.md).
 
-So the walk still chowns unconditionally whenever the entry is a
-non-directory carrying setuid or setgid, preserving that hardening. File
-capabilities are *not* probed: setting one needs `CAP_SETFCAP`, which no path
-Wings offers a server can obtain. Measured on the case-study node: zero
-setuid/setgid files and zero fscaps across the shared tmpfs and every server
-volume, so the strict branch never fires there.
-
-## Reproducing the F1 export
-
-```bash
-CLONE=../wings-cgroups/v1-legacy/build/wings-pterodactyl
-git -C "$CLONE" worktree add -b filesystem/v1.13.1 /tmp/f1-ptero v1.13.1
-# edit server/filesystem/filesystem.go, commit
-git -C /tmp/f1-ptero format-patch -1 --no-numbered --zero-commit --no-signature \
-    -o patches/filesystem/pterodactyl-v1.13.1
-```
-
-The branch `filesystem/v1.13.1` lives in that clone (untracked by vbpub); the
-exported `.patch` here is the durable artifact.
-
-## Gate — `gofmt`/`build`/`test` green 2026-08-04; oracles 16–18 still open
-
-Per repo doctrine the devcontainer is a cockpit, never the gate.
-`$CGROUP_PARENT_DEV_BACKGROUND` was blocked 2026-08-03 (unset in the
-devcontainer, absent from PID 1's environment) and is now exported by hand —
-see [[vbpub-cgroup-parent-env-gap]] / `srdm/nyxloom-trove/GUIDE.md`. With it
-set:
+## Checks
 
 ```bash
-docker run --rm --cgroup-parent="$CGROUP_PARENT_DEV_BACKGROUND" \
-  -v /tmp/f1-ptero:/src -w /src \
-  -e GOFLAGS=-mod=mod -e GOCACHE=/tmp/gocache -e GOMODCACHE=/tmp/gomod \
-  golang:1.24 bash -c 'gofmt -l server/filesystem/ && go build ./... && \
-                       go test ./server/filesystem/...'
+PYTHONPATH=../libraries/patchseries/src python3 -m patchseries check \
+  patches/pterodactyl-v1.13.4 --vocabulary vocabulary.toml
+scripts/prove-v1-equivalence.sh
+scripts/test.sh pterodactyl
 ```
 
-`gofmt` reports nothing, `go build ./...` succeeds, and every test under
-`server/filesystem/` passes (`TestFilesystem_Delete`, `_Path`,
-`_Blocks_Symlinks`, and the `goblin`-driven `NewFs`-based suite).
-
-**`go vet ./server/filesystem/` is NOT clean, and that is vanilla Wings, not
-F1.** It reports three `unreachable code` findings in
-`server/filesystem/filesystem_test.go`'s `NewFs()` helper — `panic(err);
-return nil, nil` three times over, at the lines Go itself will not let a
-`panic` fall through from. The F1 patch touches only `filesystem.go` (one
-file, verified against `git show --stat` on the exported patch); nothing in
-it or near it accounts for this. Measured on an unpatched checkout of the
-same commit before drawing that conclusion, not assumed. Left as upstream's
-own finding rather than patched around — F1 is a chown-walk skip, not a
-vendor cleanup, and silently "fixing" code the patch does not own would make
-the diff larger than what it claims to do.
-
-**Still open, and still what "not gated" means**: pelican's export, and
-oracles 16–18 of the master plan — the privileged EROFS/chown-walk behavior
-against a real read-only mount, which needs the same privileged harness
-`srdm`'s P02 built, pointed at this patched Wings rather than at `srdm`
-itself. No privileged harness exists in `wings-patchstack` yet; wiring one
-is real work, not a measurement away.
+The equivalence proof applies the archived and canonical v1.13.3 series to
+their pinned base and checks the resulting tree hashes. It reports the
+v1.13.3 source digest recorded for `.7`; it does not compare source trees
+across upstream releases. `test.sh` delegates to the registered `wings`
+Run-Gate lane, which runs in tester-unified under `$CGROUP_PARENT_DEV_GATES`.
+The lane runs the Go build, vet, affected package tests, workflow contract
+tests, and integration compile checks without starting a nested container.
+Its wrapper refuses Run-Gate extra mounts and `DOCKER_HOST`; its worker checks
+that the standard host Docker socket is absent, and `INTEGRATION=1` is refused.
+The separate registered `coverage` lane runs Assay R1. Exporting a patch series
+stages and validates the full replacement before swapping the canonical
+directory.

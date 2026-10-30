@@ -354,7 +354,7 @@ so a real 5.4:1 (`io.bfq.weight` 540) is `IOWeight=4950`, and 8:1 (bfq 800) is
 `IOWeight=7800`. There used to be a convenience knob that did this conversion
 inside Wings — `io_bfq_weight` / `WINGS_CG_IO_BFQ_WEIGHT`, patch 0005. It was
 retired on 2026-09-08 in favour of one spelling on systemd's own scale; see
-[`patchstack/README.md`](v1-legacy/patchstack/README.md).
+[`wings-patchstack/README.md`](../wings-patchstack/README.md).
 
 Why not write `io.bfq.weight` directly and skip the arithmetic? Because systemd
 re-derives that file from `IOWeight` every time it re-applies the unit's IO

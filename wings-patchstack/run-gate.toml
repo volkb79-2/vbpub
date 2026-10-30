@@ -1,0 +1,36 @@
+# Wings Go tests and workflow tests inherit the estate tester-unified
+# environment, including its CPU cap and forwarded host facts.
+schema_version = 1
+
+[lanes.wings]
+kind = "command"
+environment = "tester-unified"
+argv = [
+  "bash", "-c",
+  "cd {worktree}/wings-patchstack && exec bash scripts/run-tests-in-gate.sh pterodactyl",
+]
+clean_tree = false
+budget = "30m"
+
+[lanes.wings.resources]
+memory = "4g"
+pids = 4096
+
+[lanes.coverage]
+kind = "command"
+environment = "tester-unified"
+argv = [
+  "bash", "-c",
+  "cd {worktree}/wings-patchstack && exec bash scripts/run-coverage-in-gate.sh pterodactyl",
+]
+clean_tree = false
+budget = "60m"
+artifacts = [
+  ".assay/coverage/verdict.json",
+  ".assay/coverage/cover.out",
+  ".assay/progress-coverage.jsonl",
+]
+
+[lanes.coverage.resources]
+memory = "4g"
+pids = 4096

@@ -1,5 +1,11 @@
 # Test ladder
 
+> Historical matrix: its Pelican target and slice-manager tests describe the
+> pre-redesign stack. The active patch workflow is under
+> [`wings-patchstack/`](../../../wings-patchstack/README.md), and its
+> [consumer guide](../../../wings-patchstack/CONSUMERS.md#apply-the-pinned-series)
+> documents the current pinned Pterodactyl series.
+
 Four rungs, cheapest first. The table states what each rung **covers** — run
 them yourself for a result. The full ladder was last exercised green against
 the complete six-commit series (0001–0006); both patched trees are
