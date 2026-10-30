@@ -785,6 +785,24 @@ def test_usage_charts_cli_writes_the_versioned_chart_document_privately(tmp_path
     assert target.stat().st_mode & 0o777 == 0o600
 
 
+def test_usage_charts_cli_rejects_missing_data_and_output(monkeypatch):
+    from nyxloom import cli
+
+    monkeypatch.setattr(
+        cli, "_build_usage_report_data",
+        lambda _args: {"extensions": {"chart_data": None}},
+    )
+    with pytest.raises(ValueError, match="chart data was not produced"):
+        cli.cmd_usage_charts(SimpleNamespace(out="charts.json"))
+
+    monkeypatch.setattr(
+        cli, "_build_usage_report_data",
+        lambda _args: {"extensions": {"chart_data": {"schema_version": "usage-charts-v1"}}},
+    )
+    with pytest.raises(ValueError, match="requires --out FILE.json"):
+        cli.cmd_usage_charts(SimpleNamespace(out=None))
+
+
 def test_primary_cli_registers_chart_options_and_requires_output(monkeypatch, capsys):
     from nyxloom import cli
     from nyxloom.cli_registry import primary_cli

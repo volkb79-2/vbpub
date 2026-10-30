@@ -1194,6 +1194,49 @@ def test_primary_cli_usage_spelling_has_help_and_required_since_error(capsys):
     assert "required: --since" in capsys.readouterr().err
 
 
+def test_usage_report_registry_validators_cover_rejections_and_allowed_states():
+    from argparse import ArgumentTypeError
+    from types import SimpleNamespace
+
+    from cli_extended import CliFailure
+    from nyxloom.cli_registry import (
+        _usage_report_guard,
+        _usage_share,
+        _usage_top,
+    )
+
+    with pytest.raises(ArgumentTypeError, match="percent"):
+        _usage_share("not-a-percent")
+    with pytest.raises(ArgumentTypeError, match="positive integer"):
+        _usage_top("many")
+    for value in ("0", "-1"):
+        with pytest.raises(ArgumentTypeError, match="positive integer"):
+            _usage_top(value)
+    assert _usage_top("3") == 3
+
+    _usage_report_guard(SimpleNamespace())
+    _usage_report_guard(SimpleNamespace(
+        flat=False, depth=0, usage_format="json", out=None,
+        top=3, group_by="model",
+    ))
+    with pytest.raises(CliFailure, match="mutually exclusive"):
+        _usage_report_guard(SimpleNamespace(flat=True, depth=0))
+    with pytest.raises(CliFailure, match="zero or greater"):
+        _usage_report_guard(SimpleNamespace(flat=False, depth=-1))
+    for report_format in ("html", "pdf"):
+        with pytest.raises(CliFailure, match=f"--format {report_format} requires --out FILE"):
+            _usage_report_guard(SimpleNamespace(usage_format=report_format, out=None))
+        _usage_report_guard(SimpleNamespace(usage_format=report_format, out="report.out"))
+    with pytest.raises(CliFailure, match="configure chart data"):
+        _usage_report_guard(SimpleNamespace(
+            usage_format="table", top=3, group_by=None,
+        ))
+    with pytest.raises(CliFailure, match="configure chart data"):
+        _usage_report_guard(SimpleNamespace(
+            usage_format="csv", top=None, group_by="model",
+        ))
+
+
 def test_usage_html_rejects_missing_output_before_calling_handler(monkeypatch, capsys):
     from nyxloom import cli
 

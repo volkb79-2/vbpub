@@ -2104,7 +2104,7 @@ def test_anchor_and_calibrate_cli_emit_only_private_metadata_and_qualified_resul
     assert "estimated limit percentage: unknown" in fit_text
 
 
-def test_usage_windows_cli_text_handles_observed_interval_and_missing_profile(
+def test_usage_windows_cli_text_handles_interval_boundary_warning_and_missing_profile(
     monkeypatch, capsys,
 ):
     from nyxloom.session_extract.usage import anchors, loader, pricing, windows
@@ -2112,7 +2112,11 @@ def test_usage_windows_cli_text_handles_observed_interval_and_missing_profile(
     from nyxloom import cli
 
     monkeypatch.setattr(loader, "load_corpus", lambda **_kwargs: _corpus([]))
-    monkeypatch.setattr(anchors, "list_anchors", lambda _path: [])
+
+    def unreadable_anchors(_path):
+        raise AnchorError("cannot read anchor store")
+
+    monkeypatch.setattr(anchors, "list_anchors", unreadable_anchors)
     monkeypatch.setattr(pricing, "load_weights", lambda _path: load_weights())
     monkeypatch.setattr(pricing, "apply_valuation", lambda *_args: {})
     result = {
@@ -2128,7 +2132,11 @@ def test_usage_windows_cli_text_handles_observed_interval_and_missing_profile(
             "weighted_units": 8.0, "api_equivalent_usd": 0.0001,
         }],
         "threshold_events": [],
-        "observed_reset_boundaries": [],
+        "observed_reset_boundaries": [{
+            "kind": "five_hour",
+            "reset_at": "2026-10-28T10:00:00Z",
+            "evidence": [{"source_id": "synthetic-observation"}],
+        }],
         "reset_boundary_status": {
             "five_hour": {"interval_status": "observed"},
             "weekly": {"interval_status": "start_unknown"},
@@ -2147,7 +2155,10 @@ def test_usage_windows_cli_text_handles_observed_interval_and_missing_profile(
     assert "Weight profile: unavailable" in output
     assert "Observed-reset intervals:" in output
     assert "five_hour [2026-10-28T05:00:00Z, 2026-10-28T10:00:00Z)" in output
+    assert "Observed five_hour reset at 2026-10-28T10:00:00Z (1 evidence record(s))." in output
+    assert "Warning: Usage anchor state could not be read; no anchors were used." in output
     assert "weekly interval status: start_unknown" in output
+    assert "continuing without anchors" in capsys.readouterr().err
 
     result["weight_profile"] = {"name": "synthetic-profile"}
     assert cli.cmd_usage_windows(_usage_cli_args(
@@ -2178,6 +2189,20 @@ def test_private_usage_output_writer_cleans_failed_atomic_replacement(tmp_path, 
     for leftover in leftovers:
         leftover.unlink()
     assert leftovers
+
+
+def test_private_usage_output_writer_reports_prepare_failure(tmp_path, monkeypatch):
+    from nyxloom import cli
+
+    def fail_mkstemp(*_args, **_kwargs):
+        raise PermissionError("permission denied")
+
+    monkeypatch.setattr(cli.tempfile, "mkstemp", fail_mkstemp)
+    with pytest.raises(
+        ValueError,
+        match="cannot prepare usage report output directory .*permission denied",
+    ):
+        cli._write_private_usage_output(tmp_path / "usage.json", "{}\n")
 
 
 def test_cost_state_fit_guards_residuals_modifiers_and_unknown_exact_prices():
