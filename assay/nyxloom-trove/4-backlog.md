@@ -13311,9 +13311,12 @@ collection and produced no coverage artifact; `tests/conftest.py` then raised
 while trying to archive that missing artifact. The registered
 `tester-unified` diagnostic at `6d828e37` (Run-Gate ID
 `c4a9176839db955e9e6fa67e5aa69839`) exposed the collection error: a contention
-test passed positional arguments to keyword-only `CounterDelta`. This commit
-corrects that test helper; coverage and preflight acceptance remain pending a
-green preflight on the corrected tree. See the
+test passed positional arguments to keyword-only `CounterDelta`, corrected in
+`b6137aed`. The next preflight at `b6137aed` completed all tests and reported
+100% R1 coverage for its configured targets, but R0 found that the two target
+lists omitted the new module and the reviewed dataclass fixture still pinned
+the previous observation shape. This commit updates both contracts; acceptance
+remains pending a green preflight on the corrected tree. See the
 [Opus design](reports/ASSAY-DESIGN-OPUS-2026-10-30.md), §§2, 6.1–6.2 and 7/WP1.
 
 ## B174 — wire load-independent termination and progress telemetry through R0/R1
