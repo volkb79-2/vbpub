@@ -40,7 +40,11 @@ max_live_clones)` from its actual input. For btrfs and reflink, cowtree checks
 `ingest_bytes + max_live_clones * per_clone_bytes`. For the copy backend it
 checks `(1 + max_live_clones) * max(ingest_bytes, per_clone_bytes)`. Btrfs
 admission also includes this process's bytes deleted in the preceding 60
-seconds because block reclamation can lag. `Run.reserve(extra)` checks the
+seconds because block reclamation can lag. The pending-delete ledger is
+process-local and keyed by filesystem device, so deletions recorded by any run
+or GC scan on a device contribute to every btrfs admission on that device.
+This bound matches the shared free-space pool and can conservatively reserve
+bytes across distinct roots on the same filesystem. `Run.reserve(extra)` checks the
 current reservation plus an additional estimate before the consumer grows
 concurrency. `SpaceRefused` reports the needed and available bytes and the
 estimate values. Cowtree does not invent a fixed capacity floor or move a run
@@ -64,8 +68,12 @@ the owner, GC retains the run. A hostname mismatch is always unknown, even
 when boot IDs differ, because a shared scan directory may contain a live run
 from another host. On btrfs, GC removes each top-level tree through
 the btrfs backend so subvolumes are destroyed with the required ioctl before
-removing the run directory. External holders and malformed or missing
-manifests are reported and retained. `open_run()` reports the presence of dead
+removing the run directory. GC reads no more than 64 KiB from `owner.json`;
+larger manifests are retained as malformed without reading the full file.
+Cowtree rejects labels that would make its own owner manifest exceed
+64 KiB, so it cannot create a run that its GC reader refuses to parse.
+External holders and malformed or missing manifests are reported and retained.
+`open_run()` reports the presence of dead
 flock-owned runs once per process; it never reaps them automatically.
 
 An active `Run` keeps `(st_dev, st_ino)` pairs for its run directory,
@@ -112,3 +120,16 @@ manifest's `external_ref`. Cowtree adds `external_ref=` and requires it for an
 external holder instead of inventing an identifier. External runs still hold
 their flock while open; `gc` never removes them, even after that flock is
 released. The external owner remains responsible for their lifecycle.
+
+## CLI exit statuses
+
+Argparse reserves status `2` for syntax and usage errors. Cowtree maps each
+`CowError.code` to a separate nonzero status so a configured but invalid root
+cannot be mistaken for malformed command syntax: `cow` → `1`, `root-invalid`
+→ `3`, `space` → `4`, `path` → `5`, `backend` → `6`, and `lease` → `7`.
+The generic `cow` status `1` is also the fallback for an unknown subclass code.
+
+Default `gc` scans only the configured area's run directory. Plain-mode runs
+are created under the selected temporary directory and require an explicit
+`gc --scan DIR`; the CLI logs that instruction instead of implying it scanned
+those runs.

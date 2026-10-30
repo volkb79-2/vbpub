@@ -29,6 +29,10 @@ def test_public_vocabulary_is_documented():
         "gc",
         "make-shared",
         "api_version = 1",
+        "cowtree gc --scan",
+        "64 kib",
+        "root-invalid",
+        "lease",
     ):
         assert value in docs
 
@@ -64,7 +68,17 @@ def test_readme_features_link_to_design_guide_sections():
         "one-adapter-for-three-storage-paths",
         "ownership-and-identity",
         "input-derived-space-admission",
+        "cli-exit-statuses",
     } <= design_sections
+
+
+def test_readme_cli_exit_code_table_matches_error_code_mapping():
+    from cowtree.cli import _ERROR_EXIT_CODES
+
+    readme = Path("README.md").read_text(encoding="utf-8")
+    for code, status in _ERROR_EXIT_CODES.items():
+        assert f"| {status} | `{code}` |" in readme
+    assert "| 2 | `usage` |" in readme
 
 
 def test_lane_configs_use_current_schemas_and_closed_coverage_gate():

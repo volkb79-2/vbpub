@@ -228,7 +228,9 @@ def _probe(root: str, filesystem: str, ops: Ops) -> str:
         except FileNotFoundError:
             pass
         except OSError as exc:
-            raise RootInvalid(f"cannot remove cowtree capability probe: {exc}") from exc
+            logging.getLogger("cowtree").warning(
+                "cowtree: cannot remove capability probe directory %s: %s", probe_dir, exc
+            )
 
 
 def detect(

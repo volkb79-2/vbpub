@@ -242,6 +242,14 @@ def test_gc_retains_invalid_manifests(tmp_path, payload):
     assert directory.exists()
 
 
+def test_manifest_reader_rejects_owner_json_larger_than_limit(tmp_path):
+    run_path = _dead_run(tmp_path, "oversized-manifest")
+    manifest_path = run_path / "owner.json"
+    manifest_path.write_bytes(manifest_path.read_bytes() + b" " * (64 * 1024))
+
+    assert _manifest(str(run_path)) is None
+
+
 def test_manifest_validator_rejects_malformed_identity_and_estimate_fields(tmp_path):
     run = open_run("manifest-shapes", estimate=SpaceEstimate(1, 2, 3), environ={}, plain_dir=tmp_path)
     path = Path(run.path) / "owner.json"
