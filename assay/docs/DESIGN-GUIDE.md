@@ -524,7 +524,9 @@ free, rather than costing a second cut of its own.**
   R2 has selected candidates, but the process cannot inspect the full cgroup
   v2 ancestor hierarchy B145 requires. Assay retains completed R0/R1 claims
   and reports only R2 as unavailable; independent R3 can still run. A
-  positive resource-limit event during a candidate remains `ERROR/EXEC_FAILED`.
+  missing or uncomparable candidate-time resource window is optional telemetry
+  after preflight and does not abort the R2 campaign; WP1 classifies the
+  candidate from its termination evidence.
 - **`FAIL`/`RED_FIRST_UNPROVEN`** (F015/M7, A-433 as amended by A-434 under
   DA-R18) — the R4 red-first (`fail-before/pass-after`) claim's judged
   refusal: assay materialised both commits and ran the declared tests on
@@ -709,17 +711,19 @@ than the candidate's own cgroup reports. For example, a leaf with
 In each candidate window, Assay uses the candidate's ordinary event files and
 candidate-local event files, then the ancestors' local event files. A positive
 candidate `pids.events:max`, `memory.events:oom`, `oom_kill`, or
-`oom_group_kill` delta is an infrastructure failure; a `memory.events:max`
-delta remains telemetry because the kernel can satisfy the allocation through
-reclaim. The local sample also covers an increment between sequential reads
-of the regular and local files.
+`oom_group_kill` delta is evidence for the shared termination classifier; a
+clean PASS remains final, while a non-clean test failure with the event becomes
+infrastructure-affected. A `memory.events:max` delta remains telemetry because
+the kernel can satisfy the allocation through reclaim. The local sample also
+covers an increment between sequential reads of the regular and local files.
 A sibling can change a shared ancestor's hierarchical count without changing
 that ancestor's local count, so that
 hierarchical-only change does not invalidate an unaffected candidate. A
 positive local failure-relevant event at a shared ancestor with no candidate
-event remains ambiguous and withholds mutation outcomes. `memory.events:max`
-is telemetry, including at ancestors, so it does not create attribution
-ambiguity by itself. The candidate's ordinary event file
+event makes that candidate window unobserved; it does not withhold the
+candidate outcome or stop the campaign. `memory.events:max` is telemetry,
+including at ancestors, so it does not create attribution ambiguity by itself.
+The candidate's ordinary event file
 becomes local when `pids_localevents` or `memory_localevents` is enabled. For
 each active controller in that mode, Assay requires the candidate cgroup to
 have no child cgroups, so the local file still covers its execution; an
@@ -750,40 +754,48 @@ The candidate and ancestor-local comparison is the sole event classifier;
 there is no separate gate-wide `memory.events` OOM check around a candidate,
 because that aggregate can include an unrelated sibling's event.
 
-For each started full candidate command, Assay records the selected counters
-immediately before and after it. If the lane stops before a full command starts,
-that candidate remains `budget_exceeded` and shares a zero-duration sample
-taken after already-submitted work finishes. Replacement materialization or a
-saved-witness replay may already have run; the shared sample does not describe
-that earlier work or prove it did not happen. A positive candidate failure-
-event delta records that candidate as `crashed`, making R2 `ERROR/EXEC_FAILED`;
-a `memory.events:max` delta alone stays telemetry. If the candidate counters
-stay unchanged while any visible ancestor's local failure-relevant counter
-increases, Assay cannot attribute that event to the candidate and withholds
-mutation outcomes with the same infrastructure error. `memory.events:max`
-alone remains telemetry and does not block the lane. A positive
-delta during witness-prefix replay likewise stops the lane with payload-free
-`ERROR/EXEC_FAILED` before retry, so the replay
-event cannot be hidden by a later command. A positive delta never certifies a
-kill or survivor. The visible cgroup paths, controller availability, and
-configured limits must match between the bracketing samples. If they change,
-or if a required counter is missing, malformed, or unreadable, native R2 fails
-closed. A cgroup mount rooted below the hierarchy root refuses native R2
-before its candidate sweep; a hidden local ancestor requires the explicit
-observer and is refused when that endpoint is absent or unprovable. B148/A-494
-performs the same local-first/explicit-observer capability check after R0/R1
-and before any candidate starts; when unavailable it preserves the lower
-claims and marks only R2 as unmeasured. Empty or unsupported candidate sets do
-not require observation, and inventory failures remain typed refusals rather
-than empty-set results. Worker
+For each started full candidate command, Assay tries to read the selected
+counters immediately before and after it. If the lane stops before a full
+command starts, that candidate remains `budget_exceeded` and may carry a
+shared zero-duration sample taken after already-submitted work finishes.
+Replacement materialization or a saved-witness replay may already have run;
+the shared sample does not describe that earlier work or prove it did not
+happen.
+
+After the required pre-candidate capability probe succeeds, a missing endpoint
+or an uncomparable window is telemetry with status `unobserved`. Assay records
+the reason in the private mutation state and candidate progress stream, emits
+one advisory line, omits `resource_limit_evidence` from that candidate's v16
+verdict entry, and continues the campaign. A changed signature reports the
+specific cgroup index, path or mount, controller file, and before/after value
+so a later occurrence is diagnosable. The candidate is classified with
+`termination.classify()` and no limit-event evidence: a surviving PASS remains
+`survived`, and a clean test failure remains `killed`; process, timeout, and
+other infrastructure outcomes follow the same classifier. An observed
+failure-relevant event only changes a candidate when the classifier gives it
+precedence over the command result. A clean PASS remains final, while a
+non-clean command failure with a direct event is `crashed`. A positive
+`memory.events:max` delta alone stays telemetry.
+
+A positive event during witness-prefix replay still stops the lane with
+payload-free `ERROR/EXEC_FAILED` before retry, so that event cannot be hidden by
+a later command. The full hierarchy preflight remains fail-closed: an
+unavailable local view or explicit observer after R0/R1 preserves those claims
+and marks only R2 as unmeasured before any candidate starts. Empty or
+unsupported candidate sets do not require observation, and inventory failures
+remain typed refusals rather than empty-set results. Worker
 creation failure at the executor boundary yields a payload-free
 `ERROR/EXEC_FAILED`, so a `RuntimeError` such as `can't start new thread`
 cannot escape the verdict path. This contract observes cgroup v2 events; it
 does not detect per-process limits such as `RLIMIT_NPROC` or `RLIMIT_AS`.
 
 `assay verify` independently checks the evidence shape, subtraction, and
-bucket. Resume state with a positive counter delta is rejected for reuse, and
-the B145 worker guard advanced the judge identity to `/7`, B114 cold-witness
+bucket; an omitted candidate resource field is valid because sampling can be
+unobserved after preflight. Resume state carries an explicit unobserved marker
+and reason, while records with no evidence form or with contradictory terminal
+evidence are refused for reuse. In particular, an old `crashed` record for a
+PASS under a limit event fails revalidation and the candidate is rerun. The
+B145 worker guard advanced the judge identity to `/7`, B114 cold-witness
 identity inputs advanced it to `/8`, the RG-89 observer policy advanced it to
 `/9`, and B155's event-scope attribution advances it to `/10`; older records
 are cold starts. The mutation-state schema number

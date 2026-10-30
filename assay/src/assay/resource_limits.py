@@ -46,10 +46,50 @@ LimitSignatureEntry = tuple[
     bool,
 ]
 
+_LIMIT_SIGNATURE_FIELDS = (
+    "path",
+    "mount_id",
+    "pids.max.present",
+    "pids.max",
+    "memory.max.present",
+    "memory.max",
+    "pids.events.present",
+    "memory.events.present",
+    "pids.events.local.present",
+    "memory.events.local.present",
+    "pids_localevents",
+    "memory_localevents",
+)
+
 _RESOURCE_OBSERVER_REQUEST_TIMEOUT_SECONDS = 5.0
 _RESOURCE_OBSERVER_PREFLIGHT_JOIN_GRACE_SECONDS = 1.0
 _RESOURCE_OBSERVER_RESTART_RETRY_SECONDS = 30.0
 _RESOURCE_OBSERVER_RETRY_INTERVAL_SECONDS = 0.2
+
+
+def _limit_signature_change_detail(
+    before: ResourceLimitCounters, after: ResourceLimitCounters
+) -> str:
+    changes: list[str] = []
+    for index, (old, new) in enumerate(
+        zip(before.limit_signature, after.limit_signature)
+    ):
+        changes.extend(
+            f"cgroup[{index}].{name} changed: {old_value} -> {new_value}"
+            for name, old_value, new_value in zip(_LIMIT_SIGNATURE_FIELDS, old, new)
+            if old_value != new_value
+        )
+    for index in range(len(after.limit_signature), len(before.limit_signature)):
+        old = before.limit_signature[index]
+        changes.append(
+            f"cgroup[{index}] removed: path={old[0]}, mount_id={old[1]}"
+        )
+    for index in range(len(before.limit_signature), len(after.limit_signature)):
+        new = after.limit_signature[index]
+        changes.append(
+            f"cgroup[{index}] added: path={new[0]}, mount_id={new[1]}"
+        )
+    return "; ".join(changes) or "signature changed without a field-level difference"
 
 
 class ResourceLimitObservationError(RuntimeError):
@@ -223,8 +263,8 @@ class ResourceLimitEvidence:
     ) -> ResourceLimitEvidence:
         if before.limit_signature != after.limit_signature:
             raise ResourceLimitObservationError(
-                "cgroup paths, mount identities, controller files, or resource "
-                "limits changed during a candidate command"
+                "cgroup resource-limit observation changed during a candidate "
+                f"command: {_limit_signature_change_detail(before, after)}"
             )
         pids, memory_max, memory_oom, memory_oom_kill, memory_oom_group_kill = (
             _candidate_counter_deltas(before, after)

@@ -164,6 +164,7 @@ items:
   - {id: B179, title: "Retry unresolved R2 infrastructure candidates serially at sweep end", type: feature, component: mutation, context_estimate: medium}
   - {id: B180, title: "Move remaining host-varying process evidence out of verdict v16", type: feature, component: evidence, context_estimate: medium}
   - {id: B181, title: "whole-target R2 start failures: unsorted R1 targets, coverage banner reported as the first failing test, leaked test children and maxfail in IOBench", type: bugfix, component: execution, context_estimate: medium}
+  - {id: B182, title: "R2 campaigns stop when candidate cgroup resource windows change or the observer disappears", type: bugfix, component: mutation, context_estimate: medium}
 ---
 
 # assay — backlog
@@ -13443,3 +13444,33 @@ admission attempt returned host-busy before tests ran (log:
 After the Assay lane passes and this branch is merged, retry each R2 campaign
 from a new worktree based on the integrated `origin/main`; keep the failed
 campaign worktrees untouched.
+
+## B182 — R2 campaigns stop when candidate cgroup resource windows change or the observer disappears
+
+**Status: IMPLEMENTED in `assay-r2fix-20261030`; registered gate acceptance is
+part of this change.** The PWMCP log
+`/tmp/run-gate/lanes/r2/47f333762a526841379559a959b0cfbc.log` and IOBench's
+`.assay/progress-r2.jsonl` retained only the generic comparison failure, not
+the before/after signatures, so the exact field in those historical windows
+cannot be recovered. A regression using the real
+`ResourceLimitEvidence.between()` exception text reproduces the configuration
+change `cgroup[0].memory.max: 4096 -> 8192`. The old diagnostic grouped path,
+mount, controller-file, and limit changes together; the candidate executor
+then promoted comparison failure or post-preflight observer loss to
+`ERROR/EXEC_FAILED`, stopping the campaign.
+
+**Contract:** Keep the full pre-candidate cgroup capability probe fail-closed.
+After that probe, a missing sample or uncomparable window is unobserved
+telemetry for that candidate: omit `resource_limit_evidence`, preserve the
+reason in state/progress, print one advisory line, and continue using
+`termination.classify()` without limit-event evidence. PASS remains survived;
+a clean test failure remains killed; crash and infrastructure outcomes follow
+the classifier. An observed failure-relevant event only affects the candidate
+where classifier precedence says it does. A positive event during saved-witness
+replay remains lane-fatal. Keep verdict schema v16; v17 remains WP8.
+
+**Acceptance:** Real comparison-error text names each changed cgroup field and
+its old/new value. Tests cover signature drift, observer loss, campaign
+continuation, PASS with a positive event, state revalidation, and verifier
+acceptance of omitted optional evidence. Run the registered
+`self-qualification-preflight` and `tester-unified` gates before push.

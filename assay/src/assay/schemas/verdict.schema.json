@@ -1528,7 +1528,7 @@
       "additionalProperties": false
     },
     "resource_limit_evidence": {
-      "description": "B145: cgroup v2 process-limit and memory event counter evidence for native R2 candidates. A started full candidate command has samples bracketing its execution. A candidate whose full command did not start after an early stop is budget_exceeded and shares one zero-duration sample taken after already-submitted work finishes at sweep close. Replacement materialization or a saved-witness replay may already have run; the shared sample does not describe that earlier work or prove it did not happen. A positive failed-fork or OOM-related delta during a full command is classified as crashed; a positive failed-fork or OOM-related delta during witness-prefix replay stops the lane with payload-free ERROR/EXEC_FAILED before retry. A positive memory.events:max delta is retained as telemetry and does not invalidate an outcome by itself. Events are sampled at the candidate cgroup and every visible ancestor with the corresponding controller active, including unlimited active ancestors; a finite pids.max or memory.max requires its event file. The model and independent verifier require each delta in a candidate outcome to equal after minus before and classify positive failed-fork or OOM-related deltas as crashed.",
+      "description": "B145: optional cgroup v2 process-limit and memory event counter telemetry for native R2 candidates. A started full candidate command is sampled before and after execution; if a post-preflight sample is unavailable or the window cannot be compared, the field is omitted and the candidate is classified from its termination. A candidate whose full command did not start after an early stop is budget_exceeded and may carry one zero-duration sample taken after already-submitted work finishes at sweep close. Replacement materialization or a saved-witness replay may already have run; the shared sample does not describe that earlier work or prove it did not happen. A positive failed-fork or OOM-related delta during a clean PASS remains survived; with a non-clean termination it follows the shared termination classifier, and it cannot accompany a killed outcome. A positive failed-fork or OOM-related delta during witness-prefix replay stops the lane with payload-free ERROR/EXEC_FAILED before retry. A positive memory.events:max delta is retained as telemetry and does not invalidate an outcome by itself. Events are sampled at the candidate cgroup and every visible ancestor with the corresponding controller active, including unlimited active ancestors; a finite pids.max or memory.max requires its event file. The model and independent verifier require each present counter delta in a candidate outcome to equal after minus before.",
       "type": "object",
       "required": [
         "cgroup_version",
@@ -1716,7 +1716,6 @@
             },
             "then": {
               "required": [
-                "resource_limit_evidence",
                 "process_tree_evidence"
               ]
             },

@@ -1122,8 +1122,8 @@ def _counters_sequence(monkeypatch, *values):
     def read():
         value = next(queue)
         if isinstance(value, BaseException):
-            raise value
-        return value
+            return None, str(value)
+        return value, None
 
     monkeypatch.setattr(mutation, "_read_candidate_resource_counters_during_campaign", read)
 
@@ -1134,13 +1134,12 @@ def _zero_counters():
     )
 
 
-def test_observer_loss_after_a_failed_command_chains_to_the_command_failure(tmp_path, monkeypatch):
+def test_observer_loss_after_a_failed_command_does_not_replace_command_failure(tmp_path, monkeypatch):
     lost = AssayError("observer gone", outcome=Outcome.ERROR, reason_code=ReasonCode.EXEC_FAILED)
     _counters_sequence(monkeypatch, _zero_counters(), lost)
     command_failure = RuntimeError("command failed to run")
-    with pytest.raises(AssayError, match="observer gone") as caught:
+    with pytest.raises(RuntimeError, match="command failed to run"):
         _execute(tmp_path, monkeypatch, [command_failure])
-    assert caught.value.__cause__ is command_failure
 
 
 def test_a_resource_limit_event_during_a_failed_command_stops_the_claim(tmp_path, monkeypatch):
@@ -1150,7 +1149,9 @@ def test_a_resource_limit_event_during_a_failed_command_stops_the_claim(tmp_path
     hit = mutation._dataclass_replace(
         hit, pids_events_max=mutation.CounterDelta(before=0, after=1, delta=1)
     )
-    monkeypatch.setattr(mutation, "_candidate_resource_limit_evidence", lambda *_a: hit)
+    monkeypatch.setattr(
+        mutation, "_candidate_resource_limit_evidence", lambda *_a: (hit, None)
+    )
     command_failure = RuntimeError("command failed to run")
     with pytest.raises(AssayError, match="resource-limit event during native R2 attempt") as caught:
         _execute(tmp_path, monkeypatch, [command_failure])

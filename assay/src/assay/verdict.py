@@ -381,9 +381,11 @@ __all__ = [
 #: `[defaults].env_passthrough` and its lane-level list, including allowed
 #: names absent at run time. Present passthrough values are redacted in
 #: `env_effective` and fingerprinted in `env_effective_passthrough_sha256`.
-#: Native R2 outcomes also carry cgroup v2 process-limit and OOM event deltas;
-#: positive failed-fork or OOM-related deltas must be classified as `crashed`,
-#: while `memory.events:max` is retained as telemetry. These v14 additions
+#: Native R2 outcomes may carry cgroup v2 process-limit and OOM event deltas;
+#: post-preflight observation loss omits that optional telemetry, and a
+#: positive failed-fork or OOM-related delta cannot accompany a `killed`
+#: outcome. A clean PASS remains survived, timeouts remain incomplete, and
+#: `memory.events:max` is telemetry. These v14 additions
 #: ship together before the first v14 release; `assay verify` refuses v13.
 #:
 #: **Bumped 14 -> 15 (B114/B110 P3).** Native R2 policy records whether
@@ -1917,17 +1919,18 @@ class MutantOutcome:
     mutated_file_sha256: str | None = None
     execution: MutationExecution | None = None
     #: (B145/schema v14) Exact cgroup v2 process-limit and OOM counter
-    #: deltas observed around this native candidate's full command. A
-    #: positive failed-fork or OOM-related delta during that command requires
-    #: the `crashed` bucket; `memory.events:max` remains telemetry. A positive
+    #: deltas observed around this native candidate's full command. Omitted
+    #: when post-preflight telemetry could not be observed or compared; that
+    #: candidate is still classified from its termination. A positive
+    #: failed-fork or OOM-related delta cannot accompany `killed`;
+    #: `memory.events:max` remains telemetry. A positive
     #: failed-fork or OOM-related delta during witness-prefix replay instead
     #: stops the lane with payload-free `ERROR/EXEC_FAILED` before retry. A
-    #: `budget_exceeded` candidate whose full command did not start carries
+    #: `budget_exceeded` candidate whose full command did not start may carry
     #: the shared zero-duration sweep-close sample. Replacement materialization
     #: or a witness-prefix replay may already have run; that sample does not
-    #: describe the earlier work. Native outcomes always carry this object,
-    #: including zero deltas. Ingested outcomes have no per-candidate execution
-    #: and therefore cannot carry this field.
+    #: describe the earlier work. Ingested outcomes have no per-candidate
+    #: execution and therefore cannot carry this field.
     resource_limit_evidence: ResourceLimitEvidence | None = None
     #: B162/schema v16: process-tree proof for each native executed candidate.
     process_tree_evidence: ProcessTreeEvidence | None = None
@@ -2038,13 +2041,6 @@ class MutantOutcome:
                 raise ValueError("ledger execution cannot carry per-execution resource evidence")
             if self.execution.mode == "ledger" and self.process_tree_evidence is not None:
                 raise ValueError("ledger execution cannot carry process-tree evidence")
-            if (
-                self.resource_limit_evidence is None
-                and self.execution.mode != "ledger"
-            ):
-                raise ValueError(
-                    "native executed MutantOutcome requires resource_limit_evidence"
-                )
             if (
                 self.process_tree_evidence is None
                 and self.execution.mode != "ledger"
@@ -2251,10 +2247,10 @@ class Mutation:
                 if (
                     item.resource_limit_evidence is not None
                     and item.resource_limit_evidence.limit_hit
-                    and name != "crashed"
+                    and name == "killed"
                 ):
                     raise ValueError(
-                        "resource-limit-affected mutation outcomes must be in crashed"
+                        "a positive failed-fork or OOM event cannot be classified as killed"
                     )
         if self.candidate_ids is not None:
             if len(self.candidate_ids) != len(set(self.candidate_ids)):

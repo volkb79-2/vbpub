@@ -2185,10 +2185,15 @@ def _check_b145_resource_limit_evidence(
                 "per-execution resource_limit_evidence"
             )
         return
-    raw = entry.get("resource_limit_evidence")
+    if "resource_limit_evidence" not in entry:
+        # Candidate-window resource sampling is telemetry after the required
+        # preflight. An unavailable or unstable window is represented by an
+        # omitted optional field; it does not invalidate the R2 termination.
+        return
+    raw = entry["resource_limit_evidence"]
     if not isinstance(raw, dict):
         failures.append(
-            f"native mutation.{bucket} entry requires resource_limit_evidence"
+            f"native mutation.{bucket} entry resource_limit_evidence must be an object"
         )
         return
     if set(raw) != {"cgroup_version", "pids_events", "memory_events"}:
@@ -2253,10 +2258,10 @@ def _check_b145_resource_limit_evidence(
         positive_limit_delta = positive_limit_delta or (
             invalidates_candidate and delta > 0
         )
-    if positive_limit_delta and bucket != "crashed":
+    if positive_limit_delta and bucket == "killed":
         failures.append(
             f"native mutation.{bucket} entry has a positive failed-fork or OOM "
-            "counter delta; it cannot be classified as a test kill or survival"
+            "counter delta; it cannot be classified as a test kill"
         )
 
 

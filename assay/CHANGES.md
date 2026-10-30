@@ -5,6 +5,11 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 
 ### Fixed
+- Continue native R2 campaigns when a post-preflight candidate resource window
+  is unavailable or unstable. Assay records the reason as unobserved telemetry,
+  classifies the candidate with the shared termination rules, and keeps the
+  initial cgroup capability probe fail-closed; detailed signature differences
+  now identify the changed cgroup field (B182). The verdict schema stays v16.
 - Sort declared whole-target paths when building R1 and native/ingested R2
   verdicts; avoid reporting pytest-cov's platform banner as the first failing
   test or treating R0 execution errors as measured test failures (B181).
