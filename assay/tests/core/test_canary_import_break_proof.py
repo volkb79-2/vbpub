@@ -11,16 +11,11 @@ from __future__ import annotations
 
 import re
 import shutil
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from assay.adapters.go import GoAdapter
-from assay.adapters.javascript import JavaScriptAdapter
-from assay.adapters.python import PythonAdapter
-from assay.config import CanaryConfig
-from assay.errors import Outcome, ReasonCode
 from conftest import (
     GitRepo,
     completed_process,
@@ -33,10 +28,15 @@ from conftest import (
 )
 
 from assay import canary, contention
+from assay.adapters.go import GoAdapter
+from assay.adapters.javascript import JavaScriptAdapter
+from assay.adapters.python import PythonAdapter
+from assay.config import CanaryConfig
+from assay.errors import Outcome, ReasonCode
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _failed_command(stdout: str = "", stderr: str = "") -> SimpleNamespace:
@@ -157,6 +157,48 @@ def test_go_panic_proof_requires_the_nonce_and_exact_injected_line(tmp_path: Pat
     )
 
 
+def test_go_panic_without_the_run_nonce_is_not_cause_proof(tmp_path: Path):
+    nonce = "d" * 32
+    target = tmp_path / "pkg" / "mod.go"
+    diagnostic = (
+        "panic: unrelated panic\n\n"
+        "goroutine 1 [running]:\n"
+        f"example/pkg.init.0()\n\t{target}:9 +0x1\n"
+    )
+
+    assert not canary._has_import_break_diagnostic(
+        _failed_command(stderr=diagnostic),
+        nonce=nonce,
+        target_path="pkg/mod.go",
+        target_file=target,
+        line=9,
+        language="go",
+        cwd=".",
+    )
+
+
+def test_go_panic_nonce_at_another_file_is_not_cause_proof(tmp_path: Path):
+    nonce = "e" * 32
+    target = tmp_path / "pkg" / "mod.go"
+    other = tmp_path / "pkg" / "other.go"
+    token = f"{canary._IMPORT_BREAK_MARKER}:{nonce}"
+    diagnostic = (
+        f"panic: {token}\n\n"
+        "goroutine 1 [running]:\n"
+        f"example/pkg.init.0()\n\t{other}:9 +0x1\n"
+    )
+
+    assert not canary._has_import_break_diagnostic(
+        _failed_command(stderr=diagnostic),
+        nonce=nonce,
+        target_path="pkg/mod.go",
+        target_file=target,
+        line=9,
+        language="go",
+        cwd=".",
+    )
+
+
 def test_javascript_nonce_without_a_native_error_header_is_not_cause_proof(
     tmp_path: Path,
 ):
@@ -175,6 +217,45 @@ def test_javascript_nonce_without_a_native_error_header_is_not_cause_proof(
         target_file=target,
         line=line,
         language="javascript",
+        cwd=".",
+    )
+
+
+def test_javascript_nonce_at_another_file_is_not_cause_proof(tmp_path: Path):
+    nonce = "f" * 32
+    target = tmp_path / "pkg" / "mod.js"
+    other = tmp_path / "pkg" / "other.js"
+    token = f"{canary._IMPORT_BREAK_MARKER}:{nonce}"
+    diagnostic = f"Error: {token}\n    at Object.<anonymous> ({other}:9:7)\n"
+
+    assert not canary._has_import_break_diagnostic(
+        _failed_command(stderr=diagnostic),
+        nonce=nonce,
+        target_path="pkg/mod.js",
+        target_file=target,
+        line=9,
+        language="javascript",
+        cwd=".",
+    )
+
+
+def test_go_diagnostic_grammar_is_not_used_for_sql(tmp_path: Path):
+    nonce = "1" * 32
+    target = tmp_path / "pkg" / "mod.sql"
+    token = f"{canary._IMPORT_BREAK_MARKER}:{nonce}"
+    diagnostic = (
+        f"panic: {token}\n\n"
+        "goroutine 1 [running]:\n"
+        f"example/pkg.init.0()\n\t{target}:9 +0x1\n"
+    )
+
+    assert not canary._has_import_break_diagnostic(
+        _failed_command(stderr=diagnostic),
+        nonce=nonce,
+        target_path="pkg/mod.sql",
+        target_file=target,
+        line=9,
+        language="sql",
         cwd=".",
     )
 
