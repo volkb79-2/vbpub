@@ -7,7 +7,7 @@
       "upstream": "1.13.3"
     },
     {
-      "reason": "Pre-ledger local tag observed on 2026-10-30 in running container ptero-wings-patched-133-wings-1. Image ID sha256:abd25f6ee6fadd865ba06d2b2192bfb466b5b5e0280751b78de76f273abf5468; image labels are absent, so its original series digest remains unknown. Binary SHA-256 8d41e704662c815c67ef3427dc92757a2c25c8685afb1db0346aca0e893a080f was reproduced byte-for-byte from the current v1.13.3 series using Go 1.24.11 and the Dockerfile build recipe with VERSION=1.13.3-cgroup.6.",
+      "reason": "Pre-ledger local tag observed on 2026-10-30 in running container <compose-project>-wings-1. Image ID sha256:abd25f6ee6fadd865ba06d2b2192bfb466b5b5e0280751b78de76f273abf5468; image labels are absent, so its original series digest remains unknown. Binary SHA-256 8d41e704662c815c67ef3427dc92757a2c25c8685afb1db0346aca0e893a080f was reproduced byte-for-byte from the current v1.13.3 series using Go 1.24.11 and the Dockerfile build recipe with VERSION=1.13.3-cgroup.6.",
       "suffix": "cgroup.6",
       "upstream": "1.13.3"
     }

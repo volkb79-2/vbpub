@@ -1,12 +1,6 @@
-# Wings Go tests and workflow tests run in tester-unified, with Run-Gate
-# resolving and validating the host's required gates slice.
+# Wings Go tests and workflow tests inherit the estate tester-unified
+# environment, including its CPU cap and forwarded host facts.
 schema_version = 1
-
-[environments.tester-unified]
-mode = "ephemeral"
-image = "tester-unified:local"
-image_env = "RUN_GATE_TESTER_UNIFIED_IMAGE"
-cgroup_slice_env = "CGROUP_PARENT_DEV_GATES"
 
 [lanes.wings]
 kind = "command"

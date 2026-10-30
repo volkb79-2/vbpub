@@ -65,9 +65,11 @@ The active target is the official [Pterodactyl Wings v1.13.4 release](https://gi
 pinned to `6987d5e6f0612133e031255a99655e822d30579a`. Clone, apply, and image
 build workflows verify a fetched ref against the corresponding full commit SHA.
 
-`build-image.sh` derives each `cgroup.N` suffix from the ordered patch bytes
-and pinned upstream commit, then records the source digest, image ID, and build
-date in [`image-ledger.json`](image-ledger.json). The digest excludes filenames,
+`build-image.sh` assigns each successful image build a unique `cgroup.N` suffix
+for its upstream version, then records the source digest from the ordered patch
+bytes and pinned upstream commit, image ID, and build date in
+[`image-ledger.json`](image-ledger.json). Rebuilding unchanged source receives
+a new suffix so each suffix identifies one image. The digest excludes filenames,
 the `patchseries` version, and build time. The UTC build date and tool version
 are separate image labels. Before building, the script reserves a suffix in the
 ledger under a lock and consumes that reservation after a successful build.

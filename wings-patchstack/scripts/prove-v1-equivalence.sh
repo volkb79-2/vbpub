@@ -32,6 +32,7 @@ if len(matches) != 1 or matches[0]["series_digest"] != digest:
 print(digest)
 PY
 )"
+EXPECTED_TREE_SHA="67e1552cc3bd0c695dc22c3d15f5333ee692ca35"
 [[ "$SERIES_DIGEST" =~ ^[0-9a-f]{64}$ ]] || {
     echo "patchseries returned an invalid series digest" >&2
     exit 1
@@ -68,11 +69,16 @@ printf 'old series HEAD: %s\n' "$OLD_HEAD"
 printf 'new series HEAD: %s\n' "$NEW_HEAD"
 printf 'old tree: %s\n' "$OLD_TREE_SHA"
 printf 'new tree: %s\n' "$NEW_TREE_SHA"
+printf 'expected tree: %s\n' "$EXPECTED_TREE_SHA"
 
 if [[ "$OLD_TREE_SHA" != "$NEW_TREE_SHA" ]]; then
     echo "git diff --stat:" >&2
     git -C "$UPSTREAM_DIR" diff --stat "$OLD_HEAD" "$NEW_HEAD" >&2
     echo "EQUIVALENCE: FAIL (tree hashes differ)" >&2
+    exit 1
+fi
+if [[ "$NEW_TREE_SHA" != "$EXPECTED_TREE_SHA" ]]; then
+    echo "EQUIVALENCE: FAIL (canonical tree differs from the recorded golden hash)" >&2
     exit 1
 fi
 DIFF_STAT="$(git -C "$UPSTREAM_DIR" diff --stat "$OLD_HEAD" "$NEW_HEAD")"

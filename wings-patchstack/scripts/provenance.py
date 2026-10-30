@@ -124,18 +124,19 @@ def _read_ledger(path: Path = LEDGER_PATH) -> dict[str, Any]:
         (item["upstream"], item["suffix"])
         for item in legacy
     }
-    suffix_digests: dict[tuple[str, str], str] = {}
+    seen_suffixes: set[tuple[str, str]] = set()
     for item in (*builds, *reservations):
         key = (item["upstream"], item["suffix"])
         if key in legacy_suffixes:
             raise ProvenanceError(
                 f"image ledger {path} reuses legacy suffix {item['suffix']}"
             )
-        previous = suffix_digests.setdefault(key, item["series_digest"])
-        if previous != item["series_digest"]:
+        if key in seen_suffixes:
             raise ProvenanceError(
-                f"image ledger {path} assigns suffix {item['suffix']} to different digests"
+                f"image ledger {path} has more than one entry for "
+                f"suffix {item['suffix']}"
             )
+        seen_suffixes.add(key)
     return document
 
 
@@ -152,28 +153,8 @@ def _suffix_number(value: object) -> int:
     return int(match.group(1))
 
 
-def _choose_suffix(ledger: dict[str, Any], upstream: str, digest: str) -> str:
-    matching = {
-        entry["suffix"]
-        for entry in ledger["builds"]
-        if entry["upstream"] == upstream and entry["series_digest"] == digest
-    }
-    if len(matching) > 1:
-        raise ProvenanceError(
-            f"digest {digest} has multiple suffixes for upstream {upstream}"
-        )
-    if matching:
-        suffix = next(iter(matching))
-        if any(
-            entry["upstream"] == upstream
-            and entry["suffix"] == suffix
-            and entry["series_digest"] != digest
-            for entry in ledger["builds"]
-        ):
-            raise ProvenanceError(
-                f"suffix {suffix} is already recorded for a different digest"
-            )
-        return suffix
+def _choose_suffix(ledger: dict[str, Any], upstream: str) -> str:
+    """Allocate a unique suffix for every build record of this upstream."""
     numbers = [
         _suffix_number(entry["suffix"])
         for entry in (
@@ -190,12 +171,17 @@ def _choose_suffix(ledger: dict[str, Any], upstream: str, digest: str) -> str:
 def _locked_ledger(path: Path) -> Iterator[None]:
     """Serialize ledger read-modify-replace operations through a stable lock file."""
     lock_path = path.with_name(path.name + ".lock")
-    with lock_path.open("a+", encoding="utf-8") as stream:
-        fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+    file_descriptor = os.open(
+        lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o666
+    )
+    try:
+        fcntl.flock(file_descriptor, fcntl.LOCK_EX)
         try:
             yield
         finally:
-            fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+            fcntl.flock(file_descriptor, fcntl.LOCK_UN)
+    finally:
+        os.close(file_descriptor)
 
 
 def _reserve(args: argparse.Namespace) -> int:
@@ -212,7 +198,7 @@ def _reserve(args: argparse.Namespace) -> int:
                 f"digest {digest} already has an active reservation for upstream "
                 f"{args.upstream_version}"
             )
-        suffix = _choose_suffix(ledger, args.upstream_version, digest)
+        suffix = _choose_suffix(ledger, args.upstream_version)
         if any(
             entry["upstream"] == args.upstream_version
             and entry["suffix"] == suffix
@@ -270,11 +256,10 @@ def _record(args: argparse.Namespace) -> int:
         if any(
             entry["upstream"] == args.upstream_version
             and entry["suffix"] == args.suffix
-            and entry["series_digest"] != args.series_digest
             for entry in ledger["builds"]
         ):
             raise ProvenanceError(
-                f"suffix {args.suffix} is already recorded for a different digest"
+                f"suffix {args.suffix} already has a recorded build"
             )
         entry = {
             "upstream": args.upstream_version,

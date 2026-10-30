@@ -18,13 +18,19 @@ from patchseries import parse, series_digest
 
 def test_wings_gate_uses_tester_unified_and_gate_slice() -> None:
     config = tomllib.loads((WINGS / "run-gate.toml").read_text(encoding="utf-8"))
-    environment = config["environments"]["tester-unified"]
+    estate_config = tomllib.loads(
+        (ROOT / "run-gate.root.toml").read_text(encoding="utf-8")
+    )
+    environment = estate_config["environments"]["tester-unified"]
     lane = config["lanes"]["wings"]
 
+    assert "environments" not in config
     assert environment["mode"] == "ephemeral"
     assert environment["image"] == "tester-unified:local"
     assert environment["image_env"] == "RUN_GATE_TESTER_UNIFIED_IMAGE"
     assert environment["cgroup_slice_env"] == "CGROUP_PARENT_DEV_GATES"
+    assert "CGROUP_PARENT_DEV_BACKGROUND" in environment["forward_env"]
+    assert environment["resources"]["cpus"] == "3"
     assert lane["environment"] == "tester-unified"
     assert lane["kind"] == "command"
 
@@ -41,6 +47,19 @@ def test_wings_gate_uses_tester_unified_and_gate_slice() -> None:
     assert "RUN_GATE_EXTRA_MOUNTS" in test_script
     assert "DOCKER_HOST" in test_script
     assert "! -S /var/run/docker.sock" in worker_script
+
+
+def test_assay_coverage_base_matches_shallow_clone_tip() -> None:
+    assay = tomllib.loads(
+        (WINGS / "assay" / "assay.toml").read_text(encoding="utf-8")
+    )
+    stack = (WINGS / "stack.conf").read_text(encoding="utf-8")
+    clone_script = (WINGS / "scripts" / "clone.sh").read_text(encoding="utf-8")
+    ref_match = re.search(r'^PTERODACTYL_REF="([^"]+)"$', stack, re.MULTILINE)
+
+    assert ref_match is not None
+    assert assay["lanes"]["coverage"]["judge"]["base"] == ref_match.group(1)
+    assert 'git clone --branch "$REF" --depth 50' in clone_script
 
 
 def test_ledger_current_series_identity_matches_active_patch_bytes() -> None:
@@ -82,6 +101,13 @@ def test_ledger_current_series_identity_matches_active_patch_bytes() -> None:
             series, upstream_commits[item["upstream"]]
         )
     assert ledger["reservations"] == []
+
+
+def test_ledger_has_one_build_record_per_upstream_suffix() -> None:
+    ledger = json.loads((WINGS / "image-ledger.json").read_text(encoding="utf-8"))
+    keys = [(item["upstream"], item["suffix"]) for item in ledger["builds"]]
+
+    assert len(keys) == len(set(keys))
 
 
 def _heading_slug(heading: str) -> str:

@@ -65,8 +65,8 @@ not established.
 
 ## Running v1.13.3 image and SHA comparison
 
-The exact production container inspected was
-`ptero-wings-patched-133-wings-1`, using
+The running Wings container inspected was
+`<compose-project>-wings-1`, using
 `wings-local:1.13.3-cgroup.6`, image ID
 `sha256:abd25f6ee6fadd865ba06d2b2192bfb466b5b5e0280751b78de76f273abf5468`.
 It reports `wings v1.13.3-cgroup.6`; the binary SHA-256 is
@@ -80,14 +80,14 @@ image itself has no OCI labels. These are the labels on the running container:
 | `com.docker.compose.depends_on` | empty |
 | `com.docker.compose.image` | `sha256:abd25f6ee6fadd865ba06d2b2192bfb466b5b5e0280751b78de76f273abf5468` |
 | `com.docker.compose.oneoff` | `False` |
-| `com.docker.compose.project` | `ptero-wings-patched-133` |
-| `com.docker.compose.project.config_files` | `/root/ptero-wings-patched-13.3/docker-compose.yml` |
-| `com.docker.compose.project.working_dir` | `/root/ptero-wings-patched-13.3` |
+| `com.docker.compose.project` | `<compose-project>` |
+| `com.docker.compose.project.config_files` | `/path/to/<compose-project>/docker-compose.yml` |
+| `com.docker.compose.project.working_dir` | `/path/to/<compose-project>` |
 | `com.docker.compose.service` | `wings` |
 | `com.docker.compose.version` | `5.6.1` |
 | `traefik.enable` | `true` |
 | `traefik.http.routers.wings-api.entrypoints` | `websecure` |
-| `traefik.http.routers.wings-api.rule` | ``Host(`wings.gstammtisch.dchive.de`)`` |
+| `traefik.http.routers.wings-api.rule` | ``Host(`<wings-fqdn>`)`` |
 | `traefik.http.services.wings-api.loadbalancer.server.port` | `443` |
 
 Embedded build information reports Go 1.24.11, `-trimpath=true`,

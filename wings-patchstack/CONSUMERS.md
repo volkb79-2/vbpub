@@ -86,6 +86,10 @@ BUILDX_BUILDER=mdt-managed nice -n 19 ionice -c 3 \
   wings-patchstack/scripts/build-image.sh pterodactyl
 ```
 
+Use the `built:` tag printed by the script after a new build. Every successful
+build gets a new suffix, including a rebuild of unchanged source, so do not
+derive the tag from the source digest.
+
 For the ledger state recorded on 2026-10-30, the active image tag is
 `wings-local:1.13.4-cgroup.1`. The ledger's `series_digest` is the recomputed
 ordered-patch-bytes-plus-upstream-commit identity. The already-built image
@@ -104,12 +108,14 @@ docker run --rm --pull never --cpus 1 \
 ```
 
 Deployment is intentionally separate. During a planned maintenance window,
-edit `/root/ptero-wings-patched-13.3/docker-compose.yml` so the `wings` service
-uses `wings-local:1.13.4-cgroup.1`, inspect the resolved Compose configuration,
-then recreate that service from the local image:
+set `WINGS_COMPOSE_DIR` to the directory containing your Compose file, then edit
+`$WINGS_COMPOSE_DIR/docker-compose.yml` so the `wings` service uses
+`wings-local:1.13.4-cgroup.1`. Inspect the resolved Compose configuration, then
+recreate that service from the local image:
 
 ```bash
-cd /root/ptero-wings-patched-13.3
+WINGS_COMPOSE_DIR="/path/to/your/compose/project"
+cd "$WINGS_COMPOSE_DIR"
 docker compose config
 docker compose up -d --no-deps --pull never wings
 ```

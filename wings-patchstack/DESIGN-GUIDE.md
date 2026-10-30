@@ -61,7 +61,10 @@ human-readable name; it does not prove the commit. Clone and apply fetch the
 configured ref and fail unless its resolved commit equals the pinned SHA. Build
 metadata names that base alongside the patchseries version. The equivalence
 proof remains tied to the historical `.3` base and reports that series digest;
-it does not compare trees across the `.3` and `.4` releases.
+it does not compare trees across the `.3` and `.4` releases. It checks both
+applied trees against each other and the recorded canonical tree hash
+`67e1552cc3bd0c695dc22c3d15f5333ee692ca35`, so identical changes to both series
+cannot silently redefine the proven result.
 
 ## Series digest and image suffix
 
@@ -82,18 +85,19 @@ ledger keeps the source digest in `series_digest` and the value present in the
 already-built image label in `image_label_series_digest`; the images were not
 rebuilt to rewrite labels. The active v1.13.4 digest is `fbe1fcddd19c59127f45d3afb923c532a15d054dfdd23f7d3f6c398c48838dec`.
 
-The image suffix is derived from committed ledger history while holding an
-exclusive `flock` on the stable `image-ledger.json.lock` sidecar. The script
-persists a reservation before starting Docker, so another process sees that
-suffix as occupied. A known digest reuses its suffix for the same upstream
-version; a new digest advances that upstream version's `cgroup.N`. A
-successful build atomically records its image ID and date and consumes the
-reservation. A Docker build failure releases the reservation. If Docker has
-already produced the tag but the record step fails, the reservation remains
-active to prevent another digest from overwriting an unrecorded image; an
-operator can release it with the helper's `release` command after resolving
-that state. Atomic JSON replacement happens inside the same lock, so two
-record operations cannot overwrite each other's ledger snapshot.
+The image suffix advances through the upstream version's `cgroup.N` sequence
+for each successful build, including a rebuild of an unchanged digest. This
+makes each tag and ledger row identify one image even if the image ID changes.
+The script allocates under an exclusive `flock` on the stable
+`image-ledger.json.lock` sidecar and persists a reservation before starting
+Docker, so another process sees that suffix as occupied. A successful build
+atomically records its image ID and date and consumes the reservation. A Docker
+build failure releases the reservation. If Docker has already produced the tag
+but the record step fails, the reservation remains active to prevent another
+build from overwriting an unrecorded image; an operator can release it with the
+helper's `release` command after resolving that state. Atomic JSON replacement
+happens inside the same lock, so two record operations cannot overwrite each
+other's ledger snapshot.
 
 The v1.13.3 ledger history includes the pre-ledger `.4` and `.6` suffixes; the
 `.6` record notes the observed image ID and binary hash while leaving its

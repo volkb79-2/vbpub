@@ -201,3 +201,59 @@ def test_record_consumes_reservation_and_release_frees_failed_allocation(
     )
     assert retry.returncode == 0
     assert retry.stdout.split("\t")[1] == failed_fields[1]
+
+
+def test_rebuilding_same_digest_allocates_a_unique_suffix(
+    tmp_path: Path, ledger: Path
+) -> None:
+    series = _write_series(tmp_path / "series", "same source")
+    recorded_suffixes: list[str] = []
+
+    for index, image_char in enumerate(("c", "d"), start=1):
+        reserved = _reserve(ledger, series)
+        assert reserved.returncode == 0, reserved.stderr
+        _, suffix, digest, _, _, reservation_id = reserved.stdout.rstrip(
+            "\n"
+        ).split("\t")
+        recorded = subprocess.run(
+            _command(
+                ledger,
+                "record",
+                "--upstream-version",
+                "1.13.3",
+                "--suffix",
+                suffix,
+                "--series-digest",
+                digest,
+                "--reservation-id",
+                reservation_id,
+                "--image-id",
+                "sha256:" + image_char * 64,
+                "--built-at",
+                f"2030-01-01T00:00:0{index}Z",
+            ),
+            capture_output=True,
+            text=True,
+            check=False,
+            env={**os.environ, "PYTHONPATH": str(LIBRARY_SRC)},
+        )
+        assert recorded.returncode == 0, recorded.stderr
+        recorded_suffixes.append(suffix)
+
+    persisted = json.loads(ledger.read_text(encoding="utf-8"))
+    assert recorded_suffixes == ["cgroup.5", "cgroup.6"]
+    assert [item["suffix"] for item in persisted["builds"]] == recorded_suffixes
+
+
+def test_lock_open_rejects_a_symlink(tmp_path: Path, ledger: Path) -> None:
+    series = _write_series(tmp_path / "series", "symlink lock")
+    lock_target = tmp_path / "lock-target"
+    lock_target.write_text("do not change\n", encoding="utf-8")
+    ledger.with_name(ledger.name + ".lock").symlink_to(lock_target)
+
+    result = _reserve(ledger, series)
+
+    assert result.returncode == 2
+    assert "error:" in result.stderr
+    assert lock_target.read_text(encoding="utf-8") == "do not change\n"
+    assert json.loads(ledger.read_text(encoding="utf-8"))["reservations"] == []

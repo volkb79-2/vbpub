@@ -4,8 +4,8 @@
 # AUTHORITATIVE COPY. This file lives here, under version control, and is
 # copied to <clone>/assay.toml by wings-patchstack/scripts/coverage.sh on every run.
 # It must NOT be edited inside build/wings-pterodactyl/: that clone is
-# disposable — clone.sh recreates it and apply.sh/rebase.sh rewrite its
-# branch — so anything that only exists there is lost on the next re-clone.
+# disposable — clone.sh recreates it and apply.sh prepares its patch branch —
+# so anything that only exists there is lost on the next re-clone.
 #
 # Placement rule (assay CONSUMERS.md, Go point 7): assay reads the module path
 # out of the nearest go.mod at or above the directory holding assay.toml, so
@@ -50,7 +50,7 @@ snapshot_selection = "repository"
 [lanes.coverage.judge]
 language = "go"
 # Project-relative, i.e. <module root>/<entry>. These are the directories the
-# 10-patch series adds code to. NOTE: assay's source_roots are DIRECTORIES —
+# 13-patch series adds code to. NOTE: assay's source_roots are DIRECTORIES —
 # a single file is rejected at load ("source root does not exist ... looked
 # for <path>") — so cmd/root.go is expressed as the `cmd` directory. That is
 # not a widening in practice: within base..HEAD, root.go is the only changed
@@ -73,15 +73,17 @@ source_roots = ["internal/cgroups", "environment/docker", "config", "cmd", "sftp
 # via `go test -c -cover` + GOCOVERDIR + `go tool covdata textfmt` is open
 # follow-up work.
 #
-# Measured floor: 53.8% at the 9-patch tip (677d438); 54.4% at the 10-patch
-# tip (8ab9674e's underlying commit, after patch 0010 added sftp/ coverage).
-# 50.0 is a regression guard sitting just under it, not a quality target.
+# Historical floor measurements before patches 0012 and 0013: 53.8% at the
+# 9-patch tip (677d438); 54.4% at the 10-patch tip (8ab9674e's underlying
+# commit, after patch 0010 added sftp/ coverage). The current 13-patch lane
+# measures a wider source tree; 50.0 remains a regression guard, not a current
+# measurement or quality target.
 # Raise it as coverage improves; never lower it to make a red lane green.
 fail_under = 50.0
 allow_excluded = false
 # The upstream tag this series is based on: PTERODACTYL_REF in stack.conf.
-# base..HEAD is exactly the 10 patches.
-base = "v1.13.3"
+# base..HEAD is exactly the 13 patches.
+base = "v1.13.4"
 
 [lanes.coverage.judge.coverage]
 format = "go-cover"
