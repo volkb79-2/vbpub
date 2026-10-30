@@ -127,6 +127,7 @@ def test_import_break_control_passes_and_the_real_transform_fails_command_failed
     assert result.attempts[0].transformed_outcome is Outcome.FAIL
     assert result.attempts[0].expected_reason_code is ReasonCode.COMMAND_FAILED
     assert result.attempts[0].observed_reason_code is ReasonCode.COMMAND_FAILED
+    assert "receipt matched" in result.attempts[0].description
 
     claim = canary.build_canary_claim(result)
     assert claim.status is Outcome.PASS
