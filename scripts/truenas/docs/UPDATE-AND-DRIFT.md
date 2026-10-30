@@ -148,13 +148,48 @@ source ref. Current middleware `master` was
 `908f4b36e44f21e4dbe0c6c8858d2fcedd56df38`. Against v27, master has numerous
 hash/anchor differences and no longer contains three target paths
 (`boot.py`, `container/container.py`, and `vm/vm_devices.py`). Against v28,
-only `container/lifecycle.py` differs by hash; all four patch anchors still
-pass. These are source-head signals, not evidence that either published Oct 29
+only `container/lifecycle.py` differs by hash; the historical grouped adapter's
+four anchors still passed. These are source-head signals, not evidence that either published Oct 29
 update contains those changes. No adapter change is justified by this result;
 retarget only after capturing and diagnosing the exact next build from its
 update payload.
 
 ## Patch inventory and smaller variants (Q3)
+
+### Current registered series layout
+
+The RC.1, latest v27 nightly, and latest v28 nightly adapters now store one
+metadata-bearing patch per logical change under each adapter's `series/`
+directory. `supported-builds.json` remains the only exact-build registry. The
+generated [series outline](../boot-pool-patch/PATCH-SERIES.md) is parsed and
+checked with the shared `libraries/patchseries` library. The TrueNAS
+[design guide](../boot-pool-patch/docs/DESIGN-GUIDE.md#patch-series-and-bundle-identity)
+and [consumer guide](../boot-pool-patch/docs/CONSUMERS.md#inspect-and-prove-a-series)
+describe the rationale and adoption workflow.
+
+The conversion proof applied the retained grouped patches in their recorded
+installer order and the new series in natural filename order to clean source
+trees whose 19 target preimages matched each exact build's manifest. SHA-256
+was compared for every patched file: 19/19 RC.1 files, 19/19 v27 nightly
+files, and 18/18 v28 nightly files are byte-identical. The complete hashes and
+per-file yes/no results are in
+[`series-equivalence-2026-10-30.json`](../boot-pool-patch/reports/series-equivalence-2026-10-30.json).
+Archive member paths changed to `series/` and adapter metadata was updated, so
+bundle digests changed; the installed source bytes did not. This source equivalence check did not add a
+live host run or change the recorded live acceptance history.
+
+Legacy grouped files remain only under each adapter's `legacy/` directory as
+proof inputs. The generated
+[`hunk-map.json`](../boot-pool-patch/manifest/hunk-map.json) maps their hunk
+hashes to current `Change-Id` values for frozen gated builds. Installers do
+not read the hunk bridge.
+
+### Historical grouped-patch analysis
+
+The following area-by-area diffstat and location tables describe the former
+grouped patch files retained as equivalence inputs, not the files installed by
+the current adapters. Use the generated outline above for current filenames,
+metadata, and hunk counts.
 
 Patch statistics below count unified-diff hunks and added/deleted source lines;
 helper files are listed separately. Each patch's `+++ b/...` entries and `@@`
@@ -197,7 +232,7 @@ releases.
 
 | Build | Changed-file locations and patch evidence (`patch:line`) |
 |---|---|
-| v27 RC.1 | Boot mount: `v27/boot-mount.patch:2` → `pool_/import_pool.py`; VM: `v27/middleware.patch:2` → `vm/info.py`; storage: `v27/storage.patch:2,111,145,331,397,448,505,525,562,610,685` → `async_validators.py`, `pool_/dataset_query_utils.py`, `pool_/dataset.py`, `container/{container,dataset,utils,image,lifecycle}.py`, `vm/vm_devices.py`, `utils/libvirt/storage_devices.py`, `zfs/utils.py`; UI: `v27/ui-pools.patch:2,103,116` → `pool_/pool.py`, `disk_/availability.py`, `pool_/export.py`; libvirt: `v27/libvirt.patch:2`; zvol: `v27/zvol-blocksize.patch:2`. Hunk counts by patch: 3, 4, 40, 6, 2, 1. |
+| v27 RC.1 | Boot mount: `v27/legacy/boot-mount.patch:2` → `pool_/import_pool.py`; VM: `v27/legacy/middleware.patch:2` → `vm/info.py`; storage: `v27/legacy/storage.patch:2,111,145,331,397,448,505,525,562,610,685` → `async_validators.py`, `pool_/dataset_query_utils.py`, `pool_/dataset.py`, `container/{container,dataset,utils,image,lifecycle}.py`, `vm/vm_devices.py`, `utils/libvirt/storage_devices.py`, `zfs/utils.py`; UI: `v27/legacy/ui-pools.patch:2,103,116` → `pool_/pool.py`, `disk_/availability.py`, `pool_/export.py`; libvirt: `v27/legacy/libvirt.patch:2`; zvol: `v27/legacy/zvol-blocksize.patch:2`. Hunk counts by patch: 3, 4, 40, 6, 2, 1. |
 | v27 Oct 27 | Boot mount: `v27-nightly-20261027/boot-mount.patch:2`; VM and boot attach: `middleware.patch:2,44` → `vm/info.py`, `boot.py`; storage: `storage.patch:2,109,175,226,246,283,338,514,548,596,616` → `async_validators.py`, `container/{container,dataset,image,lifecycle,utils}.py`, `pool_/{dataset,dataset_query_utils}.py`, `vm/vm_devices.py`, `zfs/utils.py`, `utils/libvirt/storage_devices.py`; UI: `ui-pools.patch:2,103,116`; libvirt: `libvirt.patch:2`; zvol: `zvol-blocksize.patch:2`. Hunk counts by patch: 3, 5, 37, 6, 2, 1. |
 | v28 Oct 14 | Boot mount: `v28-nightly-20261014/boot-mount.patch:2`; VM: `middleware.patch:2,22,46` → `vm/{__init__,info,crud}.py`; storage: `storage.patch:2,101,155,229,266,312,342,403,562,585,615` → `async_validators.py`, `container/{dataset,info,lifecycle,query_pull_images,crud,utils}.py`, `pool_/dataset.py`, `zfs/{encryption_info,utils}.py`, `utils/libvirt/storage_devices.py`. Hunk counts by patch: 2, 6, 35. |
 | v28 Oct 27 | Boot mount: `v28-nightly-20261027/boot-mount.patch:2`; VM: `middleware.patch:2,22,46`; storage: `storage.patch:4,108,120,176,252,291,313,376,534,567,595` → `async_validators.py`, `container/{crud,dataset,info,lifecycle,query_pull_images,utils}.py`, `pool_/{dataset,dataset_query_utils}.py`, `zfs/utils.py`, `utils/libvirt/storage_devices.py`; UI: `ui-pools.patch:4,19,38` → `disk_/availability.py`, `pool_/export.py`, `pool_/pool.py`. Hunk counts by patch: 2, 6, 31, 6. `zfs/encryption_info.py` is the nineteenth fingerprint target, not a patched file. |

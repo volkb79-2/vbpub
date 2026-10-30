@@ -373,15 +373,20 @@ def test_rows_are_well_formed_and_ids_unique() -> None:
 def test_patch_inventory_matches_release_directories() -> None:
     listed = {names(row[0])[0] for row in INVENTORY}
     actual = {
-        f"{release}/{path.name}"
+        f"{release}/series/{path.name}"
         for release in RELEASE_DIRS
-        for path in (PATCH_ROOT / release).glob("*.patch")
+        for path in (PATCH_ROOT / release / "series").glob("*.patch")
     }
     assert listed == actual
 
 
 def test_action_rows_reference_existing_patches_lanes_and_steps() -> None:
-    patch_names = {Path(names(row[0])[0]).name for row in INVENTORY}
+    patch_names = {
+        match.group(1)
+        for release in RELEASE_DIRS
+        for patch in (PATCH_ROOT / release / "series").glob("*.patch")
+        if (match := re.search(r"^Change-Id: (.+)$", patch.read_text(), re.MULTILINE))
+    }
     for row in ACTIONS:
         for patch in names(row["patch"]):
             assert patch in patch_names, (row["id"], patch)

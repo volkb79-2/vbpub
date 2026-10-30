@@ -3,10 +3,24 @@
   "reapply_from": "27.0.0-RC.1",
   "reapply_from_bundle_sha256s": [
     "23e7667f4893f26f4861b17edc20e73f00ae2f8b797f9ff95cde446af1f25de1",
-    "50105fc127ab8a17e969d36eba5070efc76fbc0ef2a5dc52b27e2125d869e11c"
+    "50105fc127ab8a17e969d36eba5070efc76fbc0ef2a5dc52b27e2125d869e11c",
+    "25e55abdad935ad3757bf86cdda21a4c41eb72172f4dbec1457a890dad02ed2a",
+    "9d96a3ae5603f33f470cf23929b5f3857a48b85d7055da76060a58bc0a6d0409"
   ],
   "target_count": 19,
   "target_manifest_sha256": "0a7ab3fd05ac0471cda4f48904fbae5c3221de9fa5eb977dcfaecdb245ccf3c1",
   "train": "TrueNAS-27-Nightlies",
-  "version": "27.0.0-MASTER+20261029-173417"
+  "version": "27.0.0-MASTER+20261029-173417",
+  "series_dir": "series",
+  "patches": [
+    "0001-path-a-dataset-api.patch",
+    "0002-container-user-data-storage.patch",
+    "0003-workload-storage-path-guards.patch",
+    "0004-boot-pool-user-data-mount.patch",
+    "0005-tcg-virtualization-api.patch",
+    "0006-libvirt-qemu-fallback.patch",
+    "0007-path-b-boot-attach-guard.patch",
+    "0008-boot-storage-pool-ui.patch",
+    "0009-boot-pool-zvol-default.patch"
+  ]
 }

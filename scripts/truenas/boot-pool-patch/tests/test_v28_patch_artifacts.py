@@ -8,9 +8,9 @@ import tomllib
 
 
 PATCH_DIR = Path(__file__).parents[1] / "v28-nightly-20261029"
-STORAGE_PATCH = PATCH_DIR / "storage.patch"
-MIDDLEWARE_PATCH = PATCH_DIR / "middleware.patch"
-BOOT_MOUNT_PATCH = PATCH_DIR / "boot-mount.patch"
+STORAGE_PATCH = PATCH_DIR / "legacy" / "storage.patch"
+MIDDLEWARE_PATCH = PATCH_DIR / "legacy" / "middleware.patch"
+BOOT_MOUNT_PATCH = PATCH_DIR / "legacy" / "boot-mount.patch"
 BOOT_MOUNT_HELPER = PATCH_DIR / "boot_pool_mount.py"
 TARGETS = PATCH_DIR / "targets.sha256"
 
@@ -95,6 +95,8 @@ def test_exact_v28_adapter_manifests_match_the_supported_build_registry() -> Non
             "train": "TrueNAS-28-Nightlies",
             "target_count": supported["target_count"],
             "target_manifest_sha256": hashlib.sha256((adapter_dir / "targets.sha256").read_bytes()).hexdigest(),
+            "series_dir": "series",
+            "patches": supported["patches"],
         }
         assert adapter["target_count"] == len((adapter_dir / "targets.sha256").read_text().splitlines())
         assert supported["directory"] == directory

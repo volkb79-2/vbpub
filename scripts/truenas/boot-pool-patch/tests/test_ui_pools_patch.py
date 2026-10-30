@@ -1,4 +1,4 @@
-"""Contract tests for v27/ui-pools.patch and the boot_disk_partition helper."""
+"""Contract tests for the retained v27 legacy ui-pools.patch and the boot_disk_partition helper."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ import types
 import pytest
 
 PATCH_ROOT = Path(__file__).resolve().parents[1]
-PATCH = PATCH_ROOT / "v27" / "ui-pools.patch"
+PATCH = PATCH_ROOT / "v27" / "legacy" / "ui-pools.patch"
 TARGETS = [
     "middlewared/plugins/pool_/pool.py",
     "middlewared/plugins/pool_/export.py",
@@ -75,19 +75,19 @@ def test_targets_apply_script_and_bundle_know_the_patch() -> None:
     for target in TARGETS:
         assert re.search(rf"^[0-9a-f]{{64}}  {re.escape(target)}$", targets, re.M), target
     apply_script = (PATCH_ROOT / "acceptance" / "apply_v27_patch_remote.sh").read_text()
-    patch_list = "middleware.patch storage.patch libvirt.patch boot-mount.patch zvol-blocksize.patch ui-pools.patch"
-    assert f"for patch_file in {patch_list}; do" in apply_script
+    assert '"0008-boot-storage-pool-ui.patch"' in apply_script
+    assert 'for patch_file in "${patch_files[@]}"; do' in apply_script
     assert 'patch --dry-run --batch --fuzz=0 -p1 < "$patch_dir/$patch_file"' in apply_script
     assert 'patch --batch --fuzz=0 -p1 < "$patch_dir/$patch_file"' in apply_script
-    assert apply_script.index("for patch_file in " + patch_list) < \
+    assert apply_script.index("for patch_file in \"${patch_files[@]}\"; do") < \
         apply_script.index("systemctl stop middlewared.service")
     assert '"$bundle_root/shared/boot_disk_partition.py" middlewared/plugins/' in apply_script
     for compiled in ("middlewared/plugins/boot.py", "middlewared/plugins/boot_disk_partition.py", "middlewared/plugins/disk_/availability.py",
                      "middlewared/plugins/pool_/pool.py", "middlewared/plugins/pool_/export.py"):
         assert compiled in apply_script
     controller = (PATCH_ROOT / "acceptance" / "live_v27_patch.py").read_text()
-    assert "adapter_root / name" in controller
-    assert '"ui-pools.patch"' in controller
+    assert 'build["patches"]' in controller
+    assert 'series_root / name' in controller
     assert 'PATCH_ROOT / "shared" / "boot_disk_partition.py"' in controller
 
 

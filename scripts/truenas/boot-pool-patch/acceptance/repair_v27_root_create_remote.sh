@@ -139,20 +139,41 @@ cd "$dist_root"
 tar -tzf "$prior_bundle" >/dev/null
 tar -xzf "$prior_bundle" -C "$stage/prior"
 for unchanged in \
-    v27/middleware.patch v27/libvirt.patch v27/boot-mount.patch v27/targets.sha256 \
+    v27/targets.sha256 \
     shared/boot_pool_user_data.py shared/virtualization_support.py; do
     cmp -s "$stage/prior/$unchanged" "$stage/$unchanged" || fail "repair bundle changed unrelated patch input: $unchanged"
 done
+
+require_patch_text() {
+    local bundle_root=$1 needle=$2 message=$3 patch_file
+    if [ -f "$bundle_root/v27/storage.patch" ]; then
+        grep -Fq -- "$needle" "$bundle_root/v27/storage.patch" || fail "$message"
+        return
+    fi
+    [ -d "$bundle_root/v27/series" ] || fail "repair bundle has no v27 patch series"
+    for patch_file in "$bundle_root"/v27/series/*.patch; do
+        [ -f "$patch_file" ] && [ ! -L "$patch_file" ] || continue
+        if grep -Fq -- "$needle" "$patch_file"; then
+            return
+        fi
+    done
+    fail "$message"
+}
+
 if [ "$repair_stage" = root-create ]; then
-    grep -Fq '+        if user_data_root and is_user_data_namespace_path(' \
-        "$stage/prior/v27/storage.patch" || fail 'prior bundle does not contain the expected root-readiness condition'
+    require_patch_text "$stage/prior" \
+        '+        if user_data_root and is_user_data_namespace_path(' \
+        'prior bundle does not contain the expected root-readiness condition'
 else
-    grep -Fq "+        if user_data_root and not is_user_data_namespace_root(data['name'], BOOT_POOL_NAME_VALID) and is_user_data_namespace_path(" \
-        "$stage/prior/v27/storage.patch" || fail 'prior bundle does not contain the installed root-create exemption'
+    require_patch_text "$stage/prior" \
+        "+        if user_data_root and not is_user_data_namespace_root(data['name'], BOOT_POOL_NAME_VALID) and is_user_data_namespace_path(" \
+        'prior bundle does not contain the installed root-create exemption'
 fi
-grep -Fq "+        if user_data_root and not is_user_data_namespace_root(data['name'], BOOT_POOL_NAME_VALID) and is_user_data_namespace_path(" \
-    "$stage/v27/storage.patch" || fail 'replacement bundle does not contain the root-create exemption'
-grep -Fq '+            parent_mp = None' "$stage/v27/storage.patch" || fail 'replacement bundle does not skip the root parent mountpoint=none stat'
+require_patch_text "$stage" \
+    "+        if user_data_root and not is_user_data_namespace_root(data['name'], BOOT_POOL_NAME_VALID) and is_user_data_namespace_path(" \
+    'replacement bundle does not contain the root-create exemption'
+require_patch_text "$stage" '+            parent_mp = None' \
+    'replacement bundle does not skip the root parent mountpoint=none stat'
 cmp -s "$stage/prior/shared/boot_pool_user_data.py" "$dist_root/middlewared/plugins/boot_pool_user_data.py" || fail 'installed shared v27 policy differs from the prior bundle'
 cmp -s "$stage/prior/shared/virtualization_support.py" "$dist_root/middlewared/plugins/vm/virtualization_support.py" || fail 'installed shared virtualization helper differs from the prior bundle'
 python3 - "$dataset_py" "$repair_stage" "$prior_dataset_sha256" <<'PY'

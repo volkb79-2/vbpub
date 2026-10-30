@@ -1,0 +1,83 @@
+From bfe29b83e05b69827ed6ceb2d6f9dfae7f72609b Mon Sep 17 00:00:00 2001
+From: TrueNAS Patch Series <patchseries@vbpub.invalid>
+Date: Fri, 30 Oct 2026 00:00:00 +0000
+Subject: [PATCH] Guard workload paths within boot-pool user data
+
+Apply the user-data namespace boundary to VM devices, libvirt storage paths, and ZFS internal-path checks.
+
+Change-Id: workload-storage-path-guards
+Capability: storage-boundary
+Role: guard
+Risk: high
+Requires: path-a-dataset-api
+Forwarded: not-needed
+---
+ middlewared/plugins/zfs/utils.py             | 14 ++++++++++++--
+ middlewared/utils/libvirt/storage_devices.py |  8 ++++++--
+ 2 files changed, 18 insertions(+), 4 deletions(-)
+
+diff --git a/middlewared/plugins/zfs/utils.py b/middlewared/plugins/zfs/utils.py
+index 3124c75951edcf7e0686f983e956707c2162720a..76e5f7efb595810cb38267aa25b20008c155e985 100644
+--- a/middlewared/plugins/zfs/utils.py
++++ b/middlewared/plugins/zfs/utils.py
+@@ -10,6 +10,9 @@ from typing import TYPE_CHECKING, Any
+ 
+ import truenas_pylibzfs
+ 
++from middlewared.plugins.boot_pool_user_data import (
++    CONTAINER_DS_NAME, is_user_data_namespace_path, is_user_data_namespace_root,
++)
+ from middlewared.service_exception import CallError, ValidationError
+ from middlewared.utils.boot.pool import BOOT_POOL_NAME_VALID
+ 
+@@ -123,9 +126,16 @@ def has_internal_path(path: str) -> bool:
+     """
+     components = path.split("/")
+     if components[0] in BOOT_POOL_NAME_VALID:
+-        return True
++        # Keep the namespace root itself protected; only validated descendants
++        # can be operated on by ordinary storage APIs.
++        return (
++            is_user_data_namespace_root(path, BOOT_POOL_NAME_VALID)
++            or not is_user_data_namespace_path(
++                path, BOOT_POOL_NAME_VALID, (*INTERNAL_PATHS, CONTAINER_DS_NAME)
++            )
++        )
+     return len(components) > 1 and (
+-        components[1] in INTERNAL_PATHS
++        components[1] in (*INTERNAL_PATHS, CONTAINER_DS_NAME)
+         # Legacy ix-applications is left visible so users can delete it; its contents stay hidden.
+         or (components[1] == "ix-applications" and len(components) > 2)
+     )
+diff --git a/middlewared/utils/libvirt/storage_devices.py b/middlewared/utils/libvirt/storage_devices.py
+index 542a189a04ec6b84fb8ddd63c187964a98bd9afe..c7b3b3e5a71f2a2d90bd9ab62d03133d7566f1b0 100644
+--- a/middlewared/utils/libvirt/storage_devices.py
++++ b/middlewared/utils/libvirt/storage_devices.py
+@@ -3,10 +3,12 @@ import os
+ from typing import Any
+ 
+ from middlewared.api.current import ZFSResourceQuery
+-from middlewared.plugins.zfs.utils import has_internal_path
++from middlewared.plugins.boot_pool_user_data import is_user_data_namespace_path
++from middlewared.plugins.zfs.utils import INTERNAL_PATHS, has_internal_path
+ from middlewared.plugins.zfs.zvol_utils import zvol_name_to_path, zvol_path_to_name
+ from middlewared.plugins.zfs_.validation_utils import check_zvol_in_boot_pool_using_path
+ from middlewared.service_exception import ValidationErrors
++from middlewared.utils.boot.pool import BOOT_POOL_NAME_VALID
+ 
+ from .delegate import DeviceDelegate
+ from .utils import device_uniqueness_check
+@@ -124,7 +126,9 @@ class DiskDelegate(StorageDelegate):
+                 verrors.add('attributes.path', 'Disk path is required.')
+             elif not path.startswith('/dev/zvol/'):
+                 verrors.add('attributes.path', 'Disk path must start with "/dev/zvol/".')
+-            elif check_zvol_in_boot_pool_using_path(path):
++            elif check_zvol_in_boot_pool_using_path(path) and not is_user_data_namespace_path(
++                zvol_path_to_name(path), BOOT_POOL_NAME_VALID, INTERNAL_PATHS
++            ):
+                 verrors.add('attributes.path', 'Disk residing in boot pool cannot be consumed and is not supported.')
+             else:
+                 zvol_name = zvol_path_to_name(path)
+-- 
+2.55.0
+

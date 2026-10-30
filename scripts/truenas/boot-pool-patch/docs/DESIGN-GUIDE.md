@@ -66,6 +66,33 @@ TrueNAS and verify the new reported build before attempting the patch. A v28
 adapter is not inferred from a close nightly, and a source manifest on Path A
 or Path B cannot certify the active BE's `/usr`.
 
+## Patch series and bundle identity
+
+Each registered adapter has an ordered `series/` directory with one Git patch
+per logical change. The required `Change-Id`, `Capability`, `Role`, `Risk`, and
+`Requires` trailers are parsed and dependency-checked by the shared
+`libraries/patchseries` library. The exact-build compatibility boundary still
+lives only in `supported-builds.json`; its `patches` list names the ordered
+series files. The generated [`PATCH-SERIES.md`](../PATCH-SERIES.md) is an
+inventory view of those headers and patch hunks.
+
+This makes ownership and dependency order visible where changes are reviewed,
+instead of assigning identity to an old grouped file that combines unrelated
+changes. The installer still applies every selected hunk with zero fuzz and
+checks the exact preimage target hashes before mutation. The archive layout
+uses `v27/series/` or `patch/series/` and updates the bundled adapter metadata;
+bundle digests therefore bind the changed archive bytes. The installed target files remain byte-identical to the former
+grouped-patch output, as recorded per file in
+[`series-equivalence-2026-10-30.json`](../reports/series-equivalence-2026-10-30.json).
+
+Grouped patches are retained under each registered adapter's `legacy/`
+directory only as proof inputs for already-gated builds. The generated
+[`manifest/hunk-map.json`](../manifest/hunk-map.json) crosswalks those legacy
+hunk hashes to the new `Change-Id` values; it is not a runtime registry and
+installers do not read it. The generated views are refreshed and checked with
+`python3 scripts/truenas/boot-pool-patch/scripts/generate_series_views.py` and
+`python3 scripts/truenas/boot-pool-patch/scripts/generate_series_views.py --check`.
+
 ## Test gates
 
 The registered `unit-boot-pool-patch` lane runs the patch's policy, artifact,
@@ -145,12 +172,13 @@ fingerprinted middleware targets and one build-bound Path B partition shim.
 The Oct 29 source capture differs from the prior Oct 27 adapter in three
 fingerprints: `middlewared/plugins/container/crud.py`,
 `middlewared/plugins/container/lifecycle.py`, and
-`middlewared/plugins/vm/crud.py`. All four patch files pass zero-fuzz dry-runs.
+`middlewared/plugins/vm/crud.py`. All six current series patches pass
+zero-fuzz dry-runs; the former grouped source had four files.
 The VM import hunk was narrowed to the changed `kvm_supported` import because
 Oct 29 reordered the API imports; the complete source preimage hash is checked
 before that one-line hunk can run. The old Oct 14 and Oct 27 adapter rows are
 retired from the support registry. The current deterministic bundle SHA-256 is
-`5366a8029f34162515e2b6c0935cf9b19abe3c41cc214886428af583d6db069b`.
+`4ff5f7e9ba90481e2d663588ffa2c98b121f7e937343abfd61081b2d9dff9935`.
 
 Path A validates the mounted `boot-pool/user-data` root and permits an unused
 reserved partition elsewhere on the disk. Path B uses only the reserved free-
@@ -188,8 +216,9 @@ results as evidence for the Oct 29 adapter.
 ### v27 nightly update and reapply
 
 The registered v27 bridge nightly is `27.0.0-MASTER+20261029-173417`. Its
-full 19-target source fingerprint and six patch dry-runs match the captured
-build. The Path A update/reapply survival and API lanes passed. The newer
+full 19-target source fingerprint and six former grouped-patch dry-runs matched
+the captured build; the current nine-patch series also passes zero-fuzz checks.
+The Path A update/reapply survival and API lanes passed. The newer
 build's full UI lane has not passed after the Playwright pin was corrected;
 the Oct 27 Path A/B UI matrix is historical evidence for that earlier adapter,
 not a pass for the current nightly.

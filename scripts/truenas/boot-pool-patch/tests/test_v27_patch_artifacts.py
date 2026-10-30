@@ -7,9 +7,9 @@ import tomllib
 
 
 PATCH_ROOT = Path(__file__).parents[1]
-PATCH_PATH = PATCH_ROOT / "v27" / "storage.patch"
-BOOT_MOUNT_PATCH_PATH = PATCH_ROOT / "v27" / "boot-mount.patch"
-ZVOL_BLOCKSIZE_PATCH_PATH = PATCH_ROOT / "v27" / "zvol-blocksize.patch"
+PATCH_PATH = PATCH_ROOT / "v27" / "legacy" / "storage.patch"
+BOOT_MOUNT_PATCH_PATH = PATCH_ROOT / "v27" / "legacy" / "boot-mount.patch"
+ZVOL_BLOCKSIZE_PATCH_PATH = PATCH_ROOT / "v27" / "legacy" / "zvol-blocksize.patch"
 TARGETS_PATH = PATCH_ROOT / "v27" / "targets.sha256"
 SHARED_PATH = PATCH_ROOT / "shared" / "boot_pool_user_data.py"
 RUN_GATE_CONFIG = PATCH_ROOT.parent / "run-gate.toml"
@@ -157,7 +157,9 @@ def test_v27_fresh_patch_lane_refuses_preconfigured_storage() -> None:
     assert 'action == "reapply-after-update"' in controller
     assert 'action == "uninstall-stale-record"' in controller
     assert "adapter_for_version(version)" in controller
-    assert '"zvol-blocksize.patch"' in controller
+    assert 'get_supported_build(version)' in controller
+    installer = REMOTE_V27_PATCH.read_text()
+    assert '"0009-boot-pool-zvol-default.patch"' in installer
     assert '"repair_v27_zvol_blocksize_remote.sh"' in controller
     assert '"reapply_v27_after_update_remote.sh"' in controller
 
@@ -171,12 +173,11 @@ def test_v27_fresh_patch_lane_refuses_preconfigured_storage() -> None:
     ui = (PATCH_ROOT / "acceptance" / "live_ui.py").read_text()
     assert 'target.call("container.pool_choices"' in ui
 
-    installer = REMOTE_V27_PATCH.read_text()
     assert "zfs list -H -o name boot-pool/user-data" in installer
     assert "zpool list -H -o name | grep -Fxq boot-disk-data" in installer
     assert "sha256sum --check" in installer
     assert installer.index("patch --dry-run") < installer.index("zfs set readonly=off")
-    assert "zvol-blocksize.patch" in installer
+    assert 'series_dir != "series"' in installer
     assert "middlewared/plugins/pool_/dataset_info.py" in installer
     assert "restore_usr_readonly" in installer
     assert '"root_create_guard": "root-excluded-from-descendant-readiness-v1"' in installer
@@ -315,8 +316,10 @@ def test_v27_bundle_is_deterministic_and_contains_only_reviewed_members() -> Non
             )
     assert "v27/targets.sha256" in members
     assert "acceptance/apply_v27_patch_remote.sh" in members
-    assert len(members) == 17
+    assert len(members) == 20
     assert b"23e7667f4893f26f4861b17edc20e73f00ae2f8b797f9ff95cde446af1f25de1" not in acceptance_contents
+    assert len([name for name in members if name.startswith("v27/series/") and name.endswith(".patch")]) == 9
+    assert "v27/storage.patch" not in members
 
 
 def test_all_patch_installers_compare_every_target_hash_and_disable_fuzz() -> None:
@@ -370,7 +373,7 @@ def test_v27_zvol_form_repair_is_digest_bound_and_preserves_the_ui_root() -> Non
     assert "2147483648\\n/mnt/boot-pool/user-data\\non" in repair
     assert 'zfs list -H -r -o name boot-pool/user-data' in repair
     assert 'find /mnt/boot-pool/user-data -mindepth 1 -print -quit' in repair
-    assert 'zvol-blocksize.patch' in repair
+    assert '0009-boot-pool-zvol-default.patch' in repair
     assert 'prior_source_sha' in repair
     assert 'install-record.json' in repair
     assert 'restore_previous_source' in repair and 'transaction_committed=1' in repair

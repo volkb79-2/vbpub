@@ -29,6 +29,11 @@ from urllib.request import Request, urlopen
 
 PATCH_ROOT = Path(__file__).resolve().parents[1]
 REGISTRY_PATH = PATCH_ROOT / "supported-builds.json"
+REPO_ROOT = Path(__file__).resolve().parents[4]
+PATCHSERIES_SOURCE = REPO_ROOT / "libraries" / "patchseries" / "src"
+sys.path.insert(0, str(PATCHSERIES_SOURCE))
+from patchseries import SeriesError, check as check_series, load_vocabulary, parse as parse_series
+
 DOWNLOAD_ROOT = "https://download.truenas.com"
 UPDATE_ROOT = "https://auto-public.sys.truenas.net"
 SOURCE_ROOTS = {
@@ -104,6 +109,8 @@ def load_supported_builds(path: Path = REGISTRY_PATH) -> dict[str, dict[str, Any
         target_count = row.get("target_count")
         target_manifest_sha256 = row.get("target_manifest_sha256")
         patches = row.get("patches")
+        legacy_patches = row.get("legacy_patches")
+        series_dir = row.get("series_dir")
         train = row.get("train")
         adapter_id = row.get("adapter_id")
         install_bundle_sha256 = row.get("install_bundle_sha256")
@@ -112,8 +119,18 @@ def load_supported_builds(path: Path = REGISTRY_PATH) -> dict[str, dict[str, Any
                 or not isinstance(target_manifest_sha256, str)
                 or SHA256_RE.fullmatch(target_manifest_sha256) is None
                 or not isinstance(patches, list) or not patches
-                or not all(isinstance(name, str) and name.endswith(".patch") for name in patches)
+                or not all(
+                    isinstance(name, str) and name.endswith(".patch")
+                    and PurePosixPath(name).name == name for name in patches
+                )
                 or len(set(patches)) != len(patches)
+                or not isinstance(legacy_patches, list) or not legacy_patches
+                or not all(
+                    isinstance(name, str) and name.endswith(".patch")
+                    and PurePosixPath(name).name == name for name in legacy_patches
+                )
+                or len(set(legacy_patches)) != len(legacy_patches)
+                or not isinstance(series_dir, str) or series_dir != "series"
                 or not isinstance(train, str) or not train
                 or not isinstance(adapter_id, str) or not adapter_id):
             raise DriftError(f"invalid adapter metadata for supported build {version!r}")
@@ -123,6 +140,20 @@ def load_supported_builds(path: Path = REGISTRY_PATH) -> dict[str, dict[str, Any
         ):
             raise DriftError(f"invalid install bundle digest for supported build {version!r}")
         adapter_root = PATCH_ROOT / directory
+        series_root = adapter_root / series_dir
+        if series_root.is_symlink() or not series_root.is_dir():
+            raise DriftError(f"supported build {version} has no safe patch series: {series_root}")
+        try:
+            series_changes = parse_series(series_root)
+            check_series(series_changes, load_vocabulary(PATCH_ROOT / "vocabulary.toml"))
+        except (OSError, SeriesError) as exc:
+            raise DriftError(f"invalid patch series for {version}: {exc}") from exc
+        series_names = [change.path.name for change in series_changes]
+        if series_names != patches:
+            raise DriftError(
+                f"supported-build patch list differs from its natural series order for {version}: "
+                f"registry={patches!r} series={series_names!r}"
+            )
         target_path = adapter_root / "targets.sha256"
         if not target_path.is_file():
             raise DriftError(f"supported build {version} has no target manifest: {target_path}")
@@ -149,16 +180,20 @@ def load_supported_builds(path: Path = REGISTRY_PATH) -> dict[str, dict[str, Any
             or adapter_manifest.get("train") != train
             or adapter_manifest.get("target_count") != target_count
             or adapter_manifest.get("target_manifest_sha256") != target_manifest_sha256
+            or adapter_manifest.get("series_dir") != series_dir
+            or adapter_manifest.get("patches") != patches
         ):
             raise DriftError(f"adapter manifest does not match supported-build entry for {version}")
         for patch_name in patches:
-            patch_path = adapter_root / patch_name
+            patch_path = series_root / patch_name
             if not patch_path.is_file() or patch_path.is_symlink():
                 raise DriftError(f"missing or unsafe adapter patch for {version}: {patch_path}")
         result[version] = {
             **row,
             "version": version,
             "adapter_root": adapter_root,
+            "series_root": series_root,
+            "series_changes": series_changes,
             "targets": targets,
             "adapter_manifest": adapter_manifest,
         }
@@ -243,7 +278,7 @@ def verify_build(
             + render_issues(issues)
         )
     for patch_name in build["patches"]:
-        patch_path = build["adapter_root"] / patch_name
+        patch_path = build["series_root"] / patch_name
         result = run_patch(
             patch_dry_run_argv(patch_path),
             cwd=root,
@@ -303,7 +338,7 @@ def verify_installed_build(
             + render_issues(helper_issues)
         )
     for patch_name in build["patches"]:
-        patch_path = build["adapter_root"] / patch_name
+        patch_path = build["series_root"] / patch_name
         result = run_patch(
             patch_dry_run_argv(patch_path, reverse=True),
             cwd=root,
@@ -342,7 +377,7 @@ def diagnose_candidate(
         print("PREIMAGE-MATCH: every reference target hash matches")
     failed_patches: list[str] = []
     for patch_name in reference["patches"]:
-        patch_path = reference["adapter_root"] / patch_name
+        patch_path = reference["series_root"] / patch_name
         result = run_patch(
             patch_dry_run_argv(patch_path), cwd=root, text=True,
             capture_output=True, check=False,
@@ -583,7 +618,7 @@ def upstream_check(channel: str, reference_build: str, source_ref: str = "master
 
         failed_patches: list[str] = []
         for patch_name in build["patches"]:
-            patch_path = build["adapter_root"] / patch_name
+            patch_path = build["series_root"] / patch_name
             result = subprocess.run(
                 patch_dry_run_argv(patch_path), cwd=root, text=True,
                 capture_output=True, check=False,

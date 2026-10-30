@@ -16,6 +16,7 @@ import tarfile
 import uuid
 
 from remote import RemoteError, Target
+from patch_drift import get_supported_build
 from v27_patch_state import adapter_for_version
 
 
@@ -68,16 +69,16 @@ def make_bundle(profile: str, version: str = EXPECTED_VERSION) -> tuple[Path, st
     adapter = adapter_for_version(version)
     adapter_root = PATCH_ROOT / adapter.directory
     require(adapter_root.is_dir(), f"exact v27 adapter directory is missing: {adapter_root}")
+    build = get_supported_build(version)
+    require(build["adapter_root"] == adapter_root, f"supported-build registry path differs for {version}")
+    series_root = build["series_root"]
     artifacts = PATCH_ROOT / "artifacts"
     artifacts.mkdir(parents=True, exist_ok=True)
     bundle = artifacts / f"v27-{adapter.directory}-patch-bundle-{profile}-{uuid.uuid4().hex[:10]}.tar.gz"
-    patch_files = (
-        "middleware.patch", "storage.patch", "libvirt.patch", "boot-mount.patch",
-        "zvol-blocksize.patch", "ui-pools.patch", "targets.sha256",
-    )
     members = [
-        (adapter_root / name, f"v27/{name}") for name in patch_files
+        (series_root / name, f"v27/series/{name}") for name in build["patches"]
     ]
+    members.append((adapter_root / "targets.sha256", "v27/targets.sha256"))
     if (adapter_root / "adapter.json").is_file():
         members.append((adapter_root / "adapter.json", "v27/adapter.json"))
     members.extend((
@@ -109,6 +110,12 @@ def make_bundle(profile: str, version: str = EXPECTED_VERSION) -> tuple[Path, st
     bundle.write_bytes(raw.getvalue())
     bundle.chmod(0o600)
     digest = hashlib.sha256(bundle.read_bytes()).hexdigest()
+    expected_digest = build.get("install_bundle_sha256")
+    require(
+        isinstance(expected_digest, str) and digest == expected_digest,
+        f"v27 patch bundle digest differs from the exact-build registry for {version}: "
+        f"expected={expected_digest!r} actual={digest}",
+    )
     return bundle, digest
 
 

@@ -8,48 +8,81 @@
     "27.0.0-RC.1": {
       "adapter_id": "v27-rc1",
       "directory": "v27",
-      "install_bundle_sha256": "50105fc127ab8a17e969d36eba5070efc76fbc0ef2a5dc52b27e2125d869e11c",
+      "install_bundle_sha256": "9d96a3ae5603f33f470cf23929b5f3857a48b85d7055da76060a58bc0a6d0409",
       "patches": [
-        "boot-mount.patch",
-        "libvirt.patch",
-        "middleware.patch",
-        "storage.patch",
-        "ui-pools.patch",
-        "zvol-blocksize.patch"
+        "0001-path-a-dataset-api.patch",
+        "0002-container-user-data-storage.patch",
+        "0003-workload-storage-path-guards.patch",
+        "0004-boot-pool-user-data-mount.patch",
+        "0005-tcg-virtualization-api.patch",
+        "0006-libvirt-qemu-fallback.patch",
+        "0007-path-b-boot-attach-guard.patch",
+        "0008-boot-storage-pool-ui.patch",
+        "0009-boot-pool-zvol-default.patch"
       ],
       "target_count": 19,
       "target_manifest_sha256": "a463dafe522264fd4ad7b2120d5b6d3b25180fe46d98a9ffc8ef1988b93d5d67",
-      "train": "TrueNAS-27-RC"
+      "train": "TrueNAS-27-RC",
+      "series_dir": "series",
+      "legacy_patches": [
+        "middleware.patch",
+        "storage.patch",
+        "libvirt.patch",
+        "boot-mount.patch",
+        "zvol-blocksize.patch",
+        "ui-pools.patch"
+      ]
     },
     "27.0.0-MASTER+20261029-173417": {
       "adapter_id": "v27-nightly-20261029",
       "directory": "v27-nightly-20261029",
-      "install_bundle_sha256": "60b3696c44768f9c6958791e8b46c2a205d5daede9c8ab29b23228c141b58e76",
+      "install_bundle_sha256": "f3fa0be3d25ac3c9fc21a536028c10accf5e66978e5110eb096d443f1e23a702",
       "patches": [
-        "boot-mount.patch",
-        "libvirt.patch",
-        "middleware.patch",
-        "storage.patch",
-        "ui-pools.patch",
-        "zvol-blocksize.patch"
+        "0001-path-a-dataset-api.patch",
+        "0002-container-user-data-storage.patch",
+        "0003-workload-storage-path-guards.patch",
+        "0004-boot-pool-user-data-mount.patch",
+        "0005-tcg-virtualization-api.patch",
+        "0006-libvirt-qemu-fallback.patch",
+        "0007-path-b-boot-attach-guard.patch",
+        "0008-boot-storage-pool-ui.patch",
+        "0009-boot-pool-zvol-default.patch"
       ],
       "target_count": 19,
       "target_manifest_sha256": "0a7ab3fd05ac0471cda4f48904fbae5c3221de9fa5eb977dcfaecdb245ccf3c1",
-      "train": "TrueNAS-27-Nightlies"
+      "train": "TrueNAS-27-Nightlies",
+      "series_dir": "series",
+      "legacy_patches": [
+        "middleware.patch",
+        "storage.patch",
+        "libvirt.patch",
+        "boot-mount.patch",
+        "zvol-blocksize.patch",
+        "ui-pools.patch"
+      ]
     },
     "28.0.0-MASTER+20261029-175210": {
       "adapter_id": "v28-nightly-20261029",
       "directory": "v28-nightly-20261029",
-      "install_bundle_sha256": "5366a8029f34162515e2b6c0935cf9b19abe3c41cc214886428af583d6db069b",
+      "install_bundle_sha256": "4ff5f7e9ba90481e2d663588ffa2c98b121f7e937343abfd61081b2d9dff9935",
       "patches": [
-        "boot-mount.patch",
-        "middleware.patch",
-        "storage.patch",
-        "ui-pools.patch"
+        "0001-path-a-dataset-api.patch",
+        "0002-container-user-data-storage.patch",
+        "0003-workload-storage-path-guards.patch",
+        "0004-boot-pool-user-data-mount.patch",
+        "0005-tcg-virtualization-api.patch",
+        "0006-boot-storage-pool-ui.patch"
       ],
       "target_count": 19,
       "target_manifest_sha256": "8828c8dfd91617df0bb864c1c3e1687883db7176ea79ac459f6f2d39d7166acf",
-      "train": "TrueNAS-28-Nightlies"
+      "train": "TrueNAS-28-Nightlies",
+      "series_dir": "series",
+      "legacy_patches": [
+        "storage.patch",
+        "middleware.patch",
+        "boot-mount.patch",
+        "ui-pools.patch"
+      ]
     }
   }
 }

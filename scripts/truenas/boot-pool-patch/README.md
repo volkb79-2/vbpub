@@ -28,6 +28,26 @@ registered latest build before applying the patch. The exact-build lane prints
 the supported target and the required update/recheck steps when it sees an
 older build.
 
+## Patch series
+
+Each registered adapter stores one DEP-3-style Git patch per logical change in
+its `series/` directory. `supported-builds.json` remains the exact-build
+registry; its ordered `patches` list and `series_dir` select the files that the
+installer packages. The generated [patch-series outline](PATCH-SERIES.md)
+shows each `Change-Id`, capability, role, risk, dependency, target file, hunk
+count, and diffstat. The [design guide](docs/DESIGN-GUIDE.md#patch-series-and-bundle-identity)
+explains the split and compatibility contract. The [consumer guide](docs/CONSUMERS.md#inspect-and-prove-a-series)
+shows how to validate and adopt a series.
+
+The legacy grouped patch files are retained under each adapter's `legacy/`
+directory as byte-level proof inputs and as the frozen-build hunk bridge. They
+are not read by installers. The migration proof in
+[`reports/series-equivalence-2026-10-30.json`](reports/series-equivalence-2026-10-30.json)
+compares every patched file from all three registered builds; every legacy and
+series SHA-256 is identical. Bundle members now use `series/`, and adapter
+manifests and bundled readmes were updated. Those archive byte changes alter
+bundle digests while installed middleware bytes remain identical.
+
 ## Update and rollback
 
 An update creates a new boot environment with stock `/usr`. The updater copies

@@ -21,7 +21,7 @@ Path B, method names in backticks, `-` for "none").
   is false.
 
 Columns. `API (stock)`, `UI (stock)` and `UI (patched)` are what was measured
-on stock and patched TrueNAS v27.0.0-RC.1 on the hosted Netcup test VM
+on stock and patched TrueNAS v27.0.0-RC.1 on a disposable TrueNAS test host
 (2026-10-27/28, see `LIVE-V1001-RUN-LOG.md`). The version columns also record
 the exact v27 nightly and v28 2026-10-27 v1001 runs summarized in `TODO.md`:
 `works`, `blocked: <why>`,
@@ -41,23 +41,23 @@ certify the current checkout or a later target state.
 
 | id | path | action | API methods | API (stock) | UI (stock) | UI (patched) | patch | size | verdict | lane : step | v27 | v28 |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| A-01 | A | Create the `boot-pool/user-data` root dataset | `pool.dataset.create` | refused (boot-pool excluded) | blocked: boot-pool not offered | works | `storage.patch` | done | works | `live-ui` : `path-a-root-ui` | PASS | pending |
-| A-02 | A | Create a child filesystem | `pool.dataset.create` | refused | blocked | works | `storage.patch` | done | works | `live-ui` : `dataset-ui` | PASS | PASS |
-| A-03 | A | Create a zvol | `pool.dataset.create` | refused | blocked | works | `storage.patch`, `zvol-blocksize.patch` | done | works | `live-ui` : `zvol-ui` | PASS | PASS |
-| A-04 | A | Add a container on `boot-pool` | `container.create`, `container.pool_choices` | refused | blocked | works | `storage.patch` | done | works | `live-ui` : `container-ui` | PASS | PASS |
-| A-05 | A | Create a VM on an existing zvol | `vm.create`, `vm.device.create` | refused | blocked | works | `storage.patch`, `libvirt.patch` | done | works | `live-ui` : `vm-ui` | PASS | PASS |
-| A-06 | A | Start/stop a container and a VM (TCG) | `container.start`, `vm.start`, `vm.stop` | refused (KVM required) | blocked | works | `libvirt.patch` | done | works | `live-ui-workloads` : `ui-action` | pending | pending |
-| A-07 | A | Open Shares, add an SMB/NFS share | `pool.query`, `sharing.smb.create`, `sharing.nfs.create` | works | blocked: Shares page gates on `pool.query`, which excludes boot-pool | works | `ui-pools.patch` | S | patch-UI | `live-ui` : `shares-ui` | PASS | pending |
-| A-08 | A | Export, modify, expand, replace, attach or detach boot-pool from the UI | `pool.export`, `pool.update`, `pool.expand`, `pool.upgrade`, `pool.replace`, `pool.attach`, `pool.detach`, `pool.offline`, `pool.online`, `pool.remove` | n/a | n/a | refused (synthetic row id 0 does not exist) | `ui-pools.patch` | S | n/a | `live-api-probe` : `refused-pool-mutations`; `live-api-probe` : `boot-pool-unchanged` | PASS | PASS |
+| A-01 | A | Create the `boot-pool/user-data` root dataset | `pool.dataset.create` | refused (boot-pool excluded) | blocked: boot-pool not offered | works | `path-a-dataset-api` | done | works | `live-ui` : `path-a-root-ui` | PASS | pending |
+| A-02 | A | Create a child filesystem | `pool.dataset.create` | refused | blocked | works | `path-a-dataset-api` | done | works | `live-ui` : `dataset-ui` | PASS | PASS |
+| A-03 | A | Create a zvol | `pool.dataset.create` | refused | blocked | works | `path-a-dataset-api`, `boot-pool-zvol-default` (v27 only) | done | works | `live-ui` : `zvol-ui` | PASS | PASS |
+| A-04 | A | Add a container on `boot-pool` | `container.create`, `container.pool_choices` | refused | blocked | works | `container-user-data-storage`, `path-a-dataset-api` | done | works | `live-ui` : `container-ui` | PASS | PASS |
+| A-05 | A | Create a VM on an existing zvol | `vm.create`, `vm.device.create` | refused | blocked | works | `path-a-dataset-api`, `workload-storage-path-guards`, `tcg-virtualization-api`, `libvirt-qemu-fallback` (v27 only) | done | works | `live-ui` : `vm-ui` | PASS | PASS |
+| A-06 | A | Start/stop a container and a VM (TCG) | `container.start`, `vm.start`, `vm.stop` | refused (KVM required) | blocked | works | `container-user-data-storage`, `tcg-virtualization-api`, `libvirt-qemu-fallback` (v27 only) | done | works | `live-ui-workloads` : `ui-action` | pending | pending |
+| A-07 | A | Open Shares, add an SMB/NFS share | `pool.query`, `sharing.smb.create`, `sharing.nfs.create` | works | blocked: Shares page gates on `pool.query`, which excludes boot-pool | works | `boot-storage-pool-ui` | S | patch-UI | `live-ui` : `shares-ui` | PASS | pending |
+| A-08 | A | Export, modify, expand, replace, attach or detach boot-pool from the UI | `pool.export`, `pool.update`, `pool.expand`, `pool.upgrade`, `pool.replace`, `pool.attach`, `pool.detach`, `pool.offline`, `pool.online`, `pool.remove` | n/a | n/a | refused (synthetic row id 0 does not exist) | `boot-storage-pool-ui` | S | n/a | `live-api-probe` : `refused-pool-mutations`; `live-api-probe` : `boot-pool-unchanged` | PASS | PASS |
 | A-09 | A | Add cache/log/special vdev | `pool.update` | refused for boot-pool zvols | UI steps show, no valid target | refused | - | L | API-TUI | `live-vdev-topology` : - | refused by design | pending |
 | B-01 | B | Reserve the free-tail partition (label `boot-disk-data`, ZFS type) | - | no method (partitioning is `sgdisk`) | not possible | not possible | - | M | API-TUI | `live-path-b-partition` : `result` | PASS | PASS |
-| B-02 | B | Create a pool on the reserved partition from the pool wizard | `pool.create`, `disk.details`, `core.get_methods` | `pool.create` takes disk names only (`vda4` -> EINVAL "disks not found in system"); `disk.details UNUSED` empty | blocked: wizard sees no disks | works: `disk.details` offers the partition, `pool.create` runs stock-property `zpool create` by PARTUUID and adopts it; unsupported create options and destructive export are refused; live `core.get_methods` schema drift fails before storage mutations | `ui-pools.patch` | M | patch-UI | `live-ui` : `path-b-pool-ui`; `live-api-probe` : `pool-create-schema-live-match`; `live-api-probe` : `details-lists-reserved-partition`; `live-api-probe` : `shim-create-on-partition`; `live-api-probe` : `shim-pool-registered`; `live-api-probe` : `shim-destroy-refused`; `live-api-probe` : `shim-destroy-partitions-unchanged`; `live-api-probe` : `shim-replace-does-not-touch-other-partitions`; `live-api-probe` : `shim-offline-does-not-touch-other-partitions`; `live-api-probe` : `shim-detach-does-not-touch-other-partitions`; `live-api-probe` : `shim-remove-does-not-touch-other-partitions` | PASS | PASS |
-| B-03 | B | Create a further pool on more free space of a device | `pool.create`, `disk.details` | blocked (free space is not a disk) | blocked | works once B-01 reserved another partition; carving free space from the UI is not offered | `ui-pools.patch` | L (carving) | API-TUI | `live-api-probe` : `details-lists-reserved-partition` | pending | pending |
-| B-04 | B | Datasets, zvols, containers and a VM on `boot-disk-data` | `pool.dataset.create`, `container.create`, `vm.create` | works | works | works | `storage.patch` | done | works | `live-ui` : `dataset-ui`; `live-ui` : `zvol-ui`; `live-ui` : `container-ui`; `live-ui` : `vm-ui` | PASS | PASS |
+| B-02 | B | Create a pool on the reserved partition from the pool wizard | `pool.create`, `disk.details`, `core.get_methods` | `pool.create` takes disk names only (`vda4` -> EINVAL "disks not found in system"); `disk.details UNUSED` empty | blocked: wizard sees no disks | works: `disk.details` offers the partition, `pool.create` runs stock-property `zpool create` by PARTUUID and adopts it; unsupported create options and destructive export are refused; live `core.get_methods` schema drift fails before storage mutations | `boot-storage-pool-ui`, `path-b-boot-attach-guard` (v27 only) | M | patch-UI | `live-ui` : `path-b-pool-ui`; `live-api-probe` : `pool-create-schema-live-match`; `live-api-probe` : `details-lists-reserved-partition`; `live-api-probe` : `shim-create-on-partition`; `live-api-probe` : `shim-pool-registered`; `live-api-probe` : `shim-destroy-refused`; `live-api-probe` : `shim-destroy-partitions-unchanged`; `live-api-probe` : `shim-replace-does-not-touch-other-partitions`; `live-api-probe` : `shim-offline-does-not-touch-other-partitions`; `live-api-probe` : `shim-detach-does-not-touch-other-partitions`; `live-api-probe` : `shim-remove-does-not-touch-other-partitions` | PASS | PASS |
+| B-03 | B | Create a further pool on more free space of a device | `pool.create`, `disk.details` | blocked (free space is not a disk) | blocked | works once B-01 reserved another partition; carving free space from the UI is not offered | `boot-storage-pool-ui` | L (carving) | API-TUI | `live-api-probe` : `details-lists-reserved-partition` | pending | pending |
+| B-04 | B | Datasets, zvols, containers and a VM on `boot-disk-data` | `pool.dataset.create`, `container.create`, `vm.create` | works | works | works | `container-user-data-storage`, `workload-storage-path-guards` | done | works | `live-ui` : `dataset-ui`; `live-ui` : `zvol-ui`; `live-ui` : `container-ui`; `live-ui` : `vm-ui` | PASS | PASS |
 | B-05 | B | Shares on `boot-disk-data` | `sharing.smb.create` | works | works (a real pool exists) | works | - | done | works | `live-ui` : `shares-ui` | PASS | pending |
 | B-06 | B | Adopt a hand-made pool on the partition | `pool.import_find`, `pool.import_pool` | works: listed and imported ONLINE, shows in `pool.query` | works (Import pool) | works | - | done | API-TUI | `live-api-probe` : `import-hand-made-pool` | PASS | PASS |
-| B-07 | B | Mirror the boot pool onto the partition | `boot.attach` | refused: internal TypeError (partition has no disk size) | n/a | refused (the boot pool's own partitions are never offered) | `ui-pools.patch` | - | n/a | `live-api-probe` : `boot-attach-refused-unchanged` | PASS | PASS |
-| B-08 | B | Reclaim an exported Path B partition for reuse | `pool.export`, `disk.details` | works: export with `destroy=false`, then use the guarded helper with the explicit pool name, PARTUUID, and expected pool GUID | blocked: no label-clear control | blocked: run `shared/reclaim_path_b.py`; the wizard can use the partition again afterward | `ui-pools.patch` | M | API-TUI | `live-api-probe` : `cleanup-partition-offered-again`; `live-ui` : `path-b-pool-ui` | PASS | PASS |
+| B-07 | B | Mirror the boot pool onto the partition | `boot.attach` | refused: internal TypeError (partition has no disk size) | n/a | refused (the boot pool's own partitions are never offered) | `boot-storage-pool-ui`, `path-b-boot-attach-guard` (v27 only) | - | n/a | `live-api-probe` : `boot-attach-refused-unchanged` | PASS | PASS |
+| B-08 | B | Reclaim an exported Path B partition for reuse | `pool.export`, `disk.details` | works: export with `destroy=false`, then use the guarded helper with the explicit pool name, PARTUUID, and expected pool GUID | blocked: no label-clear control | blocked: run `shared/reclaim_path_b.py`; the wizard can use the partition again afterward | `boot-storage-pool-ui` | M | API-TUI | `live-api-probe` : `cleanup-partition-offered-again`; `live-ui` : `path-b-pool-ui` | PASS | PASS |
 
 The B-08 API probe step validates cleanup of its own throwaway pool; by
 itself, it does not certify the operator reclaim helper. On 2026-10-30 the
@@ -72,27 +72,36 @@ separately checks that the wizard can use an offered partition.
 
 ## Patch inventory
 
-Every patch file below must exist and every patch file in the release
-directories must appear here.
+Each row names one metadata-bearing series patch; grouped legacy patch files
+are recorded in `manifest/hunk-map.json` and are not installer inputs. The
+[generated outline](PATCH-SERIES.md) shows the full metadata and hunk summary.
 
-| file | release | affects UI |
-|---|---|---|
-| `v27/middleware.patch` | v27 | no |
-| `v27/storage.patch` | v27 | yes |
-| `v27/libvirt.patch` | v27 | yes |
-| `v27/boot-mount.patch` | v27 | no |
-| `v27/zvol-blocksize.patch` | v27 | yes |
-| `v27/ui-pools.patch` | v27 | yes |
-| `v27-nightly-20261029/boot-mount.patch` | v27 | no |
-| `v27-nightly-20261029/middleware.patch` | v27 | no |
-| `v27-nightly-20261029/storage.patch` | v27 | yes |
-| `v27-nightly-20261029/libvirt.patch` | v27 | yes |
-| `v27-nightly-20261029/zvol-blocksize.patch` | v27 | yes |
-| `v27-nightly-20261029/ui-pools.patch` | v27 | yes |
-| `v28-nightly-20261029/boot-mount.patch` | v28 | no |
-| `v28-nightly-20261029/middleware.patch` | v28 | yes |
-| `v28-nightly-20261029/storage.patch` | v28 | yes |
-| `v28-nightly-20261029/ui-pools.patch` | v28 | yes |
+| file | Change-Id | release | affects UI |
+|---|---|---|---|
+| `v27/series/0001-path-a-dataset-api.patch` | `path-a-dataset-api` | v27 RC.1 | yes |
+| `v27/series/0002-container-user-data-storage.patch` | `container-user-data-storage` | v27 RC.1 | yes |
+| `v27/series/0003-workload-storage-path-guards.patch` | `workload-storage-path-guards` | v27 RC.1 | yes |
+| `v27/series/0004-boot-pool-user-data-mount.patch` | `boot-pool-user-data-mount` | v27 RC.1 | no |
+| `v27/series/0005-tcg-virtualization-api.patch` | `tcg-virtualization-api` | v27 RC.1 | yes |
+| `v27/series/0006-libvirt-qemu-fallback.patch` | `libvirt-qemu-fallback` | v27 RC.1 | yes |
+| `v27/series/0007-path-b-boot-attach-guard.patch` | `path-b-boot-attach-guard` | v27 RC.1 | no |
+| `v27/series/0008-boot-storage-pool-ui.patch` | `boot-storage-pool-ui` | v27 RC.1 | yes |
+| `v27/series/0009-boot-pool-zvol-default.patch` | `boot-pool-zvol-default` | v27 RC.1 | yes |
+| `v27-nightly-20261029/series/0001-path-a-dataset-api.patch` | `path-a-dataset-api` | v27 nightly | yes |
+| `v27-nightly-20261029/series/0002-container-user-data-storage.patch` | `container-user-data-storage` | v27 nightly | yes |
+| `v27-nightly-20261029/series/0003-workload-storage-path-guards.patch` | `workload-storage-path-guards` | v27 nightly | yes |
+| `v27-nightly-20261029/series/0004-boot-pool-user-data-mount.patch` | `boot-pool-user-data-mount` | v27 nightly | no |
+| `v27-nightly-20261029/series/0005-tcg-virtualization-api.patch` | `tcg-virtualization-api` | v27 nightly | yes |
+| `v27-nightly-20261029/series/0006-libvirt-qemu-fallback.patch` | `libvirt-qemu-fallback` | v27 nightly | yes |
+| `v27-nightly-20261029/series/0007-path-b-boot-attach-guard.patch` | `path-b-boot-attach-guard` | v27 nightly | no |
+| `v27-nightly-20261029/series/0008-boot-storage-pool-ui.patch` | `boot-storage-pool-ui` | v27 nightly | yes |
+| `v27-nightly-20261029/series/0009-boot-pool-zvol-default.patch` | `boot-pool-zvol-default` | v27 nightly | yes |
+| `v28-nightly-20261029/series/0001-path-a-dataset-api.patch` | `path-a-dataset-api` | v28 nightly | yes |
+| `v28-nightly-20261029/series/0002-container-user-data-storage.patch` | `container-user-data-storage` | v28 nightly | yes |
+| `v28-nightly-20261029/series/0003-workload-storage-path-guards.patch` | `workload-storage-path-guards` | v28 nightly | yes |
+| `v28-nightly-20261029/series/0004-boot-pool-user-data-mount.patch` | `boot-pool-user-data-mount` | v28 nightly | no |
+| `v28-nightly-20261029/series/0005-tcg-virtualization-api.patch` | `tcg-virtualization-api` | v28 nightly | yes |
+| `v28-nightly-20261029/series/0006-boot-storage-pool-ui.patch` | `boot-storage-pool-ui` | v28 nightly | yes |
 
 ## Notes and evidence
 

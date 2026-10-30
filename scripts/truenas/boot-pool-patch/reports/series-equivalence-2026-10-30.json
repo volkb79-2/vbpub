@@ -1,0 +1,437 @@
+{
+  "all_builds_identical": true,
+  "build_count": 3,
+  "builds": [
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "all_identical": true,
+      "build": "27.0.0-MASTER+20261029-173417",
+      "files": [
+        {
+          "file": "middlewared/async_validators.py",
+          "identical": true,
+          "legacy_sha256": "327b719330d0aed0eee6e8298050064a9d9dcd3397543dfb2a88a9b83ec748cb",
+          "series_sha256": "327b719330d0aed0eee6e8298050064a9d9dcd3397543dfb2a88a9b83ec748cb",
+          "stock_sha256": "8dd8707d0a24be1accca74a761594c298ee79cd4ead517bef2e848602dcc8108"
+        },
+        {
+          "file": "middlewared/plugins/boot.py",
+          "identical": true,
+          "legacy_sha256": "24093ef88764df0d7c400011b76760c1c4eb8275faa4c002918f7787ec692e9b",
+          "series_sha256": "24093ef88764df0d7c400011b76760c1c4eb8275faa4c002918f7787ec692e9b",
+          "stock_sha256": "ef791a26f28dcf123b710b8b53bb35998a738e201f0cce5bb6c18c5b54f7208b"
+        },
+        {
+          "file": "middlewared/plugins/container/container.py",
+          "identical": true,
+          "legacy_sha256": "4ce2cea685f595fdc1e227b7b46d1f83acaa7f698ec89aa0847084e137eae2a6",
+          "series_sha256": "4ce2cea685f595fdc1e227b7b46d1f83acaa7f698ec89aa0847084e137eae2a6",
+          "stock_sha256": "8b51d2a2d90eb10eb55a26a0b206d8ec856dfa537fd4c98a52b30a0640402097"
+        },
+        {
+          "file": "middlewared/plugins/container/dataset.py",
+          "identical": true,
+          "legacy_sha256": "7f72007f4f5499a230882413093eff60ca6a516faa058800fb1a66048a7c5f54",
+          "series_sha256": "7f72007f4f5499a230882413093eff60ca6a516faa058800fb1a66048a7c5f54",
+          "stock_sha256": "98b02756661cc13921b74e9cd349fd184be7479019f5867147edbc4d5a2c3079"
+        },
+        {
+          "file": "middlewared/plugins/container/image.py",
+          "identical": true,
+          "legacy_sha256": "052df0ed8d9e93cb6efc63aa6dce73019c8d96eba4b0905e7ef3bc6adfd23dd2",
+          "series_sha256": "052df0ed8d9e93cb6efc63aa6dce73019c8d96eba4b0905e7ef3bc6adfd23dd2",
+          "stock_sha256": "be727201b76974b524f8d346f53827e384b63ad496b7cb9c647a2f0d7764dbad"
+        },
+        {
+          "file": "middlewared/plugins/container/lifecycle.py",
+          "identical": true,
+          "legacy_sha256": "f2026cd8e3a1e91b73db4d7ceb3f1fe2747e53ed21e41cd81485551787d3cb5f",
+          "series_sha256": "f2026cd8e3a1e91b73db4d7ceb3f1fe2747e53ed21e41cd81485551787d3cb5f",
+          "stock_sha256": "426076f311a744e712a5f65372a99dcef240362d6dbdbc7dd1d0d2f418429b9b"
+        },
+        {
+          "file": "middlewared/plugins/container/utils.py",
+          "identical": true,
+          "legacy_sha256": "6fe96889929d9dbf26657f2c4ba13b96fbefc4111d8ce30ad119ba758e5520fd",
+          "series_sha256": "6fe96889929d9dbf26657f2c4ba13b96fbefc4111d8ce30ad119ba758e5520fd",
+          "stock_sha256": "a724c7ceb9813471911cda858de5b1163180a6374eac001df75be51e825ff315"
+        },
+        {
+          "file": "middlewared/plugins/disk_/availability.py",
+          "identical": true,
+          "legacy_sha256": "e1b0386ea6dc6f5865ead7c42b4bb38e18ecfa5c320aa8cae44c759576d02e0c",
+          "series_sha256": "e1b0386ea6dc6f5865ead7c42b4bb38e18ecfa5c320aa8cae44c759576d02e0c",
+          "stock_sha256": "2c7fb23ae47f16826e84607c1350ade66887cdd9960860150d117749c6fe73d9"
+        },
+        {
+          "file": "middlewared/plugins/pool_/dataset.py",
+          "identical": true,
+          "legacy_sha256": "8eaa9361a15cbaa703f10323b82f5a2dc6408cd3b1adf70166afe137fedc449f",
+          "series_sha256": "8eaa9361a15cbaa703f10323b82f5a2dc6408cd3b1adf70166afe137fedc449f",
+          "stock_sha256": "07c4717640c2bc016ccdbbe63858ed03f325cc4b5cd058e6ce4bf68d9340bb08"
+        },
+        {
+          "file": "middlewared/plugins/pool_/dataset_info.py",
+          "identical": true,
+          "legacy_sha256": "48c7256ec75f314a4329b5cefdd0c7dbf45ca1c1717b835fe061c0b5da782e01",
+          "series_sha256": "48c7256ec75f314a4329b5cefdd0c7dbf45ca1c1717b835fe061c0b5da782e01",
+          "stock_sha256": "437ee090a00fb877c8a030d60646b0e17ed1958b9817d6dcba9a046e95670720"
+        },
+        {
+          "file": "middlewared/plugins/pool_/dataset_query_utils.py",
+          "identical": true,
+          "legacy_sha256": "3a9146d2f13f0d3fdffa4b160993d78061d5618cee9cabe8b15db6285c3e3214",
+          "series_sha256": "3a9146d2f13f0d3fdffa4b160993d78061d5618cee9cabe8b15db6285c3e3214",
+          "stock_sha256": "66da11a41b89a0730f5cc292ba7f023b4dc8b8f0d84084f0e870f2d28304120e"
+        },
+        {
+          "file": "middlewared/plugins/pool_/export.py",
+          "identical": true,
+          "legacy_sha256": "3831477e514c3582b8b4c9b506a2ee5c266a5a51356f757c82570a5fac89ca68",
+          "series_sha256": "3831477e514c3582b8b4c9b506a2ee5c266a5a51356f757c82570a5fac89ca68",
+          "stock_sha256": "9a2ce0b4bdaf4b84cd9f72ee6327d5ba6340e13c65ce7e5232f2ffaf0d1c8321"
+        },
+        {
+          "file": "middlewared/plugins/pool_/import_pool.py",
+          "identical": true,
+          "legacy_sha256": "da294dfcbef77fe837270c10de831c51be585e8d4e1e9bc213ebdf0b5136710c",
+          "series_sha256": "da294dfcbef77fe837270c10de831c51be585e8d4e1e9bc213ebdf0b5136710c",
+          "stock_sha256": "112453a7cb4dd84c2a25c313278f8d91b88cb9dd336912911c1043ed11eb1588"
+        },
+        {
+          "file": "middlewared/plugins/pool_/pool.py",
+          "identical": true,
+          "legacy_sha256": "a61c8f54bb859e89adf6dc10fa91ab54edbff1b5740c10e2cf802cc53e49dc09",
+          "series_sha256": "a61c8f54bb859e89adf6dc10fa91ab54edbff1b5740c10e2cf802cc53e49dc09",
+          "stock_sha256": "69bc2630097975bb7c8547bf6feb7ae24f908a357e161c243d71b8520dd56270"
+        },
+        {
+          "file": "middlewared/plugins/vm/info.py",
+          "identical": true,
+          "legacy_sha256": "ac91d9a40792a5844221addb41afcfaa82e171c9fb0e37b0b2ecbecb90c013ba",
+          "series_sha256": "ac91d9a40792a5844221addb41afcfaa82e171c9fb0e37b0b2ecbecb90c013ba",
+          "stock_sha256": "472746556b11b512da0bcd29e925ac625870627d5b4d224401f55fc5147b34d5"
+        },
+        {
+          "file": "middlewared/plugins/vm/vm_devices.py",
+          "identical": true,
+          "legacy_sha256": "82c69da5a4553fe8aa3eb221ed026f739999510cf87168f1552f0d5fc379328e",
+          "series_sha256": "82c69da5a4553fe8aa3eb221ed026f739999510cf87168f1552f0d5fc379328e",
+          "stock_sha256": "a937cea6bbf6175fc2cd1c49ab50c9a1834b80dfff85eb18ed2ef1c1382c5e48"
+        },
+        {
+          "file": "middlewared/plugins/zfs/utils.py",
+          "identical": true,
+          "legacy_sha256": "a54823ab48072682b66193fda55aad1b24ebf8e2acbf791f8092efadf183c3d5",
+          "series_sha256": "a54823ab48072682b66193fda55aad1b24ebf8e2acbf791f8092efadf183c3d5",
+          "stock_sha256": "83a76048f1f740b54751a553bf9ec88879d9fcd7af763f9f6142541a1524d922"
+        },
+        {
+          "file": "middlewared/utils/libvirt/storage_devices.py",
+          "identical": true,
+          "legacy_sha256": "05647ba057a20e7fbab1dffc9948c51b356126ee21c7916a39da1d90c9a27aea",
+          "series_sha256": "05647ba057a20e7fbab1dffc9948c51b356126ee21c7916a39da1d90c9a27aea",
+          "stock_sha256": "16a8945d780d632c652c6b54f4b928c1c592d5b5f69df29f7c990d6d9311ad07"
+        },
+        {
+          "file": "truenas_pylibvirt/domain/vm/xml.py",
+          "identical": true,
+          "legacy_sha256": "b136eeb3063c048f9f2c77065e80b2f33485d2cbe8843d4b3acb7f079a9ba665",
+          "series_sha256": "b136eeb3063c048f9f2c77065e80b2f33485d2cbe8843d4b3acb7f079a9ba665",
+          "stock_sha256": "ff32f797999039a7aa45b8189430d78f8349bb77087f8b8b8638d940d9ed3bcf"
+        }
+      ],
+      "legacy_patch_count": 6,
+      "patched_file_count": 19,
+      "series_patch_count": 9,
+      "target_count": 19,
+      "target_manifest_sha256": "0a7ab3fd05ac0471cda4f48904fbae5c3221de9fa5eb977dcfaecdb245ccf3c1"
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "all_identical": true,
+      "build": "27.0.0-RC.1",
+      "files": [
+        {
+          "file": "middlewared/async_validators.py",
+          "identical": true,
+          "legacy_sha256": "327b719330d0aed0eee6e8298050064a9d9dcd3397543dfb2a88a9b83ec748cb",
+          "series_sha256": "327b719330d0aed0eee6e8298050064a9d9dcd3397543dfb2a88a9b83ec748cb",
+          "stock_sha256": "8dd8707d0a24be1accca74a761594c298ee79cd4ead517bef2e848602dcc8108"
+        },
+        {
+          "file": "middlewared/plugins/boot.py",
+          "identical": true,
+          "legacy_sha256": "24093ef88764df0d7c400011b76760c1c4eb8275faa4c002918f7787ec692e9b",
+          "series_sha256": "24093ef88764df0d7c400011b76760c1c4eb8275faa4c002918f7787ec692e9b",
+          "stock_sha256": "ef791a26f28dcf123b710b8b53bb35998a738e201f0cce5bb6c18c5b54f7208b"
+        },
+        {
+          "file": "middlewared/plugins/container/container.py",
+          "identical": true,
+          "legacy_sha256": "08d05351a24f118970a02eb331d11bbb5c2438af1c2daa66654f74fd3675b6fd",
+          "series_sha256": "08d05351a24f118970a02eb331d11bbb5c2438af1c2daa66654f74fd3675b6fd",
+          "stock_sha256": "c0e0c9f46dcfc6930018b350483e6068e37cd3a0c8f8ca1946fca64aa86a9972"
+        },
+        {
+          "file": "middlewared/plugins/container/dataset.py",
+          "identical": true,
+          "legacy_sha256": "7f72007f4f5499a230882413093eff60ca6a516faa058800fb1a66048a7c5f54",
+          "series_sha256": "7f72007f4f5499a230882413093eff60ca6a516faa058800fb1a66048a7c5f54",
+          "stock_sha256": "98b02756661cc13921b74e9cd349fd184be7479019f5867147edbc4d5a2c3079"
+        },
+        {
+          "file": "middlewared/plugins/container/image.py",
+          "identical": true,
+          "legacy_sha256": "052df0ed8d9e93cb6efc63aa6dce73019c8d96eba4b0905e7ef3bc6adfd23dd2",
+          "series_sha256": "052df0ed8d9e93cb6efc63aa6dce73019c8d96eba4b0905e7ef3bc6adfd23dd2",
+          "stock_sha256": "be727201b76974b524f8d346f53827e384b63ad496b7cb9c647a2f0d7764dbad"
+        },
+        {
+          "file": "middlewared/plugins/container/lifecycle.py",
+          "identical": true,
+          "legacy_sha256": "f2026cd8e3a1e91b73db4d7ceb3f1fe2747e53ed21e41cd81485551787d3cb5f",
+          "series_sha256": "f2026cd8e3a1e91b73db4d7ceb3f1fe2747e53ed21e41cd81485551787d3cb5f",
+          "stock_sha256": "426076f311a744e712a5f65372a99dcef240362d6dbdbc7dd1d0d2f418429b9b"
+        },
+        {
+          "file": "middlewared/plugins/container/utils.py",
+          "identical": true,
+          "legacy_sha256": "6fe96889929d9dbf26657f2c4ba13b96fbefc4111d8ce30ad119ba758e5520fd",
+          "series_sha256": "6fe96889929d9dbf26657f2c4ba13b96fbefc4111d8ce30ad119ba758e5520fd",
+          "stock_sha256": "a724c7ceb9813471911cda858de5b1163180a6374eac001df75be51e825ff315"
+        },
+        {
+          "file": "middlewared/plugins/disk_/availability.py",
+          "identical": true,
+          "legacy_sha256": "e1b0386ea6dc6f5865ead7c42b4bb38e18ecfa5c320aa8cae44c759576d02e0c",
+          "series_sha256": "e1b0386ea6dc6f5865ead7c42b4bb38e18ecfa5c320aa8cae44c759576d02e0c",
+          "stock_sha256": "2c7fb23ae47f16826e84607c1350ade66887cdd9960860150d117749c6fe73d9"
+        },
+        {
+          "file": "middlewared/plugins/pool_/dataset.py",
+          "identical": true,
+          "legacy_sha256": "82e997cefaaac4e20623c11808d8b30ef3b2372fe2b11eeb86bebc5a785115cf",
+          "series_sha256": "82e997cefaaac4e20623c11808d8b30ef3b2372fe2b11eeb86bebc5a785115cf",
+          "stock_sha256": "ea3b97564a0bf4e58c8cd25b9db1a7ee92fe60f78994fc9547c11b0cf79833ad"
+        },
+        {
+          "file": "middlewared/plugins/pool_/dataset_info.py",
+          "identical": true,
+          "legacy_sha256": "48c7256ec75f314a4329b5cefdd0c7dbf45ca1c1717b835fe061c0b5da782e01",
+          "series_sha256": "48c7256ec75f314a4329b5cefdd0c7dbf45ca1c1717b835fe061c0b5da782e01",
+          "stock_sha256": "437ee090a00fb877c8a030d60646b0e17ed1958b9817d6dcba9a046e95670720"
+        },
+        {
+          "file": "middlewared/plugins/pool_/dataset_query_utils.py",
+          "identical": true,
+          "legacy_sha256": "3a9146d2f13f0d3fdffa4b160993d78061d5618cee9cabe8b15db6285c3e3214",
+          "series_sha256": "3a9146d2f13f0d3fdffa4b160993d78061d5618cee9cabe8b15db6285c3e3214",
+          "stock_sha256": "66da11a41b89a0730f5cc292ba7f023b4dc8b8f0d84084f0e870f2d28304120e"
+        },
+        {
+          "file": "middlewared/plugins/pool_/export.py",
+          "identical": true,
+          "legacy_sha256": "3831477e514c3582b8b4c9b506a2ee5c266a5a51356f757c82570a5fac89ca68",
+          "series_sha256": "3831477e514c3582b8b4c9b506a2ee5c266a5a51356f757c82570a5fac89ca68",
+          "stock_sha256": "9a2ce0b4bdaf4b84cd9f72ee6327d5ba6340e13c65ce7e5232f2ffaf0d1c8321"
+        },
+        {
+          "file": "middlewared/plugins/pool_/import_pool.py",
+          "identical": true,
+          "legacy_sha256": "512bc0cf551bf83f9b4fde4bdf92c72e4b22872391816ee3feebbde79d6a4ab4",
+          "series_sha256": "512bc0cf551bf83f9b4fde4bdf92c72e4b22872391816ee3feebbde79d6a4ab4",
+          "stock_sha256": "96a677acc8d724c6c4777d57cfde51fb477a745cdda8ea46b49dbf6696381f4d"
+        },
+        {
+          "file": "middlewared/plugins/pool_/pool.py",
+          "identical": true,
+          "legacy_sha256": "a61c8f54bb859e89adf6dc10fa91ab54edbff1b5740c10e2cf802cc53e49dc09",
+          "series_sha256": "a61c8f54bb859e89adf6dc10fa91ab54edbff1b5740c10e2cf802cc53e49dc09",
+          "stock_sha256": "69bc2630097975bb7c8547bf6feb7ae24f908a357e161c243d71b8520dd56270"
+        },
+        {
+          "file": "middlewared/plugins/vm/info.py",
+          "identical": true,
+          "legacy_sha256": "ac91d9a40792a5844221addb41afcfaa82e171c9fb0e37b0b2ecbecb90c013ba",
+          "series_sha256": "ac91d9a40792a5844221addb41afcfaa82e171c9fb0e37b0b2ecbecb90c013ba",
+          "stock_sha256": "472746556b11b512da0bcd29e925ac625870627d5b4d224401f55fc5147b34d5"
+        },
+        {
+          "file": "middlewared/plugins/vm/vm_devices.py",
+          "identical": true,
+          "legacy_sha256": "becdb52c1c14c4dba5647b49b8b841c68ee63b9f204e2c7272197a12b625568c",
+          "series_sha256": "becdb52c1c14c4dba5647b49b8b841c68ee63b9f204e2c7272197a12b625568c",
+          "stock_sha256": "9e8a8bc059dae6a3313dd1a71e235b66d50642dcbc4bdd16fa4721d81a137478"
+        },
+        {
+          "file": "middlewared/plugins/zfs/utils.py",
+          "identical": true,
+          "legacy_sha256": "4b08985aa4fca1d1fc22f146d904a04a91cd863947b8ad20df1579fb92e5205a",
+          "series_sha256": "4b08985aa4fca1d1fc22f146d904a04a91cd863947b8ad20df1579fb92e5205a",
+          "stock_sha256": "a7fdba0d7a48a00df088fd1bb6d0ba6cf3ee4663777651fd3e2c0a4579977835"
+        },
+        {
+          "file": "middlewared/utils/libvirt/storage_devices.py",
+          "identical": true,
+          "legacy_sha256": "05647ba057a20e7fbab1dffc9948c51b356126ee21c7916a39da1d90c9a27aea",
+          "series_sha256": "05647ba057a20e7fbab1dffc9948c51b356126ee21c7916a39da1d90c9a27aea",
+          "stock_sha256": "16a8945d780d632c652c6b54f4b928c1c592d5b5f69df29f7c990d6d9311ad07"
+        },
+        {
+          "file": "truenas_pylibvirt/domain/vm/xml.py",
+          "identical": true,
+          "legacy_sha256": "5ace9475d945f53bfe9e35ed4f918ef7969cdfc860d8860ffc37ab3ae8b008f9",
+          "series_sha256": "5ace9475d945f53bfe9e35ed4f918ef7969cdfc860d8860ffc37ab3ae8b008f9",
+          "stock_sha256": "91e30f121fb65992445b54cf05383db7a4d9e6348a281cff3ec6dea17df3a40d"
+        }
+      ],
+      "legacy_patch_count": 6,
+      "patched_file_count": 19,
+      "series_patch_count": 9,
+      "target_count": 19,
+      "target_manifest_sha256": "a463dafe522264fd4ad7b2120d5b6d3b25180fe46d98a9ffc8ef1988b93d5d67"
+    },
+    {
+      "adapter_id": "v28-nightly-20261029",
+      "all_identical": true,
+      "build": "28.0.0-MASTER+20261029-175210",
+      "files": [
+        {
+          "file": "middlewared/async_validators.py",
+          "identical": true,
+          "legacy_sha256": "77988372b1b644f96de94cda3317a5a3f25dcf819308edf6aa36b02bf8501e4a",
+          "series_sha256": "77988372b1b644f96de94cda3317a5a3f25dcf819308edf6aa36b02bf8501e4a",
+          "stock_sha256": "23a722c488d62fe0548eee4018ed3ae4e3eb5d31c779513452efd42186e7d1a0"
+        },
+        {
+          "file": "middlewared/plugins/container/crud.py",
+          "identical": true,
+          "legacy_sha256": "d3680ec84e8f1553b6bd10f9d6b34715fabde04347e54261e4661d55908b2256",
+          "series_sha256": "d3680ec84e8f1553b6bd10f9d6b34715fabde04347e54261e4661d55908b2256",
+          "stock_sha256": "c9e34786a5b89201f04c96a5569e88c8af0894531f2bc296faf908ec185155df"
+        },
+        {
+          "file": "middlewared/plugins/container/dataset.py",
+          "identical": true,
+          "legacy_sha256": "835879b8213398a6205b2b14f904f747bd2ee8c868f562afc8e9a591a988b5b8",
+          "series_sha256": "835879b8213398a6205b2b14f904f747bd2ee8c868f562afc8e9a591a988b5b8",
+          "stock_sha256": "c289a621a6d294abc3907787cc0f7d05fd0dcebd1e937eaa5cbe16cdc920c632"
+        },
+        {
+          "file": "middlewared/plugins/container/info.py",
+          "identical": true,
+          "legacy_sha256": "0814c5dfac49c68933a2e7edaec468552190e679dcf176a067e988c70adf789d",
+          "series_sha256": "0814c5dfac49c68933a2e7edaec468552190e679dcf176a067e988c70adf789d",
+          "stock_sha256": "60c881ff44e5233fc7b260b7b1c77298561f107c32f135512df3d26243572721"
+        },
+        {
+          "file": "middlewared/plugins/container/lifecycle.py",
+          "identical": true,
+          "legacy_sha256": "f4fd86a622d18b714f909d23717e41467a01f1b5394e334250caf81d09a84248",
+          "series_sha256": "f4fd86a622d18b714f909d23717e41467a01f1b5394e334250caf81d09a84248",
+          "stock_sha256": "a641eab0298eda06352fcd2d14a90a7e67fe47bd8e677c1a40814bdcbdc704d4"
+        },
+        {
+          "file": "middlewared/plugins/container/query_pull_images.py",
+          "identical": true,
+          "legacy_sha256": "b1830fe86bba7aa178fefe800e2d77eb02c9e8c162b2b19bdb1b4e6d7fc036c7",
+          "series_sha256": "b1830fe86bba7aa178fefe800e2d77eb02c9e8c162b2b19bdb1b4e6d7fc036c7",
+          "stock_sha256": "ad66e58201f5e8ee9ba88153809537c1980cfb3bd3801da693e4377001b8bb12"
+        },
+        {
+          "file": "middlewared/plugins/container/utils.py",
+          "identical": true,
+          "legacy_sha256": "53e8582dcda323f5ac03572cddca71d1da83eb60fbbea1575468a0131ddb9859",
+          "series_sha256": "53e8582dcda323f5ac03572cddca71d1da83eb60fbbea1575468a0131ddb9859",
+          "stock_sha256": "a724c7ceb9813471911cda858de5b1163180a6374eac001df75be51e825ff315"
+        },
+        {
+          "file": "middlewared/plugins/disk_/availability.py",
+          "identical": true,
+          "legacy_sha256": "aa2236f48d924234b99b1696c70eabaa4e45ddf2d8e7ac47db958bffb180629f",
+          "series_sha256": "aa2236f48d924234b99b1696c70eabaa4e45ddf2d8e7ac47db958bffb180629f",
+          "stock_sha256": "fb2df91bd05ca8fabe58d0f3abb8a2479db0ac47b3e9cc997a976a44bf128053"
+        },
+        {
+          "file": "middlewared/plugins/pool_/dataset.py",
+          "identical": true,
+          "legacy_sha256": "e7c7470e62c3f484af66df00d98f601bee62cd4bd363dacff8af7058cecf6347",
+          "series_sha256": "e7c7470e62c3f484af66df00d98f601bee62cd4bd363dacff8af7058cecf6347",
+          "stock_sha256": "1ec7ea470c9cda41bf5e40977c91ca388f944e32f51050ef005a5fb588d5b2b7"
+        },
+        {
+          "file": "middlewared/plugins/pool_/dataset_query_utils.py",
+          "identical": true,
+          "legacy_sha256": "24c3390385184fa818cbb4e7fe71d4fe2720bdfc46cf4b580799ee8243cb09a2",
+          "series_sha256": "24c3390385184fa818cbb4e7fe71d4fe2720bdfc46cf4b580799ee8243cb09a2",
+          "stock_sha256": "be4f624763a2fc62f685e935680fd32c617aa20bffe887664fc6250148eea9bf"
+        },
+        {
+          "file": "middlewared/plugins/pool_/export.py",
+          "identical": true,
+          "legacy_sha256": "f71f0487cbb543ea70d29499d5db0feddbcff5d9c98aaabb1d353885dda07bd7",
+          "series_sha256": "f71f0487cbb543ea70d29499d5db0feddbcff5d9c98aaabb1d353885dda07bd7",
+          "stock_sha256": "bbcbb8d3660b1c2528d2ac4b7a5e7cde34729f7c3fa53a3f31d1f29feb241a56"
+        },
+        {
+          "file": "middlewared/plugins/pool_/import_pool.py",
+          "identical": true,
+          "legacy_sha256": "d11d2eeeed657fca231f007138a7deaa79b0834305ac48122b63db1c23f577e7",
+          "series_sha256": "d11d2eeeed657fca231f007138a7deaa79b0834305ac48122b63db1c23f577e7",
+          "stock_sha256": "b926903ec62ec5d2a2c2ead15b303d57f83d59d7d51dff52fcbf9fb8d8c6123d"
+        },
+        {
+          "file": "middlewared/plugins/pool_/pool.py",
+          "identical": true,
+          "legacy_sha256": "61db12aaf78a99d1b25eb2f1a58d2c46f8eabb49cf99e13380f1b6aa63c24667",
+          "series_sha256": "61db12aaf78a99d1b25eb2f1a58d2c46f8eabb49cf99e13380f1b6aa63c24667",
+          "stock_sha256": "675d65ad9be69ac7f13abda0b80115bb8d78777fd8144d53e0f198901170df45"
+        },
+        {
+          "file": "middlewared/plugins/vm/__init__.py",
+          "identical": true,
+          "legacy_sha256": "db20cc1bfa62bb7dda0a02e904a176d2e0917af8efcf5f7fb4d90a6da2d68bd7",
+          "series_sha256": "db20cc1bfa62bb7dda0a02e904a176d2e0917af8efcf5f7fb4d90a6da2d68bd7",
+          "stock_sha256": "0a3e809977bdbb3f98e259394b919f2448f2482564e54a2af76ad626552ba7ac"
+        },
+        {
+          "file": "middlewared/plugins/vm/crud.py",
+          "identical": true,
+          "legacy_sha256": "8287d8699795da4c8ef410a1fad85f40735461d85cab187f75658659cbf01af0",
+          "series_sha256": "8287d8699795da4c8ef410a1fad85f40735461d85cab187f75658659cbf01af0",
+          "stock_sha256": "e7654a77a10bd68d0a87a01f224bc128a1880f0868df8592906cf26e6b18fb2a"
+        },
+        {
+          "file": "middlewared/plugins/vm/info.py",
+          "identical": true,
+          "legacy_sha256": "4ff6ee51f6a066d6fd5be665fafbf0de70f9af19c8934686538ee0ae819e217f",
+          "series_sha256": "4ff6ee51f6a066d6fd5be665fafbf0de70f9af19c8934686538ee0ae819e217f",
+          "stock_sha256": "866d683be9c87058d99a5dba7a8323cbc8c95ed3540433e0bcd2cec4138e2c65"
+        },
+        {
+          "file": "middlewared/plugins/zfs/utils.py",
+          "identical": true,
+          "legacy_sha256": "4f1ca44d9b026d3ec884754f64bd1e635433cbbf310fe8522686dbb0e59dd30f",
+          "series_sha256": "4f1ca44d9b026d3ec884754f64bd1e635433cbbf310fe8522686dbb0e59dd30f",
+          "stock_sha256": "a1da11b8fc67c2bba3fafee399177aa29e3791be42b528288875490d29466b75"
+        },
+        {
+          "file": "middlewared/utils/libvirt/storage_devices.py",
+          "identical": true,
+          "legacy_sha256": "afa9a10e13b64e9efa24dc222ed10ce6375d6868af596ae5d92a0a343cecb115",
+          "series_sha256": "afa9a10e13b64e9efa24dc222ed10ce6375d6868af596ae5d92a0a343cecb115",
+          "stock_sha256": "d8969caae7e9656c85cd0939bade1a98ba9ae87c418e80110f6ced2213fc79d4"
+        }
+      ],
+      "legacy_patch_count": 4,
+      "patched_file_count": 18,
+      "series_patch_count": 6,
+      "target_count": 19,
+      "target_manifest_sha256": "8828c8dfd91617df0bb864c1c3e1687883db7176ea79ac459f6f2d39d7166acf"
+    }
+  ],
+  "patch_command": "patch --batch --fuzz=0 -p1",
+  "proof": "legacy and patchseries outputs are byte-identical per patched file",
+  "schema_version": 1
+}

@@ -401,7 +401,7 @@ def test_patched_rc1_to_registered_nightly_has_one_exact_reservation_migration()
     assert not any(path.endswith("record-zvol.volsize.rawvalue") for path in expected)
     assert values["patch.install_record.version"] == "27.0.0-MASTER+20261029-173417"
     assert values["patch.install_record.bundle_sha256"] == \
-        "60b3696c44768f9c6958791e8b46c2a205d5daede9c8ab29b23228c141b58e76"
+        "f3fa0be3d25ac3c9fc21a536028c10accf5e66978e5110eb096d443f1e23a702"
 
     vanilla = survival.expected_differences(
         mode="vanilla", profile="both", dataset_names=manifest["objects"]["datasets"],

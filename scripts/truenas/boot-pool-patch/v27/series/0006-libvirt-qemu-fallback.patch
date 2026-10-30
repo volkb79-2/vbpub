@@ -1,0 +1,41 @@
+From a9b57a64916e453169c267857ea88c2b1cd224c4 Mon Sep 17 00:00:00 2001
+From: TrueNAS Patch Series <patchseries@vbpub.invalid>
+Date: Fri, 30 Oct 2026 00:00:00 +0000
+Subject: [PATCH] Generate QEMU domains when KVM is unavailable
+
+Select QEMU domain XML only when KVM is unavailable, preserving KVM behavior otherwise.
+
+Change-Id: libvirt-qemu-fallback
+Capability: tcg-virtualization
+Role: plumbing
+Risk: medium
+Requires: tcg-virtualization-api
+Forwarded: not-needed
+---
+ truenas_pylibvirt/domain/vm/xml.py | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/truenas_pylibvirt/domain/vm/xml.py b/truenas_pylibvirt/domain/vm/xml.py
+index 68093b7bf94e01147fc6d5accea483eb05a40e89..1eb8bd2408e97f736a7d07a8bed8d888c03d6a45 100644
+--- a/truenas_pylibvirt/domain/vm/xml.py
++++ b/truenas_pylibvirt/domain/vm/xml.py
+@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
+ from xml.etree import ElementTree
+ 
+ from ...device.display import DisplayDevice, DisplayDeviceType
++from ...utils import kvm_supported
+ from ...xml import xml_element
+ from ..base.xml import BaseDomainXmlGenerator
+ from .configuration import VmBootloader, VmCpuMode
+@@ -20,7 +21,7 @@ class VmDomainXmlGenerator(BaseDomainXmlGenerator):
+     domain: VmDomain
+ 
+     def _type(self) -> str:
+-        return "kvm"
++        return "kvm" if kvm_supported() else "qemu"
+ 
+     def _os_xml(self) -> ElementTree.Element:
+         hvm_attributes = {}
+-- 
+2.55.0
+

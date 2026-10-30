@@ -3,8 +3,14 @@
 This exact-build adapter targets `27.0.0-MASTER+20261029-173417`. The running
 package tree was captured after the official updater installed the build. Its
 19 target files matched the previous v27 nightly reference byte for byte, and
-all six patch files passed zero-fuzz dry-runs against those captured files.
+all nine series patches passed zero-fuzz dry-runs against those captured files.
 The target manifest SHA-256 is `0a7ab3fd05ac0471cda4f48904fbae5c3221de9fa5eb977dcfaecdb245ccf3c1`.
+
+The adapter's nine one-change patches are in [`series/`](series/), with
+`Change-Id`, capability, role, risk, and dependency trailers. The generated
+[series outline](../PATCH-SERIES.md#change-outline) is the review inventory.
+The former grouped patch files are retained only in `legacy/` for equivalence
+and the frozen-build hunk bridge; installers package the series.
 
 The registry entry pins this version and target manifest. The next v27 RC
 adapter is registered separately; version-prefix matching does not authorize

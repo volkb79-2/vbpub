@@ -49,10 +49,22 @@ manifest_path, targets_path, version = sys.argv[1:]
 manifest = json.loads(Path(manifest_path).read_text())
 target_digest = hashlib.sha256(Path(targets_path).read_bytes()).hexdigest()
 targets = Path(targets_path).read_text().splitlines()
+patches = [
+    "0001-path-a-dataset-api.patch",
+    "0002-container-user-data-storage.patch",
+    "0003-workload-storage-path-guards.patch",
+    "0004-boot-pool-user-data-mount.patch",
+    "0005-tcg-virtualization-api.patch",
+    "0006-libvirt-qemu-fallback.patch",
+    "0007-path-b-boot-attach-guard.patch",
+    "0008-boot-storage-pool-ui.patch",
+    "0009-boot-pool-zvol-default.patch",
+]
 if version == "27.0.0-RC.1":
     expected = {
         "id": "v27-rc1", "version": version, "train": "TrueNAS-27-RC",
         "target_count": len(targets), "target_manifest_sha256": target_digest,
+        "series_dir": "series", "patches": patches,
     }
 elif re.fullmatch(r"27\.0\.0-MASTER\+(\d{8})-\d{6}", version):
     day = version.split("+", 1)[1].split("-", 1)[0]
@@ -61,6 +73,7 @@ elif re.fullmatch(r"27\.0\.0-MASTER\+(\d{8})-\d{6}", version):
         "train": "TrueNAS-27-Nightlies", "reapply_from": "27.0.0-RC.1",
         "reapply_from_bundle_sha256s": manifest.get("reapply_from_bundle_sha256s"),
         "target_count": len(targets), "target_manifest_sha256": target_digest,
+        "series_dir": "series", "patches": patches,
     }
     prior_digests = manifest.get("reapply_from_bundle_sha256s")
     if (not isinstance(prior_digests, list) or not prior_digests
@@ -72,6 +85,22 @@ else:
 if manifest != expected:
     raise SystemExit(f"adapter manifest does not match the exact supported build: {manifest!r}")
 PY
+patch_file_list=$(python3 - "$adapter_manifest" <<'PY'
+import json
+from pathlib import Path
+import sys
+manifest = json.loads(Path(sys.argv[1]).read_text())
+series_dir = manifest.get("series_dir")
+patches = manifest.get("patches")
+if series_dir != "series" or not isinstance(patches, list) or not patches:
+    raise SystemExit("adapter series list is missing or invalid")
+for name in patches:
+    if not isinstance(name, str) or name != Path(name).name or not name.endswith(".patch"):
+        raise SystemExit(f"unsafe adapter series filename: {name!r}")
+    print(f"{series_dir}/{name}")
+PY
+)
+mapfile -t patch_files <<< "$patch_file_list"
 [ ! -e /dev/kvm ] || fail '/dev/kvm exists; this is not the intended TCG target'
 
 if zfs list -H -o name boot-pool/user-data >/dev/null 2>&1; then
@@ -141,8 +170,8 @@ if issues:
     raise SystemExit(1)
 PY
 sha256sum --check --strict "$patch_dir/targets.sha256"
-for patch_file in middleware.patch storage.patch libvirt.patch boot-mount.patch zvol-blocksize.patch ui-pools.patch; do
-    [ -f "$patch_dir/$patch_file" ] || fail "v27 adapter is missing $patch_file"
+for patch_file in "${patch_files[@]}"; do
+    [ -f "$patch_dir/$patch_file" ] && [ ! -L "$patch_dir/$patch_file" ] || fail "v27 adapter is missing or unsafe: $patch_file"
     patch --dry-run --batch --fuzz=0 -p1 < "$patch_dir/$patch_file"
 done
 
@@ -152,7 +181,7 @@ trap restore_usr_readonly EXIT
 mount -o remount,rw /usr
 
 systemctl stop middlewared.service
-for patch_file in middleware.patch storage.patch libvirt.patch boot-mount.patch zvol-blocksize.patch ui-pools.patch; do
+for patch_file in "${patch_files[@]}"; do
     patch --batch --fuzz=0 -p1 < "$patch_dir/$patch_file"
 done
 install -m 0644 "$bundle_root/shared/virtualization_support.py" middlewared/plugins/vm/
@@ -160,7 +189,7 @@ install -m 0644 "$bundle_root/shared/boot_pool_user_data.py" middlewared/plugins
 install -m 0644 "$bundle_root/shared/boot_disk_partition.py" middlewared/plugins/
 install -m 0644 "$bundle_root/shared/pool_create_schema_v27.json" middlewared/plugins/
 
-for patch_file in middleware.patch storage.patch libvirt.patch boot-mount.patch zvol-blocksize.patch ui-pools.patch; do
+for patch_file in "${patch_files[@]}"; do
     patch --dry-run --batch --fuzz=0 --reverse -p1 < "$patch_dir/$patch_file"
 done
 
@@ -239,7 +268,10 @@ import sys
 
 version, bundle_root, verify_record = sys.argv[1:]
 root = Path(bundle_root)
-patch_text = (root / "v27/storage.patch").read_text()
+patch_files = sorted((root / "v27/series").glob("*.patch"))
+if not patch_files:
+    raise SystemExit("v27 patch bundle has no series files")
+patch_text = "\n".join(path.read_text() for path in patch_files)
 expected_guard = (
     "+        if user_data_root and not is_user_data_namespace_root(data['name'], "
     "BOOT_POOL_NAME_VALID) and is_user_data_namespace_path("

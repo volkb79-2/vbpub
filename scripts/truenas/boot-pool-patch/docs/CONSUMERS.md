@@ -35,6 +35,42 @@ The registered lane names are `unit`, `unit-boot-pool-patch`, `live-storage`,
 `live-ui-prepare-ssh`, `live-ui-observed-v1001`, `live-ui-workloads`,
 `live-vdev-topology`, and `live-inspect`.
 
+## Inspect and prove a series
+
+The exact build and its ordered patch filenames come from
+[`supported-builds.json`](../supported-builds.json). Each adapter's `series/`
+directory contains one Git patch per logical change. The generated
+[`PATCH-SERIES.md`](../PATCH-SERIES.md) lists its IDs, capabilities, roles,
+risks, dependencies, target files, hunks, and diffstat. Refresh or check the
+outline and legacy hunk bridge after editing series headers or patch bodies:
+
+```bash
+python3 scripts/truenas/boot-pool-patch/scripts/generate_series_views.py
+python3 scripts/truenas/boot-pool-patch/scripts/generate_series_views.py --check
+```
+
+Before registering a migrated or new exact build, prove its output against a
+clean stock source tree whose files match that adapter's `targets.sha256`.
+Repeat `--stock-root VERSION=PATH` for every build in the registry; the proof
+uses the old installer order and the new natural series order with GNU
+`patch --batch --fuzz=0 -p1` and emits one old/new SHA-256 row per patched
+file:
+
+```bash
+python3 scripts/truenas/boot-pool-patch/scripts/prove_series_equivalence.py \
+  --stock-root '27.0.0-RC.1=/path/to/rc1-stock' \
+  --stock-root '27.0.0-MASTER+20261029-173417=/path/to/v27-nightly-stock' \
+  --stock-root '28.0.0-MASTER+20261029-175210=/path/to/v28-nightly-stock'
+```
+
+The installer packages the selected series files; it does not read
+`legacy/` or `manifest/hunk-map.json`. Bundle hashes bind the archive layout,
+while post-install target hashes bind the installed bytes. The recorded
+conversion proof is
+[`series-equivalence-2026-10-30.json`](../reports/series-equivalence-2026-10-30.json).
+The design and compatibility reasoning is in the
+[series design guide](DESIGN-GUIDE.md#patch-series-and-bundle-identity).
+
 ## Update and reapply workflow
 
 1. Check `supported-builds.json` and the current update feed. If the feed
@@ -1104,8 +1140,8 @@ The only supported v28 build is the latest registered nightly,
 `28.0.0-MASTER+20261029-175210`. Its adapter contains 19 exact source
 fingerprints, four patch files, and a separate Path B partition shim. Its
 current bundle digest is
-`5366a8029f34162515e2b6c0935cf9b19abe3c41cc214886428af583d6db069b`. The
-captured Oct 29 source passes all 19 hash checks and four zero-fuzz patch
+`4ff5f7e9ba90481e2d663588ffa2c98b121f7e937343abfd61081b2d9dff9935`. The
+captured Oct 29 source passes all 19 hash checks and six zero-fuzz series
 checks. Previous Oct 14 and Oct 27 builds are retired; their logs remain
 historical and do not certify this adapter. See the [adapter record](../v28-nightly-20261029/README.md)
 and [acceptance results](../../docs/ACCEPTANCE-RESULTS.md).

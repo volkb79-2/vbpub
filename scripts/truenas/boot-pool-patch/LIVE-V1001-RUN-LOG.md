@@ -62,7 +62,7 @@ The host is the only mutable target (allowlist: server id 804027 /
 
 ## Phase 3 - ui-pools patch, action matrix, Path B API spike (2026-10-28)
 
-- `v27/ui-pools.patch` (pool.py): externally originated `pool.query` (UI/midclt) also returns
+- `v27/legacy/ui-pools.patch` (pool.py): externally originated `pool.query` (UI/midclt) also returns
   one read-only synthetic `boot-pool` row (id 0) while `/mnt/boot-pool/user-data` is mounted.
   live-ui Path A on stock+patch now PASSES incl. the Shares step
   (`live-ui-v1001-patha-2-20261028.log`). `pool.export 0` / `pool.update 0` fail with

@@ -3,5 +3,17 @@
   "target_count": 19,
   "target_manifest_sha256": "a463dafe522264fd4ad7b2120d5b6d3b25180fe46d98a9ffc8ef1988b93d5d67",
   "train": "TrueNAS-27-RC",
-  "version": "27.0.0-RC.1"
+  "version": "27.0.0-RC.1",
+  "series_dir": "series",
+  "patches": [
+    "0001-path-a-dataset-api.patch",
+    "0002-container-user-data-storage.patch",
+    "0003-workload-storage-path-guards.patch",
+    "0004-boot-pool-user-data-mount.patch",
+    "0005-tcg-virtualization-api.patch",
+    "0006-libvirt-qemu-fallback.patch",
+    "0007-path-b-boot-attach-guard.patch",
+    "0008-boot-storage-pool-ui.patch",
+    "0009-boot-pool-zvol-default.patch"
+  ]
 }

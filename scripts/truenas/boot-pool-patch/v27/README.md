@@ -1,6 +1,6 @@
 # TrueNAS 27 TCG patch experiment
 
-**Status: experimental, test-only.** The complete 15-target patch set has
+**Status: experimental, test-only.** The complete 19-target patch set has
 been applied to disposable `27.0.0-RC.1` QEMU overlays. Registered Path A and
 Path B storage gates now pass destroy/snapshot refusal against an existing
 middleware-managed container dataset and verify it survives. The Path B
@@ -46,87 +46,19 @@ were copied directly from that guest:
 
 The middleware source hashes were compared with the checked-out RC source.
 The pylibvirt XML file did not match the v28 source snapshot; its installed
-contents were copied and used as the patch base. The complete patch set has
-five patch files: `middleware.patch`, `storage.patch`, `libvirt.patch`,
-`boot-mount.patch`, and `zvol-blocksize.patch`. `targets.sha256` lists all 15
-release-specific target files. The zvol helper returns the existing 16K
+contents were copied and used as the patch base. The former grouped patch set has six files under `legacy/`. The current adapter
+has nine metadata-bearing patches in [`series/`](series/), one per logical
+change. `supported-builds.json` selects their natural filename order; the
+generated [`PATCH-SERIES.md`](../PATCH-SERIES.md) lists their IDs, dependencies,
+files, and diffstats. `targets.sha256` lists all 19 release-specific target
+files. The zvol helper returns the existing 16K
 recommendation only for `boot-pool`, which is excluded from `pool.query`; it
 keeps normal data-pool topology calculations unchanged. The helpers
 `virtualization_support.py` and `boot_pool_user_data.py` are copied separately.
 
-## Disposable test procedure
+## Historical disposable test procedure
 
-The test uses a QEMU QCOW2 overlay over the unmodified 27 RC test disk. Start
-QEMU with TCG and mask both virtualization flags:
-
-```sh
--machine q35,accel=tcg -cpu max,-vmx,-svm
-```
-
-The storage test target was 20 GiB. Its boot-pool partition (`/dev/vda3`)
-ended at sector `33554398`, just below the 16 GiB image boundary. The new
-`/dev/vda4` started at sector `33554432` and was 4 GiB. `zpool list` showed
-`boot-pool` at 15 GiB and `boot-disk-data` at 3.75 GiB. Partition 3 was not
-resized. This reserved tail is available when the bounded golden image is
-restored to a larger target; it would not exist on a vanilla installation
-that allocated the entire disk to partition 3.
-
-Inside TrueNAS, verify the negative condition before patching:
-
-```sh
-test ! -e /dev/kvm
-grep -m1 '^flags' /proc/cpuinfo
-midclt call vm.virtualization_details
-```
-
-The stock `vm.virtualization_details` result was `supported: false`. Copy the
-five patch files, `targets.sha256`, and both helpers into `/tmp/v27`. Verify
-every target hash before modifying the read-only `/usr` dataset. Stop
-`middlewared` while replacing its modules, compile the changed Python files,
-then restart it and restore the read-only mount:
-
-```sh
-zfs set readonly=off boot-pool/ROOT/27.0.0-RC.1/usr
-mount -o remount,rw /usr
-cd /usr/lib/python3/dist-packages
-sha256sum --check /tmp/v27/targets.sha256
-patch --dry-run --batch -p1 < /tmp/v27/middleware.patch
-patch --dry-run --batch -p1 < /tmp/v27/storage.patch
-patch --dry-run --batch -p1 < /tmp/v27/libvirt.patch
-patch --dry-run --batch -p1 < /tmp/v27/boot-mount.patch
-patch --dry-run --batch --fuzz=0 -p1 < /tmp/v27/zvol-blocksize.patch
-systemctl stop middlewared.service
-patch --batch -p1 < /tmp/v27/middleware.patch
-patch --batch -p1 < /tmp/v27/storage.patch
-patch --batch -p1 < /tmp/v27/libvirt.patch
-patch --batch -p1 < /tmp/v27/boot-mount.patch
-patch --batch --fuzz=0 -p1 < /tmp/v27/zvol-blocksize.patch
-install -m 0644 /tmp/v27/virtualization_support.py middlewared/plugins/vm/
-install -m 0644 /tmp/v27/boot_pool_user_data.py middlewared/plugins/
-python3 -m py_compile middlewared/plugins/vm/info.py \
-  middlewared/plugins/vm/virtualization_support.py \
-  middlewared/plugins/boot_pool_user_data.py \
-  middlewared/async_validators.py \
-  middlewared/plugins/pool_/dataset_query_utils.py \
-  middlewared/plugins/pool_/dataset.py \
-  middlewared/plugins/pool_/dataset_info.py \
-  middlewared/plugins/container/container.py \
-  middlewared/plugins/container/dataset.py \
-  middlewared/plugins/container/utils.py \
-  middlewared/plugins/container/image.py \
-  middlewared/plugins/container/lifecycle.py \
-  middlewared/plugins/pool_/import_pool.py \
-  middlewared/plugins/zfs/utils.py \
-  middlewared/plugins/vm/vm_devices.py \
-  middlewared/utils/libvirt/storage_devices.py \
-  truenas_pylibvirt/domain/vm/xml.py
-systemctl start middlewared.service
-systemctl is-active middlewared.service
-midclt call vm.virtualization_details
-midclt call vm.flags
-zfs set readonly=on boot-pool/ROOT/27.0.0-RC.1/usr
-mount -o remount,ro /usr
-```
+The recorded TCG API run below used the former grouped patch bundle on a disposable QEMU overlay. Its commands are retained as historical evidence only; use the registered `live-v27-patch` workflow for runtime application. Current patch files live in `series/`, and the byte-equivalence proof against the former bundle is linked from the parent [series outline](../PATCH-SERIES.md).
 
 The target file hashes matched, all five patches applied without fuzz, and
 all changed Python files compiled. After middleware restart, the patched API

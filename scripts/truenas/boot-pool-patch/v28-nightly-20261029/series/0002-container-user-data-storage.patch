@@ -1,0 +1,293 @@
+From e22e47f5907c44fddab10698ff6922d968de4f34 Mon Sep 17 00:00:00 2001
+From: TrueNAS Patch Series <patchseries@vbpub.invalid>
+Date: Fri, 30 Oct 2026 00:00:00 +0000
+Subject: [PATCH] Route container storage through the user-data namespace
+
+Keep container datasets, roots, image mounts, and lifecycle paths inside the selected user-data namespace.
+
+Change-Id: container-user-data-storage
+Capability: container-storage
+Role: plumbing
+Risk: medium
+Requires: path-a-dataset-api
+Forwarded: not-needed
+---
+ middlewared/plugins/container/crud.py         |  1 +
+ middlewared/plugins/container/dataset.py      | 23 ++++----
+ middlewared/plugins/container/info.py         | 53 +++++++++++++++----
+ middlewared/plugins/container/lifecycle.py    | 12 +++--
+ .../plugins/container/query_pull_images.py    |  4 +-
+ middlewared/plugins/container/utils.py        | 27 ++++++++--
+ 6 files changed, 89 insertions(+), 31 deletions(-)
+
+diff --git a/middlewared/plugins/container/crud.py b/middlewared/plugins/container/crud.py
+index fd9735137bf949644e4598471a166f1f54870d07..8dd26d829a45ca342373d7845525889c2ce2e964 100644
+--- a/middlewared/plugins/container/crud.py
++++ b/middlewared/plugins/container/crud.py
+@@ -220,6 +220,7 @@ class ContainerServicePart(CRUDServicePart[ContainerEntry]):
+                 self.s.zfs.resource.snapshot.clone,
+                 ZFSResourceSnapshotCloneArgsData(snapshot=image_snapshot, dataset=dataset, bypass=True),  # noqa
+             )
++            await self.call2(self.s.zfs.resource.mount, dataset)
+         else:
+             # The container is on the different pool. Let's replicate the image.
+             source_dataset, source_snapshot = image_snapshot.split('@', 1)  # noqa
+diff --git a/middlewared/plugins/container/dataset.py b/middlewared/plugins/container/dataset.py
+index 3cc9964fd91915ae177a9a09be2df109960c148e..36f91ffee4da9f33874ab1ca11ea76040f455535 100644
+--- a/middlewared/plugins/container/dataset.py
++++ b/middlewared/plugins/container/dataset.py
+@@ -6,12 +6,14 @@ from middlewared.utils.filesystem.perms import enforce_dir_perms
+ 
+ from .utils import CONTAINER_DS_NAME, container_dataset, container_dataset_mountpoint
+ 
+-CONTAINER_DS_PARENT_DIR = f"/mnt/{CONTAINER_DS_NAME}"
+-
+-
+ async def ensure_datasets(context: ServiceContext, pool: str) -> None:
+     main_dataset = container_dataset(pool)
+     main_dataset_mountpoint = container_dataset_mountpoint(pool)
++    effective_main_dataset_mountpoint = (
++        main_dataset_mountpoint
++        if main_dataset_mountpoint.startswith("/mnt/")
++        else f"/mnt{main_dataset_mountpoint}"
++    )
+ 
+     datasets = [f"{main_dataset}/containers", f"{main_dataset}/images"]
+ 
+@@ -23,10 +25,9 @@ async def ensure_datasets(context: ServiceContext, pool: str) -> None:
+             raise CallError(f"Expected dataset {dataset['name']!r} to be FILESYSTEM, but it is {dataset['type']}")
+ 
+         if dataset["name"] == main_dataset:
+-            main_dataset_mountpoint_value = f"/mnt{main_dataset_mountpoint}"
+-            if dataset["properties"]["mountpoint"]["value"] != main_dataset_mountpoint_value:
++            if dataset["properties"]["mountpoint"]["value"] != effective_main_dataset_mountpoint:
+                 raise CallError(
+-                    f"Expected dataset {dataset['name']} to have mountpoint of {main_dataset_mountpoint_value!r}, "
++                    f"Expected dataset {dataset['name']} to have mountpoint of {effective_main_dataset_mountpoint!r}, "
+                     f"but it is {dataset['properties']['mountpoint']['value']!r}."
+                 )
+ 
+@@ -47,7 +48,7 @@ async def ensure_datasets(context: ServiceContext, pool: str) -> None:
+             ),
+         )
+ 
+-    if not await context.to_thread(os.path.ismount, f"/mnt{main_dataset_mountpoint}"):
++    if not await context.to_thread(os.path.ismount, effective_main_dataset_mountpoint):
+         await context.call2(context.s.zfs.resource.mount, main_dataset)
+ 
+     for ds_name in datasets:
+@@ -57,7 +58,7 @@ async def ensure_datasets(context: ServiceContext, pool: str) -> None:
+             )
+         await context.call2(context.s.zfs.resource.mount, ds_name)
+ 
+-    # ZFS auto-creates CONTAINER_DS_PARENT_DIR as a side effect of mounting the
+-    # per-pool dataset. Restrict it so non-root host users can't traverse to
+-    # any container's on-disk rootfs (UID-collision exposure for apps user etc.).
+-    await context.to_thread(enforce_dir_perms, CONTAINER_DS_PARENT_DIR)
++    # ZFS creates the mountpoint's parent as a side effect of mounting the
++    # per-pool dataset. Restrict it so non-root host users cannot traverse to
++    # any container's on-disk rootfs (UID-collision exposure for apps users).
++    await context.to_thread(enforce_dir_perms, os.path.dirname(effective_main_dataset_mountpoint))
+diff --git a/middlewared/plugins/container/info.py b/middlewared/plugins/container/info.py
+index d04d183336ec6022a763fe27a8b07c64b142b986..70f5f0dab999c269aa7eb15b0745ececbae9845e 100644
+--- a/middlewared/plugins/container/info.py
++++ b/middlewared/plugins/container/info.py
+@@ -1,8 +1,14 @@
++import errno
++
+ from truenas_pylicensed.features import LicenseFeature
+ 
+ from middlewared.api.current import ZFSResourceQuery
+-from middlewared.plugins.zfs.utils import get_encryption_info
++from middlewared.plugins.boot_pool_user_data import (
++    USER_DATASET_COMPONENT, is_user_data_namespace_path, statfs_field,
++)
++from middlewared.plugins.zfs.utils import get_encryption_info, INTERNAL_PATHS
+ from middlewared.service import ServiceContext
++from middlewared.service_exception import CallError
+ from middlewared.utils.boot.pool import BOOT_POOL_NAME_VALID
+ from middlewared.utils.zfs import query_imported_fast_impl
+ 
+@@ -17,19 +23,46 @@ async def license_active(context: ServiceContext) -> bool:
+ async def pool_choices(context: ServiceContext) -> dict[str, str]:
+     pools = {}
+     imported_pools = await context.to_thread(query_imported_fast_impl)
++    boot_user_data_roots = {
++        f"{pool}/{USER_DATASET_COMPONENT}": pool
++        for pool in BOOT_POOL_NAME_VALID
++        if pool in {row['name'] for row in imported_pools.values()}
++    }
++    paths = [
++        pool['name']
++        for pool in imported_pools.values()
++        if pool['name'] not in BOOT_POOL_NAME_VALID
++    ] + sorted(boot_user_data_roots)
++
+     for ds in await context.call2(
+         context.s.zfs.resource.list_impl,
+-        ZFSResourceQuery(
+-            paths=[
+-                p['name']
+-                for p in imported_pools.values()
+-                if p['name'] not in BOOT_POOL_NAME_VALID
+-            ],
+-            properties=['encryption'],
+-        )
++        ZFSResourceQuery(paths=paths, properties=['encryption', 'quota', 'mountpoint', 'canmount']),
+     ):
++        pool_name = boot_user_data_roots.get(ds['name'], ds['name'])
++        if ds['name'] in boot_user_data_roots:
++            if not is_user_data_namespace_path(ds['name'], BOOT_POOL_NAME_VALID, INTERNAL_PATHS):
++                continue
++            properties = ds['properties']
++            quota = (properties.get('quota') or {}).get('value')
++            mountpoint = (properties.get('mountpoint') or {}).get('value')
++            canmount = (properties.get('canmount') or {}).get('value')
++            if (
++                type(quota) is not int or quota <= 0
++                or mountpoint != f"/mnt/{ds['name']}"
++                or canmount != 'on'
++            ):
++                continue
++            try:
++                mounted = await context.middleware.call('filesystem.statfs', mountpoint)
++            except CallError as e:
++                if e.errno == errno.ENOENT:
++                    continue
++                raise
++            if statfs_field(mounted, 'source') != ds['name'] or statfs_field(mounted, 'dest') != mountpoint:
++                continue
++
+         enc = get_encryption_info(ds['properties'])
+         if not enc.locked:
+-            pools[ds['name']] = ds['name']
++            pools[pool_name] = pool_name
+ 
+     return pools
+diff --git a/middlewared/plugins/container/lifecycle.py b/middlewared/plugins/container/lifecycle.py
+index fea05b3b59338da4f13dbdaaf7020969b65cd18f..91a80412fdbc250ea2de489c2c0c6070d9bc4dde 100644
+--- a/middlewared/plugins/container/lifecycle.py
++++ b/middlewared/plugins/container/lifecycle.py
+@@ -20,8 +20,9 @@ from middlewared.service import CallError, ServiceContext
+ from middlewared.utils.filesystem.perms import enforce_dir_perms
+ 
+ from .bridge import BRIDGE_NAME, configure_container_bridge
+-from .dataset import CONTAINER_DS_PARENT_DIR
+-from .utils import container_instance_dataset_mountpoint, update_etc_hosts, write_etc_hostname
++from .utils import (
++    container_dataset_real_path, container_instance_real_path, update_etc_hosts, write_etc_hostname,
++)
+ 
+ IDMAPPED_ROOT_DIR = "/run/truenas_containers/root"
+ 
+@@ -110,10 +111,11 @@ async def handle_shutdown(context: ServiceContext) -> None:
+ 
+ 
+ def start(context: ServiceContext, id_: int) -> None:
+-    enforce_dir_perms(CONTAINER_DS_PARENT_DIR)
++    container = context.run_coroutine(context.call2(context.s.container.get_instance, id_))
++    pool = container.dataset.split("/")[0]
++    enforce_dir_perms(os.path.dirname(container_dataset_real_path(pool)))
+     apply_idmapped_root_acl()
+ 
+-    container = context.run_coroutine(context.call2(context.s.container.get_instance, id_))
+     if any(
+         isinstance(device.attributes, ContainerNICDevice) and device.attributes.nic_attach == BRIDGE_NAME
+         for device in container.devices
+@@ -161,7 +163,7 @@ def pylibvirt_container(
+ 
+     dataset = data.pop("dataset")
+     pool = dataset.split("/")[0]
+-    data["root"] = f"/mnt/{container_instance_dataset_mountpoint(pool, data['name'])}"
++    data["root"] = container_instance_real_path(pool, data['name'])
+     if check_ds:
+         datasets = context.call_sync2(
+             context.s.zfs.resource.list_impl,
+diff --git a/middlewared/plugins/container/query_pull_images.py b/middlewared/plugins/container/query_pull_images.py
+index ee97ecdcb6dc54a37766e4837c1fd4a55a57eea7..f3ba1039b8656858eb25974e524f700209a52d2a 100644
+--- a/middlewared/plugins/container/query_pull_images.py
++++ b/middlewared/plugins/container/query_pull_images.py
+@@ -11,7 +11,7 @@ from middlewared.service import CallError, ServiceContext, ValidationErrors
+ from middlewared.utils.network import INTERNET_TIMEOUT
+ 
+ from .dataset import ensure_datasets
+-from .utils import container_dataset, container_dataset_mountpoint
++from .utils import container_dataset, container_dataset_real_path
+ 
+ if typing.TYPE_CHECKING:
+     from middlewared.job import Job
+@@ -77,7 +77,7 @@ def pull(context: ServiceContext, job: Job, pool: str, image: dict[str, typing.A
+ 
+             downloaded_size = 0
+ 
+-            mountpoint = f'/mnt{container_dataset_mountpoint(pool)}/{suffix}'
++            mountpoint = os.path.join(container_dataset_real_path(pool), suffix)
+             # Save tarball to mountpoint
+             tarball_path = os.path.join(mountpoint, 'image.tar')
+             try:
+diff --git a/middlewared/plugins/container/utils.py b/middlewared/plugins/container/utils.py
+index ee9b24e5e07e9e656b092e438d9e1752eaceb30a..00c11f713c8e886c0710e01fe7c7c8a62ac6a124 100644
+--- a/middlewared/plugins/container/utils.py
++++ b/middlewared/plugins/container/utils.py
+@@ -1,5 +1,11 @@
+ import os
+ 
++from middlewared.plugins.boot_pool_user_data import (
++    CONTAINER_DS_NAME as _CONTAINER_DS_NAME, USER_DATASET_COMPONENT,
++    container_instance_real_path as _container_instance_real_path,
++    container_mountpoint_property, container_mountpoint_real_path as _container_mountpoint_real_path,
++)
++from middlewared.utils.boot.pool import BOOT_POOL_NAME_VALID
+ from truenas_os_pyutils.io import atomic_write
+ 
+ __all__ = (
+@@ -7,21 +13,24 @@ __all__ = (
+     "container_dataset",
+     "container_dataset_mountpoint",
+     "container_instance_dataset_mountpoint",
++    "container_dataset_real_path",
++    "container_instance_real_path",
+     "update_etc_hosts",
+     "write_etc_hostname",
+ )
+ 
+-CONTAINER_DS_NAME = ".truenas_containers"
++CONTAINER_DS_NAME = _CONTAINER_DS_NAME
+ 
+ 
+ def container_dataset(pool: str) -> str:
+     """Returns the ZFS filesystem path for containers in `pool`."""
+-    return f"{pool}/{CONTAINER_DS_NAME}"
++    parent = f"{pool}/{USER_DATASET_COMPONENT}" if pool in BOOT_POOL_NAME_VALID else pool
++    return f"{parent}/{CONTAINER_DS_NAME}"
+ 
+ 
+ def container_dataset_mountpoint(pool: str) -> str:
+     """Returns the mount point for the container filesystem."""
+-    return f"/{CONTAINER_DS_NAME}/{pool}"
++    return container_mountpoint_property(pool, BOOT_POOL_NAME_VALID, CONTAINER_DS_NAME)
+ 
+ 
+ def container_instance_dataset_mountpoint(pool: str, container_name: str) -> str:
+@@ -29,6 +38,18 @@ def container_instance_dataset_mountpoint(pool: str, container_name: str) -> str
+     return f"{container_dataset_mountpoint(pool)}/containers/{container_name}"
+ 
+ 
++def container_dataset_real_path(pool: str) -> str:
++    """Return the host-visible path for this pool's container dataset."""
++    return _container_mountpoint_real_path(pool, BOOT_POOL_NAME_VALID, CONTAINER_DS_NAME)
++
++
++def container_instance_real_path(pool: str, container_name: str) -> str:
++    """Return the host-visible rootfs path for one managed container."""
++    return _container_instance_real_path(
++        pool, container_name, BOOT_POOL_NAME_VALID, CONTAINER_DS_NAME
++    )
++
++
+ def write_etc_hostname(rootfs: str, name: str) -> None:
+     with atomic_write(os.path.join(rootfs, 'etc/hostname'), 'w') as f:
+         f.write(f'{name}\n')
+-- 
+2.55.0
+

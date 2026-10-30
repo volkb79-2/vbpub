@@ -9,7 +9,8 @@ from typing import Mapping
 
 RC1_VERSION = "27.0.0-RC.1"
 NIGHTLY_VERSION = "27.0.0-MASTER+20261029-173417"
-RC1_BUNDLE_SHA256 = "50105fc127ab8a17e969d36eba5070efc76fbc0ef2a5dc52b27e2125d869e11c"
+RC1_BUNDLE_SHA256 = "9d96a3ae5603f33f470cf23929b5f3857a48b85d7055da76060a58bc0a6d0409"
+RC1_PREVIOUS_BUNDLE_SHA256 = "25e55abdad935ad3757bf86cdda21a4c41eb72172f4dbec1457a890dad02ed2a"
 RC1_PRIOR_BUNDLE_SHA256 = "23e7667f4893f26f4861b17edc20e73f00ae2f8b797f9ff95cde446af1f25de1"
 PATH_A_ROOT = "boot-pool/user-data"
 PATH_A_MOUNTPOINT = "/mnt/boot-pool/user-data"
@@ -31,7 +32,11 @@ _ADAPTERS = {
         version=NIGHTLY_VERSION,
         directory="v27-nightly-20261029",
         reapply_from=RC1_VERSION,
-        reapply_from_bundle_sha256s=(RC1_PRIOR_BUNDLE_SHA256, RC1_BUNDLE_SHA256),
+        reapply_from_bundle_sha256s=(
+            RC1_PRIOR_BUNDLE_SHA256,
+            RC1_PREVIOUS_BUNDLE_SHA256,
+            RC1_BUNDLE_SHA256,
+        ),
     ),
 }
 

@@ -137,8 +137,13 @@ target_sha=$(awk '$2 == "middlewared/plugins/pool_/dataset_info.py" {print $1}' 
 [ "$target_sha" = "$prior_source_sha" ] || fail 'replacement bundle does not bind the inspected original dataset_info.py fingerprint'
 actual_source_sha=$(sha256sum "$source_file" | awk '{print $1}')
 [ "$actual_source_sha" = "$prior_source_sha" ] || fail "installed dataset_info.py digest mismatch: $actual_source_sha"
+zvol_patch="$stage/v27/series/0009-boot-pool-zvol-default.patch"
+if [ ! -f "$zvol_patch" ]; then
+    zvol_patch="$stage/v27/zvol-blocksize.patch"
+fi
+[ -f "$zvol_patch" ] && [ ! -L "$zvol_patch" ] || fail 'replacement bundle has no safe boot-pool zvol patch'
 cd "$dist_root"
-patch --dry-run --batch --fuzz=0 -p1 < "$stage/v27/zvol-blocksize.patch"
+patch --dry-run --batch --fuzz=0 -p1 < "$zvol_patch"
 
 if [ -e "$archive_root" ]; then
     [ -d "$archive_root" ] && [ ! -L "$archive_root" ] || fail 'repair archive root is unsafe'
@@ -158,7 +163,7 @@ transaction_started=1
 systemctl stop middlewared.service
 zfs set readonly=off "$usr_dataset"
 mount -o remount,rw /usr
-patch --batch --fuzz=0 -p1 < "$stage/v27/zvol-blocksize.patch"
+patch --batch --fuzz=0 -p1 < "$zvol_patch"
 python3 -m py_compile "$source_file"
 systemctl start middlewared.service
 for attempt in $(seq 1 120); do

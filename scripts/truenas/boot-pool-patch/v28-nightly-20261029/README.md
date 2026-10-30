@@ -4,16 +4,22 @@
 v28 base. Older v28 nightlies are refused; update TrueNAS to the exact
 registered build and verify its version before applying this adapter.
 
-This adapter fingerprints 19 target files, uses four zero-fuzz patch files,
+This adapter fingerprints 19 target files, uses six zero-fuzz series patches,
 and includes the release-specific Path B pool wizard shim. Its target manifest
 SHA-256 is
 `8828c8dfd91617df0bb864c1c3e1687883db7176ea79ac459f6f2d39d7166acf` and its
 deterministic install-bundle SHA-256 is
-`5366a8029f34162515e2b6c0935cf9b19abe3c41cc214886428af583d6db069b`.
+`4ff5f7e9ba90481e2d663588ffa2c98b121f7e937343abfd61081b2d9dff9935`.
 
-The Oct 29 source capture verified all 19 fingerprints and all four patch
-anchors. The full live update, patch, API, and UI results are recorded
-separately in the generated [acceptance index](../../docs/ACCEPTANCE-RESULTS.md);
+The Oct 29 source capture verified all 19 fingerprints and all six current
+series patches in
+the former grouped patch set; the six current series files preserve the same
+installed bytes. The generated [series outline](../PATCH-SERIES.md#change-outline)
+records each change ID, dependency, file list, hunk count, and diffstat. The
+former grouped files remain under `legacy/` for the equivalence proof and
+frozen-build hunk bridge; the installer packages only `series/`. The full live
+update, patch, API, and UI results are recorded separately in the generated
+[acceptance index](../../docs/ACCEPTANCE-RESULTS.md);
 read its individual columns before treating any behavior as accepted. Results
 from the retired Oct 14 and Oct 27 adapters do not certify this build.
 

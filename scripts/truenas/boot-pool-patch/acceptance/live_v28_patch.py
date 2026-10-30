@@ -118,15 +118,20 @@ def deterministic_bundle(
 ) -> tuple[bytes, str, dict[str, str]]:
     """Create a stable bundle with closed member names and normalized metadata."""
     patch_dir = adapter_directory(version)
+    from patch_drift import get_supported_build
+
+    build = get_supported_build(version)
+    series_root = build["series_root"]
     target_hashes = read_target_hashes(version=version)
     paths_content = "".join(f"{name}\n" for name in target_hashes).encode()
     # The sole supported v28 base carries its release-specific installer and
     # Path B partition adapter in this directory.
     versioned = True
     bundle_files = [
-        ("patch/storage.patch", patch_dir / "storage.patch"),
-        ("patch/middleware.patch", patch_dir / "middleware.patch"),
-        ("patch/boot-mount.patch", patch_dir / "boot-mount.patch"),
+        *[
+            (f"patch/{build['series_dir']}/{name}", series_root / name)
+            for name in build["patches"]
+        ],
         ("patch/targets.sha256", patch_dir / "targets.sha256"),
         ("patch/adapter.json", patch_dir / "adapter.json"),
         ("patch/boot_pool_mount.py", patch_dir / "boot_pool_mount.py"),
@@ -143,7 +148,6 @@ def deterministic_bundle(
     ]
     if version == EXPECTED_VERSION:
         bundle_files.extend((
-            ("patch/ui-pools.patch", patch_dir / "ui-pools.patch"),
             ("shared/boot_disk_partition.py", patch_dir / "boot_disk_partition.py"),
             ("shared/pool_create_schema_v28.json", patch_dir / "pool_create_schema_v28.json"),
         ))
@@ -169,7 +173,14 @@ def deterministic_bundle(
             info.mtime = 0
             archive.addfile(info, io.BytesIO(paths_content))
     bundle = raw.getvalue()
-    return bundle, hashlib.sha256(bundle).hexdigest(), target_hashes
+    digest = hashlib.sha256(bundle).hexdigest()
+    expected_digest = build.get("install_bundle_sha256")
+    require(
+        isinstance(expected_digest, str) and digest == expected_digest,
+        f"v28 patch bundle digest differs from the exact-build registry for {version}: "
+        f"expected={expected_digest!r} actual={digest}",
+    )
+    return bundle, digest, target_hashes
 
 
 def bundle_transfer_command(stage: str, encoded: str, bundle_sha256: str) -> str:

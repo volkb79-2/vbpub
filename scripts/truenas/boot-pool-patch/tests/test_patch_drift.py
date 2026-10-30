@@ -39,7 +39,9 @@ def test_supported_build_manifest_covers_only_exact_registered_adapters() -> Non
         assert build["target_count"] == len(drift.read_target_hashes(manifest))
         assert hashlib.sha256(manifest.read_bytes()).hexdigest() == build["target_manifest_sha256"]
         assert build["patches"]
-        assert all((PATCH_ROOT / build["directory"] / name).is_file() for name in build["patches"])
+        assert all((build["series_root"] / name).is_file() for name in build["patches"])
+        assert all((PATCH_ROOT / build["directory"] / "legacy" / name).is_file()
+                   for name in build["legacy_patches"])
 
 
 def test_unknown_or_unlisted_build_fails_with_exact_supported_build_list() -> None:
@@ -113,6 +115,7 @@ def test_unknown_candidate_diagnostic_reports_precise_diff_without_mutating(tmp_
         "version": "27.0.0-MASTER+20261027-173422",
         "targets": {"middlewared/plugins/example.py": hashlib.sha256(b"supported source\n").hexdigest()},
         "patches": ["example.patch"],
+        "series_root": tmp_path / "adapter" / "series",
         "adapter_root": tmp_path / "adapter",
     }
     monkeypatch.setattr(drift, "get_supported_build", lambda _version: reference)

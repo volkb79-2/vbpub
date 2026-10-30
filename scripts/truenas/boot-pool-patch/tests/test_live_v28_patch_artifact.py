@@ -71,16 +71,18 @@ def test_v28_latest_nightly_has_its_own_exact_version_adapter() -> None:
         with tarfile.open(fileobj=compressed, mode="r:") as archive:
             names = {member.name for member in archive.getmembers()}
             assert {
-                "patch/ui-pools.patch",
+                "patch/series/0006-boot-storage-pool-ui.patch",
                 "shared/boot_disk_partition.py",
                 "shared/pool_create_schema_v28.json",
             } <= names
-            ui_patch = archive.extractfile("patch/ui-pools.patch")
+            ui_patch = archive.extractfile("patch/series/0006-boot-storage-pool-ui.patch")
             assert ui_patch is not None
             assert b"middlewared/plugins/pool_/pool.py" in ui_patch.read()
             apply_script = archive.extractfile("patch/apply_v28_patch_remote.sh")
             assert apply_script is not None
-            assert b"ui-pools.patch" in apply_script.read()
+            apply_source = apply_script.read()
+            assert b'series_dir = manifest.get("series_dir")' in apply_source
+            assert b'f"{series_dir}/{name}"' in apply_source
             replace_script = archive.extractfile("patch/replace_v28_patch_remote.sh")
             assert replace_script is not None
             replacement = replace_script.read()
@@ -182,7 +184,10 @@ def test_v28_path_a_can_coexist_with_an_unused_reserved_partition() -> None:
 
 
 def test_v28_latest_dataset_query_exposes_only_the_opted_in_boot_namespace() -> None:
-    patch = (PATCH_ROOT / "v28-nightly-20261029" / "storage.patch").read_text()
+    patch = "\n".join(
+        path.read_text()
+        for path in sorted((PATCH_ROOT / "v28-nightly-20261029" / "series").glob("*.patch"))
+    )
     assert "--- a/middlewared/plugins/pool_/dataset_query_utils.py" in patch
     assert "from middlewared.plugins.boot_pool_user_data import is_user_data_namespace_path" in patch
     assert "if name in BOOT_POOL_NAME_VALID:" in patch
@@ -280,15 +285,17 @@ def test_v28_bundle_is_deterministic_and_contains_only_reviewed_members() -> Non
             members = {member.name for member in archive.getmembers()}
     assert members == {
         "patch/adapter.json",
-        "patch/storage.patch",
-        "patch/middleware.patch",
-        "patch/boot-mount.patch",
+        "patch/series/0001-path-a-dataset-api.patch",
+        "patch/series/0002-container-user-data-storage.patch",
+        "patch/series/0003-workload-storage-path-guards.patch",
+        "patch/series/0004-boot-pool-user-data-mount.patch",
+        "patch/series/0005-tcg-virtualization-api.patch",
+        "patch/series/0006-boot-storage-pool-ui.patch",
         "patch/targets.sha256",
         "patch/targets.list",
         "patch/boot_pool_mount.py",
         "patch/apply_v28_patch_remote.sh",
         "patch/replace_v28_patch_remote.sh",
-        "patch/ui-pools.patch",
         "shared/boot_pool_user_data.py",
         "shared/boot_disk_partition.py",
         "shared/pool_create_schema_v28.json",

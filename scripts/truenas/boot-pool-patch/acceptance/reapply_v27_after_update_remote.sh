@@ -161,6 +161,17 @@ manifest_path, targets_path, version, prior_digest, mode = sys.argv[1:]
 manifest = json.loads(Path(manifest_path).read_text())
 match = re.fullmatch(r"27\.0\.0-MASTER\+(\d{8})-\d{6}", version)
 targets = Path(targets_path).read_text().splitlines()
+patches = [
+    "0001-path-a-dataset-api.patch",
+    "0002-container-user-data-storage.patch",
+    "0003-workload-storage-path-guards.patch",
+    "0004-boot-pool-user-data-mount.patch",
+    "0005-tcg-virtualization-api.patch",
+    "0006-libvirt-qemu-fallback.patch",
+    "0007-path-b-boot-attach-guard.patch",
+    "0008-boot-storage-pool-ui.patch",
+    "0009-boot-pool-zvol-default.patch",
+]
 expected = {
     "id": f"v27-nightly-{match.group(1)}" if match else None,
     "version": version,
@@ -169,6 +180,8 @@ expected = {
     "reapply_from_bundle_sha256s": manifest.get("reapply_from_bundle_sha256s"),
     "target_count": len(targets),
     "target_manifest_sha256": hashlib.sha256(Path(targets_path).read_bytes()).hexdigest(),
+    "series_dir": "series",
+    "patches": patches,
 }
 prior_digests = manifest.get("reapply_from_bundle_sha256s")
 if (match is None or not isinstance(prior_digests, list)
@@ -178,6 +191,22 @@ if (match is None or not isinstance(prior_digests, list)
         or manifest != expected):
     raise SystemExit(f"adapter manifest does not match the exact recovery contract: {manifest!r}")
 PY
+patch_file_list=$(python3 - "$patch_dir/adapter.json" <<'PY'
+import json
+from pathlib import Path
+import sys
+manifest = json.loads(Path(sys.argv[1]).read_text())
+series_dir = manifest.get("series_dir")
+patches = manifest.get("patches")
+if series_dir != "series" or not isinstance(patches, list) or not patches:
+    raise SystemExit("adapter series list is missing or invalid")
+for name in patches:
+    if not isinstance(name, str) or name != Path(name).name or not name.endswith(".patch"):
+        raise SystemExit(f"unsafe adapter series filename: {name!r}")
+    print(f"{series_dir}/{name}")
+PY
+)
+mapfile -t patch_files <<< "$patch_file_list"
 version=$(midclt call system.info | python3 -c 'import json,sys; print(json.load(sys.stdin).get("version", ""))')
 [ "$version" = "$expected_version" ] || fail "expected $expected_version, found $version"
 [ ! -e /dev/kvm ] || fail '/dev/kvm appeared; the recorded TCG target changed'
@@ -280,8 +309,8 @@ if [ "$mode" = uninstall-stale-record ]; then
     exit 0
 fi
 
-for patch_file in middleware.patch storage.patch libvirt.patch boot-mount.patch zvol-blocksize.patch ui-pools.patch; do
-    [ -f "$patch_dir/$patch_file" ] || fail "nightly adapter is missing $patch_file"
+for patch_file in "${patch_files[@]}"; do
+    [ -f "$patch_dir/$patch_file" ] && [ ! -L "$patch_dir/$patch_file" ] || fail "nightly adapter is missing or unsafe: $patch_file"
     patch --dry-run --batch --fuzz=0 -p1 < "$patch_dir/$patch_file"
 done
 bundle_archive="$bundle_root/bundle.tar.gz"
@@ -305,14 +334,14 @@ zfs set readonly=off "$usr_dataset"
 usr_writable=1
 mount -o remount,rw /usr
 systemctl stop middlewared.service
-for patch_file in middleware.patch storage.patch libvirt.patch boot-mount.patch zvol-blocksize.patch ui-pools.patch; do
+for patch_file in "${patch_files[@]}"; do
     patch --batch --fuzz=0 -p1 < "$patch_dir/$patch_file"
 done
 install -m 0644 "$bundle_root/shared/virtualization_support.py" middlewared/plugins/vm/
 install -m 0644 "$bundle_root/shared/boot_pool_user_data.py" middlewared/plugins/
 install -m 0644 "$bundle_root/shared/boot_disk_partition.py" middlewared/plugins/
 install -m 0644 "$bundle_root/shared/pool_create_schema_v27.json" middlewared/plugins/
-for patch_file in middleware.patch storage.patch libvirt.patch boot-mount.patch zvol-blocksize.patch ui-pools.patch; do
+for patch_file in "${patch_files[@]}"; do
     patch --dry-run --batch --fuzz=0 --reverse -p1 < "$patch_dir/$patch_file"
 done
 python3 -m py_compile middlewared/plugins/vm/info.py middlewared/plugins/vm/virtualization_support.py \

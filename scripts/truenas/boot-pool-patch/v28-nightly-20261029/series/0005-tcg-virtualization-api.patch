@@ -1,0 +1,92 @@
+From 0113f5876ae6cb4fec4ee482e6c0cc0d01b6c83e Mon Sep 17 00:00:00 2001
+From: TrueNAS Patch Series <patchseries@vbpub.invalid>
+Date: Fri, 30 Oct 2026 00:00:00 +0000
+Subject: [PATCH] Expose QEMU TCG as a non-KVM virtualization backend
+
+Report the QEMU TCG backend only when its architecture-specific system binary is executable.
+
+Change-Id: tcg-virtualization-api
+Capability: tcg-virtualization
+Role: enable
+Risk: medium
+Requires: none
+Forwarded: not-needed
+---
+ middlewared/plugins/vm/__init__.py | 4 ++--
+ middlewared/plugins/vm/crud.py     | 4 ++--
+ middlewared/plugins/vm/info.py     | 8 ++++----
+ 3 files changed, 8 insertions(+), 8 deletions(-)
+
+diff --git a/middlewared/plugins/vm/__init__.py b/middlewared/plugins/vm/__init__.py
+index bbe0b0cc3021b6fd74205d999315235ad436fa06..1e2c97fa24d6a0d240a524375528aa65f2334dab 100644
+--- a/middlewared/plugins/vm/__init__.py
++++ b/middlewared/plugins/vm/__init__.py
+@@ -3,7 +3,7 @@ from __future__ import annotations
+ import functools
+ import typing
+ 
+-from truenas_pylibvirt.utils import kvm_supported
++from .virtualization_support import virtualization_backend
+ 
+ from middlewared.api import api_method
+ from middlewared.api.current import (
+@@ -512,7 +512,7 @@ class VMService(GenericCRUDService[VMEntry]):
+         """
+         Returns "true" if system supports virtualization, "false" otherwise.
+         """
+-        return kvm_supported()
++        return virtualization_backend() is not None
+ 
+     @api_method(VMSuspendArgs, VMSuspendResult, roles=['VM_WRITE'], check_annotations=True)
+     def suspend(self, id_: int) -> None:
+diff --git a/middlewared/plugins/vm/crud.py b/middlewared/plugins/vm/crud.py
+index 42f8ce4f70839d616d991340df10438b7348c397..dcbfe2bab513a6ebcbef1317265be138011829d5 100644
+--- a/middlewared/plugins/vm/crud.py
++++ b/middlewared/plugins/vm/crud.py
+@@ -9,7 +9,7 @@ import uuid
+ 
+ from truenas_pylibvirt import DomainDoesNotExistError
+ from truenas_pylibvirt.domain.base.configuration import parse_numeric_set
+-from truenas_pylibvirt.utils import kvm_supported
++from .virtualization_support import virtualization_backend
+ 
+ from middlewared.api.current import (
+     VMCreate,
+@@ -376,7 +376,7 @@ class VMServicePart(CRUDServicePart[VMEntry]):
+             elif flags.amd_rvi:
+                 if vcpus > 1 and flags.amd_asids is False:
+                     verrors.add(f'{schema_name}.vcpus', 'Only one virtual CPU is allowed in this system.')
+-            elif not kvm_supported():
++            elif virtualization_backend() is None:
+                 verrors.add(schema_name, 'This system does not support virtualization.')
+ 
+         if data.arch_type or data.machine_type:
+diff --git a/middlewared/plugins/vm/info.py b/middlewared/plugins/vm/info.py
+index f1eb1cd8156b8b4fc995e4b37085c167e612e3c7..1368f4a76ef19f494f302ba8d96afeab2ac0533f 100644
+--- a/middlewared/plugins/vm/info.py
++++ b/middlewared/plugins/vm/info.py
+@@ -10,6 +10,7 @@ import typing
+ 
+ from truenas_pylibvirt import GuestAgentError
+ from truenas_pylibvirt.utils import kvm_supported
++from .virtualization_support import virtualization_backend
+ from truenas_pylibvirt.utils.cpu import get_cpu_model_choices
+ from truenas_pylicensed.features import LicenseFeature
+ 
+@@ -98,10 +99,9 @@ async def license_active(context: ServiceContext) -> bool:
+ 
+ 
+ def virtualization_details() -> VMVirtualizationDetails:
+-    supported = kvm_supported()
+-    error = None
+-    if not supported:
+-        error = 'Your CPU does not support KVM extensions'
++    backend = virtualization_backend()
++    supported = backend is not None
++    error = None if supported else 'No KVM or QEMU TCG VM backend is available'
+     return VMVirtualizationDetails(supported=supported, error=error)
+ 
+ 
+-- 
+2.55.0
+
