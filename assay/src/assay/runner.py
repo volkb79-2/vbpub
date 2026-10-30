@@ -110,6 +110,7 @@ from . import (
     r2_command,
     result_reports,
     safeio,
+    termination,
 )
 from .adapters.base import HelperInvocation, LanguageAdapter
 from .config import (
@@ -151,6 +152,7 @@ from .mutation_witness import (
 from .output import VerdictOutput
 from .process_tree import (
     ProcessTreeError,
+    ProcessTreeEvidence,
     ProcessTreeProcessRunner,
     ProcessTreeSpawnError,
 )
@@ -905,10 +907,14 @@ class CommandResult:
     #: Native R2 process-tree cleanup proof. A command that leaves adopted
     #: descendants is recorded as crashed even when its leader returned 0/1.
     process_tree_evidence: Mapping[str, Any] | None = None
-    #: Private gate-time observation around the R0 command, carried only so an
-    #: R1 coverage failure from that same run can also be withheld. It is not
-    #: serialized into the verdict; the claim remains the public evidence.
-    resource_contention: contention.ContentionObservation | None = None
+    #: Private gate-time observation around the command. It is not serialized
+    #: into the verdict; progress telemetry and termination classification
+    #: consume it while the command result is in memory.
+    observation: contention.ContentionObservation | None = None
+    #: Shared termination classification, populated for R0 baseline runs.
+    termination: termination.Termination | None = None
+    #: Whether a complete structured report supplied the command outcome.
+    decided_by_report: bool = False
 
 
 def resolve_command_plan(
@@ -1235,6 +1241,7 @@ def execute_plan(
     result_report: ResultReportConfig | None = None,
     result_report_create_missing_parents: bool = False,
     classify_resource_contention: bool = False,
+    classify_r0_termination: bool = False,
 ) -> CommandResult:
     """Execute one already-frozen command plan with a required remainder.
 
@@ -1266,12 +1273,11 @@ def execute_plan(
       -- actually takes. Wiring only the first two left the confirmed live
       reproduction unfixed while every test stayed green.)
 
-    Every other call site keeps the default and is therefore unchanged by
-    construction, with no per-caller opt-out to get wrong later: R2 candidate
-    re-executions, R3's canary halves (both the snapshot engine's and
-    :mod:`assay.canary`'s legacy standalone pipeline, which passes ``None``
-    explicitly through :func:`execute_command`), and the
-    ``environment_command`` probe.
+    Every other direct :func:`execute_plan` call keeps the default and is
+    therefore unchanged by construction: R2 candidate re-executions, R3's
+    snapshot canary halves, and the ``environment_command`` probe. The legacy
+    standalone canary pipeline explicitly opts out through
+    :func:`execute_command`, since that wrapper is otherwise an R0 API.
 
     A mutation candidate deliberately does NOT get this: a mutant's whole
     signal is whether the suite fails, ``jobs``-way concurrently against one
@@ -1281,12 +1287,12 @@ def execute_plan(
     different KIND of judgement from "did the wrapped suite pass".
 
     *classify_resource_contention* is a separate, default-off gate option for
-    only the lane's own R0 baseline/direct command. A direct pids/OOM event can
-    make a failed baseline measurement incomplete, while a completed PASS
-    remains final even when an event is observed. A failed command with an
-    unavailable required direct-counter sample is incomplete. PSI and CPU
-    throttling do not change the result. R2 candidates and R3
-    transforms keep their own classification paths.
+    only the lane's own R0 baseline/direct command. It captures resource
+    observations for classification and progress. *classify_r0_termination*
+    applies the shared termination table to R0 call sites; the shared engine's
+    other roles keep it off. A direct pids/OOM event can make a failed
+    baseline measurement incomplete, while a completed PASS remains final
+    even when an event is observed. PSI and CPU throttling are advisory only.
 
     *result_report_create_missing_parents* is B006(b)'s opt-in, threaded to
     :func:`_reserve_result_report`; only the snapshot baseline passes ``True``,
@@ -1307,7 +1313,7 @@ def execute_plan(
         plan.argv_appended if plan.cli_argv_appended is None else plan.cli_argv_appended
     )
     if consent_scoped_appended and not plan.allow_argv_append:
-        return CommandResult(
+        refused = CommandResult(
             plan=plan,
             outcome=Outcome.ERROR,
             reason_code=ReasonCode.EXEC_FAILED,
@@ -1317,6 +1323,12 @@ def execute_plan(
             started=iso_utc(started_at),
             ended=iso_utc(clock()),
         )
+        if classify_r0_termination:
+            return _classify_r0_result(
+                refused,
+                observation_required=classify_resource_contention,
+            )
+        return refused
     # (B043) The single re-rooting site. *cwd* is the project root the caller
     # resolved (a snapshot's, or the invoking checkout's); the lane's own
     # declared subdirectory is joined here, once, so the lane command, every
@@ -1334,6 +1346,7 @@ def execute_plan(
         if termination_requested():
             raise _lane_timeout("Assay termination was requested before child launch")
         try:
+            observation = None
             if classify_resource_contention:
                 with contention.ContentionWindow(
                     observer_socket_path=(
@@ -1351,17 +1364,7 @@ def execute_plan(
                         result_report=result_report,
                     )
                 observation = contention_window.observation
-                result = replace(result, resource_contention=observation)
-                if contention.withhold_r0_result(
-                    observation,
-                    outcome=result.outcome,
-                    require_observation=classify_resource_contention,
-                ):
-                    result = replace(
-                        result,
-                        outcome=Outcome.ERROR,
-                        reason_code=ReasonCode.EXEC_FAILED,
-                    )
+                result = replace(result, observation=observation)
             else:
                 result = _execute_plan_inner(
                     plan,
@@ -1372,6 +1375,11 @@ def execute_plan(
                     started_at=started_at,
                     reservation=reservation,
                     result_report=result_report,
+                )
+            if classify_r0_termination:
+                result = _classify_r0_result(
+                    result,
+                    observation_required=classify_resource_contention,
                 )
         except BaseException as exc:
             if termination_requested():
@@ -1555,6 +1563,7 @@ def _execute_plan_inner(
             started=iso_utc(started_at),
             ended=ended,
             process_tree_evidence=process_tree_evidence,
+            decided_by_report=summary is not None,
         )
     # B014's bounded tails are retained for every terminal that is NOT the
     # plain green run above -- which now includes a report-driven PASS over a
@@ -1598,6 +1607,7 @@ def _execute_plan_inner(
         started=iso_utc(started_at),
         ended=ended,
         process_tree_evidence=process_tree_evidence,
+        decided_by_report=summary is not None,
     )
 
 
@@ -1621,27 +1631,144 @@ def _gate_contention_attribution_enabled() -> bool:
     return os.environ.get("ASSAY_GATE_REQUIRE_RESOURCE_OBSERVATION") == "1"
 
 
-def _withhold_r1_claim_for_contention(
-    claim: Claim,
-    observation: contention.ContentionObservation | None,
+def _classify_r0_result(
+    result: CommandResult,
+    *,
+    observation_required: bool,
+) -> CommandResult:
+    """Attach the shared termination result and map incomplete FAILs to infra."""
+    observed = result.observation
+    process_tree = (
+        ProcessTreeEvidence.from_dict(result.process_tree_evidence)
+        if isinstance(result.process_tree_evidence, Mapping)
+        else None
+    )
+    term = termination.classify(
+        outcome=result.outcome,
+        reason_code=result.reason_code,
+        returncode=result.returncode,
+        decided_by_report=result.decided_by_report,
+        process_tree=process_tree,
+        limits=None if observed is None else observed.limits,
+        observation=(
+            "not_requested"
+            if observed is None or observed.status == "unobserved"
+            else observed.status
+        ),
+        observation_required=observation_required,
+    )
+    if result.outcome is Outcome.FAIL and term not in termination.JUDGEABLE:
+        return replace(
+            result,
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.EXEC_FAILED,
+            termination=term,
+        )
+    return replace(result, termination=term)
+
+
+def _resource_progress(result: CommandResult) -> dict[str, Any] | None:
+    """Render the command's private resource window for additive progress."""
+    observed = result.observation
+    if observed is None:
+        return None
+    window_s = max(
+        0.0,
+        (
+            datetime.fromisoformat(result.ended)
+            - datetime.fromisoformat(result.started)
+        ).total_seconds(),
+    )
+    pressure_unavailable = any(
+        "cgroup-pressure" in reason for reason in observed.reasons
+    )
+    pressure_observation = (
+        "not_requested"
+        if observed.status == "unobserved"
+        else "unavailable"
+        if pressure_unavailable
+        else "clear"
+    )
+    psi_us = {
+        name.removeprefix("cgroup_psi.").removesuffix("_us"): value
+        for name, value in observed.pressure_us.items()
+        if name.startswith("cgroup_psi.")
+    }
+    throttled = observed.pressure_us.get("cgroup_cpu.throttled_usec")
+    if throttled is None and pressure_observation == "clear":
+        throttled = 0
+    limits = observed.limits
+    limit_events = {} if limits is None else {
+        name: getattr(limits, name).delta
+        for name in (
+            "pids_events_max",
+            "memory_events_max",
+            "memory_events_oom",
+            "memory_events_oom_kill",
+            "memory_events_oom_group_kill",
+        )
+    }
+    return {
+        "window_s": window_s,
+        "observation": (
+            "not_requested" if observed.status == "unobserved" else observed.status
+        ),
+        "pressure_observation": pressure_observation,
+        "psi_us": psi_us,
+        "throttled_us": throttled,
+        "limit_events": limit_events,
+    }
+
+
+def _command_finished_event(result: CommandResult, *, phase: str) -> dict[str, Any]:
+    event: dict[str, Any] = {
+        "event": "command_finished",
+        "phase": phase,
+        "outcome": result.outcome.value,
+        "reason_code": (
+            result.reason_code.value if result.reason_code is not None else None
+        ),
+        "returncode": result.returncode,
+        "started": result.started,
+        "ended": result.ended,
+    }
+    resources = _resource_progress(result)
+    if resources is not None:
+        event["resources"] = resources
+    return event
+
+
+def _announce_r0_pressure(
+    result: CommandResult,
     *,
     diagnostics: "TextIO | None",
-) -> Claim:
-    """Replace an unclassifiable coverage judgement with infrastructure."""
-    if not isinstance(claim, Claim) or claim.rigor != "R1":
-        raise TypeError("claim must be an R1 Claim")
-    if observation is None or claim.status not in {Outcome.PASS, Outcome.FAIL}:
-        return claim
-    if not contention.withhold_r1_result(observation, outcome=claim.status):
-        return claim
-
-    refusal = AssayError(
-        "R1 coverage claim withheld because its R0 resource observation "
-        "cannot classify the failed run.",
-        outcome=Outcome.ERROR,
-        reason_code=ReasonCode.EXEC_FAILED,
+) -> None:
+    """Print one diagnostic-only hint for a failed R0 with pressure evidence."""
+    observed = result.observation
+    if (
+        diagnostics is None
+        or result.outcome is not Outcome.FAIL
+        or observed is None
+        or not observed.pressure_us
+    ):
+        return
+    window = _resource_progress(result)
+    window_us = 0.0 if window is None else window["window_s"] * 1_000_000
+    measurements = []
+    for name, delta in sorted(observed.pressure_us.items()):
+        percent = "n/a" if window_us <= 0 else f"{delta * 100 / window_us:.1f}%"
+        measurements.append(f"{name}={delta}us ({percent} of window)")
+    print(
+        "assay: advisory: R0 failed during measured resource pressure: "
+        + ", ".join(measurements),
+        file=diagnostics,
     )
-    announce_refusal(refusal, diagnostics=diagnostics)
+
+
+def _r1_after_r0(claim: Claim, baseline: termination.Termination | None) -> Claim:
+    """Replace R1 with infrastructure when its R0 baseline was not judgeable."""
+    if baseline is None or baseline in termination.JUDGEABLE:
+        return claim
     return Claim(
         rigor="R1",
         source="computed",
@@ -1664,6 +1791,7 @@ def execute_command(
     clock: Clock = _utc_now,
     result_report: ResultReportConfig | None = _LANE_DECLARED_REPORT,
     classify_resource_contention: bool = False,
+    classify_r0_termination: bool = True,
 ) -> CommandResult:
     """The R0 step (A-094): resolve the plan, then run it, and return a
     :class:`CommandResult` on every terminal path.
@@ -1702,14 +1830,14 @@ def execute_command(
     "no such file", "not executable", "not a directory": every shape of
     "the process could not be started") maps to ``ERROR``/``EXEC_FAILED``.
     ``subprocess.TimeoutExpired`` maps to ``BUDGET_EXCEEDED``/``LANE_TIMEOUT``.
-    Otherwise the exit code decides: 0 is ``PASS``; anything else is
-    ``FAIL``/``COMMAND_FAILED`` (A-073 -- an ordinary non-zero exit is a
-    judged R0 FAIL, never ``EXEC_FAILED``, and never a universal PASS).
-    The registered gate may opt into cgroup attribution for its own R0 call:
-    a direct pids/OOM event can make a failed R0 result incomplete, while a
-    completed PASS remains final even when an event is observed. A missing
-    required direct-counter sample can likewise make only a failed result
-    incomplete. PSI and CPU throttling do not change the result.
+    Otherwise the exit code decides: 0 is ``PASS``; a normal non-zero exit is
+    ``FAIL``/``COMMAND_FAILED``. The shared termination classifier preserves
+    self-inflicted fatal signals as judged failures and maps external signals
+    to ``ERROR/EXEC_FAILED`` with signal detail. The registered gate may opt
+    into cgroup attribution for its own R0 call: a direct pids/OOM event or a
+    required unavailable direct-counter sample can make a failed result
+    ``ERROR/EXEC_FAILED``; a completed PASS remains final. PSI and CPU
+    throttling do not change the result.
 
     **(B078) *result_report*** defaults to the sentinel
     :data:`_LANE_DECLARED_REPORT`, meaning "use ``lane.result_report``" --
@@ -1724,8 +1852,10 @@ def execute_command(
     own R0 command.
 
     *classify_resource_contention* is an internal gate opt-in. Its default is
-    false so library callers and tests do not acquire ambient-host-dependent
-    verdicts; registered gate R0 call sites opt in explicitly.
+    false so library callers do not acquire ambient-host-dependent evidence;
+    registered gate R0 call sites opt in explicitly. R0 termination
+    classification is enabled by default; the legacy canary pipeline opts out
+    because its command is a canary half rather than the lane's R0 baseline.
     """
     plan = resolve_command_plan(
         lane, argv_append=argv_append, passthrough_source=passthrough_source,
@@ -1753,6 +1883,7 @@ def execute_command(
             else result_report
         ),
         classify_resource_contention=classify_resource_contention,
+        classify_r0_termination=classify_r0_termination,
     )
 
 
@@ -1763,16 +1894,25 @@ def build_r0_claim(result: CommandResult) -> Claim:
     a caller (P05) that already has a :class:`CommandResult` never has to
     reconstruct this by hand.
     """
-    failing_test = (
-        first_failing_test(result.stdout_tail, result.stderr_tail)
-        if result.outcome is Outcome.FAIL
-        else None
-    )
-    detail = (
-        refusal_detail(f"R0 command failed; first failing test: {failing_test}")
-        if failing_test is not None
-        else None
-    )
+    detail = None
+    if result.termination is not None and result.termination not in termination.JUDGEABLE:
+        observation = result.observation
+        detail_text = termination.detail(
+            result.termination,
+            limits=None if observation is None else observation.limits,
+            observation_reasons=(
+                () if observation is None else observation.reasons
+            ),
+            returncode=result.returncode,
+        )
+        if detail_text is not None:
+            detail = refusal_detail(detail_text)
+    if detail is None and result.outcome is Outcome.FAIL:
+        failing_test = first_failing_test(result.stdout_tail, result.stderr_tail)
+        if failing_test is not None:
+            detail = refusal_detail(
+                f"R0 command failed; first failing test: {failing_test}"
+            )
     return Claim(
         rigor="R0",
         source="computed",
@@ -3223,6 +3363,7 @@ def _execute_snapshot_unit(
     progress_heartbeat_seconds: float | None = None,
     progress_phase: str = "baseline",
     classify_resource_contention: bool = False,
+    classify_r0_termination: bool = False,
 ) -> SnapshotUnitResult:
     """Run *plan* once inside *snapshot* -- the ONE engine the lane's own
     baseline, :mod:`assay.canary`'s control/transform halves, and (with its
@@ -3474,23 +3615,10 @@ def _execute_snapshot_unit(
             # A-073 on every single run rather than only the first.
             result_report_create_missing_parents=True,
             classify_resource_contention=classify_resource_contention,
+            classify_r0_termination=classify_r0_termination,
         )
     if progress is not None:
-        progress.emit(
-            {
-                "event": "command_finished",
-                "phase": progress_phase,
-                "outcome": result.outcome.value,
-                "reason_code": (
-                    result.reason_code.value
-                    if result.reason_code is not None
-                    else None
-                ),
-                "returncode": result.returncode,
-                "started": result.started,
-                "ended": result.ended,
-            }
-        )
+        progress.emit(_command_finished_event(result, phase=progress_phase))
 
     # (B053/DA-R8) One `dirty_paths` call and `head_rev` ONLY on the clean
     # branch -- the A-178 observation order is unchanged. What changed is that
@@ -4331,9 +4459,11 @@ def _run_prepared_lane(
             mutation_artifact=mutation_artifact,
             progress=progress_stream,
             progress_heartbeat_seconds=progress_heartbeat_seconds,
+            classify_r0_termination=True,
             classify_resource_contention=_gate_contention_attribution_enabled(),
         )
         result = unit.result
+        _announce_r0_pressure(result, diagnostics=diagnostics)
         if cold_witness:
             coverage_facts = receipt_facts(coverage_receipt)
             coverage_proof_failure = survivor_proof_failure(
@@ -4506,22 +4636,26 @@ def _run_prepared_lane(
                 # not declare R1 the coverage read's failure never becomes a
                 # claim at all, and announcing a refusal the verdict does not
                 # carry would be a line with no document behind it.
-                profile_detail = announce_refusal(
-                    unit.profile_error, diagnostics=diagnostics
+                profile_claim = Claim(
+                    rigor="R1",
+                    source="computed",
+                    status=unit.profile_error.outcome,
+                    verified_by_assay=True,
+                    reason_code=unit.profile_error.reason_code,
                 )
-                claims += (
-                    Claim(
-                        rigor="R1",
-                        source="computed",
-                        status=unit.profile_error.outcome,
-                        verified_by_assay=True,
-                        reason_code=unit.profile_error.reason_code,
+                r1_claim = _r1_after_r0(profile_claim, result.termination)
+                if r1_claim is profile_claim:
+                    profile_detail = announce_refusal(
+                        unit.profile_error, diagnostics=diagnostics
+                    )
+                    r1_claim = replace(
+                        profile_claim,
                         detail=profile_detail.text if profile_detail else None,
                         detail_dropped_bytes=(
                             profile_detail.dropped_bytes if profile_detail else None
                         ),
-                    ),
-                )
+                    )
+                claims += (r1_claim,)
             else:
                 relocated_lane = _relocate_source_roots(
                     lane,
@@ -4556,11 +4690,7 @@ def _run_prepared_lane(
                         helpers_seen
                     ),
                 )
-                r1_claim = _withhold_r1_claim_for_contention(
-                    r1_claim,
-                    result.resource_contention,
-                    diagnostics=diagnostics,
-                )
+                r1_claim = _r1_after_r0(r1_claim, result.termination)
                 claims += (r1_claim,)
                 if r1_claim.coverage is None:
                     # (A-407) The judge refused AFTER the oracle ran, so the
@@ -7403,23 +7533,11 @@ def run_lane(
                 # unit, which is wired separately (round-1 blocker 1).
                 result_report=lane.result_report,
                 classify_resource_contention=_gate_contention_attribution_enabled(),
+                classify_r0_termination=True,
             )
+        _announce_r0_pressure(result, diagnostics=diagnostics)
         if progress_stream is not None:
-            progress_stream.emit(
-                {
-                    "event": "command_finished",
-                    "phase": "direct",
-                    "outcome": result.outcome.value,
-                    "reason_code": (
-                        result.reason_code.value
-                        if result.reason_code is not None
-                        else None
-                    ),
-                    "returncode": result.returncode,
-                    "started": result.started,
-                    "ended": result.ended,
-                }
-            )
+            progress_stream.emit(_command_finished_event(result, phase="direct"))
         result_holder.append(result)
         return _finish_direct_r0_lane(
             lane,

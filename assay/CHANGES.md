@@ -8,12 +8,18 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - Sort declared whole-target paths when building R1 and native/ingested R2
   verdicts; avoid reporting pytest-cov's platform banner as the first failing
   test or treating R0 execution errors as measured test failures (B181).
+- Classify an external signal, direct resource-limit event, or required
+  unavailable observation on a failed R0 command as `ERROR/EXEC_FAILED` with
+  deterministic detail; preserve self-inflicted fatal signals such as
+  `SIGSEGV` as `FAIL/COMMAND_FAILED`, and keep completed PASS results final.
+- Make R1 inherit a non-judgeable R0 termination as `ERROR/EXEC_FAILED`, so a
+  coverage artifact cannot mask an infrastructure failure in its baseline.
 
 ### Changed
-- Add the pure termination classifier and separate resource-limit evidence,
-  pressure telemetry, and observation availability in the internal command
-  model. R0/R1/R3 verdict paths keep their 10.0.1 behavior in this WP1 step;
-  classifier wiring follows in WP2–WP4 (B173).
+- Include observed resource windows in `command_finished` progress events and
+  print one advisory line when a failed R0 ran under measured PSI or CPU
+  throttling. Keep host measurements out of verdict fields, claim details
+  except for causal infrastructure evidence, and command output tails (B173).
 
 <!-- cmru: release history -->
 

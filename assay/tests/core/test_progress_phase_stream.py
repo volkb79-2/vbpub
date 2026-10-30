@@ -30,8 +30,6 @@ from pathlib import Path
 
 import pytest
 
-import pytest
-
 from conftest import GitRepo
 
 from assay import contention, mutation, runner

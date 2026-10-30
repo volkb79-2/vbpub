@@ -2721,41 +2721,53 @@ PSI and CPU throttling do not change R0, R1 or R3 verdicts. There is no PSI
 percentage cutoff.
 
 A direct resource-limit event never changes a completed PASS. It makes a
-failed R0 command or R1 coverage claim an infrastructure error. An unavailable
-direct-counter observation can make a failed R0 claim an infrastructure error
-when the gate requires that evidence; PSI or CPU-stat sample availability alone
-does not withhold a failure. R1 reads the direct-limit window from its R0
-baseline. For R3, a direct limit event or unavailable required direct-counter
-observation makes a failed control or transform `INCONCLUSIVE`; completed
-PASSes remain final. Timeouts, execution errors and missing results remain
-incomplete. An `import-break` catch requires the transformed command to exit
-normally with a nonzero status and the expected `COMMAND_FAILED` reason. A
-signal death or report-derived `COMMAND_FAILED` with exit status zero is
-`INCONCLUSIVE`; Assay does not inspect
-captured output for an additional cause proof. The `uncovered-line` mechanism
-continues to use its R1 coverage comparison.
+failed R0 command an `ERROR/EXEC_FAILED`, with `Claim.detail` naming the
+counter delta. External `SIGKILL`, `SIGTERM`, `SIGINT` or `SIGHUP` also makes
+R0 `ERROR/EXEC_FAILED`, with the signal number in the detail. A self-inflicted
+fatal signal such as `SIGSEGV` remains a judged `FAIL/COMMAND_FAILED`; a direct
+limit event takes precedence over that signal. A complete report failure takes
+precedence over a signal. An unavailable direct-counter observation can make a
+failed R0 claim infrastructure when the gate requires that evidence. PSI and
+CPU-stat sample availability alone never withhold a failure. Timeouts retain
+their existing `BUDGET_EXCEEDED/LANE_TIMEOUT` status.
+
+R1 inherits an infrastructure termination from its R0 baseline as
+`ERROR/EXEC_FAILED`; it does not issue a separate coverage claim from an
+unjudgeable run. When R0 is judgeable, R1 still judges the coverage artifact
+with its existing rules. Resource-window data is progress-only:
+`command_finished.resources` carries the window duration, observation status,
+PSI deltas, CPU throttling duration, and direct limit-event deltas. A failed
+R0 with pressure measurements prints one advisory line with deltas and their
+share of the command window. Telemetry never mutates the captured command tail
+or adds that tail to `Claim.detail`; the existing first-failing-test summary
+is unchanged. For R3, a direct limit event or unavailable required
+direct-counter observation makes a failed control or transform
+`INCONCLUSIVE`; completed PASSes remain final. An `import-break` catch
+requires the transformed command to exit normally with a nonzero status and
+the expected `COMMAND_FAILED` reason. A signal death or report-derived
+`COMMAND_FAILED` with exit status zero is `INCONCLUSIVE`; Assay does not
+inspect captured output for an additional cause proof. The `uncovered-line`
+mechanism continues to use its R1 coverage comparison.
 
 R2 retains its candidate-scoped pids/OOM events and its pressure-adjusted
 liveness clock: PSI and CPU throttling pause that clock, while the lane's
 absolute budget still bounds the campaign. Candidate timeouts and hangs remain
 incomplete results.
 
-WP1's shared classifier applies the design precedence table to recorded
-outcomes. A direct limit event takes precedence over a self-inflicted fatal
-signal; without a limit event, SIGSEGV/SIGABRT/SIGBUS/SIGFPE/SIGILL remain
-functional failures. An already `INCONCLUSIVE` command outcome maps to a
-non-judgeable termination: R0/R1 refuse it as `ERROR/EXEC_FAILED`, R2 places it
-in `crashed`, and R3 keeps the attempt `INCONCLUSIVE`.
+The shared classifier applies the design precedence table. A direct limit
+event takes precedence over a self-inflicted fatal signal; without a limit
+event, SIGSEGV/SIGABRT/SIGBUS/SIGFPE/SIGILL remain functional failures. An
+already `INCONCLUSIVE` command outcome maps to a non-judgeable termination:
+R0/R1 refuse it as `ERROR/EXEC_FAILED`, R2 places it in `crashed`, and R3
+keeps the attempt `INCONCLUSIVE`. R0/R1 now consume this classification, and
+the two isolated-canary resource-window callers use the same classifier; the
+remaining R3 receipt alignment is a separate follow-up.
 
-The WP1 implementation retains the three `withhold_*` compatibility helpers
-and their type guards because the live R0/R1/R3 call sites still depend on
-them until WP2/WP3 wiring. The planned deletions are therefore not complete.
-The sampler filters `cgroup_cpu.nr_throttled` from `pressure_us`; that count is
-not telemetry, while duration fields such as `throttled_usec` remain. This
-filter is recorded as current behavior, not a verdict rule. `detail()` also
-takes an optional fourth `returncode` argument so an external signal detail
-can include its number. The classifier module is 132 lines, compared with the
-design's initial ~90-line estimate. `ContentionObservation` is unhashable
+The three `withhold_*` compatibility helpers and their type guards are
+deleted. The sampler filters `cgroup_cpu.nr_throttled` from `pressure_us`;
+that count is not telemetry, while duration fields such as `throttled_usec`
+remain. `detail()` takes an optional `returncode` argument so external-signal
+details can include the signal number. `ContentionObservation` is unhashable
 because its `pressure_us` mapping is read-only, and its status alone cannot
 certify that the command had no direct limit event.
 

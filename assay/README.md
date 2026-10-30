@@ -1514,10 +1514,15 @@ you're changing assay itself:
   across container `/tmp` namespaces. Docker names do not decide admission.
   For R0/R1/R3, a direct pids or memory OOM event in the measured cgroup is
   a limit event. PSI and CPU throttling do not change verdicts. A direct event
-  never changes a completed PASS. A direct event can make a failed
-  command or coverage claim an infrastructure error; an unavailable direct
-  counter observation can do the same when the gate requires that evidence.
-  PSI or CPU-stat sample availability alone never changes a failed verdict.
+  never changes a completed PASS. A direct event can make a failed R0 command
+  an infrastructure error; R1 inherits an infrastructure termination from
+  its R0 baseline. External SIGKILL, SIGTERM, SIGINT or SIGHUP also makes a
+  failed R0 command infrastructure, while a self-inflicted fatal signal such
+  as SIGSEGV remains a judged failure. An unavailable direct-counter
+  observation can make a failed command infrastructure when the gate requires
+  that evidence. PSI or CPU-stat sample availability alone never changes a
+  failed verdict. The design guide records the precedence rules, progress
+  fields and advisory diagnostic.
   R2 keeps its per-candidate event windows and pressure-adjusted liveness
   clock.
   Import-break canaries require the transformed command to exit normally with

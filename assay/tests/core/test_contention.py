@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-from assay.errors import Outcome
 
 from assay import contention, resource_limits
 
@@ -203,7 +202,7 @@ def test_contention_window_accepts_a_clear_cgroup_window(monkeypatch):
         ),
     ],
 )
-def test_psi_and_throttling_never_withhold_a_failed_r0(
+def test_contention_window_records_psi_and_throttling_deltas(
     monkeypatch, pressure_kwargs, expected_pressure_us
 ):
     window = _window(
@@ -214,9 +213,6 @@ def test_psi_and_throttling_never_withhold_a_failed_r0(
         pass
     assert window.observation.status == "clear"
     assert window.observation.pressure_us == expected_pressure_us
-    assert not contention.withhold_r0_result(
-        window.observation, outcome=Outcome.FAIL
-    )
 
 
 def test_contention_window_keeps_resource_limit_evidence(monkeypatch):
@@ -288,11 +284,6 @@ def test_only_unavailable_direct_counters_make_the_window_unavailable(monkeypatc
         pass
     assert unknown_window.observation == _observation(
         "clear", reasons=("cgroup-pressure-window-unavailable",)
-    )
-    assert not contention.withhold_r0_result(
-        unknown_window.observation,
-        outcome=Outcome.FAIL,
-        require_observation=True,
     )
 
 
@@ -391,155 +382,3 @@ def test_missing_counter_snapshot_is_unavailable_but_pressure_snapshot_is_clear(
         "unavailable" if expected_reason.startswith("resource-counter") else "clear"
     )
     assert expected_reason in window.observation.reasons
-
-
-@pytest.mark.parametrize(
-    ("observation", "outcome", "require_observation", "withhold"),
-    [
-        (_observation("clear"), Outcome.FAIL, False, False),
-        (_observation("clear", hit=True), Outcome.FAIL, False, True),
-        (_observation("clear", hit=True), Outcome.PASS, False, False),
-        (_observation("unavailable"), Outcome.FAIL, False, True),
-        (_observation("unavailable"), Outcome.PASS, False, False),
-        (contention.ContentionObservation("unobserved"), Outcome.FAIL, False, False),
-        (contention.ContentionObservation("unobserved"), Outcome.PASS, True, False),
-        (contention.ContentionObservation("unobserved"), Outcome.FAIL, True, True),
-    ],
-)
-def test_withhold_canary_result_for_incomplete_or_resource_limited_results(
-    observation, outcome, require_observation, withhold
-):
-    assert (
-        contention.withhold_canary_result(
-            observation,
-            outcome=outcome,
-            require_observation=require_observation,
-        )
-        is withhold
-    )
-
-
-def test_withhold_canary_result_validates_inputs():
-    with pytest.raises(TypeError, match="observation must"):
-        contention.withhold_canary_result("clear", outcome=Outcome.FAIL)
-    with pytest.raises(TypeError, match="outcome must"):
-        contention.withhold_canary_result(
-            _observation("clear"), outcome="FAIL"
-        )
-    with pytest.raises(TypeError, match="require_observation must be a bool"):
-        contention.withhold_canary_result(
-            contention.ContentionObservation("unobserved"),
-            outcome=Outcome.PASS,
-            require_observation=1,
-        )
-
-
-def test_gate_canary_retains_pass_without_a_resource_sample():
-    assert not contention.withhold_canary_result(
-        contention.ContentionObservation("unobserved"),
-        outcome=Outcome.PASS,
-        require_observation=True,
-    )
-    assert contention.withhold_canary_result(
-        contention.ContentionObservation("unobserved"),
-        outcome=Outcome.FAIL,
-        require_observation=True,
-    )
-
-
-@pytest.mark.parametrize(
-    ("status", "resource_limit_hit", "outcome", "withhold"),
-    [
-        ("clear", False, Outcome.FAIL, False),
-        ("clear", True, Outcome.FAIL, True),
-        ("unavailable", False, Outcome.FAIL, True),
-        ("unobserved", False, Outcome.FAIL, False),
-        ("clear", True, Outcome.PASS, False),
-        ("unobserved", False, Outcome.PASS, False),
-        ("unavailable", False, Outcome.PASS, False),
-        ("clear", False, Outcome.PASS, False),
-    ],
-)
-def test_withhold_r0_result_only_for_direct_limits_or_unclassifiable_failures(
-    status, resource_limit_hit, outcome, withhold
-):
-    assert (
-        contention.withhold_r0_result(
-            _observation(status, hit=resource_limit_hit),
-            outcome=outcome,
-        )
-        is withhold
-    )
-
-def test_limit_event_withholds_failed_r0():
-    assert contention.withhold_r0_result(
-        _observation("clear", hit=True),
-        outcome=Outcome.FAIL,
-    )
-
-
-def test_unavailable_required_sample_withholds_failed_r0():
-    assert contention.withhold_r0_result(
-        _observation(
-            "unavailable", reasons=("after-sample-unavailable:resource-counters",)
-        ),
-        outcome=Outcome.FAIL,
-        require_observation=True,
-    )
-
-
-def test_r0_unobserved_window_does_not_withhold_a_completed_pass():
-    assert not contention.withhold_r0_result(
-        contention.ContentionObservation("unobserved"),
-        outcome=Outcome.PASS,
-    )
-    assert (
-        contention.withhold_r0_result(
-            contention.ContentionObservation("unobserved"),
-            outcome=Outcome.PASS,
-            require_observation=True,
-        )
-        is False
-    )
-
-
-def test_withhold_r0_result_validates_inputs():
-    with pytest.raises(TypeError, match="observation must"):
-        contention.withhold_r0_result("clear", outcome=Outcome.FAIL)
-    with pytest.raises(TypeError, match="outcome must"):
-        contention.withhold_r0_result(
-            _observation("clear"),
-            outcome="FAIL",
-        )
-    with pytest.raises(TypeError, match="require_observation must be a bool"):
-        contention.withhold_r0_result(
-            contention.ContentionObservation("unobserved"),
-            outcome=Outcome.FAIL,
-            require_observation=1,
-        )
-
-
-@pytest.mark.parametrize(
-    ("observation", "outcome", "withhold"),
-    [
-        (_observation("clear"), Outcome.FAIL, False),
-        (_observation("clear", hit=True), Outcome.FAIL, True),
-        (_observation("clear", hit=True), Outcome.PASS, False),
-        (_observation("unavailable"), Outcome.PASS, False),
-        (_observation("unavailable"), Outcome.FAIL, True),
-        (contention.ContentionObservation("unobserved"), Outcome.FAIL, True),
-    ],
-)
-def test_withhold_r1_result_for_direct_limits_or_unavailable_failures(
-    observation, outcome, withhold
-):
-    assert contention.withhold_r1_result(observation, outcome=outcome) is withhold
-
-
-def test_withhold_r1_result_validates_inputs():
-    with pytest.raises(TypeError, match="observation must"):
-        contention.withhold_r1_result("clear", outcome=Outcome.FAIL)
-    with pytest.raises(TypeError, match="outcome must"):
-        contention.withhold_r1_result(
-            _observation("clear"), outcome="FAIL"
-        )

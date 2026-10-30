@@ -15,7 +15,6 @@ wall-clock wait: both are exercised here only through the INJECTED
 
 from __future__ import annotations
 
-import inspect
 import io
 import subprocess
 import sys
@@ -130,12 +129,9 @@ def test_gate_mode_failed_r0_is_not_withheld_for_psi_or_throttling(
     monkeypatch.setattr(contention_module, "ContentionWindow", lambda **kwargs: Window())
     lane = make_lane(argv=("/bin/sh", "-c", "exit 9"))
 
-    contention_kwargs = (
-        {"classify_resource_contention": True}
-        if "classify_resource_contention" in inspect.signature(runner.execute_command).parameters
-        else {}
+    result = runner.execute_command(
+        lane, cwd=tmp_path, classify_resource_contention=True
     )
-    result = runner.execute_command(lane, cwd=tmp_path, **contention_kwargs)
 
     assert result.outcome is expected_outcome
     assert result.reason_code is (
@@ -188,18 +184,15 @@ def test_gate_mode_pass_verdict_has_no_stderr_tail(
     monkeypatch.setattr(contention_module, "ContentionWindow", lambda **kwargs: Window())
     lane = make_lane(argv=("/bin/sh", "-c", "exit 0"))
 
-    contention_kwargs = (
-        {"classify_resource_contention": True}
-        if "classify_resource_contention" in inspect.signature(runner.execute_command).parameters
-        else {}
+    result = runner.execute_command(
+        lane, cwd=tmp_path, classify_resource_contention=True
     )
-    result = runner.execute_command(lane, cwd=tmp_path, **contention_kwargs)
 
     assert result.outcome is expected_outcome
     assert result.reason_code is (
         ReasonCode.EXEC_FAILED if expected_outcome is Outcome.ERROR else None
     )
-    assert getattr(result, "resource_contention", None) is Window.observation
+    assert result.observation is Window.observation
     assert result.stderr_tail is None
 
 
@@ -241,88 +234,6 @@ def _coverage_claim(status: Outcome) -> Claim:
     )
 
 
-def test_r1_claim_ignores_psi_and_throttling_but_retains_direct_limits():
-    adjust = getattr(runner, "_withhold_r1_claim_for_contention", None)
-    assert callable(adjust), "R1 must retain the R0 resource window for attribution"
-
-    pressured_failure = adjust(
-        _coverage_claim(Outcome.FAIL),
-        ContentionObservation(
-            "clear",
-            limits=LIMITS_CLEAR,
-            reasons=("cgroup_cpu.throttled_usec=1",),
-        ),
-        diagnostics=None,
-    )
-    assert pressured_failure.status is Outcome.FAIL
-    assert pressured_failure.reason_code is ReasonCode.UNCOVERED_LINES
-    assert pressured_failure.coverage is not None
-
-    affected_pass = _coverage_claim(Outcome.PASS)
-    assert adjust(
-        affected_pass,
-        ContentionObservation(
-            "clear",
-            limits=LIMITS_CLEAR,
-            reasons=("cgroup_cpu.throttled_usec=1",),
-        ),
-        diagnostics=None,
-    ) is affected_pass
-
-    direct_limit_pass = adjust(
-        _coverage_claim(Outcome.PASS),
-        ContentionObservation("clear", limits=LIMITS_HIT),
-        diagnostics=None,
-    )
-    assert direct_limit_pass.status is Outcome.PASS
-    assert direct_limit_pass.coverage is not None
-
-    direct_limit_fail = adjust(
-        _coverage_claim(Outcome.FAIL),
-        ContentionObservation("clear", limits=LIMITS_HIT),
-        diagnostics=None,
-    )
-    assert direct_limit_fail.status is Outcome.ERROR
-    assert direct_limit_fail.reason_code is ReasonCode.EXEC_FAILED
-    assert direct_limit_fail.detail is None
-
-    unknown_pass = adjust(
-        _coverage_claim(Outcome.PASS),
-        ContentionObservation("unavailable"),
-        diagnostics=None,
-    )
-    assert unknown_pass.status is Outcome.PASS
-
-    no_observation = _coverage_claim(Outcome.FAIL)
-    assert adjust(no_observation, None, diagnostics=None) is no_observation
-
-    already_infrastructure = Claim(
-        rigor="R1",
-        source="computed",
-        status=Outcome.ERROR,
-        verified_by_assay=True,
-        reason_code=ReasonCode.EXEC_FAILED,
-    )
-    assert adjust(
-        already_infrastructure,
-        ContentionObservation("unavailable"),
-        diagnostics=None,
-    ) is already_infrastructure
-
-    with pytest.raises(TypeError, match="claim must be an R1 Claim"):
-        adjust(
-            object(), ContentionObservation("clear", limits=LIMITS_CLEAR), diagnostics=None
-        )
-
-
-def test_r1_contention_adjustment_is_wired_after_coverage_judgement():
-    source = inspect.getsource(runner._run_prepared_lane)
-    assert "_withhold_r1_claim_for_contention(" in source
-    assert source.index("r1_claim = evaluate_r1(") < source.index(
-        "r1_claim = _withhold_r1_claim_for_contention("
-    ) < source.index("claims += (r1_claim,)")
-
-
 # --- a missing executable is ERROR/EXEC_FAILED, via the INJECTED seam only ---
 
 
@@ -342,6 +253,11 @@ def test_missing_executable_is_error_exec_failed_via_injection(tmp_path: Path):
         process_runner=_raise_file_not_found,
         clock=fixed_clock(MOMENT_A, MOMENT_B),
     )
+
+    assert result.outcome is Outcome.ERROR
+    assert result.reason_code is ReasonCode.EXEC_FAILED
+    assert result.returncode is None
+    assert result.stderr_tail == ""
 
 
 def _window_with_observation(monkeypatch, observation):
@@ -541,10 +457,6 @@ def test_command_tail_is_never_appended_by_assay(
     assert result.outcome is Outcome.FAIL
     assert result.stderr_tail == "the command's final output\n"
     assert claim.detail is None
-
-    assert result.outcome is Outcome.ERROR
-    assert result.reason_code is ReasonCode.EXEC_FAILED
-    assert result.returncode is None
 
 
 def _raise_permission_error(argv, *, env, cwd, timeout):

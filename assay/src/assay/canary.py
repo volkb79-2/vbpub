@@ -81,7 +81,7 @@ from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import Iterable, Mapping, Sequence
 
-from . import contention, git
+from . import contention, git, termination
 from .adapters.base import LanguageAdapter
 from .config import Lane
 from .coverage_parsers.model import CoverageProfile
@@ -89,6 +89,7 @@ from .diff import AddedLines
 from .errors import AssayError, Outcome, ReasonCode
 from .evaluate import evaluate_coverage
 from .isolation import SnapshotRepository
+from .process_tree import ProcessTreeEvidence
 from .runner import (
     Clock,
     CommandPlan,
@@ -291,6 +292,7 @@ def _run_pipeline(
         # `_execute_snapshot_unit`'s canary callers get the same exclusion for
         # free, by keeping `result_report`'s default there.
         result_report=None,
+        classify_r0_termination=False,
     )
     r0_claim = build_r0_claim(result)
     if _r1_unreached(r0_claim, lane):
@@ -481,6 +483,40 @@ def _judge_unit(
     return r1_claim.status, r1_claim.reason_code
 
 
+def _canary_failure_is_incomplete(
+    unit: SnapshotUnitResult,
+    *,
+    outcome: Outcome,
+    reason_code: ReasonCode | None,
+    observation: contention.ContentionObservation,
+    observation_required: bool,
+) -> bool:
+    """Use the shared termination table for a failed canary half."""
+    process_tree = (
+        ProcessTreeEvidence.from_dict(unit.result.process_tree_evidence)
+        if isinstance(unit.result.process_tree_evidence, Mapping)
+        else None
+    )
+    classified = termination.classify(
+        outcome=outcome,
+        reason_code=reason_code,
+        returncode=unit.result.returncode,
+        decided_by_report=(
+            unit.result.decided_by_report
+            and unit.result.outcome is Outcome.FAIL
+        ),
+        process_tree=process_tree,
+        limits=observation.limits,
+        observation=(
+            "not_requested"
+            if observation.status == "unobserved"
+            else observation.status
+        ),
+        observation_required=observation_required,
+    )
+    return outcome is Outcome.FAIL and classified not in termination.JUDGEABLE
+
+
 def run_isolated_canary(
     lane: Lane,
     *,
@@ -621,7 +657,7 @@ def run_isolated_canary(
                 outcome=Outcome.NO_MEASUREMENT,
                 reason_code=control_unit.post_reason,
             )
-        control_outcome, _ = _judge_unit(
+        control_outcome, control_reason_code = _judge_unit(
             lane,
             control_unit,
             repo=control_snapshot.root,
@@ -632,9 +668,11 @@ def run_isolated_canary(
             deadline=deadline,
             sensitive_values=_plan_passthrough_values(plan),
         )
-        if contention.withhold_canary_result(
-            control_contention.observation,
+        if _canary_failure_is_incomplete(
+            control_unit,
             outcome=control_outcome,
+            reason_code=control_reason_code,
+            observation=control_contention.observation,
             require_observation=require_contention_observation,
         ):
             control_outcome = Outcome.INCONCLUSIVE
@@ -727,9 +765,11 @@ def run_isolated_canary(
             observed_reason_code,
             transform_unit.result.returncode,
         )
-        if contention.withhold_canary_result(
-            transform_contention.observation,
+        if _canary_failure_is_incomplete(
+            transform_unit,
             outcome=transformed_outcome,
+            reason_code=observed_reason_code,
+            observation=transform_contention.observation,
             require_observation=require_contention_observation,
         ):
             transformed_outcome = Outcome.INCONCLUSIVE
