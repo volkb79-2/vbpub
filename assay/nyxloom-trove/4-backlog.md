@@ -13195,10 +13195,10 @@ unrepresentable. R2 itself: B169.
 
 ## B171 — whole-target start failures in the 2026-10-29 PWMCP and IOBench R2 runs
 
-**Status: IMPLEMENTED; focused registered gates pending.** The two campaign
-worktrees remain read-only evidence. PWMCP's R1 judgment producer forwarded
-the lane's package-grouped target declaration directly, while
-`JudgmentR1.__post_init__` requires Python-lexically sorted targets. The
+**Status: IMPLEMENTED; IOBench `r0-r1` gate PASS; Assay `tester-unified` queued.**
+The two campaign worktrees remain read-only evidence. PWMCP's R1 judgment
+producer forwarded the lane's package-grouped target declaration directly,
+while `JudgmentR1.__post_init__` requires Python-lexically sorted targets. The
 campaign log therefore stopped at verdict construction before mutation work.
 IOBench's captured R0 stdout reports 752 passed tests and coverage JSON; its
 `EXEC_FAILED` instead came from an adopted detached `setsid sleep` child in
@@ -13218,7 +13218,12 @@ docstring-only `src/iobench/__init__.py`, which has no executable lines.
 
 **Evidence and acceptance:** the captured IOBench artifact reports
 `752 passed in 111.58s`; there is no coverage threshold failure or missing
-dependency. Run the registered `assay` `tester-unified` and
-`libraries/iobench` `r0-r1` lanes after the fix is committed. Then, after this
-branch is merged, retry each R2 campaign from a new worktree based on the
-integrated `origin/main`; keep the failed campaign worktrees untouched.
+dependency. The registered `libraries/iobench` `r0-r1` lane passed with 754
+tests and 100% statement and branch coverage (log:
+`/tmp/run-gate/lanes/r0-r1/1209e88734533f9e2c762a92971d4933.log`). The Assay
+`tester-unified` lane is queued until the shared gate host is idle; its earlier
+admission attempt returned host-busy before tests ran (log:
+`/tmp/run-gate/lanes/tester-unified/6e7a425186146aa40b4e51b1d78214df.log`).
+After the Assay lane passes and this branch is merged, retry each R2 campaign
+from a new worktree based on the integrated `origin/main`; keep the failed
+campaign worktrees untouched.
