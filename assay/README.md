@@ -1507,9 +1507,9 @@ you're changing assay itself:
   `docker wait` status. The five registered Assay qualification lanes share a
   run-gate lock; a Git-common-directory lock also serializes B105 callers
   across container `/tmp` namespaces. Docker names do not decide admission.
-  For R0/R1/R3, `affected` means a direct pids or memory OOM event in the
-  measured cgroup; PSI and CPU throttling do not change verdicts. A direct
-  event never changes a completed PASS. A direct event can make a failed
+  For R0/R1/R3, a direct pids or memory OOM event in the measured cgroup is
+  a limit event. PSI and CPU throttling do not change verdicts. A direct event
+  never changes a completed PASS. A direct event can make a failed
   command or coverage claim an infrastructure error; an unavailable direct
   counter observation can do the same when the gate requires that evidence.
   PSI or CPU-stat sample availability alone never changes a failed verdict.

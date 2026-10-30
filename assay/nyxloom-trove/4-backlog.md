@@ -13300,6 +13300,8 @@ process-tree and resource-limit evidence. WP1 adds the decision table and
 separates observation availability, limit evidence, and pressure telemetry.
 The table includes an explicit non-judgeable `INCONCLUSIVE` termination and a
 self-inflicted-signal-plus-limit row, where `LIMIT_EVENT` wins per §2.
+Self-inflicted means any signal outside `EXTERNAL_SIGNALS`, matching the
+classifier predicate rather than limiting the rule to five common fatal signals.
 The existing R0/R1/R3 callers still use compatibility helpers until their
 classifier integrations land in WP2 and WP3; deleting those helpers in WP1
 alone would leave live callers broken. Preserve independent SQL qualification

@@ -1854,7 +1854,6 @@ def test_self_qualification_judges_share_the_complete_source_inventory():
         assert lane.judge is not None
         assert lane.judge.targets == qualification.judge.targets
 
-    assert preflight.judge is not None
     assert preflight.judge.mode == "whole_target"
     assert preflight.judge.fail_under == qualification.judge.fail_under == 100.0
     assert preflight.judge.require_branch is True

@@ -41,8 +41,8 @@ All `file:line` refer to the tip unless marked `main:` or `v10.0.0:`. Paths are 
 | R-1 | R0 command exits 0, or a complete structured report shows 0 failures | **PASS** | exit status / B078 report (`runner.py:1581`). Telemetry: progress only |
 | R-2 | R0 normal non-zero exit, no limit event, observation clear or not requested | **FAIL/COMMAND_FAILED** (unchanged meaning) | exit status. If the window shows PSI/throttle, Assay prints an advisory hint on stderr; the verdict is unaffected |
 | R-3 | R0 non-zero with a limit event in the own subtree (pids.events max, memory.events oom/oom_kill/oom_group_kill delta > 0) | **ERROR/EXEC_FAILED**, `Claim.detail` names the event | ContentionWindow limit deltas (`contention.py:142-190`); ancestor-only events are not attributed (`DESIGN-GUIDE.md:2722-2725`) |
-| R-4 | R0 leader killed by an external signal (rc ∈ {-9,-15,-2,-1}, or tree `leader_status == "signaled"`) | **ERROR/EXEC_FAILED**, detail `killed-by-signal:N` | `CommandResult.returncode` / `ProcessTreeEvidence.leader_status` (`process_tree.py:91-94`) |
-| R-5 | R0 leader died of SIGSEGV/SIGABRT/SIGBUS/SIGFPE/SIGILL (self-inflicted), with no higher-precedence evidence | **FAIL/COMMAND_FAILED** | rc < 0 with that signal; the product crashed itself |
+| R-4 | R0 leader killed by an external signal (rc ∈ {-9,-15,-2,-1}, or tree `leader_status == "signaled"` without a self-inflicted signal) | **ERROR/EXEC_FAILED**, detail `killed-by-signal:N` | `CommandResult.returncode` / `ProcessTreeEvidence.leader_status` (`process_tree.py:91-94`) |
+| R-5 | R0 leader died from any signal outside `EXTERNAL_SIGNALS` (self-inflicted), with no higher-precedence evidence | **FAIL/COMMAND_FAILED** | rc < 0 with a signal outside `EXTERNAL_SIGNALS`; the process died from a signal not classified as external |
 | R-6 | R0 non-zero in gate mode (`ASSAY_GATE_REQUIRE_RESOURCE_OBSERVATION=1`) with the observation unavailable | **ERROR/EXEC_FAILED**, detail names the missing sample | ContentionWindow availability. Applies only to non-PASS |
 | R-7 | R0 PASS with a limit event or unavailable sample | **PASS** (change vs tip `contention.py:282-283`) | rule 1. Event goes to progress `resources` |
 | R-8 | R0 Assay wall budget expires | **BUDGET_EXCEEDED/LANE_TIMEOUT** (unchanged) | `runner.py:1451-1497` |
@@ -67,10 +67,11 @@ Precedence inside `classify()` (top wins): NOT_RUN (ERROR/NO_MEASUREMENT without
 
 Why a FAIL decided by a complete report beats a later signal or limit event: the assertions already failed and were recorded, and that is stronger evidence than the death mode.
 
-A self-inflicted fatal signal is a functional failure only after higher-precedence
+A signal outside `EXTERNAL_SIGNALS` is treated as self-inflicted by this
+classifier, so it is a functional failure only after higher-precedence
 infrastructure evidence is excluded. In particular, a direct limit event wins
-when it accompanies SIGSEGV/SIGABRT/SIGBUS/SIGFPE/SIGILL; without that event,
-the signal remains R-5's `FAIL/COMMAND_FAILED`.
+when it accompanies any such signal; without that event, the signal remains
+R-5's `FAIL/COMMAND_FAILED`.
 
 Known limit, documented and not engineered: a shell wrapper that turns a child's death into `128+N` is indistinguishable from a normal exit unless the observer sees the limit event.
 
