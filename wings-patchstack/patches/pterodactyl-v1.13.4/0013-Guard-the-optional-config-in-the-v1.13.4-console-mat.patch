@@ -1,0 +1,37 @@
+From ce1c6153c9e8b3e6e26a43cfe5ff5b054cb09e6d Mon Sep 17 00:00:00 2001
+From: nyxloom-carver <development@richtfest.tech>
+Date: Fri, 30 Oct 2026 12:46:17 +0000
+Subject: [PATCH 13/13] Guard the optional config in the v1.13.4 console
+ matcher
+
+The v1.13.4 server console test constructs a server without a process
+configuration and exercises console output while already running. The startup
+matcher is skipped in that state, but the independent steady matcher must also
+handle the absent configuration before checking the ANSI option.
+
+Co-Authored-By: Codex gpt-6-luna <noreply@openai.com>
+Change-Id: wings-startup-resource-staging-v1-13-4-config-guard
+Capability: startup-resource-staging
+Role: guard
+Risk: low
+Requires: wings-startup-resource-staging
+---
+ server/listeners.go | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/server/listeners.go b/server/listeners.go
+index 8d666d1..9d8e7cc 100644
+--- a/server/listeners.go
++++ b/server/listeners.go
+@@ -181,7 +181,7 @@ func (s *Server) onConsoleOutput(data []byte) {
+ 	// fires later than that. Done on a copy so the stop-command comparison
+ 	// below still sees the bytes it expects.
+ 	sliceLine := v
+-	if processConfiguration.Startup.StripAnsi {
++	if processConfiguration != nil && processConfiguration.Startup.StripAnsi {
+ 		sliceLine = stripAnsiRegex.ReplaceAll(v, []byte(""))
+ 	}
+ 
+-- 
+2.55.0
+

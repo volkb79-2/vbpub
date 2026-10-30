@@ -27,9 +27,9 @@ if [[ "${INTEGRATION:-0}" == "1" ]]; then
     CMD+='
 echo "=== docker integration tests ===" && go test -tags dockerintegration -count=1 -v ./environment/docker/
 '
-    go_in_container "$SRC_DIR" --docker "$CMD"
+    go_in_container "$SRC_DIR" --docker --cpus 3 "$CMD"
 else
-    go_in_container "$SRC_DIR" "$CMD"
+    go_in_container "$SRC_DIR" --cpus 3 "$CMD"
 fi
 if [[ "${COVERAGE:-0}" == "1" ]]; then
     "$SCRIPT_DIR/coverage.sh" "$TARGET"

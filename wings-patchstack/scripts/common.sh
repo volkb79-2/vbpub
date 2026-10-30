@@ -71,6 +71,26 @@ go_in_container() {
     local src="$1"; shift
     local docker_args=()
     local tar_args=(--exclude='.git')
+    if [[ -z "${CGROUP_PARENT_DEV_GATES:-}" ]]; then
+        echo "CGROUP_PARENT_DEV_GATES must be supplied by the host environment" >&2
+        return 2
+    fi
+    # Check the unit when this process can actually reach the host systemd.
+    # In the devcontainer, /run/systemd/system is not mounted and systemctl is
+    # only a shim; there the trusted value is injected by devcontainer.json.
+    if [[ -d /run/systemd/system ]]; then
+        local load_state
+        if ! load_state="$(systemctl show "$CGROUP_PARENT_DEV_GATES" \
+            --property=LoadState --value 2>/dev/null)"; then
+            echo "could not verify the host gate slice; use the host-provided CGROUP_PARENT_DEV_GATES" >&2
+            return 2
+        fi
+        if [[ "$load_state" != loaded ]]; then
+            echo "host gate slice is not LoadState=loaded; use the host-provided CGROUP_PARENT_DEV_GATES" >&2
+            return 2
+        fi
+    fi
+    docker_args+=(--cgroup-parent "$CGROUP_PARENT_DEV_GATES")
     while :; do
         case "${1:-}" in
             --docker)   docker_args+=(-v /var/run/docker.sock:/var/run/docker.sock); shift ;;

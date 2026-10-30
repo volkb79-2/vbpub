@@ -63,6 +63,7 @@ TAG="$IMAGE_PREFIX:$VERSION"
 BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 cd "$SRC_DIR" || exit 1
 tar --exclude='.git' -cf - . | docker build \
+    --load \
     --label "org.opencontainers.image.version=$VERSION" \
     --label "org.opencontainers.image.created=$BUILD_DATE" \
     --label "org.vbpub.wings.series-digest=$SERIES_DIGEST" \
