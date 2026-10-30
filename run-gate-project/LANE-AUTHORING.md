@@ -292,6 +292,18 @@ with sqlfluff in a command lane if the project wants it.
   count is decided by the CONTAINER's visible CPU count (which nothing
   capped) while the actual budget is decided by whatever else is running
   on the shared host; `doctor` names the gap when it sees one.
+- Resource policy and consumer facts share `[resources]`. Use
+  `io_sync = "durable"` for any lane that judges fsync, crash consistency,
+  or storage durability; it is lane-only and rejects every `--io-sync`
+  override, including `strict`. Use
+  `io_sync = "relaxed"` only for ephemeral performance lanes that accept the
+  eatmydata shim. `[resources.cowtree] mode` selects `auto` or `off`; with
+  `auto`, an ephemeral lane passes `MDT_COW_ROOT` through at its unchanged
+  same-path bind. CoW and repository bind paths cannot contain commas, colons,
+  or newlines. See the [resource settings consumer contract](CONSUMERS.md#combined-resource-settings)
+  for precedence and examples. `ram_target` and lane-only `candidate_ram`
+  are parsed resource metadata and do not currently select workers or change
+  container capacity.
 - **Let `run-gate.footprint.json` set the budget, not a guess (RG-55).**
   Every lane kind is profiled now, bare-host included (RG-57) — a
   bare-host lane without the cgroup-profiler daemon reachable gets a

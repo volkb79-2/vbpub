@@ -3053,8 +3053,9 @@ expected verdict artifact covering all six outcomes and every `reason_code`.
   probe-js` project; assay's suite needs no Node toolchain for the same reason
   it needs no Go one).
   Parsing a profile and injecting a canary into Go source are pure text
-  operations, so **assay's suite needs no Go toolchain** — mandatory here, since
-  this devcontainer has none.
+  operations, so **assay's suite does not invoke Go**. The standard vbpub
+  `tester-unified` image now includes Go for downstream Go consumers; the
+  missing-tool preflight test explicitly simulates an environment without it.
 - **Runtime-materialised git fixtures:** dirty-tree, base-is-HEAD and
   merge-commit cases are `git init`'d into `tmp_path` at test time. Committing a
   git repo inside a git repo is the alternative, and it is worse.
@@ -3066,16 +3067,17 @@ expected verdict artifact covering all six outcomes and every `reason_code`.
   R1 with its independent `tools/covergate`. This validates a real module,
   repository nesting and package topology without migrating or editing srdm.
 
-**Go stays out of the devcontainer.** The cockpit currently has no Go toolchain
-at all, so — in srdm's Dockerfile's own words — *"it cannot even pretend"* to
-produce a ship signal. Adding one would manufacture the cockpit-green pathway
-§9 exists to close, and would create a version that can drift from the build
-container. Instead, srdm's `gate/Dockerfile` `unit` target (generic:
+**Go stays out of the interactive cockpit.** The cockpit remains without a Go
+toolchain, so its local result cannot stand in for the isolated gate or drift
+from the build image. The standard vbpub `tester-unified` image now includes a
+pinned Go toolchain for consumers with Go R1 lanes. Assay's ordinary suite
+still does not invoke Go, and its missing-tool test simulates the absent-Go
+case explicitly. srdm's `gate/Dockerfile` `unit` target (generic:
 `golang:1.25`, run-uid identity, prewarmed std cache, `GOTOOLCHAIN=local`,
-caches outside the bind mount) is promoted to `vbpub/tester-unified-go`; srdm's
-`e2e` target (systemd-in-Docker, privileged — genuinely srdm-specific) layers on
-top of it; and a `tools/go` wrapper gives local ergonomics against that image's
-*pinned* version. `tester-unified` is untouched, as its own reasoning demands.
+caches outside the bind mount) remains the basis for its purpose-built
+`vbpub/tester-unified-go`; srdm's `e2e` target (systemd-in-Docker, privileged —
+genuinely srdm-specific) layers on top of it; and a `tools/go` wrapper gives
+local ergonomics against that image's *pinned* version.
 
 ## 11. Where language-specificity actually lives
 

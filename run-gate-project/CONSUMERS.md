@@ -249,6 +249,89 @@ memory = "2g"                       # required local ceiling for memory.events a
 pids = 8192                          # required local ceiling for pids.events attribution
 ```
 
+## Combined resource settings
+
+Use the same `resources` table for Run-Gate caps and consumer-specific facts.
+The precedence is CLI override, lane, project, environment, central, then
+defaults. Consumer subtables are closed: `[resources.cowtree] mode` becomes
+`COWTREE_MODE`, and `[resources.vm] disk_cache` becomes `VM_DISK_CACHE`.
+Run-Gate does not pass `ram_target` or `candidate_ram` through as raw
+environment variables.
+
+<!-- run-gate-config -->
+```toml
+schema_version = 1
+
+[resources]
+ram_target = "75%"
+
+[resources.cowtree]
+mode = "auto"
+
+[environments.tester-unified]
+mode = "ephemeral"
+image = "tester-unified:local"
+
+[environments.tester-unified.resources]
+io_sync = "strict"
+
+[environments.host]
+mode = "host"
+
+[lanes.r2]
+kind = "assay"
+environment = "tester-unified"
+assay_lane = "r2"
+
+[lanes.r2.resources]
+candidate_ram = "300m"
+io_sync = "relaxed"
+
+[lanes.iobench-r0]
+kind = "command"
+environment = "tester-unified"
+argv = ["python3", "-m", "pytest", "tests"]
+
+[lanes.iobench-r0.resources]
+io_sync = "durable"
+
+[lanes.vm-system]
+kind = "command"
+environment = "host"
+argv = ["vmctl", "run"]
+
+[lanes.vm-system.resources.vm]
+disk_cache = "unsafe"
+```
+
+`io_sync` defaults to `strict`; it adds no preload. Mark any lane that checks
+fsync, crash consistency, or storage durability as `durable`. That value is
+lane-only and rejects every `--io-sync` override, including `strict`.
+`relaxed` is for ephemeral lanes and requires
+an image carrying `org.vbpub.tester.eatmydata-lib`; Run-Gate creates and
+read-only binds `/etc/ld.so.preload` from that label. You can make a one-run
+comparison with `run-gate r2 --io-sync relaxed`; command-line I/O overrides
+are recorded and excluded from history. The `history` output keeps modes
+separate. A sequence whose members use different modes keeps history per
+member and excludes its aggregate measurement.
+
+`[resources.cowtree] mode = "auto"` forwards `COWTREE_MODE=auto`. If
+`MDT_COW_ROOT` is set, ephemeral lane containers bind that host path to the
+same path inside the container; Run-Gate does not stat or translate it. Use
+`run-gate r2 --cow off` for a one-run CoW opt-out. Set `disk_cache` only on a
+host-mode VM lane; the consumer default remains its own policy when the key
+is absent. `MDT_COW_ROOT` and repository paths used in bind mounts cannot
+contain commas, colons, or newlines; Run-Gate refuses them before Docker.
+
+`RUN_GATE_EXTRA_MOUNTS` uses explicit Docker `--mount type=bind` entries, so
+Docker refuses a missing host source instead of silently creating an empty
+directory. Commas and newlines in either path are refused before Docker;
+colon separates the `host=container` entries.
+
+`ram_target` accepts a size or a percentage, and `candidate_ram` accepts a
+size on a lane. Run-Gate parses and validates these values as resource
+metadata; they do not currently affect worker count or container capacity.
+
 ### Per-invocation image selection
 
 Use `image_env` on an **ephemeral** environment when a workflow must select an

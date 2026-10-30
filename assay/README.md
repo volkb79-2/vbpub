@@ -18,7 +18,10 @@ linking against assay itself.
   [JavaScript/TypeScript coverage, mutation ingestion and canaries](#javascripttypescript-coverage-mutation-ingestion-and-canaries)
   below. Go is supported at **R1 only** — changed-line coverage for `.go`,
   statement-granular, requiring a real Go toolchain on the judging machine;
-  see the Go section below. **Full matrix, and what R0–R3 each actually mean:
+  the standard vbpub `tester-unified` image supplies Go, while custom judging
+  images must provide it. See the [Go lane consumer guide](docs/CONSUMERS.md#go-lanes-what-exists-today-and-what-a-go-lane-will-require)
+  and [DESIGN-GUIDE §10](docs/DESIGN-GUIDE.md#10-fixture-projects-and-the-go-toolchain-constraint).
+  **Full matrix, and what R0–R3 each actually mean:
   [Rigor levels, and what's registered where](#rigor-levels-and-whats-registered-where).**
 
 ---
@@ -690,7 +693,9 @@ to begin no statement. The worked lane is
 [CONSUMERS.md point 8](docs/CONSUMERS.md); the qualification also found a real
 defect in assay itself (B061), which is what a qualification is for.
 
-**A Go lane requires a real Go toolchain on PATH.** The statement-position
+**A Go lane requires a real Go toolchain on PATH.** The standard vbpub
+`tester-unified` image supplies it; a custom judging image must include one.
+The statement-position
 oracle is a Go program — A-217 rules that a Python re-implementation of
 `cmd/cover`'s segmentation is not an acceptable substitute — so on a machine
 without `go`, an R1 Go lane is refused `NO_MEASUREMENT`/`MISSING_EXTERNAL_TOOL`

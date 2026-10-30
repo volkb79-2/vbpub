@@ -909,3 +909,44 @@ rule against a second reading of an assay-owned fact still stands). Stale
 closeout files are deleted at script start, so a lane killed mid-run cannot
 inherit an earlier run's. A lane stopped by its budget has no closeout; the
 operator runs `assay analyze campaign` on its progress directly.
+
+## Combined resource settings
+
+Run-Gate keeps its settings in the existing `resources` table instead of
+adding separate bind and I/O tables. That table has one precedence order:
+CLI override, lane, project, environment, central, then the shipped default.
+Consumer values stay under closed consumer subtables and are translated to
+their own prefixed environment variables; run-gate-owned values such as
+`io_sync`, `ram_target` and `candidate_ram` are never forwarded raw.
+
+`[resources.cowtree] mode` is translated to `COWTREE_MODE`. With `mode =
+"auto"` and `MDT_COW_ROOT` present, an ephemeral lane receives a same-path
+bind and the unchanged path value. Run-Gate validates the spelling of that
+root but never stats or translates it: the value belongs to the host mount
+namespace, while the target process may run in a different one. The bind uses
+Docker's `--mount type=bind` form so a missing source is refused instead of
+silently created as an empty directory. Commas, colons, and newlines are
+refused in `MDT_COW_ROOT` and repository bind paths before any Docker call,
+because the mount arguments cannot safely represent them. Extra-mount paths
+reject commas and newlines; their colon remains the list separator.
+
+The fsync knob is owned by Run-Gate end to end. `strict` is the default and
+adds no preload. `durable` is lane-only and cannot be weakened by a lower
+scope; every `--io-sync` override, including `strict`, is refused on a durable
+lane. `relaxed` is limited to ephemeral lanes. The
+selected image must carry `org.vbpub.tester.eatmydata-lib`; Run-Gate uses that
+image fact to write a lane-scoped preload file and mounts it read-only at
+`/etc/ld.so.preload`. This avoids accepting a caller-supplied library path,
+keeps the default image behavior unchanged, and lets the loader apply the
+shim to the lane's dynamic processes. A CLI-selected I/O override is recorded
+and excluded from history. History retains one measurement per
+`(lane, commit, io_sync)` so relaxed and strict timings are not collapsed.
+A sequence with members on different I/O modes has no single aggregate mode,
+so its aggregate record is excluded from history while each member retains its
+own measurement.
+
+`ram_target` accepts a size or a percentage, and `candidate_ram` accepts a
+size on a lane. Both are parsed and validated resource metadata. They do not
+currently select worker counts or change container caps; this is the shipped
+contract until a separate worker-policy change defines the derivation and its
+evidence.

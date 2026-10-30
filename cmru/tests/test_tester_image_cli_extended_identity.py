@@ -36,6 +36,8 @@ UPSTREAM_BASE = "mcr.microsoft.com/devcontainers/python:3.14-trixie"
 assert UPSTREAM_BASE != DEFAULT_BASE
 STACK = (REPO_ROOT / "wings-patchstack" / "stack.conf").read_text("utf-8")
 GO_IMAGE = re.search(r'^PTERODACTYL_GO_IMAGE="([^"]+)"$', STACK, re.MULTILINE).group(1)
+EATMYDATA_LIB_AMD64 = "/usr/lib/x86_64-linux-gnu/libeatmydata.so.1"
+EATMYDATA_LIB_ARM64 = "/usr/lib/aarch64-linux-gnu/libeatmydata.so.1"
 
 
 BASE_ID = "sha256:" + "b" * 64
@@ -76,12 +78,15 @@ def _tree(tmp_path: Path):
         'esac\n'
         'if [ "$1" = image ]; then\n'
         '  case "$*" in\n'
+        '    *"{{.Architecture}}"*) echo "${FAKE_BASE_ARCH:-amd64}";;\n'
         '    *org.vbpub.run-gate.version*) echo 24.0.0;;\n'
         f'    *org.vbpub.run-gate.wheel-sha256*) echo {digest};;\n'
         '    *org.vbpub.cli-extended.wheel-sha256*) echo "$FAKE_CLI_EXTENDED_LABEL";;\n'
         '    *org.vbpub.tester-unified.base-image-id*) echo "$FAKE_BASE_IMAGE_ID_LABEL";;\n'
         '    *org.vbpub.tester-unified.base-image*) echo "$FAKE_BASE_IMAGE_LABEL";;\n'
         '    *org.vbpub.tester-unified.go-toolchain-image*) echo "$FAKE_GO_TOOLCHAIN_LABEL";;\n'
+        '    *org.vbpub.tester.eatmydata-lib*) echo '
+        '"${FAKE_EATMYDATA_LIB_LABEL:-/usr/lib/x86_64-linux-gnu/libeatmydata.so.1}";;\n'
         '    *"{{.Id}}"*) echo "$FAKE_BASE_IMAGE_ID";;\n'
         '  esac\n'
         'fi\n'
@@ -261,6 +266,39 @@ def test_the_resolved_base_identity_is_passed_to_buildx_and_accepted_when_record
     result, log = _build(tmp_path, label=PINNED_DIGEST, base_label=DEFAULT_BASE)
     assert result.returncode == 0, result.stderr
     assert f"--build-arg TESTER_UNIFIED_BASE_IMAGE_ID={BASE_ID}" in _buildx(log)
+
+
+@pytest.mark.parametrize(
+    ("architecture", "library"),
+    [("amd64", EATMYDATA_LIB_AMD64), ("arm64", EATMYDATA_LIB_ARM64)],
+)
+def test_base_architecture_selects_and_records_the_installed_eatmydata_library(
+    tmp_path, architecture, library,
+):
+    result, log = _build(
+        tmp_path,
+        label=PINNED_DIGEST,
+        env_extra={
+            "FAKE_BASE_ARCH": architecture,
+            "FAKE_EATMYDATA_LIB_LABEL": library,
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert f"--build-arg TESTER_EATMYDATA_LIB={library}" in _buildx(log)
+
+
+def test_an_image_with_a_different_eatmydata_library_label_is_refused(tmp_path):
+    result, _log = _build(
+        tmp_path,
+        label=PINNED_DIGEST,
+        env_extra={"FAKE_EATMYDATA_LIB_LABEL": "/wrong/libeatmydata.so.1"},
+    )
+
+    assert result.returncode == 2
+    assert "does not advertise its installed libeatmydata library" in result.stderr
+    assert f"expected: {EATMYDATA_LIB_AMD64}" in result.stderr
+    assert "observed: /wrong/libeatmydata.so.1" in result.stderr
 
 
 def test_an_image_recording_another_base_identity_is_refused(tmp_path):

@@ -16,6 +16,7 @@ artifacts = ["coverage.json"]
 
 [lanes.r0-r1.resources]
 memory = "1g"
+io_sync = "durable"
 
 [lanes.r2]
 kind = "command"
@@ -32,6 +33,7 @@ artifacts = [".assay/verdict-r2.json", ".assay/progress-r2.jsonl"]
 [lanes.r2.resources]
 pids = 8192
 memory = "1536m"
+io_sync = "durable"
 
 [lanes.gate]
 kind = "command"
