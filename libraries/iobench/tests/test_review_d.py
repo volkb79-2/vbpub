@@ -34,7 +34,10 @@ def _detached_sleep_script(pidfile, seconds):
     # `$!` names the outer `setsid` command, which may fork before exec when
     # its caller is already a process-group leader.
     child = f"echo $$ > {shlex.quote(str(pidfile))}; exec sleep {seconds}"
-    return f"setsid sh -c {shlex.quote(child)} & sleep 28"
+    # Replace the outer shell with its foreground sleeper. If SIGKILL hits a
+    # shell and its child together, the shell cannot reap that child; pytest's
+    # subreaper then inherits a zombie that outlives the session.
+    return f"setsid sh -c {shlex.quote(child)} & exec sleep 28"
 
 
 def _abort_when_probe_starts(host, stuck=False):
