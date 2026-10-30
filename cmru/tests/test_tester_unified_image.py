@@ -46,11 +46,11 @@ CMRU_WHEEL_BUILD_BODY = (
 # packages are added only when the base lacks them (the MDT base ships Docker's
 # own, which they would clash with). It runs before any wheel input is copied.
 TESTER_HOST_TOOLS_RUN = (
-    'set -eu && packages="ca-certificates curl git jq openssh-client util-linux" '
+    'set -eu && packages="ca-certificates curl git jq libeatmydata1 openssh-client util-linux" '
     '&& if ! command -v docker >/dev/null 2>&1; then packages="$packages docker-cli"; fi '
     "&& apt-get update && apt-get install -y --no-install-recommends $packages "
     "&& rm -rf /var/lib/apt/lists/* && docker --version "
-    "&& git --version && nsenter --version"
+    '&& git --version && nsenter --version && test -r "${TESTER_EATMYDATA_LIB}"'
 )
 # Docker's OWN docker-compose-plugin at an exact version, checked against a pinned sha256 per
 # architecture (INT-01 D-006); never Debian's unpinned `docker-compose`. Runs before any wheel input.
@@ -216,6 +216,7 @@ CMRU_POST_INSTALL_MUTATIONS = (
     CMRU_POST_INSTALL_VERSION_ASSERTION_RUN,
     CMRU_POST_INSTALL_IDENTITY_RUN,
     "RUN run-gate --version",
+    "RUN go version",
 )
 NYXLOOM_WHEEL_BUILD_BODY = (
     "python -m build --wheel --outdir /wheels && ls -1 /wheels"
@@ -318,6 +319,8 @@ def _all_projects(root: Path, **overrides: str) -> Path:
                    '[project.optional-dependencies]\ntest = ["coverage>=7"]\n',
         "cgroup-profiler": '[project]\nname = "cgroup-profiler"\ndependencies = []\n'
                            '[project.optional-dependencies]\ntest = ["numpy>=2"]\n',
+        "libraries__patchseries": '[project]\nname = "patchseries"\ndependencies = []\n'
+                                  '[project.optional-dependencies]\ntest = ["pytest>=8", "pytest-cov>=6"]\n',
         "pwmcp__client": '[project]\nname = "pwmcp-client"\ndependencies = ["playwright==1"]\n'
                          '[project.optional-dependencies]\ntest = ["pillow>=10"]\n',
         "libraries__cli-extended": '[project]\nname = "cli-extended"\ndependencies = []\n'
@@ -341,7 +344,8 @@ def test_generator_emits_the_third_party_closure_and_expands_self_extras(tmp_pat
 @pytest.mark.parametrize(
     "bad",
     ["Worktree", "cmru==1", "assay", "ciu>=1",
-     "nyxloom", "topos[dev]>=1", "CGroup.Profiler", "run_gate", "iobench", "vmscreen>=0"],
+     "nyxloom", "topos[dev]>=1", "CGroup.Profiler", "run_gate", "iobench", "vmscreen>=0",
+     "patchseries"],
 )
 def test_generator_refuses_estate_internal_names_in_dependencies(tmp_path, bad):
     """BG-05: a PyPI-default pip must never be asked for an estate-internal
@@ -444,6 +448,7 @@ def _real_estate_layout(tmp_path):
     (tmp_path / "pwmcp" / "client").symlink_to(REPO_ROOT / "pwmcp" / "client")
     (tmp_path / "libraries").mkdir()
     (tmp_path / "libraries" / "cli-extended").symlink_to(REPO_ROOT / "libraries" / "cli-extended")
+    (tmp_path / "libraries" / "patchseries").symlink_to(REPO_ROOT / "libraries" / "patchseries")
     return tmp_path
 
 
@@ -1434,7 +1439,7 @@ def test_dockerfile_asserts_where_imports_come_from_and_that_cli_extended_is_the
     assert 'subprocess.run([str(entrypoint), "--version"]' in text
     assert 'RUN_GATE_TESTER_VERSION}"' in text
     assert "ENV PATH=/opt/tester-venv/bin:${PATH}" in text
-    assert text.rstrip().endswith("RUN run-gate --version")
+    assert text.rstrip().endswith("RUN run-gate --version\nRUN go version")
 
 
 def test_estate_has_no_tracked_run_gate_script_copies_or_symlinks():
@@ -4425,13 +4430,14 @@ def _code_lines(dockerfile):
 
 
 def test_tester_unified_is_built_from_tester_base_with_no_other_fallback():
-    """The base ARG keeps its published name (build-image.sh and Run-Gate 24.0.1's release preparation
-    parse `ARG TESTER_UNIFIED_BASE_IMAGE=` and compare the recorded label); only its default moved."""
+    """The final stage uses tester-base; Node and Go are explicit toolchain-only stages."""
     text = DOCKERFILE.read_text("utf-8")
     assert re.search(r"^ARG TESTER_UNIFIED_BASE_IMAGE=tester-base:local$", text, re.MULTILINE)
     froms = re.findall(r"^FROM (\S+)", text, re.MULTILINE)
-    # the only other FROM allowed is tester-unified's digest-pinned node stage (D-004)
-    assert [f for f in froms if not f.startswith("docker.io/library/node:")] == ["${TESTER_UNIFIED_BASE_IMAGE}"], froms
+    assert len(froms) == 3, froms
+    assert froms[0].startswith("docker.io/library/node:")
+    assert froms[1:] == ["${WINGS_GO_TOOLCHAIN_IMAGE}", "${TESTER_UNIFIED_BASE_IMAGE}"], froms
+    assert "FROM ${WINGS_GO_TOOLCHAIN_IMAGE} AS go-source" in text
     assert re.search(r'^LABEL org\.vbpub\.tester-unified\.base-image="\$\{TESTER_UNIFIED_BASE_IMAGE\}"$', text, re.MULTILINE)
 
 
@@ -4536,6 +4542,26 @@ def test_go_toolchain_is_selected_by_wings_configuration_and_recorded():
     assert "RUN go version" in dockerfile
     for document in (readme, design, consumers):
         assert "Go" in document and "wings" in document.lower()
+
+
+def test_eatmydata_is_installed_and_its_architecture_specific_library_is_labelled():
+    dockerfile = DOCKERFILE.read_text(encoding="utf-8")
+    builder = (REPO_ROOT / "tester-unified" / "build-image.sh").read_text(encoding="utf-8")
+    readme = (REPO_ROOT / "tester-unified" / "README.md").read_text(encoding="utf-8")
+    design = (REPO_ROOT / "tester-unified" / "docs" / "DESIGN-GUIDE.md").read_text(encoding="utf-8")
+    consumers = (REPO_ROOT / "tester-unified" / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+
+    assert "libeatmydata1" in dockerfile
+    assert 'ARG TESTER_EATMYDATA_LIB' in dockerfile
+    assert 'LABEL org.vbpub.tester.eatmydata-lib="${TESTER_EATMYDATA_LIB}"' in dockerfile
+    assert 'test -r "${TESTER_EATMYDATA_LIB}"' in dockerfile
+    assert "amd64) eatmydata_lib=/usr/lib/x86_64-linux-gnu/libeatmydata.so.1" in builder
+    assert "arm64) eatmydata_lib=/usr/lib/aarch64-linux-gnu/libeatmydata.so.1" in builder
+    assert '"TESTER_EATMYDATA_LIB=$eatmydata_lib"' in builder
+    assert 'org.vbpub.tester.eatmydata-lib' in builder
+    for document in (readme, design, consumers):
+        assert "libeatmydata1" in document
+        assert "org.vbpub.tester.eatmydata-lib" in document
 
 
 def host_environment_users(config_text: str) -> list[str]:
@@ -4882,12 +4908,15 @@ def _pip_targets(tokens: list[str]) -> list[str]:
 
 def test_the_age_window_never_applies_to_a_first_party_package(tmp_path):
     """Operator decision 2026-10-27: first-party packages (cmru, assay, run-gate, ciu, cli-extended, topos,
-    nyxloom, pwmcp, cgroup-profiler, iobench, vmscreen, worktree) are always the latest published release and
+    nyxloom, pwmcp, cgroup-profiler, iobench, vmscreen, worktree, patchseries) are always the latest published release and
     never pass through ``--uploaded-prior-to``. In the two images that means: every aged pip command is
     index-bound and installs only pip, build or a generator-produced requirements file; every command that
     installs a first-party input is ``--no-index`` and carries no age; and the generated closures name no
     first-party distribution. tester-base runs no pip at all."""
-    for name in ("iobench", "vmscreen", "worktree", "cli-extended", "run-gate", "cgroup-profiler", "pwmcp-client"):
+    for name in (
+        "iobench", "vmscreen", "worktree", "cli-extended", "run-gate",
+        "cgroup-profiler", "pwmcp-client", "patchseries",
+    ):
         assert name in gen.ESTATE_INTERNAL, name
     tester_base = REPO_ROOT / "tester-base" / "Dockerfile"
     assert not re.search(r"\bpip\b", tester_base.read_text("utf-8"))
