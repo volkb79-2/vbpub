@@ -35,6 +35,33 @@ class Workflows:
         calls = _system_preflight_calls()
         return _system_preflight_snapshot([self.rpc.call(call.method, *call.params) for call in calls])
 
+    def system_update_baseline(self) -> tuple[str, str, str]:
+        """Read the running version, boot ID, and unique active boot environment."""
+        calls = _system_baseline_calls()
+        return _system_baseline_snapshot([self.rpc.call(call.method, *call.params) for call in calls])
+
+    def system_status(self) -> dict[str, str]:
+        version, boot_id, boot_environment = self.system_update_baseline()
+        return {"version": version, "state": "READY", "boot_id": boot_id,
+                "active_boot_environment": boot_environment}
+
+    def verify_system_reboot(self, baseline: tuple[str, str, str], *,
+                             expected_version: str | None = None) -> dict[str, Any]:
+        if (not isinstance(baseline, tuple) or len(baseline) != 3
+                or any(not isinstance(value, str) or not value.strip() for value in baseline)):
+            raise Refused("system-baseline", "reboot verification needs the reviewed version, boot ID, and boot environment")
+        current = self.system_update_baseline()
+        if current[1] == baseline[1]:
+            raise Refused("system-reboot-not-observed", "the host returned without a new boot ID")
+        wanted = expected_version if expected_version is not None else baseline[0]
+        if not isinstance(wanted, str) or not wanted.strip() or current[0] != wanted:
+            raise Refused("system-version-mismatch", f"host returned version {current[0]!r}; expected {wanted!r}")
+        if expected_version is not None and expected_version != baseline[0] and current[2] == baseline[2]:
+            raise Refused("system-boot-environment", "the update returned on the previous active boot environment")
+        return {"version": current[0], "boot_id": current[1], "boot_environment": current[2],
+                "previous_version": baseline[0], "previous_boot_id": baseline[1],
+                "previous_boot_environment": baseline[2]}
+
     def system_power_action(self, operation: str, *, delay: int | None = None,
                             force_with_jobs: bool = False) -> Action:
         if operation not in {"reboot", "shutdown"}:
@@ -46,10 +73,12 @@ class Workflows:
         preflight = self.system_preflight()
         options = {"delay": delay}
         method = f"system.{operation}"
+        baseline = self.system_update_baseline() if operation == "reboot" else None
+        probes = (*_system_preflight_calls(), *(_system_baseline_calls() if baseline is not None else ()))
         action = Action("TNT-47", Kind.DESTRUCTIVE,
                         f"{operation.title()} TrueNAS host {preflight[0]} after a {delay if delay is not None else 'no'} second delay",
                         (RpcCall(method, (f"tnt requested {operation}", options), job=True),),
-                        _system_preflight_calls(), preflight[0], force_with_jobs, preflight)
+                        probes, preflight[0], force_with_jobs, preflight, system_baseline=baseline)
         return action
 
     def update_check(self) -> dict[str, Any]:
@@ -59,6 +88,49 @@ class Workflows:
         candidate = status.get("new_version") if isinstance(status, Mapping) else None
         available = self.rpc.call("update.available_versions") if candidate is not None else []
         return _update_status_summary(current_version, raw, available)
+
+    def update_profiles(self) -> dict[str, Any]:
+        config = self.rpc.call("update.config")
+        choices = self.rpc.call("update.profile_choices")
+        return _update_profile_summary(config, choices)
+
+    def update_select_train_action(self, train: str, *, force_with_jobs: bool = False) -> Action:
+        if not isinstance(train, str) or not train.strip():
+            raise Refused("update-train", "select an exact available update train")
+        train = train.strip()
+        if not isinstance(force_with_jobs, bool):
+            raise Refused("system-force", "force_with_jobs must be true or false")
+        preflight = self.system_preflight()
+        profiles = self.update_profiles()
+        if train == profiles["current_train"]:
+            raise Refused("update-train", f"{train!r} is already the selected update train")
+        selected = next((row for row in profiles["profiles"] if row["profile"] == train), None)
+        if selected is None or selected["available"] is not True:
+            raise Refused("update-train", f"{train!r} is not an available update train")
+        return Action("TNT-47", Kind.DESTRUCTIVE, f"Select TrueNAS update train {train}",
+                      (RpcCall("update.update", ({"profile": train},)),),
+                      (*_system_preflight_calls(), RpcCall("update.config"), RpcCall("update.profile_choices")),
+                      train, force_with_jobs, preflight)
+
+    def update_download_action(self, target_version: str, *, force_with_jobs: bool = False) -> Action:
+        if not isinstance(target_version, str) or not target_version.strip():
+            raise Refused("update-target", "type an exact available target version")
+        target_version = target_version.strip()
+        if not isinstance(force_with_jobs, bool):
+            raise Refused("system-force", "force_with_jobs must be true or false")
+        preflight = self.system_preflight()
+        update = self.update_check()
+        if update["new_version"] != target_version:
+            raise Refused("update-target", f"{target_version!r} is not the currently available target version")
+        baseline = self.system_update_baseline()
+        return Action(
+            "TNT-47", Kind.DESTRUCTIVE,
+            f"Download TrueNAS update {target_version} from train {update['target_train']}",
+            (RpcCall("update.download", (update["target_train"], target_version), job=True),),
+            (*_system_preflight_calls(), RpcCall("update.status"), RpcCall("update.available_versions"),
+             *_system_baseline_calls()),
+            target_version, force_with_jobs, preflight, system_baseline=baseline,
+        )
 
     def update_apply_action(self, target_version: str, *, force_with_jobs: bool = False) -> Action:
         if not isinstance(target_version, str) or not target_version.strip():
@@ -70,13 +142,15 @@ class Workflows:
         update = self.update_check()
         if update["new_version"] != target_version:
             raise Refused("update-target", f"{target_version!r} is not the currently available target version")
+        baseline = self.system_update_baseline()
         attrs = {"dataset_name": None, "resume": False, "train": update["target_train"],
                  "version": target_version, "reboot": False}
         probes = (*_system_preflight_calls(), RpcCall("update.status"), RpcCall("update.available_versions"),
-                  RpcCall("system.version"))
+                  *_system_baseline_calls())
         return Action("TNT-47", Kind.DESTRUCTIVE,
                       f"Apply TrueNAS update {target_version} from train {update['target_train']}; reboot remains separate",
-                      (RpcCall("update.run", (attrs,), job=True),), probes, target_version, force_with_jobs, preflight)
+                      (RpcCall("update.run", (attrs,), job=True),), probes, target_version, force_with_jobs,
+                      preflight, system_baseline=baseline)
 
     def config_export_action(self, path: str, *, root_authorized_keys: bool = False) -> Action:
         target = _absolute_tar_path(path)
@@ -1189,6 +1263,47 @@ def _system_preflight_calls() -> tuple[RpcCall, ...]:
     )
 
 
+def _system_baseline_calls() -> tuple[RpcCall, ...]:
+    return (RpcCall("system.version"), RpcCall("system.state"), RpcCall("system.boot_id"),
+            RpcCall("boot.environment.query", ([], {})))
+
+
+def _system_baseline_snapshot(results: Any) -> tuple[str, str, str]:
+    if not isinstance(results, (list, tuple)) or len(results) != 4:
+        raise Refused("system-baseline", "system baseline requires version, READY state, boot ID, and boot environments")
+    version, state, boot_id, environments = results
+    if not isinstance(version, str) or not version.strip():
+        raise Refused("system-baseline", "system.version did not return a valid version")
+    if state != "READY":
+        raise Refused("system-not-ready", f"system action requires READY; observed {state!r}")
+    if not isinstance(boot_id, str) or not boot_id.strip():
+        raise Refused("system-baseline", "system.boot_id did not return a valid boot ID")
+    rows = _rows(environments, "boot.environment.query")
+    active = [row for row in rows if row.get("active") is True]
+    if len(active) != 1 or not isinstance(active[0].get("id"), str) or not active[0]["id"].strip():
+        raise Refused("system-boot-environment", "boot.environment.query must return exactly one active environment with an ID")
+    return version.strip(), boot_id.strip(), active[0]["id"].strip()
+
+
+def _update_profile_summary(config: Any, choices: Any) -> dict[str, Any]:
+    if not isinstance(config, Mapping) or not isinstance(config.get("profile"), str) or not config["profile"].strip():
+        raise Refused("update-profile-shape", "update.config omitted its selected profile")
+    if not isinstance(choices, Mapping):
+        raise Refused("update-profile-shape", "update.profile_choices did not return a profile mapping")
+    profiles: list[dict[str, Any]] = []
+    for profile, raw in sorted(choices.items(), key=lambda item: str(item[0]).casefold()):
+        if (not isinstance(profile, str) or not profile.strip() or not isinstance(raw, Mapping)
+                or raw.get("name") != profile or not isinstance(raw.get("footnote"), str)
+                or not isinstance(raw.get("description"), str) or not isinstance(raw.get("available"), bool)):
+            raise Refused("update-profile-shape", "update.profile_choices returned an invalid profile entry")
+        profiles.append({"profile": profile, "footnote": raw["footnote"], "description": raw["description"],
+                         "available": raw["available"]})
+    current = config["profile"].strip()
+    if not any(row["profile"] == current for row in profiles):
+        raise Refused("update-profile-shape", "the currently selected profile is missing from update.profile_choices")
+    return {"current_train": current, "profiles": profiles}
+
+
 def _system_preflight_snapshot(results: Any) -> tuple[Any, ...]:
     if not isinstance(results, (list, tuple)) or len(results) != 6:
         raise Refused("system-preflight", "system actions require complete host, role, jobs, VM, container, and SMB-session probes")
@@ -1319,18 +1434,24 @@ def _absolute_tar_path(path: str) -> str:
 
 
 def _validate_system_preflight(action: Action, probe_results: Any) -> None:
-    system_methods = {"system.reboot", "system.shutdown", "update.run"}
+    system_methods = {"system.reboot", "system.shutdown", "update.run", "update.download", "update.update"}
     system_calls = [call for call in action.calls if normalise_method(call.method) in system_methods]
     if not system_calls and not action.system_preflight:
         return
     probes = _system_preflight_calls()
     method = normalise_method(system_calls[0].method) if len(system_calls) == 1 else None
-    extra = ((RpcCall("update.status"), RpcCall("update.available_versions"), RpcCall("system.version"))
-             if method == "update.run" else ())
+    if method == "system.reboot":
+        extra = _system_baseline_calls()
+    elif method in {"update.run", "update.download"}:
+        extra = (RpcCall("update.status"), RpcCall("update.available_versions"), *_system_baseline_calls())
+    elif method == "update.update":
+        extra = (RpcCall("update.config"), RpcCall("update.profile_choices"))
+    else:
+        extra = ()
     if (len(system_calls) != 1 or tuple(action.probe[:len(probes)]) != probes
             or tuple(action.probe[len(probes):]) != extra
             or not isinstance(probe_results, (list, tuple)) or len(probe_results) != len(probes) + len(extra)):
-        raise Refused("system-preflight", "a system action requires its exact v27 host, job, VM, container, and SMB probes")
+        raise Refused("system-preflight", "a system action requires its exact v27 host, role, job, VM, container, SMB, and operation probes")
     snapshot = _system_preflight_snapshot(probe_results[:len(probes)])
     if snapshot != action.system_preflight:
         raise Refused("system-preflight-drift", "the host safety counts changed before the plan was created; plan again")
@@ -1347,18 +1468,53 @@ def _validate_system_preflight(action: Action, probe_results: Any) -> None:
                      or call.params[1]["delay"] < 0 or call.params[1]["delay"] > 86400))
                 or action.confirm_target != snapshot[0]):
             raise Refused("system-action-shape", "reboot and shutdown require a destructive host-name-confirmed v27 job")
-    else:
-        if action.kind is not Kind.DESTRUCTIVE or not call.job or len(call.params) != 1 or not isinstance(call.params[0], Mapping):
-            raise Refused("update-action-shape", "update.run must be a destructive v27 job")
-        attrs = call.params[0]
-        if (set(attrs) != {"dataset_name", "resume", "train", "version", "reboot"}
-                or attrs.get("dataset_name") is not None or attrs.get("resume") is not False or attrs.get("reboot") is not False
-                or not isinstance(attrs.get("train"), str) or not isinstance(attrs.get("version"), str)
-                or action.confirm_target != attrs.get("version")):
-            raise Refused("update-action-shape", "update.run must bind one exact target version and leave reboot separate")
+        if method == "system.reboot":
+            baseline = _system_baseline_snapshot(probe_results[len(probes):])
+            if action.system_baseline != baseline:
+                raise Refused("system-baseline-drift", "the host version, boot ID, or active boot environment changed; plan again")
+        elif action.system_baseline is not None:
+            raise Refused("system-baseline", "shutdown plans must not carry a reboot verification baseline")
+    elif method == "update.update":
+        if (action.kind is not Kind.DESTRUCTIVE or call.job or len(call.params) != 1
+                or not isinstance(call.params[0], Mapping) or set(call.params[0]) != {"profile"}
+                or not isinstance(call.params[0].get("profile"), str)
+                or action.confirm_target != call.params[0].get("profile") or action.system_baseline is not None):
+            raise Refused("update-profile-action", "update.update must change one exact profile as a typed destructive plan")
+        summary = _update_profile_summary(*probe_results[len(probes):])
+        selected = call.params[0]["profile"]
+        choice = next((row for row in summary["profiles"] if row["profile"] == selected), None)
+        if selected == summary["current_train"] or choice is None or choice["available"] is not True:
+            raise Refused("update-profile-drift", "the selected update profile is no longer available; plan again")
+    elif method in {"update.run", "update.download"}:
+        expected_job = True
+        if (action.kind is not Kind.DESTRUCTIVE or call.job is not expected_job
+                or action.system_baseline is None):
+            message = ("update.run must be a destructive v27 job bound to a READY system baseline"
+                       if method == "update.run" else
+                       "update.download must be a destructive v27 job bound to a READY system baseline")
+            raise Refused("update-action-shape", message)
+        if method == "update.run":
+            if len(call.params) != 1 or not isinstance(call.params[0], Mapping):
+                raise Refused("update-action-shape", "update.run must be a destructive v27 job with one parameter object")
+            attrs = call.params[0]
+            if (set(attrs) != {"dataset_name", "resume", "train", "version", "reboot"}
+                    or attrs.get("dataset_name") is not None or attrs.get("resume") is not False
+                    or attrs.get("reboot") is not False or not isinstance(attrs.get("train"), str)
+                    or not isinstance(attrs.get("version"), str) or action.confirm_target != attrs.get("version")):
+                raise Refused("update-action-shape", "update.run must bind one exact target version and leave reboot separate")
+            target_train, target_version = attrs["train"], attrs["version"]
+        else:
+            if (len(call.params) != 2 or any(not isinstance(value, str) or not value.strip() for value in call.params)
+                    or action.confirm_target != call.params[1]):
+                raise Refused("update-action-shape", "update.download must bind one exact train and typed target version")
+            target_train, target_version = call.params
         summary = _update_status_summary(probe_results[8], probe_results[6], probe_results[7])
-        if summary["new_version"] != attrs["version"] or summary["target_train"] != attrs["train"]:
+        if summary["new_version"] != target_version or summary["target_train"] != target_train:
             raise Refused("update-target-drift", "the requested update is no longer the version available on this train")
+        # The baseline reads begin after the host preflight and update status/available-version pair.
+        baseline = _system_baseline_snapshot(probe_results[8:])
+        if action.system_baseline != baseline:
+            raise Refused("system-baseline-drift", "the host version, boot ID, or active boot environment changed; plan again")
 
 
 def _validate_config_export_probe(action: Action, probe_results: Any) -> None:

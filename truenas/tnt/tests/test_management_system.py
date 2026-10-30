@@ -11,15 +11,15 @@ from textual.widgets import Button, Checkbox, Input, Select, Static, TextArea, T
 
 from dataclasses import replace
 
-from tnt.actions import Action, Kind, RpcCall, apply_plan, make_plan
+from tnt.actions import Action, Kind, PlanExecutionError, RpcCall, apply_plan, make_plan
 from tnt.cli import build_cli
 from tnt.errors import Refused, TntError, TransportError
 from tnt.session import open_session
 from tnt.testing import FakeServer
 from tnt.tui.app import TntApp
 from tnt.tui.workflows import PlanReview
-from tnt.workflows import (_absolute_tar_path, _system_preflight_snapshot, _update_status_summary,
-                           validate_plan_preconditions)
+from tnt.workflows import (_absolute_tar_path, _system_baseline_snapshot, _system_preflight_snapshot,
+                           _update_profile_summary, _update_status_summary, validate_plan_preconditions)
 
 
 class _DownloadResponse:
@@ -69,6 +69,153 @@ def test_update_check_uses_v27_status_and_reports_train_versions_and_release_not
             session.close()
 
 
+def test_update_profiles_selection_download_apply_and_v28_reconnect_are_guarded():
+    target_version = "TrueNAS-28.0.0-BETA.1"
+    target_train = "TrueNAS-SCALE-28.0-BETA"
+    with FakeServer() as server:
+        server.update_target_train = target_train
+        server.update_new_version = target_version
+        session = open_session(server.profile(), secret=server.secret(), allow_loopback_ws=True, allow_write=True)
+        try:
+            baseline = session.workflows.system_update_baseline()
+            profiles = session.workflows.update_profiles()
+            assert profiles["current_train"] == server.update_train
+            assert any(row["profile"] == target_train and row["available"] for row in profiles["profiles"])
+
+            selection = session.workflows.update_select_train_action(target_train)
+            selection_plan = make_plan(selection, session.rpc)
+            with pytest.raises(Refused, match="type 'TrueNAS-SCALE-28.0-BETA'"):
+                apply_plan(selection_plan, session.rpc, allow_write=True, typed_confirmation="wrong")
+            apply_plan(selection_plan, session.rpc, allow_write=True, typed_confirmation=target_train)
+            with pytest.raises(Refused, match="already applied"):
+                apply_plan(selection_plan, session.rpc, allow_write=True, typed_confirmation=target_train)
+            assert server.update_train == target_train
+
+            download_progress = []
+            download = session.workflows.update_download_action(target_version)
+            download_plan = make_plan(download, session.rpc)
+            assert download_plan.action.calls[0].render().startswith("update.download(")
+            download_result = apply_plan(download_plan, session.rpc, allow_write=True,
+                                         typed_confirmation=target_version, job_progress=download_progress.append)
+            assert download_progress and download_result.calls[0].status == "completed"
+            assert server.update_downloaded == (target_train, target_version)
+
+            update_progress = []
+            update = session.workflows.update_apply_action(target_version)
+            update_plan = make_plan(update, session.rpc)
+            assert update_plan.action.system_baseline == baseline
+            update_result = apply_plan(update_plan, session.rpc, allow_write=True,
+                                       typed_confirmation=target_version, job_progress=update_progress.append)
+            assert update_progress and update_result.calls[0].status == "completed"
+            assert server.pending_update_version == target_version
+
+            reboot = session.workflows.system_power_action("reboot")
+            reboot_plan = make_plan(reboot, session.rpc)
+            assert reboot_plan.action.system_baseline == baseline
+            try:
+                apply_plan(reboot_plan, session.rpc, allow_write=True, typed_confirmation="test")
+            except PlanExecutionError:
+                # The fake host closes the connection after its reboot job has been recorded.
+                pass
+            assert server.called().count("system.reboot") == 1
+        finally:
+            session.close()
+
+        after = open_session(server.profile(), secret=server.secret(), allow_loopback_ws=True, allow_write=True)
+        try:
+            for _ in range(3):
+                if after.rpc.call("system.state") == "READY":
+                    break
+            report = after.workflows.verify_system_reboot(baseline, expected_version=target_version)
+            assert report["version"] == target_version
+            assert report["boot_id"] != baseline[1]
+            assert report["boot_environment"] != baseline[2]
+        finally:
+            after.close()
+
+        verified = open_session(server.profile(), secret=server.secret(), allow_loopback_ws=True, allow_write=True)
+        try:
+            assert verified.backend.generation == "v28-verification-only"
+            assert verified.rpc.read_only is True
+            assert verified.workflows.system_status()["version"] == target_version
+            with pytest.raises(Refused, match="restricted read-only verification surface"):
+                verified.rpc.call("update.status")
+            with pytest.raises(Refused, match="restricted read-only verification surface"):
+                verified.rpc.call("system.reboot")
+        finally:
+            verified.close()
+
+
+def test_update_plan_preconditions_refuse_train_or_boot_baseline_drift():
+    with FakeServer() as server:
+        server.update_target_train = "TrueNAS-SCALE-27-NEXT"
+        session = open_session(server.profile(), secret=server.secret(), allow_loopback_ws=True, allow_write=True)
+        try:
+            selection = session.workflows.update_select_train_action(server.update_target_train)
+            with pytest.raises(Refused, match="no longer available"):
+                server.update_target_train = "TrueNAS-SCALE-27-STABLE"
+                make_plan(selection, session.rpc)
+
+            server.update_target_train = "TrueNAS-SCALE-27-NEXT"
+            download = session.workflows.update_download_action(server.update_new_version)
+            drifted = list(download.probe)
+            # The active boot environment changes between plan construction and its fresh validation probes.
+            server.active_boot_environment = "fake-be-2"
+            with pytest.raises(Refused, match="baseline-drift"):
+                make_plan(download, session.rpc)
+            assert drifted[-1].method == "boot.environment.query"
+        finally:
+            session.close()
+
+
+def test_v28_verification_session_does_not_expose_v27_read_surface():
+    with FakeServer(version="TrueNAS-28.0.0-MASTER+20261030-000000") as server:
+        session = open_session(server.profile(), secret=server.secret(), allow_loopback_ws=True, allow_write=True)
+        try:
+            assert session.rpc.read_only
+            assert session.workflows.system_status()["version"].startswith("TrueNAS-28.")
+            with pytest.raises(Refused, match="restricted read-only verification surface"):
+                session.rpc.call("update.status")
+            with pytest.raises(Refused, match="restricted read-only verification surface"):
+                session.rpc.call("pool.dataset.create", {"name": "tank/forbidden", "type": "FILESYSTEM"})
+        finally:
+            session.close()
+
+
+def test_v28_tui_exposes_only_readonly_system_verification():
+    import asyncio
+    from types import SimpleNamespace
+
+    with FakeServer(version="TrueNAS-28.0.0-MASTER+20261030-000000") as server:
+        session = open_session(server.profile(), secret=server.secret(), allow_loopback_ws=True, allow_write=True)
+
+        async def go():
+            app = TntApp(session)
+            async with app.run_test(size=(160, 50)) as pilot:
+                _select_key(app, "update")
+                await _wait_for(pilot, lambda: "Post-update verification surface connected" in
+                                str(app.query_one("#system-update-note", Static).render()))
+                assert "TrueNAS-28.0.0-MASTER" in str(app.query_one("#system-update-details", Static).render())
+                for widget_id in ("system-update-train", "system-update-target", "system-update-force",
+                                  "system-update-check", "system-update-select", "system-update-download",
+                                  "system-update-plan"):
+                    assert app.query_one(f"#{widget_id}").disabled
+
+                _select_key(app, "reboot")
+                await _wait_for(pilot, lambda: app.query_one("#view-system-reboot").is_attached)
+                power = app.query_one("#view-system-reboot")
+                for widget_id in ("system-power-delay", "system-power-force", "system-power-plan"):
+                    assert power.query_one(f"#{widget_id}").disabled
+                power.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="system-power-plan")))
+                assert "power actions are unavailable" in str(power.query_one("#system-power-note", Static).render())
+                assert "system.reboot" not in server.called()
+
+        try:
+            asyncio.run(go())
+        finally:
+            session.close()
+
+
 def test_reboot_plan_shows_preflight_and_requires_force_and_typed_host():
     with FakeServer() as server:
         server.active_jobs = [{"id": 41, "method": "pool.scrub.run", "state": "RUNNING", "description": "Scrub"}]
@@ -90,9 +237,25 @@ def test_reboot_plan_shows_preflight_and_requires_force_and_typed_host():
             with pytest.raises(Refused, match="type 'test'"):
                 apply_plan(plan, session.rpc, allow_write=True, typed_confirmation="wrong")
             assert "system.reboot" not in server.called()
-            apply_plan(plan, session.rpc, allow_write=True, typed_confirmation="test")
+            try:
+                apply_plan(plan, session.rpc, allow_write=True, typed_confirmation="test")
+            except PlanExecutionError:
+                # A reboot may be accepted by the host before the WebSocket reply is lost.
+                pass
             request = next(row for row in server.requests if row["method"] == "system.reboot")
             assert request["params"] == ["tnt requested reboot", {"delay": 15}]
+            session.close()
+            after = open_session(server.profile(), secret=server.secret(), allow_loopback_ws=True, allow_write=True)
+            try:
+                for _ in range(3):
+                    if after.rpc.call("system.state") == "READY":
+                        break
+                report = after.workflows.verify_system_reboot(action.system_baseline,
+                                                               expected_version=action.system_baseline[0])
+                assert report["version"] == action.system_baseline[0]
+                assert report["boot_environment"] == action.system_baseline[2]
+            finally:
+                after.close()
         finally:
             session.close()
 
@@ -243,6 +406,51 @@ def test_system_cli_covers_review_refusals_and_job_flows(config, capsys):
         assert request["params"][0]["version"] == target and request["params"][0]["reboot"] is False
 
 
+def test_system_update_cli_selects_downloads_and_waits_for_v28(config, capsys, monkeypatch):
+    import tnt.cli as cli_module
+
+    monkeypatch.setattr(cli_module.time, "sleep", lambda _seconds: None)
+    target = "TrueNAS-28.0.0-BETA.1"
+    train = "TrueNAS-SCALE-28.0-BETA"
+    with FakeServer() as server:
+        server.update_target_train = train
+        server.update_new_version = target
+
+        def open_fake(profile, **kwargs):
+            credential = kwargs.pop("secret", server.secret())
+            return open_session(server.profile(profile.name), secret=credential, allow_loopback_ws=True, **kwargs)
+
+        cli = build_cli(opener=open_fake)
+        code = cli.run(argv=["system", "update", "profiles", "--config", str(config), "--json"])
+        profiles = json.loads(capsys.readouterr().out)
+        assert code == 0 and profiles["current_train"] == "TrueNAS-SCALE-27-STABLE"
+
+        code = cli.run(argv=["system", "update", "select", train, "--config", str(config), "--allow-write",
+                             "--confirm", train])
+        assert code == 0 and "System action completed" in capsys.readouterr().out
+        code = cli.run(argv=["system", "update", "download", target, "--config", str(config), "--allow-write",
+                             "--confirm", target])
+        captured = capsys.readouterr()
+        assert code == 0 and "System action completed" in captured.out and "100%" in captured.err
+
+        code = cli.run(argv=["system", "update", "apply", target, "--config", str(config), "--allow-write",
+                             "--confirm", target])
+        assert code == 0 and "System action completed" in capsys.readouterr().out
+        code = cli.run(argv=["system", "reboot", "--config", str(config), "--allow-write", "--confirm", "test",
+                             "--wait", "--expect-version", target])
+        captured = capsys.readouterr()
+        assert code == 0 and "returned READY after reboot" in captured.out
+        assert server.called().count("update.update") == 1
+        assert server.called().count("update.download") == 1
+        assert server.called().count("update.run") == 1
+        assert server.called().count("system.reboot") == 1
+
+        code = cli.run(argv=["system", "verify", "--config", str(config), "--json"])
+        verified = json.loads(capsys.readouterr().out)
+        assert code == 0 and verified["version"] == target
+        assert verified["active_boot_environment"] != "fake-be-1"
+
+
 def test_system_config_export_cli_dry_run_and_invalid_download_result(config, opener, capsys, tmp_path, monkeypatch):
     import tnt.cli as cli_module
 
@@ -366,7 +574,7 @@ def test_reboot_tui_reconnects_after_fake_disconnect_with_bounded_attempts():
                 assert "returned to READY" in note, note
                 outcome = str(app.screen.query_one("#system-power-job", Static).render())
                 assert '"method": "system.reboot"' in outcome and '"job_id": "1"' in outcome
-                assert [request["method"] for request in server.requests].count("system.state") == 2
+                assert [request["method"] for request in server.requests].count("system.state") >= 4
                 assert server.logins == 3
 
         try:
@@ -520,7 +728,7 @@ def test_system_power_callbacks_report_refusal_success_and_uncertain_results(mon
 
     reconnects = []
     monkeypatch.setattr(SystemPowerView, "_reconnect_after_reboot",
-                        lambda self, *, uncertain=False: reconnects.append(uncertain))
+                        lambda self, **kwargs: reconnects.append(kwargs.get("uncertain", False)))
     with FakeServer() as server:
         session = open_session(server.profile(), secret=server.secret(), allow_loopback_ws=True, allow_write=True)
         plan = SimpleNamespace(action=SimpleNamespace(confirm_target="test"))

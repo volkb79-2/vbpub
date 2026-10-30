@@ -93,6 +93,7 @@ class GuardedRpc:
         self._issued_plans: dict[str, str] = {}
         self._execution_grants: dict[str, _ExecutionGrant] = {}
         self._live_capabilities: frozenset[str] | None = None
+        self._restricted_read_methods: frozenset[str] | None = None
         self._event_subscriptions: set[str] = set()
         self._worker_state = threading.local()
         self.session_id = uuid.uuid4().hex
@@ -205,6 +206,14 @@ class GuardedRpc:
                 raise Refused("method-capabilities", "live method capabilities are already set for this session")
             self._live_capabilities = frozenset(methods)
 
+    def _set_restricted_read_methods(self, methods: Iterable[str]) -> None:
+        """Limit a deliberately partial adapter to its measured/reference read surface."""
+        names = frozenset(normalise_method(method) for method in methods)
+        with self._lock:
+            if self._restricted_read_methods is not None:
+                raise Refused("method-capabilities", "the restricted read surface is already set for this session")
+            self._restricted_read_methods = names
+
     def call(self, method: str, *params: Any, job: bool = False,
              job_callback: Callable[[Mapping[str, Any]], None] | None = None) -> Any:
         with self._lock:  # one call at a time: another thread or task can never interleave with a plan's calls
@@ -247,6 +256,8 @@ class GuardedRpc:
         if cancelled is not None and cancelled.is_set():
             raise Refused("cancelled", "the selected host session changed; this operation was cancelled")
         name = normalise_method(method)
+        if self._restricted_read_methods is not None and name not in self._restricted_read_methods:
+            raise Refused("method-unavailable", f"{name} is outside this adapter's restricted read-only verification surface")
         if self._live_capabilities is not None and name not in self._live_capabilities:
             raise Refused("method-unavailable", f"{name} is not reported by the live v27 capability list; this method is unavailable on this host")
         if not is_read_method(name):

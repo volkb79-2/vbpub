@@ -9,6 +9,7 @@ import threading
 from types import SimpleNamespace
 
 import pytest
+from textual.css.query import NoMatches
 from textual.widgets import Button, Checkbox, DataTable, Input, Select, Static, TextArea, Tree
 
 from tnt.actions import Action, ApplyResult, CallExecution, Kind, RpcCall, make_plan
@@ -87,10 +88,18 @@ def choose(app, label):
     tree.select_node(found)
 
 
-async def wait_loaded(pilot, app):
+async def wait_loaded(pilot, app, *, key=None):
     for _ in range(100):
         await pilot.pause(0.05)
-        if " loaded." in str(app.query_one("#workflow-note", Static).render()):
+        if key is None:
+            note = app.query_one("#workflow-note", Static)
+        else:
+            try:
+                view = app.query_one(f"#view-{key}", WorkflowView)
+                note = view.query_one("#workflow-note", Static)
+            except NoMatches:
+                continue
+        if " loaded." in str(note.render()):
             return
     raise AssertionError("workflow view did not load")
 
@@ -170,7 +179,7 @@ def test_workflow_action_builders_cover_all_core_screen_operations(config):
             ]
             for label, key_name, operations in matrix:
                 choose(app, label)
-                await wait_loaded(pilot, app)
+                await wait_loaded(pilot, app, key=key_name)
                 view = app.query_one(f"#view-{key_name}", WorkflowView)
                 for operation, data, name, method in operations:
                     view.query_one("#workflow-data", TextArea).text = json.dumps(data)
@@ -209,7 +218,7 @@ def test_workflow_view_input_refusals_loading_and_vm_recovery_messages(config):
         app = TntApp(session)
         async with app.run_test(size=(160, 50)) as pilot:
             choose(app, "Virtual Machines")
-            await wait_loaded(pilot, app)
+            await wait_loaded(pilot, app, key="vm")
             view = app.query_one("#view-vm", WorkflowView)
             view._load_failed("offline")
             assert "Failed to load Virtual Machines" in str(app.query_one("#workflow-note", Static).render())
@@ -238,7 +247,7 @@ def test_workflow_view_input_refusals_loading_and_vm_recovery_messages(config):
             assert view.pending_vm_name is None and view.pending_vm_devices == []
 
             choose(app, "Local Users")
-            await wait_loaded(pilot, app)
+            await wait_loaded(pilot, app, key="users")
             users = app.query_one("#view-users", WorkflowView)
             users.query_one("#workflow-data", TextArea).text = '{"sshpubkey": "never here"}'
             with pytest.raises(ValueError, match="hidden secret field"):
@@ -261,7 +270,7 @@ def test_workflow_view_input_refusals_loading_and_vm_recovery_messages(config):
                 build_action(users, "unrecognized")
 
             choose(app, "Containers")
-            await wait_loaded(pilot, app)
+            await wait_loaded(pilot, app, key="containers")
             containers = app.query_one("#view-containers", WorkflowView)
             containers._loaded([{"name": "broken-metrics", "metrics": {
                 "cpu": {"cpu_user_percentage": True, "cpu_system_percentage": 2}, "mem_usage_limit": None}}])
@@ -339,7 +348,7 @@ def test_workflow_action_builders_cover_management_screens(config):
                     find(tree.root)
                     assert target is not None
                     tree.select_node(target)
-                    await wait_loaded(pilot, app)
+                    await wait_loaded(pilot, app, key=key)
                     view = app.query_one(f"#view-{key}", WorkflowView)
                     for operation, data, name, method in operations:
                         view.query_one("#workflow-data", TextArea).text = json.dumps(data)
@@ -399,7 +408,7 @@ def test_plan_review_refusal_apply_cancel_and_parent_callbacks(config):
         app = TntApp(session)
         async with app.run_test(size=(160, 50)) as pilot:
             choose(app, "Containers")
-            await wait_loaded(pilot, app)
+            await wait_loaded(pilot, app, key="containers")
             view = app.query_one("#view-containers", WorkflowView)
             app.push_screen(PlanReview(plan, session, parent_view=view))
             await pilot.pause(0.05)
@@ -558,7 +567,7 @@ def test_plan_review_drops_callbacks_from_cancelled_apply_workers(config, monkey
         app = TntApp(session)
         async with app.run_test(size=(160, 50)) as pilot:
             choose(app, "Containers")
-            await wait_loaded(pilot, app)
+            await wait_loaded(pilot, app, key="containers")
             for _ in range(2):
                 review = PlanReview(plan, session)
                 app.push_screen(review)
@@ -651,7 +660,7 @@ def test_workflow_button_validation_and_vm_cancel_distinguishes_stage(config):
         app = TntApp(session)
         async with app.run_test(size=(160, 50)) as pilot:
             choose(app, "Virtual Machines")
-            await wait_loaded(pilot, app)
+            await wait_loaded(pilot, app, key="vm")
             view = app.query_one("#view-vm", WorkflowView)
             view.query_one("#workflow-operation", Select).clear()
             await pilot.click("#workflow-plan")

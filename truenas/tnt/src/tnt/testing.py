@@ -25,6 +25,7 @@ from websockets.http11 import Response
 from websockets.sync.server import ServerConnection, serve
 
 from .adapters.v27 import V27
+from .adapters.v28_verification import V28Verification
 from .profile import Profile, Secret
 
 GIB = 1024 ** 3
@@ -73,6 +74,8 @@ class FakeServer:
                             "loadavg": [0.1, 0.2, 0.3], "uptime": "1 day", "uptime_seconds": 86400}
         self.system_state = "READY"
         self._system_state_checks = 0
+        self.boot_id = "fake-boot-id-1"
+        self.active_boot_environment = "fake-be-1"
         self.active_jobs: list[dict[str, Any]] = []
         self.active_smb_sessions = 0
         self.system_roles = ["FULL_ADMIN"]
@@ -80,13 +83,16 @@ class FakeServer:
         self.update_train = "TrueNAS-SCALE-27-STABLE"
         self.update_target_train = self.update_train
         self.update_new_version = "TrueNAS-27.0.0-RC.2"
+        self.pending_update_version: str | None = None
+        self.update_downloaded: tuple[str, str] | None = None
         self.update_release_notes = "This maintenance release adds synthetic management coverage.\n\nAdditional details."
         self._download_tokens: dict[int, str] = {}
         self._used_downloads: set[int] = set()
         self.config_backup_bytes = _fake_config_tar()
         self.disks = std_disks if disks is None else disks
         self.parts = std_parts if parts is None else parts
-        self.methods = sorted(V27.supported_methods()) if methods is None else methods
+        adapter = V28Verification if "28." in version else V27
+        self.methods = sorted(adapter.supported_methods()) if methods is None else methods
         self.fail = dict(fail or {})
         self.pools: Any = [{"id": 1, "name": "tank", "healthy": True, "warning": False,
                             "status": "ONLINE", "status_code": "ONLINE", "scan": None, "expand": None,
@@ -243,7 +249,8 @@ class FakeServer:
                     result = self._dispatch(method, params)
                     if method in {"container.create", "container.stop", "container.delete", "vm.stop", "vm.restart",
                                   "replication.run", "cloudsync.sync",
-                                  "app.start", "app.stop", "app.delete", "system.reboot", "system.shutdown", "update.run"}:
+                                  "app.start", "app.stop", "app.delete", "system.reboot", "system.shutdown",
+                                  "update.run", "update.download"}:
                         self._send_job(ws, msg["id"], result)
                         if method == "system.reboot":
                             ws.close(code=1012, reason="system reboot")
@@ -374,12 +381,18 @@ class FakeServer:
             "system.version": lambda p: self.version,
             "system.info": lambda p: dict(self.system_info),
             "system.state": self._system_state,
-            "system.boot_id": lambda p: "fake-boot-id",
+            "system.boot_id": lambda p: self.boot_id,
+            "boot.environment.query": lambda p: [{"id": self.active_boot_environment, "active": True,
+                                                    "activated": True, "dataset": f"boot-pool/{self.active_boot_environment}"}],
             "system.reboot": self._system_reboot,
             "system.shutdown": self._system_shutdown,
             "update.status": self._update_status,
             "update.available_versions": self._update_available_versions,
-            "update.run": lambda p: True,
+            "update.config": lambda p: {"id": 1, "autocheck": False, "profile": self.update_train},
+            "update.profile_choices": self._update_profile_choices,
+            "update.update": self._update_config,
+            "update.download": self._update_download,
+            "update.run": self._update_run,
             "core.get_jobs": self._get_jobs,
             "reporting.get_data": self._reporting_get_data,
             "alert.list": lambda p: list(self.alerts),
@@ -567,6 +580,15 @@ class FakeServer:
     def _system_reboot(self, params: list[Any]) -> bool:
         self.system_state = "BOOTING"
         self._system_state_checks = 0
+        suffix = int(self.boot_id.rsplit("-", 1)[-1]) + 1 if self.boot_id.rsplit("-", 1)[-1].isdigit() else 2
+        self.boot_id = f"fake-boot-id-{suffix}"
+        if self.pending_update_version is not None:
+            self.version = self.pending_update_version
+            self.system_info["version"] = self.version
+            be_suffix = int(self.active_boot_environment.rsplit("-", 1)[-1]) + 1 \
+                if self.active_boot_environment.rsplit("-", 1)[-1].isdigit() else 2
+            self.active_boot_environment = f"fake-be-{be_suffix}"
+            self.pending_update_version = None
         return True
 
     def _system_shutdown(self, params: list[Any]) -> bool:
@@ -586,6 +608,37 @@ class FakeServer:
     def _update_available_versions(self, params: list[Any]) -> list[dict[str, Any]]:
         status = self._update_status([])["status"]["new_version"]
         return [{"train": self.update_target_train, "version": status}]
+
+    def _update_profile_choices(self, params: list[Any]) -> dict[str, dict[str, Any]]:
+        profiles = {self.update_train: {"name": self.update_train, "footnote": "Current", "description": "Stable train",
+                                        "available": True}}
+        if self.update_target_train != self.update_train:
+            profiles[self.update_target_train] = {"name": self.update_target_train, "footnote": "Available",
+                                                  "description": "Next train", "available": True}
+        return profiles
+
+    def _update_config(self, params: list[Any]) -> dict[str, Any]:
+        data = params[0] if params and isinstance(params[0], dict) else {}
+        profile = data.get("profile")
+        if not isinstance(profile, str) or profile not in self._update_profile_choices([]):
+            raise _RpcError(CALL_ERROR, "invalid update profile")
+        self.update_train = profile
+        self.update_target_train = profile
+        return {"id": 1, "autocheck": False, "profile": profile}
+
+    def _update_download(self, params: list[Any]) -> bool:
+        if len(params) != 2 or params[0] != self.update_target_train or params[1] != self.update_new_version:
+            raise _RpcError(CALL_ERROR, "requested update is unavailable")
+        self.update_downloaded = (params[0], params[1])
+        return True
+
+    def _update_run(self, params: list[Any]) -> bool:
+        attrs = params[0] if params and isinstance(params[0], dict) else {}
+        if (attrs.get("train") != self.update_target_train or attrs.get("version") != self.update_new_version
+                or attrs.get("reboot") is not False):
+            raise _RpcError(CALL_ERROR, "requested update is unavailable")
+        self.pending_update_version = attrs["version"]
+        return True
 
     def _get_jobs(self, params: list[Any]) -> list[dict[str, Any]]:
         return self._query({row.get("id"): row for row in self.active_jobs}, params)

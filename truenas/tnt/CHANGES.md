@@ -65,9 +65,13 @@
 - test(tnt): cover branch gaps and record pytest-cov false green (bacb3c503)
 
 <!-- cmru: pending release notes begin -->
+- Added guarded v27 update-profile selection, update download/apply jobs, and CLI/TUI reboot reconnect with version,
+  boot-ID, and active boot-environment verification. Added a v28 read-only verification surface and the operator-run
+  `live-update` lane for vanilla-v27, patched-v27-to-v28, and patched-v28 readback. The lane is not a release gate;
+  live host results are recorded in [LIVE-TESTING.md](docs/LIVE-TESTING.md#update-survival-acceptance).
 - Registered the first CMRU release for this TUI and scriptable CLI for vanilla TrueNAS v27: initial version `0.1.0`,
   tag `tnt-v0.1.0`, and a wheel plus SHA256 in the matching GitHub Release; CMRU maintains `tnt-latest` as the moving
-  release. No tnt release has been published yet.
+  release. CMRU published `tnt-v0.1.0` on 2026-10-29.
   The release gate runs the existing `r0-r1` and `ux-focused` lanes; real-tmux cases still skip because
   `tester-unified` does not include tmux (TNT-54). The wheel's dependencies remain those in `pyproject.toml`.
   See the [release design](docs/DESIGN.md#12-decisions-open-questions-and-estate-registration) and
