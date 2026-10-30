@@ -267,14 +267,23 @@ creation checks the path on the TrueNAS host and refuses missing paths and boot-
 only its share configuration, never the data. SMB output includes the share ACL. See the [share adoption examples](docs/CONSUMERS.md#shares).
 
 System actions are under `System > Update`, `Reboot`, `Shutdown`, and `General Settings` (configuration export).
-Update check and profile views show the current train/version and the exact available target. Train selection,
-download, and apply each use single-use typed-confirmation plans; download and apply show job progress. Apply keeps
+Update check shows the current candidate train/version; `system update versions` lists exact version pairs across
+trains. The profile view shows the current profile ID and choices' separate display names and availability. Profile
+selection, download, and apply each use single-use typed-confirmation plans; download and apply show job progress.
+Pass `--train` with a version from `versions` to select an exact update outside the current check candidate. Apply keeps
 reboot separate. The CLI can reconnect after reboot and verify READY state, the new boot ID, expected version, and
 changed active boot environment. The TUI does the same after an update followed by System > Reboot. A lost reboot
 reply is never resubmitted. v28 is available only through a restricted read-only post-update verification surface.
-Reboot, shutdown, train selection, download, and apply show active jobs, running VMs and containers, and active SMB
+Reboot, shutdown, profile selection, download, and apply show active jobs, running VMs and containers, and active SMB
 sessions; any running job blocks the plan unless `--force-with-jobs` is explicit. Every destructive plan requires the
-exact host name, train, or version shown in the plan.
+exact host name, profile ID, or version shown in the plan. See the
+[system-action design](docs/DESIGN.md#system-actions) for why profile IDs and update trains are handled separately,
+and the [copyable commands](docs/CONSUMERS.md#system-actions). The live update lane takes explicit
+`TNT_LIVE_UPDATE_TARGET_PROFILE`, `TNT_LIVE_UPDATE_TARGET_TRAIN`, and `TNT_LIVE_UPDATE_TARGET_VERSION` values and
+validates the exact pair before creating its test dataset, then checks dataset and snapshot identity records across
+the reboot. The optional patched-v27-to-v28 leg follows the companion patcher's fresh-target guards; see
+[the design rationale](docs/DESIGN.md#system-actions) and
+[live acceptance steps](docs/CONSUMERS.md#live-update-survival-acceptance).
 
 ```sh
 tnt system update check --host lab --json

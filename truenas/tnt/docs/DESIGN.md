@@ -354,15 +354,27 @@ single-use plans. Before planning, tnt reads `system.info`, `auth.me`, `core.get
 and `smb.status`. It requires `FULL_ADMIN` because v27 filters `core.get_jobs` to the caller's own jobs for less
 privileged sessions. The plan prints the host name, active job IDs/methods, running VM and container names, and active
 SMB-session count. Any active job blocks planning unless `--force-with-jobs` is explicit. The same probes are
-fingerprinted and checked again immediately before apply; the host, selected train, or exact target version must be
-typed for destructive confirmation.
+fingerprinted and checked again immediately before apply; the host, selected profile ID, or exact target version must
+be typed for destructive confirmation.
 
 Update check reads `system.version` and `update.status`; because `new_version` has no train field, tnt matches its
 version, manifest, release notes, and release-notes URL to exactly one `update.available_versions` row. Ambiguous or
-incomplete records refuse the operation. `update.config` and `update.profile_choices` expose the current profile and
-available trains. Train selection and downloading are explicit planned jobs; apply binds the exact version and train
-into `update.run`, sets `reboot=false`, and follows job progress. `update.run` can download an uncached update itself,
-but the separate download action makes a deliberate staged workflow possible.
+incomplete records refuse the operation. `update.config` supplies the selected profile ID, while
+`update.profile_choices` maps profile IDs to display names, descriptions, footnotes, and availability. Profile IDs are
+not update trains: profile selection plans `update.update({profile: ID})`; a fresh update check reports its nominated
+train/version, while `system update versions` exposes the exact train/version pairs available across all trains.
+Download and apply bind one exact version and train into `update.download` and `update.run`; apply sets
+`reboot=false` and follows job progress. `update.run` can download an uncached update itself, but the separate
+download action makes a deliberate staged workflow possible. The live acceptance lane therefore takes an explicit
+target profile ID and train/version pair, validates the exact target before creating its data fixture, and never
+derives a profile ID from a train name.
+
+The live fixture hashes only dataset and snapshot identity fields. The v27 acceptance host returned `null` for the
+optional dataset `comments` property after creation, so the lane does not rely on that field or claim it persisted.
+This gives the survival check a stable API-visible identity contract without implying file-content coverage.
+The patched-v27 leg also respects the companion patcher's fresh-target gate: a present Path B pool, Path A user-data
+root, patch marker, container, or VM is a refusal condition. The tnt update workflow does not remove or bypass those
+preconditions; the patched-v27-to-v28 leg is conditional on the selected disposable target satisfying them.
 
 Reboot remains separate because an update job completing does not prove that the new system booted. A reboot plan
 binds a READY version, `system.boot_id`, and the unique active `boot.environment.query` ID. The CLI `--wait` path and

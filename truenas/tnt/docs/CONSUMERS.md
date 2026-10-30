@@ -418,13 +418,18 @@ tree. See the [API key design](DESIGN.md#api-keys) and [v27 signatures](API-METH
 ### System actions
 
 Check updates and available profiles first. The check matches an update-status candidate to exactly one train and
-shows its release notes; `profiles` reports the current profile and TrueNAS's available choices. Select only an
-available profile. Download and apply each require a separate plan and the exact target version as typed
-confirmation. `update.run` sets `reboot=false` and tracks its job; reboot remains a separate host action:
+shows its release notes. `profiles` reports the current profile ID and choices; each choice has a profile ID, a
+separate display name, and an availability flag. Select only an available profile ID. Profile IDs are not update
+trains; after selection, check again to see the candidate train and version TrueNAS offers. `versions` lists exact
+train/version pairs across all update trains. Download and apply each require a separate plan and the exact target
+version as typed confirmation. Pass `--train TRAIN_FROM_VERSIONS` to bind a version from another train; without it,
+download/apply use the update-check candidate. `update.run` sets `reboot=false` and tracks its job; reboot remains a
+separate host action:
 
 ```sh
 tnt system update check --host lab --json
 tnt system update profiles --host lab --json
+tnt system update versions --host lab --json
 tnt system update select PROFILE_FROM_PROFILES --host lab --allow-write \
   --confirm PROFILE_FROM_PROFILES
 tnt system update check --host lab --json  # recheck after changing the profile
@@ -437,18 +442,28 @@ tnt system reboot --host lab --allow-write --confirm HOST_NAME_FROM_PLAN \
 tnt system verify --host lab --json
 ```
 
-Replace placeholders with exact values from `profiles`, `check`, and the rendered reboot plan. `download` is an
-explicit preparation step; apply can also fetch a candidate that is not already cached. Before selecting a profile,
+Replace placeholders with exact values from `profiles`, `check`, and the rendered reboot plan. For selection, use the
+`profile` key from an available `profiles` entry, not its display name or the target train. `download` is an explicit
+preparation step; apply can also fetch a candidate that is not already cached. Before selecting a profile,
 downloading, applying, rebooting, or shutting down, tnt requires `FULL_ADMIN` so it can inspect all active jobs. Each
 plan shows jobs, running VM/container names, and active SMB-session count. Running jobs block the action unless
 `--force-with-jobs` is supplied; exact typed confirmation remains required. Reboot and shutdown accept an optional
 0–86400 second delay:
 
+To use a version listed on a train other than the check candidate, bind both values from `versions` explicitly:
+
+```sh
+tnt system update download VERSION_FROM_VERSIONS --train TRAIN_FROM_VERSIONS --host lab --allow-write \
+  --confirm VERSION_FROM_VERSIONS
+tnt system update apply VERSION_FROM_VERSIONS --train TRAIN_FROM_VERSIONS --host lab --allow-write \
+  --confirm VERSION_FROM_VERSIONS
+```
+
 ```sh
 tnt system reboot --host lab --delay 60 --allow-write --confirm HOST_NAME_FROM_PLAN --wait
 tnt system shutdown --host lab --allow-write --confirm HOST_NAME_FROM_PLAN
 tnt system reboot --host lab --force-with-jobs --allow-write --confirm HOST_NAME_FROM_PLAN
-tnt tui --host lab  # System > Update: check/select/download/apply; Reboot: reconnect and verify
+tnt tui --host lab  # System > Update shows profile IDs separately from update trains
 ```
 
 `--wait` is valid only for reboot. It uses fresh read-only sessions and never resubmits the reboot request. Retries
@@ -461,10 +476,10 @@ snapshot readback. It does not expose writes. Do not start a system action outsi
 ### Live update-survival acceptance
 
 The registered `live-update` lane runs the same tnt plan/apply and job paths against one explicitly selected host.
-It creates a unique dataset under the selected non-boot data pool, stores a marker in its dataset comment, creates a
-snapshot, and prints a canonical API-record dump plus SHA-256 before updating. After reboot it reads the same records
-through tnt and compares the dump and digest. The fixture is API-visible dataset/snapshot metadata, not a file-byte
-hash. The test also verifies tnt refuses a fixture under `boot-pool`; it does not weaken the boot-pool guard.
+It creates a uniquely named dataset under the selected non-boot data pool and a matching snapshot, then prints a
+canonical API-record dump plus SHA-256 before updating. After reboot it reads the same identity records through tnt
+and compares the dump and digest. The fixture is API-visible dataset/snapshot metadata, not a file-byte hash. The test
+also verifies tnt refuses a fixture under `boot-pool`; it does not weaken the boot-pool guard.
 
 Configure the host and secrets as mode-0600 files outside the checkout. Mount their physical host directory into the
 tester path with `RUN_GATE_EXTRA_MOUNTS`; both paths must match the forwarded `TNT_CONFIG` and `TNT_SECRETS` values.
@@ -480,27 +495,33 @@ export TNT_LIVE_POOL=tank
 export TNT_LIVE_ALLOW_SYSTEM=1
 ```
 
-Run these phases in order against a disposable v1001 host. Resolve the exact source version, update train, and target
-version from tnt's `system verify`, `system update profiles`, and `system update check` output. Serialize every
+Run these phases in order against a disposable v1001 host. Resolve the source version from `system verify`, the target
+profile ID from `system update profiles`, and the exact train/version pair from `system update versions`. The lane
+selects the requested available profile through a typed tnt plan if needed, then verifies the exact pair is still
+available before it creates a fixture. Serialize every
 connection to v1001, including the patch pre-steps, with the estate lock:
 
 ```bash
 export TNT_LIVE_UPDATE_PHASE=vanilla-v27
 export TNT_LIVE_UPDATE_SOURCE_VERSION='<exact vanilla v27 source version>'
+export TNT_LIVE_UPDATE_TARGET_PROFILE='<available profile ID, such as DEVELOPER>'
 export TNT_LIVE_UPDATE_TARGET_TRAIN='<available v27 nightly train>'
-export TNT_LIVE_UPDATE_TARGET_VERSION='<exact v27 nightly version>'
+export TNT_LIVE_UPDATE_TARGET_VERSION='<exact v27 nightly version from system update versions>'
 flock -w 3600 /home/vscode/vbpub-release-program-20261027/v1001.lock run-gate live-update
 ```
 
 Next, install the v27 patch using the existing `scripts/truenas/boot-pool-patch` CLI's `live-v27-patch` lane and its
-documented install or `reapply-after-update` action. Do not reproduce the patch. Run that command under the same
-`flock` lock. Then select the v28 train/version from tnt's update check and run the guarded tnt update phase:
+documented install or `reapply-after-update` action. Do not reproduce the patch. The fresh install refuses a host
+with an existing `boot-disk-data` pool, `boot-pool/user-data` root, patch marker, container, or VM; use the
+companion's recovery action only when its exact stale-record guards apply. Run that command under the same `flock`
+lock. Then select the v28 train/version from tnt's update check and run the guarded tnt update phase:
 
 ```bash
 export TNT_LIVE_UPDATE_PHASE=patched-v27
 export TNT_LIVE_UPDATE_SOURCE_VERSION='<exact patched v27 version>'
+export TNT_LIVE_UPDATE_TARGET_PROFILE='<available profile ID, such as DEVELOPER>'
 export TNT_LIVE_UPDATE_TARGET_TRAIN='<available v28 train>'
-export TNT_LIVE_UPDATE_TARGET_VERSION='<exact v28 version>'
+export TNT_LIVE_UPDATE_TARGET_VERSION='<exact v28 nightly version from system update versions>'
 flock -w 3600 /home/vscode/vbpub-release-program-20261027/v1001.lock run-gate live-update
 ```
 

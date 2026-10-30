@@ -69,27 +69,93 @@ def test_update_check_uses_v27_status_and_reports_train_versions_and_release_not
             session.close()
 
 
+def test_reboot_verification_accepts_update_api_version_without_system_prefix():
+    with FakeServer() as server:
+        session = open_session(server.profile(), secret=server.secret(), allow_loopback_ws=True)
+        try:
+            baseline = session.workflows.system_update_baseline()
+            server.version = "TrueNAS-27.0.0-MASTER+20261027-173422"
+            server.system_info["version"] = server.version
+            server.boot_id = "fake-boot-id-2"
+            server.active_boot_environment = "fake-be-2"
+            report = session.workflows.verify_system_reboot(
+                baseline, expected_version="27.0.0-MASTER+20261027-173422")
+            assert report["version"] == server.version
+            assert report["boot_environment"] == "fake-be-2"
+        finally:
+            session.close()
+
+
+def test_update_versions_bind_explicit_train_and_version_for_download_and_apply():
+    target_train = "TrueNAS-27-Nightlies"
+    target_version = "27.0.0-MASTER+20261027-173422"
+    with FakeServer() as server:
+        server.update_target_train = "TrueNAS-28-Nightlies"
+        server.update_new_version = "TrueNAS-28.0.0-MASTER+20261027-175229"
+        server.update_alternate_versions = [(target_train, target_version)]
+        session = open_session(server.profile(), secret=server.secret(), allow_loopback_ws=True, allow_write=True)
+        try:
+            versions = session.workflows.update_versions()
+            assert {"train": target_train, "version": target_version} in versions
+
+            download = session.workflows.update_download_action(target_version, target_train=target_train)
+            download_plan = make_plan(download, session.rpc)
+            assert download_plan.action.calls[0].params == (target_train, target_version)
+            apply_plan(download_plan, session.rpc, allow_write=True, typed_confirmation=target_version)
+            assert server.update_downloaded == (target_train, target_version)
+
+            update = session.workflows.update_apply_action(target_version, target_train=target_train)
+            update_plan = make_plan(update, session.rpc)
+            assert update_plan.action.calls[0].params[0]["train"] == target_train
+            apply_plan(update_plan, session.rpc, allow_write=True, typed_confirmation=target_version)
+            assert server.pending_update_version == target_version
+        finally:
+            session.close()
+
+
+def test_update_profile_summary_keeps_enum_id_separate_from_display_name():
+    summary = _update_profile_summary(
+        {"profile": "DEVELOPER"},
+        {
+            "DEVELOPER": {"name": "Developer", "footnote": "", "description": "Nightly updates", "available": True},
+            "EARLY_ADOPTER": {"name": "Early Adopter", "footnote": "", "description": "Early releases", "available": False},
+        },
+    )
+
+    assert summary["current_profile"] == "DEVELOPER"
+    assert summary["profiles"] == [
+        {"profile": "DEVELOPER", "name": "Developer", "footnote": "", "description": "Nightly updates",
+         "available": True},
+        {"profile": "EARLY_ADOPTER", "name": "Early Adopter", "footnote": "", "description": "Early releases",
+         "available": False},
+    ]
+
+
 def test_update_profiles_selection_download_apply_and_v28_reconnect_are_guarded():
     target_version = "TrueNAS-28.0.0-BETA.1"
     target_train = "TrueNAS-SCALE-28.0-BETA"
+    target_profile = "EARLY_ADOPTER"
     with FakeServer() as server:
         server.update_target_train = target_train
+        server.update_target_profile = target_profile
         server.update_new_version = target_version
         session = open_session(server.profile(), secret=server.secret(), allow_loopback_ws=True, allow_write=True)
         try:
             baseline = session.workflows.system_update_baseline()
             profiles = session.workflows.update_profiles()
-            assert profiles["current_train"] == server.update_train
-            assert any(row["profile"] == target_train and row["available"] for row in profiles["profiles"])
+            assert profiles["current_profile"] == server.update_profile
+            assert any(row["profile"] == target_profile and row["name"] == "Early Adopter" and row["available"]
+                       for row in profiles["profiles"])
 
-            selection = session.workflows.update_select_train_action(target_train)
+            selection = session.workflows.update_select_profile_action(target_profile)
             selection_plan = make_plan(selection, session.rpc)
-            with pytest.raises(Refused, match="type 'TrueNAS-SCALE-28.0-BETA'"):
+            with pytest.raises(Refused, match="type 'EARLY_ADOPTER'"):
                 apply_plan(selection_plan, session.rpc, allow_write=True, typed_confirmation="wrong")
-            apply_plan(selection_plan, session.rpc, allow_write=True, typed_confirmation=target_train)
+            apply_plan(selection_plan, session.rpc, allow_write=True, typed_confirmation=target_profile)
             with pytest.raises(Refused, match="already applied"):
-                apply_plan(selection_plan, session.rpc, allow_write=True, typed_confirmation=target_train)
-            assert server.update_train == target_train
+                apply_plan(selection_plan, session.rpc, allow_write=True, typed_confirmation=target_profile)
+            assert server.update_profile == target_profile
+            assert server.update_target_train == target_train
 
             download_progress = []
             download = session.workflows.update_download_action(target_version)
@@ -146,17 +212,17 @@ def test_update_profiles_selection_download_apply_and_v28_reconnect_are_guarded(
             verified.close()
 
 
-def test_update_plan_preconditions_refuse_train_or_boot_baseline_drift():
+def test_update_plan_preconditions_refuse_profile_or_boot_baseline_drift():
     with FakeServer() as server:
-        server.update_target_train = "TrueNAS-SCALE-27-NEXT"
+        server.update_target_profile = "EARLY_ADOPTER"
         session = open_session(server.profile(), secret=server.secret(), allow_loopback_ws=True, allow_write=True)
         try:
-            selection = session.workflows.update_select_train_action(server.update_target_train)
+            selection = session.workflows.update_select_profile_action(server.update_target_profile)
             with pytest.raises(Refused, match="no longer available"):
-                server.update_target_train = "TrueNAS-SCALE-27-STABLE"
+                server.update_target_profile = "GENERAL"
                 make_plan(selection, session.rpc)
 
-            server.update_target_train = "TrueNAS-SCALE-27-NEXT"
+            server.update_target_profile = "EARLY_ADOPTER"
             download = session.workflows.update_download_action(server.update_new_version)
             drifted = list(download.probe)
             # The active boot environment changes between plan construction and its fresh validation probes.
@@ -196,7 +262,7 @@ def test_v28_tui_exposes_only_readonly_system_verification():
                 await _wait_for(pilot, lambda: "Post-update verification surface connected" in
                                 str(app.query_one("#system-update-note", Static).render()))
                 assert "TrueNAS-28.0.0-MASTER" in str(app.query_one("#system-update-details", Static).render())
-                for widget_id in ("system-update-train", "system-update-target", "system-update-force",
+                for widget_id in ("system-update-profile", "system-update-target", "system-update-force",
                                   "system-update-check", "system-update-select", "system-update-download",
                                   "system-update-plan"):
                     assert app.query_one(f"#{widget_id}").disabled
@@ -411,9 +477,10 @@ def test_system_update_cli_selects_downloads_and_waits_for_v28(config, capsys, m
 
     monkeypatch.setattr(cli_module.time, "sleep", lambda _seconds: None)
     target = "TrueNAS-28.0.0-BETA.1"
-    train = "TrueNAS-SCALE-28.0-BETA"
+    profile_id = "EARLY_ADOPTER"
     with FakeServer() as server:
-        server.update_target_train = train
+        server.update_target_profile = profile_id
+        server.update_target_train = "TrueNAS-SCALE-28.0-BETA"
         server.update_new_version = target
 
         def open_fake(profile, **kwargs):
@@ -423,10 +490,10 @@ def test_system_update_cli_selects_downloads_and_waits_for_v28(config, capsys, m
         cli = build_cli(opener=open_fake)
         code = cli.run(argv=["system", "update", "profiles", "--config", str(config), "--json"])
         profiles = json.loads(capsys.readouterr().out)
-        assert code == 0 and profiles["current_train"] == "TrueNAS-SCALE-27-STABLE"
+        assert code == 0 and profiles["current_profile"] == "DEVELOPER"
 
-        code = cli.run(argv=["system", "update", "select", train, "--config", str(config), "--allow-write",
-                             "--confirm", train])
+        code = cli.run(argv=["system", "update", "select", profile_id, "--config", str(config), "--allow-write",
+                             "--confirm", profile_id])
         assert code == 0 and "System action completed" in capsys.readouterr().out
         code = cli.run(argv=["system", "update", "download", target, "--config", str(config), "--allow-write",
                              "--confirm", target])
@@ -449,6 +516,35 @@ def test_system_update_cli_selects_downloads_and_waits_for_v28(config, capsys, m
         verified = json.loads(capsys.readouterr().out)
         assert code == 0 and verified["version"] == target
         assert verified["active_boot_environment"] != "fake-be-1"
+
+
+def test_system_update_cli_binds_alternate_train_from_versions(config, capsys):
+    target_train = "TrueNAS-27-Nightlies"
+    target_version = "27.0.0-MASTER+20261027-173422"
+    with FakeServer() as server:
+        server.update_target_train = "TrueNAS-28-Nightlies"
+        server.update_new_version = "TrueNAS-28.0.0-MASTER+20261027-175229"
+        server.update_alternate_versions = [(target_train, target_version)]
+
+        def open_fake(profile, **kwargs):
+            credential = kwargs.pop("secret", server.secret())
+            return open_session(server.profile(profile.name), secret=credential, allow_loopback_ws=True, **kwargs)
+
+        cli = build_cli(opener=open_fake)
+        code = cli.run(argv=["system", "update", "versions", "--config", str(config), "--json"])
+        versions = json.loads(capsys.readouterr().out)
+        assert code == 0 and {"train": target_train, "version": target_version} in versions
+
+        for verb in ("download", "apply"):
+            code = cli.run(argv=["system", "update", verb, target_version, "--train", target_train,
+                                 "--config", str(config), "--allow-write", "--confirm", target_version])
+            assert code == 0 and "System action completed" in capsys.readouterr().out
+
+        download = next(row for row in server.requests if row["method"] == "update.download")
+        update = next(row for row in server.requests if row["method"] == "update.run")
+        assert download["params"] == [target_train, target_version]
+        assert update["params"][0]["train"] == target_train
+        assert update["params"][0]["version"] == target_version
 
 
 def test_system_config_export_cli_dry_run_and_invalid_download_result(config, opener, capsys, tmp_path, monkeypatch):
@@ -1291,6 +1387,9 @@ def _valid_system_preflight():
 def test_system_preflight_snapshot_normalizes_and_sorts_visible_runtime_state():
     snapshot = _system_preflight_snapshot(_valid_system_preflight())
     assert snapshot == ("test", ((1, "pool.scrub.run"),), ("guest",), ("web",), 4, True)
+    api_client_roles = _valid_system_preflight()
+    api_client_roles[1] = {"privilege": {"roles": {"FULL_ADMIN", "SYSTEM_UPDATE_WRITE"}}}
+    assert _system_preflight_snapshot(api_client_roles) == snapshot
     empty = _valid_system_preflight()
     empty[2] = []
     empty[3] = [{"name": "stopped", "status": {"state": "STOPPED"}}]

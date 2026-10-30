@@ -780,29 +780,41 @@ def _system_verbs(ident: CliIdentity, opener: SessionOpener) -> list[VerbSpec]:
         handler=lambda args, runtime: _workflow_read(
             args, runtime, opener, lambda session: session.workflows.update_profiles())))
     update_registry.register(VerbSpec(
+        "versions", None, "List exact available update train/version pairs across TrueNAS trains.",
+        group=VerbGroup.EXPLORATION.value, options=HOST_OPTIONS,
+        handler=lambda args, runtime: _workflow_read(
+            args, runtime, opener, lambda session: session.workflows.update_versions())))
+    update_registry.register(VerbSpec(
         "select", None, "Select one exact available update profile as a typed destructive plan.",
         group=VerbGroup.MODIFICATION.value,
-        arguments=(ArgumentSpec("train", "Exact available profile name; also the typed confirmation.", metavar="PROFILE"),),
+        arguments=(ArgumentSpec("profile", "Exact available profile ID; also the typed confirmation.", metavar="PROFILE"),),
         options=HOST_OPTIONS + ACTION_OPTIONS + (force_jobs,),
         handler=lambda args, runtime: _system_action(
             args, runtime, opener,
-            lambda session: session.workflows.update_select_train_action(args.train, force_with_jobs=args.force_with_jobs))))
+            lambda session: session.workflows.update_select_profile_action(
+                args.profile, force_with_jobs=args.force_with_jobs))))
     update_registry.register(VerbSpec(
         "download", None, "Download the exact currently available update as a tracked job.",
         group=VerbGroup.MODIFICATION.value,
         arguments=(ArgumentSpec("version", "Exact available target version; also the typed confirmation.", metavar="VERSION"),),
-        options=HOST_OPTIONS + ACTION_OPTIONS + (force_jobs,),
+        options=HOST_OPTIONS + ACTION_OPTIONS + (force_jobs,
+            _value(("--train",), "Exact train from `system update versions` when choosing beyond the check candidate.",
+                   "TRAIN", "WORKFLOW")),
         handler=lambda args, runtime: _system_action(
             args, runtime, opener,
-            lambda session: session.workflows.update_download_action(args.version, force_with_jobs=args.force_with_jobs))))
+            lambda session: session.workflows.update_download_action(
+                args.version, target_train=args.train, force_with_jobs=args.force_with_jobs))))
     update_registry.register(VerbSpec(
         "apply", None, "Apply the exact currently available update as a destructive job; reboot is separate.",
         group=VerbGroup.MODIFICATION.value,
         arguments=(ArgumentSpec("version", "Exact available target version; also the typed confirmation.", metavar="VERSION"),),
-        options=HOST_OPTIONS + ACTION_OPTIONS + (force_jobs,),
+        options=HOST_OPTIONS + ACTION_OPTIONS + (force_jobs,
+            _value(("--train",), "Exact train from `system update versions` when choosing beyond the check candidate.",
+                   "TRAIN", "WORKFLOW")),
         handler=lambda args, runtime: _system_action(
             args, runtime, opener,
-            lambda session: session.workflows.update_apply_action(args.version, force_with_jobs=args.force_with_jobs))))
+            lambda session: session.workflows.update_apply_action(
+                args.version, target_train=args.train, force_with_jobs=args.force_with_jobs))))
     verify = VerbSpec(
         "verify", None, "Show the READY version, boot ID, and active boot environment, including on v28.",
         group=VerbGroup.EXPLORATION.value, options=HOST_OPTIONS,

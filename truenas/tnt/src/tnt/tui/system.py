@@ -250,18 +250,18 @@ class SystemUpdateView(Vertical):
         yield Static(intro, id="system-update-note")
         yield Static("", id="system-update-details", markup=False)
         with Vertical(id="system-update-form"):
-            yield Input(placeholder="Exact available update profile / train", id="system-update-train")
+            yield Input(placeholder="Exact available profile ID", id="system-update-profile")
             yield Input(placeholder="Exact target version to apply", id="system-update-target")
             yield Checkbox("Force only when running jobs are listed", id="system-update-force")
             with Horizontal():
                 yield Button("Check for updates", id="system-update-check")
-                yield Button("Plan train selection", id="system-update-select")
+                yield Button("Plan profile selection", id="system-update-select")
                 yield Button("Plan download", id="system-update-download")
                 yield Button("Plan update", id="system-update-plan", variant="error")
 
     def on_mount(self) -> None:
         if getattr(self.session.backend, "read_only", False):
-            for widget_id in ("system-update-train", "system-update-target", "system-update-force",
+            for widget_id in ("system-update-profile", "system-update-target", "system-update-force",
                               "system-update-check", "system-update-select", "system-update-download", "system-update-plan"):
                 self.query_one(f"#{widget_id}").disabled = True
             self._verify()
@@ -278,7 +278,10 @@ class SystemUpdateView(Vertical):
 
     @work(thread=True, exclusive=True)
     def _check(self) -> None:
-        run_session_work(self, lambda session: session.workflows.update_check(), "_checked", "_check_failed")
+        run_session_work(self, lambda session: {
+            "status": session.workflows.update_check(),
+            "profiles": session.workflows.update_profiles(),
+        }, "_checked", "_check_failed")
 
     def _check_failed(self, message: str) -> None:
         self.status = None
@@ -289,13 +292,16 @@ class SystemUpdateView(Vertical):
         self.query_one("#system-update-note", Static).update("Post-update verification surface connected; no writes are enabled.")
         self.query_one("#system-update-details", Static).update(json.dumps(status, indent=2, sort_keys=True))
 
-    def _checked(self, status: dict[str, Any]) -> None:
+    def _checked(self, result: dict[str, Any]) -> None:
+        status = result["status"]
+        profiles = result["profiles"]
         self.status = status
         self.query_one("#system-update-note", Static).update(
             "Update available." if status.get("new_version") else "No update is currently available.")
         details = {
             "current_train": status.get("train"), "target_train": status.get("target_train"),
-            "profile": status.get("profile"),
+            "current_profile": profiles["current_profile"],
+            "profiles": profiles["profiles"],
             "current_version": status.get("current_version"), "new_version": status.get("new_version"),
             "changelog_summary": status.get("changelog_summary"),
             "release_notes_url": status.get("release_notes_url"),
@@ -303,7 +309,6 @@ class SystemUpdateView(Vertical):
         self.query_one("#system-update-details", Static).update(json.dumps(details, indent=2, sort_keys=True))
         if status.get("new_version"):
             self.query_one("#system-update-target", Input).value = str(status["new_version"])
-            self.query_one("#system-update-train", Input).value = str(status.get("target_train") or "")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "system-update-check":
@@ -312,18 +317,18 @@ class SystemUpdateView(Vertical):
         if event.button.id not in {"system-update-select", "system-update-download", "system-update-plan"}:
             return
         target = self.query_one("#system-update-target", Input).value.strip()
-        train = self.query_one("#system-update-train", Input).value.strip()
+        profile = self.query_one("#system-update-profile", Input).value.strip()
         force = self.query_one("#system-update-force", Checkbox).value
         self.query_one("#system-update-note", Static).update("Checking current host state and preparing the plan…")
         for widget_id in ("system-update-select", "system-update-download", "system-update-plan"):
             self.query_one(f"#{widget_id}", Button).disabled = True
-        self._make_plan(event.button.id, target, train, force)
+        self._make_plan(event.button.id, target, profile, force)
 
     @work(thread=True, exclusive=True)
-    def _make_plan(self, operation: str, target: str, train: str, force: bool) -> None:
+    def _make_plan(self, operation: str, target: str, profile: str, force: bool) -> None:
         def build_and_plan(session, lease):
             if operation == "system-update-select":
-                action = session.workflows.update_select_train_action(train, force_with_jobs=force)
+                action = session.workflows.update_select_profile_action(profile, force_with_jobs=force)
             elif operation == "system-update-download":
                 action = session.workflows.update_download_action(target, force_with_jobs=force)
             else:

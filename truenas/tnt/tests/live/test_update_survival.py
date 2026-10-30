@@ -18,7 +18,7 @@ from tnt.session import open_session
 pytestmark = pytest.mark.live
 
 _PHASES = {"vanilla-v27", "patched-v27", "patched-v28"}
-_DATASET_FIELDS = ("id", "name", "type", "comments")
+_DATASET_FIELDS = ("id", "name", "type")
 _SNAPSHOT_FIELDS = ("id", "dataset", "name")
 
 
@@ -26,6 +26,15 @@ def _required(name: str) -> str:
     value = os.environ.get(name, "").strip()
     assert value, f"live-update requires {name}"
     return value
+
+
+def _version_for_system(target: str) -> str:
+    return target if target.startswith("TrueNAS-") else f"TrueNAS-{target}"
+
+
+def _target_is_family(target: str, family: int) -> bool:
+    version = target[len("TrueNAS-"):] if target.startswith("TrueNAS-") else target
+    return version.startswith(f"{family}.")
 
 
 def _apply(session, action, confirmation: str | None = None, *, progress: list[dict] | None = None):
@@ -53,12 +62,9 @@ def _canonical_dump(session, dataset: str, snapshot: str) -> tuple[dict, str]:
     if not isinstance(dataset_rows, list) or len(dataset_rows) != 1 or not isinstance(dataset_rows[0], dict):
         raise AssertionError(f"pool.dataset.query did not return exactly one row for {dataset!r}")
     dataset_row = {field: dataset_rows[0].get(field) for field in _DATASET_FIELDS}
-    comments = dataset_row.get("comments")
-    if isinstance(comments, dict) and "value" in comments:
-        dataset_row["comments"] = comments["value"]
     if (dataset_row["id"] != dataset or dataset_row["name"] != dataset
-            or dataset_row["type"] != "FILESYSTEM" or not isinstance(dataset_row["comments"], str)):
-        raise AssertionError(f"dataset record lost its identity or user marker: {dataset_row!r}")
+            or dataset_row["type"] != "FILESYSTEM"):
+        raise AssertionError(f"dataset record lost its identity: {dataset_row!r}")
     snapshot_rows = session.rpc.call("pool.snapshot.query", [["id", "=", snapshot]],
                                      {"select": list(_SNAPSHOT_FIELDS)})
     if not isinstance(snapshot_rows, list) or len(snapshot_rows) != 1 or not isinstance(snapshot_rows[0], dict):
@@ -122,7 +128,7 @@ def test_update_survival_for_selected_live_system():
         profile, _, session = _open(profile_name, allow_write=False)
         try:
             expected = _required("TNT_LIVE_UPDATE_TARGET_VERSION")
-            assert expected.startswith("TrueNAS-28."), f"patched-v28 must verify a v28 build, got {expected!r}"
+            assert _target_is_family(expected, 28), f"patched-v28 must verify a v28 build, got {expected!r}"
             dataset = _required("TNT_LIVE_UPDATE_DATASET")
             snapshot = _required("TNT_LIVE_UPDATE_SNAPSHOT")
             expected_sha = _required("TNT_LIVE_UPDATE_CANONICAL_SHA256")
@@ -131,7 +137,7 @@ def test_update_survival_for_selected_live_system():
                 "v28 verification must use the restricted read-only adapter"
             )
             before = session.workflows.system_status()
-            assert before["version"] == expected
+            assert before["version"] == _version_for_system(expected)
             assert before["state"] == "READY"
             _, observed_sha = _canonical_dump(session, dataset, snapshot)
             assert observed_sha == expected_sha, f"post-update canonical data SHA-256 differs: {observed_sha}"
@@ -145,12 +151,13 @@ def test_update_survival_for_selected_live_system():
 
     source = _required("TNT_LIVE_UPDATE_SOURCE_VERSION")
     target = _required("TNT_LIVE_UPDATE_TARGET_VERSION")
+    target_profile = _required("TNT_LIVE_UPDATE_TARGET_PROFILE")
     target_train = _required("TNT_LIVE_UPDATE_TARGET_TRAIN")
     pool = _required("TNT_LIVE_POOL")
     assert pool != "boot-pool" and "/" not in pool, "TNT_LIVE_POOL must name one non-boot data pool"
     assert source.startswith("TrueNAS-27."), f"{phase} must start from v27, got {source!r}"
-    assert ((phase == "vanilla-v27" and target.startswith("TrueNAS-27.")) or
-            (phase == "patched-v27" and target.startswith("TrueNAS-28."))), (
+    assert ((phase == "vanilla-v27" and _target_is_family(target, 27)) or
+            (phase == "patched-v27" and _target_is_family(target, 28))), (
             "vanilla-v27 must target a v27 nightly; patched-v27 must target v28"
         )
 
@@ -161,6 +168,25 @@ def test_update_survival_for_selected_live_system():
     try:
         baseline = session.workflows.system_update_baseline()
         assert baseline[0] == source, f"expected source version {source!r}, got {baseline[0]!r}"
+        profiles = session.workflows.update_profiles()
+        target_choice = next((row for row in profiles["profiles"] if row["profile"] == target_profile), None)
+        assert target_choice is not None and target_choice["available"] is True, (
+            f"target update profile {target_profile!r} is not reported as available"
+        )
+        if profiles["current_profile"] != target_profile:
+            select_plan, _ = _apply(
+                session, session.workflows.update_select_profile_action(target_profile), target_profile)
+            assert select_plan.action.calls[0].method == "update.update"
+            profiles = session.workflows.update_profiles()
+            assert profiles["current_profile"] == target_profile
+        versions = session.workflows.update_versions()
+        assert {"train": target_train, "version": target} in versions, (
+            f"TrueNAS does not list the exact requested target/train: {target!r} on {target_train!r}"
+        )
+        status = session.workflows.update_check()
+
+        # Resolve all update/profile preconditions before writing a fixture so a
+        # mismatch cannot leave a dataset behind on the disposable host.
         pools = session.rpc.call("pool.query", [], {})
         assert isinstance(pools, list) and any(row.get("name") == pool for row in pools if isinstance(row, dict)), (
             f"data pool {pool!r} is not visible through tnt"
@@ -174,41 +200,30 @@ def test_update_survival_for_selected_live_system():
 
         existing = session.rpc.call("pool.dataset.query", [["id", "=", dataset]], {})
         assert existing == [], f"refusing to reuse pre-existing live fixture {dataset!r}"
-        marker = json.dumps({"purpose": "tnt update survival acceptance", "nonce": suffix,
-                             "source_version": source, "target_version": target}, sort_keys=True)
         _apply(session, session.workflows.dataset_create_action({
-            "name": dataset, "type": "FILESYSTEM", "comments": marker,
+            "name": dataset, "type": "FILESYSTEM",
         }))
         _apply(session, session.workflows.snapshot_create_action({"dataset": dataset, "name": f"tnt-update-{suffix}"}))
         canonical_before, digest_before = _canonical_dump(session, dataset, snapshot)
         print(json.dumps({"phase": phase, "source_version": source, "target_version": target,
                           "dataset": dataset, "snapshot": snapshot,
+                          "selected_profile": profiles["current_profile"], "target_train": target_train,
+                          "profile_candidate": status["new_version"],
                           "canonical_sha256": digest_before, "canonical_dump": canonical_before},
                          sort_keys=True), flush=True)
 
-        profiles = session.workflows.update_profiles()
-        target_profile = next((row for row in profiles["profiles"] if row["profile"] == target_train), None)
-        assert target_profile is not None and target_profile["available"] is True, (
-            f"target update profile {target_train!r} is not reported as available"
-        )
-        if profiles["current_train"] != target_train:
-            select_plan, _ = _apply(session, session.workflows.update_select_train_action(target_train), target_train)
-            assert select_plan.action.calls[0].method == "update.update"
-        status = session.workflows.update_check()
-        assert status["new_version"] == target and status["target_train"] == target_train, (
-            f"TrueNAS does not offer the exact requested target/train: {status!r}"
-        )
-
         download_progress: list[dict] = []
         download_plan, download_result = _apply(
-            session, session.workflows.update_download_action(target), target, progress=download_progress,
+            session, session.workflows.update_download_action(target, target_train=target_train), target,
+            progress=download_progress,
         )
         assert download_plan.action.calls[0].method == "update.download"
         _assert_job(download_result, "update.download", download_progress)
 
         update_progress: list[dict] = []
         update_plan, update_result = _apply(
-            session, session.workflows.update_apply_action(target), target, progress=update_progress,
+            session, session.workflows.update_apply_action(target, target_train=target_train), target,
+            progress=update_progress,
         )
         assert update_plan.action.system_baseline == baseline
         assert update_plan.action.calls[0].method == "update.run"

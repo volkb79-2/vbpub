@@ -4,6 +4,9 @@
 
 <!-- cmru: release history -->
 
+### Fixed
+- Treat `update.profile_choices` keys as profile IDs and their `name` fields as display labels; accept API-client role sets and bind update downloads/applies to an exact available train/version pair. Preflight live updates before creating fixtures.
+
 ## [0.1.0] - 2026-10-29
 <!-- cmru: generated -->
 <!-- cmru: source-end=c0421e29c4a03b05de49455b4c93f92161cb813d -->
