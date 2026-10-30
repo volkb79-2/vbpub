@@ -49,7 +49,7 @@ def test_shared_table_r0_and_r3_columns_match_the_contract():
         Termination.INCONCLUSIVE: (Outcome.ERROR, ReasonCode.EXEC_FAILED),
     }
     expected_r0_by_case_name = {
-        "no-measurement-without-leak": (
+        "no-measurement-without-leak-is-not-run": (
             Outcome.NO_MEASUREMENT,
             ReasonCode.TARGET_NOT_MEASURED,
         ),
