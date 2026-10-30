@@ -144,6 +144,28 @@ _EXPECTED_REASON_BY_MECHANISM: Mapping[str, ReasonCode] = MappingProxyType(
 )
 
 
+def _require_clean_import_break_exit(
+    mechanism: str,
+    outcome: Outcome,
+    reason_code: ReasonCode | None,
+    returncode: int | None,
+) -> tuple[Outcome, ReasonCode | None]:
+    """Only an ordinary nonzero process exit can certify an import break.
+
+    A negative ``subprocess`` return code means the process was terminated by
+    a signal. A report-derived ``COMMAND_FAILED`` with return code zero also
+    lacks the ordinary nonzero exit that certifies a clean import-break catch.
+    """
+    if (
+        mechanism == MECHANISM_IMPORT_BREAK
+        and outcome is Outcome.FAIL
+        and reason_code is ReasonCode.COMMAND_FAILED
+    ):
+        if returncode is None or returncode <= 0:
+            return Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE
+    return outcome, reason_code
+
+
 def _single_target_result(*, mechanism: str, **attempt: object) -> CanaryResult:
     """(B007/A-432, schema v10) the R3 payload for a lane that declared ONE
     canary target: a one-element ``attempts`` array.
@@ -158,14 +180,6 @@ def _single_target_result(*, mechanism: str, **attempt: object) -> CanaryResult:
     return CanaryResult(
         mechanism=mechanism,
         attempts=(CanaryAttempt(**attempt),),  # type: ignore[arg-type]
-    )
-
-
-def _contention_note(phase: str, observation: contention.ContentionObservation) -> str:
-    details = f" ({', '.join(observation.reasons)})" if observation.reasons else ""
-    return (
-        f"{phase} result withheld by cgroup resource window "
-        f"{observation.status}{details}"
     )
 
 
@@ -381,7 +395,7 @@ def run_python_canary(
     git.run(repo, "add", "-A")
     git.run(repo, "commit", "-q", "-m", f"assay canary: {description}")
 
-    transformed_outcome, observed_reason_code, _ = _run_pipeline(
+    transformed_outcome, observed_reason_code, transformed_result = _run_pipeline(
         lane,
         repo=repo,
         project_root=project_root,
@@ -391,6 +405,12 @@ def run_python_canary(
         infrastructure_environment=infrastructure_environment,
         process_runner=process_runner,
         clock=clock,
+    )
+    transformed_outcome, observed_reason_code = _require_clean_import_break_exit(
+        mechanism,
+        transformed_outcome,
+        observed_reason_code,
+        transformed_result.returncode,
     )
     return _single_target_result(
         mechanism=mechanism,
@@ -564,7 +584,6 @@ def run_isolated_canary(
     # lane's own format, which is exactly the disagreement A-271's
     # one-grammar rule exists to prevent.
     coverage_producer = lane.judge.coverage.producer if wants_coverage else None
-    contention_notes: list[str] = []
     observer_is_declared = (
         "ASSAY_RESOURCE_OBSERVER_SOCKET" in plan.env_effective
         or "ASSAY_RESOURCE_OBSERVER_SOCKET" in plan.env_passthrough
@@ -619,9 +638,6 @@ def run_isolated_canary(
             require_observation=require_contention_observation,
         ):
             control_outcome = Outcome.INCONCLUSIVE
-            contention_notes.append(
-                _contention_note("control", control_contention.observation)
-            )
         original_bytes = prepared.read_regular_file(
             canary_repo_path, timeout=deadline.remaining()
         )
@@ -705,6 +721,12 @@ def run_isolated_canary(
             deadline=deadline,
             sensitive_values=_plan_passthrough_values(plan),
         )
+        transformed_outcome, observed_reason_code = _require_clean_import_break_exit(
+            mechanism,
+            transformed_outcome,
+            observed_reason_code,
+            transform_unit.result.returncode,
+        )
         if contention.withhold_canary_result(
             transform_contention.observation,
             outcome=transformed_outcome,
@@ -712,18 +734,11 @@ def run_isolated_canary(
         ):
             transformed_outcome = Outcome.INCONCLUSIVE
             observed_reason_code = ReasonCode.CANARY_INCONCLUSIVE
-            contention_notes.append(
-                _contention_note("transform", transform_contention.observation)
-            )
 
     return _single_target_result(
         mechanism=mechanism,
         target=target,
-        description=(
-            f"{description}; {'; '.join(contention_notes)}"
-            if contention_notes
-            else description
-        ),
+        description=description,
         control_outcome=control_outcome,
         transformed_outcome=transformed_outcome,
         expected_reason_code=expected_reason,
@@ -1038,8 +1053,9 @@ def judge_attempt(attempt: CanaryAttempt) -> tuple[Outcome, ReasonCode | None]:
       from the configured expected one — both ``FAIL``/``CANARY_SURVIVED``;
     * otherwise — a PASSING control and a transformed run with the expected
       reason code — ``PASS``. For ``import-break``, that code is the ordinary
-      ``COMMAND_FAILED`` result and does not independently prove the injected
-      statement caused the failure.
+      ``COMMAND_FAILED`` result. The producer requires an ordinary nonzero
+      process exit for that result; a signal death or report-only failure is
+      recorded as ``INCONCLUSIVE`` before this helper judges the attempt.
 
     A ``"not_attempted"`` entry has no judgement of its own: it is
     bookkeeping about an aggregation, and :func:`judge_canary` reads it as

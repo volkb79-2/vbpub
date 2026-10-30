@@ -1509,12 +1509,18 @@ you're changing assay itself:
   across container `/tmp` namespaces. Docker names do not decide admission.
   For R0/R1/R3, `affected` means a direct pids or memory OOM event in the
   measured cgroup; PSI and CPU throttling do not change verdicts. A direct
-  event may withhold either outcome, and an unavailable observation may
-  withhold a failure. Otherwise, completed PASS results are retained. R2
-  keeps its per-candidate event windows and pressure-adjusted liveness clock.
-  Import-break canaries use the expected `COMMAND_FAILED` reason from 10.0.0;
+  event never changes a completed PASS. A direct event can make a failed
+  command or coverage claim an infrastructure error; an unavailable direct
+  counter observation can do the same when the gate requires that evidence.
+  PSI or CPU-stat sample availability alone never changes a failed verdict.
+  R2 keeps its per-candidate event windows and pressure-adjusted liveness
+  clock.
+  Import-break canaries require the transformed command to exit normally with
+  a nonzero status and the expected `COMMAND_FAILED` reason; a signal death or
+  report-derived `COMMAND_FAILED` with exit status zero is `INCONCLUSIVE`.
   Assay does not inspect output for a separate cause proof. Timeouts, execution
-  errors and missing results remain `INCONCLUSIVE`. Observer sampling is
+  errors and missing results remain
+  `INCONCLUSIVE`. Observer sampling is
   lane-scoped: Assay uses the socket only when it appears in the lane's
   resolved environment, so a parent gate's ambient socket cannot change a
   nested lane's verdict. See [host load and verdicts](docs/DESIGN-GUIDE.md#host-load-and-verdicts).

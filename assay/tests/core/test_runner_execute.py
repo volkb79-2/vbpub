@@ -132,10 +132,7 @@ def test_gate_mode_failed_r0_is_not_withheld_for_psi_or_throttling(
         else ReasonCode.COMMAND_FAILED
     )
     assert result.returncode == 9
-    if expected_outcome is Outcome.ERROR:
-        assert f"cgroup resource window was {status}" in result.stderr_tail
-    else:
-        assert result.stderr_tail == ""
+    assert result.stderr_tail == ""
     assert runner.build_r0_claim(result).status is expected_outcome
 
 
@@ -143,7 +140,7 @@ def test_gate_mode_failed_r0_is_not_withheld_for_psi_or_throttling(
     ("status", "resource_limit_hit", "expected_outcome"),
     [
         ("clear", False, Outcome.PASS),
-        ("affected", True, Outcome.ERROR),
+        ("affected", True, Outcome.PASS),
         ("unknown", False, Outcome.PASS),
     ],
 )
@@ -191,10 +188,7 @@ def test_gate_mode_pass_verdict_has_no_stderr_tail(
         ReasonCode.EXEC_FAILED if expected_outcome is Outcome.ERROR else None
     )
     assert getattr(result, "resource_contention", None) is Window.observation
-    if expected_outcome is Outcome.ERROR:
-        assert "R0 result withheld" in result.stderr_tail
-    else:
-        assert result.stderr_tail is None
+    assert result.stderr_tail is None
 
 
 @pytest.mark.parametrize(
@@ -260,7 +254,17 @@ def test_r1_claim_ignores_psi_and_throttling_but_retains_direct_limits():
         ContentionObservation("affected", resource_limit_hit=True),
         diagnostics=None,
     )
-    assert direct_limit_pass.status is Outcome.ERROR
+    assert direct_limit_pass.status is Outcome.PASS
+    assert direct_limit_pass.coverage is not None
+
+    direct_limit_fail = adjust(
+        _coverage_claim(Outcome.FAIL),
+        ContentionObservation("affected", resource_limit_hit=True),
+        diagnostics=None,
+    )
+    assert direct_limit_fail.status is Outcome.ERROR
+    assert direct_limit_fail.reason_code is ReasonCode.EXEC_FAILED
+    assert direct_limit_fail.detail is None
 
     unknown_pass = adjust(
         _coverage_claim(Outcome.PASS),

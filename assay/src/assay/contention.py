@@ -37,9 +37,10 @@ class ContentionObservation:
 class ContentionWindow:
     """Capture this process cgroup's counters immediately around one command.
 
-    The observer socket is optional for Assay consumers.  B105 provides it,
-    which makes an unavailable pre/post sample an explicit unknown rather than
-    a claim that the run was pressure-free.
+    The observer socket is optional for Assay consumers. B105 provides it,
+    which makes an unavailable direct-counter pre/post sample an explicit
+    unknown rather than a claim that the run was unaffected. PSI and CPU-stat
+    sample availability remains advisory and does not affect classification.
     """
 
     def __init__(
@@ -183,7 +184,10 @@ class ContentionWindow:
                 resource_limit_hit=True,
                 reasons=tuple(reasons),
             )
-        elif limit_evidence is not None and pressure_status in {"clear", "stalled"}:
+        elif limit_evidence is not None:
+            # PSI and CPU-stat sampling are advisory. Once the direct
+            # pids/OOM counters are readable, their result alone determines
+            # whether a failed command can be classified.
             self.observation = ContentionObservation("clear", reasons=tuple(reasons))
         else:
             self.observation = ContentionObservation("unknown", reasons=tuple(reasons))
@@ -199,10 +203,11 @@ def withhold_canary_result(
     """Whether a canary result is unclassifiable from its resource window.
 
     A cgroup OOM or pids-limit event can directly prevent a command from
-    completing. A required unavailable sample prevents classifying a failed
-    control or transform, while completed passes remain usable without a
-    sample. PSI and CPU throttling do not change the result. Command timeouts
-    and other incomplete outcomes are already infrastructure.
+    completing when the command failed. A required unavailable direct-counter
+    sample also prevents classifying a failed control or transform, while
+    completed passes remain usable without a sample. PSI and CPU throttling do
+    not change the result. Command timeouts and other incomplete outcomes are
+    already infrastructure.
     """
     if not isinstance(observation, ContentionObservation):
         raise TypeError("observation must be a ContentionObservation")
@@ -210,10 +215,10 @@ def withhold_canary_result(
         raise TypeError("outcome must be an Outcome")
     if type(require_observation) is not bool:
         raise TypeError("require_observation must be a bool")
-    if observation.resource_limit_hit:
-        return True
     if outcome is not Outcome.FAIL:
         return False
+    if observation.resource_limit_hit:
+        return True
     if observation.status == "unobserved":
         return require_observation
     return observation.status in {"affected", "unknown"}
@@ -227,10 +232,11 @@ def withhold_r0_result(
 ) -> bool:
     """Whether an R0 result is unclassifiable from its resource window.
 
-    A direct pids/OOM event makes the R0 measurement incomplete even if its
-    command exited successfully. A failed command with an unavailable
-    required observation is incomplete. PSI and throttling do not affect the
-    result. Command-budget expiry is already an incomplete outcome.
+    A direct pids/OOM event makes a failed R0 measurement incomplete.
+    Completed PASS results stay final. A failed command with an unavailable
+    required direct-counter observation is incomplete. PSI and throttling do
+    not affect the result. Command-budget expiry is already an incomplete
+    outcome.
     """
     if not isinstance(observation, ContentionObservation):
         raise TypeError("observation must be a ContentionObservation")
@@ -238,10 +244,10 @@ def withhold_r0_result(
         raise TypeError("outcome must be an Outcome")
     if type(require_observation) is not bool:
         raise TypeError("require_observation must be a bool")
-    if observation.resource_limit_hit:
-        return True
     if outcome is not Outcome.FAIL:
         return False
+    if observation.resource_limit_hit:
+        return True
     return observation.status in {"affected", "unknown"} or (
         require_observation and observation.status == "unobserved"
     )
@@ -254,18 +260,17 @@ def withhold_r1_result(
 ) -> bool:
     """Whether an R1 coverage claim is incomplete under its R0 window.
 
-    A direct pids/OOM event can truncate R0 or its coverage artifact and
-    withholds either outcome. PSI and throttling do not affect a completed
-    coverage claim; an unavailable required observation withholds a failure.
+    A direct pids/OOM event can make a failed R0 command or coverage result
+    incomplete. Completed PASS results stay final. PSI and throttling do not
+    affect a completed coverage claim; an unavailable direct-counter
+    observation withholds a failed claim.
     """
     if not isinstance(observation, ContentionObservation):
         raise TypeError("observation must be a ContentionObservation")
     if not isinstance(outcome, Outcome):
         raise TypeError("outcome must be an Outcome")
-    if observation.resource_limit_hit:
-        return True
-    return outcome is Outcome.FAIL and observation.status in {
-        "affected",
-        "unknown",
-        "unobserved",
+    if outcome is not Outcome.FAIL:
+        return False
+    return observation.resource_limit_hit or observation.status in {
+        "unknown", "unobserved"
     }

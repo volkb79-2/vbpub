@@ -1356,28 +1356,10 @@ def execute_plan(
                     outcome=result.outcome,
                     require_observation=classify_resource_contention,
                 ):
-                    window_details = (
-                        f" ({', '.join(observation.reasons)})"
-                        if observation.reasons
-                        else ""
-                    )
-                    diagnostic = (
-                        "\nAssay R0 result withheld because its cgroup resource "
-                        f"window was {observation.status}{window_details}; treated "
-                        "as an infrastructure result."
-                    )
-                    stderr_tail, additional_dropped = _bounded_tail(
-                        (result.stderr_tail or "") + diagnostic,
-                        sensitive_values=_plan_passthrough_values(plan),
-                    )
                     result = replace(
                         result,
                         outcome=Outcome.ERROR,
                         reason_code=ReasonCode.EXEC_FAILED,
-                        stderr_tail=stderr_tail,
-                        stderr_dropped_bytes=(
-                            result.stderr_dropped_bytes + additional_dropped
-                        ),
                     )
             else:
                 result = _execute_plan_inner(
@@ -1652,26 +1634,19 @@ def _withhold_r1_claim_for_contention(
     if not contention.withhold_r1_result(observation, outcome=claim.status):
         return claim
 
-    details = (
-        f" ({', '.join(observation.reasons)})"
-        if observation.reasons
-        else ""
-    )
     refusal = AssayError(
-        "R1 coverage claim withheld because its R0 cgroup resource window "
-        f"was {observation.status}{details}; treated as infrastructure for retry.",
+        "R1 coverage claim withheld because its R0 resource observation "
+        "cannot classify the failed run.",
         outcome=Outcome.ERROR,
         reason_code=ReasonCode.EXEC_FAILED,
     )
-    detail = announce_refusal(refusal, diagnostics=diagnostics)
+    announce_refusal(refusal, diagnostics=diagnostics)
     return Claim(
         rigor="R1",
         source="computed",
         status=Outcome.ERROR,
         verified_by_assay=True,
         reason_code=ReasonCode.EXEC_FAILED,
-        detail=detail.text if detail else None,
-        detail_dropped_bytes=detail.dropped_bytes if detail else None,
     )
 
 

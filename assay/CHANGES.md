@@ -7,9 +7,26 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ### Fixed
 - fix(assay): allow concurrent gates through admission independent of Docker-name snapshots; attribute direct resource-limit events to the measured cgroup
 - fix(assay): make the R3 verifier derive incomplete transformed canary runs as INCONCLUSIVE, matching the producer
-- fix(assay): reserve `affected` for direct pids/OOM events; PSI and CPU throttling no longer change R0/R1/R3 verdicts
-- fix(assay): restore 10.0.0 import-break canary semantics, where a clean `COMMAND_FAILED` is the expected reason and no output cause proof is required
-- fix(assay): remove cgroup telemetry from PASS stderr tails and canary descriptions; compare SQL witness stderr exactly without a telemetry exception
+- fix(assay): retain completed PASS results despite direct limit events or
+  unavailable direct-counter samples; only direct-limit and required
+  direct-counter evidence can make failures infrastructure
+- fix(assay): keep PSI and CPU-throttling sample availability out of
+  R0/R1/R3 failure classification
+- fix(assay): require an ordinary nonzero process exit for an import-break
+  canary catch; signal deaths and report-derived `COMMAND_FAILED` results with
+  exit status zero remain inconclusive
+- fix(assay): remove resource-window observations from verdict tails, details
+  and canary descriptions; compare SQL witness stderr exactly without a
+  telemetry exception
+- fix(assay): keep `assay analyze campaign` incomplete when a native R2
+  lane's verdict has no R2 judgment, while preserving whole-scope
+  qualification for R0/R1-only and plan-only ingested analysis. Absence of an
+  R2 judgment no longer supplies evidence of an ingested inventory, so early
+  verdicts such as failed R0 baselines retain `inventory_not_exhausted` and
+  `qualifying: false`. This is safe because native inventory still requires
+  the reconstructed native plan, ingested inventory still requires an
+  explicit ingested producer on a lane configured with a mutation report,
+  and non-R2 lane scope keeps its prior qualification rule.
 
 <!-- cmru: release history -->
 

@@ -9,6 +9,7 @@ import hashlib
 import importlib.util
 import os
 import re
+import select
 import signal
 import shutil
 import stat
@@ -92,6 +93,7 @@ FAKE_DOCKER = r'''#!/usr/bin/env python3
 import hashlib
 import json
 import os
+import signal
 import sys
 import subprocess
 import time
@@ -338,8 +340,11 @@ if args and args[0] == "wait":
         print("0")
         raise SystemExit(0)
     if mode == "blocked-wait":
-        while not read_state().get("stopped"):
-            time.sleep(0.05)
+        ready_path = os.environ.get("DOCKER_WAIT_READY")
+        if ready_path:
+            with open(ready_path, "w", encoding="ascii") as stream:
+                stream.write("ready\n")
+        signal.pause()
     if mode in {"analysis-pilot-inner-log", "analysis-host-check-dirties"}:
         log_follow_done = Path(os.environ["DOCKER_LOG_FOLLOW_DONE"])
         deadline = time.monotonic() + 10
@@ -872,6 +877,7 @@ def launch_env(tmp_path: Path, *, mode: str):
         "DOCKER_UNIT_PROBE_STATE": str(tmp_path / "docker-unit-probe-state.json"),
         "DOCKER_MODE": mode,
         "TMPDIR": str(tmp_path),
+        "DOCKER_WAIT_READY": str(tmp_path / "docker-wait-ready.fifo"),
     }
     env["ASSAY_GATE_RESOURCE_OBSERVER_SOURCE"] = os.environ.get(
         "ASSAY_GATE_RESOURCE_OBSERVER_SOURCE",
@@ -4139,6 +4145,9 @@ def test_runner_cancellation_stops_and_removes_its_owned_container(
     tmp_path: Path, committed_worktree: Path
 ):
     env, trace = launch_env(tmp_path, mode="blocked-wait")
+    ready_path = Path(env["DOCKER_WAIT_READY"])
+    os.mkfifo(ready_path)
+    ready_fd = os.open(ready_path, os.O_RDWR | os.O_NONBLOCK)
     proc = subprocess.Popen(
         ["bash", str(SCRIPT), str(committed_worktree), "self-qualification-preflight"],
         env=env,
@@ -4147,22 +4156,15 @@ def test_runner_cancellation_stops_and_removes_its_owned_container(
         text=True,
     )
     try:
-        for _ in range(200):
-            if trace.exists() and any(
-                json.loads(line)[:1] == ["wait"]
-                and CONTAINER_ID in json.loads(line)
-                for line in trace.read_text(encoding="utf-8").splitlines()
-            ):
-                break
-            if proc.poll() is not None:
-                pytest.fail("launcher exited before reaching docker wait" + f": {proc.communicate()[1][-600:]!r}")
-            time.sleep(0.05)
-        else:
+        readable, _, _ = select.select([ready_fd], [], [], 60)
+        if not readable:
             pytest.fail("launcher did not reach docker wait")
+        assert os.read(ready_fd, 64) == b"ready\n"
 
         proc.send_signal(signal.SIGTERM)
-        stdout, stderr = proc.communicate(timeout=10)
+        stdout, stderr = proc.communicate(timeout=60)
     finally:
+        os.close(ready_fd)
         if proc.poll() is None:
             proc.kill()
             proc.communicate(timeout=5)

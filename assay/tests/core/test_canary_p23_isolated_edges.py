@@ -223,6 +223,8 @@ def _run_import_break_with_resource_observations(
     tmp_path: Path,
     monkeypatch,
     observations: tuple[contention.ContentionObservation, ...],
+    *,
+    transformed_returncode: int | None = None,
 ):
     monkeypatch.setenv("ASSAY_GATE_REQUIRE_RESOURCE_OBSERVATION", "1")
     monkeypatch.setenv("ASSAY_RESOURCE_OBSERVER_SOCKET", "/observer.sock")
@@ -256,7 +258,12 @@ def _run_import_break_with_resource_observations(
     def process(argv, *, env, cwd, timeout):
         source = (Path(cwd) / "pkg/mod.py").read_text()
         broken = "assay-canary-import-break" in source
-        return completed_process(list(argv), 1 if broken else 0, "", "")
+        returncode = (
+            transformed_returncode
+            if broken and transformed_returncode is not None
+            else 1 if broken else 0
+        )
+        return completed_process(list(argv), returncode, "", "")
 
     with prepared_snapshot(git_repo, commit=head_rev, scratch_root=scratch) as prepared:
         result = run_isolated_canary(
@@ -283,7 +290,7 @@ def _run_import_break_with_resource_observations(
 
 
 @pytest.mark.parametrize("limited_phase", ["control", "transform"])
-def test_limit_event_withholds_a_canary_result(
+def test_limit_event_only_withholds_a_failed_canary_result(
     git_repo: GitRepo, tmp_path: Path, monkeypatch, limited_phase: str
 ):
     affected = contention.ContentionObservation(
@@ -296,17 +303,16 @@ def test_limit_event_withholds_a_canary_result(
         git_repo, tmp_path, monkeypatch, observations
     )
 
-    assert attempt.control_outcome is (
-        Outcome.INCONCLUSIVE if limited_phase == "control" else Outcome.PASS
-    )
+    assert attempt.control_outcome is Outcome.PASS
     assert attempt.transformed_outcome is (
-        Outcome.FAIL if limited_phase == "control" else Outcome.INCONCLUSIVE
+        Outcome.INCONCLUSIVE if limited_phase == "transform" else Outcome.FAIL
     )
     if limited_phase == "transform":
         assert attempt.observed_reason_code is ReasonCode.CANARY_INCONCLUSIVE
     assert canary.judge_attempt(attempt) == (
-        Outcome.INCONCLUSIVE,
-        ReasonCode.CANARY_INCONCLUSIVE,
+        (Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE)
+        if limited_phase == "transform"
+        else (Outcome.PASS, None)
     )
 
 
@@ -333,44 +339,46 @@ def test_import_break_command_failed_is_expected_under_psi(
 def test_canary_description_has_no_host_telemetry(
     git_repo: GitRepo, tmp_path: Path, monkeypatch
 ):
-    pressure = contention.ContentionObservation(
-        "clear",
-        reasons=(
-            "cgroup_psi.cpu.some_us=5340037",
-            "cgroup_cpu.throttled_usec=500",
+    observations = (
+        contention.ContentionObservation(
+            "affected",
+            resource_limit_hit=True,
+            reasons=("pids_events_max=1",),
+        ),
+        contention.ContentionObservation(
+            "unknown", reasons=("after-sample-unavailable:/sensitive/path",)
         ),
     )
     attempt = _run_import_break_with_resource_observations(
-        git_repo, tmp_path, monkeypatch, (pressure, pressure)
+        git_repo, tmp_path, monkeypatch, observations
     )
 
     description = attempt.description.lower()
     assert "cgroup" not in description
     assert "psi" not in description
     assert "throttl" not in description
+    assert "pids_events" not in description
+    assert "/sensitive/path" not in description
 
 
-def test_contention_note_retains_direct_limit_and_unavailable_sample_details():
-    affected = canary._contention_note(
-        "control",
-        contention.ContentionObservation(
-            "affected", resource_limit_hit=True, reasons=("pids_events_max=1",)
-        ),
-    )
-    unknown = canary._contention_note(
-        "transform",
-        contention.ContentionObservation(
-            "unknown", reasons=("after-sample-unavailable:/sensitive/path",)
-        ),
+def test_signalled_import_break_is_inconclusive(
+    git_repo: GitRepo, tmp_path: Path, monkeypatch
+):
+    clear = contention.ContentionObservation("clear")
+    attempt = _run_import_break_with_resource_observations(
+        git_repo,
+        tmp_path,
+        monkeypatch,
+        (clear, clear),
+        transformed_returncode=-9,
     )
 
-    assert affected == (
-        "control result withheld by cgroup resource window affected "
-        "(pids_events_max=1)"
-    )
-    assert unknown == (
-        "transform result withheld by cgroup resource window unknown "
-        "(after-sample-unavailable:/sensitive/path)"
+    assert attempt.control_outcome is Outcome.PASS
+    assert attempt.transformed_outcome is Outcome.INCONCLUSIVE
+    assert attempt.observed_reason_code is ReasonCode.CANARY_INCONCLUSIVE
+    assert canary.judge_attempt(attempt) == (
+        Outcome.INCONCLUSIVE,
+        ReasonCode.CANARY_INCONCLUSIVE,
     )
 
 def test_a_test_path_canary_target_is_still_refused_before_any_unit(

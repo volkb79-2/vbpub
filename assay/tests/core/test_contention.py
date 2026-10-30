@@ -212,7 +212,7 @@ def test_direct_limit_event_is_preserved_when_pressure_sample_is_unavailable(
     )
 
 
-def test_contention_window_fails_closed_when_either_sample_is_unavailable(monkeypatch):
+def test_only_unavailable_direct_counters_make_the_window_unknown(monkeypatch):
     before_failure = contention.ContentionWindow(
         observer_socket_path="/observer.sock",
         counters_reader=lambda **kwargs: (_ for _ in ()).throw(OSError("before")),
@@ -243,7 +243,12 @@ def test_contention_window_fails_closed_when_either_sample_is_unavailable(monkey
     with unknown_window:
         pass
     assert unknown_window.observation == contention.ContentionObservation(
-        "unknown", reasons=("cgroup-pressure-window-unavailable",)
+        "clear", reasons=("cgroup-pressure-window-unavailable",)
+    )
+    assert not contention.withhold_r0_result(
+        unknown_window.observation,
+        outcome=Outcome.FAIL,
+        require_observation=True,
     )
 
 
@@ -261,7 +266,7 @@ def test_contention_window_records_a_failed_before_pressure_sample(monkeypatch):
     with window:
         pass
 
-    assert window.observation.status == "unknown"
+    assert window.observation.status == "clear"
     assert window.observation.reasons == (
         "before-sample-unavailable:cgroup-pressure:OSError: before pressure unavailable",
     )
@@ -302,14 +307,16 @@ def test_contention_window_records_a_failed_resource_counter_comparison(monkeypa
         ),
     ],
 )
-def test_contention_window_reports_missing_snapshots_without_inventing_clear(
+def test_missing_counter_snapshot_is_unknown_but_pressure_snapshot_is_clear(
     monkeypatch, limits, pressure, expected_reason
 ):
     window = _window(monkeypatch, limits=limits, pressure=pressure)
     with window:
         pass
 
-    assert window.observation.status == "unknown"
+    assert window.observation.status == (
+        "unknown" if expected_reason.startswith("resource-counter") else "clear"
+    )
     assert expected_reason in window.observation.reasons
 
 
@@ -327,7 +334,7 @@ def test_contention_window_reports_missing_snapshots_without_inventing_clear(
             contention.ContentionObservation("affected", resource_limit_hit=True),
             Outcome.PASS,
             False,
-            True,
+            False,
         ),
         (contention.ContentionObservation("unknown"), Outcome.FAIL, False, True),
         (contention.ContentionObservation("unknown"), Outcome.PASS, False, False),
@@ -384,7 +391,7 @@ def test_gate_canary_retains_pass_without_a_resource_sample():
         ("affected", True, Outcome.FAIL, True),
         ("unknown", False, Outcome.FAIL, True),
         ("unobserved", False, Outcome.FAIL, False),
-        ("affected", True, Outcome.PASS, True),
+        ("affected", True, Outcome.PASS, False),
         ("unobserved", False, Outcome.PASS, False),
         ("unknown", False, Outcome.PASS, False),
         ("clear", False, Outcome.PASS, False),
@@ -463,7 +470,7 @@ def test_withhold_r0_result_validates_inputs():
         (
             contention.ContentionObservation("affected", resource_limit_hit=True),
             Outcome.PASS,
-            True,
+            False,
         ),
         (contention.ContentionObservation("unknown"), Outcome.PASS, False),
         (contention.ContentionObservation("unknown"), Outcome.FAIL, True),

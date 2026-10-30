@@ -108,17 +108,22 @@ run. Docker container names do not block this lane. Run-Gate maps exit 3 to
 infrastructure `ERROR`; the wrapper uses it for launch failures, timeouts and
 incomplete resource evidence. For R0/R1/R3, `affected` means a direct pids or
 memory OOM event in the measured cgroup. PSI and CPU throttling do not change
-verdicts. A direct event may withhold either outcome; an unavailable
-observation may withhold a failure, while completed PASS results are retained
-when no direct event occurred. R1 coverage arithmetic is unchanged for the
-same complete report, and its claim uses the R0 command's resource window. R2
-keeps per-candidate resource events and its pressure-adjusted liveness clock.
-Import-break canaries use the expected `COMMAND_FAILED` reason from 10.0.0;
-Assay does not inspect output for a separate cause proof. Timeouts, execution
-errors and missing R3 results remain `INCONCLUSIVE`. Observer sampling follows
-the lane's resolved environment, so the tester gate's ambient socket cannot
-change a nested lane's result. The five registered lanes share a Run-Gate lock
-and a Git-common-directory lock; no host-wide quiet window is required. See
+verdicts. A direct event never changes a completed PASS. It can turn a failed
+R0 command or R1 coverage claim into an infrastructure error; an unavailable
+direct-counter observation can do the same when the gate requires it. PSI or
+CPU-stat sample availability alone never changes a failed verdict. R1 coverage
+arithmetic is unchanged for the same complete report, and its claim uses the
+R0 command's resource window. R2 keeps per-candidate resource events and its
+pressure-adjusted liveness clock.
+Import-break canaries require the transformed command to exit normally with a
+nonzero status and the expected `COMMAND_FAILED` reason; signal deaths and
+report-derived `COMMAND_FAILED` results with exit status zero are
+`INCONCLUSIVE`. Assay does not inspect output for a separate cause proof.
+Timeouts, execution errors and missing R3 results remain
+`INCONCLUSIVE`. Observer sampling follows the lane's resolved environment, so
+the tester gate's ambient socket cannot change a nested lane's result. The five
+registered lanes share a Run-Gate lock and a Git-common-directory lock; no
+host-wide quiet window is required. See
 [host load and verdicts](DESIGN-GUIDE.md#host-load-and-verdicts).
 
 `ASSAY_GATE_ALLOW_SHARED_HOST=1` is a compatibility no-op across the

@@ -2718,14 +2718,18 @@ Ancestor-only counters are not attributed to the command, and
 allocation. PSI and CPU throttling do not make a window `affected` and do not
 change R0, R1 or R3 verdicts. There is no PSI percentage cutoff.
 
-A direct resource-limit event withholds either R0/R1 result, including a
-completed command or coverage PASS. An unavailable observation can withhold a
-failed R0/R1 result; otherwise the command outcome and the coverage arithmetic
-decide. R1 reads the resource window from its R0 baseline. For R3, a direct
-limit event or an unavailable required observation can make a failed control
-or transform `INCONCLUSIVE`; timeouts, execution errors and missing results
-remain incomplete. The `import-break` mechanism uses the expected
-`COMMAND_FAILED` reason, matching 10.0.0 semantics. Assay does not inspect
+A direct resource-limit event never changes a completed PASS. It makes a
+failed R0 command or R1 coverage claim an infrastructure error. An unavailable
+direct-counter observation can make a failed R0 claim an infrastructure error
+when the gate requires that evidence; PSI or CPU-stat sample availability alone
+does not withhold a failure. R1 reads the direct-limit window from its R0
+baseline. For R3, a direct limit event or unavailable required direct-counter
+observation makes a failed control or transform `INCONCLUSIVE`; completed
+PASSes remain final. Timeouts, execution errors and missing results remain
+incomplete. An `import-break` catch requires the transformed command to exit
+normally with a nonzero status and the expected `COMMAND_FAILED` reason. A
+signal death or report-derived `COMMAND_FAILED` with exit status zero is
+`INCONCLUSIVE`; Assay does not inspect
 captured output for an additional cause proof. The `uncovered-line` mechanism
 continues to use its R1 coverage comparison.
 
