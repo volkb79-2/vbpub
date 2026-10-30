@@ -1681,18 +1681,13 @@ def cmd_usage_windows(args) -> int:
     print(f"Rolling five-hour analysis (not an account session): [{rolling['start']}, {rolling['end']})")
     print(f"  raw={rolling['raw_token_units']:,}; weighted={rolling['weighted_units']}; API-equivalent USD={rolling['api_equivalent_usd']}")
     print("  weighted units and API-equivalent USD are estimates; API-equivalent USD is not billed cost.")
+    # load_weights only returns profile-bearing weights with validated provenance.
     profile = result["weight_profile"]
-    if profile is not None:
-        provenance = result["price_provenance"]
-        if provenance is None:
-            print(f"Weight profile: {profile['name']} (experimental); price provenance unavailable")
-        else:
-            print(
-                f"Weight profile: {profile['name']} (experimental); API prices retrieved "
-                f"{provenance['retrieved_on']} from {provenance['source_url']}"
-            )
-    else:
-        print("Weight profile: unavailable")
+    provenance = result["price_provenance"]
+    print(
+        f"Weight profile: {profile['name']} (experimental); API prices retrieved "
+        f"{provenance['retrieved_on']} from {provenance['source_url']}"
+    )
     if result["observed_intervals"]:
         print("Observed-reset intervals:")
         for interval in result["observed_intervals"]:

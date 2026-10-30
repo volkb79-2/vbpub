@@ -2104,28 +2104,33 @@ def test_anchor_and_calibrate_cli_emit_only_private_metadata_and_qualified_resul
     assert "estimated limit percentage: unknown" in fit_text
 
 
-def test_usage_windows_cli_text_handles_interval_boundary_warning_and_missing_profile(
+def test_usage_windows_cli_text_handles_interval_warning_and_weight_provenance(
     monkeypatch, capsys,
 ):
     from nyxloom.session_extract.usage import anchors, loader, pricing, windows
 
     from nyxloom import cli
 
+    weights = load_weights()
+    real_build_usage_windows = windows.build_usage_windows
     monkeypatch.setattr(loader, "load_corpus", lambda **_kwargs: _corpus([]))
 
     def unreadable_anchors(_path):
         raise AnchorError("cannot read anchor store")
 
     monkeypatch.setattr(anchors, "list_anchors", unreadable_anchors)
-    monkeypatch.setattr(pricing, "load_weights", lambda _path: load_weights())
+    monkeypatch.setattr(pricing, "load_weights", lambda _path: weights)
     monkeypatch.setattr(pricing, "apply_valuation", lambda *_args: {})
     result = {
         "rolling_analysis": {
             "start": "2026-10-28T07:00:00Z", "end": "2026-10-28T12:00:00Z",
             "raw_token_units": 0, "weighted_units": 0.0, "api_equivalent_usd": 0.0,
         },
-        "weight_profile": None,
-        "price_provenance": None,
+        "weight_profile": {"name": weights.default_weight_profile},
+        "price_provenance": {
+            "source_url": weights.provenance["pricing_url"],
+            "retrieved_on": weights.provenance["retrieved_on"],
+        },
         "observed_intervals": [{
             "kind": "five_hour", "start": "2026-10-28T05:00:00Z",
             "end": "2026-10-28T10:00:00Z", "raw_token_units": 12,
@@ -2153,7 +2158,12 @@ def test_usage_windows_cli_text_handles_interval_boundary_warning_and_missing_pr
     )) == 0
     captured = capsys.readouterr()
     output = captured.out
-    assert "Weight profile: unavailable" in output
+    profile_description = (
+        f"Weight profile: {weights.default_weight_profile} (experimental); "
+        f"API prices retrieved {weights.provenance['retrieved_on']} from "
+        f"{weights.provenance['pricing_url']}"
+    )
+    assert profile_description in output
     assert "Observed-reset intervals:" in output
     assert "five_hour [2026-10-28T05:00:00Z, 2026-10-28T10:00:00Z)" in output
     assert "Observed five_hour reset at 2026-10-28T10:00:00Z (1 evidence record(s))." in output
@@ -2161,12 +2171,12 @@ def test_usage_windows_cli_text_handles_interval_boundary_warning_and_missing_pr
     assert "weekly interval status: start_unknown" in output
     assert "continuing without anchors" in captured.err
 
-    result["weight_profile"] = {"name": "synthetic-profile"}
+    monkeypatch.setattr(windows, "build_usage_windows", real_build_usage_windows)
     assert cli.cmd_usage_windows(_usage_cli_args(
         usage_windows_format="text",
     )) == 0
     profile_text = capsys.readouterr().out
-    assert "synthetic-profile (experimental); price provenance unavailable" in profile_text
+    assert profile_description in profile_text
 
 
 def test_private_usage_output_writer_cleans_failed_atomic_replacement(tmp_path, monkeypatch):
