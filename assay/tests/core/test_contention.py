@@ -5,9 +5,9 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from assay.errors import Outcome
 
 from assay import contention, resource_limits
-from assay.errors import Outcome
 
 
 def _pressure(
@@ -41,7 +41,9 @@ def _pressure(
     }
 
 
-def _window(monkeypatch, *, limits=None, pressure=None, hit=False, duration_us=1_000_000):
+def _window(
+    monkeypatch, *, limits=None, pressure=None, hit=False, duration_us=1_000_000
+):
     if limits is None:
         limits = (object(), object())
     if pressure is None:
@@ -115,6 +117,14 @@ def test_contention_window_rejects_non_callable_readers(kwargs):
         contention.ContentionWindow(**kwargs)
 
 
+def test_contention_window_rejects_a_non_callable_clock():
+    with pytest.raises(TypeError, match="monotonic_ns must be callable"):
+        contention.ContentionWindow(
+            observer_socket_path=None,
+            monotonic_ns=3,
+        )
+
+
 def test_contention_window_without_observer_is_explicitly_unobserved(monkeypatch):
     def must_not_read(*args, **kwargs):
         pytest.fail("unconfigured observation must not read host cgroups")
@@ -136,7 +146,9 @@ def test_contention_window_accepts_a_clear_cgroup_window(monkeypatch):
     assert window.observation == contention.ContentionObservation("clear")
 
 
-def test_contention_window_records_host_pressure_but_uses_material_cgroup_stalls(monkeypatch):
+def test_contention_window_records_host_pressure_but_uses_material_cgroup_stalls(
+    monkeypatch,
+):
     window = _window(
         monkeypatch,
         pressure=(_pressure(host_total=0), _pressure(host_total=20)),
@@ -290,7 +302,9 @@ def test_contention_window_fails_closed_when_either_sample_is_unavailable(monkey
     with before_failure:
         pass
     assert before_failure.observation.status == "unknown"
-    assert before_failure.observation.reasons[0].startswith("before-sample-unavailable:")
+    assert before_failure.observation.reasons[0].startswith(
+        "before-sample-unavailable:"
+    )
 
     after_values = iter((object(),))
     after_failure = contention.ContentionWindow(
@@ -314,6 +328,72 @@ def test_contention_window_fails_closed_when_either_sample_is_unavailable(monkey
     )
 
 
+def test_contention_window_records_a_failed_before_pressure_sample(monkeypatch):
+    window = _window(monkeypatch)
+    pressure_values = iter((OSError("before pressure unavailable"), _pressure()))
+
+    def pressure_reader(_pid):
+        value = next(pressure_values)
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    window.pressure_reader = pressure_reader
+    with window:
+        pass
+
+    assert window.observation.status == "unknown"
+    assert window.observation.reasons == (
+        "before-sample-unavailable:cgroup-pressure:OSError: before pressure unavailable",
+    )
+
+
+def test_contention_window_records_a_failed_resource_counter_comparison(monkeypatch):
+    window = _window(monkeypatch)
+
+    def fail_comparison(cls, before, after):
+        raise OSError("counter identities changed")
+
+    monkeypatch.setattr(
+        resource_limits.ResourceLimitEvidence,
+        "between",
+        classmethod(fail_comparison),
+    )
+    with window:
+        pass
+
+    assert window.observation.status == "unknown"
+    assert window.observation.reasons == (
+        "resource-counter-comparison-unavailable:OSError: counter identities changed",
+    )
+
+
+@pytest.mark.parametrize(
+    ("limits", "pressure", "expected_reason"),
+    [
+        (
+            (None, object()),
+            (_pressure(), _pressure()),
+            "resource-counter-sample-unavailable:missing-snapshot",
+        ),
+        (
+            (object(), object()),
+            (None, _pressure()),
+            "cgroup-pressure-window-unavailable",
+        ),
+    ],
+)
+def test_contention_window_reports_missing_snapshots_without_inventing_clear(
+    monkeypatch, limits, pressure, expected_reason
+):
+    window = _window(monkeypatch, limits=limits, pressure=pressure)
+    with window:
+        pass
+
+    assert window.observation.status == "unknown"
+    assert expected_reason in window.observation.reasons
+
+
 @pytest.mark.parametrize(
     (
         "observation",
@@ -324,29 +404,92 @@ def test_contention_window_fails_closed_when_either_sample_is_unavailable(monkey
     ),
     [
         (contention.ContentionObservation("clear"), Outcome.FAIL, False, False, False),
-        (contention.ContentionObservation("affected"), Outcome.FAIL, False, False, True),
-        (contention.ContentionObservation("affected"), Outcome.FAIL, True, False, False),
-        (contention.ContentionObservation("affected", resource_limit_hit=True), Outcome.FAIL, True, False, True),
+        (
+            contention.ContentionObservation("affected"),
+            Outcome.FAIL,
+            False,
+            False,
+            True,
+        ),
+        (
+            contention.ContentionObservation("affected"),
+            Outcome.FAIL,
+            True,
+            False,
+            False,
+        ),
+        (
+            contention.ContentionObservation("affected", resource_limit_hit=True),
+            Outcome.FAIL,
+            True,
+            False,
+            True,
+        ),
         (contention.ContentionObservation("unknown"), Outcome.FAIL, False, False, True),
         (contention.ContentionObservation("unknown"), Outcome.FAIL, True, False, False),
-        (contention.ContentionObservation("unknown"), Outcome.PASS, False, False, False),
-        (contention.ContentionObservation("affected", resource_limit_hit=True), Outcome.PASS, False, False, True),
-        (contention.ContentionObservation("affected"), Outcome.PASS, False, False, False),
-        (contention.ContentionObservation("unobserved"), Outcome.PASS, False, False, False),
-        (contention.ContentionObservation("unobserved"), Outcome.FAIL, False, False, False),
-        (contention.ContentionObservation("unobserved"), Outcome.PASS, False, True, False),
-        (contention.ContentionObservation("unobserved"), Outcome.FAIL, False, True, True),
+        (
+            contention.ContentionObservation("unknown"),
+            Outcome.PASS,
+            False,
+            False,
+            False,
+        ),
+        (
+            contention.ContentionObservation("affected", resource_limit_hit=True),
+            Outcome.PASS,
+            False,
+            False,
+            True,
+        ),
+        (
+            contention.ContentionObservation("affected"),
+            Outcome.PASS,
+            False,
+            False,
+            False,
+        ),
+        (
+            contention.ContentionObservation("unobserved"),
+            Outcome.PASS,
+            False,
+            False,
+            False,
+        ),
+        (
+            contention.ContentionObservation("unobserved"),
+            Outcome.FAIL,
+            False,
+            False,
+            False,
+        ),
+        (
+            contention.ContentionObservation("unobserved"),
+            Outcome.PASS,
+            False,
+            True,
+            False,
+        ),
+        (
+            contention.ContentionObservation("unobserved"),
+            Outcome.FAIL,
+            False,
+            True,
+            True,
+        ),
     ],
 )
 def test_withhold_canary_result_for_incomplete_or_affected_failures(
     observation, outcome, expected_failure, require_observation, withhold
 ):
-    assert contention.withhold_canary_result(
-        observation,
-        outcome=outcome,
-        expected_failure=expected_failure,
-        require_observation=require_observation,
-    ) is withhold
+    assert (
+        contention.withhold_canary_result(
+            observation,
+            outcome=outcome,
+            expected_failure=expected_failure,
+            require_observation=require_observation,
+        )
+        is withhold
+    )
 
 
 def test_withhold_canary_result_validates_inputs():
@@ -396,13 +539,14 @@ def test_gate_canary_retains_pass_without_a_resource_sample():
         ("clear", Outcome.PASS, False),
     ],
 )
-def test_withhold_r0_result_only_for_unclassifiable_shapes(
-    status, outcome, withhold
-):
-    assert contention.withhold_r0_result(
-        contention.ContentionObservation(status),
-        outcome=outcome,
-    ) is withhold
+def test_withhold_r0_result_only_for_unclassifiable_shapes(status, outcome, withhold):
+    assert (
+        contention.withhold_r0_result(
+            contention.ContentionObservation(status),
+            outcome=outcome,
+        )
+        is withhold
+    )
 
 
 def test_r0_resource_limit_event_withholds_the_result():
@@ -421,22 +565,29 @@ def test_r0_unobserved_window_does_not_withhold_a_completed_pass():
         contention.ContentionObservation("unobserved"),
         outcome=Outcome.PASS,
     )
-    assert contention.withhold_r0_result(
-        contention.ContentionObservation("unobserved"),
-        outcome=Outcome.PASS,
-        require_observation=True,
-    ) is False
+    assert (
+        contention.withhold_r0_result(
+            contention.ContentionObservation("unobserved"),
+            outcome=Outcome.PASS,
+            require_observation=True,
+        )
+        is False
+    )
 
 
 def test_withhold_r0_result_validates_inputs():
     with pytest.raises(TypeError, match="observation must"):
-        contention.withhold_r0_result(
-            "clear", outcome=Outcome.FAIL
-        )
+        contention.withhold_r0_result("clear", outcome=Outcome.FAIL)
     with pytest.raises(TypeError, match="outcome must"):
         contention.withhold_r0_result(
             contention.ContentionObservation("clear"),
             outcome="FAIL",
+        )
+    with pytest.raises(TypeError, match="require_observation must be a bool"):
+        contention.withhold_r0_result(
+            contention.ContentionObservation("unobserved"),
+            outcome=Outcome.FAIL,
+            require_observation=1,
         )
 
 
@@ -469,4 +620,3 @@ def test_withhold_r1_result_validates_inputs():
         contention.withhold_r1_result(
             contention.ContentionObservation("clear"), outcome="FAIL"
         )
-

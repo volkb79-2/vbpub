@@ -94,9 +94,7 @@ class ContentionWindow:
                 observer_socket_path=self.observer_socket_path
             )
         except Exception as exc:  # noqa: BLE001 -- any sampling failure is unknown evidence
-            self._before_counter_error = (
-                f"before-sample-unavailable:resource-counters:{type(exc).__name__}: {exc}"
-            )
+            self._before_counter_error = f"before-sample-unavailable:resource-counters:{type(exc).__name__}: {exc}"
         try:
             self._before_pressure = self.pressure_reader(self.pid)
         except Exception as exc:  # noqa: BLE001 -- any sampling failure is unknown evidence
@@ -191,7 +189,9 @@ class ContentionWindow:
                 if counter.delta > 0
             )
         if pressure_status == "stalled":
-            reasons.extend(f"{name}={value}" for name, value in sorted(pressure_deltas.items()))
+            reasons.extend(
+                f"{name}={value}" for name, value in sorted(pressure_deltas.items())
+            )
 
         throttled = any(
             pressure_deltas.get(name, 0) > 0
@@ -209,7 +209,9 @@ class ContentionWindow:
         )
         if resource_limit_hit or throttled or material_psi:
             self.observation = ContentionObservation(
-                "affected", resource_limit_hit=resource_limit_hit, reasons=tuple(reasons)
+                "affected",
+                resource_limit_hit=resource_limit_hit,
+                reasons=tuple(reasons),
             )
         elif limit_evidence is not None and pressure_status in {"clear", "stalled"}:
             self.observation = ContentionObservation("clear", reasons=tuple(reasons))
@@ -254,9 +256,7 @@ def withhold_canary_result(
         return False
     if observation.status == "unobserved":
         return require_observation
-    return observation.status in {"affected", "unknown"} or (
-        require_observation and observation.status == "unobserved"
-    )
+    return observation.status in {"affected", "unknown"}
 
 
 def withhold_r0_result(
