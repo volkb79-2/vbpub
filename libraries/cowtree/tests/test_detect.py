@@ -280,7 +280,7 @@ def test_private_layout_requires_mode_and_regular_version(tmp_path):
         detect(environ={"MDT_COW_ROOT": str(second)}, ops=FakeOps(), log=lambda _message: None)
 
 
-def test_read_mountinfo_fallback_and_error(tmp_path):
+def test_read_mountinfo_fallback_and_error(tmp_path, monkeypatch):
     assert " - " in _read_mountinfo(LinuxOps())
 
     class BrokenOps(FakeOps):
@@ -289,6 +289,17 @@ def test_read_mountinfo_fallback_and_error(tmp_path):
 
     with pytest.raises(RootInvalid, match="cannot read"):
         detect(environ={"MDT_COW_ROOT": str(tmp_path)}, ops=BrokenOps(), log=lambda _message: None)
+
+    real_read_text = Path.read_text
+
+    def fail_mountinfo(path, *args, **kwargs):
+        if str(path) == "/proc/self/mountinfo":
+            raise OSError(errno.EACCES, "mountinfo denied")
+        return real_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", fail_mountinfo)
+    with pytest.raises(RootInvalid, match="cannot read /proc/self/mountinfo"):
+        _read_mountinfo(LinuxOps())
 
 
 def test_effective_uid_failure_refuses(tmp_path):
@@ -323,10 +334,35 @@ def test_private_layout_rejects_non_directory_child(tmp_path, path_kind):
 def test_private_layout_refuses_child_with_wrong_mode(tmp_path):
     root = tmp_path / "area"
     root.mkdir()
-    runs = root / ".cowtree" / "runs"
+    private = root / ".cowtree"
+    private.mkdir(mode=0o700)
+    runs = private / "runs"
     runs.mkdir(parents=True, mode=0o700)
+    os.chmod(private, 0o700)
     os.chmod(runs, 0o755)
-    with pytest.raises(RootInvalid, match="mode 0700"):
+    with pytest.raises(RootInvalid, match="cowtree directory must have mode 0700"):
+        detect_module._ensure_private_layout(str(root))
+
+
+@pytest.mark.parametrize("child", ["runs", "shared"])
+def test_private_layout_wraps_child_inspection_failure(tmp_path, monkeypatch, child):
+    root = tmp_path / "area"
+    root.mkdir()
+    private = root / ".cowtree"
+    private.mkdir(mode=0o700)
+    (private / "VERSION").write_text("1\n")
+    (private / "runs").mkdir(mode=0o700)
+    (root / "shared").mkdir(mode=0o700)
+    target = private / child if child == "runs" else root / child
+    real_lstat = detect_module.os.lstat
+
+    def fail_child_lstat(value, *args, **kwargs):
+        if os.fspath(value) == str(target):
+            raise PermissionError(errno.EACCES, "child stat denied")
+        return real_lstat(value, *args, **kwargs)
+
+    monkeypatch.setattr(detect_module.os, "lstat", fail_child_lstat)
+    with pytest.raises(RootInvalid, match="cannot inspect cowtree directory"):
         detect_module._ensure_private_layout(str(root))
 
 
@@ -357,19 +393,37 @@ def test_private_layout_reports_create_and_secure_failures(tmp_path, monkeypatch
         detect_module._ensure_private_layout(str(root))
 
 
-def test_private_layout_reports_probe_write_failure(tmp_path, monkeypatch):
+@pytest.mark.parametrize("failure_kind", ["error", "short-write"])
+def test_private_layout_reports_probe_write_failure(tmp_path, monkeypatch, failure_kind):
     root = tmp_path / "area"
     root.mkdir()
     real_write = detect_module.os.write
 
     def short_write(fd, data):
         if os.readlink(f"/proc/self/fd/{fd}").endswith("/.cowtree/VERSION"):
+            if failure_kind == "short-write":
+                return 1
             raise OSError(errno.EIO, "version write failed")
         return real_write(fd, data)
 
     monkeypatch.setattr(detect_module.os, "write", short_write)
     with pytest.raises(RootInvalid, match="cannot initialize"):
         detect_module._ensure_private_layout(str(root))
+
+
+def test_reflink_probe_returns_false_when_first_open_fails(tmp_path):
+    probe = tmp_path / "probe"
+    probe.mkdir()
+    ops = FakeOps()
+    original_open = ops.open
+
+    def fail_source_open(path, *args, **kwargs):
+        if path == str(probe / "reflink-source"):
+            raise PermissionError(errno.EACCES, "probe source denied")
+        return original_open(path, *args, **kwargs)
+
+    ops.open = fail_source_open
+    assert detect_module._try_reflink_probe(str(probe), ops) is False
 
 
 @pytest.mark.parametrize("failure_stage", ["private-stat", "version-open", "runs-mkdir", "runs-chmod"])

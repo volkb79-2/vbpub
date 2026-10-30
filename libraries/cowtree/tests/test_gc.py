@@ -472,6 +472,59 @@ def test_gc_retains_nonregular_lock(tmp_path):
     assert path.exists()
 
 
+def test_gc_checks_the_opened_lock_is_regular(tmp_path, monkeypatch):
+    run = open_run("invalid-open-lock", estimate=SpaceEstimate(0, 0, 0), environ={}, plain_dir=tmp_path)
+    path = Path(run.path)
+    _abandon(run)
+    real_fstat = gc_module.os.fstat
+
+    def nonregular_lock(fd):
+        target = os.readlink(f"/proc/self/fd/{fd}")
+        if target.endswith("/owner.lock"):
+            return StatResultProxy(real_fstat(fd), st_mode=0o040700)
+        return real_fstat(fd)
+
+    monkeypatch.setattr(gc_module.os, "fstat", nonregular_lock)
+    result = {item.name: item.status for item in gc(tmp_path)}
+    assert result[path.name] == "invalid-lock"
+    assert path.exists()
+
+
+def test_dead_flock_inventory_swallows_lock_close_error(tmp_path, monkeypatch):
+    run = open_run("inventory-close-error", estimate=SpaceEstimate(0, 0, 0), environ={}, plain_dir=tmp_path)
+    path = Path(run.path)
+    _abandon(run)
+    lock_path = path / "owner.lock"
+    real_open = gc_module.os.open
+    real_fstat = gc_module.os.fstat
+    real_close = gc_module.os.close
+    descriptors = []
+
+    def track_open(value, *args, **kwargs):
+        descriptor = real_open(value, *args, **kwargs)
+        if os.fspath(value) == str(lock_path):
+            descriptors.append(descriptor)
+        return descriptor
+
+    def fail_lock_fstat(descriptor):
+        if descriptor in descriptors:
+            raise PermissionError(13, "inventory lock fstat denied")
+        return real_fstat(descriptor)
+
+    def fail_lock_close(descriptor):
+        if descriptor in descriptors:
+            raise OSError(5, "inventory lock close denied")
+        return real_close(descriptor)
+
+    monkeypatch.setattr(gc_module.os, "open", track_open)
+    monkeypatch.setattr(gc_module.os, "fstat", fail_lock_fstat)
+    monkeypatch.setattr(gc_module.os, "close", fail_lock_close)
+    assert dead_flock_runs(tmp_path) == []
+    assert len(descriptors) == 1
+    monkeypatch.setattr(gc_module.os, "close", real_close)
+    real_close(descriptors[0])
+
+
 def test_gc_reports_lock_and_delete_errors(tmp_path, monkeypatch):
     import cowtree.gc as gc_module
 
@@ -532,17 +585,24 @@ def test_gc_deletes_btrfs_subvolume_trees_with_backend(tmp_path, monkeypatch):
     ops.destroy_calls.clear()
 
     real_stat = os.stat
+    real_lstat = os.lstat
     target = os.path.abspath(tree)
 
-    def subvolume_stat(path, *args, **kwargs):
-        result = real_stat(path, *args, **kwargs)
-        if isinstance(path, (str, bytes, os.PathLike)) and os.path.abspath(os.fspath(path)) == target:
-            values = list(result)
-            values[1] = 256
-            return os.stat_result(values)
-        return result
+    def with_subvolume_inode(stat_call):
+        def subvolume_stat(path, *args, **kwargs):
+            result = stat_call(path, *args, **kwargs)
+            if isinstance(path, (str, bytes, os.PathLike)) and os.path.abspath(os.fspath(path)) == target:
+                values = list(result)
+                values[1] = 256
+                return os.stat_result(values)
+            return result
 
-    monkeypatch.setattr(os, "stat", subvolume_stat)
+        return subvolume_stat
+
+    # The backend classifies the child through lstat so symlinks cannot be
+    # followed into a btrfs-only destruction path.
+    monkeypatch.setattr(os, "stat", with_subvolume_inode(real_stat))
+    monkeypatch.setattr(os, "lstat", with_subvolume_inode(real_lstat))
     result = gc(run_path.parent, ops=ops)
     assert result[0].status == "deleted"
     assert ops.destroy_calls == ["tree"]
@@ -629,6 +689,14 @@ def test_shared_lock_and_backend_failures_are_reported(tmp_path, monkeypatch):
     with pytest.raises(PathRefused, match="regular file"):
         make_shared(area, "cache")
     monkeypatch.setattr(gc_module.os, "fstat", real_fstat)
+
+    lock.unlink()
+    target = tmp_path / "shared-lock-target"
+    target.touch()
+    lock.symlink_to(target)
+    with pytest.raises(BackendFailed, match="shared-lock"):
+        make_shared(area, "cache")
+    lock.unlink()
 
     real_flock = gc_module.fcntl.flock
 

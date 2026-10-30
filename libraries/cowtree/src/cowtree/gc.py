@@ -128,7 +128,7 @@ def _allocated_bytes(path: str) -> tuple[int, int]:
         current = stack.pop()
         info = os.lstat(current)
         total += int(getattr(info, "st_blocks", 0)) * 512
-        if stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode):
+        if stat.S_ISDIR(info.st_mode):
             with os.scandir(current) as entries:
                 for entry in entries:
                     if entry.is_dir(follow_symlinks=False):

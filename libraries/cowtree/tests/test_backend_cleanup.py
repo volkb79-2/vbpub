@@ -11,6 +11,7 @@ from cowtree.backends import (
     BtrfsBackend,
     CopyBackend,
     LinuxOps,
+    ReflinkBackend,
     _cleanup_created,
     _cleanup_empty_created_directory,
     _cleanup_partial_created_tree,
@@ -763,9 +764,12 @@ def test_btrfs_snapshot_destination_identity_failure_is_cleaned(tmp_path, monkey
     source.mkdir()
     destination = tmp_path / "snapshot"
     _magic_inode(monkeypatch, source)
+    logs = []
     ops = FakeOps()
-    backend = BtrfsBackend(ops)
+    backend = BtrfsBackend(ops, log=logs.append)
     original_fstat = ops.fstat
+    original_close = ops.close
+    leaked = []
 
     def changed_destination(fd):
         result = original_fstat(fd)
@@ -773,10 +777,20 @@ def test_btrfs_snapshot_destination_identity_failure_is_cleaned(tmp_path, monkey
             return StatResultProxy(result, st_ino=result.st_ino + 1)
         return result
 
+    def fail_destination_close(fd):
+        if ops._fd_path(fd) == str(destination):
+            leaked.append(fd)
+            raise OSError(errno.EIO, "destination close failed")
+        original_close(fd)
+
     ops.fstat = changed_destination
+    ops.close = fail_destination_close
     with pytest.raises(PathRefused, match="identity changed"):
         backend.clone_tree(str(source), str(destination))
+    assert any("close after snapshot identity failure also failed" in item for item in logs)
     assert not destination.exists()
+    ops.close = original_close
+    original_close(leaked[0])
 
 
 def test_btrfs_snapshot_destination_open_failure_cleans_created_snapshot(tmp_path, monkeypatch):
@@ -1053,4 +1067,122 @@ def test_directory_cleanup_helpers_handle_missing_leaf_and_nested_symlink(tmp_pa
     _make_dirs_writable(str(symlink))
     _delete_path(str(symlink))
     assert outside.is_dir()
+
+
+def test_identity_at_closes_descriptor_after_successful_fd_fallback(tmp_path, monkeypatch):
+    parent_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    real_stat = os.stat
+
+    def fail_stat(path, *args, **kwargs):
+        if path == "tree" and kwargs.get("dir_fd") == parent_fd:
+            raise OSError(errno.EIO, "statat unavailable")
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(backend_module.os, "stat", fail_stat)
+    try:
+        assert _identity_at(parent_fd, "tree") == _identity(tree)
+    finally:
+        os.close(parent_fd)
+
+
+@pytest.mark.parametrize("backend_type", [CopyBackend, ReflinkBackend])
+def test_copy_backends_preserve_typed_tree_destination_collision(tmp_path, backend_type):
+    source = tmp_path / "source"
+    source.mkdir()
+    destination = tmp_path / "destination"
+    destination.mkdir()
+    with pytest.raises(DestinationExists):
+        backend_type(FakeOps()).clone_tree(str(source), str(destination))
+
+
+def test_copy_file_refuses_changed_destination_identity_and_cleans_created_file(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    source.write_bytes(b"payload")
+    destination = tmp_path / "destination"
+    real_identity = backend_module._path_identity
+    wrong_identity = True
+
+    def changed_identity(path):
+        nonlocal wrong_identity
+        if path == str(destination) and wrong_identity:
+            wrong_identity = False
+            return (0, 0)
+        return real_identity(path)
+
+    monkeypatch.setattr(backend_module, "_path_identity", changed_identity)
+    with pytest.raises(PathRefused, match="identity changed during file creation"):
+        CopyBackend(FakeOps()).clone_file(str(source), str(destination))
+    assert not destination.exists()
+
+
+@pytest.mark.parametrize("backend_type", [CopyBackend, BtrfsBackend])
+@pytest.mark.parametrize("failure_kind", ["typed", "os-error"])
+def test_tree_creation_preserves_path_when_identity_cannot_be_observed(
+    tmp_path, monkeypatch, backend_type, failure_kind
+):
+    path = tmp_path / "tree"
+
+    def identity_unavailable(_parent_fd, _name):
+        if failure_kind == "typed":
+            raise PathRefused("created tree could not be identified")
+        raise OSError(errno.EIO, "created tree metadata unavailable")
+
+    monkeypatch.setattr(backend_module, "_identity_at", identity_unavailable)
+    expected = PathRefused if failure_kind == "typed" else BackendFailed
+    with pytest.raises(expected):
+        backend_type(FakeOps()).make_tree(str(path))
+    assert path.is_dir()
+
+
+def test_cleanup_empty_directory_returns_when_path_vanishes_before_quarantine(tmp_path, monkeypatch):
+    path = tmp_path / "partial"
+    path.mkdir()
+    identity = _identity(path)
+
+    def disappear(source, _destination):
+        os.rmdir(source)
+        raise FileNotFoundError(errno.ENOENT, "path disappeared")
+
+    monkeypatch.setattr(backend_module, "_rename_noreplace", disappear)
+    _cleanup_empty_created_directory(str(path), identity, os.rmdir, lambda _message: None)
+    assert not path.exists()
+
+
+def test_btrfs_empty_created_tree_ignores_missing_path(tmp_path):
+    BtrfsBackend(FakeOps())._delete_empty_created_tree(str(tmp_path / "missing"))
+
+
+@pytest.mark.parametrize("failure_kind", ["file-exists", "os-error"])
+def test_btrfs_make_tree_logs_secondary_close_errors(tmp_path, failure_kind):
+    logs = []
+    path = tmp_path / "tree"
+    ops = FakeOps()
+    backend = BtrfsBackend(ops, log=logs.append)
+    original_fchmod = ops.fchmod
+    original_close = ops.close
+    leaked = []
+
+    def fail_fchmod(_fd, _mode):
+        if failure_kind == "file-exists":
+            raise FileExistsError(errno.EEXIST, "concurrent destination")
+        raise OSError(errno.EIO, "mode update failed")
+
+    def fail_tree_close(fd):
+        if ops._fd_path(fd) == str(path):
+            leaked.append(fd)
+            raise OSError(errno.EIO, "close failed")
+        original_close(fd)
+
+    ops.fchmod = fail_fchmod
+    ops.close = fail_tree_close
+    expected = DestinationExists if failure_kind == "file-exists" else BackendFailed
+    with pytest.raises(expected):
+        backend.make_tree(str(path))
+    assert any("close after subvolume creation failure also failed" in item for item in logs)
+    assert not path.exists()
+    ops.close = original_close
+    original_close(leaked[0])
+    ops.fchmod = original_fchmod
 

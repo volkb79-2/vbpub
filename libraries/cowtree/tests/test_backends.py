@@ -38,15 +38,23 @@ from .fakes import FakeOps, StatResultProxy
 
 def _magic_inode(monkeypatch, *paths):
     real_stat = os.stat
+    real_lstat = os.lstat
     targets = {os.path.abspath(os.fspath(path)) for path in paths}
 
-    def fake_stat(path, *args, **kwargs):
-        result = real_stat(path, *args, **kwargs)
-        if isinstance(path, (str, bytes, os.PathLike)) and os.path.abspath(os.fspath(path)) in targets:
-            return StatResultProxy(result, st_ino=256)
-        return result
+    def with_subvolume_inode(stat_call):
+        def fake_stat(path, *args, **kwargs):
+            result = stat_call(path, *args, **kwargs)
+            if isinstance(path, (str, bytes, os.PathLike)) and os.path.abspath(os.fspath(path)) in targets:
+                return StatResultProxy(result, st_ino=256)
+            return result
 
-    monkeypatch.setattr(backend_module.os, "stat", fake_stat)
+        return fake_stat
+
+    # Detection uses no-follow metadata so a symlink to a subvolume is not
+    # mistaken for the subvolume itself. Model the same inode through both
+    # stat interfaces used by the backend.
+    monkeypatch.setattr(backend_module.os, "stat", with_subvolume_inode(real_stat))
+    monkeypatch.setattr(backend_module.os, "lstat", with_subvolume_inode(real_lstat))
 
 
 def test_subvol_root_snapshot_else_walk(tmp_path, monkeypatch):
@@ -527,13 +535,10 @@ def test_ingest_tree_falls_back_to_bytes_on_exdev_only(tmp_path):
 
 
 def test_plain_backend_and_cp_reflink_auto_fallback(tmp_path):
-    cp = shutil.which("cp")
-    if cp is None:
-        pytest.skip("coreutils cp is unavailable")
+    cp = "cp"
     source_root = Path(__file__).parent
     mountinfo = Path("/proc/self/mountinfo").read_text(encoding="utf-8")
-    if mount_fstype(str(source_root), mountinfo) != "ext4":
-        pytest.skip("the tester checkout is not on ext4")
+    assert mount_fstype(str(source_root), mountinfo) == "ext4", "registered tester-unified lane needs ext4 for this fallback probe"
     with tempfile.TemporaryDirectory(dir=source_root) as scratch:
         scratch_dir = Path(scratch)
         source = scratch_dir / "source"

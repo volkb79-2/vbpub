@@ -500,8 +500,7 @@ class Run:
                 try:
                     os.rmdir(self.path)
                 except OSError as exc:
-                    if first_error is None:
-                        first_error = exc
+                    first_error = exc
             try:
                 fcntl.flock(self._lock_fd, fcntl.LOCK_UN)
             except OSError as exc:

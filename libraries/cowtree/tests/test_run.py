@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import fcntl
 import json
 import multiprocessing
@@ -792,3 +793,126 @@ def test_partial_cleanup_failure_is_logged_without_masking_original(tmp_path, mo
     monkeypatch.setattr(run._backend, "_delete_empty_created_tree", original_delete_empty)
     original_delete(Path(run.path) / "trees" / "partial")
     run.close()
+
+
+def test_close_keeps_first_error_across_multiple_tree_delete_failures(tmp_path, monkeypatch):
+    run = open_run("multiple-delete-errors", estimate=SpaceEstimate(0, 0, 0), environ={}, plain_dir=tmp_path)
+    run.make_tree("first")
+    run.make_tree("second")
+
+    def fail_delete(path):
+        raise OSError(errno.EIO, f"cannot delete {path}")
+
+    monkeypatch.setattr(run._backend, "delete_tree", fail_delete)
+    with pytest.raises(BackendFailed, match="cannot delete"):
+        run.close()
+    assert Path(run.path).is_dir()
+    shutil.rmtree(run.path)
+
+
+def test_close_handles_missing_manifest_and_owner_lock_unlink_error(tmp_path, monkeypatch):
+    run = open_run("missing-manifest-close", estimate=SpaceEstimate(0, 0, 0), environ={}, plain_dir=tmp_path)
+    path = Path(run.path)
+    (path / "owner.json").unlink()
+    real_unlink = run_module.os.unlink
+
+    def fail_lock_unlink(value, *args, **kwargs):
+        if os.fspath(value) == str(path / "owner.lock"):
+            raise PermissionError(errno.EACCES, "owner lock unlink denied")
+        return real_unlink(value, *args, **kwargs)
+
+    monkeypatch.setattr(run_module.os, "unlink", fail_lock_unlink)
+    with pytest.raises(BackendFailed, match="owner lock unlink denied"):
+        run.close()
+    assert path.is_dir() and (path / "owner.lock").exists()
+    monkeypatch.setattr(run_module.os, "unlink", real_unlink)
+    shutil.rmtree(path)
+
+
+def test_close_retains_first_unlink_error_when_unlock_and_close_also_fail(tmp_path, monkeypatch):
+    run = open_run("multiple-close-errors", estimate=SpaceEstimate(0, 0, 0), environ={}, plain_dir=tmp_path)
+    path = Path(run.path)
+    lock_fd = run._lock_fd
+    real_unlink = run_module.os.unlink
+    real_flock = run_module.fcntl.flock
+    real_close = run_module.os.close
+
+    def fail_owner_unlink(value, *args, **kwargs):
+        if os.path.basename(os.fspath(value)) in {"owner.json", "owner.lock"}:
+            raise PermissionError(errno.EACCES, f"unlink denied for {value}")
+        return real_unlink(value, *args, **kwargs)
+
+    def fail_unlock(fd, operation):
+        if fd == lock_fd and operation == fcntl.LOCK_UN:
+            raise OSError(errno.EIO, "unlock failed")
+        return real_flock(fd, operation)
+
+    def fail_close(fd):
+        if fd == lock_fd:
+            raise OSError(errno.EIO, "close failed")
+        return real_close(fd)
+
+    monkeypatch.setattr(run_module.os, "unlink", fail_owner_unlink)
+    monkeypatch.setattr(run_module.fcntl, "flock", fail_unlock)
+    monkeypatch.setattr(run_module.os, "close", fail_close)
+    with pytest.raises(BackendFailed, match="unlink denied"):
+        run.close()
+    assert path.is_dir()
+    monkeypatch.setattr(run_module.os, "close", real_close)
+    real_close(lock_fd)
+    monkeypatch.setattr(run_module.os, "unlink", real_unlink)
+    shutil.rmtree(path)
+
+
+def test_close_reports_run_directory_removal_error(tmp_path, monkeypatch):
+    run = open_run("run-dir-close-error", estimate=SpaceEstimate(0, 0, 0), environ={}, plain_dir=tmp_path)
+    path = Path(run.path)
+    real_rmdir = run_module.os.rmdir
+
+    def fail_run_rmdir(value, *args, **kwargs):
+        if os.fspath(value) == str(path):
+            raise PermissionError(errno.EACCES, "run directory removal denied")
+        return real_rmdir(value, *args, **kwargs)
+
+    monkeypatch.setattr(run_module.os, "rmdir", fail_run_rmdir)
+    with pytest.raises(BackendFailed, match="run directory removal denied"):
+        run.close()
+    assert path.is_dir()
+    monkeypatch.setattr(run_module.os, "rmdir", real_rmdir)
+    path.rmdir()
+
+
+def test_close_reports_unlock_error_without_an_earlier_failure(tmp_path, monkeypatch):
+    run = open_run("unlock-close-error", estimate=SpaceEstimate(0, 0, 0), environ={}, plain_dir=tmp_path)
+    path = Path(run.path)
+    lock_fd = run._lock_fd
+    real_flock = run_module.fcntl.flock
+
+    def fail_unlock(fd, operation):
+        if fd == lock_fd and operation == fcntl.LOCK_UN:
+            raise OSError(errno.EIO, "unlock failed")
+        return real_flock(fd, operation)
+
+    monkeypatch.setattr(run_module.fcntl, "flock", fail_unlock)
+    with pytest.raises(BackendFailed, match="unlock failed"):
+        run.close()
+    assert not path.exists()
+
+
+def test_close_reports_lock_descriptor_close_error(tmp_path, monkeypatch):
+    run = open_run("lock-close-error", estimate=SpaceEstimate(0, 0, 0), environ={}, plain_dir=tmp_path)
+    path = Path(run.path)
+    lock_fd = run._lock_fd
+    real_close = run_module.os.close
+
+    def fail_lock_close(fd):
+        if fd == lock_fd:
+            raise OSError(errno.EIO, "descriptor close failed")
+        return real_close(fd)
+
+    monkeypatch.setattr(run_module.os, "close", fail_lock_close)
+    with pytest.raises(BackendFailed, match="descriptor close failed"):
+        run.close()
+    assert not path.exists()
+    monkeypatch.setattr(run_module.os, "close", real_close)
+    real_close(lock_fd)

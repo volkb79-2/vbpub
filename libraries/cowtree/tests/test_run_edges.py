@@ -196,6 +196,117 @@ def test_open_run_allocation_and_lock_failures_clean_partial_runs(tmp_path, monk
         open_run("lock-open", estimate=SpaceEstimate(0, 0, 0), environ={}, plain_dir=tmp_path)
 
 
+def test_top_level_clone_file_failure_removes_ownership_tracking(tmp_path, monkeypatch):
+    run = open_run("top-level-file", estimate=SpaceEstimate(0, 0, 0), environ={}, plain_dir=tmp_path)
+    source_tree = run.make_tree("source")
+    source = source_tree / "payload"
+    source.write_text("payload")
+    destination = Path(run.path) / "trees" / "copy"
+    real_created_identity = run._backend.created_identity
+    monkeypatch.setattr(run._backend, "created_identity", lambda _path: None)
+
+    with pytest.raises(PathRefused, match="did not record"):
+        run.clone_file(source, destination)
+
+    assert not destination.exists()
+    assert str(destination) not in run._owned
+    assert str(destination) not in run._owned_identities
+    monkeypatch.setattr(run._backend, "created_identity", real_created_identity)
+    run.close()
+
+
+@pytest.mark.parametrize("shape", ["unavailable", "symlink", "directory"])
+def test_record_created_file_identity_refuses_unavailable_or_nonfile_paths(tmp_path, monkeypatch, shape):
+    run = open_run("file-shape", estimate=SpaceEstimate(0, 0, 0), environ={}, plain_dir=tmp_path)
+    tree = run.make_tree("tree")
+    destination = tree / "candidate"
+    destination.write_text("payload")
+    info = os.lstat(destination)
+    identity = (info.st_dev, info.st_ino)
+    real_created_identity = run._backend.created_identity
+    real_lstat = run_module.os.lstat
+    monkeypatch.setattr(run._backend, "created_identity", lambda _path: identity)
+
+    def altered_lstat(value, *args, **kwargs):
+        if os.fspath(value) == str(destination):
+            if shape == "unavailable":
+                raise PermissionError(errno.EACCES, "file stat denied")
+            mode = 0o120777 if shape == "symlink" else 0o040700
+            return StatResultProxy(real_lstat(value, *args, **kwargs), st_mode=mode)
+        return real_lstat(value, *args, **kwargs)
+
+    monkeypatch.setattr(run_module.os, "lstat", altered_lstat)
+    expected = "unavailable" if shape == "unavailable" else "regular file"
+    with pytest.raises(PathRefused, match=expected):
+        run._record_created_file_identity(str(destination))
+
+    monkeypatch.setattr(run_module.os, "lstat", real_lstat)
+    monkeypatch.setattr(run._backend, "created_identity", real_created_identity)
+    run._backend.forget_created_identity(str(destination))
+    destination.unlink()
+    run.close()
+
+
+@pytest.mark.parametrize("operation", ["mkdir", "chmod"])
+def test_area_run_allocation_os_errors_remove_partial_directory(tmp_path, monkeypatch, operation):
+    root = tmp_path / "area"
+    root.mkdir()
+    ops = FakeOps(filesystem="xfs")
+    detect(environ={"MDT_COW_ROOT": str(root)}, ops=ops, log=lambda _message: None)
+    monkeypatch.setattr(run_module, "_utc_now", lambda: ("stamp", "created"))
+    monkeypatch.setattr(run_module.secrets, "token_hex", lambda _n: "b" * 16)
+    tool = f"allocation-{operation}"
+    expected = root / ".cowtree" / "runs" / f"{tool}-stamp-{'b' * 16}"
+
+    if operation == "mkdir":
+        real_mkdir = run_module.os.mkdir
+
+        def fail_mkdir(value, *args, **kwargs):
+            if os.fspath(value) == str(expected):
+                raise PermissionError(errno.EACCES, "run directory create denied")
+            return real_mkdir(value, *args, **kwargs)
+
+        monkeypatch.setattr(run_module.os, "mkdir", fail_mkdir)
+    else:
+        real_chmod = run_module.os.chmod
+
+        def fail_chmod(value, *args, **kwargs):
+            if os.fspath(value) == str(expected):
+                raise PermissionError(errno.EACCES, "run directory chmod denied")
+            return real_chmod(value, *args, **kwargs)
+
+        monkeypatch.setattr(run_module.os, "chmod", fail_chmod)
+
+    with pytest.raises(BackendFailed, match="allocate-run"):
+        open_run(tool, estimate=SpaceEstimate(0, 0, 0), environ={"MDT_COW_ROOT": str(root)}, ops=ops)
+    assert not expected.exists()
+
+
+def test_open_run_preserves_setup_error_when_partial_cleanup_fails(tmp_path, monkeypatch):
+    original_write_manifest = run_module._write_manifest
+    original_rmtree = shutil.rmtree
+    partial_path = []
+
+    def fail_manifest(path, _document, *, create):
+        assert create is True
+        partial_path.append(path)
+        raise OSError(errno.EIO, "manifest write failed")
+
+    def fail_cleanup(path, *args, **kwargs):
+        if os.fspath(path) == partial_path[0]:
+            raise OSError(errno.EACCES, "partial cleanup denied")
+        return original_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(run_module, "_write_manifest", fail_manifest)
+    monkeypatch.setattr(shutil, "rmtree", fail_cleanup)
+    with pytest.raises(OSError, match="manifest write failed"):
+        open_run("setup-cleanup", estimate=SpaceEstimate(0, 0, 0), environ={}, plain_dir=tmp_path)
+    assert partial_path and Path(partial_path[0]).is_dir()
+    monkeypatch.setattr(run_module, "_write_manifest", original_write_manifest)
+    monkeypatch.setattr(shutil, "rmtree", original_rmtree)
+    original_rmtree(partial_path[0])
+
+
 
 def test_shared_source_is_authorized_for_tree_and_file_clones(tmp_path):
     root = tmp_path / "cow-area"
