@@ -234,8 +234,10 @@ across local transcripts, including nested subagents. JSON is the frozen
 events; CSV has one report row followed by one row per call. The table shows
 raw token classes, experimental weighted units, local observed share, and
 API-equivalent USD estimates. Message, thinking, tool content, and filesystem
-paths are excluded. API-equivalent USD is dated list-price arithmetic, not a
-billed amount; weighted units do not measure subscription consumption. The
+paths are excluded. CSV text cells beginning with `=`, `+`, `-`, `@`, tab, or
+carriage return receive a leading single quote so spreadsheet software treats
+them as text. API-equivalent USD is dated list-price arithmetic, not a billed
+amount; weighted units do not measure subscription consumption. The
 `usage prices`, `usage windows`, `usage anchor`, and `usage calibrate` verbs
 expose price diagnostics, observed reset intervals, and explicitly qualified
 UI readings. See the [usage report guide](docs/CONSUMERS.md#report-claude-code-usage)

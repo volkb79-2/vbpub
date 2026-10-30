@@ -945,9 +945,12 @@ run-gate mutation --reuse-from .assay/verdict-mutation.json \
 Before forwarding a selective request, Run-Gate checks Assay's inventory
 version. `--rejudge` requires Assay 5.2.0 or newer; `--reuse-from` requires
 7.1.0 or newer. An in-repository source install may report a version such as
-`9.0.1.dev1083+gabc123`; Run-Gate compares its release version with the floor.
-A development build of the floor version itself, an older version, or an
-unrecognized version does not prove support and is refused.
+`9.0.1.dev1083+ga43c0fcf9`; Run-Gate also accepts a stable `X.Y.Z` release.
+The source form is `X.Y.Z.devN+g<7-64 lowercase hex digits>[.dYYYYMMDD]`,
+with an optional leading `v`. A stable version with local metadata and a
+development version without its Git revision are refused. A development
+build of the floor version itself, an older version, or any other unrecognized
+version does not prove support and is refused.
 
 Command lanes accept per-run arguments only when `accepts_args = true` is
 declared. The separator keeps request arguments out of run-gate's own option

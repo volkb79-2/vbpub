@@ -171,3 +171,10 @@ The final exact-tree Run-Gate log is
 `/tmp/run-gate/lanes/session-extract/d1b8b0eadd04fb3c014f386fd8d3b1ed.log`;
 its campaign analysis is
 `/tmp/run-gate/lanes/session-extract/d1b8b0eadd04fb3c014f386fd8d3b1ed.campaign.json`.
+
+The 312 surviving candidates and two budget-exceeded candidates are grouped
+by source file, line range, operator, and provisional triage classification in
+the [R2 survivor inventory](nyxloom-usage-r2-survivor-inventory-2026-10-30.md).
+Its adjacent JSON sidecar lists every candidate ID and outcome. The inventory
+does not change the waiver or report R2 as green; candidate-level triage and
+any killing tests remain deferred.

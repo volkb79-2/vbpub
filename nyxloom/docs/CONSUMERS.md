@@ -109,6 +109,12 @@ nyxloom usage anchor list
 nyxloom usage calibrate --format json
 ```
 
+The CSV writer prefixes a single quote to every text cell starting with `=`,
+`+`, `-`, `@`, tab, or carriage return, so user-controlled labels and IDs are
+treated as text by spreadsheet software. This changes only CSV text cells;
+numeric columns stay numeric and JSON output preserves the original values.
+See the [design rationale](DESIGN-GUIDE.md#local-usage-report).
+
 `--since` accepts an ISO-8601 timestamp with a timezone or a positive duration
 using seconds, minutes, hours, days, or weeks (`s`, `m`, `h`, `d`, `w`). The
 report interval is half-open `[since, until)` in UTC: `--since` is included and

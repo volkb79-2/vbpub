@@ -139,6 +139,13 @@ overlapping subtree rows for calls. Its `conflicted` column exposes the
 deterministic representative status. Table, HTML and PDF show conflicted-call
 counts on visible node rows; JSON and CSV retain call-level identity.
 
+CSV quoting alone does not stop spreadsheet formula evaluation. At the CSV
+serialization boundary, Nyxloom prefixes every text cell beginning with `=`,
+`+`, `-`, `@`, tab, or carriage return with one single quote. This covers
+labels and identifiers across all text columns; numeric values remain numeric,
+and JSON output is unchanged. The [consumer guide](CONSUMERS.md#report-claude-code-usage)
+shows the CSV export and its spreadsheet-safe text behavior.
+
 Coverage diagnostics retain both lost-data warnings and successful merge
 counters. `partial` is true when malformed, unavailable, incomplete, or
 unattributed source data prevents a complete report. Ordinary stream-block and

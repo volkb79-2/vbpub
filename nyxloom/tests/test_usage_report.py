@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import csv
+import io
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
@@ -456,6 +457,69 @@ def test_usage_report_v1_has_exact_call_ledger_and_versioned_csv(tmp_path):
     assert csv_rows[0]["schema_version"] == "usage-report-v1"
     assert sum(row["record_type"] == "call" for row in csv_rows) == 4
     assert "Schema: usage-report-v1" in render_table(report)
+
+
+def test_usage_csv_neutralizes_formula_leading_text_in_every_text_column():
+    prefixes = ("=", "+", "-", "@", "\t", "\r")
+    fields = (
+        "call_id", "session_id", "agent_id", "topic", "agent_type",
+        "project_id", "request_id", "message_id", "timestamp", "model",
+        "effort", "service_tier", "speed", "inference_geo", "source_id",
+    )
+    labels = {
+        field: f"{prefixes[index % len(prefixes)]}FORMULA_{field}"
+        for index, field in enumerate(fields)
+    }
+    call = {
+        **labels,
+        "tokens": {
+            "input": 1,
+            "cache_read": 0,
+            "cache_write_5m": 0,
+            "cache_write_1h": 0,
+            "cache_write_unclassified": 0,
+            "output": 0,
+            "thinking": 0,
+        },
+        "request_ids": ["=FORMULA_request_alias"],
+        "source_ids": ["+FORMULA_source_alias"],
+        "context_size": 1,
+        "sidechain": False,
+        "has_fork_source": False,
+        "source_line": 1,
+        "provenance": {"source": "@FORMULA_provenance"},
+        "stream_block_count": 1,
+        "copied_source_count": 0,
+        "conflicted": False,
+        "raw_token_units": 1,
+        "weighted_units": None,
+        "api_equivalent_usd": None,
+    }
+    metadata = {
+        "schema_version": "=FORMULA_schema",
+        "report": "+FORMULA_report",
+        "window": {
+            "since": "-FORMULA_since",
+            "until": "@FORMULA_until",
+        },
+        "calls": [call],
+        "lineage_edges": [],
+    }
+
+    rows = list(csv.DictReader(io.StringIO(render_csv(metadata), newline="")))
+    report_row = next(row for row in rows if row["record_type"] == "report")
+    call_row = next(row for row in rows if row["record_type"] == "call")
+
+    assert report_row["schema_version"] == "'=FORMULA_schema"
+    assert report_row["report"] == "'+FORMULA_report"
+    assert report_row["window_since"] == "'-FORMULA_since"
+    assert report_row["window_until"] == "'@FORMULA_until"
+    assert call_row["node_id"] == "'" + labels["session_id"]
+    for field, label in labels.items():
+        assert call_row[field] == "'" + label
+    assert call_row["request_ids"].startswith("[")
+    assert call_row["source_ids"].startswith("[")
+    assert call_row["provenance"].startswith("{")
 
 
 @pytest.mark.parametrize("missing_request_first", [False, True])

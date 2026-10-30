@@ -9789,13 +9789,15 @@ def assay_inventory_version_meets_floor(
     """Compare an Assay inventory version with a feature floor.
 
     In-repository lanes install Assay from the selected worktree, so its
-    setuptools_scm version can be ``X.Y.Z.devN+g<revision>``. Accept that
-    exact development shape while keeping opaque versions and a development
-    build of the floor itself below the stable feature floor.
+    setuptools_scm version can be ``X.Y.Z.devN+g<revision>`` (with the
+    optional date suffix emitted for a dirty tree). Accept that exact source
+    identity or a stable ``X.Y.Z`` release, while refusing partial local
+    versions and a development build of the floor itself.
     """
     match = re.fullmatch(
-        r"v?(?P<release>[0-9]+(?:\.[0-9]+){2})(?P<dev>\.dev[0-9]+)?"
-        r"(?:\+[A-Za-z0-9.-]+)?", declared.strip())
+        r"v?(?P<release>[0-9]+(?:\.[0-9]+){2})"
+        r"(?:(?P<dev>\.dev[0-9]+)\+g[0-9a-f]{7,64}(?:\.d[0-9]{8})?)?",
+        declared.strip())
     if match is None:
         return False
     version = tuple(int(part) for part in match.group("release").split("."))

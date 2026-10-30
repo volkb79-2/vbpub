@@ -1,0 +1,4911 @@
+{
+  "campaign": {
+    "assay_version": "9.0.1.dev1083+ga43c0fcf9",
+    "command_exit_code": 4,
+    "ended": "2026-10-30T09:13:45.167007+00:00",
+    "evidence": {
+      "assay_state_directory": "/workspaces/vbpub/.run-gate/assay-state/.worktrees/nyxloom-usage-20261028/nyxloom",
+      "matching_campaign_candidate_records": 1203,
+      "matching_outcome_mismatches": 0,
+      "progress_path": "nyxloom/.assay/progress-session-extract.jsonl",
+      "progress_sha256": "1e2f2282d388b694e939bba4b6fa33f3c7f2d64a262a6d26b44534985ffa49ab",
+      "state_candidate_records_total": 1231,
+      "verdict_path": "nyxloom/.assay/verdict-session-extract.json",
+      "verdict_sha256": "7d05c109b9404330674aacebeede3227fd171621cd48ae49238d3982411900cf"
+    },
+    "final_exact_tree_resume": {
+      "rejected_total": 5,
+      "rejudged_total": 2,
+      "resumed_total": 1196,
+      "run_gate_log_id": "d1b8b0eadd04fb3c014f386fd8d3b1ed",
+      "started": "2026-10-30T09:06:18.480426+00:00"
+    },
+    "full_campaign_progress_window": {
+      "candidate_total": 1203,
+      "from": "2026-10-30T00:45:45",
+      "through": "2026-10-30T08:50:14"
+    },
+    "lane": "session-extract",
+    "outcome": "BUDGET_EXCEEDED",
+    "reason_code": "LANE_TIMEOUT",
+    "source_commit": "a43c0fcf97d8ef14b592b8eb0c6b377ab0e1251c",
+    "started": "2026-10-30T09:06:25.198142+00:00"
+  },
+  "candidates": [
+    {
+      "candidate_id": "aac067012781dc0bcd495fdb9ef6acb5ffd1033491d2aeae8130f338320cddfb",
+      "candidate_index": 1,
+      "group_id": "G01",
+      "line": 116,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py"
+    },
+    {
+      "candidate_id": "abf49dcff2e8f23bb4bf34354a9da7012bfd3c40cf234b86ac92a4824634fcec",
+      "candidate_index": 0,
+      "group_id": "G01",
+      "line": 116,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py"
+    },
+    {
+      "candidate_id": "1f82767155a675f5a8f0b3d70d8c32ac44246c09b2e934d736f5038dde686fdd",
+      "candidate_index": 2,
+      "group_id": "G01",
+      "line": 150,
+      "mutation": "And->Or",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py"
+    },
+    {
+      "candidate_id": "f49fc8091cd66d5a23ea394de394a7d722351f74d5954cae2b32c21c39a3f7e3",
+      "candidate_index": 5,
+      "group_id": "G01",
+      "line": 156,
+      "mutation": "And->Or",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py"
+    },
+    {
+      "candidate_id": "0f323fa4eb6968ed02d0c0df7a9421d2834e5634fa103ba4fb53704486c4447d",
+      "candidate_index": 9,
+      "group_id": "G01",
+      "line": 160,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py"
+    },
+    {
+      "candidate_id": "bacbdf50488a03e17b9b11a42a954d31b11effdff99d3a9db04b7bd7bcfdc669",
+      "candidate_index": 8,
+      "group_id": "G01",
+      "line": 160,
+      "mutation": "IsNot->Is",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py"
+    },
+    {
+      "candidate_id": "22622208b8c1020be9deb142c1b3c7dc2b208f3b2f502e44ca5360d1d9445964",
+      "candidate_index": 13,
+      "group_id": "G01",
+      "line": 165,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py"
+    },
+    {
+      "candidate_id": "a3d7f8e5b639f6422c4303ecd0650d0a3f55324bc226f3fcd1ff7bb9c1b50599",
+      "candidate_index": 91,
+      "group_id": "G01",
+      "line": 888,
+      "mutation": "And->Or",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py"
+    },
+    {
+      "candidate_id": "a14c9a19a958be61669b70a51ac292189a42401ddec1fcb40ef9fe1bba5f1289",
+      "candidate_index": 102,
+      "group_id": "G01",
+      "line": 906,
+      "mutation": "Eq->NotEq",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py"
+    },
+    {
+      "candidate_id": "71834fc0c01014a0db896fb304d405fff450d1d8a405870ebaf4d28f40d2b1bf",
+      "candidate_index": 112,
+      "group_id": "G01",
+      "line": 916,
+      "mutation": "And->Or",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py"
+    },
+    {
+      "candidate_id": "526c70c7aac50687400b6b214efd0b5777d54b1b245a4ab812caf9b0bedecbba",
+      "candidate_index": 114,
+      "group_id": "G01",
+      "line": 918,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py"
+    },
+    {
+      "candidate_id": "53879561c72058f9bf6ef70b3587ccb1597095e747dc55d9bf94aee1374fae65",
+      "candidate_index": 133,
+      "group_id": "G02",
+      "line": 49,
+      "mutation": "GtE->Gt",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/compress.py"
+    },
+    {
+      "candidate_id": "96c4de82e0db564d43371e5e76f35bc7fddbda4e7323df8238ad7b0ba13e6899",
+      "candidate_index": 160,
+      "group_id": "G03",
+      "line": 235,
+      "mutation": "False->True",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/config.py"
+    },
+    {
+      "candidate_id": "46ffad67a986f1095dde919d4cc7f503feac3f638e281f0a3efa31a758521280",
+      "candidate_index": 161,
+      "group_id": "G03",
+      "line": 245,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/config.py"
+    },
+    {
+      "candidate_id": "fa2d1200692eb79de65c5b334b7537f93f14dcd70cd6f864629364b4cefb2622",
+      "candidate_index": 183,
+      "group_id": "G04",
+      "line": 217,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/ledger.py"
+    },
+    {
+      "candidate_id": "1433e7be778d221549aaea77bf3548ea294f8b7d8418972d8d7a116d40c9e471",
+      "candidate_index": 186,
+      "group_id": "G04",
+      "line": 353,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/ledger.py"
+    },
+    {
+      "candidate_id": "ba23ff6400af9beb1ac7aaa52966bb541367acf690be9a97744baca7b2262534",
+      "candidate_index": 187,
+      "group_id": "G05",
+      "line": 35,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/presets.py"
+    },
+    {
+      "candidate_id": "b3e28db56be44437d132520d90b0262caaea60b0c9a75d49403f4c9d1e79d02f",
+      "candidate_index": 188,
+      "group_id": "G05",
+      "line": 57,
+      "mutation": "False->True",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/presets.py"
+    },
+    {
+      "candidate_id": "6680cace428625ff394c63e190cd7b55b976213cd7a210f74bd3d6e9bc106891",
+      "candidate_index": 189,
+      "group_id": "G05",
+      "line": 58,
+      "mutation": "False->True",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/presets.py"
+    },
+    {
+      "candidate_id": "a75f1928e3737cb0672217b2984ea6f1fdcdf2f3e91cd8fc82c97760eb7bee53",
+      "candidate_index": 191,
+      "group_id": "G05",
+      "line": 75,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/presets.py"
+    },
+    {
+      "candidate_id": "b174cfded013d815b432fabc2a0a65127a01bed5f77abe6b6aa8ee5db27853cc",
+      "candidate_index": 192,
+      "group_id": "G05",
+      "line": 90,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/presets.py"
+    },
+    {
+      "candidate_id": "ebe086057a6b38a6b83928ff396dc3be88027987aa753db107639031109d932c",
+      "candidate_index": 5,
+      "group_id": "G05",
+      "line": 91,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "budget_exceeded",
+      "path": "nyxloom/src/nyxloom/session_extract/presets.py"
+    },
+    {
+      "candidate_id": "c43e1882bf2dff591bebf81935a47988c868c0c42014994c2ac9869f254c1868",
+      "candidate_index": 194,
+      "group_id": "G05",
+      "line": 98,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/presets.py"
+    },
+    {
+      "candidate_id": "e5570f5ab5739097b4767cf596291971551ae086dd122331ac14ec0e8f9dbc08",
+      "candidate_index": 195,
+      "group_id": "G05",
+      "line": 99,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/presets.py"
+    },
+    {
+      "candidate_id": "de38cd06ecc5022d93c8745bc0a57f32701779a14147659d639330ff558c5f22",
+      "candidate_index": 204,
+      "group_id": "G05",
+      "line": 139,
+      "mutation": "False->True",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/presets.py"
+    },
+    {
+      "candidate_id": "7124ffe8c19001bff0452449a11df31caaa80f6b230be9ffc898334d58096ffd",
+      "candidate_index": 205,
+      "group_id": "G05",
+      "line": 143,
+      "mutation": "False->True",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/presets.py"
+    },
+    {
+      "candidate_id": "d5ac71986efa2cd27410365c2eb6bc897502f3fedf986422b41adab3065783ae",
+      "candidate_index": 206,
+      "group_id": "G05",
+      "line": 145,
+      "mutation": "False->True",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/presets.py"
+    },
+    {
+      "candidate_id": "56df2415d1e9a6961d80cb4f57136447ce1f64d85e733f5155bb843e5538bbcf",
+      "candidate_index": 214,
+      "group_id": "G06",
+      "line": 206,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/render.py"
+    },
+    {
+      "candidate_id": "1da200e1e598cc45bc1086a7a6b9d0cada48505e4bc4eecd52b6cd2fab5dbec6",
+      "candidate_index": 240,
+      "group_id": "G07",
+      "line": 156,
+      "mutation": "Lt->LtE",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/shellcmd.py"
+    },
+    {
+      "candidate_id": "82e6252d2f97f347cc517986480d223a9590e489bb4cc924fd53959b54a8bea4",
+      "candidate_index": 244,
+      "group_id": "G07",
+      "line": 178,
+      "mutation": "Gt->GtE",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/shellcmd.py"
+    },
+    {
+      "candidate_id": "11cdf5b98830a16e6fa4db926babc4b1d89abbb8861cb8c601203851b60601c9",
+      "candidate_index": 254,
+      "group_id": "G07",
+      "line": 218,
+      "mutation": "And->Or",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/shellcmd.py"
+    },
+    {
+      "candidate_id": "1c2c23ef526fb8785d0f96811ecab5502489b9f83f2ef7356da9ecf4965de5f8",
+      "candidate_index": 255,
+      "group_id": "G07",
+      "line": 218,
+      "mutation": "Lt->LtE",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/shellcmd.py"
+    },
+    {
+      "candidate_id": "9c19f9153e5179313d18bf25216fe8d1dfb92084e2f898c0f833022c2610e8cd",
+      "candidate_index": 263,
+      "group_id": "G07",
+      "line": 233,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/shellcmd.py"
+    },
+    {
+      "candidate_id": "971d73c0594d6392063f85e8cdfff3a84e81919e8c4f393724c1dd0770d65b43",
+      "candidate_index": 267,
+      "group_id": "G07",
+      "line": 273,
+      "mutation": "Lt->LtE",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/shellcmd.py"
+    },
+    {
+      "candidate_id": "ab944712398113859fbeefc2caf9dbef7dede6280836a7ee10dadb3698ab67ff",
+      "candidate_index": 281,
+      "group_id": "G08",
+      "line": 205,
+      "mutation": "GtE->Gt",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/stats.py"
+    },
+    {
+      "candidate_id": "a656b6571e942c725459974b133740ce3cd650131fbfdb02ecc1093d48c67b17",
+      "candidate_index": 288,
+      "group_id": "G09",
+      "line": 80,
+      "mutation": "False->True",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/stopstate.py"
+    },
+    {
+      "candidate_id": "1b8adf790a025aeedd7efe1a8a7f45e907af823364fb92390ad676f09104d752",
+      "candidate_index": 300,
+      "group_id": "G09",
+      "line": 109,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/stopstate.py"
+    },
+    {
+      "candidate_id": "5e6080ae13a7fda806754823cc7e6ec123581dfe5714a1790fc3c7b95e402128",
+      "candidate_index": 370,
+      "group_id": "G10",
+      "line": 178,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/toolresult.py"
+    },
+    {
+      "candidate_id": "a5f68262332bb9e6a97ad6cc56736d7794069420e57453c2e7744caffcbec4d7",
+      "candidate_index": 379,
+      "group_id": "G11",
+      "line": 38,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/anchors.py"
+    },
+    {
+      "candidate_id": "5913b9f89ee5c0134aa6a69e94296d05db8fab53836ced910eccb4bc431995f6",
+      "candidate_index": 385,
+      "group_id": "G11",
+      "line": 68,
+      "mutation": "LtE->Lt",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/anchors.py"
+    },
+    {
+      "candidate_id": "89bcc7a74421f51fe63ac77562546f4ce2b2720708ded68f10b56a94accb5c6b",
+      "candidate_index": 389,
+      "group_id": "G11",
+      "line": 77,
+      "mutation": "LtE->Lt",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/anchors.py"
+    },
+    {
+      "candidate_id": "bc326169214991e4591a5cbb74e7d5b5594b9257e1ccf50026c8cb2a74fa0de6",
+      "candidate_index": 388,
+      "group_id": "G11",
+      "line": 77,
+      "mutation": "LtE->Lt",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/anchors.py"
+    },
+    {
+      "candidate_id": "8c6cf67c11785e3ac034e499a94d658b646f7dba03a882f2721841a80200784e",
+      "candidate_index": 390,
+      "group_id": "G11",
+      "line": 80,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/anchors.py"
+    },
+    {
+      "candidate_id": "94e15435b84422b20793baf854f31a029c9c786e78325b78b20e285ebb75f240",
+      "candidate_index": 403,
+      "group_id": "G11",
+      "line": 203,
+      "mutation": "And->Or",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/anchors.py"
+    },
+    {
+      "candidate_id": "501e26b121f91c799824c5b4db7e7fd1d75a668cd09e747d88a21ba1748a6330",
+      "candidate_index": 406,
+      "group_id": "G11",
+      "line": 208,
+      "mutation": "False->True",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/anchors.py"
+    },
+    {
+      "candidate_id": "4c8674631a296582e3ebef689e786d9836bc76e01fcdb5e193511661c312a261",
+      "candidate_index": 407,
+      "group_id": "G11",
+      "line": 208,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/anchors.py"
+    },
+    {
+      "candidate_id": "d98da7a14315c76827b1760b698d89599bad94d5c9205ff8dbf7fcbae42150bf",
+      "candidate_index": 409,
+      "group_id": "G12",
+      "line": 22,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/calibration.py"
+    },
+    {
+      "candidate_id": "96cae925d70559c6ec1d611f852ab3281f26c9da25dd940bfccf3776625c66ba",
+      "candidate_index": 414,
+      "group_id": "G12",
+      "line": 67,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/calibration.py"
+    },
+    {
+      "candidate_id": "f1175dce46edc14e7e07eda6f44a3a9d42fe6046895eedf5180c9b88e6aff413",
+      "candidate_index": 417,
+      "group_id": "G12",
+      "line": 74,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/calibration.py"
+    },
+    {
+      "candidate_id": "03cec9318b054bf10d879a7cdc75272fd3c3ac345780f15d0190258320eecada",
+      "candidate_index": 422,
+      "group_id": "G12",
+      "line": 89,
+      "mutation": "Lt->LtE",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/calibration.py"
+    },
+    {
+      "candidate_id": "ac0536a2787824dcfc09fc5cea0c92b818fdd890de98ca07a6dc0cc551869b5e",
+      "candidate_index": 420,
+      "group_id": "G12",
+      "line": 89,
+      "mutation": "LtE->Lt",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/calibration.py"
+    },
+    {
+      "candidate_id": "dc12bcf4403327da7d894d701cf8279a8218162f5e220d49d0929da7471a9b1a",
+      "candidate_index": 424,
+      "group_id": "G12",
+      "line": 94,
+      "mutation": "Lt->LtE",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/calibration.py"
+    },
+    {
+      "candidate_id": "e6c05c8d61d03f8e105389434b4f0f8987b67dc12b3aef408654b672955f559a",
+      "candidate_index": 423,
+      "group_id": "G12",
+      "line": 94,
+      "mutation": "LtE->Lt",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/calibration.py"
+    },
+    {
+      "candidate_id": "0b82e8c89aa1b37e58a5fefd0372bbc2715711e56f73b428f7f757f415d50165",
+      "candidate_index": 429,
+      "group_id": "G12",
+      "line": 110,
+      "mutation": "Gt->GtE",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/calibration.py"
+    },
+    {
+      "candidate_id": "78f5a4cec8eb95b880ea1417703ae2e1649c5d7c3219381d468c0585d8e42013",
+      "candidate_index": 434,
+      "group_id": "G12",
+      "line": 125,
+      "mutation": "Gt->GtE",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/calibration.py"
+    },
+    {
+      "candidate_id": "258728631cf0de3882146bea4de2620c5e6e402a53c87106e7b8aff727121e17",
+      "candidate_index": 435,
+      "group_id": "G12",
+      "line": 128,
+      "mutation": "Gt->GtE",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/calibration.py"
+    },
+    {
+      "candidate_id": "2b00d2beac064169655a2a90dcc03e68f2562a1b866511c3af1e04d9a76f81f0",
+      "candidate_index": 437,
+      "group_id": "G12",
+      "line": 155,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/calibration.py"
+    },
+    {
+      "candidate_id": "cb879b40162ca3afd0de021840b9f582fbd469abc467b904d356940d06c474f0",
+      "candidate_index": 441,
+      "group_id": "G12",
+      "line": 195,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/calibration.py"
+    },
+    {
+      "candidate_id": "275d076363ea2ec0d20ee4c3bbba263ac57097eff422aa20477c13e9b32f6ab2",
+      "candidate_index": 442,
+      "group_id": "G13",
+      "line": 41,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/charts.py"
+    },
+    {
+      "candidate_id": "bf02660bf58e1a996ca730c14e8963c428aec877e0ddba611dad1868c889683e",
+      "candidate_index": 443,
+      "group_id": "G13",
+      "line": 41,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/charts.py"
+    },
+    {
+      "candidate_id": "0a858626d111435fa44f94af9ead524591ae0ed0b689932a5d7bd5d0f8961671",
+      "candidate_index": 445,
+      "group_id": "G13",
+      "line": 58,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/charts.py"
+    },
+    {
+      "candidate_id": "4d25efe7186b2ad2523bbd25debb26015496b059aba57ddb5b08fa788001f2c6",
+      "candidate_index": 448,
+      "group_id": "G13",
+      "line": 65,
+      "mutation": "None->[]",
+      "operator": "python:falsy-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/charts.py"
+    },
+    {
+      "candidate_id": "ecf0adea7078543e97b62d937ea1ccf7ba4d11b92c1163645f63f24dde36b77f",
+      "candidate_index": 449,
+      "group_id": "G13",
+      "line": 70,
+      "mutation": "False->True",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/charts.py"
+    },
+    {
+      "candidate_id": "ab7b073bd6473574b19108c60860c7d53d6709bd8d00b8982b50cdea10df02f7",
+      "candidate_index": 450,
+      "group_id": "G13",
+      "line": 70,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/charts.py"
+    },
+    {
+      "candidate_id": "89a30bd1f777469c27226b0b8e0986803279ea84e155ffb9252afe1941c00767",
+      "candidate_index": 456,
+      "group_id": "G13",
+      "line": 108,
+      "mutation": "IsNot->Is",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/charts.py"
+    },
+    {
+      "candidate_id": "94e2ed1445e7ac22f898c8623d387966b97ca96281b17af67bc3f87ecb21a284",
+      "candidate_index": 457,
+      "group_id": "G13",
+      "line": 129,
+      "mutation": "Gt->GtE",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/charts.py"
+    },
+    {
+      "candidate_id": "a1b233d211ae3b74980e2245fca3ea85f09737735b8cd5bbefed639b29ddd4d7",
+      "candidate_index": 458,
+      "group_id": "G13",
+      "line": 148,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/charts.py"
+    },
+    {
+      "candidate_id": "aaad885924dcdf123a1895562b93359874d249dc1f51f05d4ea0f6cffc5cca88",
+      "candidate_index": 459,
+      "group_id": "G13",
+      "line": 178,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/charts.py"
+    },
+    {
+      "candidate_id": "b0da4fdc68c9a1b39f0d6f483e94db1711ededd4554df2c41211687a235a88d8",
+      "candidate_index": 460,
+      "group_id": "G13",
+      "line": 223,
+      "mutation": "Eq->NotEq",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/charts.py"
+    },
+    {
+      "candidate_id": "fa0d62e00751b7e74f61d6cf83bfa1eb35a315aac158b227155c0b62ce977d33",
+      "candidate_index": 464,
+      "group_id": "G13",
+      "line": 269,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/charts.py"
+    },
+    {
+      "candidate_id": "7d22bfe171a1be87562f3aaa09d9df2a59f700fd92852a734a105f2ee54031c0",
+      "candidate_index": 463,
+      "group_id": "G13",
+      "line": 269,
+      "mutation": "IsNot->Is",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/charts.py"
+    },
+    {
+      "candidate_id": "8eac64da84d2edcfc46d86de9a352b62cc49eca0a081ef51ae01eb667133a687",
+      "candidate_index": 465,
+      "group_id": "G13",
+      "line": 272,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/charts.py"
+    },
+    {
+      "candidate_id": "ed8c0d221dbaa756234e1e997eeb5409f8c84e1e6e116030877c24823d808a83",
+      "candidate_index": 468,
+      "group_id": "G13",
+      "line": 290,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/charts.py"
+    },
+    {
+      "candidate_id": "9c53faf6a6c9690c47bdea873ca65b03bbd8d2acb8a95aaab8ca055fd547354a",
+      "candidate_index": 469,
+      "group_id": "G13",
+      "line": 290,
+      "mutation": "NotEq->Eq",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/charts.py"
+    },
+    {
+      "candidate_id": "ac91e2666190acb30080c5d53d9fa8dcc567f2ebcdaf8a26f5c3bee544f05a94",
+      "candidate_index": 467,
+      "group_id": "G13",
+      "line": 290,
+      "mutation": "NotEq->Eq",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/charts.py"
+    },
+    {
+      "candidate_id": "312b64544851661406aa85f06b93857c7a87664e0f83052a6aa6a53ffa7d9a15",
+      "candidate_index": 472,
+      "group_id": "G13",
+      "line": 304,
+      "mutation": "Lt->LtE",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/charts.py"
+    },
+    {
+      "candidate_id": "591b20daa5e3dfc39c83653d8d23600180e55b1690507a9da3697084d0578a87",
+      "candidate_index": 474,
+      "group_id": "G13",
+      "line": 310,
+      "mutation": "Gt->GtE",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/charts.py"
+    },
+    {
+      "candidate_id": "0f7f6517a7fa6f42fd54160eb7161a9c0c3456081aceb67b4120df3686bc7131",
+      "candidate_index": 475,
+      "group_id": "G13",
+      "line": 325,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/charts.py"
+    },
+    {
+      "candidate_id": "012ee4b6f3401a638845462ea073706f1d2f06aa22efc7db7ee6b03b8901216a",
+      "candidate_index": 480,
+      "group_id": "G13",
+      "line": 373,
+      "mutation": "LtE->Lt",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/charts.py"
+    },
+    {
+      "candidate_id": "5c2f1f7e1be97ccd4d6e65d89c0a2fa5aa8f72de9346708133c07ae863df5b98",
+      "candidate_index": 482,
+      "group_id": "G13",
+      "line": 468,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/charts.py"
+    },
+    {
+      "candidate_id": "63133c635a0ae3a3cfb86c086b132cf7116ef321e8aa7451f9fa6f987908d784",
+      "candidate_index": 483,
+      "group_id": "G13",
+      "line": 469,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/charts.py"
+    },
+    {
+      "candidate_id": "fb9460dac57eb8e5d54fcd1ca582ba3a64648d7c3d8e60436175573dad7b0704",
+      "candidate_index": 500,
+      "group_id": "G13",
+      "line": 751,
+      "mutation": "Lt->LtE",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/charts.py"
+    },
+    {
+      "candidate_id": "c0d7aafd54931606672dcb0b514f5b87ef92d6f07eccb611a3ceb963fb3a1bf8",
+      "candidate_index": 499,
+      "group_id": "G13",
+      "line": 751,
+      "mutation": "LtE->Lt",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/charts.py"
+    },
+    {
+      "candidate_id": "86e0121336fe13bcefda8064b8dbbe81fef9dbdce3a648b359c2401238e2867f",
+      "candidate_index": 513,
+      "group_id": "G13",
+      "line": 856,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/charts.py"
+    },
+    {
+      "candidate_id": "aa31d65ede774275d843e92b11c89718b8b8ccbe6341fa4ad8a45a6651f19c08",
+      "candidate_index": 511,
+      "group_id": "G13",
+      "line": 856,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/charts.py"
+    },
+    {
+      "candidate_id": "ebb65f87856b2d28e2cc201aa543824fc12252b4de1cba195e1ab2f90fbf07b1",
+      "candidate_index": 515,
+      "group_id": "G13",
+      "line": 856,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/charts.py"
+    },
+    {
+      "candidate_id": "410e70a8ed2a482491fc30c7ffdc6ab459968178f3c8bbcdc7cde4059ee30026",
+      "candidate_index": 516,
+      "group_id": "G13",
+      "line": 856,
+      "mutation": "GtE->Gt",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/charts.py"
+    },
+    {
+      "candidate_id": "7640430f7ad72b0140b0e400681bea80134f45309c458ade8c1d3d28ba681a83",
+      "candidate_index": 512,
+      "group_id": "G13",
+      "line": 856,
+      "mutation": "LtE->Lt",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/charts.py"
+    },
+    {
+      "candidate_id": "5e897203866044f51be950fc9d2100df504225808d7f45ef2d093b4c501d0231",
+      "candidate_index": 517,
+      "group_id": "G13",
+      "line": 859,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/charts.py"
+    },
+    {
+      "candidate_id": "b889e5c295a62a4213f05c2e2c4b647c5f0f86ddcf86323dffae9f2eec8a37d1",
+      "candidate_index": 520,
+      "group_id": "G13",
+      "line": 864,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/charts.py"
+    },
+    {
+      "candidate_id": "7892d2680ffb3fafe1f1d8fe916d724af806baaa169b8a5394b35e5a4c7c3382",
+      "candidate_index": 521,
+      "group_id": "G13",
+      "line": 865,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/charts.py"
+    },
+    {
+      "candidate_id": "4415b78508f8daa345223f54770d92e607f9194d9214a8f1fafe57dd2788a45e",
+      "candidate_index": 522,
+      "group_id": "G13",
+      "line": 870,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/charts.py"
+    },
+    {
+      "candidate_id": "79b9849e358f3e95b655b216cfb7eab950686819ef4b85b2e39772a5e4b40def",
+      "candidate_index": 524,
+      "group_id": "G13",
+      "line": 872,
+      "mutation": "Lt->LtE",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/charts.py"
+    },
+    {
+      "candidate_id": "0b3ae638f459b695eafe9cb9074ae3aa3944bc313805179c3221d95349c338b2",
+      "candidate_index": 523,
+      "group_id": "G13",
+      "line": 872,
+      "mutation": "LtE->Lt",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/charts.py"
+    },
+    {
+      "candidate_id": "7dbe4a9d39fac3c867dd3d8e1ae95bb86c5100fe1cbde65475d9d43048d7a007",
+      "candidate_index": 525,
+      "group_id": "G13",
+      "line": 873,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/charts.py"
+    },
+    {
+      "candidate_id": "027036f1ebe7d61254872526882fde337a848d6930e6acc8ba52f1a6893a2bd4",
+      "candidate_index": 531,
+      "group_id": "G13",
+      "line": 887,
+      "mutation": "Gt->GtE",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/charts.py"
+    },
+    {
+      "candidate_id": "0598e78eb1b9b58546a892dc587c8a2bd5b3e24c543b52aa5f045449864a5087",
+      "candidate_index": 529,
+      "group_id": "G13",
+      "line": 887,
+      "mutation": "Lt->LtE",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/charts.py"
+    },
+    {
+      "candidate_id": "362b51092883a50febdd5d580835df23a2c67c621d2ade256ca1d9cca72d68ab",
+      "candidate_index": 533,
+      "group_id": "G13",
+      "line": 887,
+      "mutation": "Lt->LtE",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/charts.py"
+    },
+    {
+      "candidate_id": "f84c7d0670fa21ae048aa4f7bd2c21b6cac9a87cd55641d9928bbe3c0ba871ff",
+      "candidate_index": 535,
+      "group_id": "G13",
+      "line": 889,
+      "mutation": "Lt->LtE",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/charts.py"
+    },
+    {
+      "candidate_id": "675854888fad150e26f6e03b05366339a97c06ba5203678473e5cdaef6438a9a",
+      "candidate_index": 534,
+      "group_id": "G13",
+      "line": 889,
+      "mutation": "LtE->Lt",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/charts.py"
+    },
+    {
+      "candidate_id": "8712be3e0d11ee97eb1316b70666bdcbfee3136e0a25787aaac038dfacb7e06d",
+      "candidate_index": 536,
+      "group_id": "G13",
+      "line": 899,
+      "mutation": "And->Or",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/charts.py"
+    },
+    {
+      "candidate_id": "e44b798579465699473a8cc5706afcd5155e71f097e642954f31bb549fe59fa1",
+      "candidate_index": 537,
+      "group_id": "G13",
+      "line": 899,
+      "mutation": "Eq->NotEq",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/charts.py"
+    },
+    {
+      "candidate_id": "a688c2935fe3c451d56b10465d1d8dd5cdff48543f98b3591250c4f030202ffc",
+      "candidate_index": 543,
+      "group_id": "G13",
+      "line": 949,
+      "mutation": "Lt->LtE",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/charts.py"
+    },
+    {
+      "candidate_id": "6b945ff48bcfa1ddccb6c785b6f86e43b8ff289cb64db76d27b83f0be16edb6d",
+      "candidate_index": 548,
+      "group_id": "G13",
+      "line": 966,
+      "mutation": "LtE->Lt",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/charts.py"
+    },
+    {
+      "candidate_id": "72bc7c6e014ec7cd73380b8f9a5bae7d6047200120f11c330dd45a2755237c11",
+      "candidate_index": 550,
+      "group_id": "G13",
+      "line": 1066,
+      "mutation": "False->True",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/charts.py"
+    },
+    {
+      "candidate_id": "f6402b8bd5639968ff2d1054008355bc07528f639e5d165af979c4ca1722c606",
+      "candidate_index": 551,
+      "group_id": "G13",
+      "line": 1067,
+      "mutation": "False->True",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/charts.py"
+    },
+    {
+      "candidate_id": "34e67bf5fdc08e1280dfa16ea542341f9a08e71ede26d527d9334a0f572fc8fc",
+      "candidate_index": 553,
+      "group_id": "G14",
+      "line": 18,
+      "mutation": "False->True",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/html.py"
+    },
+    {
+      "candidate_id": "a2d7c4ae6b1d0d3f25ca7d411ddadddacc392f85c98e5b4da700f01a49e672ae",
+      "candidate_index": 554,
+      "group_id": "G15",
+      "line": 19,
+      "mutation": "False->True",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/html.py"
+    },
+    {
+      "candidate_id": "e40e8db1bd1928a994bb0a2d33a04abc233bc4fe82ceb14a7293494d0c6cadda",
+      "candidate_index": 555,
+      "group_id": "G14",
+      "line": 21,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/html.py"
+    },
+    {
+      "candidate_id": "ba1207b4a546dde99c12c8226095e8f9be897ec59d67a95bf66b58badd248ae9",
+      "candidate_index": 560,
+      "group_id": "G16",
+      "line": 35,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "9c1235bf186011f7919773ca4e3200c6c5a6cc248fbccd6358033471263ab478",
+      "candidate_index": 561,
+      "group_id": "G16",
+      "line": 44,
+      "mutation": "False->True",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "77c812e01f8073aa2ae904539727c0f4ecceadbc862f9668493df0ea64a63f0e",
+      "candidate_index": 562,
+      "group_id": "G16",
+      "line": 47,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "2c085ff7f5e8d117f396ecc28c176c55f942d55f9301eca4bd618c1a629bc55e",
+      "candidate_index": 563,
+      "group_id": "G16",
+      "line": 84,
+      "mutation": "False->True",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "0cc732e87e525687438e59b0c5b7c8654fd4a5efb58cc5b62c4e510067fb3a42",
+      "candidate_index": 564,
+      "group_id": "G16",
+      "line": 86,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "85b948c1b441b670d1f520a1371a9fd5e489c0cc5980d942122380f131fa3ebf",
+      "candidate_index": 565,
+      "group_id": "G16",
+      "line": 95,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "cafc5d4a0ffade88839db1490658a14e14d95edd60a78e7b8581df32c6a5be0e",
+      "candidate_index": 566,
+      "group_id": "G16",
+      "line": 102,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "b5de812a1c28684f50a21038f5c4316812a81196d77198b3f285884524bf286f",
+      "candidate_index": 570,
+      "group_id": "G16",
+      "line": 108,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "25462ed5fe99b39ee015372563ff6186b1731483832192433301fd132eda973f",
+      "candidate_index": 610,
+      "group_id": "G16",
+      "line": 230,
+      "mutation": "IsNot->Is",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "fd58bebbf449b436682614c7773da84272e9e987c55615a4a02cb046e4b97e4e",
+      "candidate_index": 613,
+      "group_id": "G16",
+      "line": 254,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "e3021a87c6758d3d71322d05705f34b9e492aef63b353390ab1417ffa460f022",
+      "candidate_index": 624,
+      "group_id": "G16",
+      "line": 273,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "65241e2356c527e0f3c8b64e013f3125e8d614c2cc830f280320ff6aa83cb37d",
+      "candidate_index": 628,
+      "group_id": "G16",
+      "line": 281,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "a39368ec368fff30fa0dbb2cee15b40582a73180e8fd0527881039bb01622134",
+      "candidate_index": 629,
+      "group_id": "G16",
+      "line": 294,
+      "mutation": "And->Or",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "08f9ff99871d8cf9cef727a8221aeb4aa7e865454138580794bab48a0a15486f",
+      "candidate_index": 630,
+      "group_id": "G16",
+      "line": 303,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "34cf6bf6e693acc98ba77dfaa6030a64c7df2643954338e231284929aa509ba0",
+      "candidate_index": 631,
+      "group_id": "G16",
+      "line": 305,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "e46c97c754e31f69a706adcb0730ff99eaf0b9393f079725b420469d5e9ea4c8",
+      "candidate_index": 633,
+      "group_id": "G16",
+      "line": 313,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "0e3762d475fa08a4066a947e8a4f4a7ee8f329b83cb3d67ab9d1119e25271051",
+      "candidate_index": 648,
+      "group_id": "G16",
+      "line": 335,
+      "mutation": "And->Or",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "5821dec10da7bd4ad30b3bb4f4d78dd2b8bf6fcc346710b0bf73dba76e7531ac",
+      "candidate_index": 647,
+      "group_id": "G16",
+      "line": 335,
+      "mutation": "And->Or",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "689676c823946273a07b96c7747f20388b0442d2b10fbf03790c38cb16b3460f",
+      "candidate_index": 650,
+      "group_id": "G16",
+      "line": 338,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "f67fa66ff54e20985c02c7e1a0fd350cc4805b278c79a9378947d22a4c858aab",
+      "candidate_index": 649,
+      "group_id": "G16",
+      "line": 338,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "6e03c62032a43db9ca4dcd682627abcfebeb575c84a7f2b226fa103b08453412",
+      "candidate_index": 661,
+      "group_id": "G16",
+      "line": 374,
+      "mutation": "Lt->LtE",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "558916d65c155a2df85965527ee1c3c8bfacdc3cb051e3b674372bc6c7ca9708",
+      "candidate_index": 6,
+      "group_id": "G16",
+      "line": 397,
+      "mutation": "NotEq->Eq",
+      "operator": "python:compare-swap",
+      "outcome": "budget_exceeded",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "f588880c79be1c9807f8a45e0c9b75d22f8ba44930ef81933cde77e540ee44a2",
+      "candidate_index": 666,
+      "group_id": "G16",
+      "line": 428,
+      "mutation": "Gt->GtE",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "5647f384c5cb6150623109c27f4be54a537ffed527983e211087b3580f43f849",
+      "candidate_index": 703,
+      "group_id": "G16",
+      "line": 662,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "4ca5fcc835b998a24307594ab15c74f853181feb36f0c690151c94243bca7f50",
+      "candidate_index": 704,
+      "group_id": "G16",
+      "line": 662,
+      "mutation": "Lt->LtE",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "355d122b15ee38a0d25de5f04887e4f816d7cdbba74d16718eeca93b4ba87a76",
+      "candidate_index": 708,
+      "group_id": "G16",
+      "line": 696,
+      "mutation": "And->Or",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "55f272b5f2328c136faa37b618468b9994c888fa03517aee6e0a87ca70a438d4",
+      "candidate_index": 711,
+      "group_id": "G16",
+      "line": 751,
+      "mutation": "IsNot->Is",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "d90b282e7318b2aed71c717589d2a4abf8f05951b9e5f6ad2b3aae5ecdeb433e",
+      "candidate_index": 713,
+      "group_id": "G16",
+      "line": 780,
+      "mutation": "Gt->GtE",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "c8837945cbee871915641c747b9547a5bab2c78c34a91c8d1c90321b940c323c",
+      "candidate_index": 715,
+      "group_id": "G16",
+      "line": 802,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "6dfb4095016998a983e699025f7467007da6311a6f9e630b6c89b3db9e62fffe",
+      "candidate_index": 731,
+      "group_id": "G16",
+      "line": 852,
+      "mutation": "Lt->LtE",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "14fc466c518495294d78cf47d89e8899dcfa88038f4a4eede97cdc0fc430cc07",
+      "candidate_index": 732,
+      "group_id": "G16",
+      "line": 853,
+      "mutation": "False->True",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "fcfb4a681e5ad9f2c0e6ce7ea303ab4b62f4c213b2305789101c2b9ddec68777",
+      "candidate_index": 733,
+      "group_id": "G16",
+      "line": 853,
+      "mutation": "False->True",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "a26b66aad7a33c44f416607b4a16df0d284e7a6732653895e8914b3ad9016eb2",
+      "candidate_index": 738,
+      "group_id": "G16",
+      "line": 856,
+      "mutation": "False->True",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "ca71302e06c160997adf2a283736a5a97fb3fac425b71398809aebb5dd1438a9",
+      "candidate_index": 739,
+      "group_id": "G16",
+      "line": 856,
+      "mutation": "False->True",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "d8d029b64495c810c8a70e71868bd3baa2b67b16c78fa78e1381ff65b65c084f",
+      "candidate_index": 747,
+      "group_id": "G16",
+      "line": 874,
+      "mutation": "And->Or",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "a676a5a05fa668ffa6c1ca11773de7f76ff467bf29a1f89b8abe965b6d60eb1e",
+      "candidate_index": 750,
+      "group_id": "G16",
+      "line": 886,
+      "mutation": "And->Or",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "2363be40e4bf0dd6e4c0fe695331b25cf941c43dddeafdc8bad47fe737010eaa",
+      "candidate_index": 752,
+      "group_id": "G16",
+      "line": 889,
+      "mutation": "And->Or",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "4a9419f670e715fc09d52573be23aa45baef63698b3322504aa9eac9505092dc",
+      "candidate_index": 757,
+      "group_id": "G16",
+      "line": 898,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "55bb87f83fe2c4472a4c0d27de10205b24ac653888d813fb6fb52c54f2de37b5",
+      "candidate_index": 759,
+      "group_id": "G16",
+      "line": 901,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "2c1e790aeb57e372e3b6c8fc0e0d14aacfd7d22bced945c186c98e3dc9e37b00",
+      "candidate_index": 776,
+      "group_id": "G16",
+      "line": 955,
+      "mutation": "IsNot->Is",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "22b017929f97fc575f17c2c2392b6e18570ff19b1a2fea01637b36d13228168e",
+      "candidate_index": 780,
+      "group_id": "G16",
+      "line": 978,
+      "mutation": "Eq->NotEq",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "55299384c57f88501e65be352d6ab68ffec2ab2f1f3c22f2e9d1b279642cc4d6",
+      "candidate_index": 788,
+      "group_id": "G16",
+      "line": 1012,
+      "mutation": "IsNot->Is",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "625c955c13f279f19fe7c3124294f7060ba45e8e44c331e11acc07522b984fd3",
+      "candidate_index": 792,
+      "group_id": "G16",
+      "line": 1034,
+      "mutation": "Gt->GtE",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "c6e2e9b6ba8e0ac5043a21905883f9678df9a857fc456be8dc29cefd9094b228",
+      "candidate_index": 790,
+      "group_id": "G16",
+      "line": 1034,
+      "mutation": "LtE->Lt",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "9424c62232939cb128c86313ab07b9665ac622cf28ab43afcedfc6e26e8f8532",
+      "candidate_index": 793,
+      "group_id": "G16",
+      "line": 1045,
+      "mutation": "Eq->NotEq",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "f6854f1e73a556a650fb9d6cdcfb8b4ccf930764edbe481ce5679673e4b3c5a4",
+      "candidate_index": 795,
+      "group_id": "G16",
+      "line": 1046,
+      "mutation": "Lt->LtE",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "07f6bda2b9d007aecbaf3e8d44764e477b15fe9afeba93aede293e3fcc308409",
+      "candidate_index": 796,
+      "group_id": "G16",
+      "line": 1049,
+      "mutation": "LtE->Lt",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "faa1a94034b1efbcde7ba9ca5288ecc0ea5f0ff311c3961bb19f7d0367692d50",
+      "candidate_index": 805,
+      "group_id": "G16",
+      "line": 1136,
+      "mutation": "Eq->NotEq",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "1c48690925716e32bdd0a89749cb31a1b94863fd0dd88f85389aa5da81b23fbe",
+      "candidate_index": 807,
+      "group_id": "G16",
+      "line": 1161,
+      "mutation": "Is->IsNot",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "85dc0b327460bbeabdcbf7a213c81c98d510a5a9ee61dc3bbc4f97235ffee6cf",
+      "candidate_index": 810,
+      "group_id": "G16",
+      "line": 1174,
+      "mutation": "Is->IsNot",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "069ff7e99476f5ac665bf4c0b149efea2032babd3f76cc1702125f2530edc372",
+      "candidate_index": 813,
+      "group_id": "G16",
+      "line": 1185,
+      "mutation": "Is->IsNot",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "3d34f194cade32d3856821c18c9eae92b57b3745db4dcbd879fd95e360c6c550",
+      "candidate_index": 818,
+      "group_id": "G16",
+      "line": 1209,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "56d26bfde9888cef1e54fbf944227c317fd0d824411453b3b83f43ec0e6e3a2c",
+      "candidate_index": 822,
+      "group_id": "G16",
+      "line": 1213,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "b0ecd29cda7e72508ccaf3d3553cdf372bfafa6fbebd14c74657cd4b5309c82e",
+      "candidate_index": 828,
+      "group_id": "G16",
+      "line": 1216,
+      "mutation": "Lt->LtE",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py"
+    },
+    {
+      "candidate_id": "40386a2fa16bf871592637cc12a36ecf1a3868c105d6aaf2bcd8e3a256d762ab",
+      "candidate_index": 830,
+      "group_id": "G17",
+      "line": 10,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/model.py"
+    },
+    {
+      "candidate_id": "b9ebcbdbc092a3401de8693ae6e9c09072187354d3304825416ac171f487c713",
+      "candidate_index": 831,
+      "group_id": "G17",
+      "line": 10,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/model.py"
+    },
+    {
+      "candidate_id": "07e376e79ef8fa10b07be228d646e369b9dbbe64556cb1eb48149685e94d27cb",
+      "candidate_index": 832,
+      "group_id": "G17",
+      "line": 18,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/model.py"
+    },
+    {
+      "candidate_id": "5846ca20f850307baa9c887f2e63d6a519c1eacedd132f35f1ac5429543ebd5a",
+      "candidate_index": 833,
+      "group_id": "G17",
+      "line": 49,
+      "mutation": "False->True",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/model.py"
+    },
+    {
+      "candidate_id": "01c1d3c98e36440449c74c3090e155c27246355060283f293c0c00e9b3a56f71",
+      "candidate_index": 834,
+      "group_id": "G17",
+      "line": 50,
+      "mutation": "False->True",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/model.py"
+    },
+    {
+      "candidate_id": "9e026183bde38a3281b63b2c572614320e51b1f58a4fb8f284cf2d34ade50566",
+      "candidate_index": 835,
+      "group_id": "G17",
+      "line": 52,
+      "mutation": "False->True",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/model.py"
+    },
+    {
+      "candidate_id": "b794976127520718da885d54110d6fb503b90c9d25cb3bb6be6f73880a683780",
+      "candidate_index": 837,
+      "group_id": "G17",
+      "line": 74,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/model.py"
+    },
+    {
+      "candidate_id": "7a2c5a13a0fc5989c619cfabfca488899f076fc2145ee9619f23ca45657129ab",
+      "candidate_index": 839,
+      "group_id": "G17",
+      "line": 102,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/model.py"
+    },
+    {
+      "candidate_id": "98f2e5d45d7b25727ee54ae27fbe77a54e3370886c2485713ebe6cee66205216",
+      "candidate_index": 840,
+      "group_id": "G17",
+      "line": 102,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/model.py"
+    },
+    {
+      "candidate_id": "a0f5da377d547ad389107d9ff54d4db5dad9e2781471958a4b863e5dce85c7c0",
+      "candidate_index": 842,
+      "group_id": "G17",
+      "line": 116,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/model.py"
+    },
+    {
+      "candidate_id": "a2c341d4ac57e8c721dc01faf66f69d9df5bde943383341ddaa0e65fde8cfa3d",
+      "candidate_index": 841,
+      "group_id": "G17",
+      "line": 116,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/model.py"
+    },
+    {
+      "candidate_id": "5ef069df70aeec5e4c895343073e56e1f7671716c43d9189f520489012b43cfc",
+      "candidate_index": 843,
+      "group_id": "G17",
+      "line": 128,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/model.py"
+    },
+    {
+      "candidate_id": "6386b8d2d4b9eebe6b45cafaac9f06806a26d185c4e273be062fb83a57cc2bb2",
+      "candidate_index": 844,
+      "group_id": "G17",
+      "line": 180,
+      "mutation": "Gt->GtE",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/model.py"
+    },
+    {
+      "candidate_id": "dc64b99cdadf66346998b83e17fa084cf0b4d8e84f83d9f4247a7ec66de31493",
+      "candidate_index": 847,
+      "group_id": "G17",
+      "line": 216,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/model.py"
+    },
+    {
+      "candidate_id": "5cf81dd6eba52202b322fd4bee3b1d1060eda91eff6019fbc594eeaa964f9491",
+      "candidate_index": 849,
+      "group_id": "G17",
+      "line": 235,
+      "mutation": "False->True",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/model.py"
+    },
+    {
+      "candidate_id": "854296f3f25d7954da32ec477065df8e8b4ed3e41bbb2dccb20805ef915cc5a6",
+      "candidate_index": 850,
+      "group_id": "G17",
+      "line": 236,
+      "mutation": "False->True",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/model.py"
+    },
+    {
+      "candidate_id": "21fb6670e011f6f1b08ba31b880c31156925186ed3aacb602a23e4d1746e94b5",
+      "candidate_index": 851,
+      "group_id": "G17",
+      "line": 245,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/model.py"
+    },
+    {
+      "candidate_id": "01c4ac9a4384601d57cc842e5e42af57e0697ad5a46260ee0c3a70d4e5e63a82",
+      "candidate_index": 852,
+      "group_id": "G17",
+      "line": 253,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/model.py"
+    },
+    {
+      "candidate_id": "30a879b27f9fc1ca12b1a548a287a4d2fe36254e7abd5d262f80634e2a36bcb1",
+      "candidate_index": 853,
+      "group_id": "G17",
+      "line": 284,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/model.py"
+    },
+    {
+      "candidate_id": "098705ed93ced0993c1453f5952b7b070fcd44b199c92ec9334ba877793f9157",
+      "candidate_index": 855,
+      "group_id": "G17",
+      "line": 296,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/model.py"
+    },
+    {
+      "candidate_id": "9b9207a726e55ed3c62e6fba6ab3b3d3984fb74e0089a0bbd1af67acff5e72e8",
+      "candidate_index": 854,
+      "group_id": "G17",
+      "line": 296,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/model.py"
+    },
+    {
+      "candidate_id": "ae59c47741e3378a19473686588ec247597462da78818b55094e4a630383fd46",
+      "candidate_index": 862,
+      "group_id": "G18",
+      "line": 30,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/pricing.py"
+    },
+    {
+      "candidate_id": "c358b3c6efae146fef0dd0da7c96212a82812433a73710fc5334a203964f010f",
+      "candidate_index": 861,
+      "group_id": "G18",
+      "line": 30,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/pricing.py"
+    },
+    {
+      "candidate_id": "9bfb8cce2db70615e891b8326492c18a1c24aa047ce18d626355574dfe586fca",
+      "candidate_index": 864,
+      "group_id": "G18",
+      "line": 39,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/pricing.py"
+    },
+    {
+      "candidate_id": "d98f65713d2ac949711241bb8074c44ad11b212ecbef9526aaf5a432a29c0114",
+      "candidate_index": 863,
+      "group_id": "G18",
+      "line": 39,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/pricing.py"
+    },
+    {
+      "candidate_id": "31d0dfdbec727fad517c2f341f3d206e2323cb2731dd4f4bede8ba91d5b512d7",
+      "candidate_index": 866,
+      "group_id": "G18",
+      "line": 47,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/pricing.py"
+    },
+    {
+      "candidate_id": "dca55a0f9ab809a1949225e464c09fd049db7961100e469275011d20a4eabc76",
+      "candidate_index": 865,
+      "group_id": "G18",
+      "line": 47,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/pricing.py"
+    },
+    {
+      "candidate_id": "4b3ed8a4207a0814f23c49b8d7cbd1bfec309456a056d4c91c18822ab607516d",
+      "candidate_index": 868,
+      "group_id": "G18",
+      "line": 60,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/pricing.py"
+    },
+    {
+      "candidate_id": "6b9fb2c5296e0268949c5361f0edb33d51dbafcad0bda8ff4831d359efaf591c",
+      "candidate_index": 867,
+      "group_id": "G18",
+      "line": 60,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/pricing.py"
+    },
+    {
+      "candidate_id": "e543b21fd3630b0f4fcb36c9d711e0e09f25f22707aaa6191a1ad6beef3a2c73",
+      "candidate_index": 920,
+      "group_id": "G18",
+      "line": 266,
+      "mutation": "Gt->GtE",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/pricing.py"
+    },
+    {
+      "candidate_id": "138e8d4412e9e39425e239309d16051a2a6819757cf3e0d37cdd06776995b998",
+      "candidate_index": 922,
+      "group_id": "G18",
+      "line": 295,
+      "mutation": "Is->IsNot",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/pricing.py"
+    },
+    {
+      "candidate_id": "8db426afc74c611646f01b990c190adbda34b029a3b915873107cd26ce2f07ec",
+      "candidate_index": 923,
+      "group_id": "G18",
+      "line": 300,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/pricing.py"
+    },
+    {
+      "candidate_id": "c0b425815e59b3a3f04ba8de6f6ce018b6fc357a095c9adf6a370215ca09510f",
+      "candidate_index": 926,
+      "group_id": "G18",
+      "line": 303,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/pricing.py"
+    },
+    {
+      "candidate_id": "2a707ed9ea41689db83210c7e957169c772e74ad5bd78bfef306e289867d5514",
+      "candidate_index": 927,
+      "group_id": "G18",
+      "line": 305,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/pricing.py"
+    },
+    {
+      "candidate_id": "c79b2e2e145d5e51132e9d7cb607777c936d244a833bee86a26bd3d321ed385a",
+      "candidate_index": 934,
+      "group_id": "G18",
+      "line": 415,
+      "mutation": "IsNot->Is",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/pricing.py"
+    },
+    {
+      "candidate_id": "f36f406cba4173345a3465f194595803583789a936750d5a5e9cb89261877a63",
+      "candidate_index": 935,
+      "group_id": "G18",
+      "line": 426,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/pricing.py"
+    },
+    {
+      "candidate_id": "91b384bc4c2f3f4293a8633a6c1e5df1da1cd4e1bfe7008b4142405353e8a989",
+      "candidate_index": 939,
+      "group_id": "G18",
+      "line": 448,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/pricing.py"
+    },
+    {
+      "candidate_id": "17e500fbfe7d52148718b9453ef51305a2b64df86d136d9ac0c4ace74349c99c",
+      "candidate_index": 941,
+      "group_id": "G18",
+      "line": 449,
+      "mutation": "None->[]",
+      "operator": "python:falsy-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/pricing.py"
+    },
+    {
+      "candidate_id": "7dc73bc5589f5111fbc12759565c1a4fd363d84d3ba5404cfc052b94c4f9854c",
+      "candidate_index": 944,
+      "group_id": "G18",
+      "line": 464,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/pricing.py"
+    },
+    {
+      "candidate_id": "4c0236f680c6d19fb9bbdb4e2d0a784fb17a911d45d71dc453ad87d7795a4010",
+      "candidate_index": 945,
+      "group_id": "G18",
+      "line": 470,
+      "mutation": "Lt->LtE",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/pricing.py"
+    },
+    {
+      "candidate_id": "ac35d06c3a55ba1e38e0c6ad71bf31b02a0a38cf3c37479b01862c46c2cac6bb",
+      "candidate_index": 947,
+      "group_id": "G18",
+      "line": 481,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/pricing.py"
+    },
+    {
+      "candidate_id": "8d501d2f4502b94f6eb2c21afe3bc871063283d059620f55e35436650c75bf1f",
+      "candidate_index": 951,
+      "group_id": "G18",
+      "line": 492,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/pricing.py"
+    },
+    {
+      "candidate_id": "ec1aa26d00225d795287fb196b53d485d6b176f8016cc378cc7674de6ca8d143",
+      "candidate_index": 950,
+      "group_id": "G18",
+      "line": 492,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/pricing.py"
+    },
+    {
+      "candidate_id": "65902184d363d8659c8e55cb7895ce7aec7d7058cfc23fc78f25393badeb19e1",
+      "candidate_index": 954,
+      "group_id": "G18",
+      "line": 535,
+      "mutation": "Gt->GtE",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/pricing.py"
+    },
+    {
+      "candidate_id": "a5e445f827d44ed9a4561eb4efaec715d6f0d16240d8de52e9a0b7e653c8b124",
+      "candidate_index": 967,
+      "group_id": "G18",
+      "line": 565,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/pricing.py"
+    },
+    {
+      "candidate_id": "335c2967fff9d775383031dcef489eff26cebe4e5cb08acd4b4bf6b431156880",
+      "candidate_index": 963,
+      "group_id": "G18",
+      "line": 565,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/pricing.py"
+    },
+    {
+      "candidate_id": "40d8077cb9ca0fc8886ba36181f685611b467f654a1f76f2f0e59c9f72fe34ff",
+      "candidate_index": 969,
+      "group_id": "G18",
+      "line": 569,
+      "mutation": "Lt->LtE",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/pricing.py"
+    },
+    {
+      "candidate_id": "57cd304507133dc734938dde400623486ea11ddded582d63dfb5bd64e097ee1f",
+      "candidate_index": 972,
+      "group_id": "G18",
+      "line": 585,
+      "mutation": "And->Or",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/pricing.py"
+    },
+    {
+      "candidate_id": "b78b86990763722c53085f98c23d0910801755ebb3b438d2b2430a0310e17690",
+      "candidate_index": 974,
+      "group_id": "G18",
+      "line": 586,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/pricing.py"
+    },
+    {
+      "candidate_id": "0826205e091299bfde12770cb6f969621709fea65e90787334b8b8857a1273f6",
+      "candidate_index": 976,
+      "group_id": "G18",
+      "line": 592,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/pricing.py"
+    },
+    {
+      "candidate_id": "ee8fd3008891eadd64b15d12a6d456238b5662b7070088e9d80e29c89f2c3769",
+      "candidate_index": 983,
+      "group_id": "G18",
+      "line": 606,
+      "mutation": "Gt->GtE",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/pricing.py"
+    },
+    {
+      "candidate_id": "bb0c2da2863447891a6289f4d2c5dc04782eb1fbfcdf5d32684456ee6d58b941",
+      "candidate_index": 987,
+      "group_id": "G18",
+      "line": 620,
+      "mutation": "Lt->LtE",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/pricing.py"
+    },
+    {
+      "candidate_id": "75f89a6b9326d90778aa66bd46d06c87c7764a32522785b30732500eb61a3e91",
+      "candidate_index": 988,
+      "group_id": "G18",
+      "line": 625,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/pricing.py"
+    },
+    {
+      "candidate_id": "bfb8d65a5f15b8e6d421fe99afb6f507104df386c51e536b527d37ecc1571c5d",
+      "candidate_index": 989,
+      "group_id": "G18",
+      "line": 626,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/pricing.py"
+    },
+    {
+      "candidate_id": "f620ddc7fdd01f8a525a9629291cf3d1a3f0da5b934b3f5537b53b44e962b760",
+      "candidate_index": 990,
+      "group_id": "G18",
+      "line": 628,
+      "mutation": "False->True",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/pricing.py"
+    },
+    {
+      "candidate_id": "53099656ac7905a1a1825b56d155cc564fc34d141714dfb280e191c84386d4d1",
+      "candidate_index": 992,
+      "group_id": "G18",
+      "line": 637,
+      "mutation": "Gt->GtE",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/pricing.py"
+    },
+    {
+      "candidate_id": "549e485fc02535440d80186806e1845254da01b7755bfa5431aad42c0c4b17d5",
+      "candidate_index": 993,
+      "group_id": "G18",
+      "line": 641,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/pricing.py"
+    },
+    {
+      "candidate_id": "e4698ffefc6c7df5b80d9b4002c3d64d47e0b8ae2144ee3a37a7cf29a1169282",
+      "candidate_index": 994,
+      "group_id": "G18",
+      "line": 642,
+      "mutation": "False->True",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/pricing.py"
+    },
+    {
+      "candidate_id": "e233b62e3c570402f8ca0835a6663d3e90ccae2ba4c2a19e918e66e5752ff259",
+      "candidate_index": 999,
+      "group_id": "G18",
+      "line": 660,
+      "mutation": "Gt->GtE",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/pricing.py"
+    },
+    {
+      "candidate_id": "8a38959fd2fc59a3a8bb9f80d07c1ff9d821eb354b17a58856a7f4ff56779003",
+      "candidate_index": 1000,
+      "group_id": "G18",
+      "line": 670,
+      "mutation": "False->True",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/pricing.py"
+    },
+    {
+      "candidate_id": "f2d092d733c854ca8a945b6b645ed54db298add1ad83176f38bcdacae2aa0dbe",
+      "candidate_index": 1008,
+      "group_id": "G18",
+      "line": 680,
+      "mutation": "Eq->NotEq",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/pricing.py"
+    },
+    {
+      "candidate_id": "96083499d2cc26a3a4feabbb512560e53bc0cd0bf3b01837772bbfdb06126653",
+      "candidate_index": 1009,
+      "group_id": "G18",
+      "line": 682,
+      "mutation": "Lt->LtE",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/pricing.py"
+    },
+    {
+      "candidate_id": "5d7216af2fb181c18c1c4de03125650439cfc08e1a46160c79d5ab03f8e8d19a",
+      "candidate_index": 1011,
+      "group_id": "G19",
+      "line": 41,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/query.py"
+    },
+    {
+      "candidate_id": "0795cbb853a5401d24373440a777d124798d19f541a961db889615233c7f3700",
+      "candidate_index": 1017,
+      "group_id": "G19",
+      "line": 69,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/query.py"
+    },
+    {
+      "candidate_id": "27794fef1196b49003018d89821fb817ef85ed1848ae0d59c9120ac949df2e0d",
+      "candidate_index": 1020,
+      "group_id": "G19",
+      "line": 73,
+      "mutation": "IsNot->Is",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/query.py"
+    },
+    {
+      "candidate_id": "c81e56918f75ac0f47e395a835f5ea3aca580363bda0cc94639dd745480d283f",
+      "candidate_index": 1021,
+      "group_id": "G19",
+      "line": 74,
+      "mutation": "Lt->LtE",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/query.py"
+    },
+    {
+      "candidate_id": "a0e23a02396d4712d37a2691d8f64e0a6207cea31a8c90fb8c4b098a4ecd4ac1",
+      "candidate_index": 1023,
+      "group_id": "G19",
+      "line": 88,
+      "mutation": "LtE->Lt",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/query.py"
+    },
+    {
+      "candidate_id": "3cd6a7d9e97999df2e79d3fc304959641a0febe8b485854e994c3c02e50e0371",
+      "candidate_index": 1024,
+      "group_id": "G19",
+      "line": 101,
+      "mutation": "None->[]",
+      "operator": "python:falsy-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/query.py"
+    },
+    {
+      "candidate_id": "220581c4a1f0c9a905a15c6b65bba452920f61bf3208f95e7e3283dfb4ff6def",
+      "candidate_index": 1026,
+      "group_id": "G19",
+      "line": 103,
+      "mutation": "False->True",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/query.py"
+    },
+    {
+      "candidate_id": "3eaca29d6f0f84cef7e2e92407f81aba31fd50160df8d06b53c100833aeb2454",
+      "candidate_index": 1027,
+      "group_id": "G19",
+      "line": 103,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/query.py"
+    },
+    {
+      "candidate_id": "b8106175521681492b7194e971ff88f0e5f25d73ed2d4ac701f79f824ec698a0",
+      "candidate_index": 1031,
+      "group_id": "G19",
+      "line": 138,
+      "mutation": "Lt->LtE",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/query.py"
+    },
+    {
+      "candidate_id": "49d6f55ddd49aa9629fccdaac79feb02b892f952ab24e965655349125a397f00",
+      "candidate_index": 1033,
+      "group_id": "G19",
+      "line": 143,
+      "mutation": "Lt->LtE",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/query.py"
+    },
+    {
+      "candidate_id": "f3f822760fabbd0fbe885107a0f50fbf5044a1e16f39a885ea289a38740584a2",
+      "candidate_index": 1032,
+      "group_id": "G19",
+      "line": 143,
+      "mutation": "LtE->Lt",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/query.py"
+    },
+    {
+      "candidate_id": "6f467195d14a067f0c9280ae6a0b6489b712b3ce30343e7e5624d54a8975d464",
+      "candidate_index": 1043,
+      "group_id": "G19",
+      "line": 213,
+      "mutation": "And->Or",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/query.py"
+    },
+    {
+      "candidate_id": "99dd8d4700aa27a9ad432b3d678c0869d2542ed63da7893de857ba50d8b839b7",
+      "candidate_index": 1046,
+      "group_id": "G19",
+      "line": 237,
+      "mutation": "Eq->NotEq",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/query.py"
+    },
+    {
+      "candidate_id": "a65de7f70f7ad5da235351ece1f7f35a2e2f15d9c289ce793edc7f9d45391be9",
+      "candidate_index": 1047,
+      "group_id": "G19",
+      "line": 239,
+      "mutation": "Is->IsNot",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/query.py"
+    },
+    {
+      "candidate_id": "15f975334f1f1a1ab2e3248616d93126243f6e9bc76bed9ddab7dde0166ca238",
+      "candidate_index": 1048,
+      "group_id": "G19",
+      "line": 240,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/query.py"
+    },
+    {
+      "candidate_id": "184f339e3598c40f955fa30aea64a6e33d5114be0595b35c16951268b1e9df74",
+      "candidate_index": 1049,
+      "group_id": "G19",
+      "line": 243,
+      "mutation": "Eq->NotEq",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/query.py"
+    },
+    {
+      "candidate_id": "9a292e0c20b78ca464de3899f727bcb73d8338ddfe0b0781c2b60c7d68b619e0",
+      "candidate_index": 1050,
+      "group_id": "G19",
+      "line": 245,
+      "mutation": "Eq->NotEq",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/query.py"
+    },
+    {
+      "candidate_id": "e1638a0db95cd6722185010c2530b969cf19afb4beacc5d1379ff9ad1d3b6de4",
+      "candidate_index": 1051,
+      "group_id": "G19",
+      "line": 247,
+      "mutation": "Eq->NotEq",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/query.py"
+    },
+    {
+      "candidate_id": "b40449a868185a21dda2745e0edf77cfe4586e33da9ebbfee52533b2946b53e4",
+      "candidate_index": 1052,
+      "group_id": "G19",
+      "line": 249,
+      "mutation": "Eq->NotEq",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/query.py"
+    },
+    {
+      "candidate_id": "15b9103cd0fde5a89f1b2d7df2d0f2d0a923f310a8409ff199af1a18175d2376",
+      "candidate_index": 1056,
+      "group_id": "G19",
+      "line": 268,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/query.py"
+    },
+    {
+      "candidate_id": "9ee241ea3474c9a0f4dacda91da7744f83233f4b2d1df0087807175d6e5eef86",
+      "candidate_index": 1058,
+      "group_id": "G19",
+      "line": 268,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/query.py"
+    },
+    {
+      "candidate_id": "bac578fd30080f7985071985bfe781c0b51cfe0aa26a88b832e8a2af1ed09473",
+      "candidate_index": 1057,
+      "group_id": "G19",
+      "line": 268,
+      "mutation": "LtE->Lt",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/query.py"
+    },
+    {
+      "candidate_id": "bb42d16bab667242da92478f0029679df22d48f8b7ccc2b2f6a55029d7924897",
+      "candidate_index": 1055,
+      "group_id": "G19",
+      "line": 268,
+      "mutation": "LtE->Lt",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/query.py"
+    },
+    {
+      "candidate_id": "554975d4b7f51897971faa95d008840ddbef84f39e64224f9ebf010dea9a607b",
+      "candidate_index": 1059,
+      "group_id": "G19",
+      "line": 276,
+      "mutation": "Lt->LtE",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/query.py"
+    },
+    {
+      "candidate_id": "fc29f97ea31d02b0d492eb36b9aead142629c3623e35edde6f45f5d5ec7e3d0a",
+      "candidate_index": 1062,
+      "group_id": "G19",
+      "line": 324,
+      "mutation": "None->[]",
+      "operator": "python:falsy-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/query.py"
+    },
+    {
+      "candidate_id": "b0ec2177b3c00001253393e55fd89ffbfab8d7badee6c1488cb2a8bd92524729",
+      "candidate_index": 1065,
+      "group_id": "G19",
+      "line": 374,
+      "mutation": "Gt->GtE",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/query.py"
+    },
+    {
+      "candidate_id": "e39aa94c89d2acff0962f84c70473926e9f88a560f402783754ae0558d07c20c",
+      "candidate_index": 1073,
+      "group_id": "G19",
+      "line": 562,
+      "mutation": "LtE->Lt",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/query.py"
+    },
+    {
+      "candidate_id": "823f39a4790eec97932f53ea5d5efd3ea4cf66398e1d3b4d5892b7f7d4e398a6",
+      "candidate_index": 1087,
+      "group_id": "G19",
+      "line": 605,
+      "mutation": "And->Or",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/query.py"
+    },
+    {
+      "candidate_id": "29a2f2a8c1e4383dcf6e712cb93ab81fd886dafb7264857fb46f31587344ca17",
+      "candidate_index": 1086,
+      "group_id": "G19",
+      "line": 605,
+      "mutation": "Is->IsNot",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/query.py"
+    },
+    {
+      "candidate_id": "bac5729566820d61932921b325a7777aab90db7d5db0547aff570dfb403d2b6a",
+      "candidate_index": 1088,
+      "group_id": "G19",
+      "line": 605,
+      "mutation": "Is->IsNot",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/query.py"
+    },
+    {
+      "candidate_id": "0dce01a8b1a1d57f45079246de89068a2b1d23ffb17c9f92059559acd2696004",
+      "candidate_index": 1093,
+      "group_id": "G19",
+      "line": 614,
+      "mutation": "And->Or",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/query.py"
+    },
+    {
+      "candidate_id": "c8d361a9afbe55c3e9a9b4c456480e0337032af78522bd05c62bd2e6c3c9c3dd",
+      "candidate_index": 1091,
+      "group_id": "G19",
+      "line": 614,
+      "mutation": "And->Or",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/query.py"
+    },
+    {
+      "candidate_id": "733772db5a37a60fdab172f80c5d1c896ee3c50df7b3cda251f54c1c30cb48de",
+      "candidate_index": 1090,
+      "group_id": "G19",
+      "line": 614,
+      "mutation": "Gt->GtE",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/query.py"
+    },
+    {
+      "candidate_id": "a308fa1630f262b3d59d17d636a9bc75f7a553d4e884f619501d91b61c48de28",
+      "candidate_index": 1094,
+      "group_id": "G19",
+      "line": 614,
+      "mutation": "Gt->GtE",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/query.py"
+    },
+    {
+      "candidate_id": "cc849a6ae1c246428419b2e5dbfcdfaaf1d333edb709a66410f936390bbc1a4f",
+      "candidate_index": 1092,
+      "group_id": "G19",
+      "line": 614,
+      "mutation": "Gt->GtE",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/query.py"
+    },
+    {
+      "candidate_id": "9bd4aa42e1cc7c562e1b7a7c6f524f5fd7a96ede9c42e714910f2871d348d6c6",
+      "candidate_index": 1095,
+      "group_id": "G19",
+      "line": 617,
+      "mutation": "Lt->LtE",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/query.py"
+    },
+    {
+      "candidate_id": "857c69b9c928c7a0a3118fa22ded161abd270a6c9e144f3e3dc51e203b970c69",
+      "candidate_index": 1098,
+      "group_id": "G19",
+      "line": 652,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/query.py"
+    },
+    {
+      "candidate_id": "e6e61d6f5fc5f4c4cd71ff8bac97570cd76bca5e6fd5f3751d2111c66c936cce",
+      "candidate_index": 1102,
+      "group_id": "G20",
+      "line": 26,
+      "mutation": "False->True",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/render.py"
+    },
+    {
+      "candidate_id": "d12de7e45d766f25edf8e91b02f3718d7d68daa44afc6e94c8184dff2f353cd0",
+      "candidate_index": 1103,
+      "group_id": "G20",
+      "line": 26,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/render.py"
+    },
+    {
+      "candidate_id": "ee0dd316bdb35deb8f86b4c22f2188620b555830329d73c57cc4f235ffd98c99",
+      "candidate_index": 1104,
+      "group_id": "G20",
+      "line": 38,
+      "mutation": "Eq->NotEq",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/render.py"
+    },
+    {
+      "candidate_id": "dbcfe25e1b10d8e5164b77f2719270f8054db3d87ade06d2c005ded647b51e83",
+      "candidate_index": 1106,
+      "group_id": "G20",
+      "line": 39,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/render.py"
+    },
+    {
+      "candidate_id": "3a8c9128d0d41272485c3ea58f2b61d4dada0a3c5af3021fb645cf89dcc76bb6",
+      "candidate_index": 1105,
+      "group_id": "G20",
+      "line": 39,
+      "mutation": "Is->IsNot",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/render.py"
+    },
+    {
+      "candidate_id": "9d4e5dbec7d209763777025b52e23f32ed1d4936206195f5e997fa674f3e1324",
+      "candidate_index": 1108,
+      "group_id": "G20",
+      "line": 51,
+      "mutation": "Eq->NotEq",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/render.py"
+    },
+    {
+      "candidate_id": "21d1147b00a8a4b6069e5b30811aca78b69bcc66bb9018bf4431f751c27a91f8",
+      "candidate_index": 1109,
+      "group_id": "G20",
+      "line": 60,
+      "mutation": "And->Or",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/render.py"
+    },
+    {
+      "candidate_id": "19cb54afef573f8fa4a507c61254ca7b4ed28e58084103f86c9e68bddaceb531",
+      "candidate_index": 1118,
+      "group_id": "G20",
+      "line": 132,
+      "mutation": "IsNot->Is",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/render.py"
+    },
+    {
+      "candidate_id": "d70f3da2d2912c7221439cab1d14a5a74bec725e55abf56d47df7474681b56b3",
+      "candidate_index": 1121,
+      "group_id": "G20",
+      "line": 153,
+      "mutation": "And->Or",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/render.py"
+    },
+    {
+      "candidate_id": "f9a35c7c0850b74854f04fc1c52c1c88f2a5c5ab67e6ba4430acd45f10c1223c",
+      "candidate_index": 1120,
+      "group_id": "G20",
+      "line": 153,
+      "mutation": "Is->IsNot",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/render.py"
+    },
+    {
+      "candidate_id": "3e684fa64e6dab2bac07235cb20e749265459557d93eb15364f8a2f081cab2af",
+      "candidate_index": 1122,
+      "group_id": "G20",
+      "line": 153,
+      "mutation": "IsNot->Is",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/render.py"
+    },
+    {
+      "candidate_id": "47ccdd8364801134a1771aead861c37224c546a5cf2b99802b6c546326a89963",
+      "candidate_index": 1123,
+      "group_id": "G20",
+      "line": 155,
+      "mutation": "Is->IsNot",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/render.py"
+    },
+    {
+      "candidate_id": "775bf375ec2a08468c96a7c2527396818cc1d094fe7096c60e7d69d500019e10",
+      "candidate_index": 1126,
+      "group_id": "G20",
+      "line": 158,
+      "mutation": "And->Or",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/render.py"
+    },
+    {
+      "candidate_id": "7aaea5359056a561882234bf894e2de1e24a93f5ea612952e33dc91a1bdc85ee",
+      "candidate_index": 1125,
+      "group_id": "G20",
+      "line": 158,
+      "mutation": "And->Or",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/render.py"
+    },
+    {
+      "candidate_id": "17ba49ba535e1db8572d547349ff218e1ff10fa840cf4f180eb5de8395b1c9a1",
+      "candidate_index": 1124,
+      "group_id": "G20",
+      "line": 158,
+      "mutation": "IsNot->Is",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/render.py"
+    },
+    {
+      "candidate_id": "e1e2e7ee849e589dcb6ce610339fa9ee83a47ed9ec73726143bf48fcca563de3",
+      "candidate_index": 1127,
+      "group_id": "G20",
+      "line": 179,
+      "mutation": "And->Or",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/render.py"
+    },
+    {
+      "candidate_id": "ad8c265289f69989e563ab06898533210b66d85789e88da8da422b9f5c544117",
+      "candidate_index": 1128,
+      "group_id": "G20",
+      "line": 187,
+      "mutation": "And->Or",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/render.py"
+    },
+    {
+      "candidate_id": "a8c20fd8c983e4cbc865b239a2d009f40a1d6c92bb73a8d967cd51fe1e937938",
+      "candidate_index": 1129,
+      "group_id": "G20",
+      "line": 200,
+      "mutation": "And->Or",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/render.py"
+    },
+    {
+      "candidate_id": "1770240b436f4965eaacb50a2d38968faeee204004d354c69b1c8cae6488b25d",
+      "candidate_index": 1130,
+      "group_id": "G20",
+      "line": 254,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/render.py"
+    },
+    {
+      "candidate_id": "fa4dd141829c63e8e7140944eb19110c9320aa3ab2bb784a4a03cd03c3ebb502",
+      "candidate_index": 1131,
+      "group_id": "G20",
+      "line": 278,
+      "mutation": "NotEq->Eq",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/render.py"
+    },
+    {
+      "candidate_id": "5c7152aa309d5b7e107c49c56424ec9c20b030f7389046e57d6f76763ee87e95",
+      "candidate_index": 1132,
+      "group_id": "G20",
+      "line": 279,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/render.py"
+    },
+    {
+      "candidate_id": "17de586e188eb266c5239070ffdd61d3c7458e3b8655631597b3d145fa0e26cf",
+      "candidate_index": 1133,
+      "group_id": "G20",
+      "line": 279,
+      "mutation": "NotEq->Eq",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/render.py"
+    },
+    {
+      "candidate_id": "a7d1f539665bd0ae897e9b9a22c16f54dc416733e122571844b856a21bbf6ce6",
+      "candidate_index": 1134,
+      "group_id": "G20",
+      "line": 280,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/render.py"
+    },
+    {
+      "candidate_id": "d9e808a846192f700ad16f3219b2ee341e853d314685f1991153bbba68d6ca04",
+      "candidate_index": 1135,
+      "group_id": "G20",
+      "line": 298,
+      "mutation": "IsNot->Is",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/render.py"
+    },
+    {
+      "candidate_id": "5880b7bc54cc71cd1c59d1d3a749cd00284271c0808a8728fca2c6de87b305df",
+      "candidate_index": 1136,
+      "group_id": "G20",
+      "line": 329,
+      "mutation": "IsNot->Is",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/render.py"
+    },
+    {
+      "candidate_id": "12845839a647ee73e81d13fcac6fd883764391d6fbfe2eeb14cadb8cdcb1d268",
+      "candidate_index": 1137,
+      "group_id": "G20",
+      "line": 341,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/render.py"
+    },
+    {
+      "candidate_id": "2ed8e4549b10a3524552e09ba281825adb1c397a2355a24903e99c3a97a50a68",
+      "candidate_index": 1138,
+      "group_id": "G20",
+      "line": 342,
+      "mutation": "IsNot->Is",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/render.py"
+    },
+    {
+      "candidate_id": "cd8050c41913d4884cbc27c6304f0b7712ca76a66c7914874c51578de70ec4d2",
+      "candidate_index": 1139,
+      "group_id": "G20",
+      "line": 345,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/render.py"
+    },
+    {
+      "candidate_id": "41972c1ddf866514529a88b89ae095a78b6be679d1e8ca0eca440b244a401be7",
+      "candidate_index": 1140,
+      "group_id": "G20",
+      "line": 346,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/render.py"
+    },
+    {
+      "candidate_id": "c332da2b2b88226ba5c2c70e278e17bac0226c848429acf992cec694e220c14b",
+      "candidate_index": 1141,
+      "group_id": "G20",
+      "line": 347,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/render.py"
+    },
+    {
+      "candidate_id": "903028e736a1195c4b99401534ebc8c47751ce6e29d69ecf38b030d4569d9e9e",
+      "candidate_index": 1142,
+      "group_id": "G20",
+      "line": 348,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/render.py"
+    },
+    {
+      "candidate_id": "20c8662d70e60c771f27c9dd19428ff490cdc240e755090cbf59e1ed69fc9965",
+      "candidate_index": 1143,
+      "group_id": "G20",
+      "line": 349,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/render.py"
+    },
+    {
+      "candidate_id": "a9389ef4552cb15e0a67996615a5271389ce887a7dd5c870751e6445d3f3121e",
+      "candidate_index": 1144,
+      "group_id": "G20",
+      "line": 351,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/render.py"
+    },
+    {
+      "candidate_id": "eed9a80af71a0245c91d65e8d66310950b59826eb487f815b0f5fd6ef0995d58",
+      "candidate_index": 1145,
+      "group_id": "G20",
+      "line": 354,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/render.py"
+    },
+    {
+      "candidate_id": "25771cfa2cbdc68ac5d57739a37a9c420c96d4493d673efd1600a96c1219b094",
+      "candidate_index": 1146,
+      "group_id": "G20",
+      "line": 355,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/render.py"
+    },
+    {
+      "candidate_id": "3911c298f932fbfb9d08f85d87bcda5fc1eee90f33e4df9d45498db9e7b5a4c7",
+      "candidate_index": 1147,
+      "group_id": "G20",
+      "line": 356,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/render.py"
+    },
+    {
+      "candidate_id": "88e442f4019e1117ba836db25fd02b7661609ad72fb87cfc3fffb272af573243",
+      "candidate_index": 1148,
+      "group_id": "G20",
+      "line": 357,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/render.py"
+    },
+    {
+      "candidate_id": "b4773237189e96901a6b6d6d045c335996708cf04904f5cf240cfb7baa382584",
+      "candidate_index": 1149,
+      "group_id": "G20",
+      "line": 364,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/render.py"
+    },
+    {
+      "candidate_id": "3a05114b9080aabefba09c589baee8c21bb2aa8fecd523289adea53a0fdae23d",
+      "candidate_index": 1150,
+      "group_id": "G20",
+      "line": 367,
+      "mutation": "False->True",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/render.py"
+    },
+    {
+      "candidate_id": "b09cea0774fe17a859fd56188dd2db859132aa59c59b8f500f7513791535b26f",
+      "candidate_index": 1151,
+      "group_id": "G20",
+      "line": 376,
+      "mutation": "IsNot->Is",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/render.py"
+    },
+    {
+      "candidate_id": "19de638575806a6c69c925ec941cfd766d3981a9a4c593bd3eb54618b92e5556",
+      "candidate_index": 1152,
+      "group_id": "G20",
+      "line": 377,
+      "mutation": "IsNot->Is",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/render.py"
+    },
+    {
+      "candidate_id": "8440f0edfc24591c9e176ae8a1742d9e209fef83e1a11ab25bdc4d994503ee63",
+      "candidate_index": 1156,
+      "group_id": "G21",
+      "line": 33,
+      "mutation": "IsNot->Is",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/windows.py"
+    },
+    {
+      "candidate_id": "aea835414f4f0f1c4da5e9c9b3ee96b4e113ec420df400c96e70f55f11c2a842",
+      "candidate_index": 1155,
+      "group_id": "G21",
+      "line": 33,
+      "mutation": "IsNot->Is",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/windows.py"
+    },
+    {
+      "candidate_id": "5344d67bd7ccd6764f4bae72a5633960e544664c0b648f92b4847228d892e13b",
+      "candidate_index": 1157,
+      "group_id": "G21",
+      "line": 34,
+      "mutation": "IsNot->Is",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/windows.py"
+    },
+    {
+      "candidate_id": "2d90e7c6156b5c0bc0510db0135160dc241546d39e4b6747a2418eeee747dc81",
+      "candidate_index": 1160,
+      "group_id": "G21",
+      "line": 40,
+      "mutation": "Or->And",
+      "operator": "python:boolop-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/windows.py"
+    },
+    {
+      "candidate_id": "790968a23be1e8e2120f569ec2bb20c7f2e1e3aefa5892a27effd86b077a853b",
+      "candidate_index": 1169,
+      "group_id": "G21",
+      "line": 125,
+      "mutation": "Lt->LtE",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/windows.py"
+    },
+    {
+      "candidate_id": "f18a622f08eb813f2003fab6fe6360b7537e23ac9469191728f93b95065e4c36",
+      "candidate_index": 1168,
+      "group_id": "G21",
+      "line": 125,
+      "mutation": "LtE->Lt",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/windows.py"
+    },
+    {
+      "candidate_id": "6b63660807d988b50697ef8768b7b902ad4629118c215099787d2541e0549d99",
+      "candidate_index": 1174,
+      "group_id": "G21",
+      "line": 155,
+      "mutation": "Eq->NotEq",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/windows.py"
+    },
+    {
+      "candidate_id": "70e99b0e1f3aee77a55178f7d8e27bcd46e1e6c6bbd0a3fcbfef410c6e7d9f1d",
+      "candidate_index": 1176,
+      "group_id": "G21",
+      "line": 166,
+      "mutation": "Gt->GtE",
+      "operator": "python:compare-swap",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/windows.py"
+    },
+    {
+      "candidate_id": "f84d071a0b3026d08a2ba345bea78d34fe1cb56a2ab416da33ca8784ae39bd75",
+      "candidate_index": 1182,
+      "group_id": "G21",
+      "line": 209,
+      "mutation": "False->True",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/windows.py"
+    },
+    {
+      "candidate_id": "f36821661c783bdba9379648d9d66f4e7daad28f6e75a6d5a30b402d37a2c8c9",
+      "candidate_index": 1183,
+      "group_id": "G21",
+      "line": 210,
+      "mutation": "True->False",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/usage/windows.py"
+    },
+    {
+      "candidate_id": "cbf0a809ad3a9346c35b793bf07fe7f25a50959ee07b37f4aef1ef4841673fb8",
+      "candidate_index": 1197,
+      "group_id": "G22",
+      "line": 148,
+      "mutation": "False->True",
+      "operator": "python:bool-const-flip",
+      "outcome": "survived",
+      "path": "nyxloom/src/nyxloom/session_extract/watch.py"
+    }
+  ],
+  "classification_key": {
+    "error_path": "The mutation changes validation, refusal, recovery, or invalid-state handling; deferred triage should construct the legitimate state and the failing state separately.",
+    "likely_equivalent": "Source-level hypothesis only: the syntax mutation may preserve the externally observable contract. Confirm exact behavioral and byte-level expectations before dismissing it.",
+    "test_gap": "The mutation changes a normal behavior predicate or default; existing tests did not distinguish it. Deferred triage should identify the missing behavior case."
+  },
+  "groups": [
+    {
+      "budget_exceeded_count": 0,
+      "budget_operator_counts": {},
+      "candidate_count": 11,
+      "candidate_ids": [
+        "0f323fa4eb6968ed02d0c0df7a9421d2834e5634fa103ba4fb53704486c4447d",
+        "1f82767155a675f5a8f0b3d70d8c32ac44246c09b2e934d736f5038dde686fdd",
+        "22622208b8c1020be9deb142c1b3c7dc2b208f3b2f502e44ca5360d1d9445964",
+        "526c70c7aac50687400b6b214efd0b5777d54b1b245a4ab812caf9b0bedecbba",
+        "71834fc0c01014a0db896fb304d405fff450d1d8a405870ebaf4d28f40d2b1bf",
+        "a14c9a19a958be61669b70a51ac292189a42401ddec1fcb40ef9fe1bba5f1289",
+        "a3d7f8e5b639f6422c4303ecd0650d0a3f55324bc226f3fcd1ff7bb9c1b50599",
+        "aac067012781dc0bcd495fdb9ef6acb5ffd1033491d2aeae8130f338320cddfb",
+        "abf49dcff2e8f23bb4bf34354a9da7012bfd3c40cf234b86ac92a4824634fcec",
+        "bacbdf50488a03e17b9b11a42a954d31b11effdff99d3a9db04b7bd7bcfdc669",
+        "f49fc8091cd66d5a23ea394de394a7d722351f74d5954cae2b32c21c39a3f7e3"
+      ],
+      "classification": "test_gap",
+      "classification_note": "Adapter defaults, identity ownership and edit/tool-input branches need distinguishing behavior cases; inspect the ownership conflict cases separately.",
+      "group_id": "G01",
+      "line_ranges": [
+        {
+          "end": 116,
+          "start": 116
+        },
+        {
+          "end": 150,
+          "start": 150
+        },
+        {
+          "end": 156,
+          "start": 156
+        },
+        {
+          "end": 160,
+          "start": 160
+        },
+        {
+          "end": 165,
+          "start": 165
+        },
+        {
+          "end": 888,
+          "start": 888
+        },
+        {
+          "end": 906,
+          "start": 906
+        },
+        {
+          "end": 916,
+          "start": 916
+        },
+        {
+          "end": 918,
+          "start": 918
+        }
+      ],
+      "operator_counts": {
+        "python:bool-const-flip": 2,
+        "python:boolop-swap": 7,
+        "python:compare-swap": 2
+      },
+      "path": "nyxloom/src/nyxloom/session_extract/adapters/claude_code.py",
+      "survived_count": 11,
+      "survivor_operator_counts": {
+        "python:bool-const-flip": 2,
+        "python:boolop-swap": 7,
+        "python:compare-swap": 2
+      }
+    },
+    {
+      "budget_exceeded_count": 0,
+      "budget_operator_counts": {},
+      "candidate_count": 1,
+      "candidate_ids": [
+        "53879561c72058f9bf6ef70b3587ccb1597095e747dc55d9bf94aee1374fae65"
+      ],
+      "classification": "test_gap",
+      "classification_note": "Transcript-boundary matching is not distinguished by current coverage.",
+      "group_id": "G02",
+      "line_ranges": [
+        {
+          "end": 49,
+          "start": 49
+        }
+      ],
+      "operator_counts": {
+        "python:compare-swap": 1
+      },
+      "path": "nyxloom/src/nyxloom/session_extract/compress.py",
+      "survived_count": 1,
+      "survivor_operator_counts": {
+        "python:compare-swap": 1
+      }
+    },
+    {
+      "budget_exceeded_count": 0,
+      "budget_operator_counts": {},
+      "candidate_count": 2,
+      "candidate_ids": [
+        "46ffad67a986f1095dde919d4cc7f503feac3f638e281f0a3efa31a758521280",
+        "96c4de82e0db564d43371e5e76f35bc7fddbda4e7323df8238ad7b0ba13e6899"
+      ],
+      "classification": "test_gap",
+      "classification_note": "Boolean configuration defaults change opt-in extraction behavior when callers omit the field.",
+      "group_id": "G03",
+      "line_ranges": [
+        {
+          "end": 235,
+          "start": 235
+        },
+        {
+          "end": 245,
+          "start": 245
+        }
+      ],
+      "operator_counts": {
+        "python:bool-const-flip": 2
+      },
+      "path": "nyxloom/src/nyxloom/session_extract/config.py",
+      "survived_count": 2,
+      "survivor_operator_counts": {
+        "python:bool-const-flip": 2
+      }
+    },
+    {
+      "budget_exceeded_count": 0,
+      "budget_operator_counts": {},
+      "candidate_count": 2,
+      "candidate_ids": [
+        "1433e7be778d221549aaea77bf3548ea294f8b7d8418972d8d7a116d40c9e471",
+        "fa2d1200692eb79de65c5b334b7537f93f14dcd70cd6f864629364b4cefb2622"
+      ],
+      "classification": "test_gap",
+      "classification_note": "Ledger policy defaults need direct contract assertions for both enabled and disabled cases.",
+      "group_id": "G04",
+      "line_ranges": [
+        {
+          "end": 217,
+          "start": 217
+        },
+        {
+          "end": 353,
+          "start": 353
+        }
+      ],
+      "operator_counts": {
+        "python:bool-const-flip": 2
+      },
+      "path": "nyxloom/src/nyxloom/session_extract/ledger.py",
+      "survived_count": 2,
+      "survivor_operator_counts": {
+        "python:bool-const-flip": 2
+      }
+    },
+    {
+      "budget_exceeded_count": 1,
+      "budget_operator_counts": {
+        "python:bool-const-flip": 1
+      },
+      "candidate_count": 11,
+      "candidate_ids": [
+        "6680cace428625ff394c63e190cd7b55b976213cd7a210f74bd3d6e9bc106891",
+        "7124ffe8c19001bff0452449a11df31caaa80f6b230be9ffc898334d58096ffd",
+        "a75f1928e3737cb0672217b2984ea6f1fdcdf2f3e91cd8fc82c97760eb7bee53",
+        "b174cfded013d815b432fabc2a0a65127a01bed5f77abe6b6aa8ee5db27853cc",
+        "b3e28db56be44437d132520d90b0262caaea60b0c9a75d49403f4c9d1e79d02f",
+        "ba23ff6400af9beb1ac7aaa52966bb541367acf690be9a97744baca7b2262534",
+        "c43e1882bf2dff591bebf81935a47988c868c0c42014994c2ac9869f254c1868",
+        "d5ac71986efa2cd27410365c2eb6bc897502f3fedf986422b41adab3065783ae",
+        "de38cd06ecc5022d93c8745bc0a57f32701779a14147659d639330ff558c5f22",
+        "e5570f5ab5739097b4767cf596291971551ae086dd122331ac14ec0e8f9dbc08",
+        "ebe086057a6b38a6b83928ff396dc3be88027987aa753db107639031109d932c"
+      ],
+      "classification": "test_gap",
+      "classification_note": "Preset defaults and cancellation/selection predicates need cases that distinguish each option combination.",
+      "group_id": "G05",
+      "line_ranges": [
+        {
+          "end": 35,
+          "start": 35
+        },
+        {
+          "end": 58,
+          "start": 57
+        },
+        {
+          "end": 75,
+          "start": 75
+        },
+        {
+          "end": 91,
+          "start": 90
+        },
+        {
+          "end": 99,
+          "start": 98
+        },
+        {
+          "end": 139,
+          "start": 139
+        },
+        {
+          "end": 143,
+          "start": 143
+        },
+        {
+          "end": 145,
+          "start": 145
+        }
+      ],
+      "operator_counts": {
+        "python:bool-const-flip": 11
+      },
+      "path": "nyxloom/src/nyxloom/session_extract/presets.py",
+      "survived_count": 10,
+      "survivor_operator_counts": {
+        "python:bool-const-flip": 10
+      }
+    },
+    {
+      "budget_exceeded_count": 0,
+      "budget_operator_counts": {},
+      "candidate_count": 1,
+      "candidate_ids": [
+        "56df2415d1e9a6961d80cb4f57136447ce1f64d85e733f5155bb843e5538bbcf"
+      ],
+      "classification": "test_gap",
+      "classification_note": "Timestamp and ledger-boundary rendering choices need explicit transition cases.",
+      "group_id": "G06",
+      "line_ranges": [
+        {
+          "end": 206,
+          "start": 206
+        }
+      ],
+      "operator_counts": {
+        "python:boolop-swap": 1
+      },
+      "path": "nyxloom/src/nyxloom/session_extract/render.py",
+      "survived_count": 1,
+      "survivor_operator_counts": {
+        "python:boolop-swap": 1
+      }
+    },
+    {
+      "budget_exceeded_count": 0,
+      "budget_operator_counts": {},
+      "candidate_count": 6,
+      "candidate_ids": [
+        "11cdf5b98830a16e6fa4db926babc4b1d89abbb8861cb8c601203851b60601c9",
+        "1c2c23ef526fb8785d0f96811ecab5502489b9f83f2ef7356da9ecf4965de5f8",
+        "1da200e1e598cc45bc1086a7a6b9d0cada48505e4bc4eecd52b6cd2fab5dbec6",
+        "82e6252d2f97f347cc517986480d223a9590e489bb4cc924fd53959b54a8bea4",
+        "971d73c0594d6392063f85e8cdfff3a84e81919e8c4f393724c1dd0770d65b43",
+        "9c19f9153e5179313d18bf25216fe8d1dfb92084e2f898c0f833022c2610e8cd"
+      ],
+      "classification": "error_path",
+      "classification_note": "Nested command and token parsing limits include refusal and malformed-input paths.",
+      "group_id": "G07",
+      "line_ranges": [
+        {
+          "end": 156,
+          "start": 156
+        },
+        {
+          "end": 178,
+          "start": 178
+        },
+        {
+          "end": 218,
+          "start": 218
+        },
+        {
+          "end": 233,
+          "start": 233
+        },
+        {
+          "end": 273,
+          "start": 273
+        }
+      ],
+      "operator_counts": {
+        "python:bool-const-flip": 1,
+        "python:boolop-swap": 1,
+        "python:compare-swap": 4
+      },
+      "path": "nyxloom/src/nyxloom/session_extract/shellcmd.py",
+      "survived_count": 6,
+      "survivor_operator_counts": {
+        "python:bool-const-flip": 1,
+        "python:boolop-swap": 1,
+        "python:compare-swap": 4
+      }
+    },
+    {
+      "budget_exceeded_count": 0,
+      "budget_operator_counts": {},
+      "candidate_count": 1,
+      "candidate_ids": [
+        "ab944712398113859fbeefc2caf9dbef7dede6280836a7ee10dadb3698ab67ff"
+      ],
+      "classification": "error_path",
+      "classification_note": "Integer-versus-boolean token validation needs malformed numeric cases.",
+      "group_id": "G08",
+      "line_ranges": [
+        {
+          "end": 205,
+          "start": 205
+        }
+      ],
+      "operator_counts": {
+        "python:compare-swap": 1
+      },
+      "path": "nyxloom/src/nyxloom/session_extract/stats.py",
+      "survived_count": 1,
+      "survivor_operator_counts": {
+        "python:compare-swap": 1
+      }
+    },
+    {
+      "budget_exceeded_count": 0,
+      "budget_operator_counts": {},
+      "candidate_count": 2,
+      "candidate_ids": [
+        "1b8adf790a025aeedd7efe1a8a7f45e907af823364fb92390ad676f09104d752",
+        "a656b6571e942c725459974b133740ce3cd650131fbfdb02ecc1093d48c67b17"
+      ],
+      "classification": "error_path",
+      "classification_note": "Synthetic interrupt and tool-result handling are recovery-state branches.",
+      "group_id": "G09",
+      "line_ranges": [
+        {
+          "end": 80,
+          "start": 80
+        },
+        {
+          "end": 109,
+          "start": 109
+        }
+      ],
+      "operator_counts": {
+        "python:bool-const-flip": 1,
+        "python:boolop-swap": 1
+      },
+      "path": "nyxloom/src/nyxloom/session_extract/stopstate.py",
+      "survived_count": 2,
+      "survivor_operator_counts": {
+        "python:bool-const-flip": 1,
+        "python:boolop-swap": 1
+      }
+    },
+    {
+      "budget_exceeded_count": 0,
+      "budget_operator_counts": {},
+      "candidate_count": 1,
+      "candidate_ids": [
+        "5e6080ae13a7fda806754823cc7e6ec123581dfe5714a1790fc3c7b95e402128"
+      ],
+      "classification": "test_gap",
+      "classification_note": "Tool-result summarization and SCP effect defaults lack distinguishing assertions.",
+      "group_id": "G10",
+      "line_ranges": [
+        {
+          "end": 178,
+          "start": 178
+        }
+      ],
+      "operator_counts": {
+        "python:bool-const-flip": 1
+      },
+      "path": "nyxloom/src/nyxloom/session_extract/toolresult.py",
+      "survived_count": 1,
+      "survivor_operator_counts": {
+        "python:bool-const-flip": 1
+      }
+    },
+    {
+      "budget_exceeded_count": 0,
+      "budget_operator_counts": {},
+      "candidate_count": 8,
+      "candidate_ids": [
+        "4c8674631a296582e3ebef689e786d9836bc76e01fcdb5e193511661c312a261",
+        "501e26b121f91c799824c5b4db7e7fd1d75a668cd09e747d88a21ba1748a6330",
+        "5913b9f89ee5c0134aa6a69e94296d05db8fab53836ced910eccb4bc431995f6",
+        "89bcc7a74421f51fe63ac77562546f4ce2b2720708ded68f10b56a94accb5c6b",
+        "8c6cf67c11785e3ac034e499a94d658b646f7dba03a882f2721841a80200784e",
+        "94e15435b84422b20793baf854f31a029c9c786e78325b78b20e285ebb75f240",
+        "a5f68262332bb9e6a97ad6cc56736d7794069420e57453c2e7744caffcbec4d7",
+        "bc326169214991e4591a5cbb74e7d5b5594b9257e1ccf50026c8cb2a74fa0de6"
+      ],
+      "classification": "error_path",
+      "classification_note": "Timestamp, range, source validation and anchor-store conflict/write checks are refusal paths.",
+      "group_id": "G11",
+      "line_ranges": [
+        {
+          "end": 38,
+          "start": 38
+        },
+        {
+          "end": 68,
+          "start": 68
+        },
+        {
+          "end": 77,
+          "start": 77
+        },
+        {
+          "end": 80,
+          "start": 80
+        },
+        {
+          "end": 203,
+          "start": 203
+        },
+        {
+          "end": 208,
+          "start": 208
+        }
+      ],
+      "operator_counts": {
+        "python:bool-const-flip": 2,
+        "python:boolop-swap": 3,
+        "python:compare-swap": 3
+      },
+      "path": "nyxloom/src/nyxloom/session_extract/usage/anchors.py",
+      "survived_count": 8,
+      "survivor_operator_counts": {
+        "python:bool-const-flip": 2,
+        "python:boolop-swap": 3,
+        "python:compare-swap": 3
+      }
+    },
+    {
+      "budget_exceeded_count": 0,
+      "budget_operator_counts": {},
+      "candidate_count": 12,
+      "candidate_ids": [
+        "03cec9318b054bf10d879a7cdc75272fd3c3ac345780f15d0190258320eecada",
+        "0b82e8c89aa1b37e58a5fefd0372bbc2715711e56f73b428f7f757f415d50165",
+        "258728631cf0de3882146bea4de2620c5e6e402a53c87106e7b8aff727121e17",
+        "2b00d2beac064169655a2a90dcc03e68f2562a1b866511c3af1e04d9a76f81f0",
+        "78f5a4cec8eb95b880ea1417703ae2e1649c5d7c3219381d468c0585d8e42013",
+        "96cae925d70559c6ec1d611f852ab3281f26c9da25dd940bfccf3776625c66ba",
+        "ac0536a2787824dcfc09fc5cea0c92b818fdd890de98ca07a6dc0cc551869b5e",
+        "cb879b40162ca3afd0de021840b9f582fbd469abc467b904d356940d06c474f0",
+        "d98da7a14315c76827b1760b698d89599bad94d5c9205ff8dbf7fcbae42150bf",
+        "dc12bcf4403327da7d894d701cf8279a8218162f5e220d49d0929da7471a9b1a",
+        "e6c05c8d61d03f8e105389434b4f0f8987b67dc12b3aef408654b672955f559a",
+        "f1175dce46edc14e7e07eda6f44a3a9d42fe6046895eedf5180c9b88e6aff413"
+      ],
+      "classification": "test_gap",
+      "classification_note": "Reset-window fitting, monotonicity, residual limits and estimate disclosures need boundary cases; invalid input branches may be error paths.",
+      "group_id": "G12",
+      "line_ranges": [
+        {
+          "end": 22,
+          "start": 22
+        },
+        {
+          "end": 67,
+          "start": 67
+        },
+        {
+          "end": 74,
+          "start": 74
+        },
+        {
+          "end": 89,
+          "start": 89
+        },
+        {
+          "end": 94,
+          "start": 94
+        },
+        {
+          "end": 110,
+          "start": 110
+        },
+        {
+          "end": 125,
+          "start": 125
+        },
+        {
+          "end": 128,
+          "start": 128
+        },
+        {
+          "end": 155,
+          "start": 155
+        },
+        {
+          "end": 195,
+          "start": 195
+        }
+      ],
+      "operator_counts": {
+        "python:bool-const-flip": 2,
+        "python:boolop-swap": 3,
+        "python:compare-swap": 7
+      },
+      "path": "nyxloom/src/nyxloom/session_extract/usage/calibration.py",
+      "survived_count": 12,
+      "survivor_operator_counts": {
+        "python:bool-const-flip": 2,
+        "python:boolop-swap": 3,
+        "python:compare-swap": 7
+      }
+    },
+    {
+      "budget_exceeded_count": 0,
+      "budget_operator_counts": {},
+      "candidate_count": 48,
+      "candidate_ids": [
+        "012ee4b6f3401a638845462ea073706f1d2f06aa22efc7db7ee6b03b8901216a",
+        "027036f1ebe7d61254872526882fde337a848d6930e6acc8ba52f1a6893a2bd4",
+        "0598e78eb1b9b58546a892dc587c8a2bd5b3e24c543b52aa5f045449864a5087",
+        "0a858626d111435fa44f94af9ead524591ae0ed0b689932a5d7bd5d0f8961671",
+        "0b3ae638f459b695eafe9cb9074ae3aa3944bc313805179c3221d95349c338b2",
+        "0f7f6517a7fa6f42fd54160eb7161a9c0c3456081aceb67b4120df3686bc7131",
+        "275d076363ea2ec0d20ee4c3bbba263ac57097eff422aa20477c13e9b32f6ab2",
+        "312b64544851661406aa85f06b93857c7a87664e0f83052a6aa6a53ffa7d9a15",
+        "362b51092883a50febdd5d580835df23a2c67c621d2ade256ca1d9cca72d68ab",
+        "410e70a8ed2a482491fc30c7ffdc6ab459968178f3c8bbcdc7cde4059ee30026",
+        "4415b78508f8daa345223f54770d92e607f9194d9214a8f1fafe57dd2788a45e",
+        "4d25efe7186b2ad2523bbd25debb26015496b059aba57ddb5b08fa788001f2c6",
+        "591b20daa5e3dfc39c83653d8d23600180e55b1690507a9da3697084d0578a87",
+        "5c2f1f7e1be97ccd4d6e65d89c0a2fa5aa8f72de9346708133c07ae863df5b98",
+        "5e897203866044f51be950fc9d2100df504225808d7f45ef2d093b4c501d0231",
+        "63133c635a0ae3a3cfb86c086b132cf7116ef321e8aa7451f9fa6f987908d784",
+        "675854888fad150e26f6e03b05366339a97c06ba5203678473e5cdaef6438a9a",
+        "6b945ff48bcfa1ddccb6c785b6f86e43b8ff289cb64db76d27b83f0be16edb6d",
+        "72bc7c6e014ec7cd73380b8f9a5bae7d6047200120f11c330dd45a2755237c11",
+        "7640430f7ad72b0140b0e400681bea80134f45309c458ade8c1d3d28ba681a83",
+        "7892d2680ffb3fafe1f1d8fe916d724af806baaa169b8a5394b35e5a4c7c3382",
+        "79b9849e358f3e95b655b216cfb7eab950686819ef4b85b2e39772a5e4b40def",
+        "7d22bfe171a1be87562f3aaa09d9df2a59f700fd92852a734a105f2ee54031c0",
+        "7dbe4a9d39fac3c867dd3d8e1ae95bb86c5100fe1cbde65475d9d43048d7a007",
+        "86e0121336fe13bcefda8064b8dbbe81fef9dbdce3a648b359c2401238e2867f",
+        "8712be3e0d11ee97eb1316b70666bdcbfee3136e0a25787aaac038dfacb7e06d",
+        "89a30bd1f777469c27226b0b8e0986803279ea84e155ffb9252afe1941c00767",
+        "8eac64da84d2edcfc46d86de9a352b62cc49eca0a081ef51ae01eb667133a687",
+        "94e2ed1445e7ac22f898c8623d387966b97ca96281b17af67bc3f87ecb21a284",
+        "9c53faf6a6c9690c47bdea873ca65b03bbd8d2acb8a95aaab8ca055fd547354a",
+        "a1b233d211ae3b74980e2245fca3ea85f09737735b8cd5bbefed639b29ddd4d7",
+        "a688c2935fe3c451d56b10465d1d8dd5cdff48543f98b3591250c4f030202ffc",
+        "aa31d65ede774275d843e92b11c89718b8b8ccbe6341fa4ad8a45a6651f19c08",
+        "aaad885924dcdf123a1895562b93359874d249dc1f51f05d4ea0f6cffc5cca88",
+        "ab7b073bd6473574b19108c60860c7d53d6709bd8d00b8982b50cdea10df02f7",
+        "ac91e2666190acb30080c5d53d9fa8dcc567f2ebcdaf8a26f5c3bee544f05a94",
+        "b0da4fdc68c9a1b39f0d6f483e94db1711ededd4554df2c41211687a235a88d8",
+        "b889e5c295a62a4213f05c2e2c4b647c5f0f86ddcf86323dffae9f2eec8a37d1",
+        "bf02660bf58e1a996ca730c14e8963c428aec877e0ddba611dad1868c889683e",
+        "c0d7aafd54931606672dcb0b514f5b87ef92d6f07eccb611a3ceb963fb3a1bf8",
+        "e44b798579465699473a8cc5706afcd5155e71f097e642954f31bb549fe59fa1",
+        "ebb65f87856b2d28e2cc201aa543824fc12252b4de1cba195e1ab2f90fbf07b1",
+        "ecf0adea7078543e97b62d937ea1ccf7ba4d11b92c1163645f63f24dde36b77f",
+        "ed8c0d221dbaa756234e1e997eeb5409f8c84e1e6e116030877c24823d808a83",
+        "f6402b8bd5639968ff2d1054008355bc07528f639e5d165af979c4ca1722c606",
+        "f84c7d0670fa21ae048aa4f7bd2c21b6cac9a87cd55641d9928bbe3c0ba871ff",
+        "fa0d62e00751b7e74f61d6cf83bfa1eb35a315aac158b227155c0b62ce977d33",
+        "fb9460dac57eb8e5d54fcd1ca582ba3a64648d7c3d8e60436175573dad7b0704"
+      ],
+      "classification": "test_gap",
+      "classification_note": "Joined chart ordering, grouping, point limits and anchor-fit clipping need distinguishing cases; malformed-fit guards are error paths.",
+      "group_id": "G13",
+      "line_ranges": [
+        {
+          "end": 41,
+          "start": 41
+        },
+        {
+          "end": 58,
+          "start": 58
+        },
+        {
+          "end": 65,
+          "start": 65
+        },
+        {
+          "end": 70,
+          "start": 70
+        },
+        {
+          "end": 108,
+          "start": 108
+        },
+        {
+          "end": 129,
+          "start": 129
+        },
+        {
+          "end": 148,
+          "start": 148
+        },
+        {
+          "end": 178,
+          "start": 178
+        },
+        {
+          "end": 223,
+          "start": 223
+        },
+        {
+          "end": 269,
+          "start": 269
+        },
+        {
+          "end": 272,
+          "start": 272
+        },
+        {
+          "end": 290,
+          "start": 290
+        },
+        {
+          "end": 304,
+          "start": 304
+        },
+        {
+          "end": 310,
+          "start": 310
+        },
+        {
+          "end": 325,
+          "start": 325
+        },
+        {
+          "end": 373,
+          "start": 373
+        },
+        {
+          "end": 469,
+          "start": 468
+        },
+        {
+          "end": 751,
+          "start": 751
+        },
+        {
+          "end": 856,
+          "start": 856
+        },
+        {
+          "end": 859,
+          "start": 859
+        },
+        {
+          "end": 865,
+          "start": 864
+        },
+        {
+          "end": 870,
+          "start": 870
+        },
+        {
+          "end": 873,
+          "start": 872
+        },
+        {
+          "end": 887,
+          "start": 887
+        },
+        {
+          "end": 889,
+          "start": 889
+        },
+        {
+          "end": 899,
+          "start": 899
+        },
+        {
+          "end": 949,
+          "start": 949
+        },
+        {
+          "end": 966,
+          "start": 966
+        },
+        {
+          "end": 1067,
+          "start": 1066
+        }
+      ],
+      "operator_counts": {
+        "python:bool-const-flip": 11,
+        "python:boolop-swap": 13,
+        "python:compare-swap": 23,
+        "python:falsy-swap": 1
+      },
+      "path": "nyxloom/src/nyxloom/session_extract/usage/charts.py",
+      "survived_count": 48,
+      "survivor_operator_counts": {
+        "python:bool-const-flip": 11,
+        "python:boolop-swap": 13,
+        "python:compare-swap": 23,
+        "python:falsy-swap": 1
+      }
+    },
+    {
+      "budget_exceeded_count": 0,
+      "budget_operator_counts": {},
+      "candidate_count": 2,
+      "candidate_ids": [
+        "34e67bf5fdc08e1280dfa16ea542341f9a08e71ede26d527d9334a0f572fc8fc",
+        "e40e8db1bd1928a994bb0a2d33a04abc233bc4fe82ceb14a7293494d0c6cadda"
+      ],
+      "classification": "likely_equivalent",
+      "classification_note": "The ensure_ascii and sort_keys mutations change JSON byte formatting, not the parsed payload; verify no byte-for-byte output contract depends on them.",
+      "group_id": "G14",
+      "line_ranges": [
+        {
+          "end": 18,
+          "start": 18
+        },
+        {
+          "end": 21,
+          "start": 21
+        }
+      ],
+      "operator_counts": {
+        "python:bool-const-flip": 2
+      },
+      "path": "nyxloom/src/nyxloom/session_extract/usage/html.py",
+      "survived_count": 2,
+      "survivor_operator_counts": {
+        "python:bool-const-flip": 2
+      }
+    },
+    {
+      "budget_exceeded_count": 0,
+      "budget_operator_counts": {},
+      "candidate_count": 1,
+      "candidate_ids": [
+        "a2d7c4ae6b1d0d3f25ca7d411ddadddacc392f85c98e5b4da700f01a49e672ae"
+      ],
+      "classification": "error_path",
+      "classification_note": "The allow_nan mutation changes rejection of non-finite JSON values.",
+      "group_id": "G15",
+      "line_ranges": [
+        {
+          "end": 19,
+          "start": 19
+        }
+      ],
+      "operator_counts": {
+        "python:bool-const-flip": 1
+      },
+      "path": "nyxloom/src/nyxloom/session_extract/usage/html.py",
+      "survived_count": 1,
+      "survivor_operator_counts": {
+        "python:bool-const-flip": 1
+      }
+    },
+    {
+      "budget_exceeded_count": 1,
+      "budget_operator_counts": {
+        "python:compare-swap": 1
+      },
+      "candidate_count": 54,
+      "candidate_ids": [
+        "069ff7e99476f5ac665bf4c0b149efea2032babd3f76cc1702125f2530edc372",
+        "07f6bda2b9d007aecbaf3e8d44764e477b15fe9afeba93aede293e3fcc308409",
+        "08f9ff99871d8cf9cef727a8221aeb4aa7e865454138580794bab48a0a15486f",
+        "0cc732e87e525687438e59b0c5b7c8654fd4a5efb58cc5b62c4e510067fb3a42",
+        "0e3762d475fa08a4066a947e8a4f4a7ee8f329b83cb3d67ab9d1119e25271051",
+        "14fc466c518495294d78cf47d89e8899dcfa88038f4a4eede97cdc0fc430cc07",
+        "1c48690925716e32bdd0a89749cb31a1b94863fd0dd88f85389aa5da81b23fbe",
+        "22b017929f97fc575f17c2c2392b6e18570ff19b1a2fea01637b36d13228168e",
+        "2363be40e4bf0dd6e4c0fe695331b25cf941c43dddeafdc8bad47fe737010eaa",
+        "25462ed5fe99b39ee015372563ff6186b1731483832192433301fd132eda973f",
+        "2c085ff7f5e8d117f396ecc28c176c55f942d55f9301eca4bd618c1a629bc55e",
+        "2c1e790aeb57e372e3b6c8fc0e0d14aacfd7d22bced945c186c98e3dc9e37b00",
+        "34cf6bf6e693acc98ba77dfaa6030a64c7df2643954338e231284929aa509ba0",
+        "355d122b15ee38a0d25de5f04887e4f816d7cdbba74d16718eeca93b4ba87a76",
+        "3d34f194cade32d3856821c18c9eae92b57b3745db4dcbd879fd95e360c6c550",
+        "4a9419f670e715fc09d52573be23aa45baef63698b3322504aa9eac9505092dc",
+        "4ca5fcc835b998a24307594ab15c74f853181feb36f0c690151c94243bca7f50",
+        "55299384c57f88501e65be352d6ab68ffec2ab2f1f3c22f2e9d1b279642cc4d6",
+        "558916d65c155a2df85965527ee1c3c8bfacdc3cb051e3b674372bc6c7ca9708",
+        "55bb87f83fe2c4472a4c0d27de10205b24ac653888d813fb6fb52c54f2de37b5",
+        "55f272b5f2328c136faa37b618468b9994c888fa03517aee6e0a87ca70a438d4",
+        "5647f384c5cb6150623109c27f4be54a537ffed527983e211087b3580f43f849",
+        "56d26bfde9888cef1e54fbf944227c317fd0d824411453b3b83f43ec0e6e3a2c",
+        "5821dec10da7bd4ad30b3bb4f4d78dd2b8bf6fcc346710b0bf73dba76e7531ac",
+        "625c955c13f279f19fe7c3124294f7060ba45e8e44c331e11acc07522b984fd3",
+        "65241e2356c527e0f3c8b64e013f3125e8d614c2cc830f280320ff6aa83cb37d",
+        "689676c823946273a07b96c7747f20388b0442d2b10fbf03790c38cb16b3460f",
+        "6dfb4095016998a983e699025f7467007da6311a6f9e630b6c89b3db9e62fffe",
+        "6e03c62032a43db9ca4dcd682627abcfebeb575c84a7f2b226fa103b08453412",
+        "77c812e01f8073aa2ae904539727c0f4ecceadbc862f9668493df0ea64a63f0e",
+        "85b948c1b441b670d1f520a1371a9fd5e489c0cc5980d942122380f131fa3ebf",
+        "85dc0b327460bbeabdcbf7a213c81c98d510a5a9ee61dc3bbc4f97235ffee6cf",
+        "9424c62232939cb128c86313ab07b9665ac622cf28ab43afcedfc6e26e8f8532",
+        "9c1235bf186011f7919773ca4e3200c6c5a6cc248fbccd6358033471263ab478",
+        "a26b66aad7a33c44f416607b4a16df0d284e7a6732653895e8914b3ad9016eb2",
+        "a39368ec368fff30fa0dbb2cee15b40582a73180e8fd0527881039bb01622134",
+        "a676a5a05fa668ffa6c1ca11773de7f76ff467bf29a1f89b8abe965b6d60eb1e",
+        "b0ecd29cda7e72508ccaf3d3553cdf372bfafa6fbebd14c74657cd4b5309c82e",
+        "b5de812a1c28684f50a21038f5c4316812a81196d77198b3f285884524bf286f",
+        "ba1207b4a546dde99c12c8226095e8f9be897ec59d67a95bf66b58badd248ae9",
+        "c6e2e9b6ba8e0ac5043a21905883f9678df9a857fc456be8dc29cefd9094b228",
+        "c8837945cbee871915641c747b9547a5bab2c78c34a91c8d1c90321b940c323c",
+        "ca71302e06c160997adf2a283736a5a97fb3fac425b71398809aebb5dd1438a9",
+        "cafc5d4a0ffade88839db1490658a14e14d95edd60a78e7b8581df32c6a5be0e",
+        "d8d029b64495c810c8a70e71868bd3baa2b67b16c78fa78e1381ff65b65c084f",
+        "d90b282e7318b2aed71c717589d2a4abf8f05951b9e5f6ad2b3aae5ecdeb433e",
+        "e3021a87c6758d3d71322d05705f34b9e492aef63b353390ab1417ffa460f022",
+        "e46c97c754e31f69a706adcb0730ff99eaf0b9393f079725b420469d5e9ea4c8",
+        "f588880c79be1c9807f8a45e0c9b75d22f8ba44930ef81933cde77e540ee44a2",
+        "f67fa66ff54e20985c02c7e1a0fd350cc4805b278c79a9378947d22a4c858aab",
+        "f6854f1e73a556a650fb9d6cdcfb8b4ccf930764edbe481ce5679673e4b3c5a4",
+        "faa1a94034b1efbcde7ba9ca5288ecc0ea5f0ff311c3961bb19f7d0367692d50",
+        "fcfb4a681e5ad9f2c0e6ce7ea303ab4b62f4c213b2305789101c2b9ddec68777",
+        "fd58bebbf449b436682614c7773da84272e9e987c55615a4a02cb046e4b97e4e"
+      ],
+      "classification": "error_path",
+      "classification_note": "The group spans malformed metadata, source validation, file races, lineage fallbacks and timestamp checks; candidate-level review should separate error paths from ordinary attribution gaps.",
+      "group_id": "G16",
+      "line_ranges": [
+        {
+          "end": 35,
+          "start": 35
+        },
+        {
+          "end": 44,
+          "start": 44
+        },
+        {
+          "end": 47,
+          "start": 47
+        },
+        {
+          "end": 84,
+          "start": 84
+        },
+        {
+          "end": 86,
+          "start": 86
+        },
+        {
+          "end": 95,
+          "start": 95
+        },
+        {
+          "end": 102,
+          "start": 102
+        },
+        {
+          "end": 108,
+          "start": 108
+        },
+        {
+          "end": 230,
+          "start": 230
+        },
+        {
+          "end": 254,
+          "start": 254
+        },
+        {
+          "end": 273,
+          "start": 273
+        },
+        {
+          "end": 281,
+          "start": 281
+        },
+        {
+          "end": 294,
+          "start": 294
+        },
+        {
+          "end": 303,
+          "start": 303
+        },
+        {
+          "end": 305,
+          "start": 305
+        },
+        {
+          "end": 313,
+          "start": 313
+        },
+        {
+          "end": 335,
+          "start": 335
+        },
+        {
+          "end": 338,
+          "start": 338
+        },
+        {
+          "end": 374,
+          "start": 374
+        },
+        {
+          "end": 397,
+          "start": 397
+        },
+        {
+          "end": 428,
+          "start": 428
+        },
+        {
+          "end": 662,
+          "start": 662
+        },
+        {
+          "end": 696,
+          "start": 696
+        },
+        {
+          "end": 751,
+          "start": 751
+        },
+        {
+          "end": 780,
+          "start": 780
+        },
+        {
+          "end": 802,
+          "start": 802
+        },
+        {
+          "end": 853,
+          "start": 852
+        },
+        {
+          "end": 856,
+          "start": 856
+        },
+        {
+          "end": 874,
+          "start": 874
+        },
+        {
+          "end": 886,
+          "start": 886
+        },
+        {
+          "end": 889,
+          "start": 889
+        },
+        {
+          "end": 898,
+          "start": 898
+        },
+        {
+          "end": 901,
+          "start": 901
+        },
+        {
+          "end": 955,
+          "start": 955
+        },
+        {
+          "end": 978,
+          "start": 978
+        },
+        {
+          "end": 1012,
+          "start": 1012
+        },
+        {
+          "end": 1034,
+          "start": 1034
+        },
+        {
+          "end": 1046,
+          "start": 1045
+        },
+        {
+          "end": 1049,
+          "start": 1049
+        },
+        {
+          "end": 1136,
+          "start": 1136
+        },
+        {
+          "end": 1161,
+          "start": 1161
+        },
+        {
+          "end": 1174,
+          "start": 1174
+        },
+        {
+          "end": 1185,
+          "start": 1185
+        },
+        {
+          "end": 1209,
+          "start": 1209
+        },
+        {
+          "end": 1213,
+          "start": 1213
+        },
+        {
+          "end": 1216,
+          "start": 1216
+        }
+      ],
+      "operator_counts": {
+        "python:bool-const-flip": 11,
+        "python:boolop-swap": 22,
+        "python:compare-swap": 21
+      },
+      "path": "nyxloom/src/nyxloom/session_extract/usage/loader.py",
+      "survived_count": 53,
+      "survivor_operator_counts": {
+        "python:bool-const-flip": 11,
+        "python:boolop-swap": 22,
+        "python:compare-swap": 20
+      }
+    },
+    {
+      "budget_exceeded_count": 0,
+      "budget_operator_counts": {},
+      "candidate_count": 21,
+      "candidate_ids": [
+        "01c1d3c98e36440449c74c3090e155c27246355060283f293c0c00e9b3a56f71",
+        "01c4ac9a4384601d57cc842e5e42af57e0697ad5a46260ee0c3a70d4e5e63a82",
+        "07e376e79ef8fa10b07be228d646e369b9dbbe64556cb1eb48149685e94d27cb",
+        "098705ed93ced0993c1453f5952b7b070fcd44b199c92ec9334ba877793f9157",
+        "21fb6670e011f6f1b08ba31b880c31156925186ed3aacb602a23e4d1746e94b5",
+        "30a879b27f9fc1ca12b1a548a287a4d2fe36254e7abd5d262f80634e2a36bcb1",
+        "40386a2fa16bf871592637cc12a36ecf1a3868c105d6aaf2bcd8e3a256d762ab",
+        "5846ca20f850307baa9c887f2e63d6a519c1eacedd132f35f1ac5429543ebd5a",
+        "5cf81dd6eba52202b322fd4bee3b1d1060eda91eff6019fbc594eeaa964f9491",
+        "5ef069df70aeec5e4c895343073e56e1f7671716c43d9189f520489012b43cfc",
+        "6386b8d2d4b9eebe6b45cafaac9f06806a26d185c4e273be062fb83a57cc2bb2",
+        "7a2c5a13a0fc5989c619cfabfca488899f076fc2145ee9619f23ca45657129ab",
+        "854296f3f25d7954da32ec477065df8e8b4ed3e41bbb2dccb20805ef915cc5a6",
+        "98f2e5d45d7b25727ee54ae27fbe77a54e3370886c2485713ebe6cee66205216",
+        "9b9207a726e55ed3c62e6fba6ab3b3d3984fb74e0089a0bbd1af67acff5e72e8",
+        "9e026183bde38a3281b63b2c572614320e51b1f58a4fb8f284cf2d34ade50566",
+        "a0f5da377d547ad389107d9ff54d4db5dad9e2781471958a4b863e5dce85c7c0",
+        "a2c341d4ac57e8c721dc01faf66f69d9df5bde943383341ddaa0e65fde8cfa3d",
+        "b794976127520718da885d54110d6fb503b90c9d25cb3bb6be6f73880a683780",
+        "b9ebcbdbc092a3401de8693ae6e9c09072187354d3304825416ac171f487c713",
+        "dc64b99cdadf66346998b83e17fa084cf0b4d8e84f83d9f4247a7ec66de31493"
+      ],
+      "classification": "test_gap",
+      "classification_note": "Model defaults and temporal gap handling need direct tests of omitted flags and boundary behavior.",
+      "group_id": "G17",
+      "line_ranges": [
+        {
+          "end": 10,
+          "start": 10
+        },
+        {
+          "end": 18,
+          "start": 18
+        },
+        {
+          "end": 50,
+          "start": 49
+        },
+        {
+          "end": 52,
+          "start": 52
+        },
+        {
+          "end": 74,
+          "start": 74
+        },
+        {
+          "end": 102,
+          "start": 102
+        },
+        {
+          "end": 116,
+          "start": 116
+        },
+        {
+          "end": 128,
+          "start": 128
+        },
+        {
+          "end": 180,
+          "start": 180
+        },
+        {
+          "end": 216,
+          "start": 216
+        },
+        {
+          "end": 236,
+          "start": 235
+        },
+        {
+          "end": 245,
+          "start": 245
+        },
+        {
+          "end": 253,
+          "start": 253
+        },
+        {
+          "end": 284,
+          "start": 284
+        },
+        {
+          "end": 296,
+          "start": 296
+        }
+      ],
+      "operator_counts": {
+        "python:bool-const-flip": 20,
+        "python:compare-swap": 1
+      },
+      "path": "nyxloom/src/nyxloom/session_extract/usage/model.py",
+      "survived_count": 21,
+      "survivor_operator_counts": {
+        "python:bool-const-flip": 20,
+        "python:compare-swap": 1
+      }
+    },
+    {
+      "budget_exceeded_count": 0,
+      "budget_operator_counts": {},
+      "candidate_count": 41,
+      "candidate_ids": [
+        "0826205e091299bfde12770cb6f969621709fea65e90787334b8b8857a1273f6",
+        "138e8d4412e9e39425e239309d16051a2a6819757cf3e0d37cdd06776995b998",
+        "17e500fbfe7d52148718b9453ef51305a2b64df86d136d9ac0c4ace74349c99c",
+        "2a707ed9ea41689db83210c7e957169c772e74ad5bd78bfef306e289867d5514",
+        "31d0dfdbec727fad517c2f341f3d206e2323cb2731dd4f4bede8ba91d5b512d7",
+        "335c2967fff9d775383031dcef489eff26cebe4e5cb08acd4b4bf6b431156880",
+        "40d8077cb9ca0fc8886ba36181f685611b467f654a1f76f2f0e59c9f72fe34ff",
+        "4b3ed8a4207a0814f23c49b8d7cbd1bfec309456a056d4c91c18822ab607516d",
+        "4c0236f680c6d19fb9bbdb4e2d0a784fb17a911d45d71dc453ad87d7795a4010",
+        "53099656ac7905a1a1825b56d155cc564fc34d141714dfb280e191c84386d4d1",
+        "549e485fc02535440d80186806e1845254da01b7755bfa5431aad42c0c4b17d5",
+        "57cd304507133dc734938dde400623486ea11ddded582d63dfb5bd64e097ee1f",
+        "65902184d363d8659c8e55cb7895ce7aec7d7058cfc23fc78f25393badeb19e1",
+        "6b9fb2c5296e0268949c5361f0edb33d51dbafcad0bda8ff4831d359efaf591c",
+        "75f89a6b9326d90778aa66bd46d06c87c7764a32522785b30732500eb61a3e91",
+        "7dc73bc5589f5111fbc12759565c1a4fd363d84d3ba5404cfc052b94c4f9854c",
+        "8a38959fd2fc59a3a8bb9f80d07c1ff9d821eb354b17a58856a7f4ff56779003",
+        "8d501d2f4502b94f6eb2c21afe3bc871063283d059620f55e35436650c75bf1f",
+        "8db426afc74c611646f01b990c190adbda34b029a3b915873107cd26ce2f07ec",
+        "91b384bc4c2f3f4293a8633a6c1e5df1da1cd4e1bfe7008b4142405353e8a989",
+        "96083499d2cc26a3a4feabbb512560e53bc0cd0bf3b01837772bbfdb06126653",
+        "9bfb8cce2db70615e891b8326492c18a1c24aa047ce18d626355574dfe586fca",
+        "a5e445f827d44ed9a4561eb4efaec715d6f0d16240d8de52e9a0b7e653c8b124",
+        "ac35d06c3a55ba1e38e0c6ad71bf31b02a0a38cf3c37479b01862c46c2cac6bb",
+        "ae59c47741e3378a19473686588ec247597462da78818b55094e4a630383fd46",
+        "b78b86990763722c53085f98c23d0910801755ebb3b438d2b2430a0310e17690",
+        "bb0c2da2863447891a6289f4d2c5dc04782eb1fbfcdf5d32684456ee6d58b941",
+        "bfb8d65a5f15b8e6d421fe99afb6f507104df386c51e536b527d37ecc1571c5d",
+        "c0b425815e59b3a3f04ba8de6f6ce018b6fc357a095c9adf6a370215ca09510f",
+        "c358b3c6efae146fef0dd0da7c96212a82812433a73710fc5334a203964f010f",
+        "c79b2e2e145d5e51132e9d7cb607777c936d244a833bee86a26bd3d321ed385a",
+        "d98f65713d2ac949711241bb8074c44ad11b212ecbef9526aaf5a432a29c0114",
+        "dca55a0f9ab809a1949225e464c09fd049db7961100e469275011d20a4eabc76",
+        "e233b62e3c570402f8ca0835a6663d3e90ccae2ba4c2a19e918e66e5752ff259",
+        "e4698ffefc6c7df5b80d9b4002c3d64d47e0b8ae2144ee3a37a7cf29a1169282",
+        "e543b21fd3630b0f4fcb36c9d711e0e09f25f22707aaa6191a1ad6beef3a2c73",
+        "ec1aa26d00225d795287fb196b53d485d6b176f8016cc378cc7674de6ca8d143",
+        "ee8fd3008891eadd64b15d12a6d456238b5662b7070088e9d80e29c89f2c3769",
+        "f2d092d733c854ca8a945b6b645ed54db298add1ad83176f38bcdacae2aa0dbe",
+        "f36f406cba4173345a3465f194595803583789a936750d5a5e9cb89261877a63",
+        "f620ddc7fdd01f8a525a9629291cf3d1a3f0da5b934b3f5537b53b44e962b760"
+      ],
+      "classification": "test_gap",
+      "classification_note": "Price selection, prompt thresholds, reconciliation and fit-rank limits need explicit boundary cases.",
+      "group_id": "G18",
+      "line_ranges": [
+        {
+          "end": 30,
+          "start": 30
+        },
+        {
+          "end": 39,
+          "start": 39
+        },
+        {
+          "end": 47,
+          "start": 47
+        },
+        {
+          "end": 60,
+          "start": 60
+        },
+        {
+          "end": 266,
+          "start": 266
+        },
+        {
+          "end": 295,
+          "start": 295
+        },
+        {
+          "end": 300,
+          "start": 300
+        },
+        {
+          "end": 303,
+          "start": 303
+        },
+        {
+          "end": 305,
+          "start": 305
+        },
+        {
+          "end": 415,
+          "start": 415
+        },
+        {
+          "end": 426,
+          "start": 426
+        },
+        {
+          "end": 449,
+          "start": 448
+        },
+        {
+          "end": 464,
+          "start": 464
+        },
+        {
+          "end": 470,
+          "start": 470
+        },
+        {
+          "end": 481,
+          "start": 481
+        },
+        {
+          "end": 492,
+          "start": 492
+        },
+        {
+          "end": 535,
+          "start": 535
+        },
+        {
+          "end": 565,
+          "start": 565
+        },
+        {
+          "end": 569,
+          "start": 569
+        },
+        {
+          "end": 586,
+          "start": 585
+        },
+        {
+          "end": 592,
+          "start": 592
+        },
+        {
+          "end": 606,
+          "start": 606
+        },
+        {
+          "end": 620,
+          "start": 620
+        },
+        {
+          "end": 626,
+          "start": 625
+        },
+        {
+          "end": 628,
+          "start": 628
+        },
+        {
+          "end": 637,
+          "start": 637
+        },
+        {
+          "end": 642,
+          "start": 641
+        },
+        {
+          "end": 660,
+          "start": 660
+        },
+        {
+          "end": 670,
+          "start": 670
+        },
+        {
+          "end": 680,
+          "start": 680
+        },
+        {
+          "end": 682,
+          "start": 682
+        }
+      ],
+      "operator_counts": {
+        "python:bool-const-flip": 21,
+        "python:boolop-swap": 7,
+        "python:compare-swap": 12,
+        "python:falsy-swap": 1
+      },
+      "path": "nyxloom/src/nyxloom/session_extract/usage/pricing.py",
+      "survived_count": 41,
+      "survivor_operator_counts": {
+        "python:bool-const-flip": 21,
+        "python:boolop-swap": 7,
+        "python:compare-swap": 12,
+        "python:falsy-swap": 1
+      }
+    },
+    {
+      "budget_exceeded_count": 0,
+      "budget_operator_counts": {},
+      "candidate_count": 37,
+      "candidate_ids": [
+        "0795cbb853a5401d24373440a777d124798d19f541a961db889615233c7f3700",
+        "0dce01a8b1a1d57f45079246de89068a2b1d23ffb17c9f92059559acd2696004",
+        "15b9103cd0fde5a89f1b2d7df2d0f2d0a923f310a8409ff199af1a18175d2376",
+        "15f975334f1f1a1ab2e3248616d93126243f6e9bc76bed9ddab7dde0166ca238",
+        "184f339e3598c40f955fa30aea64a6e33d5114be0595b35c16951268b1e9df74",
+        "220581c4a1f0c9a905a15c6b65bba452920f61bf3208f95e7e3283dfb4ff6def",
+        "27794fef1196b49003018d89821fb817ef85ed1848ae0d59c9120ac949df2e0d",
+        "29a2f2a8c1e4383dcf6e712cb93ab81fd886dafb7264857fb46f31587344ca17",
+        "3cd6a7d9e97999df2e79d3fc304959641a0febe8b485854e994c3c02e50e0371",
+        "3eaca29d6f0f84cef7e2e92407f81aba31fd50160df8d06b53c100833aeb2454",
+        "49d6f55ddd49aa9629fccdaac79feb02b892f952ab24e965655349125a397f00",
+        "554975d4b7f51897971faa95d008840ddbef84f39e64224f9ebf010dea9a607b",
+        "5d7216af2fb181c18c1c4de03125650439cfc08e1a46160c79d5ab03f8e8d19a",
+        "6f467195d14a067f0c9280ae6a0b6489b712b3ce30343e7e5624d54a8975d464",
+        "733772db5a37a60fdab172f80c5d1c896ee3c50df7b3cda251f54c1c30cb48de",
+        "823f39a4790eec97932f53ea5d5efd3ea4cf66398e1d3b4d5892b7f7d4e398a6",
+        "857c69b9c928c7a0a3118fa22ded161abd270a6c9e144f3e3dc51e203b970c69",
+        "99dd8d4700aa27a9ad432b3d678c0869d2542ed63da7893de857ba50d8b839b7",
+        "9a292e0c20b78ca464de3899f727bcb73d8338ddfe0b0781c2b60c7d68b619e0",
+        "9bd4aa42e1cc7c562e1b7a7c6f524f5fd7a96ede9c42e714910f2871d348d6c6",
+        "9ee241ea3474c9a0f4dacda91da7744f83233f4b2d1df0087807175d6e5eef86",
+        "a0e23a02396d4712d37a2691d8f64e0a6207cea31a8c90fb8c4b098a4ecd4ac1",
+        "a308fa1630f262b3d59d17d636a9bc75f7a553d4e884f619501d91b61c48de28",
+        "a65de7f70f7ad5da235351ece1f7f35a2e2f15d9c289ce793edc7f9d45391be9",
+        "b0ec2177b3c00001253393e55fd89ffbfab8d7badee6c1488cb2a8bd92524729",
+        "b40449a868185a21dda2745e0edf77cfe4586e33da9ebbfee52533b2946b53e4",
+        "b8106175521681492b7194e971ff88f0e5f25d73ed2d4ac701f79f824ec698a0",
+        "bac5729566820d61932921b325a7777aab90db7d5db0547aff570dfb403d2b6a",
+        "bac578fd30080f7985071985bfe781c0b51cfe0aa26a88b832e8a2af1ed09473",
+        "bb42d16bab667242da92478f0029679df22d48f8b7ccc2b2f6a55029d7924897",
+        "c81e56918f75ac0f47e395a835f5ea3aca580363bda0cc94639dd745480d283f",
+        "c8d361a9afbe55c3e9a9b4c456480e0337032af78522bd05c62bd2e6c3c9c3dd",
+        "cc849a6ae1c246428419b2e5dbfcdfaaf1d333edb709a66410f936390bbc1a4f",
+        "e1638a0db95cd6722185010c2530b969cf19afb4beacc5d1379ff9ad1d3b6de4",
+        "e39aa94c89d2acff0962f84c70473926e9f88a560f402783754ae0558d07c20c",
+        "f3f822760fabbd0fbe885107a0f50fbf5044a1e16f39a885ea289a38740584a2",
+        "fc29f97ea31d02b0d492eb36b9aead142629c3623e35edde6f45f5d5ec7e3d0a"
+      ],
+      "classification": "test_gap",
+      "classification_note": "Query window, sorting, burst, folding and generated-time boundaries need distinguishing cases.",
+      "group_id": "G19",
+      "line_ranges": [
+        {
+          "end": 41,
+          "start": 41
+        },
+        {
+          "end": 69,
+          "start": 69
+        },
+        {
+          "end": 74,
+          "start": 73
+        },
+        {
+          "end": 88,
+          "start": 88
+        },
+        {
+          "end": 101,
+          "start": 101
+        },
+        {
+          "end": 103,
+          "start": 103
+        },
+        {
+          "end": 138,
+          "start": 138
+        },
+        {
+          "end": 143,
+          "start": 143
+        },
+        {
+          "end": 213,
+          "start": 213
+        },
+        {
+          "end": 237,
+          "start": 237
+        },
+        {
+          "end": 240,
+          "start": 239
+        },
+        {
+          "end": 243,
+          "start": 243
+        },
+        {
+          "end": 245,
+          "start": 245
+        },
+        {
+          "end": 247,
+          "start": 247
+        },
+        {
+          "end": 249,
+          "start": 249
+        },
+        {
+          "end": 268,
+          "start": 268
+        },
+        {
+          "end": 276,
+          "start": 276
+        },
+        {
+          "end": 324,
+          "start": 324
+        },
+        {
+          "end": 374,
+          "start": 374
+        },
+        {
+          "end": 562,
+          "start": 562
+        },
+        {
+          "end": 605,
+          "start": 605
+        },
+        {
+          "end": 614,
+          "start": 614
+        },
+        {
+          "end": 617,
+          "start": 617
+        },
+        {
+          "end": 652,
+          "start": 652
+        }
+      ],
+      "operator_counts": {
+        "python:bool-const-flip": 2,
+        "python:boolop-swap": 10,
+        "python:compare-swap": 23,
+        "python:falsy-swap": 2
+      },
+      "path": "nyxloom/src/nyxloom/session_extract/usage/query.py",
+      "survived_count": 37,
+      "survivor_operator_counts": {
+        "python:bool-const-flip": 2,
+        "python:boolop-swap": 10,
+        "python:compare-swap": 23,
+        "python:falsy-swap": 2
+      }
+    },
+    {
+      "budget_exceeded_count": 0,
+      "budget_operator_counts": {},
+      "candidate_count": 41,
+      "candidate_ids": [
+        "12845839a647ee73e81d13fcac6fd883764391d6fbfe2eeb14cadb8cdcb1d268",
+        "1770240b436f4965eaacb50a2d38968faeee204004d354c69b1c8cae6488b25d",
+        "17ba49ba535e1db8572d547349ff218e1ff10fa840cf4f180eb5de8395b1c9a1",
+        "17de586e188eb266c5239070ffdd61d3c7458e3b8655631597b3d145fa0e26cf",
+        "19cb54afef573f8fa4a507c61254ca7b4ed28e58084103f86c9e68bddaceb531",
+        "19de638575806a6c69c925ec941cfd766d3981a9a4c593bd3eb54618b92e5556",
+        "20c8662d70e60c771f27c9dd19428ff490cdc240e755090cbf59e1ed69fc9965",
+        "21d1147b00a8a4b6069e5b30811aca78b69bcc66bb9018bf4431f751c27a91f8",
+        "25771cfa2cbdc68ac5d57739a37a9c420c96d4493d673efd1600a96c1219b094",
+        "2ed8e4549b10a3524552e09ba281825adb1c397a2355a24903e99c3a97a50a68",
+        "3911c298f932fbfb9d08f85d87bcda5fc1eee90f33e4df9d45498db9e7b5a4c7",
+        "3a05114b9080aabefba09c589baee8c21bb2aa8fecd523289adea53a0fdae23d",
+        "3a8c9128d0d41272485c3ea58f2b61d4dada0a3c5af3021fb645cf89dcc76bb6",
+        "3e684fa64e6dab2bac07235cb20e749265459557d93eb15364f8a2f081cab2af",
+        "41972c1ddf866514529a88b89ae095a78b6be679d1e8ca0eca440b244a401be7",
+        "47ccdd8364801134a1771aead861c37224c546a5cf2b99802b6c546326a89963",
+        "5880b7bc54cc71cd1c59d1d3a749cd00284271c0808a8728fca2c6de87b305df",
+        "5c7152aa309d5b7e107c49c56424ec9c20b030f7389046e57d6f76763ee87e95",
+        "775bf375ec2a08468c96a7c2527396818cc1d094fe7096c60e7d69d500019e10",
+        "7aaea5359056a561882234bf894e2de1e24a93f5ea612952e33dc91a1bdc85ee",
+        "88e442f4019e1117ba836db25fd02b7661609ad72fb87cfc3fffb272af573243",
+        "903028e736a1195c4b99401534ebc8c47751ce6e29d69ecf38b030d4569d9e9e",
+        "9d4e5dbec7d209763777025b52e23f32ed1d4936206195f5e997fa674f3e1324",
+        "a7d1f539665bd0ae897e9b9a22c16f54dc416733e122571844b856a21bbf6ce6",
+        "a8c20fd8c983e4cbc865b239a2d009f40a1d6c92bb73a8d967cd51fe1e937938",
+        "a9389ef4552cb15e0a67996615a5271389ce887a7dd5c870751e6445d3f3121e",
+        "ad8c265289f69989e563ab06898533210b66d85789e88da8da422b9f5c544117",
+        "b09cea0774fe17a859fd56188dd2db859132aa59c59b8f500f7513791535b26f",
+        "b4773237189e96901a6b6d6d045c335996708cf04904f5cf240cfb7baa382584",
+        "c332da2b2b88226ba5c2c70e278e17bac0226c848429acf992cec694e220c14b",
+        "cd8050c41913d4884cbc27c6304f0b7712ca76a66c7914874c51578de70ec4d2",
+        "d12de7e45d766f25edf8e91b02f3718d7d68daa44afc6e94c8184dff2f353cd0",
+        "d70f3da2d2912c7221439cab1d14a5a74bec725e55abf56d47df7474681b56b3",
+        "d9e808a846192f700ad16f3219b2ee341e853d314685f1991153bbba68d6ca04",
+        "dbcfe25e1b10d8e5164b77f2719270f8054db3d87ade06d2c005ded647b51e83",
+        "e1e2e7ee849e589dcb6ce610339fa9ee83a47ed9ec73726143bf48fcca563de3",
+        "e6e61d6f5fc5f4c4cd71ff8bac97570cd76bca5e6fd5f3751d2111c66c936cce",
+        "ee0dd316bdb35deb8f86b4c22f2188620b555830329d73c57cc4f235ffd98c99",
+        "eed9a80af71a0245c91d65e8d66310950b59826eb487f815b0f5fd6ef0995d58",
+        "f9a35c7c0850b74854f04fc1c52c1c88f2a5c5ab67e6ba4430acd45f10c1223c",
+        "fa4dd141829c63e8e7140944eb19110c9320aa3ab2bb784a4a03cd03c3ebb502"
+      ],
+      "classification": "test_gap",
+      "classification_note": "Renderer traversal, folded ownership, exact-ledger totals and CSV value mapping need output assertions.",
+      "group_id": "G20",
+      "line_ranges": [
+        {
+          "end": 26,
+          "start": 26
+        },
+        {
+          "end": 39,
+          "start": 38
+        },
+        {
+          "end": 51,
+          "start": 51
+        },
+        {
+          "end": 60,
+          "start": 60
+        },
+        {
+          "end": 132,
+          "start": 132
+        },
+        {
+          "end": 153,
+          "start": 153
+        },
+        {
+          "end": 155,
+          "start": 155
+        },
+        {
+          "end": 158,
+          "start": 158
+        },
+        {
+          "end": 179,
+          "start": 179
+        },
+        {
+          "end": 187,
+          "start": 187
+        },
+        {
+          "end": 200,
+          "start": 200
+        },
+        {
+          "end": 254,
+          "start": 254
+        },
+        {
+          "end": 280,
+          "start": 278
+        },
+        {
+          "end": 298,
+          "start": 298
+        },
+        {
+          "end": 329,
+          "start": 329
+        },
+        {
+          "end": 342,
+          "start": 341
+        },
+        {
+          "end": 349,
+          "start": 345
+        },
+        {
+          "end": 351,
+          "start": 351
+        },
+        {
+          "end": 357,
+          "start": 354
+        },
+        {
+          "end": 364,
+          "start": 364
+        },
+        {
+          "end": 367,
+          "start": 367
+        },
+        {
+          "end": 377,
+          "start": 376
+        }
+      ],
+      "operator_counts": {
+        "python:bool-const-flip": 5,
+        "python:boolop-swap": 21,
+        "python:compare-swap": 15
+      },
+      "path": "nyxloom/src/nyxloom/session_extract/usage/render.py",
+      "survived_count": 41,
+      "survivor_operator_counts": {
+        "python:bool-const-flip": 5,
+        "python:boolop-swap": 21,
+        "python:compare-swap": 15
+      }
+    },
+    {
+      "budget_exceeded_count": 0,
+      "budget_operator_counts": {},
+      "candidate_count": 10,
+      "candidate_ids": [
+        "2d90e7c6156b5c0bc0510db0135160dc241546d39e4b6747a2418eeee747dc81",
+        "5344d67bd7ccd6764f4bae72a5633960e544664c0b648f92b4847228d892e13b",
+        "6b63660807d988b50697ef8768b7b902ad4629118c215099787d2541e0549d99",
+        "70e99b0e1f3aee77a55178f7d8e27bcd46e1e6c6bbd0a3fcbfef410c6e7d9f1d",
+        "790968a23be1e8e2120f569ec2bb20c7f2e1e3aefa5892a27effd86b077a853b",
+        "8440f0edfc24591c9e176ae8a1742d9e209fef83e1a11ab25bdc4d994503ee63",
+        "aea835414f4f0f1c4da5e9c9b3ee96b4e113ec420df400c96e70f55f11c2a842",
+        "f18a622f08eb813f2003fab6fe6360b7537e23ac9469191728f93b95065e4c36",
+        "f36821661c783bdba9379648d9d66f4e7daad28f6e75a6d5a30b402d37a2c8c9",
+        "f84d071a0b3026d08a2ba345bea78d34fe1cb56a2ab416da33ca8784ae39bd75"
+      ],
+      "classification": "test_gap",
+      "classification_note": "Window aggregation and reset-boundary inclusivity need cases on both sides of each endpoint.",
+      "group_id": "G21",
+      "line_ranges": [
+        {
+          "end": 34,
+          "start": 33
+        },
+        {
+          "end": 40,
+          "start": 40
+        },
+        {
+          "end": 125,
+          "start": 125
+        },
+        {
+          "end": 155,
+          "start": 155
+        },
+        {
+          "end": 166,
+          "start": 166
+        },
+        {
+          "end": 210,
+          "start": 209
+        }
+      ],
+      "operator_counts": {
+        "python:bool-const-flip": 2,
+        "python:boolop-swap": 1,
+        "python:compare-swap": 7
+      },
+      "path": "nyxloom/src/nyxloom/session_extract/usage/windows.py",
+      "survived_count": 10,
+      "survivor_operator_counts": {
+        "python:bool-const-flip": 2,
+        "python:boolop-swap": 1,
+        "python:compare-swap": 7
+      }
+    },
+    {
+      "budget_exceeded_count": 0,
+      "budget_operator_counts": {},
+      "candidate_count": 1,
+      "candidate_ids": [
+        "cbf0a809ad3a9346c35b793bf07fe7f25a50959ee07b37f4aef1ef4841673fb8"
+      ],
+      "classification": "likely_equivalent",
+      "classification_note": "The ensure_ascii mutation changes escape spelling while preserving parsed JSON; confirm consumers have no byte-level dependency.",
+      "group_id": "G22",
+      "line_ranges": [
+        {
+          "end": 148,
+          "start": 148
+        }
+      ],
+      "operator_counts": {
+        "python:bool-const-flip": 1
+      },
+      "path": "nyxloom/src/nyxloom/session_extract/watch.py",
+      "survived_count": 1,
+      "survivor_operator_counts": {
+        "python:bool-const-flip": 1
+      }
+    }
+  ],
+  "schema_version": 1,
+  "summary": {
+    "budget_exceeded": 2,
+    "killed": 889,
+    "operator_counts_for_budget_exceeded": {
+      "python:bool-const-flip": 1,
+      "python:compare-swap": 1
+    },
+    "operator_counts_for_survivors": {
+      "python:bool-const-flip": 99,
+      "python:boolop-swap": 90,
+      "python:compare-swap": 119,
+      "python:falsy-swap": 4
+    },
+    "other_terminal": 0,
+    "pending": 0,
+    "planned": 1203,
+    "r2_is_green": false,
+    "survived": 312
+  }
+}

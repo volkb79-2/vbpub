@@ -381,6 +381,17 @@ def _call_row(call: dict[str, Any], report: dict[str, Any], edges: dict[tuple[st
 
 def render_csv(report: dict[str, Any]) -> str:
     """Render a flat exact call ledger with one leading report metadata row."""
+
+    def safe_row(row: dict[str, Any]) -> dict[str, Any]:
+        """Neutralize spreadsheet formula prefixes on every text cell."""
+        formula_prefixes = ("=", "+", "-", "@", "\t", "\r")
+        return {
+            column: "'" + value
+            if isinstance(value, str) and value.startswith(formula_prefixes)
+            else value
+            for column, value in row.items()
+        }
+
     output = io.StringIO(newline="")
     writer = csv.DictWriter(output, fieldnames=CSV_COLUMNS, lineterminator="\n")
     writer.writeheader()
@@ -392,11 +403,11 @@ def render_csv(report: dict[str, Any]) -> str:
         "window_since": report["window"]["since"],
         "window_until": report["window"]["until"],
     })
-    writer.writerow(report_row)
+    writer.writerow(safe_row(report_row))
     edges = {
         (edge["session_id"], edge["agent_id"]): edge
         for edge in report["lineage_edges"]
     }
     for call in report["calls"]:
-        writer.writerow(_call_row(call, report, edges))
+        writer.writerow(safe_row(_call_row(call, report, edges)))
     return output.getvalue()

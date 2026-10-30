@@ -16210,11 +16210,19 @@ class TestResumeAndProgressAlways:
 
     @pytest.mark.parametrize("declared, required, expected", [
         ("9.0.1.dev1083+ga43c0fcf9", (5, 2, 0), True),
-        ("v7.1.1.dev4+gabc123.d20261030", (7, 1, 0), True),
+        ("v7.1.1.dev4+gabc1234.d20261030", (7, 1, 0), True),
         ("7.1.0", (7, 1, 0), True),
-        ("7.1.0.dev4+gabc123", (7, 1, 0), False),
-        ("5.1.99.dev4+gabc123", (5, 2, 0), False),
+        ("v7.1.0", (7, 1, 0), True),
+        ("7.1.0.dev4+gabc1234", (7, 1, 0), False),
+        ("5.1.99.dev4+gabc1234", (5, 2, 0), False),
         ("9.0.1rc1", (5, 2, 0), False),
+        ("9.0.1+foo", (5, 2, 0), False),
+        ("9.0.1+ga43c0fcf9", (5, 2, 0), False),
+        ("9.0.1.dev3", (5, 2, 0), False),
+        ("9.0.1.dev3+foo", (5, 2, 0), False),
+        ("9.0.1.dev3+g123456", (5, 2, 0), False),
+        ("9.0.1.dev3+ga43c0fcf9.d2026-10-30", (5, 2, 0), False),
+        ("5.2.0.dev1+ga43c0fcf9", (5, 2, 0), False),
         ("unknown", (5, 2, 0), False),
     ])
     def test_assay_inventory_version_meets_floor(
