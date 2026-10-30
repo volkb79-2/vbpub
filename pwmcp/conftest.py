@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
 from collections.abc import Iterator
 from pathlib import Path
@@ -9,11 +11,17 @@ from pathlib import Path
 import pytest
 
 _REPOSITORY = Path(__file__).resolve().parent
+_GIT_EXECUTABLE_ENV = "PWMCP_TEST_GIT_EXECUTABLE"
 
 
 def _git_status_porcelain() -> str:
+    git_executable = os.environ.get(_GIT_EXECUTABLE_ENV) or shutil.which("git")
+    if git_executable is None:
+        raise RuntimeError(
+            f"the PWMCP Git-status guard requires git on PATH or {_GIT_EXECUTABLE_ENV}"
+        )
     result = subprocess.run(
-        ["git", "status", "--porcelain", "--untracked-files=all"],
+        [git_executable, "status", "--porcelain", "--untracked-files=all"],
         cwd=_REPOSITORY,
         check=True,
         capture_output=True,
