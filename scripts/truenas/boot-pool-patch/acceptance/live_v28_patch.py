@@ -26,23 +26,18 @@ from remote import RemoteError, Target, flatten_datasets
 EXPECTED_VERSION = "28.0.0-MASTER+20261014-230204"
 SCRIPT_DIR = Path(__file__).resolve().parent
 TRUENAS_ROOT = SCRIPT_DIR.parents[1]
-PATCH_DIR = TRUENAS_ROOT / "boot-pool-patch" / "v28-nightly-20261014"
+PATCH_ROOT = TRUENAS_ROOT / "boot-pool-patch"
+ADAPTERS = {
+    EXPECTED_VERSION: PATCH_ROOT / "v28-nightly-20261014",
+    "28.0.0-MASTER+20261027-175229": PATCH_ROOT / "v28-nightly-20261027",
+}
+TARGET_COUNTS = {EXPECTED_VERSION: 15, "28.0.0-MASTER+20261027-175229": 19}
+PATCH_DIR = ADAPTERS[EXPECTED_VERSION]
 SHARED_DIR = TRUENAS_ROOT / "boot-pool-patch" / "shared"
 STORAGE_ROOTS = {
     "path-a": ("boot-pool/user-data", "/mnt/boot-pool/user-data"),
     "path-b": ("boot-disk-data", "/mnt/boot-disk-data"),
 }
-BUNDLE_FILES = (
-    ("patch/storage.patch", PATCH_DIR / "storage.patch"),
-    ("patch/middleware.patch", PATCH_DIR / "middleware.patch"),
-    ("patch/boot-mount.patch", PATCH_DIR / "boot-mount.patch"),
-    ("patch/targets.sha256", PATCH_DIR / "targets.sha256"),
-    ("patch/boot_pool_mount.py", PATCH_DIR / "boot_pool_mount.py"),
-    ("patch/apply_v28_patch_remote.sh", SCRIPT_DIR / "apply_v28_patch_remote.sh"),
-    ("patch/replace_v28_patch_remote.sh", SCRIPT_DIR / "replace_v28_patch_remote.sh"),
-    ("shared/boot_pool_user_data.py", SHARED_DIR / "boot_pool_user_data.py"),
-    ("shared/virtualization_support.py", SHARED_DIR / "virtualization_support.py"),
-)
 
 
 def require(condition: bool, message: str) -> None:
@@ -54,8 +49,17 @@ def report(stage: str, detail: str) -> None:
     print(f"[{stage}] {detail}", flush=True)
 
 
-def read_target_hashes(path: Path | None = None) -> dict[str, str]:
-    manifest_path = path or PATCH_DIR / "targets.sha256"
+def adapter_directory(version: str) -> Path:
+    try:
+        return ADAPTERS[version]
+    except KeyError as exc:
+        raise RemoteError(f"no v28 adapter is registered for {version!r}") from exc
+
+
+def read_target_hashes(
+    path: Path | None = None, *, version: str = EXPECTED_VERSION,
+) -> dict[str, str]:
+    manifest_path = path or adapter_directory(version) / "targets.sha256"
     try:
         lines = manifest_path.read_text(encoding="utf-8").splitlines()
     except OSError as exc:
@@ -72,8 +76,9 @@ def read_target_hashes(path: Path | None = None) -> dict[str, str]:
         if str(target) in result:
             raise RemoteError(f"duplicate v28 target path at {manifest_path}:{line_number}: {target}")
         result[str(target)] = fields[0]
-    if len(result) != 15:
-        raise RemoteError(f"expected 15 v28 target fingerprints, found {len(result)}")
+    expected_count = TARGET_COUNTS[version]
+    if len(result) != expected_count:
+        raise RemoteError(f"expected {expected_count} v28 target fingerprints for {version}, found {len(result)}")
     return result
 
 
@@ -104,14 +109,41 @@ def require_guests_stopped(
             raise RemoteError(f"refusing to restart middleware while {label} {identifier!r} is {state!r}")
 
 
-def deterministic_bundle() -> tuple[bytes, str, dict[str, str]]:
+def deterministic_bundle(
+    version: str = EXPECTED_VERSION,
+) -> tuple[bytes, str, dict[str, str]]:
     """Create a stable bundle with closed member names and normalized metadata."""
-    target_hashes = read_target_hashes()
+    patch_dir = adapter_directory(version)
+    target_hashes = read_target_hashes(version=version)
     paths_content = "".join(f"{name}\n" for name in target_hashes).encode()
+    versioned = version != EXPECTED_VERSION
+    bundle_files = [
+        ("patch/storage.patch", patch_dir / "storage.patch"),
+        ("patch/middleware.patch", patch_dir / "middleware.patch"),
+        ("patch/boot-mount.patch", patch_dir / "boot-mount.patch"),
+        ("patch/targets.sha256", patch_dir / "targets.sha256"),
+        ("patch/boot_pool_mount.py", patch_dir / "boot_pool_mount.py"),
+        (
+            "patch/apply_v28_patch_remote.sh",
+            patch_dir / "apply_v28_patch_remote.sh" if versioned else SCRIPT_DIR / "apply_v28_patch_remote.sh",
+        ),
+        (
+            "patch/replace_v28_patch_remote.sh",
+            patch_dir / "replace_v28_patch_remote.sh" if versioned else SCRIPT_DIR / "replace_v28_patch_remote.sh",
+        ),
+        ("shared/boot_pool_user_data.py", SHARED_DIR / "boot_pool_user_data.py"),
+        ("shared/virtualization_support.py", SHARED_DIR / "virtualization_support.py"),
+    ]
+    if version == "28.0.0-MASTER+20261027-175229":
+        bundle_files.extend((
+            ("patch/ui-pools.patch", patch_dir / "ui-pools.patch"),
+            ("shared/boot_disk_partition.py", patch_dir / "boot_disk_partition.py"),
+            ("shared/pool_create_schema_v28.json", patch_dir / "pool_create_schema_v28.json"),
+        ))
     raw = io.BytesIO()
     with gzip.GzipFile(fileobj=raw, mode="wb", filename="", mtime=0) as compressed:
         with tarfile.open(fileobj=compressed, mode="w", format=tarfile.USTAR_FORMAT) as archive:
-            for archive_name, source in BUNDLE_FILES:
+            for archive_name, source in bundle_files:
                 if not source.is_file() or source.is_symlink():
                     raise RemoteError(f"v28 adapter bundle member is missing or not a regular file: {source}")
                 info = tarfile.TarInfo(archive_name)
@@ -178,14 +210,14 @@ def check_target_preconditions(target: Target, version: str, profile: str) -> No
     info = target.call("system.info", timeout=120)
     actual = str(info.get("version", ""))
     require(actual == version, f"expected TrueNAS {version}, got {actual!r}")
-    require(version == EXPECTED_VERSION, f"no v28 adapter is registered for {version!r}")
+    adapter_directory(version)
     require(target.shell("test ! -e /dev/kvm && printf absent") == "absent",
             "this v28 acceptance needs /dev/kvm absent so the TCG branch is exercised")
     require(target.shell("systemctl is-active --quiet middlewared.service && printf active") == "active",
             "middlewared must be active before patching")
     if profile == "path-a":
-        require(target.shell("test ! -e /dev/vda4 && printf absent") == "absent",
-                "Path A requires the full-disk layout without partition 4")
+        # Path A uses the mounted boot-pool user-data root; a separate reserved
+        # partition may coexist on the same disk without affecting this profile.
         target.shell(
             "test \"$(zfs get -H -o value mountpoint boot-pool/user-data)\" = "
             f"{shlex.quote(mountpoint)} && "
@@ -205,10 +237,11 @@ def check_target_preconditions(target: Target, version: str, profile: str) -> No
             f"mountpoint -q {shlex.quote(mountpoint)} && printf mounted",
             timeout=90,
         ) == "mounted", "Path B boot-disk-data must already be mounted at its canonical path")
-    datasets = flatten_datasets(target.query(
-        "pool.dataset.query", [["id", "=", dataset]], timeout=120,
-    ))
-    require(dataset in datasets, f"{profile} persistent backup root is not queryable: {datasets!r}")
+    if profile == "path-b":
+        datasets = flatten_datasets(target.query(
+            "pool.dataset.query", [["id", "=", dataset]], timeout=120,
+        ))
+        require(dataset in datasets, f"{profile} persistent backup root is not queryable: {datasets!r}")
     statfs = target.call("filesystem.statfs", mountpoint, timeout=90)
     require(
         statfs.get("source") == dataset and statfs.get("dest") == mountpoint,
@@ -226,8 +259,7 @@ def main() -> int:
     profile = os.environ.get("TRUENAS_STORAGE_PROFILE", "")
     storage_root_for_profile(profile)
     expected_version = os.environ.get("TRUENAS_EXPECTED_VERSION", "")
-    if expected_version != EXPECTED_VERSION:
-        raise RemoteError(f"this adapter only targets {EXPECTED_VERSION}; got {expected_version!r}")
+    adapter_directory(expected_version)
     action = os.environ.get("TRUENAS_V28_PATCH_ACTION", "install")
     replace_guard = os.environ.get("TRUENAS_TEST_ALLOW_PATCH_REPLACE", "")
     if action not in {"install", "replace"}:
@@ -248,7 +280,7 @@ def main() -> int:
 
     target = Target.from_environment()
     check_target_preconditions(target, expected_version, profile)
-    bundle, bundle_sha256, target_hashes = deterministic_bundle()
+    bundle, bundle_sha256, target_hashes = deterministic_bundle(expected_version)
     stage = f"/tmp/truenas-v28-boot-pool-patch-{uuid.uuid4().hex}"
     encoded = base64.b64encode(bundle).decode("ascii")
     transfer = bundle_transfer_command(stage, encoded, bundle_sha256)

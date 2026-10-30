@@ -25,6 +25,7 @@ from path_b_ui_setup import (
     pool_create_request_evidence,
     reserved_partition_four_name,
     resolve_path_b_setup_mode,
+    check_checkbox_via_visible_label,
     validate_pool_create_topology,
 )
 from path_a_ui_provisioner import PathARootProvisionError, provision_path_a_ui_root
@@ -33,8 +34,15 @@ from observed_patch_manifest import (
     load_observed_patch_manifest,
     verify_observed_patch_files,
 )
+from patch_install_record import (
+    V27_INSTALL_RECORD,
+    V27_RELEASES,
+    manifest_paths,
+    select_v28_record,
+)
 from remote import RemoteError, Target, flatten_datasets
 from ui_resume import (
+    managed_v28_patch_root_entries,
     unexpected_ui_root_snapshots,
     validate_resumed_ui_dataset,
     ui_root_internal_datasets,
@@ -48,6 +56,16 @@ def require(condition: bool, message: str) -> None:
 
 def report(stage: str, detail: str) -> None:
     print(f"[{stage}] {detail}", flush=True)
+
+
+def create_pool_control(page):
+    """Return the one visible Create Pool control, regardless of semantic role."""
+    matches = []
+    for role in ("button", "link"):
+        control = page.get_by_role(role, name=re.compile(r"^create pool$", re.IGNORECASE))
+        if control.count() == 1 and control.is_visible():
+            matches.append(control)
+    return matches[0] if len(matches) == 1 else None
 
 
 def connect_pwmcp(ws_url: str) -> BrowserLease:
@@ -516,20 +534,22 @@ def inventory_before_ui_mutation(
                 f"preprovisioned Path B requires boot-disk-data ONLINE: {direct_pools!r}")
     else:
         raise RemoteError("Path B inventory requires an explicit setup mode")
-    marker_state = target.shell(
-        "if test -e /root/v27-boot-pool-patch-install.json; then printf present; else printf absent; fi",
-        timeout=30,
-    )
+    expected_release = required_env("TRUENAS_EXPECTED_VERSION")
+    patch_record: dict = {}
+    record_path = ""
     observed_manifest_path = os.environ.get("TRUENAS_OBSERVED_PATCH_MANIFEST", "")
     allow_observed_patch = os.environ.get("TRUENAS_TEST_ALLOW_UNRECORDED_PATCH", "")
     if observed_manifest_path or allow_observed_patch:
-        expected_release = required_env("TRUENAS_EXPECTED_VERSION")
         require(
             allow_observed_patch == "1" and bool(observed_manifest_path),
             "unrecorded patch UI checks require both the explicit guard and an observed-code manifest",
         )
         require(profile == "path-a" and expected_release == "27.0.0-RC.1",
                 "unrecorded patch UI checks support only the observed v27 Path A target")
+        marker_state = target.shell(
+            f"if test -e {shlex.quote(V27_INSTALL_RECORD)}; then printf present; else printf absent; fi",
+            timeout=30,
+        )
         require(marker_state == "absent",
                 "observed-code UI checks require the v27 patch-install record to remain absent")
         try:
@@ -546,17 +566,45 @@ def inventory_before_ui_mutation(
             "unrecorded-patch-state",
             "target source matches the pinned observed v27 fingerprint; UI result is exploratory and does not certify the current patch bundle",
         )
-    else:
+    elif expected_release in V27_RELEASES:
+        marker_state = target.shell(
+            f"if test -f {shlex.quote(V27_INSTALL_RECORD)}; then printf present; else printf absent; fi",
+            timeout=30,
+        )
         require(marker_state == "present", "live-ui requires the registered v27 patch-install record")
         try:
-            patch_record = json.loads(
-                target.shell("cat /root/v27-boot-pool-patch-install.json", timeout=30)
-            )
+            patch_record = json.loads(target.shell(
+                f"cat -- {shlex.quote(V27_INSTALL_RECORD)}", timeout=30,
+            ))
         except (RemoteError, ValueError) as exc:
             raise RemoteError("live-ui requires the registered v27 patch-install record") from exc
         require(
             patch_record.get("root_create_guard") == "root-excluded-from-descendant-readiness-v1",
             f"live-ui requires the v27 root-create guard marker from the current patch bundle: {patch_record!r}",
+        )
+    else:
+        try:
+            paths = manifest_paths(expected_release)
+            contents = {}
+            for path in paths:
+                quoted = shlex.quote(path)
+                raw = target.shell(
+                    f"if test -L {quoted}; then printf '__TRUENAS_SYMLINK__'; "
+                    f"elif test -f {quoted}; then cat -- {quoted}; "
+                    "else printf '__TRUENAS_ABSENT__'; fi",
+                    timeout=30,
+                )
+                if raw == "__TRUENAS_SYMLINK__":
+                    raise ValueError(f"registered patch record is a symlink: {path}")
+                if raw != "__TRUENAS_ABSENT__":
+                    contents[path] = raw
+            record_path, patch_record = select_v28_record(contents, expected_release)
+        except (RemoteError, ValueError) as exc:
+            raise RemoteError(f"live-ui requires one valid registered patch record: {exc}") from exc
+        report(
+            "registered-patch-state",
+            f"version={expected_release} profile={patch_record['storage_profile']} "
+            f"bundle_sha256={patch_record['bundle_sha256']} record={record_path}",
         )
     if profile == "path-b":
         require(path_b_setup in {"ui-wizard", "preprovisioned"},
@@ -698,6 +746,43 @@ def inventory_before_ui_mutation(
             "find", mountpoint, "-mindepth", "1", "-maxdepth", "1", "-printf", "%f\\n",
         ]).splitlines()
         allowed_root_contents = {".truenas_containers"}
+        try:
+            patch_root_entries = managed_v28_patch_root_entries(
+                expected_release, patch_record.get("storage_profile", ""),
+                record_path, patch_record, mountpoint,
+            )
+        except ValueError as exc:
+            raise RemoteError(f"UI resume rejected v28 patch storage metadata: {exc}") from exc
+        if patch_root_entries:
+            backup_root_name = ".truenas-boot-pool-patch-backups"
+            replacement_root_name = ".truenas-boot-pool-patch-replacements"
+            backup_path = patch_record["backup"]
+            backup_root = f"{mountpoint}/{backup_root_name}"
+            archive_path = f"{backup_path}/targets.tar.gz"
+            backup_state = target.shell(
+                "if test -d " + shlex.quote(backup_root)
+                + " && test ! -L " + shlex.quote(backup_root)
+                + " && test -d " + shlex.quote(backup_path)
+                + " && test ! -L " + shlex.quote(backup_path)
+                + " && test -f " + shlex.quote(archive_path)
+                + " && test ! -L " + shlex.quote(archive_path)
+                + "; then printf valid; else printf invalid; fi",
+                timeout=30,
+            )
+            require(backup_state == "valid",
+                    "UI resume requires the registered v28 original-file backup and archive")
+            replacement_root = f"{mountpoint}/{replacement_root_name}"
+            replacement_state = target.shell(
+                "if test -e " + shlex.quote(replacement_root)
+                + " || test -L " + shlex.quote(replacement_root)
+                + "; then if test -d " + shlex.quote(replacement_root)
+                + " && test ! -L " + shlex.quote(replacement_root)
+                + "; then printf directory; else printf unsafe; fi; else printf absent; fi",
+                timeout=30,
+            )
+            require(replacement_state in {"directory", "absent"},
+                    "UI resume found unsafe v28 patch replacement metadata")
+            allowed_root_contents.update(patch_root_entries)
         if resume_existing_ui_dataset:
             allowed_root_contents.add(resume_existing_ui_dataset.rsplit("/", 1)[-1])
         require(set(root_contents) <= allowed_root_contents,
@@ -744,7 +829,9 @@ def create_path_a_root_in_ui(
     add = page.get_by_role("button", name="Add Dataset", exact=True)
     add.wait_for(state="visible", timeout=120_000)
     add.click()
-    dialog = page.get_by_role("dialog", name="Slide-in form", exact=True)
+    dialog = page.get_by_role(
+        "dialog", name=re.compile(r"^(?:Slide-in form|Add Dataset)$", re.IGNORECASE),
+    )
     dialog.wait_for(state="visible", timeout=60_000)
     snapshot = record_dialog(page, dialog, "path-a-root-ui-form")
     fill_labeled_textbox(dialog, ("Name",), "user-data")
@@ -895,8 +982,8 @@ def create_path_b_pool_in_ui(
     """Try the supported pool wizard, accepting only the reserved free-tail partition."""
     jobs_before = target.call("core.get_jobs", [["method", "=", "pool.create"]], timeout=120)
     body = page.locator("body")
-    create = page.get_by_role("button", name=re.compile(r"^create pool$", re.IGNORECASE))
-    if create.count() == 0:
+    create = create_pool_control(page)
+    if create is None:
         storage_link = page.get_by_text("Storage", exact=True).first
         if storage_link.count() == 0 or not storage_link.is_visible():
             # Return to the authenticated dashboard using the UI so its
@@ -906,15 +993,19 @@ def create_path_b_pool_in_ui(
             storage_link = page.get_by_text("Storage", exact=True).first
         if storage_link.count() == 1 and storage_link.is_visible():
             storage_link.click()
-            create.wait_for(state="visible", timeout=60_000)
+            deadline = time.monotonic() + 60
+            while time.monotonic() < deadline:
+                create = create_pool_control(page)
+                if create is not None:
+                    break
+                page.wait_for_timeout(500)
         else:
             snapshot = body.aria_snapshot()
             raise RemoteError(
                 "Path B UI cannot reach the Storage section from the authenticated UI; "
                 f"page={page.url!r} form={snapshot[:2600]!r}"
             )
-        create = page.get_by_role("button", name=re.compile(r"^create pool$", re.IGNORECASE))
-    if create.count() != 1 or not create.is_visible():
+    if create is None:
         snapshot = body.aria_snapshot()
         raise RemoteError(
             "Path B UI cannot open the storage pool creation wizard; "
@@ -991,9 +1082,10 @@ def create_path_b_pool_in_ui(
             "the pool wizard did not show its disk-erase confirmation dialog")
     warning = " ".join(confirmation.inner_text(timeout=30_000).split())
     require("erased" in warning, f"unexpected pool-creation confirmation text: {warning!r}")
-    acknowledge = confirmation.get_by_role("checkbox", name=re.compile(r"^confirm$", re.IGNORECASE))
-    require(acknowledge.count() == 1, "the erase confirmation has no single Confirm checkbox")
-    acknowledge.check()
+    try:
+        check_checkbox_via_visible_label(confirmation, "Confirm")
+    except ValueError as exc:
+        raise RemoteError(f"pool erase confirmation could not be acknowledged: {exc}") from exc
     proceed = confirmation.get_by_role("button", name=re.compile(r"^(continue|create pool|create)$", re.IGNORECASE))
     require(proceed.count() == 1 and proceed.is_enabled(), "the erase confirmation cannot be continued")
     proceed.click()
@@ -1034,14 +1126,24 @@ def create_path_b_pool_in_ui(
     raise RemoteError("UI pool creation did not register boot-disk-data ONLINE within 600 seconds")
 
 
-def inspect_path_b_partition_ui(page, base_url: str) -> None:
+def inspect_path_b_partition_ui(page) -> None:
     """Record disk-screen controls related to partition creation without mutating storage."""
-    storage_url = base_url + "/ui/storage"
     try:
-        page.goto(storage_url, wait_until="domcontentloaded", timeout=120_000)
-        page.get_by_role("button", name=re.compile(r"^create pool$", re.IGNORECASE)).wait_for(
-            state="visible", timeout=90_000,
+        storage_link = page.get_by_text("Storage", exact=True).first
+        if storage_link.count() != 1 or not storage_link.is_visible():
+            snapshot = page.locator("body").aria_snapshot()
+            report(
+                "path-b-partition-ui-inventory",
+                "authenticated UI has no single visible Storage sidebar link; "
+                f"page={page.url!r} form={snapshot[:2500]!r}",
+            )
+            return
+        storage_link.click()
+        page.get_by_role("heading", name="Storage Dashboard").wait_for(
+            state="visible", timeout=60_000,
         )
+        page.wait_for_url(re.compile(r"/ui/storage(?:[?#]|$)"), timeout=30_000)
+        page.wait_for_timeout(700)
         candidates = []
         for role in ("button", "link"):
             control = page.get_by_role(role, name=re.compile(r"^disks$", re.IGNORECASE))
@@ -1057,6 +1159,7 @@ def inspect_path_b_partition_ui(page, base_url: str) -> None:
             return
         role, control = candidates[0]
         control.click()
+        page.wait_for_url(re.compile(r"/ui/storage/disks(?:[?#]|$)"), timeout=30_000)
         page.wait_for_load_state("domcontentloaded", timeout=30_000)
         page.wait_for_timeout(700)
         body = page.locator("body")
@@ -1084,14 +1187,15 @@ def inspect_path_b_partition_ui(page, base_url: str) -> None:
             "screen_text": body_text[:3500],
         }, sort_keys=True))
     except PlaywrightError as exc:
+        try:
+            rendered_dom = page.locator("body").aria_snapshot(timeout=10_000)
+        except PlaywrightError as snapshot_exc:
+            rendered_dom = f"<snapshot unavailable: {type(snapshot_exc).__name__}: {str(snapshot_exc)[:300]}>"
         report(
             "path-b-partition-ui-inventory",
-            f"could not inspect the TrueNAS Disks screen: {type(exc).__name__}: {str(exc)[:500]}",
+            f"could not inspect the TrueNAS Disks screen: {type(exc).__name__}: {str(exc)[:500]}; "
+            f"page={page.url!r}; rendered DOM={rendered_dom[:5000]!r}",
         )
-    finally:
-        page.goto(storage_url, wait_until="domcontentloaded", timeout=120_000)
-
-
 def select_dataset_parent(page, base_url: str, profile: str) -> str:
     parent = selected_dataset_parent(profile)
 
@@ -1119,9 +1223,55 @@ def select_dataset_parent(page, base_url: str, profile: str) -> str:
 
 
 def create_dataset_in_ui(page, parent: str, name: str) -> str:
-    page.get_by_role("button", name="Add Dataset", exact=True).click()
-    dialog = page.get_by_role("dialog", name="Slide-in form")
-    dialog.get_by_role("textbox", name="Name").fill(name)
+    add_button = page.get_by_role("button", name="Add Dataset", exact=True)
+    add_button.click()
+    dialog = page.get_by_role(
+        "dialog", name=re.compile(r"^(?:Slide-in form|Add Dataset)$", re.IGNORECASE),
+    )
+    if not (dialog.count() == 1 and dialog.is_visible()):
+        button_state = add_button.evaluate(
+            """el => ({outerHTML: el.outerHTML.slice(0, 3000), disabled: !!el.disabled,
+                       ariaDisabled: el.getAttribute('aria-disabled'),
+                       ariaHaspopup: el.getAttribute('aria-haspopup'),
+                       ariaExpanded: el.getAttribute('aria-expanded'),
+                       title: el.getAttribute('title')})"""
+        )
+        report("dataset-create-add-state", json.dumps(button_state, sort_keys=True))
+        dataset_options = []
+        for role in ("menuitem", "option"):
+            option = page.get_by_role(
+                role, name=re.compile(r"^(?:create\s+)?dataset$", re.IGNORECASE), exact=True,
+            )
+            dataset_options.extend(
+                option.nth(index)
+                for index in range(option.count())
+                if option.nth(index).is_visible()
+            )
+        if len(dataset_options) == 1:
+            dataset_options[0].click()
+            report("dataset-create-add-menu", "selected the Dataset action from the Add Dataset menu")
+        elif len(dataset_options) > 1:
+            snapshot = page.locator("body").aria_snapshot()
+            raise RemoteError(
+                "Add Dataset exposed multiple Dataset menu actions; refusing to guess: "
+                f"{snapshot[:3000]!r}"
+            )
+        else:
+            try:
+                dialog.wait_for(state="visible", timeout=5_000)
+            except PlaywrightError as exc:
+                snapshot = page.locator("body").aria_snapshot()
+                raise RemoteError(
+                    "Add Dataset opened neither the dataset form nor a unique Dataset menu action; "
+                    f"URL={page.url!r}; rendered DOM={snapshot[:10000]!r}"
+                ) from exc
+    dialog.wait_for(state="visible", timeout=60_000)
+    record_dialog(page, dialog, "dataset-create-ui-form-loading")
+    progress = dialog.get_by_role("progressbar")
+    if progress.count() == 1:
+        progress.wait_for(state="hidden", timeout=60_000)
+    record_dialog(page, dialog, "dataset-create-ui-form-ready", limit=6000)
+    fill_labeled_textbox(dialog, ("Name", "Dataset Name"), name)
     dialog.get_by_role("button", name="Save", exact=True).click()
     validation = page.get_by_role("dialog", name=re.compile(r"Validation Error", re.IGNORECASE))
     deadline = time.monotonic() + 5
@@ -1186,7 +1336,9 @@ def create_zvol_in_ui(
         option.first.wait_for(state="visible", timeout=30_000)
         option.first.click()
 
-    dialog = page.get_by_role("dialog", name="Slide-in form", exact=True)
+    dialog = page.get_by_role(
+        "dialog", name=re.compile(r"^(?:Slide-in form|Add Zvol)$", re.IGNORECASE),
+    )
     dialog.wait_for(state="visible", timeout=60_000)
     record_dialog(page, dialog, "zvol-ui-form-loading")
     progress = dialog.get_by_role("progressbar")
@@ -1507,20 +1659,59 @@ def fill_numeric_control(dialog, label: str, value: str) -> bool:
     return False
 
 
+def wait_for_container_form(page, *, timeout_ms: int = 120_000):
+    """Find the unique visible container form from its required storage controls."""
+    deadline = time.monotonic() + timeout_ms / 1000
+    last_visible = []
+    while time.monotonic() < deadline:
+        dialogs = page.get_by_role("dialog")
+        matches = []
+        last_visible = []
+        for index in range(dialogs.count()):
+            dialog = dialogs.nth(index)
+            if not dialog.is_visible():
+                continue
+            snapshot = dialog.aria_snapshot()
+            last_visible.append(snapshot[:3000])
+            autostart = dialog.get_by_role("checkbox", name="Autostart", exact=True)
+            pool_selector = dialog.get_by_role("combobox", name="Pool", exact=True)
+            if autostart.count() == 1 and pool_selector.count() == 1:
+                matches.append(dialog)
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            raise RemoteError(
+                "container creation exposed multiple forms with Autostart and Pool controls; "
+                f"visible forms={last_visible!r}"
+            )
+        page.wait_for_timeout(250)
+    raise RemoteError(
+        "container creation did not expose one visible form with Autostart and Pool controls; "
+        f"URL={page.url!r}; visible forms={last_visible!r}"
+    )
+
+
 def create_container_in_ui(
     page, base_url: str, *, pool: str, name: str, image_name: str, image_version: str,
     autostart: bool = True,
 ) -> None:
     page.goto(base_url + "/ui/containers", wait_until="domcontentloaded", timeout=120_000)
     page.get_by_role("button", name="Create New Container", exact=True).click()
-    dialog = page.get_by_role("dialog", name="Slide-in form", exact=True)
-    dialog.wait_for(state="visible", timeout=120_000)
+    dialog = wait_for_container_form(page)
     record_dialog(page, dialog, "container-ui-form")
     autostart_control = dialog.get_by_role("checkbox", name="Autostart", exact=True)
-    require(autostart_control.count() == 1 and autostart_control.is_visible(),
-            "container form does not expose one visible Autostart control")
+    require(autostart_control.count() == 1,
+            "container form does not expose one Autostart control")
     if autostart_control.is_checked() != autostart:
-        autostart_control.set_checked(autostart)
+        label = dialog.get_by_text("Autostart", exact=True)
+        visible_labels = [
+            label.nth(index)
+            for index in range(label.count())
+            if label.nth(index).is_visible()
+        ]
+        require(len(visible_labels) == 1,
+                f"container form does not expose one visible Autostart label: {dialog.aria_snapshot()[:2400]!r}")
+        visible_labels[0].click()
     require(autostart_control.is_checked() == autostart,
             f"container UI Autostart control did not retain {autostart}")
     report("container-ui-autostart", f"selected Autostart={autostart} through the UI")
@@ -1634,18 +1825,39 @@ def select_existing_zvol_in_vm_wizard(page, dialog, zvol: str) -> None:
 
 def vm_region_next_button(dialog, expected_name: str):
     region = dialog.get_by_role("region", name=re.compile(expected_name, re.IGNORECASE))
+    if region.count() == 1:
+        button = region.get_by_role("button", name="Next", exact=True)
+        require(
+            button.count() == 1 and button.is_visible() and button.is_enabled(),
+            f"VM wizard {expected_name!r} region has no unique enabled Next button: "
+            f"{region.aria_snapshot()[:2400]!r}",
+        )
+        return button
     require(
-        region.count() == 1,
+        region.count() == 0,
         f"VM wizard expected one {expected_name!r} region, found {region.count()}: "
         f"{dialog.aria_snapshot()[:3000]!r}",
     )
-    button = region.get_by_role("button", name="Next", exact=True)
+
+    list_items = dialog.get_by_role("listitem")
+    candidates = []
+    snapshots = []
+    for index in range(list_items.count()):
+        item = list_items.nth(index)
+        snapshot = item.aria_snapshot()
+        snapshots.append(snapshot[:1100])
+        step = re.search(r'(?m)^\s*- button "\d+ ([^"]+)"', snapshot)
+        if not step or expected_name.casefold() not in step.group(1).casefold():
+            continue
+        button = item.get_by_role("button", name="Next", exact=True)
+        if button.count() == 1 and button.is_visible() and button.is_enabled():
+            candidates.append(button)
     require(
-        button.count() == 1 and button.is_visible() and button.is_enabled(),
-        f"VM wizard {expected_name!r} region has no unique enabled Next button: "
-        f"{region.aria_snapshot()[:2400]!r}",
+        len(candidates) == 1,
+        f"VM wizard expected one active {expected_name!r} list item with an enabled Next button; "
+        f"found {len(candidates)}: {snapshots!r}",
     )
-    return button
+    return candidates[0]
 
 
 def active_vm_step_next_button(dialog):
@@ -1669,14 +1881,117 @@ def active_vm_step_next_button(dialog):
         f"VM wizard has multiple active regions with enabled Next buttons: "
         f"{[name for name, _ in candidates]!r}; regions={snapshots!r}",
     )
+    if candidates:
+        return candidates[0]
+
+    list_items = dialog.get_by_role("listitem")
+    for index in range(list_items.count()):
+        item = list_items.nth(index)
+        snapshot = item.aria_snapshot()
+        snapshots.append(snapshot[:900])
+        step = re.search(r'(?m)^\s*- button "\d+ ([^"]+)"', snapshot)
+        if not step or step.group(1).casefold().startswith("pencil "):
+            continue
+        button = item.get_by_role("button", name="Next", exact=True)
+        if button.count() == 1 and button.is_visible() and button.is_enabled():
+            candidates.append((step.group(1), button))
+    require(
+        len(candidates) <= 1,
+        f"VM wizard has multiple active list items with enabled Next buttons: "
+        f"{[name for name, _ in candidates]!r}; steps={snapshots!r}",
+    )
     return candidates[0] if candidates else (None, None)
+
+
+def wait_for_vm_form_area(page, *, timeout_ms: int = 120_000):
+    """Find the visible VM wizard whether this release renders a dialog or page."""
+    deadline = time.monotonic() + timeout_ms / 1000
+    last_snapshot = ""
+    while time.monotonic() < deadline:
+        dialogs = page.get_by_role("dialog")
+        for index in range(dialogs.count()):
+            candidate = dialogs.nth(index)
+            if not candidate.is_visible():
+                continue
+            snapshot = candidate.aria_snapshot()
+            last_snapshot = f"visible dialog: {snapshot[:4500]}"
+            if "Guest Operating System" in snapshot and "Password" in snapshot:
+                return candidate
+
+        main = page.get_by_role("main")
+        if main.count() == 1 and main.is_visible():
+            snapshot = main.aria_snapshot()
+            last_snapshot = f"main page: {snapshot[:4500]}"
+            if "Guest Operating System" in snapshot and "Password" in snapshot:
+                return main
+        page.wait_for_timeout(250)
+    raise RemoteError(
+        "VM wizard did not expose one form with Guest Operating System and Password controls; "
+        f"last visible controls={last_snapshot!r}"
+    )
 
 
 def vm_form_create(page, base_url: str, *, name: str, password: str, zvol: str) -> None:
     page.goto(base_url + "/ui/vm", wait_until="domcontentloaded", timeout=120_000)
-    page.get_by_role("button", name="Add VM", exact=True).click()
-    dialog = page.get_by_role("dialog", name="Slide-in form", exact=True)
-    dialog.wait_for(state="visible", timeout=120_000)
+    entry_pattern = re.compile(
+        r"^(?:add|create)(?:\s+(?:a|new))?\s+(?:vm|virtual machine)$",
+        re.IGNORECASE,
+    )
+    entry_button = page.get_by_role(
+        "button",
+        name=entry_pattern,
+    )
+    add_button = page.get_by_role("button", name="Add", exact=True)
+    if entry_button.count() == 0 and not (add_button.count() == 1 and add_button.is_visible()):
+        try:
+            entry_button.first.wait_for(state="visible", timeout=60_000)
+        except PlaywrightError:
+            pass
+    page_snapshot = page.locator("body").aria_snapshot()
+    report("vm-create-entry-page", f"url={page.url}; controls={page_snapshot[:5000]}")
+    if entry_button.count() == 1:
+        report("vm-create-entry", entry_button.aria_snapshot())
+        entry_button.click()
+    else:
+        require(
+            entry_button.count() == 0,
+            "VM page exposes multiple Add VM or Add Virtual Machine controls; "
+            f"visible page controls={page_snapshot[:5000]!r}",
+        )
+        require(
+            add_button.count() == 1 and add_button.is_visible(),
+            "VM page exposes neither one Add VM control nor one generic Add button; "
+            f"visible page controls={page_snapshot[:5000]!r}",
+        )
+        add_button.click()
+        menu_snapshot = page.locator("body").aria_snapshot()
+        report("vm-create-entry-menu", f"controls={menu_snapshot[:5000]}")
+        menu_option_pattern = re.compile(
+            r"^(?:virtual machine|vm|create(?:\s+a)?\s+(?:vm|virtual machine))$",
+            re.IGNORECASE,
+        )
+        menu_option = None
+        for role in ("menuitem", "button", "link", "option"):
+            candidate = page.get_by_role(role, name=menu_option_pattern)
+            if candidate.count() == 1 and candidate.is_visible():
+                menu_option = candidate
+                break
+        if menu_option is None:
+            candidate = page.get_by_text(menu_option_pattern)
+            if candidate.count() == 1 and candidate.is_visible():
+                menu_option = candidate
+        require(
+            menu_option is not None,
+            "generic VM Add menu does not expose one Virtual Machine action; "
+            f"menu controls={menu_snapshot[:5000]!r}",
+        )
+        report("vm-create-entry-selected", menu_option.aria_snapshot())
+        menu_option.click()
+    form_page_snapshot = page.locator("body").aria_snapshot()
+    report("vm-create-form-page", f"url={page.url}; controls={form_page_snapshot[:5000]}")
+    form_area = wait_for_vm_form_area(page)
+    record_dialog(page, form_area, "vm-ui-form", limit=5000)
+    dialog = form_area
     for label, value in (
         ("Guest Operating System", "Linux"),
         ("System Clock", "Local"),
@@ -1944,7 +2259,7 @@ def main() -> int:
                 else:
                     create_path_a_root_in_ui(page, base_url, target, dataset_create_requests)
             else:
-                inspect_path_b_partition_ui(page, base_url)
+                inspect_path_b_partition_ui(page)
                 if path_b_setup == "ui-wizard":
                     disk = required_env("TRUENAS_DISK_DEVICE")
                     try:

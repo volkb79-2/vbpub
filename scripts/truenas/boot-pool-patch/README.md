@@ -10,16 +10,28 @@ available.
 
 ## Current status
 
-| Release | Evidence | Open acceptance |
+| Release | Verified on v1001 | Remaining limits |
 |---|---|---|
 | 25.10.4 / 25.10.7 | The retained 25.10.4 patch proposal dry-runs on 25.10.7. | Its reported UI flow failed; PWMCP reproduction remains pending. It does not apply to v27+. |
-| 27.0.0-RC.1 | Registered gates pass existing-container destroy/snapshot refusal and survival on Path A and B. Fresh Path A UI acceptance created/wrote a filesystem, created zvols, selected `boot-pool` for a container, and submitted a VM wizard using an existing boot-pool zvol. A separate UI workload gate started/stopped the container and blank VM; after a controlled v27 reboot it verified the root remounted, hashes persisted, the VM autostarted, and UI Start/Stop worked again. After the 2026-10-21 host restart, the resumed guest passed a second read-only inventory and another UI lifecycle cycle with the same filesystem/zvol hashes; the blank VM required its Power Off control to stop. Session Timeout was visible in the signed-in account menu → Preferences (300 seconds). The 2026-10-18 Path B UI refusal predates the current shim. The 2026-10-28 review rerun passed `live-inspect`, `live-v27-patch`, `live-path-b-partition`, `live-api-probe`, and Path B `live-ui` `ui-wizard`. The live schema check matched all 11 recorded `pool.create` fields before storage mutation. The documented `destroy=false` reclaim procedure passed on v1001: it verified the single leaf by PARTUUID, cleared only that partition's labels, and confirmed `disk.details` offered it again. The boot pool remained unchanged; after cleanup the patched host had no imported Path B pool and the reserved partition was available. The unit lane passed with 246 tests and 45 subtests. The topology diagnostic showed Cache/Log/Special UI steps, omitted the boot-pool zvols, and safely refused their API paths before ZFS attachment. | Retention and natural post-update accessibility of these pre-existing Path A workloads through v27→v28 and v28 patch/reboot remain untested. The current container test does not prove a user filesystem mounted inside the container, and the VM has no guest OS. Downstream UI acceptance in the `preprovisioned` mode, accepted auxiliary-vdev roles through middleware/UI, existing-pool expansion, a disk-backed cache target, share-client access, VM guest boot, and actual live KVM selection remain open. |
-| 28.0.0-MASTER+20261014-230204 | Exact target checks and guarded replacement passed. Path A and Path B provision/storage gates refuse destroy/snapshot against existing managed container data and verify survival. Path B provision passed on a reserved tail; Path A reboot/remount passed. A marker survived the v27-to-v28 update after manual mounting. A fresh post-restart Path B COW guest booted, but admission refused its registered inventory; it was then cleanly stopped with its overlay preserved. | Path B reboot/import, automatic remount and retention of pre-existing data/container/VM records through update and v28 patch reapplication, full UI, share-client access, guest OS boot, actual KVM selection, and a real second-disk cache/import-order check remain open. |
+| 27.0.0-RC.1 | Path A and Path B API/UI storage and pool-creation matrices passed. Boot-pool API mutation refusals, dataset/zvol paths, Path B pool import/adoption, and reclaim/idempotence were checked on v1001. | The subsequent update to the 2026-10-27 v27 nightly replaced the patch sources. The old manifest became stale, the exact RC.1 reapply refused before source mutation, and the Path A marker survived but booted unmounted until manually mounted. This is not automatic update survival. |
+| 27.0.0-MASTER+20261027-173422 | The v27 nightly Path A/B API/UI matrix passed before the v28 update. Update metadata, checksum, job, and reboot were verified. | Update replacement and unmounted-marker behavior above still apply. This does not establish compatibility with another v27 build. |
+| 28.0.0-MASTER+20261014-230204 | Historical adapter checks and a v27-to-v28 update were completed. | Superseded by the separate 2026-10-27 build adapter; its results do not certify the latest nightly. |
+| 28.0.0-MASTER+20261027-175229 | The exact 19-target adapter passed guarded install/replacement, Path A/B API and PWMCP UI matrices, same-bundle idempotence, and an injected-failure rollback. The v28 Path B reclaim helper returned `reclaimed`, then `already_clear`; the reserved partition was offered again and boot-pool remained ONLINE. | No later v28 nightly was installable from the official feed at the 2026-10-30 check. VM guest OS boot, actual KVM selection, share-client access, a real second-disk cache target, and general update survival remain open. |
 
-The v1001 reclaim PASS above records the earlier manual sequence. The current
-GUID-pinned `shared/reclaim_path_b.py` helper was added afterward; its imported,
-interrupted-export, and already-clear states have unit coverage, but it has not
-been run on a live host.
+The current v28 follow-up fixed three live-discovered issues: its installed
+`pool.create` schema supplies empty encryption-secret defaults that middleware
+normalizes to `None`; Path A must work with a separate unused reserved
+partition present; and the Path B wizard's erase-confirm checkbox is hidden, so
+the gate must click its unique visible label and verify the checked state.
+Replacement rollback was then exercised with an intentionally invalid adapter
+and restored the prior bundle, manifest, middleware state, and `/usr` read-only
+protection. Live text/DOM evidence is outside this checkout at
+`/home/vscode/vbpub-release-program-20261027/evidence/truenas-live-20261029/`.
+
+See the [v28 design decisions](docs/DESIGN-GUIDE.md#v28-20261027-pool-shim-design)
+and [v1001 consumer run](docs/CONSUMERS.md#v28-20261027-live-acceptance-on-v1001).
+Older v1001 checkpoints later in this file are historical; this table is the
+current live status.
 
 The prior v28 Path B `live-storage` attempt did not survive the host restart;
 its October 17 PASS is historical evidence only. The fresh guest
@@ -165,7 +177,8 @@ for the `live-ui` and `live-ui-workloads` workflow.
 
 ## Project files
 
-- `v27/` and `v28-nightly-20261014/` contain release adapters and fingerprints.
+- `v27/`, `v28-nightly-20261014/`, and `v28-nightly-20261027/` contain
+  separate exact-build release adapters and fingerprints.
 - `25.10.4/` preserves the earlier proposal and its source documents.
 - `shared/` contains policy helpers installed by release adapters.
 - [`provision_path_b.py`](provision_path_b.py) plans or creates a Path B
@@ -176,14 +189,15 @@ for the `live-ui` and `live-ui-workloads` workflow.
   from the managed guest, and verifies the selected pool's actual ZFS mount
   and allocation after UI actions. Its fresh v27 Path A setup creates
   `boot-pool/user-data` through the UI. Path B requires an explicit
-  `TRUENAS_PATH_B_SETUP`: `ui-wizard` tests partition-only setup followed by
-  UI pool creation (currently a safe refusal because `disk.query` omits
-  `/dev/vda4`), while `preprovisioned` requires the registered provisioner to
-  create and register `boot-disk-data` before UI dataset/zvol/container/VM
-  checks. The latter passed the registered unit gate (170 tests and 45
-  subtests; see the [unit log](artifacts/unit-boot-pool-patch-path-b-ui-preprovision-mode-20261021.log));
-  fresh live acceptance remains open. The browser gate rejects any
-  `pool.create` request in this mode; it does not establish UI pool creation.
+  `TRUENAS_PATH_B_SETUP`: `ui-wizard` requires a reserved free-tail partition
+  and verifies that the patched UI creates/registers `boot-disk-data` from
+  only that partition; this passed on v27 and the exact v28 2026-10-27 build.
+  `preprovisioned` requires the registered provisioner to create and register
+  `boot-disk-data` before downstream UI dataset/zvol/container/VM checks. That
+  mode passed its registered unit gate (170 tests and 45 subtests; see the
+  [unit log](artifacts/unit-boot-pool-patch-path-b-ui-preprovision-mode-20261021.log));
+  fresh live acceptance of that separate mode remains open. The browser gate
+  rejects any `pool.create` request in `preprovisioned` mode.
   Path A requires the UI's **Quota for this dataset and all children** field;
   the neighboring dataset-only quota sets `refquota`, not the guarded `quota`
   property. The adapter pins the managed root's exact mountpoint. Path B's

@@ -145,7 +145,7 @@ def test_patch_is_anchored_and_fails_on_drift(tmp_path: Path) -> None:
             assert bad.returncode != 0, "hunk applied silently to drifted source"
 
 
-def load_helper():
+def load_helper(helper_path: Path | None = None):
     service = types.ModuleType("middlewared.service")
     service.CallError = type("CallError", (Exception,), {})
     service.Service = type("Service", (), {})
@@ -160,10 +160,49 @@ def load_helper():
     sys.modules.setdefault("middlewared.plugins", plugins)
     sys.modules.setdefault("middlewared.plugins.pool_", pool_plugins)
     sys.modules["middlewared.plugins.pool_.utils"] = pool_utils
-    spec = importlib.util.spec_from_file_location("boot_disk_partition", PATCH_ROOT / "shared" / "boot_disk_partition.py")
+    spec = importlib.util.spec_from_file_location(
+        "boot_disk_partition", helper_path or PATCH_ROOT / "shared" / "boot_disk_partition.py"
+    )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def test_v28_partition_helper_uses_only_the_recorded_20261027_schema() -> None:
+    helper_path = PATCH_ROOT / "v28-nightly-20261027" / "boot_disk_partition.py"
+    schema_path = PATCH_ROOT / "v28-nightly-20261027" / "pool_create_schema_v28.json"
+    schema = json.loads(schema_path.read_text())
+    helper = load_helper(helper_path)
+    assert schema["release"] == "28.0.0-MASTER+20261027-175229"
+    assert set(schema["fields"]) == helper.ALLOWED_CREATE_FIELDS | helper.REFUSED_CREATE_FIELDS
+    assert schema["fields"]["encryption_options"]["nested_defaults"]["key"] == ""
+    assert helper.unsupported_create_options({"name": "data", "topology": {"data": []}}) == []
+    assert helper.unsupported_create_options({
+        "name": "data", "topology": {"data": []}, "encryption": True,
+    }) == ["encryption"]
+    assert helper.unsupported_create_options({
+        "name": "data", "topology": {"data": []}, "future_option": True,
+    }) == ["future_option"]
+
+    class SecretValue:
+        def __init__(self, value):
+            self.value = value
+
+        def get_secret_value(self):
+            return self.value
+
+    middleware_defaults = schema["fields"]["encryption_options"]["nested_defaults"] | {
+        "key": SecretValue(None),
+        "passphrase": SecretValue(None),
+    }
+    assert helper.unsupported_create_options({
+        "name": "data", "topology": {"data": []},
+        "encryption_options": middleware_defaults,
+    }) == []
+    nondefault = middleware_defaults | {"passphrase": SecretValue("user supplied")}
+    assert helper.unsupported_create_options({"encryption_options": nondefault}) == [
+        "encryption_options",
+    ]
 
 
 ZFS = "6a898cc3-1dd2-11b2-99a6-080020736631"

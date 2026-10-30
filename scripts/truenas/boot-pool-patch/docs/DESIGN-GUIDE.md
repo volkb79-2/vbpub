@@ -23,10 +23,10 @@ evidence that an adapter works against one exact TrueNAS build.
 
 External-host mode exists for a disposable physical or provider VM when local
 TCG admission is unavailable. It requires an explicit `--docker-network`, a
-verified custom bridge, pinned SSH host keys, and an HTTPS UI origin. It only
-allows read-only inventory, the v27 patch, guarded Path B partition/pool setup,
-the read-only `live-ui-auth` gate, the guarded `live-ui-prepare-ssh` lane, and
-the existing UI acceptance lane. SSH preparation adds the supplied public key
+verified custom bridge, pinned SSH host keys, and an HTTPS UI origin. It allows
+read-only inventory, exact-build v27/v28 patch lanes, guarded Path B
+partition/pool setup, the read-only `live-ui-auth` gate, the guarded
+`live-ui-prepare-ssh` lane, API probes, and UI acceptance. SSH preparation adds the supplied public key
 to TrueNAS's built-in root user, verifies that root password login and global
 SSH password authentication are disabled, then starts the service. It keeps
 other root authorized keys and preserves the automatic-start setting when
@@ -40,7 +40,9 @@ restricted to external targets and one invocation. It skips only `some/full`
 PSI thresholds; readable PSI, finite memory limits, current usage below every
 hard limit, CPU quota, and the 0.5 CPU / 512 MiB tester caps remain required.
 
-The `live-ui-observed-v1001` lane is a narrow exception for UI exploration on
+### Historical v1001 observed-source exploration (2026-10-21)
+
+The `live-ui-observed-v1001` lane was a narrow exception for UI exploration on
 v1001's already-customized v27 RC.1 installation. The normal `live-v27-patch`
 lane correctly refuses it because 14 of 15 current adapter targets do not
 match the release fingerprints, and no install manifest identifies the custom
@@ -63,8 +65,68 @@ verification but the first child dataset create failed with
 `pool_/dataset.py:117`. No child dataset was created, and the remaining UI
 workflow did not run. This is a failed exploratory acceptance and a middleware
 defect to diagnose, not evidence for the release adapter. The pre-patch
-provider snapshot was restored afterward; v1001 is shut off. The lane does not
-start a VM guest or test provider reinstall behavior.
+provider snapshot was restored afterward. This is an archived state; v1001 was
+later reinstalled from the operator's pristine v27 snapshot and re-tested as
+recorded in the current checkpoint below.
+
+## v28-20261027 pool shim design
+
+The installed build is `28.0.0-MASTER+20261027-175229`. Its middleware files
+did not match the earlier 2026-10-14 adapter, so it has its own 19-target
+fingerprint manifest and a separately version-guarded adapter under
+[`v28-nightly-20261027/`](../v28-nightly-20261027/). Do not reuse either
+nightly adapter on another version string: the ISO does not publish a complete
+middleware Git commit, and the target hashes are the compatibility fact.
+
+Path A's storage root lives on `boot-pool/user-data`; its preflight validates
+that exact dataset mount but does not require `/dev/vda4` to be absent. This
+lets the Path A test profile coexist with an unused reserved Path B partition
+without changing that partition. Path B exposes only an empty partition 4 or
+later named `boot-disk-data`, with the ZFS GPT type, on the boot-pool disk. It
+passes the partition by PARTUUID and only accepts one single-disk Stripe data
+vdev. It refuses mixed or mirrored topologies, non-default create options,
+boot attachment, and destructive export that would wipe the parent boot disk.
+The reason for the narrow topology is that middleware sees the parent whole
+disk during wipe; teaching every disk, replacement, and VDEV path about
+partitions would be a much larger and riskier change. See the
+[Path B wizard details](#path-b-pool-wizard-safety).
+
+Before Path B writes, the live API probe compares all required fields and
+defaults returned by `core.get_methods` with
+[`pool_create_schema_v28.json`](../v28-nightly-20261027/pool_create_schema_v28.json).
+Only `name` and the validated topology vary. The v28 schema records empty
+strings for nested encryption `key` and `passphrase`; middleware serializes
+these unset `SecretStr` values as `None`. The shim accepts `None` only when the
+recorded default is exactly the empty string, while non-empty secrets and
+other non-default options remain refusals. This models the installed loader's
+normalization without silently dropping a caller's encryption request.
+
+The Path B wizard renders its erase-confirm checkbox as a hidden input beside
+a visible label. PWMCP clicks exactly one visible same-text label when the
+checkbox is unchecked, then verifies it is checked before continuing. The
+Path A and B UI gates verify dataset, zvol, container, and VM wizard requests
+against direct ZFS backing, and the Path B gate verifies that the UI's pool
+request uses only the reserved PARTUUID. These are UI creation checks; they do
+not prove a guest OS boots or a share client can connect.
+
+Install records bind the exact version, profile, bundle hash, target hashes,
+and helper hashes. Re-running the same bundle is a no-op after verification.
+Replacement snapshots the previously patched files and manifest before
+changing `/usr`; a failure restores the prior adapter, restarts middleware,
+and restores read-only protection. On 2026-10-30 an intentionally invalid
+Python hunk exercised both the inner stock-source rollback and outer
+prior-adapter restore on v1001. The current bundle SHA-256 is
+`b7dbb8ca95e62ed4fad6a15ff26310ceccc342e6d33c99a62cfd44d3fbb22d23`.
+
+The v27-to-v27-nightly update replaced the patch source files but left a stale
+install manifest. Exact RC.1 reapplication refused before mutation; the
+Path A marker bytes survived but the dataset booted unmounted until manually
+mounted. Therefore neither a surviving marker nor a stale manifest means the
+patch survived an update. No newer v28 nightly was available in the official
+feed on 2026-10-30. The
+[README status](../README.md#current-status) summarizes live outcomes; the
+[consumer guide](CONSUMERS.md#v28-20261027-live-acceptance-on-v1001) gives the
+registered external-host commands.
 
 ## Source comparison
 
@@ -74,6 +136,7 @@ start a VM guest or test provider reinstall behavior.
 | 25.10.7 | `8ede398839` | All seven files touched by the 25.10.4 patch match the 25.10.4 versions; the patch dry-run applies. |
 | 27.0.0-RC.1 | tag `TS-27.0.0-RC.1`, commit `d83c3bf89aa4226c8fd1ef25dd273bdf447eb777` | The old patch fails on changed Docker hunks, and `virt/global.py` no longer exists. v27 uses separate `vm.*` and `container.*` middleware. |
 | 28 nightly, `28.0.0-MASTER+20261014-230204` | candidate middleware source commit `95807c2309548ec72fc09742f323aadec7f6532e` | The old patch fails. Several Docker modules changed substantially; `docker/update.py` and `virt/global.py` are absent. All three v28 TCG adapter targets match the extracted ISO payload. |
+| 28 nightly, `28.0.0-MASTER+20261027-175229` | No complete middleware Git commit is published in the ISO; 19 installed targets are fingerprinted directly. | Has a separate exact-build adapter with the Path B reserved-partition shim; v1001 Path A/B API and UI acceptance passed. See the current design section above. |
 
 The v28 ISO's SHA-256 is
 `9312f77d0a94f54dc0396050bd26bb31ea0e81d62b124e30a94075a006e7bc9a`. Its

@@ -6,6 +6,18 @@ import re
 
 
 _RESUMED_DATASET = re.compile(r"boot-pool/user-data/ui-acceptance-[0-9]{14}[0-9a-f]{6}")
+_V28_ROOT_PATCH_ENTRIES = {
+    "28.0.0-MASTER+20261014-230204": {
+        ".truenas-boot-pool-patch-v28.json",
+        ".truenas-boot-pool-patch-backups",
+    },
+    "28.0.0-MASTER+20261027-175229": {
+        ".truenas-boot-pool-patch-v28.json",
+        ".truenas-boot-pool-patch-backups",
+        ".truenas-boot-pool-patch-replacements",
+    },
+}
+_V28_BACKUP_NAME = re.compile(r"v28\.[A-Za-z0-9]{8}")
 
 
 def validate_resumed_ui_dataset(dataset: str) -> str:
@@ -30,6 +42,32 @@ def resumed_ui_dataset_members(dataset: str) -> set[str]:
         f"{dataset}/vm-disk",
         f"{dataset}/cache-device",
     }
+
+
+def managed_v28_patch_root_entries(
+    version: str, storage_profile: str, record_path: str, record: dict,
+    root_mountpoint: str,
+) -> set[str]:
+    """Allow only the exact release-managed v28 patch state in a Path A UI root."""
+    entries = _V28_ROOT_PATCH_ENTRIES.get(version)
+    if entries is None or storage_profile != "path-a":
+        return set()
+
+    manifest_name = ".truenas-boot-pool-patch-v28.json"
+    backup_root_name = ".truenas-boot-pool-patch-backups"
+    expected_record = f"{root_mountpoint}/{manifest_name}"
+    expected_backup_root = f"{root_mountpoint}/{backup_root_name}"
+    if record_path != expected_record:
+        raise ValueError("v28 Path A patch record is outside its registered user-data root")
+    if record.get("version") != version or record.get("storage_profile") != storage_profile:
+        raise ValueError("v28 Path A patch record version or storage profile changed")
+    backup = record.get("backup")
+    if not isinstance(backup, str):
+        raise ValueError("v28 Path A patch record has no backup path")
+    parent, _, name = backup.rpartition("/")
+    if parent != expected_backup_root or _V28_BACKUP_NAME.fullmatch(name) is None:
+        raise ValueError("v28 Path A patch record backup is outside its exact managed backup root")
+    return set(entries)
 
 
 def unexpected_ui_root_snapshots(snapshot_names: list[str], cached_images: list[str]) -> list[str]:

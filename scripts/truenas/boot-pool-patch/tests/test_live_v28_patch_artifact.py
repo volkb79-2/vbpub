@@ -27,6 +27,15 @@ def load_applicator():
     return module
 
 
+def load_live_api_probe():
+    sys.path.insert(0, str(ACCEPTANCE_DIR))
+    spec = importlib.util.spec_from_file_location("truenas_live_api_probe", ACCEPTANCE_DIR / "live_api_probe.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_v28_target_hash_manifest_is_closed_and_rejects_paths(tmp_path: Path) -> None:
     applicator = load_applicator()
     hashes = applicator.read_target_hashes()
@@ -41,6 +50,193 @@ def test_v28_target_hash_manifest_is_closed_and_rejects_paths(tmp_path: Path) ->
         assert "unsafe v28 target path" in str(exc)
     else:
         raise AssertionError("a traversal target must be rejected")
+
+
+def test_v28_latest_nightly_has_its_own_exact_version_adapter() -> None:
+    applicator = load_applicator()
+    version = "28.0.0-MASTER+20261027-175229"
+    adapter_dir = applicator.adapter_directory(version)
+    assert adapter_dir == PATCH_ROOT / "v28-nightly-20261027"
+    targets = applicator.read_target_hashes(version=version)
+    assert len(targets) == 19
+    assert {
+        "middlewared/plugins/pool_/pool.py",
+        "middlewared/plugins/disk_/availability.py",
+        "middlewared/plugins/pool_/export.py",
+        "middlewared/plugins/pool_/dataset_query_utils.py",
+    } <= set(targets)
+    bundle, digest, bundled_targets = applicator.deterministic_bundle(version=version)
+    assert digest and bundled_targets == targets
+    with gzip.GzipFile(fileobj=io.BytesIO(bundle), mode="rb") as compressed:
+        with tarfile.open(fileobj=compressed, mode="r:") as archive:
+            names = {member.name for member in archive.getmembers()}
+            assert {
+                "patch/ui-pools.patch",
+                "shared/boot_disk_partition.py",
+                "shared/pool_create_schema_v28.json",
+            } <= names
+            ui_patch = archive.extractfile("patch/ui-pools.patch")
+            assert ui_patch is not None
+            assert b"middlewared/plugins/pool_/pool.py" in ui_patch.read()
+            apply_script = archive.extractfile("patch/apply_v28_patch_remote.sh")
+            assert apply_script is not None
+            assert b"ui-pools.patch" in apply_script.read()
+            replace_script = archive.extractfile("patch/replace_v28_patch_remote.sh")
+            assert replace_script is not None
+            replacement = replace_script.read()
+            assert b"28.0.0-MASTER+20261027-175229" in replacement
+            assert b"len(targets) != 19" in replacement
+            assert b"len(previous_targets) not in {18, 19}" in replacement
+            assert b'expected_extension = {"middlewared/plugins/pool_/dataset_query_utils.py"}' in replacement
+            assert b"set(targets) - set(previous_targets) not in (set(), expected_extension)" in replacement
+            assert b"middlewared/plugins/boot_disk_partition.py" in replacement
+    try:
+        applicator.adapter_directory("28.0.0-MASTER+unknown")
+    except applicator.RemoteError as exc:
+        assert "no v28 adapter is registered" in str(exc)
+    else:
+        raise AssertionError("an unregistered v28 build must not select an adapter")
+
+
+def test_v28_path_a_install_uses_the_live_mount_as_backup_evidence() -> None:
+    applicator = load_applicator()
+    version = "28.0.0-MASTER+20261027-175229"
+
+    class Target:
+        def __init__(self, statfs_source: str = "boot-pool/user-data") -> None:
+            self.statfs_source = statfs_source
+            self.queries: list[str] = []
+
+        def call(self, method, *args, **kwargs):
+            if method == "system.info":
+                return {"version": version}
+            if method == "filesystem.statfs":
+                return {"source": self.statfs_source, "dest": "/mnt/boot-pool/user-data"}
+            raise AssertionError(f"unexpected middleware call: {method}")
+
+        def shell(self, command, **kwargs):
+            if "test ! -e /dev/kvm" in command:
+                return "absent"
+            if "systemctl is-active" in command:
+                return "active"
+            if "test ! -e /dev/vda4" in command:
+                return "absent"
+            if "zfs get -H -o value mountpoint boot-pool/user-data" in command:
+                return ""
+            raise AssertionError(f"unexpected shell command: {command}")
+
+        def query(self, method, *args, **kwargs):
+            self.queries.append(method)
+            assert method in {"vm.query", "container.query"}
+            return []
+
+    target = Target()
+    applicator.check_target_preconditions(target, version, "path-a")
+    assert "pool.dataset.query" not in target.queries
+
+    wrong_mount = Target(statfs_source="boot-pool")
+    try:
+        applicator.check_target_preconditions(wrong_mount, version, "path-a")
+    except applicator.RemoteError as exc:
+        assert "persistent backup mount is unavailable" in str(exc)
+    else:
+        raise AssertionError("Path A install must refuse a mount sourced from another dataset")
+
+
+def test_v28_path_a_can_coexist_with_an_unused_reserved_partition() -> None:
+    applicator = load_applicator()
+    version = "28.0.0-MASTER+20261027-175229"
+
+    class Target:
+        def call(self, method, *args, **kwargs):
+            if method == "system.info":
+                return {"version": version}
+            if method == "filesystem.statfs":
+                return {"source": "boot-pool/user-data", "dest": "/mnt/boot-pool/user-data"}
+            raise AssertionError(f"unexpected middleware call: {method}")
+
+        def shell(self, command, **kwargs):
+            if "test ! -e /dev/kvm" in command:
+                return "absent"
+            if "systemctl is-active" in command:
+                return "active"
+            if "zfs get -H -o value mountpoint boot-pool/user-data" in command:
+                return ""
+            if "/dev/vda4" in command:
+                raise AssertionError("Path A preflight must not depend on the unrelated reserved partition")
+            raise AssertionError(f"unexpected shell command: {command}")
+
+        def query(self, method, *args, **kwargs):
+            assert method in {"vm.query", "container.query"}
+            return []
+
+    applicator.check_target_preconditions(Target(), version, "path-a")
+
+    adapter = PATCH_ROOT / "v28-nightly-20261027"
+    for filename in ("apply_v28_patch_remote.sh", "replace_v28_patch_remote.sh"):
+        source = (adapter / filename).read_text()
+        assert "test ! -e /dev/vda4" not in source
+        assert "[ ! -e /dev/vda4 ]" not in source
+        assert "[ -b /dev/vda4 ]" in source
+
+
+def test_v28_latest_dataset_query_exposes_only_the_opted_in_boot_namespace() -> None:
+    patch = (PATCH_ROOT / "v28-nightly-20261027" / "storage.patch").read_text()
+    assert "--- a/middlewared/plugins/pool_/dataset_query_utils.py" in patch
+    assert "from middlewared.plugins.boot_pool_user_data import is_user_data_namespace_path" in patch
+    assert "if name in BOOT_POOL_NAME_VALID:" in patch
+    assert "if is_user_data_namespace_path(name, BOOT_POOL_NAME_VALID, INTERNAL_PATHS):" in patch
+    assert "return has_internal_path(name)" in patch
+
+
+def test_v28_latest_install_manifest_records_both_partition_shim_helpers() -> None:
+    source = (PATCH_ROOT / "v28-nightly-20261027" / "apply_v28_patch_remote.sh").read_text()
+    assert source.count("\nhelpers = {") == 1
+    record_block = source.rsplit("\nhelpers = {", 1)[1].split("}\nafter =", 1)[0]
+    assert '"middlewared/plugins/boot_disk_partition.py"' in record_block
+    assert '"middlewared/plugins/pool_create_schema_v28.json"' in record_block
+    assert "helper_hashes = {name: hashlib.sha256((root_path / name).read_bytes()).hexdigest() for name in helpers}" in source
+    assert "installed manifest and all patched/helper hashes verified" in source
+    replacement = (PATCH_ROOT / "v28-nightly-20261027" / "replace_v28_patch_remote.sh").read_text()
+    assert 'legacy_helpers = {' in replacement
+    assert 'set(helper_hashes) not in (legacy_helpers, helpers)' in replacement
+
+
+def test_v28_20261027_replacement_restores_the_prior_adapter_after_apply_failure() -> None:
+    adapter = PATCH_ROOT / "v28-nightly-20261027"
+    apply_script = (adapter / "apply_v28_patch_remote.sh").read_text()
+    replace_script = (adapter / "replace_v28_patch_remote.sh").read_text()
+
+    assert "trap rollback ERR" in apply_script
+    assert 'python3 -m py_compile "${python_targets[@]}"' in apply_script
+    assert "[rollback] restored and verified original files, middlewared state, and /usr protection" in apply_script
+    assert "trap 'restore_previous_adapter $?' ERR" in replace_script
+    assert "transaction_started=1" in replace_script
+    assert 'bash "$patch_dir/apply_v28_patch_remote.sh" "$expected_version" "$new_bundle_sha256"' in replace_script
+    assert replace_script.index("transaction_started=1") < replace_script.index("\nsystemctl stop middlewared.service\n")
+    assert replace_script.index('bash "$patch_dir/apply_v28_patch_remote.sh"') < replace_script.index(
+        "transaction_committed=1",
+    )
+    assert 'tar -xzf "$transaction_dir/patched-files.tar.gz"' in replace_script
+    assert 'install -o root -g root -m 0600 "$transaction_dir/manifest.json"' in replace_script
+    assert 'systemctl start middlewared.service >/dev/null 2>&1 || rollback_ok=0' in replace_script
+    assert 'zfs set readonly=on "$usr_dataset"' in replace_script
+    assert "[replace-rollback] restored the previous adapter" in replace_script
+
+
+def test_v28_partition_api_probe_uses_the_exact_build_schema() -> None:
+    probe = load_live_api_probe()
+    version = "28.0.0-MASTER+20261027-175229"
+    assert probe.pool_create_schema_path(version) == PATCH_ROOT / "v28-nightly-20261027" / "pool_create_schema_v28.json"
+    assert probe.pool_create_schema_path("27.0.0-MASTER+20261027-173422") == (
+        PATCH_ROOT / "shared" / "pool_create_schema_v27.json"
+    )
+    try:
+        probe.pool_create_schema_path("28.0.0-MASTER+unknown")
+    except probe.RemoteError as exc:
+        assert "no recorded pool.create schema" in str(exc)
+    else:
+        raise AssertionError("an unregistered build must not inherit another build's pool.create schema")
 
 
 def test_v28_guest_guard_resolves_nullable_vm_state_and_rejects_unknowns() -> None:

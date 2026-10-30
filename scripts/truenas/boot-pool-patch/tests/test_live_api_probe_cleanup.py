@@ -17,6 +17,26 @@ POOL_GUID = "12345"
 DEVICE = f"/dev/disk/by-partuuid/{PARTUUID}"
 
 
+@pytest.mark.parametrize(
+    ("ok", "text", "expected"),
+    [
+        (False, "[ENOENT] ALL: Pool 0 does not exist", True),
+        (False, "[ENOENT] pool.upgrade: pool with database id 0 does not exist", True),
+        (True, "Pool 0 does not exist", False),
+        (False, "[ENOENT] pool with database id 7 does not exist", False),
+        (False, "permission denied", False),
+    ],
+)
+def test_synthetic_pool_zero_refusal_matches_only_missing_pool_zero(ok, text, expected) -> None:
+    assert probe.synthetic_row_refused(ok, text) is expected
+
+
+def test_path_a_refusal_aggregate_requires_every_expected_mutation_result() -> None:
+    assert probe.all_mutations_refused([True] * 10, 10)
+    assert not probe.all_mutations_refused([True] * 9, 10)
+    assert not probe.all_mutations_refused([True] * 9 + [False], 10)
+
+
 class FakeTarget:
     def __init__(self):
         self.imported = True
@@ -28,6 +48,7 @@ class FakeTarget:
         self.mountpoint = ""
         self.fail_findmnt = False
         self.pool_leaf = PARTITION
+        self.export_pool_leaf = None
         self.fail_export = False
         self.fail_labelclear = False
         self.commands = []
@@ -37,8 +58,10 @@ class FakeTarget:
         self.commands.append(argv)
         if argv[:2] == ("readlink", "-f"):
             path = argv[-1]
-            if path == DEVICE:
+            if path in {DEVICE, f"/dev/disk/by-partuuid/{self.partuuid}"}:
                 return PARTITION
+            if path.startswith("/dev/disk/by-partuuid/"):
+                return "/dev/vda5"
             return path if path.startswith("/dev/") else PARTITION
         if argv[:2] == ("lsblk", "-dnro"):
             field = argv[2]
@@ -81,7 +104,7 @@ class FakeTarget:
                 f"  pool: {probe.POOL}\n    id: {self.guid}\n state: ONLINE\nconfig:\n\n"
                 f"        NAME        STATE     READ WRITE CKSUM\n"
                 f"        {probe.POOL} ONLINE       0     0     0\n"
-                f"          {self.pool_leaf} ONLINE       0     0     0\n"
+                f"          {self.export_pool_leaf or self.pool_leaf} ONLINE       0     0     0\n"
             )
         if argv[:4] == ("midclt", "call", "-j", "pool.export"):
             if self.fail_export:
@@ -128,6 +151,26 @@ def test_cleanup_exports_and_clears_only_the_captured_partuuid_pool() -> None:
         for command in target.commands
     )
     assert target.commands.count(("lsblk", "-dnro", "PARTUUID", DEVICE)) >= 2
+
+
+def test_cleanup_resolves_partuuid_leaf_tokens_from_zpool_import() -> None:
+    target = FakeTarget()
+    target.export_pool_leaf = PARTUUID
+
+    cleanup(target)
+
+    assert ("readlink", "-f", DEVICE) in target.commands
+    assert ("zpool", "labelclear", "-f", DEVICE) in target.commands
+
+
+def test_cleanup_refuses_a_different_partuuid_leaf_token() -> None:
+    target = FakeTarget()
+    target.export_pool_leaf = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+    with pytest.raises(RemoteError, match="not a single-leaf pool"):
+        cleanup(target)
+
+    assert not any(command[:2] == ("zpool", "labelclear") for command in target.commands)
 
 
 @pytest.mark.parametrize(

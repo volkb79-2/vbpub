@@ -70,7 +70,7 @@ UI_LANES = frozenset({
 })
 SSH_LANES = LIVE_LANES - {"live-ui-auth", "live-ui-prepare-ssh"}
 EXTERNAL_TARGET_LANES = frozenset({
-    "live-inspect", "live-v27-patch", "live-path-b-provision", "live-ui-auth",
+    "live-inspect", "live-v27-patch", "live-v28-patch", "live-path-b-provision", "live-ui-auth",
     "live-ui-prepare-ssh", "live-path-b-partition", "live-ui", "live-ui-observed-v1001",
     "live-api-probe",
 })

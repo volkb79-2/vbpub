@@ -12,7 +12,7 @@ PATCH_ROOT = Path(__file__).resolve().parents[1]
 TRUENAS_ROOT = PATCH_ROOT.parent
 ACCEPTANCE = PATCH_ROOT / "acceptance"
 DOC = (PATCH_ROOT / "ACTION-MATRIX.md").read_text()
-RELEASE_DIRS = ("v27", "v28-nightly-20261014")
+RELEASE_DIRS = ("v27", "v28-nightly-20261014", "v28-nightly-20261027")
 VERDICTS = {"works", "patch-UI", "API-TUI", "n/a", "pending decision"}
 COLUMNS = ["id", "path", "action", "methods", "api", "ui", "ui_patched", "patch", "size",
            "verdict", "lane", "v27", "v28"]

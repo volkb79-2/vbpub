@@ -35,6 +35,18 @@ MARKER = "boot-disk-data"
 ZFS_TYPE_GUID = "6a898cc3-1dd2-11b2-99a6-080020736631"
 FAILURES: list[str] = []
 POOL_CREATE_SCHEMA_PATH = Path(__file__).resolve().parents[1] / "shared" / "pool_create_schema_v27.json"
+POOL_CREATE_SCHEMA_PATHS = {
+    "27.0.0-RC.1": POOL_CREATE_SCHEMA_PATH,
+    "27.0.0-MASTER+20261027-173422": POOL_CREATE_SCHEMA_PATH,
+    "28.0.0-MASTER+20261014-230204": POOL_CREATE_SCHEMA_PATH,
+    "28.0.0-MASTER+20261027-175229": (
+        Path(__file__).resolve().parents[1] / "v28-nightly-20261027" / "pool_create_schema_v28.json"
+    ),
+}
+IMPORT_LEAF_RE = re.compile(
+    r"(?m)^\s+((?:/dev/\S+)|(?:[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}))\s+"
+    r"(?:ONLINE|DEGRADED|FAULTED|UNAVAIL|OFFLINE)\b"
+)
 
 
 def check(key: str, ok: bool, detail: object = "") -> None:
@@ -84,9 +96,17 @@ def normalized_pool_create_schema(method: dict) -> dict:
     return {"required_fields": required, "fields": fields}
 
 
-def live_pool_create_schema_matches(target: Target) -> tuple[bool, str]:
+def pool_create_schema_path(version: str) -> Path:
     try:
-        recorded = json.loads(POOL_CREATE_SCHEMA_PATH.read_text(encoding="utf-8"))
+        return POOL_CREATE_SCHEMA_PATHS[version]
+    except KeyError as exc:
+        raise RemoteError(f"no recorded pool.create schema for TrueNAS {version!r}") from exc
+
+
+def live_pool_create_schema_matches(target: Target, version: str) -> tuple[bool, str]:
+    try:
+        schema_path = pool_create_schema_path(version)
+        recorded = json.loads(schema_path.read_text(encoding="utf-8"))
         installed_methods = target.call("core.get_methods", timeout=120)
         installed_method = installed_methods.get("pool.create") if isinstance(installed_methods, dict) else None
         if not isinstance(installed_method, dict):
@@ -116,7 +136,15 @@ def boot_pool_state(target: Target) -> str:
 
 
 def synthetic_row_refused(ok: bool, text: str) -> bool:
-    return not ok and "pool 0 does not exist" in text.lower()
+    message = text.lower()
+    return not ok and (
+        "pool 0 does not exist" in message
+        or "pool with database id 0 does not exist" in message
+    )
+
+
+def all_mutations_refused(results: list[bool], expected_count: int) -> bool:
+    return expected_count > 0 and len(results) == expected_count and all(results)
 
 
 def status_leaf_paths(output: str) -> set[str]:
@@ -173,9 +201,17 @@ def run_path_a(target: Target) -> None:
     # (a scrub is non-destructive and boot.scrub offers the same); it is deliberately not
     # part of the refusal set, see ACTION-MATRIX.md.
     job_methods = {"pool.export", "pool.update", "pool.expand", "pool.replace", "pool.attach", "pool.remove"}
+    refusal_results = []
     for method, params in mutations:
         ok, text = attempt(target, method, *params, job=method in job_methods)
-        check(f"refused-{method}", synthetic_row_refused(ok, text), text)
+        refused = synthetic_row_refused(ok, text)
+        refusal_results.append(refused)
+        check(f"refused-{method}", refused, text)
+    check(
+        "refused-pool-mutations",
+        all_mutations_refused(refusal_results, len(mutations)),
+        f"{sum(refusal_results)}/{len(mutations)} boot-pool mutations refused",
+    )
     check("boot-pool-unchanged", boot_pool_state(target) == before, "zpool guid/health/status identical")
 
 
@@ -271,16 +307,21 @@ def _import_scan(target: Target, device: str) -> list[dict]:
         section = output[start.start():end]
         guid = re.search(r"(?m)^\s*id:\s*(\d+)\s*$", section)
         config = re.search(r"(?ms)^\s*config:\s*$(.*)", section)
-        leaves = re.findall(
-            r"(?m)^\s+(/dev/\S+)\s+(?:ONLINE|DEGRADED|FAULTED|UNAVAIL|OFFLINE)\b",
-            config.group(1) if config else "",
-        )
+        leaves = IMPORT_LEAF_RE.findall(config.group(1) if config else "")
         records.append({
             "name": start.group(1),
             "guid": guid.group(1) if guid else None,
             "leaves": leaves,
         })
     return records
+
+
+def _resolve_import_leaf(target: Target, leaf: str) -> str:
+    if re.fullmatch(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", leaf):
+        leaf = f"/dev/disk/by-partuuid/{leaf}"
+    elif not leaf.startswith("/dev/"):
+        raise RemoteError(f"zpool import returned an unsupported leaf token: {leaf!r}")
+    return target.run(["readlink", "-f", leaf], timeout=30)
 
 
 def _assert_exported_probe_pool(
@@ -293,7 +334,7 @@ def _assert_exported_probe_pool(
             f"export scan on {device} does not identify only pool {POOL!r} with GUID {expected_guid}: "
             f"{records!r}"
         )
-    leaves = {target.run(["readlink", "-f", leaf], timeout=30) for leaf in records[0]["leaves"]}
+    leaves = {_resolve_import_leaf(target, leaf) for leaf in records[0]["leaves"]}
     expected_leaf = target.run(["readlink", "-f", partition], timeout=30)
     if leaves != {expected_leaf}:
         raise RemoteError(
@@ -598,10 +639,10 @@ def main() -> int:
     version = str(target.call("system.info").get("version", ""))
     if not expected or version != expected:
         raise RemoteError(f"expected TrueNAS {expected!r}, found {version!r}")
-    schema_ok, schema_detail = live_pool_create_schema_matches(target)
+    schema_ok, schema_detail = live_pool_create_schema_matches(target, expected)
     check("pool-create-schema-live-match", schema_ok, schema_detail)
     if not schema_ok:
-        raise RemoteError("installed pool.create schema differs from the recorded v27 schema; stopped before storage mutations")
+        raise RemoteError(f"installed pool.create schema differs from the recorded schema for {expected}; stopped before storage mutations")
     (run_path_a if profile == "path-a" else run_path_b)(target)
     if FAILURES:
         raise RemoteError(f"failed checks: {', '.join(FAILURES)}")

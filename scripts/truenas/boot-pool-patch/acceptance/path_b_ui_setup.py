@@ -35,6 +35,28 @@ def reserved_partition_four_name(disk: str) -> str:
     return f"{disk_name}{separator}4"
 
 
+def check_checkbox_via_visible_label(container, label_text: str) -> None:
+    """Check one checkbox by its visible label, including visually hidden inputs."""
+    checkboxes = container.get_by_role("checkbox", name=label_text, exact=True)
+    if checkboxes.count() != 1:
+        raise ValueError(f"expected one {label_text} checkbox; found {checkboxes.count()}")
+    checkbox = checkboxes.first
+    if not checkbox.is_checked():
+        labels = container.get_by_text(label_text, exact=True)
+        visible_labels = [
+            labels.nth(index) for index in range(labels.count())
+            if labels.nth(index).is_visible()
+        ]
+        if len(visible_labels) != 1:
+            raise ValueError(
+                f"expected one visible {label_text} label for hidden checkbox; "
+                f"found {len(visible_labels)}"
+            )
+        visible_labels[0].click()
+    if not checkbox.is_checked():
+        raise ValueError(f"clicking the visible {label_text} label did not check its checkbox")
+
+
 def contains_pool_create_request(requests: list[object]) -> bool:
     """Detect any browser pool.create request, regardless of its pool name."""
     return any(

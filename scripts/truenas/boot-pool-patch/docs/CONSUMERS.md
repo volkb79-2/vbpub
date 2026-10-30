@@ -85,7 +85,7 @@ workflow.
 For a dedicated host that can be reset between runs, the wrapper can place its
 bounded tester on an explicitly selected custom Docker bridge and connect to
 the host by SSH. External mode is limited to `live-ui-auth`, `live-inspect`,
-`live-v27-patch`, `live-path-b-provision`, `live-path-b-partition`,
+`live-v27-patch`, `live-v28-patch`, `live-path-b-provision`, `live-path-b-partition`,
 `live-api-probe`,
 `live-ui-prepare-ssh`, `live-ui`, and the fingerprint-pinned exploratory
 `live-ui-observed-v1001` lane. It refuses
@@ -968,7 +968,134 @@ its per-start preflight admits them. The lane is budgeted for 90 minutes; its te
 0.5 CPU and 512 MiB in `$CGROUP_PARENT_DEV_GATES`, while QEMU remains separately
 capped in `$CGROUP_PARENT_DEV_BACKGROUND`.
 
-## Apply and verify the v28 adapter
+## v28-20261027 live acceptance on v1001
+
+This exact-build procedure was completed against the disposable v1001 host
+running `28.0.0-MASTER+20261027-175229`. The adapter has 19 exact middleware
+targets and records its bundle SHA-256 in the guest manifest. It is not a
+general v28 installer. The tested bundle SHA-256 is
+`b7dbb8ca95e62ed4fad6a15ff26310ceccc342e6d33c99a62cfd44d3fbb22d23`.
+The [design guide](DESIGN-GUIDE.md#v28-20261027-pool-shim-design) explains the
+build guard, schema policy, profile differences, and rollback.
+
+The following examples assume `VENV` is active, Docker uses the supported
+socket, `TRUENAS_DOCKER_NETWORK` names an existing custom bridge with PWMCP,
+and `TRUENAS_TEST_*`, `TRUENAS_UI_*`, and PWMCP settings were loaded from a
+protected local environment file. Do not put that file or credentials in the
+repository. The live runner verifies host keys, HTTPS, bridge identity,
+mutation guards, and the target version before starting the capped tester.
+
+Install on Path A first; that is where this test keeps the original-source
+backup and manifest while the reserved Path B partition is exercised later.
+Read-only inventory must confirm v28, `boot-pool` ONLINE, `/dev/vda3` as its
+leaf, and no running or indeterminate guest records before the install.
+
+```bash
+cd scripts/truenas
+source "$VENV/bin/activate"
+export DOCKER_HOST=unix:///var/run/docker.sock
+source /secure/path/to/truenas-v1001-live-env.sh
+: "${TRUENAS_DOCKER_NETWORK:?set the existing custom bridge containing pwmcp}"
+export TRUENAS_STORAGE_PROFILE=path-a
+export TRUENAS_EXPECTED_VERSION='28.0.0-MASTER+20261027-175229'
+export TRUENAS_TEST_ALLOW_MUTATIONS=1
+
+nice -n 10 "$VENV/bin/python" boot-pool-patch/run-live-gate.py live-v28-patch \
+  --docker-network "$TRUENAS_DOCKER_NETWORK" --allow-high-psi --allow-dirty
+nice -n 10 "$VENV/bin/python" boot-pool-patch/run-live-gate.py live-api-probe \
+  --docker-network "$TRUENAS_DOCKER_NETWORK" --allow-high-psi --allow-dirty
+
+# Set only when resuming a previously verified Path A root:
+export TRUENAS_TEST_RESUME_EXISTING_UI_ROOT=1
+nice -n 10 "$VENV/bin/python" boot-pool-patch/run-live-gate.py live-ui \
+  --docker-network "$TRUENAS_DOCKER_NETWORK" --allow-high-psi --allow-dirty
+unset TRUENAS_TEST_RESUME_EXISTING_UI_ROOT
+```
+
+On a fresh Path A guest with no root, leave
+`TRUENAS_TEST_RESUME_EXISTING_UI_ROOT` unset so the UI workflow exercises root
+creation. A resume flag allows only the strictly verified managed root and
+does not certify root creation. The live API probe exercises the synthetic
+read-only boot-pool row and asserts all ten id-based boot-pool mutations are
+refused, then confirms the boot-pool GUID, health, status, and vdevs are
+unchanged.
+
+For Path B, first confirm that `/dev/vda4` is the empty reserved partition
+with GPT label `boot-disk-data`, the ZFS partition type, and no mount or ZFS
+labels. If it is not reserved yet, use `live-path-b-partition` with its
+separate disk-provision guard before the API/UI checks. Set disk facts only
+from the read-only inventory:
+
+```bash
+export TRUENAS_STORAGE_PROFILE=path-b
+export TRUENAS_TEST_ALLOW_DISK_PROVISION=1
+export TRUENAS_DISK_DEVICE=/dev/vda
+export TRUENAS_BOOT_POOL_PARTITION=/dev/vda3
+
+# Only when read-only inventory confirms the reserved partition is absent:
+# nice -n 10 "$VENV/bin/python" boot-pool-patch/run-live-gate.py live-path-b-partition \
+#   --docker-network "$TRUENAS_DOCKER_NETWORK" --allow-high-psi --allow-dirty
+nice -n 10 "$VENV/bin/python" boot-pool-patch/run-live-gate.py live-api-probe \
+  --docker-network "$TRUENAS_DOCKER_NETWORK" --allow-high-psi --allow-dirty
+export TRUENAS_PATH_B_SETUP=ui-wizard
+nice -n 10 "$VENV/bin/python" boot-pool-patch/run-live-gate.py live-ui \
+  --docker-network "$TRUENAS_DOCKER_NETWORK" --allow-high-psi --allow-dirty
+unset TRUENAS_PATH_B_SETUP TRUENAS_TEST_ALLOW_DISK_PROVISION
+```
+
+The Path B API probe compares all fields/defaults from the installed
+`pool.create` schema before mutation. Only `name` and a one-disk Stripe
+topology are accepted; non-default encryption, deduplication, SED, checksum,
+duplicate-serial, and forced-topology options are refused. The installed
+schema's empty `key` and `passphrase` defaults are accepted when middleware
+normalizes unset values to `None`; non-empty secret values are refused. The
+probe then creates and registers a pool on the reserved PARTUUID, exercises the hand-made pool
+`pool.import_find`/`pool.import_pool` path, and removes only its temporary
+pool. The `ui-wizard` path submits a `pool.create` from the TrueNAS UI after
+the patched `disk.details` offers the reserved partition. Do not select the
+whole boot disk. `preprovisioned` is a separate mode for downstream UI checks
+after the supported partition/pool provisioner has already created the pool.
+
+The current v1001 run passed Path A and Path B API and PWMCP UI workflows. The
+Path B reclaim helper was also executed directly on v1001 after the UI wizard
+created `boot-disk-data`: it returned `PASS: reclaimed`, `disk.details`
+offered the same PARTUUID, and a second invocation returned
+`PASS: already_clear`. The logs
+`live-reclaim-v28-path-b-20261030.log` and
+`live-reclaim-v28-path-b-idempotence-20261030.log` are stored in the external
+evidence directory at
+`/home/vscode/vbpub-release-program-20261027/evidence/truenas-live-20261029/`.
+The installed v28 adapter also passed a same-bundle idempotent install. A
+maintainer-only injected compile failure proved that failed replacement
+restores the prior target hashes, install manifest, middleware service, and
+read-only `/usr`; see `live-v28-patch-rollback-injected-20261030.log` in the
+same evidence directory. No screenshots are committed.
+
+For a guarded replacement, read the exact `bundle_sha256` from the selected
+guest's `.truenas-boot-pool-patch-v28.json` manifest immediately before the
+run. Do not reuse a digest from another guest or build. The lane refuses a
+profile or prior-bundle mismatch and restores the old adapter if application
+fails:
+
+```bash
+export TRUENAS_V28_PATCH_ACTION=replace
+export TRUENAS_TEST_ALLOW_PATCH_REPLACE=1
+: "${TRUENAS_V28_EXPECTED_PRIOR_BUNDLE_SHA256:?read bundle_sha256 from this guest's installed manifest}"
+nice -n 10 "$VENV/bin/python" boot-pool-patch/run-live-gate.py live-v28-patch \
+  --docker-network "$TRUENAS_DOCKER_NETWORK" --allow-high-psi --allow-dirty
+unset TRUENAS_V28_PATCH_ACTION TRUENAS_TEST_ALLOW_PATCH_REPLACE \
+  TRUENAS_V28_EXPECTED_PRIOR_BUNDLE_SHA256
+```
+
+At the 2026-10-30 check, the official feed offered no newer v28 nightly to
+install. The v27 RC.1-to-nightly update replaced the patched middleware source
+but left the old manifest; reapply correctly refused before mutation. The
+Path A marker bytes survived the update but were unmounted until a manual
+mount. Do not treat either that marker or the stale manifest as patch
+survival. These observations are summarized in the
+[README status](../README.md#current-status).
+
+## Historical: apply the v28 2026-10-14 adapter
 
 The registered `live-v28-patch` lane applies the release adapter to a
 disposable v28 Path A or Path B guest. It checks the exact expected version and all 15

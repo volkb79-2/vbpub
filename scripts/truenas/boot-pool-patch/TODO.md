@@ -3,7 +3,61 @@
 For the current release/path test matrix, active gate checkpoint, and exact
 resume instructions, see [`HANDOFF.md`](HANDOFF.md).
 
-## Current checkpoint: 2026-10-21 v1001 live-test stop point; v28 migration remains open
+## Current checkpoint: 2026-10-30 v1001 matrix complete; later-build checks remain open
+
+The operator-authorized v1001 run is complete for the tested release builds.
+Only v1001 was mutated. It now runs
+`28.0.0-MASTER+20261027-175229`; Path A `boot-pool/user-data` is mounted,
+`boot-pool` is ONLINE, and `/dev/vda4` is an empty/unmounted reserved
+`boot-disk-data` partition with no imported pool or ZFS label.
+
+- [x] Starting from the pristine v27 RC.1 snapshot, verified the Path A/B API
+  and PWMCP UI matrices, including boot-pool mutation refusals, pool creation
+  on the reserved partition, hand-made pool import/adoption, and UI cleanup.
+- [x] Updated v27 RC.1 to official nightly
+  `27.0.0-MASTER+20261027-173422`. TrueNAS replaced the patched middleware
+  files but left the old install record stale. Exact RC.1 reapplication
+  refused before source mutation. The Path A marker bytes survived but were
+  unmounted after boot; manually mounting restored access. This is not
+  automatic patch/data availability through update.
+- [x] Updated v1001 to official v28 nightly
+  `28.0.0-MASTER+20261027-175229`; its exact version is not covered by the
+  2026-10-14 adapter. The separate 19-target adapter is installed and its
+  Path A and Path B API/UI matrices passed. The Path B `reclaim_path_b.py`
+  helper returned `reclaimed`, then `already_clear` on repeat. Same-bundle
+  idempotence and injected replacement rollback passed.
+- [x] Fixed three v28 live defects tests-first: unset encryption-secret
+  defaults (`""` in `core.get_methods`, `None` at runtime), Path A preflight
+  rejecting an unrelated empty reserved partition, and PWMCP's hidden erase
+  checkbox requiring its visible label. The replacement rollback probe also
+  restored the prior adapter and `/usr` protection after a compile error.
+- [x] Re-ran `live-ui` Path A on the current v28 bundle after rollback; it
+  passed and cleaned its generated UI tree.
+- [x] Final registered `unit-boot-pool-patch` gate: 310 tests and 45 subtests
+  passed on this tree. External log:
+  `unit-boot-pool-patch-final-20261030.log`.
+- [ ] Recheck v28 when a later official nightly is installable. The official
+  feed had no newer v28 build at the 2026-10-30 check; selecting a future
+  build and deciding fresh-install versus upgrade remains open.
+- [ ] On a later v28 build, create a separate guarded adapter and run the same
+  API/UI matrix before making a compatibility claim. Do not edit the existing
+  exact-build fingerprint set to accept a new version by default.
+- [ ] Test v28 natural update/reinstall behavior with the patched data present;
+  the v27 update demonstrates that middleware files can be replaced while an
+  install record remains stale. Preserve natural mount state before repair.
+- [ ] Test retention and UI Start/Stop of the existing v27 Path A container
+  and VM records through update/reapply; the v27 update probe covered a marker,
+  not that preserved UI-workload manifest.
+- [ ] Keep VM guest OS boot, actual KVM selection, NFS/SMB client access,
+  separate-disk cache/import order, and real device failure behavior open.
+
+All live text/DOM dumps are outside the checkout at
+`/home/vscode/vbpub-release-program-20261027/evidence/truenas-live-20261029/`.
+No screenshots are committed. The current version matrix and user-facing
+summary are in [README](README.md#current-status), [DESIGN-GUIDE](docs/DESIGN-GUIDE.md#v28-20261027-pool-shim-design),
+and [CONSUMERS](docs/CONSUMERS.md#v28-20261027-live-acceptance-on-v1001).
+
+## Historical v1001 access checkpoint: 2026-10-21
 
 ## Live validation status (2026-10-21)
 
@@ -270,11 +324,10 @@ Open checks:
   update lane now reports the natural post-update mount state before manual
   repair, but it has not yet run against these pre-existing UI-created records.
   Do not claim automatic post-update access from a later manual remount.
-- [ ] Find a supported UI/API inventory path for Path B that lets the UI create
-  `/dev/vda4` and then create/register `boot-disk-data`. Keep the guarded
-  partition-only lane first for the `ui-wizard` route. The 2026-10-18 probe
-  found no UI partition controls and the wizard could not see `/dev/vda4`.
-  Do not select `/dev/vda`.
+- [x] Implement and verify the Path B partition shim: the guarded lane reserves
+  `/dev/vda4`, the v27/v28 UI pool wizard sees only the reserved partition,
+  `pool.create` adopts it, and refusal cases leave the boot-pool disk layout
+  unchanged. Keep the partition-only lane first; never select `/dev/vda`.
 - [x] Run the candidate `preprovisioned` Path B UI mode through the registered
   unit gate: 170 tests + 45 subtests passed. See the
   [unit log](artifacts/unit-boot-pool-patch-path-b-ui-preprovision-mode-20261021.log).
@@ -916,3 +969,36 @@ needed for this question because this setting is exposed in Preferences.
 - [ ] Keep real-disk cache, reboot/import ordering, pool behavior when the
   backing pool is unavailable, physical fault tolerance, and representative
   performance tests open.
+
+## Detailed v1001 upgrade and v28 evidence (2026-10-29/30)
+
+- [x] Verified the official v27 nightly `27.0.0-MASTER+20261027-173422` on
+  v1001. The update replaced the RC.1 middleware patch files; the old install
+  manifest remained stale and the exact RC.1 reapply lane refused before source
+  mutation. The Path A marker dataset survived but booted unmounted; manual
+  mounting restored access. Feed metadata, checksum, update job, reboot, and
+  post-update logs are in the external `truenas-live-20261029/` evidence dir.
+- [x] Installed the official v28 nightly
+  `28.0.0-MASTER+20261027-175229` on v1001 through the TrueNAS update job and
+  verified its feed checksum and rebooted version. The 2026-10-14 adapter
+  correctly refused this build before mutation. Its storage patch has rejected
+  hunks against changed targets, so the 2026-10-27 adapter is a separate
+  exact-version target set and includes the Path B partition shim.
+- [x] Apply exact v28 adapter `28.0.0-MASTER+20261027-175229` on Path A;
+  live `pool.create` schema has 11 top-level fields with `name` and `topology`
+  required. Bundle SHA-256:
+  `b7dbb8ca95e62ed4fad6a15ff26310ceccc342e6d33c99a62cfd44d3fbb22d23`.
+- [x] Pass v28 Path A and Path B `live-api-probe` and PWMCP `live-ui` flows;
+  Path A boot-pool mutation refusals preserved its GUID/status. Path B creation
+  used only the reserved PARTUUID, imported/adopted a hand-made pool, refused
+  unsupported create options and boot attachment, and returned the partition
+  to `disk.details` during cleanup.
+- [x] Run the actual Path B reclaim helper: it returned `reclaimed`; a repeat
+  returned `already_clear`. Both checks confirmed the same partition was
+  available and `boot-pool` stayed ONLINE.
+- [x] Verify same-bundle install idempotence and inject a replacement compile
+  failure. The inner transaction restored stock files; the replacement
+  transaction restored the exact previous v28 bundle/manifest and read-only
+  `/usr` protection. Final Path A PWMCP rerun passed after rollback.
+- [x] Update README, DESIGN-GUIDE, CONSUMERS, the v28 adapter README, and the
+  action matrix with the build-specific results and remaining limits.

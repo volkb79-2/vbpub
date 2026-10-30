@@ -703,6 +703,8 @@ def test_live_ui_resume_allows_only_the_verified_root_and_pinned_image_cache() -
     assert 'zfs_property(target, zvol_name, "volblocksize") == "16384"' in source
     assert "unexpected_ui_root_snapshots(root_snapshots, cached_images)" in source
     assert "from ui_resume import (" in source
+    assert "managed_v28_patch_root_entries(" in source
+    assert "registered v28 original-file backup and archive" in source
     assert 'not any("/containers/" in name for name in descendants)' in source
     assert 'target.call("container.delete", record["id"]' in source
     assert 'cached-ui-images={cached_images if existing_root else []!r}' in source
@@ -712,12 +714,23 @@ def test_live_ui_resume_allows_only_the_verified_root_and_pinned_image_cache() -
     assert '"find", mountpoint, "-mindepth", "1", "-maxdepth", "1"' in source
     assert 'selected = f"{selected}/{name}"' in source
     assert 'page.keyboard.press("ArrowRight")' in source
+    container_form = next(
+        node for node in ast.parse(source).body
+        if isinstance(node, ast.FunctionDef) and node.name == "wait_for_container_form"
+    )
+    container_form_source = ast.get_source_segment(source, container_form)
+    assert 'dialog.get_by_role("checkbox", name="Autostart", exact=True)' in container_form_source
+    assert 'dialog.get_by_role("combobox", name="Pool", exact=True)' in container_form_source
+    assert "len(matches) == 1" in container_form_source
     container_create = next(
         node for node in ast.parse(source).body
         if isinstance(node, ast.FunctionDef) and node.name == "create_container_in_ui"
     )
     container_create_source = ast.get_source_segment(source, container_create)
-    assert 'get_by_role("dialog", name="Slide-in form", exact=True)' in container_create_source
+    assert "wait_for_container_form(page)" in container_create_source
+    assert 'dialog.get_by_text("Autostart", exact=True)' in container_create_source
+    assert "visible_labels = [" in container_create_source
+    assert "visible_labels[0].click()" in container_create_source
     assert 'get_by_role("dialog", name="Creating Container", exact=True)' in container_create_source
     assert 'dialog.wait_for(state="hidden", timeout=900_000)' in container_create_source
 
@@ -783,6 +796,44 @@ def test_path_a_ui_resume_accepts_only_the_named_dataset_and_two_zvols() -> None
             pass
         else:
             raise AssertionError(f"UI resume accepted an unexpected tree: {invalid_tree!r}")
+
+
+def test_path_a_resume_allows_only_exact_managed_v28_patch_storage() -> None:
+    contract = load_ui_resume_contract()
+    root_mountpoint = "/mnt/boot-pool/user-data"
+    record_path = f"{root_mountpoint}/.truenas-boot-pool-patch-v28.json"
+    record = {
+        "version": "28.0.0-MASTER+20261027-175229",
+        "storage_profile": "path-a",
+        "backup": f"{root_mountpoint}/.truenas-boot-pool-patch-backups/v28.ClHQxL4Y",
+    }
+    assert contract.managed_v28_patch_root_entries(
+        record["version"], record["storage_profile"], record_path, record, root_mountpoint,
+    ) == {
+        ".truenas-boot-pool-patch-v28.json",
+        ".truenas-boot-pool-patch-backups",
+        ".truenas-boot-pool-patch-replacements",
+    }
+
+    for invalid_record_path, invalid_backup in (
+        ("/root/.truenas-boot-pool-patch-v28.json", record["backup"]),
+        (record_path, f"{root_mountpoint}/unmanaged/v28.ClHQxL4Y"),
+        (record_path, f"{root_mountpoint}/.truenas-boot-pool-patch-backups/v28.bad-name!"),
+    ):
+        invalid = dict(record, backup=invalid_backup)
+        try:
+            contract.managed_v28_patch_root_entries(
+                invalid["version"], invalid["storage_profile"], invalid_record_path,
+                invalid, root_mountpoint,
+            )
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"unsafe patch storage record accepted: {invalid!r}")
+
+    assert contract.managed_v28_patch_root_entries(
+        "27.0.0-RC.1", "path-a", "/root/v27-boot-pool-patch-install.json", {}, root_mountpoint,
+    ) == set()
 
 
 def test_read_only_inventory_lane_does_not_require_mutation_guard(tmp_path, monkeypatch) -> None:
@@ -937,6 +988,13 @@ def test_external_target_requires_an_explicit_supported_host_and_https_ui_origin
         raise AssertionError("external mode must not permit update/reboot workflows")
 
 
+def test_v28_patch_lane_can_target_an_external_guest_through_its_guarded_runner(monkeypatch) -> None:
+    runner = load_runner()
+    monkeypatch.setenv("TRUENAS_TEST_HOST", "v1001.vxxu.de")
+    assert "live-v28-patch" in runner.EXTERNAL_TARGET_LANES
+    assert runner.external_target("live-v28-patch") == ("v1001.vxxu.de", None)
+
+
 def test_external_network_must_be_an_existing_custom_bridge(monkeypatch) -> None:
     runner = load_runner()
     calls = []
@@ -1055,7 +1113,8 @@ def test_live_ui_script_inventories_before_mutating_and_checks_zfs_backing() -> 
     path_b_pool_ui_source = ast.get_source_segment(source, path_b_pool_ui)
     assert 'get_by_text("Storage", exact=True)' in path_b_pool_ui_source
     assert 'page.goto(base_url + "/ui/storage"' not in path_b_pool_ui_source
-    assert 'create.wait_for(state="visible", timeout=60_000)' in path_b_pool_ui_source
+    assert "create_pool_control(page)" in path_b_pool_ui_source
+    assert "while time.monotonic() < deadline" in path_b_pool_ui_source
     assert 'require(unused_names == [expected_partition],' in path_b_pool_ui_source
     assert 'choose("Layout", "^Stripe$")' in path_b_pool_ui_source
     assert '"No disks available" in preview' in path_b_pool_ui_source
@@ -1086,7 +1145,7 @@ def test_live_ui_script_inventories_before_mutating_and_checks_zfs_backing() -> 
     assert 'size.press("Tab")' in zvol_create_source
     assert 'sparse.focus()' in zvol_create_source
     assert 'sparse.press("Space")' in zvol_create_source
-    assert 'get_by_role("dialog", name="Slide-in form", exact=True)' in zvol_create_source
+    assert 'name=re.compile(r"^(?:Slide-in form|Add Zvol)$", re.IGNORECASE)' in zvol_create_source
     assert 'progress.wait_for(state="hidden", timeout=60_000)' in zvol_create_source
     assert 'if save_button.count() == 1 and not save_button.is_enabled()' in zvol_create_source
     assert 'name=re.compile(r"validation error", re.IGNORECASE)' in zvol_create_source
@@ -1139,6 +1198,23 @@ def test_live_ui_script_inventories_before_mutating_and_checks_zfs_backing() -> 
         if isinstance(node, ast.FunctionDef) and node.name == "vm_form_create"
     )
     vm_form_source = ast.get_source_segment(source, vm_form)
+    assert 'r"^(?:add|create)(?:\\s+(?:a|new))?\\s+(?:vm|virtual machine)$"' in vm_form_source
+    assert 'report("vm-create-entry-page"' in vm_form_source
+    assert "form_area = wait_for_vm_form_area(page)" in vm_form_source
+    assert 'report("vm-create-form-page"' in vm_form_source
+    assert "def wait_for_vm_form_area(page, *, timeout_ms: int = 120_000)" in source
+    vm_form_area = next(
+        node for node in ast.parse(source).body
+        if isinstance(node, ast.FunctionDef) and node.name == "wait_for_vm_form_area"
+    )
+    vm_form_area_source = ast.get_source_segment(source, vm_form_area)
+    assert 'page.get_by_role("dialog")' in vm_form_area_source
+    assert 'page.get_by_role("main")' in vm_form_area_source
+    assert '"Guest Operating System"' in vm_form_area_source
+    assert '"Password"' in vm_form_area_source
+    assert 'get_by_role("button", name="Add", exact=True)' in vm_form_source
+    assert 'report("vm-create-entry-menu"' in vm_form_source
+    assert 'r"^(?:virtual machine|vm|create(?:\\s+a)?\\s+(?:vm|virtual machine))$"' in vm_form_source
     assert 'vm_region_next_button(dialog, "Operating System")' in vm_form_source
     assert 'vm_region_next_button(dialog, "CPU And Memory")' in vm_form_source
     assert "active_vm_step_next_button(dialog)" in vm_form_source
@@ -1167,6 +1243,14 @@ def test_live_ui_script_inventories_before_mutating_and_checks_zfs_backing() -> 
     assert "deadline = time.monotonic() + 20" in source
     assert "field_errors={form_errors!r}" in source
     assert "Save left the UI form visible" in source
+    for helper_name in ("vm_region_next_button", "active_vm_step_next_button"):
+        helper = next(
+            node for node in ast.parse(source).body
+            if isinstance(node, ast.FunctionDef) and node.name == helper_name
+        )
+        helper_source = ast.get_source_segment(source, helper)
+        assert 'dialog.get_by_role("listitem")' in helper_source
+        assert 'get_by_role("button", name="Next", exact=True)' in helper_source
 
 
 def test_tester_cleanup_reads_back_stopped_state_after_docker_stop_timeout(monkeypatch) -> None:
