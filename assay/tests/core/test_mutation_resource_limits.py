@@ -1550,7 +1550,7 @@ def test_run_mutation_observer_loss_after_second_candidate_is_recorded(
     assert len(unobserved) == 1
     assert unobserved[0]["resource_observation"] == {
         "status": "unobserved",
-        "reason": "cannot observe the required cgroup v2 process and memory limit events for native R2 candidate execution: observer disappeared after candidate 2",
+        "reason": "after: cannot observe the required cgroup v2 process and memory limit events for native R2 candidate execution: observer disappeared after candidate 2",
     }
     progress_records = [
         json.loads(line)

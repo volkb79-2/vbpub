@@ -1423,8 +1423,10 @@ def test_auto_budget_timeout_terminates_a_real_candidate_child(tmp_path, monkeyp
     formula test above pins the shipped derivation. The blocked candidate
     starts a detached descendant and records its PID before waiting forever;
     the isolated runner must time out the leader, then kill and reap that
-    descendant before returning. A five-second candidate bound gives the
-    child interpreter time to start under host load.
+    descendant before returning. WP1 classifies the candidate as crashed
+    because a descendant outlived its leader, even though cleanup proved the
+    final process tree empty. A five-second candidate bound gives the child
+    interpreter time to start under host load.
     """
     repo = _repo(tmp_path)
     scratch = tmp_path / "scratch"
@@ -1489,7 +1491,8 @@ def test_auto_budget_timeout_terminates_a_real_candidate_child(tmp_path, monkeyp
         )
 
     assert result is not None and not isinstance(result, str)
-    assert len(result.budget_exceeded) == 1
+    assert len(result.crashed) == 1
+    assert len(result.budget_exceeded) == 0
     assert len(result.survived) == 1
     assert result.budget_per_candidate_derived_s == derived_timeout
     assert candidate_timeouts == [derived_timeout, derived_timeout]
@@ -1498,9 +1501,9 @@ def test_auto_budget_timeout_terminates_a_real_candidate_child(tmp_path, monkeyp
     assert not still_running(descendant_pid), (
         "isolated runner returned while a detached candidate descendant lived"
     )
-    assert result.budget_exceeded[0].process_tree_evidence is not None
-    assert result.budget_exceeded[0].process_tree_evidence.leader_status == "timeout-killed"
-    assert result.budget_exceeded[0].process_tree_evidence.outliving_descendants >= 1
+    assert result.crashed[0].process_tree_evidence is not None
+    assert result.crashed[0].process_tree_evidence.leader_status == "timeout-killed"
+    assert result.crashed[0].process_tree_evidence.outliving_descendants >= 1
 
 
 def test_run_mutation_refuses_auto_and_an_explicit_seconds_together(tmp_path):
