@@ -13270,12 +13270,13 @@ Registered Assay gates no longer use Docker-name snapshots as admission
 blockers. A cgroup window is `affected` only when it observes a direct pids
 limit or memory OOM event in the measured command's subtree. PSI and CPU
 throttling do not make it affected and do not change R0, R1 or R3 verdicts.
-A direct resource-limit event can withhold either result; an unavailable
-observation can withhold a failure. Completed PASS results are retained when
-there is no direct limit event. R2 keeps its candidate-scoped resource events
-and pressure-adjusted liveness clock. The PASS stderr tail and canary
-`description` no longer carry host measurements, so the SQL witness compares
-stderr exactly without a telemetry exception.
+A direct pids/OOM event can make a failed R0/R1/R3 measurement incomplete, but
+completed PASS results stay final even when an event is observed. An unavailable
+required direct-counter sample can likewise make only a failed measurement
+incomplete. PSI and CPU throttling do not change R0/R1/R3 verdicts. R2 keeps its
+candidate-scoped resource events and pressure-adjusted liveness clock. The PASS
+stderr tail and canary `description` no longer carry host measurements, so the
+SQL witness compares stderr exactly without a telemetry exception.
 
 `import-break` keeps the 10.0.0 reason-code contract: a clean
 `COMMAND_FAILED` is the expected transformed result. Assay does not bind a

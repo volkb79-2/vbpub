@@ -7,9 +7,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ### Fixed
 - fix(assay): allow concurrent gates through admission independent of Docker-name snapshots; attribute direct resource-limit events to the measured cgroup
 - fix(assay): make the R3 verifier derive incomplete transformed canary runs as INCONCLUSIVE, matching the producer
-- fix(assay): retain completed PASS results despite direct limit events or
-  unavailable direct-counter samples; only direct-limit and required
-  direct-counter evidence can make failures infrastructure
+- fix(assay): keep completed R0/R1/R3 PASS results final despite direct
+  resource-limit events or unavailable direct-counter samples; these
+  observations can make only a failed result incomplete
 - fix(assay): keep PSI and CPU-throttling sample availability out of
   R0/R1/R3 failure classification
 - fix(assay): require an ordinary nonzero process exit for an import-break
@@ -18,15 +18,13 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - fix(assay): remove resource-window observations from verdict tails, details
   and canary descriptions; compare SQL witness stderr exactly without a
   telemetry exception
-- fix(assay): keep `assay analyze campaign` incomplete when a native R2
-  lane's verdict has no R2 judgment, while preserving whole-scope
-  qualification for R0/R1-only and plan-only ingested analysis. Absence of an
-  R2 judgment no longer supplies evidence of an ingested inventory, so early
-  verdicts such as failed R0 baselines retain `inventory_not_exhausted` and
-  `qualifying: false`. This is safe because native inventory still requires
-  the reconstructed native plan, ingested inventory still requires an
-  explicit ingested producer on a lane configured with a mutation report,
-  and non-R2 lane scope keeps its prior qualification rule.
+
+### Campaign analysis
+- fix(assay): keep campaign analysis incomplete and non-qualifying when a
+  native R2 lane's verified verdict has no `judgment.r2`, because it cannot
+  establish a native inventory or prove an ingested producer. Tests:
+  `analysis/tests/test_analysis_campaign.py::test_failed_baseline_verdict_does_not_establish_native_r2_inventory`;
+  `analysis/tests/test_analysis_campaign_residual.py::test_a_non_native_mutation_lane_is_reported_not_supported`.
 
 <!-- cmru: release history -->
 
@@ -219,15 +217,6 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   observations from cgprofile.
 
 ### Fixed
-- `assay analyze campaign` no longer treats a missing `judgment.r2` on a native
-  lane as evidence of an ingested inventory. Early verdicts such as failed R0
-  baselines remain incomplete with `inventory_not_exhausted` and
-  `qualifying: false`; inventory without a native plan now requires an explicit
-  ingested producer on a lane configured with a mutation report format.
-  Whole-scope `qualifying` remains true for R0/R1-only lanes and plan-only
-  ingested analysis; see the
-  [campaign design](docs/DESIGN-GUIDE.md#mutation-campaign-closeout-b108-phase-1)
-  and [consumer guide](docs/CONSUMERS.md#close-out-a-mutation-campaign-with-assay-analyze-campaign-b108).
 - Treat `memory.events:max` as resource telemetry rather than candidate
   failure evidence; only failed-fork or OOM-related counters invalidate an R2
   result. Successful reclaim at `memory.max` no longer marks a mutant crashed.

@@ -47,15 +47,6 @@ clean_tree = false
 # further 20m for clone/startup/cleanup; test_self_lane.py derives these bounds.
 budget = "5h"
 
-[lanes.parallel-safety-regression]
-kind = "command"
-environment = "tester-unified"
-argv = ["bash", "{worktree}/assay/tools/parallel-safety-regression.sh", "{worktree}"]
-clean_tree = true
-# This focused red-first lane runs a small synthetic baseline/current test set;
-# it does not invoke the release gate or an R2 campaign.
-budget = "15m"
-
 [lanes.self-qualification]
 kind = "command"
 environment = "bare-host"

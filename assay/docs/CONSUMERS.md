@@ -217,22 +217,6 @@ lane runs; that lock serializes Assay lanes only.
 `--dry-run` previews a transaction without executing `run-tests`, so it cannot
 prove cgroup capacity or lane admission.
 
-### Parallel gate regression
-
-From the repository root, use this pasteable invocation to exercise the
-shared-host contract in the registered `tester-unified` environment:
-
-```bash
-cd assay
-run-gate --worktree "$(git -C .. rev-parse --show-toplevel)" parallel-safety-regression
-```
-
-It first checks that its regression cases fail against the task branch's
-`origin/main` base, then checks that they pass on the current tree. It uses
-synthetic Docker names, cgroup samples and command results; it does not run the
-release gate or an R2 campaign. Time and resource cases use fixed samples
-rather than wall-clock slack.
-
 ### Cold-witness R2 (B114)
 
 Cold-witness mode is an explicit opt-in for the supported native Python pytest

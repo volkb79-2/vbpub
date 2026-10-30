@@ -2853,18 +2853,6 @@ shows how to preserve the log and inspect the report. Decision A-462 records
 why this separate lane supersedes A-133's former permanent R0-only limit while
 leaving the ordinary release lane unchanged.
 
-### Parallel gate regression
-
-The registered `parallel-safety-regression` lane makes the base behavior fail
-before checking the fix: it overlays the new focused assertions onto the
-task branch's merge-base with `origin/main`, requires those named assertions
-to fail there, then runs them on the current tree. The baseline proof covers
-the false `host busy` refusal, incomplete R3 classification and R0 failure
-attribution. The current proof uses fixed cgroup samples and synthetic Docker
-responses; it does not infer correctness from elapsed-time slack or require a
-quiet host. Its pasteable invocation is in
-[CONSUMERS.md](CONSUMERS.md#parallel-gate-regression).
-
 ### Registered B110 pilot and survivor-screen lanes (B118 P7b)
 
 The separately registered `b110-pilot` and `b110-screen` lanes measure native

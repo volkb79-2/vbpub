@@ -1557,9 +1557,6 @@ you're changing assay itself:
   code imported from each isolated snapshot. See the
   [self-qualification design](docs/DESIGN-GUIDE.md#full-source-self-qualification-b105)
   and [worked invocation](docs/CONSUMERS.md#assays-own-full-source-self-qualification-b105).
-  To check the shared-host admission and pressure-attribution contract with
-  deterministic synthetic inputs, use
-  [`run-gate parallel-safety-regression`](docs/DESIGN-GUIDE.md#parallel-gate-regression).
   A standalone R0/R1 preflight has a 75-minute run-gate budget and a 90-minute
   Nyxloom outer timeout, leaving time for startup and evidence collection.
   The full-source attempt is currently unqualified: the latest run stopped at

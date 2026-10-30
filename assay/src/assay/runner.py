@@ -1281,10 +1281,11 @@ def execute_plan(
     different KIND of judgement from "did the wrapped suite pass".
 
     *classify_resource_contention* is a separate, default-off gate option for
-    only the lane's own R0 baseline/direct command. A direct pids/OOM event
-    withholds either outcome. PSI and CPU throttling do not change the result.
-    A failed command with an unavailable required sample is incomplete, while
-    completed passes remain accepted without a sample. R2 candidates and R3
+    only the lane's own R0 baseline/direct command. A direct pids/OOM event can
+    make a failed baseline measurement incomplete, while a completed PASS
+    remains final even when an event is observed. A failed command with an
+    unavailable required direct-counter sample is incomplete. PSI and CPU
+    throttling do not change the result. R2 candidates and R3
     transforms keep their own classification paths.
 
     *result_report_create_missing_parents* is B006(b)'s opt-in, threaded to
@@ -1705,9 +1706,10 @@ def execute_command(
     ``FAIL``/``COMMAND_FAILED`` (A-073 -- an ordinary non-zero exit is a
     judged R0 FAIL, never ``EXEC_FAILED``, and never a universal PASS).
     The registered gate may opt into cgroup attribution for its own R0 call:
-    a direct pids/OOM event withholds either result. A failed command becomes
-    incomplete when a required sample is unavailable. PSI and CPU throttling
-    do not change the result; completed passes remain usable without a sample.
+    a direct pids/OOM event can make a failed R0 result incomplete, while a
+    completed PASS remains final even when an event is observed. A missing
+    required direct-counter sample can likewise make only a failed result
+    incomplete. PSI and CPU throttling do not change the result.
 
     **(B078) *result_report*** defaults to the sentinel
     :data:`_LANE_DECLARED_REPORT`, meaning "use ``lane.result_report``" --

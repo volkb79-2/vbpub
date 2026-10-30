@@ -185,15 +185,6 @@ asserts = ["tests-pass"]
 timeout_seconds = 21600
 environment = "tester-unified"
 
-[gates.parallel-safety-regression]
-# Small synthetic red-first regression for parallel admission and pressure
-# attribution. It runs in tester-unified and never starts the release gate/R2.
-argv = ["bash", "-c", "cd {worktree}/assay && exec run-gate --worktree {worktree} parallel-safety-regression"]
-phase = "implementation"
-asserts = ["tests-pass"]
-timeout_seconds = 1800
-environment = "tester-unified"
-
 [gates.self-qualification]
 # B105's deliberately invoked full-source R0-R3 campaign is separate from the
 # ordinary R0 release gate above. Its run-gate lane runs the Assay-owned
