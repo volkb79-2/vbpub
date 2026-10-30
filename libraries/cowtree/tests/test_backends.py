@@ -38,23 +38,15 @@ from .fakes import FakeOps, StatResultProxy
 
 def _magic_inode(monkeypatch, *paths):
     real_stat = os.stat
-    real_lstat = os.lstat
     targets = {os.path.abspath(os.fspath(path)) for path in paths}
 
-    def with_subvolume_inode(stat_call):
-        def fake_stat(path, *args, **kwargs):
-            result = stat_call(path, *args, **kwargs)
-            if isinstance(path, (str, bytes, os.PathLike)) and os.path.abspath(os.fspath(path)) in targets:
-                return StatResultProxy(result, st_ino=256)
-            return result
+    def fake_stat(path, *args, **kwargs):
+        result = real_stat(path, *args, **kwargs)
+        if isinstance(path, (str, bytes, os.PathLike)) and os.path.abspath(os.fspath(path)) in targets:
+            return StatResultProxy(result, st_ino=256)
+        return result
 
-        return fake_stat
-
-    # Detection uses no-follow metadata so a symlink to a subvolume is not
-    # mistaken for the subvolume itself. Model the same inode through both
-    # stat interfaces used by the backend.
-    monkeypatch.setattr(backend_module.os, "stat", with_subvolume_inode(real_stat))
-    monkeypatch.setattr(backend_module.os, "lstat", with_subvolume_inode(real_lstat))
+    monkeypatch.setattr(backend_module.os, "stat", fake_stat)
 
 
 def test_subvol_root_snapshot_else_walk(tmp_path, monkeypatch):

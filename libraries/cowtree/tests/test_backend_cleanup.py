@@ -889,17 +889,18 @@ def test_btrfs_delete_reports_inspection_and_destroy_errors(tmp_path, monkeypatc
     backend = BtrfsBackend(FakeOps())
     path = tmp_path / "tree"
     path.mkdir()
-    real_lstat = backend_module.os.lstat
+    real_stat = backend_module.os.stat
 
     def fail_stat(value, *args, **kwargs):
         if value == str(path):
             raise OSError(errno.EIO, "stat denied")
-        return real_lstat(value, *args, **kwargs)
+        return real_stat(value, *args, **kwargs)
 
-    monkeypatch.setattr(backend_module.os, "lstat", fail_stat)
+    monkeypatch.setattr(backend_module.os, "stat", fail_stat)
     with pytest.raises(BackendFailed, match="stat-delete-target"):
         backend.delete_tree(str(path))
-    monkeypatch.setattr(backend_module.os, "lstat", real_lstat)
+    monkeypatch.setattr(backend_module.os, "stat", real_stat)
+    backend.delete_tree(str(tmp_path / "missing"))
 
     ops = FakeOps(destroy_error=errno.EIO)
     backend = BtrfsBackend(ops)

@@ -370,6 +370,13 @@ def test_allocated_bytes_accounts_for_files_symlinks_and_nested_directories(tmp_
     assert allocated > 0 and device == os.lstat(root).st_dev
 
 
+def test_allocated_bytes_accounts_for_a_regular_file(tmp_path):
+    path = tmp_path / "payload"
+    path.write_bytes(b"allocated")
+    info = os.lstat(path)
+    assert _allocated_bytes(str(path)) == (info.st_blocks * 512, info.st_dev)
+
+
 def test_dead_flock_inventory_filters_holder_and_lease_outcomes(tmp_path, monkeypatch):
     external = open_run(
         "external-inventory", estimate=SpaceEstimate(0, 0, 0), holder="external",
@@ -455,6 +462,7 @@ def test_gc_retains_missing_or_invalid_lock_and_non_directory(tmp_path):
     missing_lock._closed = True
     (path / "owner.lock").unlink()
     (tmp_path / "symlink-run").symlink_to(path, target_is_directory=True)
+    assert dead_flock_runs(tmp_path) == []
     results = {item.name: item.status for item in gc(tmp_path)}
     assert results[path.name] == "lock-unavailable"
     assert results["symlink-run"] == "not-directory"
@@ -585,24 +593,17 @@ def test_gc_deletes_btrfs_subvolume_trees_with_backend(tmp_path, monkeypatch):
     ops.destroy_calls.clear()
 
     real_stat = os.stat
-    real_lstat = os.lstat
     target = os.path.abspath(tree)
 
-    def with_subvolume_inode(stat_call):
-        def subvolume_stat(path, *args, **kwargs):
-            result = stat_call(path, *args, **kwargs)
-            if isinstance(path, (str, bytes, os.PathLike)) and os.path.abspath(os.fspath(path)) == target:
-                values = list(result)
-                values[1] = 256
-                return os.stat_result(values)
-            return result
+    def subvolume_stat(path, *args, **kwargs):
+        result = real_stat(path, *args, **kwargs)
+        if isinstance(path, (str, bytes, os.PathLike)) and os.path.abspath(os.fspath(path)) == target:
+            values = list(result)
+            values[1] = 256
+            return os.stat_result(values)
+        return result
 
-        return subvolume_stat
-
-    # The backend classifies the child through lstat so symlinks cannot be
-    # followed into a btrfs-only destruction path.
-    monkeypatch.setattr(os, "stat", with_subvolume_inode(real_stat))
-    monkeypatch.setattr(os, "lstat", with_subvolume_inode(real_lstat))
+    monkeypatch.setattr(os, "stat", subvolume_stat)
     result = gc(run_path.parent, ops=ops)
     assert result[0].status == "deleted"
     assert ops.destroy_calls == ["tree"]

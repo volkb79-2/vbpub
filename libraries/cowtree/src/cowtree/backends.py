@@ -168,15 +168,14 @@ def _identity_at(parent_fd: int, name: str) -> tuple[int, int]:
     try:
         info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
     except OSError as stat_error:
-        descriptor = -1
         try:
             descriptor = os.open(name, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW, dir_fd=parent_fd)
-            info = os.fstat(descriptor)
         except OSError:
             raise stat_error
+        try:
+            info = os.fstat(descriptor)
         finally:
-            if descriptor >= 0:
-                os.close(descriptor)
+            os.close(descriptor)
     if not stat.S_ISDIR(info.st_mode):
         raise PathRefused(f"created tree is not a real directory: {name!r}")
     return _file_identity(info)
@@ -933,30 +932,30 @@ class BtrfsBackend(ReflinkBackend):
             finally:
                 self.ops.close(src_fd)
                 self.ops.close(parent_fd)
-            destination_fd = -1
             try:
                 destination_fd = _open_dir(dst, self.ops)
+            except OSError as exc:
+                _cleanup_created(dst, destination_identity, self.delete_tree, self.log)
+                raise _raise_backend("snapshot-writable", dst, exc) from exc
+            try:
                 if _file_identity(self.ops.fstat(destination_fd)) != destination_identity:
                     raise PathRefused("snapshot destination identity changed during clone")
                 flags = self.ops.subvol_getflags(destination_fd)
                 if flags & BTRFS_SUBVOL_RDONLY:
                     self.ops.subvol_setflags(destination_fd, flags & ~BTRFS_SUBVOL_RDONLY)
                 self.ops.close(destination_fd)
-                destination_fd = -1
             except PathRefused:
-                if destination_fd >= 0:
-                    try:
-                        self.ops.close(destination_fd)
-                    except OSError as cleanup_error:
-                        self.log(f"cowtree: close after snapshot identity failure also failed: {cleanup_error}")
+                try:
+                    self.ops.close(destination_fd)
+                except OSError as cleanup_error:
+                    self.log(f"cowtree: close after snapshot identity failure also failed: {cleanup_error}")
                 _cleanup_created(dst, destination_identity, self.delete_tree, self.log)
                 raise
             except OSError as exc:
-                if destination_fd >= 0:
-                    try:
-                        self.ops.close(destination_fd)
-                    except OSError as cleanup_error:
-                        self.log(f"cowtree: close after snapshot flag failure also failed: {cleanup_error}")
+                try:
+                    self.ops.close(destination_fd)
+                except OSError as cleanup_error:
+                    self.log(f"cowtree: close after snapshot flag failure also failed: {cleanup_error}")
                 _cleanup_created(dst, destination_identity, self.delete_tree, self.log)
                 raise _raise_backend("snapshot-writable", dst, exc) from exc
             self._mark_created(dst, destination_identity)
@@ -1003,7 +1002,7 @@ class BtrfsBackend(ReflinkBackend):
 
     def delete_tree(self, path: str) -> None:
         try:
-            target_info = os.lstat(path)
+            target_info = os.stat(path, follow_symlinks=False)
         except FileNotFoundError:
             is_subvolume = False
         except OSError as exc:
