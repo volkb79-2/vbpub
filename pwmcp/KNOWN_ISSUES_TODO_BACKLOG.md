@@ -424,3 +424,88 @@ image rebuild and the `test` extra in `client/pyproject.toml` (not touched on th
 - Gate coverage: `client/src/pwmcp_client/ocr.py` was added to the `assay.toml` judged targets (100% line
   and branch measured locally); the sidecar `containers/ocr/ocr_service.py` is tested but deliberately NOT a
   judged target yet, and the registered gate was not run.
+
+## PWMCP-12 — the session cleanliness guard makes Git a prerequisite for the whole test suite
+
+**Status:** OPEN. Severity: P2. Filed 2026-10-30 from `reviews/pwmcp2.out`.
+
+**Observed.** The autouse session fixture in `pwmcp/conftest.py:17-30,33-38`
+invokes `git status` before and after every test session. If Git is absent, the
+snapshot is not a Git worktree, or Git rejects the checkout for dubious
+ownership, setup or teardown errors before ordinary tests run. The last case
+also depends on the gate applying `safe.directory` to the mounted checkout.
+The subprocess has no timeout.
+
+**Proposed fix.** Make the guard's repository-backed execution requirement
+explicit and bounded: either opt it in only for lanes that guarantee a Git
+checkout, or validate that prerequisite with one named, actionable diagnostic
+before the suite. Distinguish missing Git, non-worktree snapshots, and
+`safe.directory` refusal; add a subprocess timeout and keep the gate's
+identity setup in sync.
+
+## PWMCP-13 — the Git-visible cleanliness guard misses ignored and exit-time writes
+
+**Status:** OPEN. Severity: P2. Filed 2026-10-30 from `reviews/pwmcp2.out`.
+
+**Observed.** `pwmcp/conftest.py:23-29,35-42` compares `git status
+--untracked-files=all`, which omits ignored paths such as `.pytest_cache/`,
+`__pycache__/`, `.assay/`, and `coverage.json`. Coverage also writes
+`coverage.json` from its atexit handler after this fixture takes its final
+snapshot. The guard therefore cannot certify that tests left the repository
+tree unchanged.
+
+**Proposed fix.** State the narrower contract in the fixture message and docs
+if Git-visible pre-exit changes are the intended scope. If the contract is
+whole-tree cleanliness, add an ignored-path check and a post-process check that
+runs after coverage and other interpreter-exit writers complete.
+
+## PWMCP-14 — repository-wide status can blame PWMCP for another subtree's writes
+
+**Status:** OPEN. Severity: P2. Filed 2026-10-30 from `reviews/pwmcp2.out`.
+
+**Observed.** `pwmcp/conftest.py:23-29` runs `git status` from the PWMCP
+directory but supplies no pathspec, so Git reports changes anywhere in the
+vbpub worktree. A concurrent write outside `pwmcp/` is then reported by the
+PWMCP-specific assertion at `:39-43` as a PWMCP test change.
+
+**Proposed fix.** Add the `pwmcp/` subtree pathspec to both snapshots, keeping
+the assertion's scope and wording aligned.
+
+## PWMCP-15 — the session guard can report xdist workers' temporary writes as failures
+
+**Status:** OPEN. Severity: P3. Filed 2026-10-30 from `reviews/pwmcp2.out`.
+
+**Observed.** The current suite does not enable pytest-xdist, but the session
+fixture in `pwmcp/conftest.py:33-43` takes independent before/after snapshots
+in each worker. If xdist is enabled later, one worker's temporary repository
+write can fall inside another worker's snapshot window and be attributed to
+the wrong worker.
+
+**Proposed fix.** Run the comparison only in the xdist controller (or one
+designated worker) and add an oracle that proves worker-local snapshots cannot
+overlap and misattribute a write.
+
+## PWMCP-16 — the session guard walks and prints more repository state than needed
+
+**Status:** OPEN. Severity: P3. Filed 2026-10-30 from `reviews/pwmcp2.out`.
+
+**Observed.** `pwmcp/conftest.py:23-29,39-43` walks the whole monorepo twice
+per session, including nested pytest sessions, and prints complete before and
+after status listings when they differ. On a large or already-dirty worktree
+this adds avoidable cost, index-refresh contention, and noisy failure output.
+
+**Proposed fix.** Use `git --no-optional-locks status` for the scoped status
+query and report only a bounded set of added/removed entries with a count of
+omitted paths.
+
+## PWMCP-17 — the new top-level test is separated from the next statement by one blank line
+
+**Status:** OPEN. Severity: P3. Filed 2026-10-30 from `reviews/pwmcp2.out`.
+
+**Observed.** `pwmcp/tests/test_ocr_service.py:51-58` has one blank line
+between the top-level test function and the following top-level `try:` block,
+which triggers the E305 style finding and makes the import/setup section harder
+to scan.
+
+**Proposed fix.** Add the second top-level blank line or move the test below
+the module's import-time setup.

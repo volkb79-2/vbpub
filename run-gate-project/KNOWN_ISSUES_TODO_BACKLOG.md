@@ -142,6 +142,14 @@ SPEC §9.
 | RG-122 | `pytest-cov --cov-fail-under` can exit successfully while printing a raw coverage result below the floor because its exit check rounds to configured precision; a `kind = "command"` Run-Gate lane trusts that exit status | Medium | OPEN (filed 2026-10-29 from tnt TNT-53; consumer precision-2 workaround documented there) |
 | RG-123 | Assay's merged-baseline parallel-safety regression lane has a stale red-first premise after merge; consolidate the load-verdict docs and retire the lane | Low | OPEN; Assay B177 WP5 follow-up after WP2–WP4 |
 | RG-124 | `RUN_GATE_EXTRA_MOUNTS` used `-v`, which can create a missing bind source as an empty host directory | Minor | FIXED IN THIS BRANCH (CW4); see `extra_mount_flags()` and `TestExtraMounts::test_extra_mount_flags_use_mount_form_for_missing_source_refusal` |
+| RG-125 | host-mode resource resolution rejects mount delimiters in `MDT_COW_ROOT` although no bind is built | Minor | OPEN 2026-10-30; review `rg3.out` |
+| RG-126 | the `MDT_COW_ROOT` refusal calls a host-mode value a Docker mount path | Minor | OPEN 2026-10-30; review `rg3.out` |
+| RG-127 | extra-mount validation runs before an attached-container return and is repeated then discarded in dispatch | Minor | OPEN 2026-10-30; review `rg3.out` |
+| RG-128 | `container_mount_flags()` can raise `TypeError` for a missing worktree instead of `GateError` | Minor | OPEN 2026-10-30; review `rg3.out` |
+| RG-129 | `dual_mount_flags()` validates the alias namespace path twice | Minor | OPEN 2026-10-30; review `rg3.out` |
+| RG-130 | users are not told that Run-Gate has no `--ram-target` option | Minor | OPEN 2026-10-30; review `rg3.out` |
+| RG-131 | the planned R2 worker-count policy is not implemented | Enhancement | OPEN 2026-10-30; PR3 residual |
+| RG-132 | per-candidate resource metrics are not yet carried into Run-Gate history and footprint data | Enhancement | OPEN 2026-10-30; PR0 residual |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -6710,3 +6718,117 @@ therefore look like a successful mount while exposing an empty path.
 **Fix and oracle.** `run_gate.py::extra_mount_flags()` emits explicit Docker
 `--mount type=bind` entries, which refuse absent sources. The registered
 oracle is `tests/test_run_gate.py::TestExtraMounts::test_extra_mount_flags_use_mount_form_for_missing_source_refusal`.
+
+## RG-125 — host-mode resource resolution rejects mount delimiters in `MDT_COW_ROOT`
+
+**Status:** OPEN. Severity: minor. Filed 2026-10-30 from `reviews/rg3.out`.
+
+**Observed.** `run_gate.py:1831-1839,1849-1857` calls
+`_validate_cow_root()` for an auto-mode CoW setting whenever `MDT_COW_ROOT` is
+set, without checking the environment mode. A host-mode lane therefore refuses
+a value containing a comma, colon, or newline even though host mode passes it
+directly to the process and builds no Docker bind for it. `CONSUMERS.md:323-324`
+describes the restriction as applying to paths used in bind mounts.
+
+**Proposed fix.** Apply the delimiter check only when an ephemeral bind will
+be built; keep host-mode pass-through behavior unchanged.
+
+## RG-126 — the CoW root refusal names Docker mount paths in host mode
+
+**Status:** OPEN. Severity: minor. Filed 2026-10-30 from `reviews/rg3.out`.
+
+**Observed.** The error at `run_gate.py:1855-1857` says “Docker mount paths”
+cannot contain delimiters. The same validator is reached during host-mode
+resource resolution, where `MDT_COW_ROOT` is not used as a mount path, so the
+message describes a condition that is not true for that invocation.
+
+**Proposed fix.** Use context-neutral wording in `_validate_cow_root()`, or
+emit Docker-specific wording only from the ephemeral bind path.
+
+## RG-127 — extra-mount validation runs before attachment is resolved and is discarded in dispatch
+
+**Status:** OPEN. Severity: minor. Filed 2026-10-30 from `reviews/rg3.out`.
+
+**Observed.** `run_gate.py:13532` computes `extra_mount_flags()` before
+`resolve_inflight()` can return an already-running container at `:13540-13546`;
+that attached run never uses the flags. A malformed `RUN_GATE_EXTRA_MOUNTS`
+can therefore refuse an invocation that will not build a Docker command. The
+ephemeral dispatch path also calls `extra_mount_flags()` at `:16032-16033` and
+discards its result before the runner computes it again.
+
+**Proposed fix.** Resolve attachment before constructing or validating
+mounts, and keep one validation/build call at the point where a new container
+will consume the flags.
+
+## RG-128 — a missing worktree can escape `container_mount_flags()` as `TypeError`
+
+**Status:** OPEN. Severity: minor. Filed 2026-10-30 from `reviews/rg3.out`.
+
+**Observed.** `validate_resource_mount_inputs()` explicitly tolerates
+`worktree is None` (`run_gate.py:1840-1844`), but
+`container_mount_flags()` passes its `worktree` argument directly to
+`validate_docker_mount_path()` (`:11922-11940`). With a missing value,
+`os.fspath()` raises `TypeError` instead of Run-Gate's named `GateError`.
+
+**Proposed fix.** Validate that a worktree is present at the public helper
+boundary and raise a specific `GateError` before calling `os.fspath()`.
+
+## RG-129 — `dual_mount_flags()` validates the alias namespace path twice
+
+**Status:** OPEN. Severity: minor. Filed 2026-10-30 from `reviews/rg3.out`.
+
+**Observed.** `run_gate.py:11596-11597` validates `namespace`, then the
+`root == repo` branch validates the same value again as `mount alias path` at
+`:11602-11603`. This duplicates the same delimiter check on the ordinary
+repository-alias path.
+
+**Proposed fix.** Validate the final alias target once after its derivation,
+while preserving validation for the subpath branch.
+
+## RG-130 — the consumer docs do not say that Run-Gate has no `--ram-target` option
+
+**Status:** OPEN. Severity: minor. Filed 2026-10-30 from `reviews/rg3.out`.
+
+**Observed.** Run-Gate accepts `ram_target` as resource metadata, but there is
+no `--ram-target` command-line option. `CONSUMERS.md:331-334` explains the
+metadata behavior without warning an operator who tries the flag; argparse
+returns only its generic unrecognized-argument error. The worker-policy text
+in `docs/DESIGN-GUIDE.md:948-951` is also silent about the absent option.
+
+**Proposed fix.** State in `CONSUMERS.md` that no `--ram-target` flag exists
+and show the supported `[resources].ram_target` configuration form; consider
+a named refusal only if a CLI alias is intentionally supported.
+
+## RG-131 — the planned R2 worker-count policy is not implemented
+
+**Status:** OPEN. Severity: enhancement. Filed 2026-10-30 as the PR3 residual.
+
+**Observed.** Run-Gate currently parses `ram_target` and `candidate_ram` as
+metadata and does not use them to select worker counts or change container
+caps (`docs/DESIGN-GUIDE.md:948-951`). The planned policy would derive `N`
+from the effective RAM target, measured average candidate RSS, the gates-slice
+CPU cap, Assay's `jobs_max`, and candidates remaining; it would pass
+`--cpus N` to Docker and `--jobs N` to Assay, default to one worker without
+measurements, and report repeated memory-target overshoot.
+
+**Proposed fix.** Implement the PR3 policy after its PR0 measurement inputs
+exist, with source-precedence, CPU-limit, no-sample, worker-bound, and
+overshoot oracles. Preserve the current metadata-only behavior until the
+policy is fully derived and validated.
+
+## RG-132 — per-candidate resource metrics are not yet carried into Run-Gate history and footprint data
+
+**Status:** OPEN. Severity: enhancement. Filed 2026-10-30 as the PR0 residual.
+
+**Observed.** Run-Gate's released-facing change note says `ram_target` and
+`candidate_ram` are metadata only (`CHANGES.md`, Unreleased). The PR0 plan
+calls for Assay candidate progress events to carry peak RSS, `write_bytes`,
+and cores, then for Run-Gate to ingest rolling mean, sample count, and judge
+share into its history and write `candidate_ram_avg` to the footprint. The
+worker policy in RG-131 needs these measurements, but no such fields are
+currently available through Run-Gate's resource metadata.
+
+**Proposed fix.** Coordinate the candidate-resource event contract with
+Assay, ingest those per-candidate samples into Run-Gate history, and publish
+the reviewed average through `run-gate footprint`. Add the PR0 event,
+rolling-mean, and footprint oracles before enabling RG-131.
