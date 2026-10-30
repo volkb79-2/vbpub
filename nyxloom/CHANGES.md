@@ -4,6 +4,51 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [0.12.0] - 2026-10-30
+<!-- cmru: generated -->
+<!-- cmru: source-end=f6dc2b9508a0ebc330a9561a6ddb3dbb80e8bc10 -->
+
+### Added
+- feat(nyxloom): add managed-browser usage PDF export (31885246e)
+- feat(nyxloom): add offline HTML usage report (fbe6c27c0)
+- feat(nyxloom): add usage chart data layer (2e451afb0)
+- feat(nyxloom): add usage pricing and calibration (2fee84a8e)
+- feat(nyxloom): add metadata-only Claude usage report (3af0bfdb3)
+
+### Fixed
+- fix(nyxloom): harden usage CSV and source-version floors (2760e2723)
+- fix(nyxloom): secure anchor parent before reading (98dd2bbde)
+- fix(nyxloom): warn for missing selected usage anchors (770a30fd5)
+- fix(nyxloom): close usage branch findings (10c5f3bfb)
+- fix(nyxloom): reconcile usage report with plan review (5dffd449f)
+
+### Changed
+- Remove unreachable usage provenance fallback (cc1ce5555)
+- Fix usage windows CLI coverage path (bd02247b2)
+- chore(nyxloom): size session-extract campaign for full run (c2448ef59)
+- Close session extract coverage branches (abd554f7d)
+- Widen mutation cap for candidate planning (f650feb26)
+- Keep unpriced call in rolling window fixture (db23fe7fa)
+- Align usage window fixtures with reset bounds (8e0df267d)
+- Bound usage reset boundaries to query window (630c04333)
+- Include strict CLI cases in usage coverage gate (345f277d8)
+- Run usage coverage gate serially (48e5d01f7)
+- Fix nyxloom usage round-two findings (a5e09046d)
+
+### Documentation
+- docs: record nyx-b3fix continuation results (a872aa7cd)
+- docs(nyxloom): record nyx-b3fix gate outcome (2feec39d9)
+- docs(nyxloom): record usage fix round two evidence (ce435465f)
+- docs(nyxloom): record usage review reconciliation (04a16e345)
+
+### Testing
+- test(nyxloom): close whole-source usage coverage gaps (19a353a31)
+- test: cover anchor read I/O errors (a43c0fcf9)
+- test(nyxloom): cover empty usage titles (1e9cf22d1)
+
+<!-- cmru: pending release notes begin -->
 ### Added
 - Add `nyxloom usage report` for metadata-only Claude Code usage across sessions and nested subagents. Freeze `usage-report-v1` with a deduplicated call ledger, provenance, lineage edges, typed lifecycle/rejection events, self/subtree totals, coverage warnings, UTC half-open windows, and table/JSON/call-ledger CSV renderers.
 - Add dated exact-model Anthropic API-equivalent USD estimates, configurable experimental weights, guarded `cost-state` fit diagnostics, observed-reset windows, and private versioned operator usage anchors with bounded calibration.
@@ -30,8 +75,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ### Testing
 - The registered `session-extract` selection includes all usage test files; R0 and R1 passed with 100% changed-line coverage (7,295/7,295 statements; 1,580/1,580 branches). The detached tester-unified BrowserLease acceptance passed for full/folded ledger totals and joined chart points with zero network requests. The overall registered lane remains incomplete: R2 hit its lane time limit with 1,199/1,201 candidates complete, two per-candidate timeouts, and R3 unstarted. See the [iteration 4 report](nyxloom-trove/reports/nyxloom-usage-iteration-4-REPORT.md) for the exact evidence and limits.
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [0.11.1] - 2026-10-28
 <!-- cmru: generated -->
