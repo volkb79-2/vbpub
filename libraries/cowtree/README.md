@@ -44,7 +44,8 @@ refused. A configured but invalid area is refused before a run directory is
 allocated. Space admission uses the consumer's input-derived `SpaceEstimate`
 and the [backend-specific formulas](DESIGN-GUIDE.md#input-derived-space-admission);
 it has no fixed floor. Btrfs admission also accounts for this process's pending
-deletes from the preceding 60 seconds on the same filesystem device. GC reads
+deletes from the preceding 60 seconds on the same filesystem, including across
+subvolumes. GC reads
 `owner.json` manifests up to 64 KiB and retains larger ones as invalid; cowtree
 refuses to write larger manifests. See the [ownership
 rules](DESIGN-GUIDE.md#ownership-and-identity).

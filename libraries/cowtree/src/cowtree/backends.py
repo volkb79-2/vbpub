@@ -21,7 +21,11 @@ BTRFS_IOC_SNAP_DESTROY = 0x5000940F
 BTRFS_IOC_SNAP_CREATE_V2 = 0x50009417
 BTRFS_IOC_SUBVOL_GETFLAGS = 0x80089419
 BTRFS_IOC_SUBVOL_SETFLAGS = 0x4008941A
+BTRFS_IOC_FS_INFO = 0x8400941F
 BTRFS_SUBVOL_RDONLY = 1 << 1
+_FS_INFO_ARGS_BYTES = 1024
+_FS_INFO_FSID_OFFSET = 16
+_FSID_BYTES = 16
 _VOL_NAME_BYTES = 4088
 _VOL_V2_BYTES = 4096
 _VOL_V2_NAME_OFFSET = 56
@@ -55,6 +59,7 @@ class Ops(Protocol):
     subvol_destroy: Callable[..., Any]
     subvol_getflags: Callable[..., Any]
     subvol_setflags: Callable[..., Any]
+    btrfs_fs_id: Callable[..., Any]
 
 
 class LinuxOps:
@@ -127,6 +132,12 @@ class LinuxOps:
 
     def subvol_setflags(self, fd, flags):
         fcntl.ioctl(fd, BTRFS_IOC_SUBVOL_SETFLAGS, bytearray(struct.pack("=Q", flags)))
+
+    def btrfs_fs_id(self, fd):
+        result = bytearray(_FS_INFO_ARGS_BYTES)
+        fcntl.ioctl(fd, BTRFS_IOC_FS_INFO, result, True)
+        start = _FS_INFO_FSID_OFFSET
+        return bytes(result[start:start + _FSID_BYTES])
 
 
 def _encoded_name(name: str, max_bytes: int) -> bytes:

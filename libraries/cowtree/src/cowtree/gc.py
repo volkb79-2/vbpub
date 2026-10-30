@@ -16,7 +16,7 @@ from .detect import Area
 from .errors import BackendFailed, CowError, PathRefused
 from .paths import validate_name
 from .run import _MAX_OWNER_MANIFEST_BYTES, _pid_starttime
-from .space import record_pending_delete
+from .space import filesystem_identity, record_pending_delete
 
 _MANIFEST_FORMAT = "cowtree-run/1"
 _LOCK_FLAGS = os.O_RDWR | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0)
@@ -169,7 +169,7 @@ def gc(scan_dir: str | os.PathLike[str], *, ops=None) -> list[GcItem]:
         return []
     if not stat.S_ISDIR(root_info.st_mode) or stat.S_ISLNK(root_info.st_mode):
         raise PathRefused(f"gc scan path must be a real directory: {root!r}")
-    pending_device = root_info.st_dev
+    operations = ops if ops is not None else LinuxOps()
     results: list[GcItem] = []
     with os.scandir(root) as entries:
         names = sorted(entry.name for entry in entries)
@@ -223,14 +223,19 @@ def gc(scan_dir: str | os.PathLike[str], *, ops=None) -> list[GcItem]:
                 status = "owner-live" if owner_status == "live" else "owner-identity-unknown"
                 results.append(GcItem(name, status))
                 continue
+            pending_filesystem = (
+                filesystem_identity(root, backend="btrfs", ops=operations)
+                if manifest["backend"] == "btrfs"
+                else None
+            )
             try:
                 allocated, _run_device = _allocated_bytes(run_dir)
-                _delete_run(run_dir, manifest, ops)
+                _delete_run(run_dir, manifest, operations)
             except (OSError, CowError) as exc:
                 results.append(GcItem(name, "delete-failed", str(exc)))
                 continue
             if manifest["backend"] == "btrfs":
-                record_pending_delete(pending_device, allocated)
+                record_pending_delete(pending_filesystem, allocated)
             results.append(GcItem(name, "deleted", deleted_bytes=allocated))
         finally:
             os.close(lock_fd)

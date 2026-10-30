@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import threading
 import time
+from collections.abc import Hashable
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -45,23 +46,37 @@ class SpaceEstimate:
 
 _PENDING_SECONDS = 60.0
 _pending_lock = threading.Lock()
-_pending_deletes: list[tuple[float, int, int]] = []
+_pending_deletes: list[tuple[float, Hashable, int]] = []
 
 
-def record_pending_delete(st_dev: int, allocated_bytes: int, *, now: float | None = None) -> None:
+def filesystem_identity(path: str, *, backend: str, ops) -> tuple[str, int | bytes]:
+    """Return a Btrfs filesystem ID or an ordinary directory's device ID."""
+    if backend == "btrfs":
+        descriptor = ops.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+        )
+        try:
+            return "btrfs", ops.btrfs_fs_id(descriptor)
+        finally:
+            ops.close(descriptor)
+    return "dev", int(ops.stat(path).st_dev)
+
+
+def record_pending_delete(filesystem: Hashable, allocated_bytes: int, *, now: float | None = None) -> None:
     if allocated_bytes <= 0:
         return
     timestamp = time.monotonic() if now is None else now
     with _pending_lock:
         _prune(timestamp)
-        _pending_deletes.append((timestamp, st_dev, allocated_bytes))
+        _pending_deletes.append((timestamp, filesystem, allocated_bytes))
 
 
-def pending_delete_bytes(st_dev: int, *, now: float | None = None) -> int:
+def pending_delete_bytes(filesystem: Hashable, *, now: float | None = None) -> int:
     timestamp = time.monotonic() if now is None else now
     with _pending_lock:
         _prune(timestamp)
-        return sum(size for _, device, size in _pending_deletes if device == st_dev)
+        return sum(size for _, key, size in _pending_deletes if key == filesystem)
 
 
 def _prune(now: float) -> None:

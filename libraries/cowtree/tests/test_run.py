@@ -592,6 +592,29 @@ def test_reserve_rechecks_before_growth(tmp_path, monkeypatch):
     run.close()
 
 
+def test_reserve_commits_memory_only_after_manifest_write_succeeds(tmp_path, monkeypatch):
+    run = open_run("reserve-manifest-cap", estimate=SpaceEstimate(0, 0, 0), environ={}, plain_dir=tmp_path)
+    monkeypatch.setattr(run_module, "available_bytes", lambda _path: 10**9)
+    run.reserve(SpaceEstimate(9, 0, 0))
+
+    manifest_at_cap = {**run._manifest, "labels": {"padding": ""}}
+    padding_bytes = run_module._MAX_OWNER_MANIFEST_BYTES - len(run_module._json_bytes(manifest_at_cap))
+    run._manifest["labels"] = {"padding": "x" * padding_bytes}
+    run_module._write_manifest(run.path, run._manifest, create=False)
+    owner_path = Path(run.path) / "owner.json"
+    assert len(owner_path.read_bytes()) == run_module._MAX_OWNER_MANIFEST_BYTES
+
+    with pytest.raises(PathRefused, match="owner manifest exceeds 64 KiB"):
+        run.reserve(SpaceEstimate(1, 0, 0))
+    assert run._reserved_bytes == 9
+    assert run._manifest["reserved_bytes"] == 9
+    assert json.loads(owner_path.read_text())["reserved_bytes"] == 9
+
+    run.reserve(SpaceEstimate(0, 0, 0))
+    assert json.loads(owner_path.read_text())["reserved_bytes"] == 9
+    run.close()
+
+
 def test_pending_delete_allowance_refuses_before_run_allocation(tmp_path, monkeypatch):
     from cowtree import run as run_module_import
 
@@ -616,9 +639,9 @@ def test_pending_delete_allowance_refuses_before_run_allocation(tmp_path, monkey
     assert list(Path(area.runs_dir).iterdir()) == []
 
 
-def test_btrfs_pending_delete_uses_the_admission_device(tmp_path, monkeypatch):
+def test_btrfs_pending_delete_uses_the_admission_filesystem(tmp_path, monkeypatch):
     import cowtree.gc as gc_module
-    from cowtree.space import pending_delete_bytes
+    from cowtree.space import filesystem_identity, pending_delete_bytes
 
     root = tmp_path / "area"
     root.mkdir()
@@ -637,33 +660,24 @@ def test_btrfs_pending_delete_uses_the_admission_device(tmp_path, monkeypatch):
         str(shared),
     )
     monkeypatch.setattr(run_module, "detect", lambda **_kwargs: area)
-    root_device = os.stat(root).st_dev
-    root_pending_before = pending_delete_bytes(root_device)
-    real_stat = os.stat
-    run_store_device = real_stat(runs).st_dev + 1000
-    tree_device = run_store_device + 1000
-
-    def run_store_stat(path, *args, **kwargs):
-        result = real_stat(path, *args, **kwargs)
-        if os.fspath(path) == str(runs):
-            values = list(result)
-            values[2] = run_store_device
-            return os.stat_result(values)
-        return result
-
-    monkeypatch.setattr(run_module.os, "stat", run_store_stat)
-    monkeypatch.setattr(gc_module, "_allocated_bytes", lambda _path: (8192, tree_device))
+    root_filesystem = filesystem_identity(str(root), backend="btrfs", ops=area.ops)
+    run_filesystem = filesystem_identity(str(runs), backend="btrfs", ops=area.ops)
+    assert root_filesystem == run_filesystem
+    root_pending_before = pending_delete_bytes(root_filesystem)
+    monkeypatch.setattr(gc_module, "_allocated_bytes", lambda _path: (8192, 999_999))
     run = open_run("pending-device", estimate=SpaceEstimate(0, 0, 0), environ={})
 
-    before = pending_delete_bytes(run_store_device)
+    assert run._pending_filesystem == run_filesystem
+    run.reserve(SpaceEstimate(0, 0, 0))
+    before = pending_delete_bytes(run_filesystem)
     run.delete_tree(run.make_tree("deleted"))
-    assert pending_delete_bytes(run_store_device) >= before + 8192
+    assert pending_delete_bytes(run_filesystem) >= before + 8192
 
-    before = pending_delete_bytes(run_store_device)
+    before = pending_delete_bytes(run_filesystem)
     run.make_tree("closed")
     run.close()
-    assert pending_delete_bytes(run_store_device) >= before + 8192
-    assert pending_delete_bytes(root_device) == root_pending_before
+    assert pending_delete_bytes(run_filesystem) >= before + 8192
+    assert pending_delete_bytes(root_filesystem) >= root_pending_before + 16_384
 
 
 def test_open_run_validates_holder_labels_and_plain_dir(tmp_path):

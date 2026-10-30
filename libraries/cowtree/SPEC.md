@@ -33,10 +33,11 @@ reflink backend when block cloning is available.
 clones, `needed = ingest_bytes + max_live_clones * per_clone_bytes`. For copy,
 `needed = (1 + max_live_clones) * max(ingest_bytes, per_clone_bytes)`.
 Admission compares that amount with `statvfs.f_bavail * f_frsize` at the run
-allocation directory; btrfs also reserves
-bytes from btrfs runs deleted by this process on the same filesystem device in
-the preceding 60 seconds. This pending-delete ledger is shared by all btrfs
-roots on that device in the process.
+allocation directory; btrfs also reserves bytes from btrfs runs deleted by this
+process on the same filesystem in the preceding 60 seconds. The pending-delete
+ledger uses the Btrfs filesystem ID from `BTRFS_IOC_FS_INFO`; ordinary
+filesystems use the allocation directory's `st_dev`. Therefore roots in
+different Btrfs subvolumes with distinct device IDs still share the allowance.
 `SpaceRefused` carries the byte counts and estimate. No fixed floor, percentage,
 fallback root, or auto-eviction is used. `Run.reserve(extra)` checks the
 current reservation plus the additional estimate before growing.

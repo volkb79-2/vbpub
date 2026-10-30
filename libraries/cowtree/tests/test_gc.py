@@ -21,7 +21,7 @@ from cowtree.gc import (
     make_shared,
     survey,
 )
-from cowtree.space import pending_delete_bytes
+from cowtree.space import filesystem_identity, pending_delete_bytes
 
 from .fakes import StatResultProxy
 
@@ -575,18 +575,20 @@ def test_gc_rejects_symlink_scan_root(tmp_path):
         gc(link)
 
 
-def test_gc_records_btrfs_pending_delete_on_scan_device(tmp_path, monkeypatch):
+def test_gc_records_btrfs_pending_delete_on_scan_filesystem(tmp_path, monkeypatch):
     import cowtree.gc as gc_module
+    from .fakes import FakeOps
 
     root = tmp_path / "area"
     root.mkdir()
     run_path = _dead_run(root, "pending-gc", area_root=root, filesystem="btrfs", create_tree=True, payload_bytes=8192)
-    device = os.stat(root).st_dev
-    before = pending_delete_bytes(device)
-    monkeypatch.setattr(gc_module, "_allocated_bytes", lambda _path: (8192, device + 1000))
-    result = gc(run_path.parent)
+    ops = FakeOps(filesystem="btrfs")
+    filesystem = filesystem_identity(str(root), backend="btrfs", ops=ops)
+    before = pending_delete_bytes(filesystem)
+    monkeypatch.setattr(gc_module, "_allocated_bytes", lambda _path: (8192, 999_999))
+    result = gc(run_path.parent, ops=ops)
     assert result[0].status == "deleted"
-    assert pending_delete_bytes(device) >= before + 8192
+    assert pending_delete_bytes(filesystem) >= before + 8192
     assert not run_path.exists()
 
 
@@ -619,16 +621,20 @@ def test_gc_deletes_btrfs_subvolume_trees_with_backend(tmp_path, monkeypatch):
 
 
 def test_gc_removes_btrfs_run_interrupted_before_trees_directory(tmp_path):
+    from .fakes import FakeOps
+
     root = tmp_path / "area"
     root.mkdir()
     run_path = _dead_run(root, "btrfs-before-trees", area_root=root, filesystem="btrfs", remove_trees=True)
 
-    result = gc(run_path.parent)
+    result = gc(run_path.parent, ops=FakeOps(filesystem="btrfs"))
     assert result[0].status == "deleted"
     assert not run_path.exists()
 
 
 def test_gc_retains_btrfs_run_with_symlinked_trees_path(tmp_path):
+    from .fakes import FakeOps
+
     root = tmp_path / "area"
     root.mkdir()
     sentinel = tmp_path / "external-trees"
@@ -642,7 +648,7 @@ def test_gc_retains_btrfs_run_with_symlinked_trees_path(tmp_path):
         trees_target=sentinel,
     )
 
-    result = gc(run_path.parent)
+    result = gc(run_path.parent, ops=FakeOps(filesystem="btrfs"))
     assert result[0].status == "delete-failed"
     assert run_path.exists()
     assert (sentinel / "keep").read_text() == "retain"
