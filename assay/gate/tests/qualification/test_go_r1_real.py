@@ -3,10 +3,14 @@ oracle, inside `tester-unified-go:local`.
 
 Every other Go test in this suite judges a COMMITTED coverprofile with no
 toolchain, which is exactly what A-334 forbids as evidence about Go. Neither
-gate image can close that: `tester-unified` has no Go (DESIGN-GUIDE §10), and
-`tester-unified-go` is not where the Python suite runs. So this module is the
-missing proof, and it is shaped by the controller's DA-3 and DA-5 rulings
-(`vbpub@237b9585`):
+the ordinary assay lane invokes Go, even though the standard `tester-unified`
+image now includes a Go toolchain for downstream consumers (DESIGN-GUIDE
+§10). This opt-in qualification uses the separate `tester-unified-go` image
+because it proves the real consumer path in that dedicated environment:
+`go test` with its pinned Go 1.25 toolchain, and the shipped assay ZIPAPP under
+the image's inherited Python 3.13.5, which has no pip or ensurepip. So this
+module is the live Go R1 proof, and it is shaped by the controller's DA-3 and
+DA-5 rulings (`vbpub@237b9585`):
 
 * DA-3 -- the pattern is `test_javascript_real_vitest.py`: skipped
   everywhere except an environment that explicitly opts in, driving the real
@@ -59,10 +63,13 @@ _IMAGE = "tester-unified-go:local"
 
 _ENV_REASON = (
     "real-Go qualification: needs ASSAY_GO_QUALIFICATION=1, a working "
-    "`docker`, and the `tester-unified-go:local` image. Neither gate image "
-    "can run it (tester-unified has no Go; the Python suite does not run in "
-    "tester-unified-go), so per DA-3 it is an explicit opt-in rather than a "
-    "registered-gate test. A-042/A-043: the cockpit has no Go and never will."
+    "`docker`, and the `tester-unified-go:local` image. Although the standard "
+    "tester-unified image now includes Go, this qualification deliberately "
+    "runs the shipped ZIPAPP and a real Go R1 consumer in the dedicated image "
+    "(pinned Go 1.25; inherited Python 3.13.5, without pip/ensurepip). It "
+    "launches a nested Docker container, so per DA-3 it remains an explicit "
+    "opt-in rather than a registered-gate test. A-042/A-043: the cockpit has "
+    "no Go and never will."
 )
 
 
