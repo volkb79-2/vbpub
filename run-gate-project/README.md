@@ -239,6 +239,9 @@ An assay lane can pass `--reuse-from PATH`, repeatable `--rejudge ID`, and
 arguments after `--` only when it declares `accepts_args = true`; sequences
 and composite commands refuse them. See [selective requests](CONSUMERS.md#selective-lane-requests)
 and the [request-scope rationale](docs/DESIGN-GUIDE.md#selective-requests-stay-with-the-selected-lane).
+Run-Gate checks the Assay inventory version before forwarding these options;
+worktree source builds with a setuptools_scm `.devN+g...` suffix are compared
+by release version, while an opaque or below-floor version is refused.
 
 Every assay lane receives `--resume`, a worktree-local progress file, and a
 durable `--state-dir` under the checkout that owns the shared Git directory.

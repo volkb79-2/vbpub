@@ -16208,6 +16208,20 @@ class TestResumeAndProgressAlways:
     def test_declared_version_tuple(self, declared, expected):
         assert run_gate.declared_version_tuple(declared) == expected
 
+    @pytest.mark.parametrize("declared, required, expected", [
+        ("9.0.1.dev1083+ga43c0fcf9", (5, 2, 0), True),
+        ("v7.1.1.dev4+gabc123.d20261030", (7, 1, 0), True),
+        ("7.1.0", (7, 1, 0), True),
+        ("7.1.0.dev4+gabc123", (7, 1, 0), False),
+        ("5.1.99.dev4+gabc123", (5, 2, 0), False),
+        ("9.0.1rc1", (5, 2, 0), False),
+        ("unknown", (5, 2, 0), False),
+    ])
+    def test_assay_inventory_version_meets_floor(
+            self, declared, required, expected):
+        assert run_gate.assay_inventory_version_meets_floor(
+            declared, required) is expected
+
 
 # ---------------------------------------------------------------------------
 # RG-35 / R-39 — the inflight record and re-attach

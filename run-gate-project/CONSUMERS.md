@@ -942,6 +942,13 @@ run-gate mutation --reuse-from .assay/verdict-mutation.json \
   --rejudge tests/test_schema.py::test_one --rejudge-outcome survived
 ```
 
+Before forwarding a selective request, Run-Gate checks Assay's inventory
+version. `--rejudge` requires Assay 5.2.0 or newer; `--reuse-from` requires
+7.1.0 or newer. An in-repository source install may report a version such as
+`9.0.1.dev1083+gabc123`; Run-Gate compares its release version with the floor.
+A development build of the floor version itself, an older version, or an
+unrecognized version does not prove support and is refused.
+
 Command lanes accept per-run arguments only when `accepts_args = true` is
 declared. The separator keeps request arguments out of run-gate's own option
 parser, and the arguments are appended to that single command's argv:

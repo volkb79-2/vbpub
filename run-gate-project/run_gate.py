@@ -8815,10 +8815,10 @@ def plan_comparison_base(lane: dict, lane_name: str, base_flag: str | None,
         if not isinstance(rigor, list) or "R2" not in rigor:
             fail(f"selective assay flags require an R2 lane; assay lane "
                  f"{lane['assay_lane']!r} declares rigor {rigor!r}")
-        version = declared_version_tuple(assay_version) \
-            if isinstance(assay_version, str) else None
         required = (7, 1, 0) if selective.get("reuse_from") else (5, 2, 0)
-        if version is None or version < required:
+        if (not isinstance(assay_version, str)
+                or not assay_inventory_version_meets_floor(
+                    assay_version, required)):
             floor = ".".join(str(part) for part in required)
             flag = "--reuse-from" if selective.get("reuse_from") else "--rejudge"
             raise GateNotRunError(
@@ -9782,6 +9782,26 @@ def declared_version_tuple(declared: str) -> tuple[int, ...] | None:
     if not parts or not all(part.isdigit() for part in parts):
         return None
     return tuple(int(part) for part in parts)
+
+
+def assay_inventory_version_meets_floor(
+        declared: str, required: tuple[int, ...]) -> bool:
+    """Compare an Assay inventory version with a feature floor.
+
+    In-repository lanes install Assay from the selected worktree, so its
+    setuptools_scm version can be ``X.Y.Z.devN+g<revision>``. Accept that
+    exact development shape while keeping opaque versions and a development
+    build of the floor itself below the stable feature floor.
+    """
+    match = re.fullmatch(
+        r"v?(?P<release>[0-9]+(?:\.[0-9]+){2})(?P<dev>\.dev[0-9]+)?"
+        r"(?:\+[A-Za-z0-9.-]+)?", declared.strip())
+    if match is None:
+        return False
+    version = tuple(int(part) for part in match.group("release").split("."))
+    if version < required:
+        return False
+    return version != required or match.group("dev") is None
 
 
 def assay_verdict_rel(assay_lane: str) -> str:
