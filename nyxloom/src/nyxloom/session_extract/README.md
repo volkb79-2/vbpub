@@ -848,6 +848,99 @@ empty because the source records do not contain timestamps.
    agent-authored condensation of segments the mechanical path structurally
    can't recover.
 
+## Local Claude Code usage report
+
+`nyxloom usage report --since 24h` is the cross-session metadata query built
+alongside this extraction package. It reads Claude Code session JSONL,
+subagent JSONL, and agent metadata to report requests in a session → subagent →
+nested-subagent tree. File-local request IDs merge stream blocks only after
+their usage/model/effort metadata agrees. A copied prefix across files merges
+only when session ID, message ID, UTC timestamp, model and full usage tuple
+match; conflicts are excluded and disclosed. Parent resolution is shared with
+`list_agents`: consistent `parentAgentId`, then one unique `toolUseId` owner;
+missing or ambiguous edges remain visible instead of being inferred from
+`spawnDepth`.
+
+The frozen `usage-report-v1` JSON has an exact deduplicated call ledger,
+typed compaction/rejection/unexplained-drop events, lineage edges, provenance,
+coverage warnings and nodes with self/subtree totals. CSV has one report
+metadata row followed by one row per call; the table presents the hierarchy.
+Successful stream and copied-prefix merges remain visible diagnostics but do
+not make coverage partial by themselves; excluded, unreadable or unattributed
+records do.
+The loader reads each file once through its initial-size snapshot and uses
+record timestamps, never file modification time, for the UTC half-open
+`[since, until)` window. The report has no message, thinking, tool-input or
+tool-result fields, and source/project paths are opaque. The command spelling
+is the deliberate D-022 choice; it calls this pure query service without
+project registration or daemon state.
+
+The report now keeps raw token units, experimental weighted units and
+API-equivalent USD estimates separate. The default exact-model price table is
+dated 2026-10-28 and cites Anthropic's pricing documentation; API USD is list-
+price arithmetic, not a bill or subscription usage. Unknown models, modifiers
+and unclassified cache writes stay unpriced. `usage prices --fit` treats
+`cost-state` as a guarded diagnostic and reports no coefficients when family
+scope, monotonicity, cache TTL split, rank or residual checks fail.
+
+`usage windows` separates consecutive observed five-hour resets and account
+weekly reset times from a rolling five-hour analysis window. Anthropic's
+documented reset semantics here are for Max plans; other plan semantics remain
+unverified. Rejections are
+threshold events, not 100% anchors. `usage anchor add` stores an explicit UI
+reading with its limit kind, timestamp, reset time, source and coverage
+assumption in a private versioned local file. Calibration reports only a
+capacity lower bound when web, other devices or other shared account surfaces
+may contribute; an estimated limit percentage remains unknown unless the
+coverage fit is identifiable. `usage-report-v1` remains the shared report
+contract. The C1 chart-data extension and offline interactive HTML renderer
+are available. The HTML report uses exact ledger calls for table totals and
+filters, while visual context decimation remains display-only. Its in-page
+anonymize control is presentation-only; `--no-labels` removes topics before
+serialization. `--format pdf --out FILE` renders this same HTML and report
+contract through the optional PWMCP `BrowserLease` client. Print pages repeat
+the table header, keep rows together where they fit, and flow every row across
+as many A4 landscape pages as needed. PDF files are private mode `0600`; the
+managed browser receives generated HTML in memory, so use `--no-labels` to
+remove sensitive free-text labels before serialization. The optional Textual
+TUI remains deferred for re-evaluation after H2.
+The consumer-facing examples live in
+[CONSUMERS.md](../../../docs/CONSUMERS.md#report-claude-code-usage), and design
+choices in [DESIGN-GUIDE.md](../../../docs/DESIGN-GUIDE.md#local-usage-report).
+
+### Chart data and `usage-charts-v1`
+
+`nyxloom usage report --format json` fills the reserved
+`extensions.chart_data` field with the same `usage-charts-v1` object written by
+`nyxloom usage charts --since 24h --out FILE.json`. The chart builder uses the
+windowed full node tree before presentation folding. It never modifies the
+exact `calls` ledger or uses subtree totals as stacked values.
+
+The four datasets are `swim_lanes`, `context_over_time`,
+`weighted_cost_buckets`, and `cost_composition`. Context points reference
+stable `call_id` and `node_id` values and include model, effort, timestamp,
+context size, token classes, weighted units, and API-equivalent USD. Context
+time decimation uses per-bucket minima and maxima and retains endpoints, each
+node's global peak, calls adjacent to structural compactions or inferred drops,
+and switch ticks. The target of 500 points per line may be exceeded to keep
+those points.
+
+Weighted-cost buckets begin at `window.since`, use five-minute intervals for
+short spans and grow in deterministic five-minute steps to fifteen minutes.
+Each deduplicated call belongs to one self-cost group. Top N is ranked by
+self weighted units and stable IDs break ties; one exact `other` bucket holds
+the remaining groups. A bucket point keeps its source call IDs. Model colors
+derive deterministically from exact model IDs; effort uses fixed dash and
+lightness keys.
+
+Reset markers use observed rejection or operator anchor timestamps. Matched
+reset pairs are shown only at the documented five-hour or weekly spacing. A
+percentage line requires a complete, identifiable calibration; the output
+distinguishes an all-account estimate from a local contribution lower bound.
+Without that evidence, percentage status is `unknown`. Chart outputs contain
+metadata and numbers only. Labels are sensitive local metadata, and
+`--no-labels` removes them before serialization.
+
 ## Relationship to `jsonl-metrics.py` and the context-lifecycle experiments
 
 `dstdns/nyxloom-trove/orientation/jsonl-metrics.py` and the E-001..E-008
@@ -855,9 +948,9 @@ experiment log in `nyxloom/docs/design-context-lifecycle-experiments.md`
 are a **different deliverable**: content-based "coherent boundary"
 detection (`gate_green`/`gate_red`/`gate_unknown`, commit,
 `edit_cluster_end`, `log_report_write`) for *pipeline-agent* transcripts,
-producing aggregate statistics — never raw prose. This tool never
-produces stats; it only ever produces prose (or a structured event list
-that renders to prose). The two are complementary: `jsonl-metrics.py`-style
+producing aggregate statistics — never raw prose. The extraction workflow
+described here does not produce stats; it produces prose (or a structured
+event list that renders to prose). The two are complementary: `jsonl-metrics.py`-style
 boundary detection could plausibly inform a *future* checkpoint signal
 here, but no code is shared today.
 

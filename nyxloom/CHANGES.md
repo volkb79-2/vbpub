@@ -4,6 +4,33 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Added
+- Add `nyxloom usage report` for metadata-only Claude Code usage across sessions and nested subagents. Freeze `usage-report-v1` with a deduplicated call ledger, provenance, lineage edges, typed lifecycle/rejection events, self/subtree totals, coverage warnings, UTC half-open windows, and table/JSON/call-ledger CSV renderers.
+- Add dated exact-model Anthropic API-equivalent USD estimates, configurable experimental weights, guarded `cost-state` fit diagnostics, observed-reset windows, and private versioned operator usage anchors with bounded calibration.
+- Add the `usage-charts-v1` chart-data extension and `nyxloom usage charts`: self-cost-partitioned time buckets, top-N plus exact `other`, joined context data, packed swim lanes, deterministic IDs/colors, and peak/event-preserving context decimation.
+- Add `nyxloom usage report --format html --out FILE` as a private offline single-file report with a hierarchical table, joined SVG diagrams, exact live filtering, synchronized isolation, keyboard controls, safe embedded JSON, and A4 landscape print CSS.
+- Add `nyxloom usage report --format pdf --out FILE` through the optional PWMCP `BrowserLease` client, with repeated table headers, unbounded page flow, row-preserving breaks, and private PDF output.
+
+### Changed
+- Reconcile usage reporting with the plan review: file-local stream deduplication and exact copied-prefix identity, explicit conflict handling, structural compaction events, shared lineage resolution, deterministic IDs/order, and timestamp-based clipping.
+- Keep successful deduplication counts visible without mislabeling a complete merged ledger as partial coverage.
+- Keep raw tokens, local weighted shares, API-equivalent USD and subscription-limit percentages distinct; unknown prices and unidentified account coverage remain unknown.
+- Build chart extensions from the complete windowed tree before display folding; `--depth` and `--min-share` now affect only the rendered hierarchy.
+- Let report, chart and windows commands select the private anchor store with `--anchor-file`; invalid optional anchor state warns, reports `unreadable` with a structured warning, and leaves the query available without anchors.
+- Apply `usage windows` `--since/--until` consistently to calls, reset evidence and reset timestamps, threshold events, and interval metrics using the half-open UTC range; clip the rolling view to the same range.
+- Expose conflicted representatives in CSV, table, HTML and PDF outputs, and retain folded-node series in the HTML joined charts under their visible parent or `other` row.
+- Reject custom price tables that combine `fast` and `over_threshold` rates for one model, since the modifier precedence is undefined.
+- Preserve a deterministic cross-file conflict representative with a `conflicted` flag and conflict-record link; clarify that `project_id` is stable across reports and active span is a sum across nodes.
+- Raise the `cli-extended` runtime floor to 0.4.0 for Nyxloom's generated semantic CLI review workflow.
+
+### Fixed
+- Resolve child rows to the shared tree nodes before sorting the HTML hierarchy, so reports with multiple sibling agents render and print completely.
+- Deduplicate mixed stream rows through both request and message identities, retain cross-file conflict representatives, and sort node events after inferred drop events are appended.
+- Create private mode-0700 usage-output parent directories, retain mode-0600 files, and translate preparation/write failures into clean CLI errors.
+
+### Testing
+- The registered `session-extract` selection includes all usage test files; R0 and R1 passed with 100% changed-line coverage (7,295/7,295 statements; 1,580/1,580 branches). The detached tester-unified BrowserLease acceptance passed for full/folded ledger totals and joined chart points with zero network requests. The overall registered lane remains incomplete: R2 hit its lane time limit with 1,199/1,201 candidates complete, two per-candidate timeouts, and R3 unstarted. See the [iteration 4 report](nyxloom-trove/reports/nyxloom-usage-iteration-4-REPORT.md) for the exact evidence and limits.
+
 <!-- cmru: release history -->
 
 ## [0.11.1] - 2026-10-28

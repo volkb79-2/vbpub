@@ -70,12 +70,15 @@ lists each option's effective omission, type, choices, placement, and effects.
 
 ## CLI boundaries and safety choices
 
-The three user CLIs follow who is working and which files the command targets:
+The user-facing command surfaces follow who is working and which files the
+command targets:
 
-- `nyxloom` edits one project's trove: `init`, `onboard`, local `lint`, and
-  `backlog`. It can work on an unregistered checkout without a daemon.
-- `nyxloom-harness` reads session files and stores for `extract*` workflows.
-  It does not load the Nyxloom project registry or initialize host state.
+- `nyxloom` edits one project's trove and offers the read-only `usage report`
+  query over local Claude Code transcripts. Both work without project
+  registration or a daemon.
+- `nyxloom-harness` searches, discovers, and extracts session files and
+  stores. It does not load the Nyxloom project registry or initialize host
+  state.
 - `nyxloomctl` handles local host operations such as registry, workflow state,
   routes/models, credentials, all-project lint, and local `daemon` control.
   It is not a remote API client. The dashboard remains the HTTP/SSE client.
@@ -94,6 +97,296 @@ The exact command ownership and old-to-new command map are in the
 directory or explicit file paths. `nyxloomctl lint` preserves the registered
 project scan. A project author therefore does not need to register the project
 with a local daemon host just to validate a handoff.
+
+## Local usage report
+
+`nyxloom usage report` is a read-only analytics query over Claude Code's local
+project transcripts. It is a separate workflow from `nyxloom-harness
+extract-report`: that command summarizes one selected source file, while this
+command selects a UTC time window across session files and attributes requests
+to sessions and nested subagents. D-022 deliberately selects the additive
+`nyxloom usage report` spelling. Its handler calls the pure
+`session_extract.usage` query service; it does not initialize project or daemon
+state. Reports are query results; the only persisted usage state is an
+explicitly entered, private operator UI anchor, recorded as the narrow D-023
+exception to D-022.
+
+File-local stream blocks are grouped by request ID, falling back to message ID
+only when request ID is absent. The loader verifies model, effort, usage and
+other request metadata before choosing the final stream row. A conflict
+excludes the group and appears in `conflicts` and coverage warnings. Request
+IDs are never global: copied prefixes are merged across files only when
+session ID, message ID, normalized UTC timestamp, model and the complete usage
+tuple all match. The call retains opaque source IDs, line provenance, stream
+block count, all distinct request-ID aliases, copied-source count and whether
+any copy came from a fork.
+
+Parent edges use the shared resolver also used by `list_agents`: a consistent
+`parentAgentId` wins, then a unique `toolUseId` owner. Missing and ambiguous
+edges remain in `lineage_edges` and in an explicit unattributed tree branch;
+`spawnDepth` describes a node but never invents its parent. `isFork` and
+sidechain calls are retained.
+
+The frozen JSON `usage-report-v1` contract is the renderer source. Its top-level
+`calls` array is the exact deduplicated ledger, including every token class,
+model, effort, speed, service tier, inference geo, context size, timestamp,
+opaque provenance and stable call ID. `nodes` reference those call IDs and
+carry exact self and subtree totals. `lineage_edges`, `events`, conflicts,
+coverage warnings, labels and reserved price, anchor and chart extension slots
+are also part of the versioned shape. CSV is intentionally a flat call ledger:
+one report metadata row followed by one row per call; it does not substitute
+overlapping subtree rows for calls. Its `conflicted` column exposes the
+deterministic representative status. Table, HTML and PDF show conflicted-call
+counts on visible node rows; JSON and CSV retain call-level identity.
+
+CSV quoting alone does not stop spreadsheet formula evaluation. At the CSV
+serialization boundary, Nyxloom prefixes every text cell beginning with `=`,
+`+`, `-`, `@`, tab, or carriage return with one single quote. This covers
+labels and identifiers across all text columns; numeric values remain numeric,
+and JSON output is unchanged. The [consumer guide](CONSUMERS.md#report-claude-code-usage)
+shows the CSV export and its spreadsheet-safe text behavior.
+
+Coverage diagnostics retain both lost-data warnings and successful merge
+counters. `partial` is true when malformed, unavailable, incomplete, or
+unattributed source data prevents a complete report. Ordinary stream-block and
+copied-prefix deduplication remain visible diagnostics but do not make an exact
+merged call ledger partial by themselves.
+
+The v1 event-kind vocabulary is `compaction`, `api_rejection`, and
+`unexplained_drop`. A compaction event comes only from a structural
+`system.compact_boundary` record; a `user.isCompactSummary` record is paired by
+`parentUuid`, with only its timestamp retained. An API rejection comes from an
+`isApiErrorMessage` record. Structured `quotaLimits` or
+`apiErrorParams.rate_limit_info` values map exact `five_hour` and `seven_day`
+values to five-hour and weekly threshold events and preserve their observed
+`resetsAt` epoch. A rejection remains a threshold event, never a percentage or
+capacity anchor. Other rejection classes remain unknown. A context-size drop of at least 30% between consecutive calls is an
+`unexplained_drop` unless a structural compaction boundary lies between them
+by timestamp and source-line tie order. It never becomes a confirmed
+compaction by heuristic.
+
+Node kinds are `main`, `subagent`, `fork`, `unattributed`, and `other`.
+Lineage statuses distinguish `resolved_parent_agent_id`,
+`resolved_tool_use_id`, `resolved_tool_use_id_parent_metadata_conflict`,
+`unresolved_ambiguous_tool_use`, `unresolved_missing_lineage_metadata`,
+`unresolved_missing_tool_use_owner`, `unresolved_missing_parent_source`,
+`unresolved_parent_conflict`, `unresolved_unknown_parent`, and
+`unresolved_cycle`; roots use `root` and the grouping node uses
+`unresolved_group`. Conflict kinds are `duplicate_conflict` and
+`cross_file_conflict`. Stream-level conflicts exclude their ambiguous
+candidates. A cross-file copied-prefix conflict keeps a deterministic
+representative call, marks it `conflicted`, and records its call ID with opaque
+source/line provenance.
+
+The loader parses each transcript once, only through its initial byte-size
+snapshot, and keeps usage metadata rather than transcript records. It never
+uses file modification time to decide which requests fall in a time window.
+Source and project paths are represented by opaque identifiers. Path-bearing
+free-text labels and path-valued identity metadata are omitted. Message,
+thinking, tool input and tool results are not fields in the report. Optional
+title/topic labels come from title and agent metadata; `--no-labels` removes
+them before serialization. `agent_type` remains, and `project_id` is a stable hash
+of the recorded cwd that stays stable across reports. This
+permits project-level correlation while keeping the filesystem path out of the
+artifact.
+
+The report keeps three measures separate. Raw token units sum input,
+cache-read, cache-write 5-minute, cache-write 1-hour, unclassified cache-write,
+and output tokens. Thinking tokens are a subset of output. The dated default
+price table uses exact Anthropic model IDs, token classes and documented
+modifiers; its values are API-equivalent list-price estimates, not billed
+costs or subscription-limit measurements. Unknown models and modifiers remain
+unpriced rather than matching a model prefix. The Haiku 5.5 tier is selected
+from prompt length, including input, cache reads and writes; the documented
+fast and US inference rates are explicit. No undocumented `priority` price is
+invented.
+
+Fast and prompt-length tiers are independent price modifiers in the source
+table. Since no precedence is defined for a model that declares both, the
+loader refuses a custom profile with both `fast` and `over_threshold` rates
+instead of silently replacing one rate set with the other.
+
+The E-009 weights remain a named experimental profile: input 1, output 5,
+cache-read 0.1, cache-write 5m 1.25 and cache-write 1h 2. The 1h value is an
+explicit historical assumption, not a verified provider weight. `weighted`
+and API USD are separate columns; `OBS LOCAL SHARE` is only the ratio of local
+weighted units to the local report total. Existing `share_of_total` and
+`--min-share` remain raw-token shares to preserve `usage-report-v1` semantics.
+
+`cost-state` has no top-level snapshot timestamp and often lacks a 5m/1h
+creation split. It is therefore diagnostic, not the price source of truth.
+`usage prices --fit` uses source-line order only within one file and returns
+coefficients only when final counters reconcile exactly to the deduplicated
+transcript family, counters are monotonic, TTL classes are complete and
+identifiable, the design matrix has full rank, modifiers are known, and the
+maximum residual is within the declared bound. Otherwise it reports `unfit`
+without coefficients. This avoids fitting a plausible but underidentified
+cache-write rate.
+
+For Max plans, Anthropic's account window is modeled from observed reset
+markers: consecutive five-hour session reset times, and the fixed weekly reset
+time assigned to the account. Other plan semantics remain unverified. A
+rolling five-hour query is an analysis range with its own label;
+it is not an account session. A single rejection's `resetsAt` cannot establish
+the preceding interval start. A reset event or rejection never means 100%.
+`usage windows` applies the requested half-open UTC range to calls, rejection
+events, reset evidence timestamps, reset timestamps, and interval metrics.
+Reset evidence and its reset timestamp must both fall inside the range.
+Interval metrics use the intersection of the observed interval and query
+range; rolling analysis is clipped to the same range.
+Operator readings therefore include kind, observation time, reset time, source
+and coverage assumption in a private `usage-anchors-v1` store. Fitting a local
+weighted activity ratio to a UI percentage gives only a lower bound when
+other devices or shared account surfaces may contribute. Without enough
+consistent readings and an identifiable coverage assumption, the limit
+percentage remains unknown. D-023 records this minimal persistence exception;
+the call ledger and report remain transient query products.
+
+Report, chart and windows commands may select that store with
+`--anchor-file FILE` and otherwise read the default XDG path. Invalid anchor state produces
+a structured `usage_anchors_unreadable` warning and the command continues
+without anchors. JSON status is `unreadable`, so a damaged optional store
+cannot look like an available empty store or block a read-only query. An absent
+default anchor store is normal; a missing explicitly selected anchor file is
+unreadable. This keeps first use of the default store quiet while making a
+misspelled selected path visible. `usage anchor add` can create an alternate
+store from an observed UI reading.
+
+## Usage chart data
+
+`usage-report-v1` remains the single exact ledger and tree contract. Its
+reserved `extensions.chart_data` slot can carry `usage-charts-v1`; the
+standalone `nyxloom usage charts` command writes that same section. Chart data
+is derived from the windowed full node model before `--depth` or `--min-share`
+folds the displayed tree, so presentation choices cannot remove cost from a
+chart. HTML attributes a hidden series to its visible folded `other` row or
+nearest displayed parent; hidden points remain selectable through that owner.
+The exact call ledger remains available for arithmetic and hover lookup.
+
+Cost groups partition deduplicated call self-cost. Nodes rank by their own
+experimental weighted units, and a report group with descendants never enters
+the same stacked bucket as those descendants. Top-N selection breaks ties by
+stable group ID; one exact `other` group collects the residual for each
+grouping. Cost buckets start at the report window and use deterministic
+five-to-fifteen-minute intervals. They retain call IDs for drill-down.
+
+Context datasets are visual views only. A global swim lane selects up to the
+top N nodes by self weighted units and uses greedy inclusive-interval packing;
+each node's line keeps its own absolute context values. Joined context panels
+select the three busiest sessions and up to top N self-cost nodes per session
+on one shared y scale. Time-bucket min/max decimation retains each line's
+endpoints, global peak, compaction/drop neighbors, and switch points. Explicit
+structural compaction events stay distinct from `unexplained_drop` events.
+
+Model hues derive from the exact model ID, and effort selects a fixed
+dash/lightness style, so renderer choices are stable. Every plotted call point
+keeps its stable call and node IDs. Rejection `resetsAt` values and operator
+reset readings are emitted as observed boundary markers; a lone marker never
+creates a start time, percentage, or capacity. The cumulative line is omitted
+unless calibration covers the complete report interval. It is labeled either
+as a conditional account estimate under explicit all-account coverage or as a
+local contribution lower bound.
+
+The chart contract is data-only and introduces no runtime library. Weighted
+cost remains the named experimental profile; API-equivalent USD and raw token
+classes remain separate fields. Chart totals use self calls only, while table
+subtree totals remain display rollups. See [how to export chart data](CONSUMERS.md#export-usage-chart-data).
+
+## Offline HTML usage report
+
+`nyxloom usage report --format html --out FILE` is a renderer of the frozen
+`usage-report-v1` contract and its `usage-charts-v1` extension. It does not
+scan transcripts independently or change either JSON schema. The page embeds
+the report data, inline CSS, and vanilla JavaScript in one file so it opens
+without internet access or a local web server. A restrictive content policy
+blocks network connections. Report JSON escapes HTML-sensitive characters
+and Unicode line separators; labels and tooltips are created as text nodes.
+
+The table and filters use the exact call ledger. Model, effort, topic, cost
+measure, and selected time range recompute self and subtree values from calls;
+decimated chart series never supply arithmetic. A call point retains its call
+and node identity for tooltips, while selecting a node in the table or a chart
+isolates it in both views. Chart cost groups still partition call self-cost,
+so a parent's subtree is never stacked with a child's calls.
+
+The window brush and zoom controls select half-open UTC ranges inside the
+report's original interval. Model hues come from the chart contract and effort
+uses its fixed dash styles. Structural compactions and model/effort switches
+remain event markers. The page includes an accessible hierarchy, keyboard
+controls, responsive light/dark colors, and a print layout for A4 or Letter
+landscape that includes collapsed tree rows and lets long reports span pages.
+
+Labeled reports are sensitive local files and are written privately. The
+in-page anonymize control changes visible labels only; `--no-labels` removes
+topic text before serialization. The footer keeps API-equivalent USD,
+experimental weighted units, and local activity shares separate from billed
+cost and account-limit usage.
+
+## PDF usage report
+
+The PDF feasibility spike confirmed that PWMCP's existing Python `BrowserLease`
+can open a page, render supplied HTML, wait for a readiness signal, apply print
+media, and return `page.pdf()` bytes. A synthetic 120-row table produced a
+five-page PDF. The implementation passes the generated HTML with
+`page.set_content`; it needs no file URL or PWMCP server/MCP change. The
+optional `nyxloom[report]` extra uses the already-operated browser service, so
+Nyxloom's default install gains no browser or PDF dependency.
+
+This route was selected over ReportLab or Matplotlib because those would add a
+separate layout and chart renderer, while the existing HTML already supplies
+the report table and SVG charts. It was selected over browser-print instructions
+alone because the CLI needs to produce a named, reproducible PDF itself. The
+spike measured a valid five-page, searchable PDF from a synthetic 120-row table;
+the managed browser and the released PWMCP client contract supply the runtime.
+
+The PDF renderer consumes the same frozen report and HTML, preserving vector
+text and SVG charts. Pagination is flow-based: A4 landscape, repeating table
+headers, row-preserving breaks, and every tree row visible. Long reports use as
+many pages as required; the layout does not assume a fixed page count. Labeled
+HTML is sent to the managed browser in memory and may contain sensitive sidecar
+descriptions, so `--no-labels` strips those values before serialization when
+they are not needed. The output remains a mode-0600 local file. The consumer
+setup and error remedies are documented in [PDF export](CONSUMERS.md#pdf-export).
+
+The public `nyxloom` grammar is registered once in `cli_registry.py`. Its
+generated surface inventory and semantic decisions are maintained through
+`cli-extended` in `docs/cli-surface.json`, the marked section of `docs/SPEC.md`,
+and `docs/cli-review.toml`; parser probes link every generated grammar case to
+a collected test. The minimum runtime floor for this review contract is
+`cli-extended>=0.4.0`.
+
+The interval is half-open `[since, until)` in UTC. Relative `--since` values
+are measured backwards from `--until` when supplied, otherwise from the single
+invocation-time sample. Each API call is timed by its own timezone-aware
+record timestamp; missing or invalid timestamps are excluded and counted as a
+coverage warning. Output timestamps are normalized to UTC. Nodes expose
+`clipped_before` and `clipped_after` when calls from their source lie outside
+the selected interval. Project selection uses the recorded `cwd` (exact
+normalized path or an unambiguous basename) and includes the matching session
+tree. The report discloses scanned files, malformed or truncated lines,
+missing fields, conflicts, lineage gaps, and concurrent changes.
+
+Wall duration is the first-to-last call span. `ACTIVE SPAN SUM` adds the spans
+within activity bursts; a gap strictly greater than 3,600 seconds starts a
+new burst. A subtree sums node-local active spans. Active span can exceed wall duration
+when subagents overlap. Both values and every tie use deterministic
+timestamp, session, opaque source, line and call-ID ordering. IDs use truncated SHA-256 over
+canonical source and record identity; JSON keys are sorted and share fractions
+are rounded to eight decimal places. Tests inject the clock and compare the
+complete versioned output. The invocation samples `now` once and reuses it for
+window resolution and `generated_at`.
+
+The writer creates missing parent directories with mode `0700`, refuses a
+symlink output file, and atomically replaces the destination with mode `0600`.
+Usage artifacts can contain sensitive labels, so both directory entries and
+report contents stay private when the caller chooses a new output directory.
+
+The hierarchy is shown directly in the table: session rows contain their own
+calls, child-agent rows, and subtree totals. `--depth` limits visible levels;
+`--min-share` folds small child trees and session roots into explicit “other”
+rows; `--flat` sorts visible nodes globally. The query and output contract are
+documented in the [consumer guide](CONSUMERS.md#report-claude-code-usage) and
+[canonical CLI reference](CLI-REFERENCE.md#current-command-and-option-contract).
 
 Mutations keep Nyxloom's existing safeguards as consent: explicit verbs,
 state-transition validation, role checks, `--apply` plus confidence flags,

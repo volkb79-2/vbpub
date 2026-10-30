@@ -12,12 +12,23 @@ dispatches cheap implementer agents behind an independent review gate, and
 discipline rather than trust.
 
 The wheel installs three human commands by data boundary: `nyxloom` authors a
-project's local trove, `nyxloom-harness` reads harness session stores, and
-`nyxloomctl` performs local host operations. The first two do not require a
-daemon or project registration. `nyxloomd` is the directly executable service
+project's local trove and reports local Claude Code usage, `nyxloom-harness`
+reads and extracts harness session stores, and `nyxloomctl` performs local
+host operations. The first two do not require a daemon or project
+registration. `nyxloomd` is the directly executable service
 entrypoint inside the daemon container. See the
 [CLI reference](CLI-REFERENCE.md#current-command-and-option-contract) for the
 complete current grammar.
+
+`nyxloom usage report` is the additive command spelling selected by D-022. It
+uses the pure `session_extract.usage` service to read Claude Code transcript
+metadata over a UTC half-open window and needs no project registration or
+daemon state. `usage charts` writes the shared `usage-charts-v1` chart data
+from the same exact ledger. The separate `usage prices`, `usage windows`,
+`usage anchor`, and `usage calibrate` verbs expose dated list-price estimates,
+observed reset intervals, and private operator readings; only explicit
+`usage anchor add` writes local usage state. See
+[Report Claude Code usage](CONSUMERS.md#report-claude-code-usage) for examples.
 
 ---
 
@@ -175,7 +186,7 @@ short `-h` alias is not accepted.
 
 | Program | Commands and target | Daemon required? |
 |---|---|---|
-| `nyxloom` | `init`, `onboard`, project-local `lint`, and `backlog *`; edits files in the current project checkout. | No |
+| `nyxloom` | `init`, `onboard`, project-local `lint`, `backlog *`, and usage analytics (`report`, `prices`, `windows`, `anchor`, `calibrate`); reports read local Claude Code metadata, while `anchor add` stores private UI readings. | No |
 | `nyxloom-harness` | `search`, `extract`, `extract-lossless`, `extract-debug`, `extract-report`, and `extract-sessions`; reads AI-harness session files/stores. | No |
 | `nyxloomctl` | Local host operations: `project`, host-wide `lint`, `doctor`, `status`, `resync`, workflow/intake/finding actions, `auth`, `route`, model catalogs, `migrate-store`, and `daemon`. This is a local operator tool, not a remote HTTP client. | Only `daemon` starts it; other commands run directly. |
 | `nyxloomd` | Direct service-manager entrypoint for the daemon lifecycle used by the existing container. | Starts the daemon |
@@ -189,6 +200,13 @@ nyxloom lint
 nyxloom backlog new "describe the issue" --type bugfix
 nyxloom backlog new --interactive
 nyxloom backlog edit CIU-1
+nyxloom usage report --since 24h
+nyxloom usage report --since 24h --format html --out usage.html
+nyxloom usage charts --since 24h --out usage-charts.json
+nyxloom usage prices --fit
+nyxloom usage windows --since 7d
+nyxloom usage anchor list
+nyxloom usage calibrate
 
 nyxloom-harness extract /path/to/session.jsonl --profile all
 

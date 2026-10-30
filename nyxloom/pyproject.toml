@@ -8,20 +8,22 @@ dependencies = [
   # vendored: this wheel used to carry cli_extended/* itself through
   # package-dir + packages.find (NYX-CLIX removed that), which put two owners
   # on the same `cli_extended/*` files in one environment (nyxloom 0.10.0 and
-  # a separately installed cli-extended 0.3.0 both wrote them). Floor 0.3.0:
-  # the latest release, and the one nyxloom's suite is verified against.
+  # a separately installed cli-extended 0.3.0 both wrote them). Floor 0.4.0:
+  # its released project config, semantic review catalog, surface workflow,
+  # and pytest marker contract are used by Nyxloom. These APIs arrived in
+  # cli-extended 0.4.0 (2026-10-07), over 14 days before this change.
   # nyxloom imports only package-root names (ArgumentSpec, CliFailure,
   # CliIdentity, CliRegistry, OptionSpec, PromptCancelled, VerbGroup,
   # VerbSpec); all eight also exist in 0.2.0 (checked against the
   # cli-extended-v0.2.0 tag), but 0.2.0 was never tested here, so the floor
-  # is not lowered to it. Same floor as cmru. Published to GitHub Releases only;
+  # is not lowered to it. Published to GitHub Releases only;
   # the bare name is unclaimed on PyPI, so install the cli-extended wheel
   # first / alongside with `--no-index` or `--find-links` (CX-D2). When
   # upgrading from nyxloom 0.10.0, reinstall the official cli-extended wheel
   # AFTER the nyxloom wheel: pip otherwise removes files formerly shared by
   # both distributions but considers cli-extended already satisfied. See
   # docs/CONSUMERS.md; cmru.toml [env] NYXLOOM_RELEASE_NOTES owns release setup.
-  "cli-extended>=0.3.0",
+  "cli-extended>=0.4.0",
   "PyYAML>=6",
   "jsonschema>=4",
   "structlog>=24,<27",  # structlog: D-L1, runtime dep (nyxloom/docs/plan-logging.md)
@@ -46,8 +48,13 @@ dependencies = [
 # tester-unified SoT: nyxloom's test closure lives HERE (not duplicated in
 # a hand-maintained requirements file). The vbpub test container installs this
 # extra, so a dep change here flows to the gate on the next image rebuild.
-test = ["pytest>=8", "hypothesis>=6", "coverage[toml]>=7", "pytest-xdist>=3", "pytest-cov>=5"]  # coverage: D-064-L2 diff-coverage gate; pytest-xdist+pytest-cov: factory-hardening G (parallel gate with xdist-safe coverage — see nyxloom-trove/nyxloom.toml [gates.tester-unified])
+test = ["pytest>=8", "hypothesis>=6", "coverage[toml]>=7", "pytest-xdist>=3", "pytest-cov>=5", "pypdf==6.19.0"]  # pypdf 6.19.0 (2026-09-16) extracts generated PDF text in renderer contract tests; pinned to a release older than the 14-day freshness window.
 interactive = ["questionary==2.1.1"]
+# PDF output uses the already-operated PWMCP browser through its Python
+# BrowserLease client. The client ships in PWMCP's verified GitHub release
+# bundle (not PyPI), and its pinned Playwright dependency must match the
+# service contract. This extra keeps all browser machinery optional.
+report = ["pwmcp-client==0.1.0"]  # exact client release declared by the PWMCP contract.
 
 [project.scripts]
 nyxloom = "nyxloom.cli:main"
@@ -84,7 +91,17 @@ git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--mat
 fallback_version = "0.1.0"
 
 [tool.setuptools.package-data]
-nyxloom = ["schemas/*.json"]
+nyxloom = ["schemas/*.json", "session_extract/usage/*.toml"]
+
+[tool.cli-extended]
+schema_version = 1
+
+[[tool.cli-extended.clis]]
+id = "nyxloom"
+factory = "nyxloom.cli_registry:primary_cli"
+review = "docs/cli-review.toml"
+manifest = "docs/cli-surface.json"
+spec = "docs/SPEC.md"
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

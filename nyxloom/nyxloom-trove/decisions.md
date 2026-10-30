@@ -272,3 +272,40 @@ declared for that reason alone, not because anything still uses them.
 **Recommendation:** Add an opt-in raw ripgrep mode for JSONL clients, preserving the existing precise mode as the default and deferring an index until search volume justifies its lifecycle cost.
 **Decision:** Follow the user's direction to add `--fast`. It requires ripgrep, ASCII query words, and explicit Codex and/or Claude selection; it refuses OpenCode and the all-client default instead of silently omitting a client. Ripgrep emits whole matching serialized-text tokens with `--only-matching`; Nyxloom counts those tokens directly, applies exact/prefix and any/all rules, and uses the existing per-term frequency cap and ranking. It does not parse candidate transcript records for matching or read matched-file tails. Serialized keys and metadata can match, and escaped query letters or Unicode case-fold equivalents may be missed. The date proxy is file modification time, labeled `FILE MTIME (UTC)`. Session discovery still reads identifying metadata to map paths to sessions and deduplicate aliases. No persistent index is created.
 **Context pointers:** `nyxloom/src/nyxloom/harness_search.py`; `nyxloom/src/nyxloom/cli_registry.py`; `nyxloom/tests/test_harness_search.py`; `nyxloom/README.md`; `nyxloom/docs/DESIGN-GUIDE.md`; `nyxloom/docs/CONSUMERS.md`; `nyxloom/docs/USAGE.md`; `nyxloom/docs/CLI-REFERENCE.md`.
+
+## D-022 · 2026-10-28 · nyxloom-usage-u1-u2 · DECIDED 2026-10-28
+**Question:** What is the first shipped surface for Claude Code usage analysis, and what does its raw share mean before prices and limit calibration are verified?
+**Why it matters:** A plausible weighted-cost or subscription-limit number can be mistaken for an authoritative bill or usage percentage. The first iteration also needs a stable, metadata-only data contract for later renderers.
+**Options:**
+- Defer the usage surface until weights, limit anchors, and charts are implemented together.
+- Ship the read-only CLI and shared tree now with raw token units; leave weighted cost and limit share explicitly unavailable until their sources are verified.
+**Recommendation:** Ship the additive `nyxloom usage report` command for U1–U2 and reserve cost/limit claims for later work.
+**Decision:** Follow the operator's direction to implement `nyxloom usage report --since ... --format table|json|csv` with session and project filters, tree/depth/share presentation, and no daemon or persistent store. Attribute nested agents by matching `.meta.json` `toolUseId` to the dispatching `Agent` tool-use ID, with the available `parentAgentId`/`spawnDepth` recovery data; de-duplicate by `(sessionId, requestId)`, falling back to message ID, and retain the last streaming row. Serialize only numbers and source metadata, never message, thinking, or tool content. Raw token units are input + cache read + cache-write 5m + cache-write 1h + unclassified cache write + output; thinking is an output subset and is not added again. `--sort cost` and `--min-share` use raw token units; weighted units, USD, and limit share remain null until U3 verifies prices against Anthropic's pricing page and cross-checks transcript `cost-state` records. Joined diagrams, HTML, PDF, and TUI remain later work packages.
+**Context pointers:** `nyxloom/src/nyxloom/session_extract/usage/`; `nyxloom/src/nyxloom/cli_registry.py`; `nyxloom/tests/test_usage_report.py`; `nyxloom/docs/DESIGN-GUIDE.md#local-usage-report`; `nyxloom/docs/CONSUMERS.md#report-claude-code-usage`; `nyxloom/docs/CLI-REFERENCE.md#current-command-and-option-contract`.
+
+### Iteration 1 plan-review reconciliation · 2026-10-28
+
+This receipt refines D-022's implementation details without reopening its command or storage decision. Implementation commit: `5dffd449f333b163b74068e2b43cbf38c397682d`.
+
+- **Finding 5 — de-duplication:** request IDs are file-local; message ID is the fallback only when request ID is absent. Cross-file copies require matching session, message ID, UTC timestamp, model, and full usage tuple. Conflicts are excluded and disclosed with provenance and stream/copy counts.
+- **Finding 6 — lineage:** `list_agents` and usage reporting share the resolver. A consistent `parentAgentId` wins, then a unique `toolUseId` owner; unresolved edges remain visible, and fork provenance is retained.
+- **Finding 7 — contract:** `usage-report-v1` freezes the exact deduplicated call ledger, provenance, lineage edges, typed events, coverage diagnostics, node self/subtree totals, and null extension slots. CSV is one report row plus one row per call.
+- **Finding 8 — compaction:** structural boundaries and paired summary timestamps use the shared `stats.py` parser. Context drops remain `unexplained_drop`; they never certify compaction.
+- **Finding 9 — time:** reports use UTC `[since, until)`, one injected invocation time, record timestamps, deterministic tie ordering, wall and active spans, and source clipping flags. Missing or invalid times are excluded and disclosed; sidechain calls remain.
+- **Finding 12 — CLI:** D-022's `nyxloom usage report` spelling is tested and uses the pure usage service without daemon state or persistent storage.
+- **Finding 14 — determinism and measurement:** stable IDs, ordering, schema, and rounding are frozen. D-022's no-persistent-store boundary remains in force. The first measured 24-hour scan had 838 files, 6,549 calls, 1,281,647,531 raw units, 14.876 seconds, and 67,836 KiB peak RSS; an immediate repeat had 6,547 calls, 1,281,247,733 raw units, 13.729 seconds, and 67,840 KiB. OS file-cache state was uncontrolled and active transcripts changed, so these are observations, not thresholds.
+
+### Iteration 2 reconciliation · 2026-10-28
+
+This iteration keeps the `usage-report-v1` ledger, CSV row contract, raw shares, deduplication and time semantics fixed. It populates only the reserved price/anchor extension slots and fields already present in the call/aggregate contract. The no-store statement in D-022 remains true for reports and transcript-derived ledgers; D-023 below is the narrow persistence exception for operator UI readings.
+
+## D-023 · 2026-10-28 · nyxloom-usage-u3-u4 · DECIDED 2026-10-28
+**Question:** What usage-analysis state may be persisted to support calibration without turning local transcript reports into a second usage database?
+**Why it matters:** Account UI percentages and reset times are observations absent from local transcripts. Calibration needs them, while caching transcript rows or generated reports would add sensitive retention and a competing source of truth.
+**Options:**
+- Keep every usage command stateless and leave calibration unavailable.
+- Persist only explicit operator-entered UI readings in a small private, versioned local state file; keep transcript scans, reports and fit outputs transient.
+- Persist transcript ledgers and calibration outputs to make repeated queries faster.
+**Recommendation:** Persist only explicit operator readings. Require limit kind, observation timestamp, displayed reset time, UI source and an explicit coverage assumption; use deterministic IDs, idempotent duplicate handling, conflict refusal and restrictive file permissions.
+**Decision:** Approved the narrow `usage-anchors-v1` file at `$XDG_STATE_HOME/nyxloom/usage-anchors-v1.json` (or `~/.local/state/nyxloom/usage-anchors-v1.json`). `usage anchor add` is the only command that writes usage state. Reports, transcript ledgers and calibration results remain transient. An observed rejection is a threshold event, never a 100% anchor. If web, other devices or shared account surfaces may contribute usage, calibration reports only a local capacity lower bound and leaves estimated limit percentage unknown. This decision supersedes D-022's no-persistence rule only for the explicit UI anchor file.
+**Context pointers:** `nyxloom/src/nyxloom/session_extract/usage/anchors.py`; `nyxloom/src/nyxloom/session_extract/usage/calibration.py`; `nyxloom/docs/DESIGN-GUIDE.md#local-usage-report`; `nyxloom/docs/CONSUMERS.md#report-claude-code-usage`; `nyxloom/docs/CLI-REFERENCE.md#current-command-and-option-contract`.

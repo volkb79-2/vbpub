@@ -49,8 +49,8 @@ COPY libraries/cli-extended/pyproject.toml libraries/cli-extended/README.md ./li
 COPY libraries/cli-extended/src ./libraries/cli-extended/src
 # The library resolves its version from its own git tag, which a no-.git context
 # lacks. The pretend version must satisfy nyxloom's declared floor
-# (cli-extended>=0.3.0); bump this ARG together with that floor.
-ARG CLI_EXTENDED_VERSION=0.3.0
+# (cli-extended>=0.4.0); bump this ARG together with that floor.
+ARG CLI_EXTENDED_VERSION=0.4.0
 ENV SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CLI_EXTENDED=${CLI_EXTENDED_VERSION}
 WORKDIR /build/libraries/cli-extended
 RUN rm -rf /wheels \

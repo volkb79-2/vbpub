@@ -36,7 +36,7 @@ schema_version = 2
 scope = "S1"
 rigor = ["R0", "R1"]
 enforcement = "gate"
-argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-n", "auto", "-q", "--cov=src/nyxloom", "--cov-branch", "--cov-report=json:coverage.json"]
+argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-n", "auto", "-q", "-rs", "--cov=src/nyxloom", "--cov-branch", "--cov-report=json:coverage.json"]
 env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1" }  # cli_extended: the tester-unified image's released wheel (CX-D1), never a source root
 # PATH: xdist worker spawn (subprocess). HOME: config/cache dirs some tests
 # touch. TERM/LANG: parity with ciu's lane. No CGROUP_PARENT_DEV_BACKGROUND
@@ -92,9 +92,10 @@ artifact = "coverage.json"
 
 # session-extract: narrow package lane (2026-09-10), added alongside
 # tester-unified rather than modifying it. Its judged source scope is only
-# src/nyxloom/session_extract. The selected CLI tests below exercise the
-# installed harness routes; parser/registry source coverage belongs to the
-# broader tester-unified lane, whose R1 suite covers the complete CLI surface.
+# src/nyxloom/session_extract. Every test_usage_*.py module is selected because
+# the full usage package is in this lane's changed-source scope; the browser
+# acceptance test remains opt-in. Parser/registry source coverage belongs to
+# the broader tester-unified lane, whose R1 suite covers the complete CLI.
 #
 # require_branch = true: unlike tester-unified, this lane's argv passes
 # --cov-branch and this judge.mode is the ONLY thing gating the new
@@ -146,18 +147,29 @@ argv = ["/opt/tester-venv/bin/python", "-m", "pytest",
   "tests/test_session_extract_presets.py",
   "tests/test_session_extract_gap_closure.py",
   "tests/test_session_extract_real_corpus.py",
+  "tests/test_usage_report.py",
+  "tests/test_usage_pricing.py",
+  "tests/test_usage_documentation.py",
+  "tests/test_usage_charts.py",
+  "tests/test_usage_html.py",
+  "tests/test_usage_html_browser.py",
+  "tests/test_usage_pdf.py",
+  "tests/test_usage_loader_coverage.py",
+  "tests/test_usage_coverage.py",
+  "tests/cli_surface/test_review_cases.py",
   "tests/test_cli_extract_groups.py",
   "tests/test_cli_help.py",
   "tests/test_cli.py::test_tick",
   "tests/test_cli.py::test_tick_project_id_passes_the_selector_to_daemon",
-  "-n", "4", "--maxfail=1", "-q", "--cov=src/nyxloom", "--cov-branch", "--cov-report=json:coverage-session-extract.json"]
+  "-n", "0", "-q", "--cov=src/nyxloom", "--cov-branch", "--cov-report=json:coverage-session-extract.json"]
 env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1" }  # cli_extended: the tester-unified image's released wheel (CX-D1), never a source root
 env_passthrough = ["HOME", "PATH", "TERM", "LANG"]
 # Native candidates now run serially so cgroup event deltas remain attributable.
-# This six-hour invocation bound is resumable; it is not a completion promise for
-# the 350-candidate ceiling. Read the current plan and progress before projecting
-# a full-campaign finish time.
-budget = "6h"
+# Resume state is tied to the judged commit tree, so this fix's tree change
+# correctly rejudges prior candidates. The previous run processed 293
+# candidates in 7012 seconds; 1203 candidates project to about 8.1 hours.
+# Keep a hard ten-hour bound for the full campaign plus R0/R1 and R3.
+budget = "10h"
 allow_argv_append = false
 
 [lanes.session-extract.isolation]
@@ -179,17 +191,15 @@ base = "126ccc39e151e33cc7bbcaa18bf765f9c9cd7dd1"
 # R2: native Python mutation, changed-lines-only -- resolve_mutation_targets
 # reuses R1's SAME current-main diff, so this mutates exactly the changed lines
 # under the session-extract source root, not the whole package. Candidate runs
-# are serial; pytest -n 4 remains the per-candidate test-runner setting. The
+# are serial; pytest runs in one process inside each candidate. The
 # finite candidate cap prevents an unbounded campaign.
 # budget_per_candidate remains 120s.
 [lanes.session-extract.judge.mutation]
 jobs = 1
-# Cap 350: the real plan at c4812cbc8 is 336 candidates (`assay plan --allow-dirty` with
-# a temporary cap of 3000: claude_code 89, shellcmd 47, toolresult 40, stopstate 37,
-# compress 28, presets 22, ledger 18, watch 17, render 16, successor 13, config 4,
-# harness 3, follow 2). The earlier "151" was the plan's cap+1 sentinel for "more than
-# the 150 cap", and a cap of 200 reported 201 (the same sentinel), so neither was a count.
-max_mutants = 350
+# The source-backed Assay plan for this tree reports 1203 candidates across
+# the session-extract source diff. Keep the cap at that exact count so this
+# branch's full plan is judged and future additions fail loudly for replanning.
+max_mutants = 1203
 operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-flip", "python:falsy-swap"]
 budget_per_candidate = "120s"
 

@@ -622,6 +622,18 @@ default. A command must declare `accepts_args = true` before arguments after
 argv has separate ownership. The [consumer examples](../CONSUMERS.md#selective-lane-requests)
 show both entry points.
 
+Selective flags also require an inventory version that proves the requested
+Assay feature is available. Internal lanes install the selected worktree's
+Assay source, whose setuptools_scm identity is `X.Y.Z.devN+g<revision>` and
+may carry a `.dYYYYMMDD` dirty-tree suffix. Run-Gate accepts that complete
+source identity or a stable `X.Y.Z` release (with an optional leading `v`),
+then compares the release part with the feature floor. It refuses an opaque
+version, partial development identity, stable release with local metadata,
+or development build at the floor itself. This keeps source-backed development
+lanes usable without treating a guessed or incomplete version as evidence.
+The [consumer guide](../CONSUMERS.md#selective-lane-requests) lists the floors
+and exact accepted forms.
+
 ## Docker names order daemon-wide admission
 
 An OS lock file coordinates only processes that share its filesystem. A host
