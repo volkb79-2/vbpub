@@ -11,6 +11,26 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 <!-- cmru: release history -->
 
+## [24.1.3] - 2026-10-30
+<!-- cmru: generated -->
+<!-- cmru: source-end=fbb3a83752d74631651454033eec82825c3456da -->
+
+### Fixed
+- fix(nyxloom): harden usage CSV and source-version floors (2760e2723)
+- fix: accept source Assay versions for selective runs (829f30db7)
+- fix(tnt): close bounded review findings (725313854)
+
+### Changed
+- Merge nyxloom usage report feature (loader, pricing, windows, charts, HTML/PDF, CSV neutralization), run-gate version-floor fix, R2 inventory (luna-reviewed, whole-source gate green 100%) (f6dc2b950)
+- Merge tnt 0.1.0 candidate: TrueNAS v27 TUI+CLI and cmru registration (luna-reviewed x3, r0-r1 943 passed 98.30%); pytest-cov backlog entry renumbered RG-110 -> RG-122 against the dev-wheel entry (c0421e29c)
+
+### Documentation
+- docs(run-gate): RG-121 section status matches its closure (c53dee982)
+- docs: record RG-120/RG-121 rejudge outcomes (440ba36ed)
+
+### Testing
+- test: pin rejudge survivor oracles (f84b1a9b4)
+
 ## [24.1.2] - 2026-10-29
 <!-- cmru: generated -->
 <!-- cmru: source-end=4b69df9deb100f9a3f64b72c221d6e8bf9ca0fa3 -->
