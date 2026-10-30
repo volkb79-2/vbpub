@@ -40,6 +40,38 @@ case "$expected_version" in
     27.0.0-RC.1|27.0.0-MASTER+20261027-173422) ;;
     *) fail "no exact v27 fresh-install adapter for $expected_version" ;;
 esac
+adapter_manifest="$patch_dir/adapter.json"
+[ -f "$adapter_manifest" ] && [ ! -L "$adapter_manifest" ] || fail 'exact-build adapter manifest is missing or unsafe'
+python3 - "$adapter_manifest" "$patch_dir/targets.sha256" "$expected_version" <<'PY'
+import hashlib
+import json
+from pathlib import Path
+import re
+import sys
+
+manifest_path, targets_path, version = sys.argv[1:]
+manifest = json.loads(Path(manifest_path).read_text())
+target_digest = hashlib.sha256(Path(targets_path).read_bytes()).hexdigest()
+expected = {
+    "27.0.0-RC.1": {
+        "id": "v27-rc1", "version": version, "train": "TrueNAS-27-RC",
+        "target_count": 18, "target_manifest_sha256": target_digest,
+    },
+    "27.0.0-MASTER+20261027-173422": {
+        "id": "v27-nightly-20261027", "version": version,
+        "train": "TrueNAS-27-Nightlies", "reapply_from": "27.0.0-RC.1",
+        "target_count": 19, "target_manifest_sha256": target_digest,
+    },
+}
+observed = dict(manifest)
+prior_bundle_digest = observed.pop("reapply_from_bundle_sha256", None)
+if version == "27.0.0-MASTER+20261027-173422" and not re.fullmatch(r"[0-9a-f]{64}", str(prior_bundle_digest)):
+    raise SystemExit("nightly adapter manifest has no valid RC.1 bundle digest")
+if version == "27.0.0-RC.1" and prior_bundle_digest is not None:
+    raise SystemExit("RC.1 adapter must not declare a prior bundle digest")
+if observed != expected[version]:
+    raise SystemExit(f"adapter manifest does not match the exact supported build: {manifest!r}")
+PY
 [ ! -e /dev/kvm ] || fail '/dev/kvm exists; this is not the intended TCG target'
 
 if zfs list -H -o name boot-pool/user-data >/dev/null 2>&1; then
@@ -51,6 +83,8 @@ fi
 if [ -e /root/v27-boot-pool-patch-install.json ]; then
     fail 'a v27 patch install record already exists'
 fi
+verify_record="/root/v27-boot-pool-patch-verify-$expected_version.json"
+[ ! -e "$verify_record" ] || fail "a v27 patch self-test record already exists for $expected_version"
 
 containers=$(midclt call container.query)
 python3 -c 'import json,sys; rows=json.loads(sys.argv[1]); assert isinstance(rows,list) and not rows, f"expected no containers, got {rows!r}"' "$containers" \
@@ -66,13 +100,51 @@ case "$usr_dataset" in
 esac
 
 cd "$install_root"
-sha256sum --check "$patch_dir/targets.sha256"
-patch --dry-run --batch -p1 < "$patch_dir/middleware.patch"
-patch --dry-run --batch -p1 < "$patch_dir/storage.patch"
-patch --dry-run --batch -p1 < "$patch_dir/libvirt.patch"
-patch --dry-run --batch -p1 < "$patch_dir/boot-mount.patch"
-patch --dry-run --batch --fuzz=0 -p1 < "$patch_dir/zvol-blocksize.patch"
-patch --dry-run --batch --fuzz=0 -p1 < "$patch_dir/ui-pools.patch"
+python3 - "$patch_dir/targets.sha256" <<'PY'
+import hashlib
+from pathlib import Path, PurePosixPath
+import sys
+
+manifest = Path(sys.argv[1])
+root = Path.cwd()
+issues = []
+seen = set()
+for number, line in enumerate(manifest.read_text(encoding="utf-8").splitlines(), 1):
+    fields = line.split(maxsplit=1)
+    if len(fields) != 2:
+        issues.append(f"INVALID {manifest}:{number}")
+        continue
+    expected, name = fields
+    relative = PurePosixPath(name)
+    if relative.is_absolute() or ".." in relative.parts or not relative.parts or relative.parts[0] not in {"middlewared", "truenas_pylibvirt"}:
+        issues.append(f"UNSAFE {name} expected=<relative middleware target> actual=<invalid path>")
+        continue
+    if name in seen:
+        issues.append(f"DUPLICATE {name} expected=<one target> actual=<duplicate>")
+        continue
+    seen.add(name)
+    path = root.joinpath(*relative.parts)
+    current = root
+    unsafe = False
+    for part in relative.parts:
+        current /= part
+        unsafe = unsafe or current.is_symlink()
+    if unsafe or not path.is_file():
+        issues.append(f"MISSING {name} expected={expected} actual=<missing-or-symlink>")
+        continue
+    actual = hashlib.sha256(path.read_bytes()).hexdigest()
+    if actual != expected:
+        issues.append(f"HASH {name} expected={expected} actual={actual}")
+if issues:
+    print("pre-patch source fingerprint mismatch; refusing every patch hunk:", file=sys.stderr)
+    print("\n".join(issues), file=sys.stderr)
+    raise SystemExit(1)
+PY
+sha256sum --check --strict "$patch_dir/targets.sha256"
+for patch_file in middleware.patch storage.patch libvirt.patch boot-mount.patch zvol-blocksize.patch ui-pools.patch; do
+    [ -f "$patch_dir/$patch_file" ] || fail "v27 adapter is missing $patch_file"
+    patch --dry-run --batch --fuzz=0 -p1 < "$patch_dir/$patch_file"
+done
 
 zfs set readonly=off "$usr_dataset"
 usr_writable=1
@@ -80,16 +152,17 @@ trap restore_usr_readonly EXIT
 mount -o remount,rw /usr
 
 systemctl stop middlewared.service
-patch --batch -p1 < "$patch_dir/middleware.patch"
-patch --batch -p1 < "$patch_dir/storage.patch"
-patch --batch -p1 < "$patch_dir/libvirt.patch"
-patch --batch -p1 < "$patch_dir/boot-mount.patch"
-patch --batch --fuzz=0 -p1 < "$patch_dir/zvol-blocksize.patch"
-patch --batch --fuzz=0 -p1 < "$patch_dir/ui-pools.patch"
+for patch_file in middleware.patch storage.patch libvirt.patch boot-mount.patch zvol-blocksize.patch ui-pools.patch; do
+    patch --batch --fuzz=0 -p1 < "$patch_dir/$patch_file"
+done
 install -m 0644 "$bundle_root/shared/virtualization_support.py" middlewared/plugins/vm/
 install -m 0644 "$bundle_root/shared/boot_pool_user_data.py" middlewared/plugins/
 install -m 0644 "$bundle_root/shared/boot_disk_partition.py" middlewared/plugins/
 install -m 0644 "$bundle_root/shared/pool_create_schema_v27.json" middlewared/plugins/
+
+for patch_file in middleware.patch storage.patch libvirt.patch boot-mount.patch zvol-blocksize.patch ui-pools.patch; do
+    patch --dry-run --batch --fuzz=0 --reverse -p1 < "$patch_dir/$patch_file"
+done
 
 python3 -m py_compile \
     middlewared/plugins/vm/info.py \
@@ -147,14 +220,24 @@ flags = json.loads(Path('/tmp/v27-vm-flags.json').read_text())
 if not isinstance(flags, dict) or any(flags.values()):
     raise SystemExit(f'TCG patch exposed hardware virtualization flags: {flags!r}')
 PY
+midclt call system.info | python3 -c 'import json,sys; info=json.load(sys.stdin); expected=sys.argv[1]; actual=info.get("version"); assert actual == expected, f"expected {expected}, got {actual!r}"' "$version"
+midclt call pool.dataset.query > /tmp/v27-datasets-self-test.json
+python3 - <<'PY'
+import json
+from pathlib import Path
 
-python3 - "$version" "$bundle_root" <<'PY'
+rows = json.loads(Path('/tmp/v27-datasets-self-test.json').read_text())
+if not isinstance(rows, list):
+    raise SystemExit(f'pool.dataset.query returned a non-list result: {rows!r}')
+PY
+
+python3 - "$version" "$bundle_root" "$verify_record" <<'PY'
 import hashlib
 import json
 from pathlib import Path
 import sys
 
-version, bundle_root = sys.argv[1:]
+version, bundle_root, verify_record = sys.argv[1:]
 root = Path(bundle_root)
 patch_text = (root / "v27/storage.patch").read_text()
 expected_guard = (
@@ -176,9 +259,45 @@ record = {
     "root_parent_mountpoint_guard": "root-create-skips-parent-mountpoint-none-v1",
     "recommended_zvol_blocksize_boot_pool": "boot-pool-defaults-to-16k-v1",
 }
-Path("/root/v27-boot-pool-patch-install.json").write_text(
-    json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
+targets_path = root / "v27/targets.sha256"
+target_before = {}
+for line in (root / "v27/targets.sha256").read_text().splitlines():
+    digest, name = line.split(maxsplit=1)
+    target_before[name] = digest
+install_root = Path("/usr/lib/python3/dist-packages")
+target_after = {
+    name: hashlib.sha256((install_root / name).read_bytes()).hexdigest()
+    for name in target_before
+}
+helper_names = (
+    "middlewared/plugins/vm/virtualization_support.py",
+    "middlewared/plugins/boot_pool_user_data.py",
+    "middlewared/plugins/boot_disk_partition.py",
+    "middlewared/plugins/pool_create_schema_v27.json",
 )
+helpers = {
+    name: hashlib.sha256((install_root / name).read_bytes()).hexdigest()
+    for name in helper_names
+}
+verification = {
+    "version": version,
+    "bundle_sha256": record["bundle_sha256"],
+    "target_manifest_sha256": hashlib.sha256(targets_path.read_bytes()).hexdigest(),
+    "target_before": target_before,
+    "target_after": target_after,
+    "helpers": helpers,
+}
+verify_path = Path(verify_record)
+
+def write_private_json(path, value):
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(json.dumps(value, sort_keys=True, indent=2) + "\n")
+    temporary.chmod(0o600)
+    temporary.replace(path)
+
+write_private_json(verify_path, verification)
+write_private_json(Path("/root/v27-boot-pool-patch-install.json"), record)
 PY
 printf '[result] PASS patched fresh TrueNAS %s; virtualization is supported by QEMU TCG; /dev/kvm remains absent\n' \
     "$version"
+printf '[self-test] exact post-apply source/helper hashes recorded at %s\n' "$verify_record"

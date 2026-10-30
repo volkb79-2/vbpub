@@ -7,10 +7,10 @@ mode=${3:?expected mode is required}
 prior_bundle_sha256=${4:?prior RC.1 bundle SHA-256 is required}
 required_version=27.0.0-MASTER+20261027-173422
 prior_version=27.0.0-RC.1
-required_prior_sha256=07fd9ba7e4df11349525203ac29ee6377b56ff55e1391b7b2c4b72123914895f
 install_root=/usr/lib/python3/dist-packages
 patch_dir="$bundle_root/v27"
 marker=/root/v27-boot-pool-patch-install.json
+verify_record="/root/v27-boot-pool-patch-verify-$required_version.json"
 path_a_root=boot-pool/user-data
 path_a_mountpoint=/mnt/boot-pool/user-data
 usr_dataset=
@@ -102,21 +102,23 @@ case "$mode" in
     reapply-after-update|uninstall-stale-record) ;;
     *) fail "unsupported recovery mode: $mode" ;;
 esac
-[ "$prior_bundle_sha256" = "$required_prior_sha256" ] || fail 'prior RC.1 bundle digest differs from the observed stale record'
 [ -d "$patch_dir" ] && [ -f "$patch_dir/targets.sha256" ] || fail "adapter targets missing under $patch_dir"
 [ -f "$patch_dir/adapter.json" ] && [ ! -L "$patch_dir/adapter.json" ] || fail 'nightly adapter manifest is missing or unsafe'
-python3 - "$patch_dir/adapter.json" "$expected_version" "$prior_bundle_sha256" <<'PY'
+python3 - "$patch_dir/adapter.json" "$patch_dir/targets.sha256" "$expected_version" "$prior_bundle_sha256" <<'PY'
+import hashlib
 import json
 from pathlib import Path
 import sys
-manifest = json.loads(Path(sys.argv[1]).read_text())
+manifest_path, targets_path, version, prior_digest = sys.argv[1:]
+manifest = json.loads(Path(manifest_path).read_text())
 expected = {
     "id": "v27-nightly-20261027",
-    "version": sys.argv[2],
+    "version": version,
     "train": "TrueNAS-27-Nightlies",
     "reapply_from": "27.0.0-RC.1",
-    "reapply_from_bundle_sha256": sys.argv[3],
+    "reapply_from_bundle_sha256": prior_digest,
     "target_count": 19,
+    "target_manifest_sha256": hashlib.sha256(Path(targets_path).read_bytes()).hexdigest(),
 }
 if manifest != expected:
     raise SystemExit(f"adapter manifest does not match the exact recovery contract: {manifest!r}")
@@ -125,6 +127,7 @@ version=$(midclt call system.info | python3 -c 'import json,sys; print(json.load
 [ "$version" = "$expected_version" ] || fail "expected $expected_version, found $version"
 [ ! -e /dev/kvm ] || fail '/dev/kvm appeared; the recorded TCG target changed'
 [ -f "$marker" ] && [ ! -L "$marker" ] || fail 'stale v27 install record is missing or unsafe'
+[ ! -e "$verify_record" ] || fail "v27 target-build self-test record already exists: $verify_record"
 python3 - "$marker" "$prior_version" "$prior_bundle_sha256" <<'PY'
 import json
 from pathlib import Path
@@ -158,6 +161,46 @@ case "$usr_dataset" in
 esac
 
 cd "$install_root"
+python3 - "$patch_dir/targets.sha256" <<'PY'
+import hashlib
+from pathlib import Path, PurePosixPath
+import sys
+
+manifest = Path(sys.argv[1])
+root = Path.cwd()
+issues = []
+seen = set()
+for number, line in enumerate(manifest.read_text(encoding="utf-8").splitlines(), 1):
+    fields = line.split(maxsplit=1)
+    if len(fields) != 2:
+        issues.append(f"INVALID {manifest}:{number}")
+        continue
+    expected, name = fields
+    relative = PurePosixPath(name)
+    if relative.is_absolute() or ".." in relative.parts or not relative.parts or relative.parts[0] not in {"middlewared", "truenas_pylibvirt"}:
+        issues.append(f"UNSAFE {name} expected=<relative middleware target> actual=<invalid path>")
+        continue
+    if name in seen:
+        issues.append(f"DUPLICATE {name} expected=<one target> actual=<duplicate>")
+        continue
+    seen.add(name)
+    path = root.joinpath(*relative.parts)
+    current = root
+    unsafe = False
+    for part in relative.parts:
+        current /= part
+        unsafe = unsafe or current.is_symlink()
+    if unsafe or not path.is_file():
+        issues.append(f"MISSING {name} expected={expected} actual=<missing-or-symlink>")
+        continue
+    actual = hashlib.sha256(path.read_bytes()).hexdigest()
+    if actual != expected:
+        issues.append(f"HASH {name} expected={expected} actual={actual}")
+if issues:
+    print("pre-patch source fingerprint mismatch; refusing every patch hunk:", file=sys.stderr)
+    print("\n".join(issues), file=sys.stderr)
+    raise SystemExit(1)
+PY
 sha256sum --check --strict "$patch_dir/targets.sha256"
 if [ "$mode" = uninstall-stale-record ]; then
     mount_path_a_tree
@@ -202,6 +245,9 @@ install -m 0644 "$bundle_root/shared/virtualization_support.py" middlewared/plug
 install -m 0644 "$bundle_root/shared/boot_pool_user_data.py" middlewared/plugins/
 install -m 0644 "$bundle_root/shared/boot_disk_partition.py" middlewared/plugins/
 install -m 0644 "$bundle_root/shared/pool_create_schema_v27.json" middlewared/plugins/
+for patch_file in middleware.patch storage.patch libvirt.patch boot-mount.patch zvol-blocksize.patch ui-pools.patch; do
+    patch --dry-run --batch --fuzz=0 --reverse -p1 < "$patch_dir/$patch_file"
+done
 python3 -m py_compile middlewared/plugins/vm/info.py middlewared/plugins/vm/virtualization_support.py \
     middlewared/plugins/boot_pool_user_data.py middlewared/plugins/boot_disk_partition.py \
     middlewared/plugins/disk_/availability.py middlewared/async_validators.py \
@@ -233,6 +279,15 @@ if details.get("supported") is not True:
     raise SystemExit(f"patched TCG backend is not supported: {details!r}")
 PY
 [ ! -e /dev/kvm ] || fail '/dev/kvm appeared after v27 update reapply'
+midclt call system.info | python3 -c 'import json,sys; info=json.load(sys.stdin); expected=sys.argv[1]; actual=info.get("version"); assert actual == expected, f"expected {expected}, got {actual!r}"' "$expected_version"
+midclt call pool.dataset.query > /tmp/v27-update-reapply-datasets.json
+python3 - <<'PY'
+import json
+from pathlib import Path
+rows = json.loads(Path('/tmp/v27-update-reapply-datasets.json').read_text())
+if not isinstance(rows, list):
+    raise SystemExit(f'pool.dataset.query returned a non-list result: {rows!r}')
+PY
 mount_path_a_tree
 archive_dir=/root/.truenas-v27-patch-records
 install -d -m 0700 "$archive_dir"
@@ -276,7 +331,45 @@ zfs set readonly=on "$usr_dataset"
 mount -o remount,ro /usr
 usr_writable=0
 findmnt -n -o OPTIONS --target /usr | tr ',' '\n' | grep -Fxq ro || fail '/usr did not return to a read-only mount after v27 update reapply'
+python3 - "$expected_version" "$bundle_archive" "$patch_dir/targets.sha256" "$verify_record" <<'PY'
+import hashlib
+import json
+import os
+from pathlib import Path
+import sys
+
+version, bundle_path, targets_path, record_path = sys.argv[1:]
+targets_file = Path(targets_path)
+target_before = {}
+for line in targets_file.read_text().splitlines():
+    digest, name = line.split(maxsplit=1)
+    target_before[name] = digest
+root = Path('/usr/lib/python3/dist-packages')
+target_after = {name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in target_before}
+helper_names = (
+    'middlewared/plugins/vm/virtualization_support.py',
+    'middlewared/plugins/boot_pool_user_data.py',
+    'middlewared/plugins/boot_disk_partition.py',
+    'middlewared/plugins/pool_create_schema_v27.json',
+)
+helpers = {name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in helper_names}
+record = {
+    'version': version,
+    'bundle_sha256': hashlib.sha256(Path(bundle_path).read_bytes()).hexdigest(),
+    'target_manifest_sha256': hashlib.sha256(targets_file.read_bytes()).hexdigest(),
+    'target_before': target_before,
+    'target_after': target_after,
+    'helpers': helpers,
+    'reapplied_from_version': '27.0.0-RC.1',
+}
+destination = Path(record_path)
+temporary = destination.with_name(destination.name + '.tmp')
+temporary.write_text(json.dumps(record, sort_keys=True, indent=2) + '\n')
+os.chmod(temporary, 0o600)
+os.replace(temporary, destination)
+PY
 transaction_committed=1
 printf '[result] PASS re-applied exact v27 nightly adapter after update; archived RC.1 record; Path A root and eligible descendants are mounted\n'
 printf '[record] archived at %s\n' "$archive_record"
 printf '[transaction] original nightly sources retained at %s\n' "$transaction_dir"
+printf '[self-test] exact post-apply source/helper hashes recorded at %s\n' "$verify_record"

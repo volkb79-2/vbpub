@@ -409,7 +409,9 @@ requires the operator to plan the reboot on the disposable target.
 On 2026-10-30, the v27 nightly Path A/B API/UI matrix and the v27 and v28
 reboot/import proofs passed on v1001. The v27-to-v28 update preserved boot-pool
 and Path B identity; the exact v28 adapter was then applied before the v28
-reboot proof. No newer v28 nightly was listed in the official feed. The
+reboot proof. The updater now advertises an unregistered Oct 29 v28 nightly;
+the stock-BE fixture survival check passed against it, but patch installation
+requires an exact reviewed adapter. The
 [patch design](../boot-pool-patch/docs/DESIGN-GUIDE.md#v27-nightly-update-and-reapply)
 explains the adapter and recovery contract; the
 [consumer guide](../boot-pool-patch/docs/CONSUMERS.md#reapply-v27-after-an-update)

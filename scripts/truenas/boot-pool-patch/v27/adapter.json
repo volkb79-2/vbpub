@@ -1,0 +1,7 @@
+{
+  "id": "v27-rc1",
+  "target_count": 18,
+  "target_manifest_sha256": "00bcd535982cbc5a36718d7a216220118d3486865e57d446bb6c9d1b7e110768",
+  "train": "TrueNAS-27-RC",
+  "version": "27.0.0-RC.1"
+}

@@ -264,8 +264,9 @@ def test_v27_latest_nightly_adapter_has_an_exact_version_and_19_target_manifest(
         "version": "27.0.0-MASTER+20261027-173422",
         "train": "TrueNAS-27-Nightlies",
         "reapply_from": "27.0.0-RC.1",
-        "reapply_from_bundle_sha256": "07fd9ba7e4df11349525203ac29ee6377b56ff55e1391b7b2c4b72123914895f",
+        "reapply_from_bundle_sha256": "23e7667f4893f26f4861b17edc20e73f00ae2f8b797f9ff95cde446af1f25de1",
         "target_count": 19,
+        "target_manifest_sha256": __import__("hashlib").sha256((adapter_dir / "targets.sha256").read_bytes()).hexdigest(),
     }
     targets = [line.split(None, 1) for line in (adapter_dir / "targets.sha256").read_text().splitlines()]
     assert len(targets) == manifest["target_count"]
@@ -277,6 +278,74 @@ def test_v27_latest_nightly_adapter_has_an_exact_version_and_19_target_manifest(
     assert "boot.attach" in readme and "reserved partition" in readme
     for filename in ("middleware.patch", "storage.patch", "libvirt.patch", "boot-mount.patch", "zvol-blocksize.patch", "ui-pools.patch"):
         assert (adapter_dir / filename).is_file()
+
+
+def test_v27_bundle_is_deterministic_and_contains_only_reviewed_members() -> None:
+    import gzip
+    import importlib.util
+    import io
+    import tarfile
+
+    acceptance = PATCH_ROOT / "acceptance"
+    import sys
+
+    sys.path.insert(0, str(acceptance))
+    try:
+        spec = importlib.util.spec_from_file_location("live_v27_patch_test", acceptance / "live_v27_patch.py")
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        from v27_patch_state import RC1_BUNDLE_SHA256
+
+        first_path, first_digest = module.make_bundle("path-a")
+        second_path, second_digest = module.make_bundle("path-a")
+    finally:
+        sys.path.remove(str(acceptance))
+
+    assert first_path.read_bytes() == second_path.read_bytes()
+    assert first_digest == second_digest
+    assert first_digest == RC1_BUNDLE_SHA256
+    with gzip.GzipFile(fileobj=io.BytesIO(first_path.read_bytes()), mode="rb") as compressed:
+        with tarfile.open(fileobj=compressed, mode="r:") as archive:
+            members = {member.name for member in archive.getmembers()}
+            acceptance_contents = b"\n".join(
+                archive.extractfile(name).read()
+                for name in members if name.startswith("acceptance/")
+            )
+    assert "v27/targets.sha256" in members
+    assert "acceptance/apply_v27_patch_remote.sh" in members
+    assert len(members) == 17
+    assert b"23e7667f4893f26f4861b17edc20e73f00ae2f8b797f9ff95cde446af1f25de1" not in acceptance_contents
+
+
+def test_all_patch_installers_compare_every_target_hash_and_disable_fuzz() -> None:
+    scripts = (
+        PATCH_ROOT / "acceptance" / "apply_v27_patch_remote.sh",
+        PATCH_ROOT / "acceptance" / "reapply_v27_after_update_remote.sh",
+        PATCH_ROOT / "acceptance" / "apply_v28_patch_remote.sh",
+        PATCH_ROOT / "v28-nightly-20261027" / "apply_v28_patch_remote.sh",
+    )
+    for path in scripts:
+        source = path.read_text()
+        assert subprocess.run(["bash", "-n", str(path)], check=False).returncode == 0
+        assert "pre-patch source fingerprint mismatch" in source
+        assert "expected={expected} actual={actual}" in source
+        assert "--fuzz=0" in source
+        assert "--reverse" in source
+
+
+def test_v27_patch_verification_record_uses_defined_atomic_file_operations() -> None:
+    source = REMOTE_V27_PATCH.read_text()
+    blocks = re.findall(r"<<'PY'\n(.*?)\nPY", source, re.DOTALL)
+    final_record_writer = next(block for block in blocks if 'verify_path = Path(verify_record)' in block)
+
+    assert "temporary.chmod(0o600)" in final_record_writer
+    assert "temporary.replace(path)" in final_record_writer
+    assert "write_private_json(verify_path, verification)" in final_record_writer
+    marker_write = 'write_private_json(Path("/root/v27-boot-pool-patch-install.json"), record)'
+    assert marker_write in final_record_writer
+    assert final_record_writer.index(marker_write) > final_record_writer.index("target_after = {")
+    assert "os." not in final_record_writer
 
 
 def test_v27_nightly_boot_attach_guard_runs_before_boot_format() -> None:

@@ -92,6 +92,7 @@ def test_live_lanes_use_a_capped_networked_exec_runner() -> None:
         "live-storage", "live-boot", "live-update", "live-v27-patch", "live-v28-patch",
         "live-path-b-provision", "live-path-b-partition", "live-ui", "live-ui-workloads",
         "live-vdev-topology", "live-inspect", "live-ui-prepare-ssh", "live-ui-observed-v1001",
+        "live-update-survival-plant", "live-update-survival-update", "live-update-survival-verify",
     ):
         lane = config["lanes"][name]
         assert lane["environment"] == "networked-tester"
@@ -870,6 +871,8 @@ def test_read_only_inventory_script_uses_only_query_operations() -> None:
     assert 'target.call("vm.' not in source
     assert 'target.call("pool.dataset.delete"' not in source
     assert 'target.shell("zpool list -H -o name,health"' in source
+    assert '"direct_block_device_inventory": block_device_inventory' in source
+    assert 'zpool status -P boot-pool' in source
     assert 'findmnt -n -o SOURCE,OPTIONS --target /usr' in source
     assert 'findmnt -n -o SOURCE,FSTYPE --target /root' in source
     assert 'v27-boot-pool-patch-install.json' in source
@@ -1004,6 +1007,127 @@ def test_v28_patch_lane_can_target_an_external_guest_through_its_guarded_runner(
     monkeypatch.setenv("TRUENAS_TEST_HOST", "v1001.vxxu.de")
     assert "live-v28-patch" in runner.EXTERNAL_TARGET_LANES
     assert runner.external_target("live-v28-patch") == ("v1001.vxxu.de", None)
+
+
+def test_update_survival_lanes_are_v1001_only_external_ssh_lanes(monkeypatch) -> None:
+    runner = load_runner()
+    monkeypatch.setenv("TRUENAS_TEST_HOST", "v1001.vxxu.de")
+    for lane in (
+        "live-update-survival-plant", "live-update-survival-update", "live-update-survival-verify",
+    ):
+        assert lane in runner.LIVE_LANES
+        assert lane in runner.EXTERNAL_TARGET_LANES
+        assert lane in runner.SSH_LANES
+        assert runner.external_target(lane) == ("v1001.vxxu.de", None)
+
+    monkeypatch.setenv("TRUENAS_TEST_HOST", "other.example")
+    try:
+        runner.external_target("live-update-survival-plant")
+    except runner.RunnerError as exc:
+        assert "restricted to disposable v1001.vxxu.de" in str(exc)
+    else:
+        raise AssertionError("update-survival accepted an external host other than v1001")
+
+
+def test_update_survival_runner_environment_is_guarded_and_uses_state_directory(tmp_path, monkeypatch) -> None:
+    runner = load_runner()
+    artifact_dir = tmp_path / ".update-survival"
+    artifact_dir.mkdir(mode=0o700)
+    artifact_dir.chmod(0o700)
+    private_key = tmp_path / "root_ed25519"
+    private_key.write_text("test private key")
+    private_key.chmod(0o600)
+    known_hosts = tmp_path / "known_hosts"
+    known_hosts.write_text("v1001 ssh-ed25519 test")
+    public_key = tmp_path / "root_ed25519.pub"
+    public_key.write_text("ssh-ed25519 AAAATEST fixture\n")
+    for name, value in {
+        "TRUENAS_TEST_ALLOW_MUTATIONS": "1",
+        "TRUENAS_EXPECTED_VERSION": "27.0.0-MASTER+20261027-173422",
+        "TRUENAS_STORAGE_PROFILE": "both",
+        "TRUENAS_SURVIVAL_MODE": "patched",
+        "TRUENAS_SURVIVAL_PROFILE": "both",
+        "TRUENAS_SURVIVAL_ARTIFACT_DIR": str(artifact_dir),
+        "TRUENAS_SURVIVAL_SSH_PUBLIC_KEY_FILE": str(public_key),
+        "TRUENAS_TEST_PORT": "22",
+        "TRUENAS_TEST_KEY": str(private_key),
+        "TRUENAS_TEST_KNOWN_HOSTS": str(known_hosts),
+    }.items():
+        monkeypatch.setenv(name, value)
+
+    plant = runner.required_live_environment(
+        "live-update-survival-plant", "v1001.vxxu.de", tmp_path,
+    )
+    assert plant["TRUENAS_SURVIVAL_MANIFEST"] == "/run/truenas-update-survival/manifest.json"
+    assert plant["TRUENAS_SURVIVAL_SSH_PUBLIC_KEY_FILE"] == str(public_key)
+    assert plant["TRUENAS_STORAGE_PROFILE"] == "both"
+
+    (artifact_dir / "manifest.json").write_text("{}")
+    monkeypatch.setenv("TRUENAS_TEST_ALLOW_UPDATE", "1")
+    monkeypatch.setenv("TRUENAS_TEST_ALLOW_REBOOT", "1")
+    monkeypatch.setenv("TRUENAS_UPDATE_EXPECTED_VERSION", "28.0.0-MASTER+20261027-175229")
+    monkeypatch.setenv("TRUENAS_UPDATE_TRAIN", "TrueNAS-28-Nightlies")
+    update = runner.required_live_environment(
+        "live-update-survival-update", "v1001.vxxu.de", tmp_path,
+    )
+    assert update["TRUENAS_TEST_ALLOW_UPDATE"] == "1"
+    assert update["TRUENAS_TEST_ALLOW_REBOOT"] == "1"
+    assert update["TRUENAS_UPDATE_TRAIN"] == "TrueNAS-28-Nightlies"
+    assert update["TRUENAS_SURVIVAL_UPDATE_RECORD"] == "/run/truenas-update-survival/update-job.json"
+
+    monkeypatch.setenv("TRUENAS_SURVIVAL_EXPECTED_AFTER", "28.0.0-MASTER+20261027-175229")
+    verify = runner.required_live_environment(
+        "live-update-survival-verify", "v1001.vxxu.de", tmp_path,
+    )
+    assert verify["TRUENAS_SURVIVAL_EXPECTED_AFTER"] == "28.0.0-MASTER+20261027-175229"
+    assert verify["TRUENAS_SURVIVAL_REPORT"] == "/run/truenas-update-survival/report.json"
+
+    monkeypatch.setenv("TRUENAS_TEST_ALLOW_REBOOT", "0")
+    try:
+        runner.required_live_environment(
+            "live-update-survival-update", "v1001.vxxu.de", tmp_path,
+        )
+    except runner.RunnerError as exc:
+        assert "TRUENAS_TEST_ALLOW_REBOOT=1" in str(exc)
+    else:
+        raise AssertionError("survival update must require the reboot guard")
+
+
+def test_networked_tester_readback_requires_the_survival_state_mount_to_be_writable() -> None:
+    runner = load_runner()
+    expected_source = "/host/worktree/.update-survival"
+    expected_destination = "/run/truenas-update-survival"
+    args = runner.docker_mount_args(
+        [("/host/worktree", "/worktree")],
+        (expected_source, expected_destination),
+    )
+    assert args == [
+        "--mount", "type=bind,src=/host/worktree,dst=/worktree,readonly",
+        "--mount", "type=bind,src=/host/worktree/.update-survival,dst=/run/truenas-update-survival",
+    ]
+    item = {"Mounts": [{
+        "Source": expected_source, "Destination": expected_destination,
+        "RW": True, "Type": "bind",
+    }]}
+    runner.verify_writable_mount(item, expected_source, expected_destination)
+
+    item["Mounts"][0]["RW"] = False
+    try:
+        runner.verify_writable_mount(item, expected_source, expected_destination)
+    except runner.RunnerError as exc:
+        assert "writable" in str(exc)
+    else:
+        raise AssertionError("survival artifact state bind was accepted as writable when it was read-only")
+
+    try:
+        runner.docker_mount_args(
+            [("/host/worktree", expected_destination)],
+            (expected_source, expected_destination),
+        )
+    except runner.RunnerError as exc:
+        assert "collides" in str(exc)
+    else:
+        raise AssertionError("survival artifact bind was allowed to shadow a read-only mount")
 
 
 def test_external_network_must_be_an_existing_custom_bridge(monkeypatch) -> None:

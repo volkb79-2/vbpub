@@ -421,7 +421,7 @@ export TRUENAS_EXPECTED_VERSION='27.0.0-MASTER+20261027-173422'
 export TRUENAS_TEST_ALLOW_MUTATIONS=1
 export TRUENAS_V27_PATCH_ACTION=reapply-after-update
 export TRUENAS_TEST_ALLOW_PATCH_REAPPLY=1
-export TRUENAS_V27_EXPECTED_PRIOR_BUNDLE_SHA256=07fd9ba7e4df11349525203ac29ee6377b56ff55e1391b7b2c4b72123914895f
+export TRUENAS_V27_EXPECTED_PRIOR_BUNDLE_SHA256=23e7667f4893f26f4861b17edc20e73f00ae2f8b797f9ff95cde446af1f25de1
 python3 boot-pool-patch/run-live-gate.py live-v27-patch \
   --docker-network "$DOCKER_NETWORK_INTERNAL" --allow-high-psi --allow-dirty
 
@@ -456,10 +456,12 @@ end-to-end tested with the Debian cloud-image upload workflow. Separate
 patched-host tests created and started a TrueNAS VM through QEMU TCG; they did
 not boot the guest OS, select actual KVM, or exercise client share access.
 VM schemas have been reviewed against v28 docs, which are currently Preview.
-The latest checked v27 nightly passed its Path A/B API/UI matrix and reboot
+The last registered v27 nightly passed its Path A/B API/UI matrix and reboot
 proof; v28 build `28.0.0-MASTER+20261027-175229` passed adapter installation
-and reboot/import proof after the v27-to-v28 update. No newer v28 nightly was
-listed on 2026-10-30. TrueNAS 24.10 needs a
+and reboot/import proof after the v27-to-v28 update. The updater now advertises
+an unregistered Oct 29 v28 nightly; a planted-fixture survival run against its
+stock BE passed, while patch installation awaits exact target fingerprints.
+TrueNAS 24.10 needs a
 legacy WebSocket, authentication, and job adapter described in the
 [design guide](DESIGN-GUIDE.md#api-version-compatibility). Do not point the
 current config at a 24.10 host.

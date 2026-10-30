@@ -278,6 +278,7 @@ def test_v28_bundle_is_deterministic_and_contains_only_reviewed_members() -> Non
         with tarfile.open(fileobj=compressed, mode="r:") as archive:
             members = {member.name for member in archive.getmembers()}
     assert members == {
+        "patch/adapter.json",
         "patch/storage.patch",
         "patch/middleware.patch",
         "patch/boot-mount.patch",

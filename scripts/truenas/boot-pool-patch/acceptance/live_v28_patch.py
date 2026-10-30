@@ -122,6 +122,7 @@ def deterministic_bundle(
         ("patch/middleware.patch", patch_dir / "middleware.patch"),
         ("patch/boot-mount.patch", patch_dir / "boot-mount.patch"),
         ("patch/targets.sha256", patch_dir / "targets.sha256"),
+        ("patch/adapter.json", patch_dir / "adapter.json"),
         ("patch/boot_pool_mount.py", patch_dir / "boot_pool_mount.py"),
         (
             "patch/apply_v28_patch_remote.sh",

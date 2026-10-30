@@ -13,6 +13,8 @@ USER_DOCS = {
     PATCH_ROOT / "docs" / "DESIGN-GUIDE.md",
     PATCH_ROOT / "docs" / "CONSUMERS.md",
 }
+UPDATE_AND_DRIFT = PATCH_ROOT.parent / "docs" / "UPDATE-AND-DRIFT.md"
+LINK_DOCS = USER_DOCS | {UPDATE_AND_DRIFT}
 LINK = re.compile(r"\[[^\]]+\]\(([^)\s]+)(?:\s+[^)]*)?\)")
 FENCE = re.compile(r"(?ms)^```[^\n]*\n.*?^```\s*$")
 
@@ -42,7 +44,7 @@ def heading_anchors(source: str) -> set[str]:
 
 
 def test_cross_document_anchors_resolve() -> None:
-    sources = {path: markdown_source(path) for path in USER_DOCS}
+    sources = {path: markdown_source(path) for path in LINK_DOCS}
     anchors = {path: heading_anchors(source) for path, source in sources.items()}
     for source_path, source in sources.items():
         for destination in LINK.findall(source):
@@ -50,13 +52,24 @@ def test_cross_document_anchors_resolve() -> None:
             if not separator or not fragment:
                 continue
             target_path = (source_path.parent / target_text).resolve() if target_text else source_path
-            matching_doc = next((path for path in USER_DOCS if path.resolve() == target_path), None)
+            matching_doc = next((path for path in LINK_DOCS if path.resolve() == target_path), None)
             if matching_doc is None or matching_doc.resolve() == source_path.resolve():
                 continue
             assert fragment in anchors[matching_doc], (
                 f"{source_path.relative_to(PATCH_ROOT)} links to missing anchor "
                 f"{fragment!r} in {matching_doc.relative_to(PATCH_ROOT)}"
             )
+
+
+def test_feature_docs_link_to_update_mechanics_and_survival_evidence() -> None:
+    for path in USER_DOCS:
+        source = markdown_source(path)
+        assert "UPDATE-AND-DRIFT.md#update-mechanics-q1" in source, (
+            f"{path.relative_to(PATCH_ROOT)} does not link to the update-mechanics record"
+        )
+        assert "UPDATE-AND-DRIFT.md#update-survival-acceptance-q4" in source, (
+            f"{path.relative_to(PATCH_ROOT)} does not link to the update-survival record"
+        )
 
 
 def test_public_path_and_setup_values_are_documented() -> None:
@@ -86,7 +99,7 @@ def test_latest_v27_nightly_matrix_and_update_reapply_result_are_synced() -> Non
         assert "Path A root and eligible descendants mounted at boot" in source, (
             f"latest v27 automatic mount result is missing from {path.name}"
         )
-        assert "No newer v28 nightly was listed" in source, (
+        assert "Oct 29 v28" in source, (
             f"latest v28 update availability is missing from {path.name}"
         )
 

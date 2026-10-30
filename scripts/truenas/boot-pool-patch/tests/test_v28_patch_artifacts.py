@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import re
 import subprocess
 import tomllib
@@ -72,6 +73,34 @@ def test_v28_patch_targets_are_fingerprinted_once() -> None:
     assert storage_targets.isdisjoint(boot_mount_targets)
     assert middleware_targets.isdisjoint(boot_mount_targets)
     assert storage_targets | middleware_targets | boot_mount_targets <= set(fingerprint_targets)
+
+
+def test_exact_v28_adapter_manifests_match_the_supported_build_registry() -> None:
+    patch_root = PATCH_DIR.parent
+    registry = json.loads((patch_root / "supported-builds.json").read_text())
+    for directory, version in (
+        ("v28-nightly-20261014", "28.0.0-MASTER+20261014-230204"),
+        ("v28-nightly-20261027", "28.0.0-MASTER+20261027-175229"),
+    ):
+        adapter_dir = patch_root / directory
+        adapter = json.loads((adapter_dir / "adapter.json").read_text())
+        supported = registry["supported_builds"][version]
+        import hashlib
+        assert adapter == {
+            "id": directory,
+            "version": version,
+            "train": "TrueNAS-28-Nightlies",
+            "target_count": supported["target_count"],
+            "target_manifest_sha256": hashlib.sha256((adapter_dir / "targets.sha256").read_bytes()).hexdigest(),
+        }
+        assert adapter["target_count"] == len((adapter_dir / "targets.sha256").read_text().splitlines())
+        assert supported["directory"] == directory
+
+
+def test_stale_october_27_update_metadata_cannot_be_selected_for_october_27_adapter() -> None:
+    patch_root = PATCH_DIR.parent
+    metadata = patch_root / "v28-nightly-20261027" / "update-artifact.json"
+    assert not metadata.exists(), "Oct. 27 adapter directory must not carry stale Oct. 14 update metadata"
 
 
 def test_v28_unified_patch_hunk_counts_match_the_patch_bodies() -> None:

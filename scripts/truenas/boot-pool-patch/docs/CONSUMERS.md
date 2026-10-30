@@ -88,11 +88,13 @@ the host by SSH. External mode is limited to `live-ui-auth`, `live-inspect`,
 `live-storage`, `live-boot`, `live-v27-patch`, `live-v28-patch`,
 `live-path-b-provision`, `live-path-b-partition`, `live-api-probe`,
 `live-ui-prepare-ssh`, `live-ui`, and the fingerprint-pinned exploratory
-`live-ui-observed-v1001` lane. The external `live-boot` lane requires
+`live-ui-observed-v1001` lane. The three `live-update-survival-*` lanes are
+also restricted to the explicitly named `v1001.vxxu.de` host. The external
+`live-boot` lane requires
 `TRUENAS_TEST_ALLOW_REBOOT=1`, checks VM/container state before reboot, and
 verifies the selected build and storage afterward. The wrapper does not restore
 provider snapshots, so use it only for a disposable host whose reboot is
-planned. External `live-update`, vdev-topology, and workload-resume remain
+planned. ISO-backed `live-update`, vdev-topology, and workload-resume remain
 managed-guest only. The tester remains capped at 0.5 CPU / 512 MiB in
 `$CGROUP_PARENT_DEV_GATES`. This does not limit CPU or memory used by the
 external TrueNAS host.
@@ -1090,7 +1092,7 @@ unset TRUENAS_V28_PATCH_ACTION TRUENAS_TEST_ALLOW_PATCH_REPLACE \
   TRUENAS_V28_EXPECTED_PRIOR_BUNDLE_SHA256
 ```
 
-On the latest v27 nightly, `27.0.0-MASTER+20261027-173422`, the Path A/B
+On the last registered v27 nightly, `27.0.0-MASTER+20261027-173422`, the Path A/B
 API/UI matrix passed on v1001. A later RC.1-to-nightly update reproduced the stale
 install record and unmounted Path A root; the exact digest-bound
 `reapply-after-update` workflow then passed on v1001. It verified the 19
@@ -1101,13 +1103,18 @@ does not install the adapter; its input/refusal contract is unit-tested, while
 the live acceptance used reapply. The v27 and v28 `live-boot` runs both passed
 Path A remount and Path B same-GUID/PARTUUID reboot plus export/import checks.
 The v27-to-v28 update to `28.0.0-MASTER+20261027-175229` preserved boot-pool
-and Path B identity. No newer v28 nightly was listed in the official feed on
-2026-10-30. See the [README status](../README.md#current-status) and the
+and Path B identity. The updater API now advertises a newer Oct 29 v28 nightly
+without a registered adapter; the data-survival run against it is in the
+update-and-drift evidence. See the [README status](../README.md#current-status) and the
 [v27 recovery design](DESIGN-GUIDE.md#v27-nightly-update-and-reapply).
 
 ## Reapply v27 after an update
 
-An update replaces the v27 patch files. The recorded RC.1 adapter must not be
+An update creates and activates a new boot environment whose `/usr` starts
+from the shipped update payload; the old BE keeps its patched `/usr` for
+rollback. The per-BE `/root/v27-boot-pool-patch-install.json` may be copied
+forward with its old version and digest, so it must not be trusted as proof
+that the active BE has the patch. The recorded RC.1 adapter must not be
 re-applied to a different nightly. After the selected system has booted the
 exact `27.0.0-MASTER+20261027-173422` build, use the guarded action below. The
 stale-record digest is a closed compatibility fact in
@@ -1121,7 +1128,7 @@ export TRUENAS_EXPECTED_VERSION='27.0.0-MASTER+20261027-173422'
 export TRUENAS_TEST_ALLOW_MUTATIONS=1
 export TRUENAS_V27_PATCH_ACTION=reapply-after-update
 export TRUENAS_TEST_ALLOW_PATCH_REAPPLY=1
-export TRUENAS_V27_EXPECTED_PRIOR_BUNDLE_SHA256=07fd9ba7e4df11349525203ac29ee6377b56ff55e1391b7b2c4b72123914895f
+export TRUENAS_V27_EXPECTED_PRIOR_BUNDLE_SHA256=23e7667f4893f26f4861b17edc20e73f00ae2f8b797f9ff95cde446af1f25de1
 : "${TRUENAS_DOCKER_NETWORK:?set the existing custom bridge containing pwmcp}"
 
 "$VENV/bin/python" boot-pool-patch/run-live-gate.py live-v27-patch \
@@ -1136,6 +1143,93 @@ record, applies the adapter transactionally, checks middleware and restores
 `/usr` read-only. It mounts Path A root and eligible descendants. The observed
 result was Path A root and eligible descendants mounted at boot.
 
+## Run update-survival acceptance
+
+The registered `live-update-survival-plant`, `live-update-survival-update`,
+and `live-update-survival-verify` lanes plant bounded data/config records,
+update to one exact newest build advertised by `update.available_versions`,
+and compare the post-update middleware dump and data checksums. The updater
+uses `update.run` with the exact train and version, then reboots. For patched
+v27-to-v28 acceptance, run `live-v28-patch` after the update and before
+`live-update-survival-verify`; for patched v27-to-newer-v27, run the guarded
+`reapply-after-update` action at that same point.
+
+For a v27-to-v28 data-survival check, run `live-update-survival-verify`
+immediately after the update. In patched mode the verifier requires the copied
+v27 marker to remain unchanged and expects Path A/B auto-mounts to be off in
+the stock v28 BE. After that survival verdict, `live-v28-patch` can be run as
+the separate compatibility/reapply check; then repeat the v28 boot/import
+acceptance when that is in scope.
+
+The update lane reads `update.profile_choices` and `update.config` before
+selecting a train. It selects `DEVELOPER` for registered v27/v28 Nightlies or
+`EARLY_ADOPTER` for registered RC trains, verifies the saved profile, and
+prints the transition. Unknown trains and unavailable profiles fail before an
+update starts; no profile string needs to be guessed or typed by the operator.
+
+Keep manifests and reports in a private `.update-survival-*` directory inside
+the worktree. The live-gate wrapper mounts only that directory writable; the
+checkout remains read-only in the capped tester. Use a custom bridge with
+egress to v1001. Hold the controller lock only around each host-touching lane,
+and let it release between lane invocations:
+
+```bash
+cd scripts/truenas
+source "$VENV/bin/activate"
+export DOCKER_HOST=unix:///var/run/docker.sock
+export TRUENAS_TEST_HOST=v1001.vxxu.de
+export TRUENAS_TEST_PORT=22
+export TRUENAS_TEST_KEY="$PWD/golden-iso/vm/root_ed25519"
+export TRUENAS_TEST_KNOWN_HOSTS="$PWD/boot-pool-patch/artifacts/v1001.known_hosts"
+export TRUENAS_TEST_DOCKER_NETWORK=custom-test-bridge
+export TRUENAS_EXPECTED_VERSION='27.0.0-MASTER+20261027-173422'
+export TRUENAS_TEST_ALLOW_MUTATIONS=1
+export TRUENAS_STORAGE_PROFILE=both
+export TRUENAS_SURVIVAL_MODE=patched
+export TRUENAS_SURVIVAL_PROFILE=both
+export TRUENAS_SURVIVAL_SSH_PUBLIC_KEY_FILE="$PWD/golden-iso/vm/root_ed25519.pub"
+export TRUENAS_SURVIVAL_ARTIFACT_DIR="$PWD/.update-survival-patched"
+mkdir -m 0700 "$TRUENAS_SURVIVAL_ARTIFACT_DIR"
+export TRUENAS_UPDATE_EXPECTED_VERSION='28.0.0-MASTER+20261027-175229'
+export TRUENAS_UPDATE_TRAIN='TrueNAS-28-Nightlies'
+export TRUENAS_SURVIVAL_EXPECTED_AFTER="$TRUENAS_UPDATE_EXPECTED_VERSION"
+
+flock -x -w 45 /home/vscode/vbpub-release-program-20261027/v1001.lock \
+  python3 boot-pool-patch/run-live-gate.py live-update-survival-plant \
+    --docker-network "$TRUENAS_TEST_DOCKER_NETWORK" --allow-dirty
+export TRUENAS_TEST_ALLOW_UPDATE=1
+export TRUENAS_TEST_ALLOW_REBOOT=1
+flock -x -w 45 /home/vscode/vbpub-release-program-20261027/v1001.lock \
+  python3 boot-pool-patch/run-live-gate.py live-update-survival-update \
+    --docker-network "$TRUENAS_TEST_DOCKER_NETWORK" --allow-dirty
+
+export TRUENAS_EXPECTED_VERSION="$TRUENAS_SURVIVAL_EXPECTED_AFTER"
+export TRUENAS_STORAGE_PROFILE=path-a
+flock -x -w 45 /home/vscode/vbpub-release-program-20261027/v1001.lock \
+  python3 boot-pool-patch/run-live-gate.py live-v28-patch \
+    --docker-network "$TRUENAS_TEST_DOCKER_NETWORK" --allow-dirty
+export TRUENAS_STORAGE_PROFILE=both
+unset TRUENAS_TEST_ALLOW_UPDATE TRUENAS_TEST_ALLOW_REBOOT
+flock -x -w 45 /home/vscode/vbpub-release-program-20261027/v1001.lock \
+  python3 boot-pool-patch/run-live-gate.py live-update-survival-verify \
+    --docker-network "$TRUENAS_TEST_DOCKER_NETWORK" --allow-dirty
+```
+
+Set `TRUENAS_SURVIVAL_MODE=vanilla` and restore the stock v27 snapshot before
+the vanilla case. Use `TRUENAS_UPDATE_TRAIN=TrueNAS-27-Nightlies` and the
+expected v27 nightly version there. The update lane refuses an older build if
+a newer build is advertised on that train. It does not install a patch. The
+current v1001 inventory had no non-reserved user pool; the test reports that
+coverage as unavailable rather than substituting boot-pool or Path B.
+Encryption is skipped unless disposable key escrow is configured. Cloud-sync
+records are captured but no remote task or credential is created.
+
+For the supported-build registry, read-only drift commands, expected
+differences, report fields, patch inventory, and measured coverage, see the
+[update mechanics](../../docs/UPDATE-AND-DRIFT.md#update-mechanics-q1) and
+[survival acceptance](../../docs/UPDATE-AND-DRIFT.md#update-survival-acceptance-q4)
+record.
+
 If the operator needs to remove the exact stale marker without installing the
 adapter, use `uninstall-stale-record` and its separate guard. Do not set both
 recovery guards:
@@ -1143,7 +1237,7 @@ recovery guards:
 ```bash
 export TRUENAS_V27_PATCH_ACTION=uninstall-stale-record
 export TRUENAS_TEST_ALLOW_PATCH_UNINSTALL=1
-export TRUENAS_V27_EXPECTED_PRIOR_BUNDLE_SHA256=07fd9ba7e4df11349525203ac29ee6377b56ff55e1391b7b2c4b72123914895f
+export TRUENAS_V27_EXPECTED_PRIOR_BUNDLE_SHA256=23e7667f4893f26f4861b17edc20e73f00ae2f8b797f9ff95cde446af1f25de1
 "$VENV/bin/python" boot-pool-patch/run-live-gate.py live-v27-patch \
   --docker-network "$TRUENAS_DOCKER_NETWORK" --allow-high-psi --allow-dirty
 unset TRUENAS_V27_PATCH_ACTION TRUENAS_TEST_ALLOW_PATCH_UNINSTALL \
@@ -1168,9 +1262,10 @@ unset TRUENAS_TEST_ALLOW_REBOOT
 
 The v27 external reboot lane was exercised on v1001 with Path B present. For
 v28 `28.0.0-MASTER+20261027-175229`, the exact 19-target adapter was installed
-after the v27-to-v28 update and the same reboot/import proof passed. No newer
-v28 nightly was listed on 2026-10-30, so no v28 update/reinstall to a newer
-build was possible. See the [test rationale](DESIGN-GUIDE.md#v27-nightly-update-and-reapply)
+after the v27-to-v28 update and the same reboot/import proof passed. The updater
+now advertises an unregistered Oct 29 v28 nightly; v27-to-v28 user-data
+survival against that stock BE passed, but patch installation against it is
+refused until its exact targets are reviewed. See the [test rationale](DESIGN-GUIDE.md#v27-nightly-update-and-reapply)
 and [current compatibility status](../README.md#current-status).
 
 ## Historical: apply the v28 2026-10-14 adapter
@@ -1319,7 +1414,7 @@ open.
 ## Experimental single-disk storage patch
 
 The earlier v27 RC.1 and 2026-10-18 diagnostics below are historical. On
-2026-10-30, the latest v27 nightly passed the full Path A/B API and PWMCP UI
+2026-10-30, the last registered v27 nightly passed the full Path A/B API and PWMCP UI
 matrix on v1001. The Path B wizard created `boot-disk-data` on the reserved
 partition after the guarded partition lane. Path A and B UI runs created a
 dataset, container, and VM using an existing zvol; the API/storage probes also

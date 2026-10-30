@@ -13,10 +13,10 @@ available.
 | Release | Verified on v1001 | Remaining limits |
 |---|---|---|
 | 25.10.4 / 25.10.7 | The retained 25.10.4 patch proposal dry-runs on 25.10.7. | Its reported UI flow failed; PWMCP reproduction remains pending. It does not apply to v27+. |
-| 27.0.0-RC.1 | Path A and Path B API/UI storage and pool-creation matrices passed. Boot-pool API mutation refusals, dataset/zvol paths, Path B pool import/adoption, and reclaim/idempotence were checked on v1001. | The subsequent update to the 2026-10-27 v27 nightly replaced the patch sources. The old manifest became stale, the exact RC.1 reapply refused before source mutation, and the Path A marker survived but booted unmounted until manually mounted. This is not automatic update survival. |
-| 27.0.0-MASTER+20261027-173422 | Path A/B API and PWMCP UI matrix passed on the latest v27 nightly. After a second RC.1-to-nightly update, `reapply-after-update` verified all 19 targets, archived the stale RC.1 record, and left the Path A root and eligible descendants mounted at boot. `live-boot` verified Path A remount plus Path B reboot and export/import identity. | Patch files are replaced by an update; re-application is an explicit guarded step. `uninstall-stale-record` is available as a separately guarded recovery action. |
+| 27.0.0-RC.1 | Path A and Path B API/UI storage and pool-creation matrices passed. Boot-pool API mutation refusals, dataset/zvol paths, Path B pool import/adoption, and reclaim/idempotence were checked on v1001. | The update selected a new boot environment with stock `/usr`; the patched RC.1 `/usr` remained in the inactive BE. The per-BE `/root/v27-boot-pool-patch-install.json` record was copied forward and stayed stale. Path A data remained, but its mount hook was absent until reapply. This is not automatic update survival. |
+| 27.0.0-MASTER+20261027-173422 | The last registered v27 adapter's Path A/B API and PWMCP UI matrix passed. After a second RC.1-to-nightly update, `reapply-after-update` verified all 19 targets, archived the stale RC.1 record, and left the Path A root and eligible descendants mounted at boot. `live-boot` verified Path A remount plus Path B reboot and export/import identity. | The feed now lists a newer Oct 29 v27 nightly; it is unregistered and must fail exact-build apply until reviewed. A later update creates another BE whose `/usr` starts from the shipped image. Re-application is an explicit guarded step; the old BE remains available for rollback. |
 | 28.0.0-MASTER+20261014-230204 | Historical adapter checks and a v27-to-v28 update were completed. | Superseded by the separate 2026-10-27 build adapter; its results do not certify the latest nightly. |
-| 28.0.0-MASTER+20261027-175229 | The exact 19-target adapter and prior Path A/B API/UI matrix passed. The v27-to-v28 update preserved boot-pool and Path B identity; the v28 reboot/import lane verified Path A remount and Path B GUID/PARTUUID through re-import. | No newer v28 nightly was listed on the official feed at the 2026-10-30 check. VM guest OS boot, actual KVM selection, share-client access, a real second-disk cache target, and update/reinstall against a newer v28 build remain open. |
+| 28.0.0-MASTER+20261027-175229 | The last registered v28 adapter's 19-target Path A/B API and UI matrix passed. The prior v27-to-v28 update preserved boot-pool and Path B identity; the v28 reboot/import lane verified Path A remount and Path B GUID/PARTUUID through re-import. | The updater API now advertises a newer Oct 29 v28 nightly; it is unregistered. The v27→v28 data-survival run against that exact newer build is recorded separately. VM guest OS boot, actual KVM selection, share-client access, and a real second-disk cache target remain open. |
 
 The current v28 follow-up fixed three live-discovered issues: its installed
 `pool.create` schema supplies empty encryption-secret defaults that middleware
@@ -32,6 +32,15 @@ See the [v28 design decisions](docs/DESIGN-GUIDE.md#v28-20261027-pool-shim-desig
 and [v1001 consumer run](docs/CONSUMERS.md#v28-20261027-live-acceptance-on-v1001).
 Older v1001 checkpoints later in this file are historical; this table is the
 current live status.
+
+Three registered `live-update-survival-*` lanes plant a canonical middleware
+and storage baseline, run one exact update-feed build, then verify saved
+records and file/zvol checksums. The external workflow is restricted to
+`v1001.vxxu.de`; it keeps the checkout read-only and persists state through a
+private artifact directory. It selects and verifies the update profile required
+for the chosen RC or nightly train. See the [update-survival procedure](docs/CONSUMERS.md#run-update-survival-acceptance),
+[design rationale](docs/DESIGN-GUIDE.md#update-survival-runner-boundary), and
+[coverage record](../docs/UPDATE-AND-DRIFT.md#update-survival-acceptance-q4).
 
 The external `live-boot` acceptance lane is available only with
 `TRUENAS_TEST_ALLOW_REBOOT=1` and a
@@ -49,6 +58,12 @@ and eligible descendants mounted at boot. The guarded `uninstall-stale-record` a
 retire that same exact stale record without installing the adapter. See the
 [post-update design](docs/DESIGN-GUIDE.md#v27-nightly-update-and-reapply) and
 [consumer commands](docs/CONSUMERS.md#reapply-v27-after-an-update).
+
+The supported-build list, read-only source diagnostics, update-survival commands,
+patch inventory, and boot-environment evidence are in the
+[update and drift record](../docs/UPDATE-AND-DRIFT.md#update-mechanics-q1).
+The repeatable data/config survival workflow and its known coverage limits are
+in the [acceptance record](../docs/UPDATE-AND-DRIFT.md#update-survival-acceptance-q4).
 
 The prior v28 Path B `live-storage` attempt did not survive the host restart;
 its October 17 PASS is historical evidence only. The fresh guest

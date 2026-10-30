@@ -62,7 +62,11 @@ LIVE_LANES = frozenset({
     "live-storage", "live-boot", "live-update", "live-v27-patch", "live-v28-patch",
     "live-path-b-provision", "live-path-b-partition", "live-ui", "live-vdev-topology",
     "live-ui-workloads", "live-ui-auth", "live-ui-prepare-ssh", "live-ui-observed-v1001",
-    "live-inspect", "live-api-probe",
+    "live-inspect", "live-api-probe", "live-update-survival-plant",
+    "live-update-survival-update", "live-update-survival-verify",
+})
+SURVIVAL_LANES = frozenset({
+    "live-update-survival-plant", "live-update-survival-update", "live-update-survival-verify",
 })
 UI_LANES = frozenset({
     "live-ui", "live-ui-workloads", "live-ui-auth", "live-ui-prepare-ssh",
@@ -72,7 +76,7 @@ SSH_LANES = LIVE_LANES - {"live-ui-auth", "live-ui-prepare-ssh"}
 EXTERNAL_TARGET_LANES = frozenset({
     "live-inspect", "live-storage", "live-boot", "live-v27-patch", "live-v28-patch", "live-path-b-provision", "live-ui-auth",
     "live-ui-prepare-ssh", "live-path-b-partition", "live-ui", "live-ui-observed-v1001",
-    "live-api-probe",
+    "live-api-probe", *SURVIVAL_LANES,
 })
 LIVE_LANE_TIMEOUT_SECONDS = {
     "live-storage": 2400,
@@ -90,7 +94,75 @@ LIVE_LANE_TIMEOUT_SECONDS = {
     "live-vdev-topology": 3600,
     "live-inspect": 900,
     "live-api-probe": 900,
+    "live-update-survival-plant": 2100,
+    "live-update-survival-update": 6000,
+    "live-update-survival-verify": 2100,
 }
+SURVIVAL_BUILD_RE = re.compile(r"\d+\.\d+\.\d+-(?:RC\.\d+|MASTER\+\d{8}-\d{6})\Z")
+SURVIVAL_STATE_DESTINATION = "/run/truenas-update-survival"
+
+
+def survival_artifact_directory(raw_path: str, worktree_root: Path) -> Path:
+    if not raw_path:
+        raise RunnerError("TRUENAS_SURVIVAL_ARTIFACT_DIR must name a private worktree directory")
+    candidate = Path(os.path.abspath(raw_path))
+    try:
+        relative = candidate.relative_to(worktree_root)
+    except ValueError as exc:
+        raise RunnerError("TRUENAS_SURVIVAL_ARTIFACT_DIR must be inside this worktree") from exc
+    current = worktree_root
+    for part in relative.parts:
+        current /= part
+        if current.is_symlink():
+            raise RunnerError(f"TRUENAS_SURVIVAL_ARTIFACT_DIR contains a symlink: {current}")
+    try:
+        resolved = candidate.resolve(strict=True)
+    except OSError as exc:
+        raise RunnerError(f"TRUENAS_SURVIVAL_ARTIFACT_DIR does not exist: {candidate}") from exc
+    if resolved != candidate or not resolved.is_dir():
+        raise RunnerError("TRUENAS_SURVIVAL_ARTIFACT_DIR must be a real directory inside this worktree")
+    if not relative.parts or not resolved.name.startswith(".update-survival"):
+        raise RunnerError(
+            "TRUENAS_SURVIVAL_ARTIFACT_DIR must be a dedicated hidden .update-survival directory"
+        )
+    mode = stat.S_IMODE(resolved.stat().st_mode)
+    if mode & 0o077:
+        raise RunnerError("TRUENAS_SURVIVAL_ARTIFACT_DIR must be mode 0700")
+    return resolved
+
+
+def verify_writable_mount(
+    item: dict[str, Any], expected_source: str, expected_destination: str,
+) -> None:
+    mounts = item.get("Mounts", [])
+    matches = [mount for mount in mounts if mount.get("Destination") == expected_destination]
+    if len(matches) != 1:
+        raise RunnerError(
+            f"tester must have exactly one survival-state bind at {expected_destination}; found {len(matches)}"
+        )
+    mount = matches[0]
+    if mount.get("Type") != "bind" or mount.get("Source") != expected_source or mount.get("RW") is not True:
+        raise RunnerError(
+            f"survival-state bind at {expected_destination} is not the selected writable host directory"
+        )
+
+
+def docker_mount_args(
+    readonly_mounts: list[tuple[str, str]], writable_mount: tuple[str, str] | None = None,
+) -> list[str]:
+    args: list[str] = []
+    for source, destination in readonly_mounts:
+        if "," in source or "," in destination:
+            raise RunnerError(f"Docker bind path contains a comma: {source!r} -> {destination!r}")
+        args.extend(["--mount", f"type=bind,src={source},dst={destination},readonly"])
+    if writable_mount is not None:
+        source, destination = writable_mount
+        if "," in source or "," in destination:
+            raise RunnerError(f"Docker bind path contains a comma: {source!r} -> {destination!r}")
+        if any(item_destination == destination for _, item_destination in readonly_mounts):
+            raise RunnerError(f"writable Docker bind destination collides with a read-only mount: {destination}")
+        args.extend(["--mount", f"type=bind,src={source},dst={destination}"])
+    return args
 
 
 def repo_path_in_tester(path: str, worktree_root: Path) -> str:
@@ -233,6 +305,8 @@ def external_target(lane: str) -> tuple[str, str | None]:
     if (not host or host != host.strip() or host.startswith("-")
             or any(char in host for char in "/\\@\x00 \t\r\n")):
         raise RunnerError("external-host mode requires TRUENAS_TEST_HOST to be a hostname or IP address")
+    if lane in SURVIVAL_LANES and host != "v1001.vxxu.de":
+        raise RunnerError("update-survival acceptance is restricted to disposable v1001.vxxu.de")
     if lane == "live-boot" and os.environ.get("TRUENAS_TEST_ALLOW_REBOOT") != "1":
         raise RunnerError("external live-boot requires TRUENAS_TEST_ALLOW_REBOOT=1 for the selected disposable host")
     if lane in UI_LANES:
@@ -261,8 +335,10 @@ def required_live_environment(
     if not os.environ.get("TRUENAS_EXPECTED_VERSION"):
         raise RunnerError("TRUENAS_EXPECTED_VERSION is required")
     profile = os.environ.get("TRUENAS_STORAGE_PROFILE", "")
-    if profile not in {"path-a", "path-b"}:
-        raise RunnerError("TRUENAS_STORAGE_PROFILE must be path-a or path-b")
+    allowed_profiles = {"path-a", "path-b", "both"} if lane in SURVIVAL_LANES else {"path-a", "path-b"}
+    if profile not in allowed_profiles:
+        choices = "path-a, path-b, or both" if lane in SURVIVAL_LANES else "path-a or path-b"
+        raise RunnerError(f"TRUENAS_STORAGE_PROFILE must be {choices}")
     if lane == "live-vdev-topology" and profile != "path-a":
         raise RunnerError("live-vdev-topology requires a fresh Path A guest with a UI-created boot-pool/user-data root")
     path_b_provision: dict[str, str] = {}
@@ -311,6 +387,62 @@ def required_live_environment(
             raise RunnerError(f"{lane} requires TRUENAS_STORAGE_PROFILE=path-a")
         if os.environ.get("TRUENAS_TEST_ALLOW_REBOOT") != "1":
             raise RunnerError("set TRUENAS_TEST_ALLOW_REBOOT=1 only when rebooting this VM is intended")
+    survival_artifacts: Path | None = None
+    survival_mode = ""
+    survival_profile = ""
+    survival_public_key = ""
+    survival_target = ""
+    survival_train = ""
+    if lane in SURVIVAL_LANES:
+        if os.environ.get("TRUENAS_TEST_ALLOW_MUTATIONS") != "1":
+            raise RunnerError("set TRUENAS_TEST_ALLOW_MUTATIONS=1 only for disposable v1001")
+        if not SURVIVAL_BUILD_RE.fullmatch(os.environ.get("TRUENAS_EXPECTED_VERSION", "")):
+            raise RunnerError("TRUENAS_EXPECTED_VERSION must be one exact TrueNAS build string")
+        if not os.environ["TRUENAS_EXPECTED_VERSION"].startswith("27.0.0-"):
+            raise RunnerError("update-survival acceptance starts from an exact v27 build")
+        survival_mode = os.environ.get("TRUENAS_SURVIVAL_MODE", "")
+        survival_profile = os.environ.get("TRUENAS_SURVIVAL_PROFILE", "")
+        if survival_mode not in {"vanilla", "patched"}:
+            raise RunnerError("TRUENAS_SURVIVAL_MODE must be vanilla or patched")
+        if survival_profile not in {"path-a", "path-b", "both"}:
+            raise RunnerError("TRUENAS_SURVIVAL_PROFILE must be path-a, path-b, or both")
+        if lane == "live-update-survival-plant" and profile != survival_profile:
+            raise RunnerError("TRUENAS_STORAGE_PROFILE must match TRUENAS_SURVIVAL_PROFILE while planting")
+        survival_artifacts = survival_artifact_directory(
+            os.environ.get("TRUENAS_SURVIVAL_ARTIFACT_DIR", ""), worktree_root,
+        )
+        manifest = survival_artifacts / "manifest.json"
+        if manifest.is_symlink() or (manifest.exists() and not manifest.is_file()):
+            raise RunnerError(f"update-survival manifest path is not a regular file: {manifest}")
+        if lane == "live-update-survival-plant" and manifest.exists():
+            raise RunnerError(f"refusing to overwrite existing update-survival manifest: {manifest}")
+        if lane in {"live-update-survival-update", "live-update-survival-verify"} and not manifest.is_file():
+            raise RunnerError(f"update-survival manifest is missing: {manifest}; run the plant lane first")
+        if lane == "live-update-survival-update":
+            if os.environ.get("TRUENAS_TEST_ALLOW_UPDATE") != "1":
+                raise RunnerError("set TRUENAS_TEST_ALLOW_UPDATE=1 only for this disposable update")
+            if os.environ.get("TRUENAS_TEST_ALLOW_REBOOT") != "1":
+                raise RunnerError("set TRUENAS_TEST_ALLOW_REBOOT=1 only when this update reboot is intended")
+            survival_target = os.environ.get("TRUENAS_UPDATE_EXPECTED_VERSION", "")
+            survival_train = os.environ.get("TRUENAS_UPDATE_TRAIN", "")
+            if not SURVIVAL_BUILD_RE.fullmatch(survival_target):
+                raise RunnerError("TRUENAS_UPDATE_EXPECTED_VERSION must be one exact TrueNAS build string")
+            series = survival_target.split(".", 1)[0]
+            if not survival_train.startswith(f"TrueNAS-{series}-"):
+                raise RunnerError("TRUENAS_UPDATE_TRAIN must match the exact target build series")
+            configured_after = os.environ.get("TRUENAS_SURVIVAL_EXPECTED_AFTER", "")
+            if configured_after and configured_after != survival_target:
+                raise RunnerError("TRUENAS_SURVIVAL_EXPECTED_AFTER must match TRUENAS_UPDATE_EXPECTED_VERSION")
+        elif lane == "live-update-survival-verify":
+            survival_target = os.environ.get("TRUENAS_SURVIVAL_EXPECTED_AFTER", "")
+            if not SURVIVAL_BUILD_RE.fullmatch(survival_target):
+                raise RunnerError("TRUENAS_SURVIVAL_EXPECTED_AFTER must be one exact TrueNAS build string")
+        if lane == "live-update-survival-plant":
+            survival_public_key = repo_path_in_tester(
+                os.environ.get("TRUENAS_SURVIVAL_SSH_PUBLIC_KEY_FILE", ""), worktree_root,
+            )
+            if not Path(survival_public_key).is_file():
+                raise RunnerError("TRUENAS_SURVIVAL_SSH_PUBLIC_KEY_FILE must be a regular public-key file")
     patch_action = ""
     patch_replace_guard = ""
     prior_patch_bundle = ""
@@ -649,6 +781,32 @@ def required_live_environment(
         }
     elif (secret_stat.st_uid, secret_stat.st_gid) != (os.getuid(), os.getgid()):
         raise RunnerError("TrueNAS UI credential file must be owned by the current non-root user")
+    survival_settings: dict[str, str] = {}
+    if lane in SURVIVAL_LANES:
+        assert survival_artifacts is not None
+        artifact_stat = survival_artifacts.stat()
+        if (artifact_stat.st_uid, artifact_stat.st_gid) != (key_stat.st_uid, key_stat.st_gid):
+            raise RunnerError("update-survival state directory and SSH key must have the same owner")
+        report_path = survival_artifacts / "report.json"
+        update_record_path = survival_artifacts / "update-job.json"
+        for label, path in (("report", report_path), ("update-job record", update_record_path)):
+            if path.is_symlink() or (path.exists() and not path.is_file()):
+                raise RunnerError(f"update-survival {label} path is not a regular file: {path}")
+        if lane == "live-update-survival-plant" and report_path.exists():
+            raise RunnerError(f"refusing to overwrite existing update-survival report: {report_path}")
+        expected_after = (
+            survival_target if lane == "live-update-survival-update"
+            else os.environ.get("TRUENAS_SURVIVAL_EXPECTED_AFTER", "")
+        )
+        survival_settings = {
+            "TRUENAS_SURVIVAL_MODE": survival_mode,
+            "TRUENAS_SURVIVAL_PROFILE": survival_profile,
+            "TRUENAS_SURVIVAL_MANIFEST": f"{SURVIVAL_STATE_DESTINATION}/manifest.json",
+            "TRUENAS_SURVIVAL_REPORT": f"{SURVIVAL_STATE_DESTINATION}/report.json",
+            "TRUENAS_SURVIVAL_UPDATE_RECORD": f"{SURVIVAL_STATE_DESTINATION}/update-job.json",
+            "TRUENAS_SURVIVAL_EXPECTED_AFTER": expected_after,
+            "TRUENAS_SURVIVAL_SSH_PUBLIC_KEY_FILE": survival_public_key,
+        }
     return {
         "TRUENAS_TEST_HOST": target_host,
         **ssh_settings,
@@ -656,8 +814,16 @@ def required_live_environment(
         "TRUENAS_STORAGE_PROFILE": profile,
         "TRUENAS_EXPECTED_VERSION": os.environ["TRUENAS_EXPECTED_VERSION"],
         "TRUENAS_TEST_ALLOW_MUTATIONS": "" if lane in {"live-inspect", "live-ui-auth"} else "1",
-        "TRUENAS_TEST_ALLOW_REBOOT": os.environ.get("TRUENAS_TEST_ALLOW_REBOOT", ""),
-        "TRUENAS_TEST_ALLOW_UPDATE": os.environ.get("TRUENAS_TEST_ALLOW_UPDATE", ""),
+        "TRUENAS_TEST_ALLOW_REBOOT": (
+            "1" if lane == "live-update-survival-update"
+            else "" if lane in SURVIVAL_LANES
+            else os.environ.get("TRUENAS_TEST_ALLOW_REBOOT", "")
+        ),
+        "TRUENAS_TEST_ALLOW_UPDATE": (
+            "1" if lane == "live-update-survival-update"
+            else "" if lane in SURVIVAL_LANES
+            else os.environ.get("TRUENAS_TEST_ALLOW_UPDATE", "")
+        ),
         "TRUENAS_TEST_ALLOW_DISK_PROVISION": os.environ.get(
             "TRUENAS_TEST_ALLOW_DISK_PROVISION", ""
         ),
@@ -675,10 +841,12 @@ def required_live_environment(
         "TRUENAS_V27_EXPECTED_PRIOR_DATASET_INFO_SHA256": v27_prior_dataset_info_digest,
         **path_b_provision,
         "TRUENAS_UPDATE_EXPECTED_VERSION": os.environ.get("TRUENAS_UPDATE_EXPECTED_VERSION", ""),
+        "TRUENAS_UPDATE_TRAIN": survival_train,
         **update_paths,
         **ui_settings,
         **root_ssh_key_settings,
         **observed_patch_settings,
+        **survival_settings,
     }
 
 
@@ -720,6 +888,7 @@ def current_checkout_mounts(worktree_root: Path) -> list[tuple[str, str]]:
 def verify_tester_container(
     *, name: str, network: str, slice_name: str, inspector: str,
     expected_cgroup: str, expected_user: str, expected_run_id: str,
+    writable_mount: tuple[str, str] | None = None,
 ) -> dict[str, Any]:
     item = docker_inspect(name)
     host = item.get("HostConfig", {})
@@ -739,6 +908,8 @@ def verify_tester_container(
         raise RunnerError("tester container ownership label changed during launch")
     if network not in actual_networks:
         raise RunnerError(f"tester container did not join the TrueNAS VM network {network!r}")
+    if writable_mount is not None:
+        verify_writable_mount(item, *writable_mount)
 
     pid = int(item["State"]["Pid"])
     cgroup = host_pid_cgroup(inspector, pid)
@@ -953,6 +1124,8 @@ def run(args: argparse.Namespace) -> int:
 
     if args.lane == "live-ui-observed-v1001" and args.docker_network is None:
         raise RunnerError("live-ui-observed-v1001 is restricted to its fingerprinted external host")
+    if args.lane in SURVIVAL_LANES and args.docker_network is None:
+        raise RunnerError("update-survival acceptance requires an explicit external --docker-network")
 
     worktree_root = Path(__file__).resolve().parents[3]
     if args.docker_network is not None:
@@ -968,6 +1141,18 @@ def run(args: argparse.Namespace) -> int:
     child_env = required_live_environment(
         args.lane, target_host, worktree_root, ui_port=ui_port, ui_url=ui_url,
     )
+    writable_mount: tuple[str, str] | None = None
+    if args.lane in SURVIVAL_LANES:
+        artifact_dir = survival_artifact_directory(
+            os.environ.get("TRUENAS_SURVIVAL_ARTIFACT_DIR", ""), worktree_root,
+        )
+        _, current_container = inspect_current_container()
+        physical_artifact_dir = resolve_docker_path(
+            artifact_dir, current_container.get("Mounts", []), writable=False,
+        )
+        if "," in physical_artifact_dir:
+            raise RunnerError("TRUENAS_SURVIVAL_ARTIFACT_DIR Docker-host path contains a comma")
+        writable_mount = (physical_artifact_dir, SURVIVAL_STATE_DESTINATION)
     workload_manifest_export: tuple[Path, str] | None = None
     if args.lane == "live-ui" and child_env.get("TRUENAS_TEST_PRESERVE_UI_WORKLOADS") == "1":
         host_manifest = Path(os.environ["TRUENAS_UI_WORKLOAD_MANIFEST"]).resolve()
@@ -1068,8 +1253,7 @@ def run(args: argparse.Namespace) -> int:
         "--label", f"{RUNNER_LABEL}={run_id}",
         "--env", "GIT_CONFIG_GLOBAL=/tmp/truenas-live-gitconfig",
     ]
-    for source, destination in mounts:
-        argv.extend(["--mount", f"type=bind,src={source},dst={destination},readonly"])
+    argv.extend(docker_mount_args(mounts, writable_mount))
     argv.extend([
         "--entrypoint", "/bin/bash", TESTER_IMAGE,
         "-lc", "git config --global --replace-all safe.directory '*' && "
@@ -1092,6 +1276,7 @@ def run(args: argparse.Namespace) -> int:
             expected_cgroup=control_group,
             expected_user=child_env["_TRUENAS_TESTER_UID_GID"],
             expected_run_id=run_id,
+            writable_mount=writable_mount,
         )
         print("[tester] " + json.dumps(placement, sort_keys=True), flush=True)
         test_key = child_env["TRUENAS_TEST_KEY"]

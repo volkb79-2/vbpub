@@ -125,13 +125,14 @@ prior-adapter restore on v1001. The current bundle SHA-256 is
 
 ### v27 nightly update and reapply
 
-The latest checked v27 nightly is `27.0.0-MASTER+20261027-173422`. Its full
+The last registered v27 nightly adapter is `27.0.0-MASTER+20261027-173422`. Its full
 Path A/B API/UI matrix passed on v1001. The first RC.1-to-nightly update
-replaced patched middleware files but left the RC.1 install record behind;
-the old exact-build reapply correctly refused before changing source, and
-`boot-pool/user-data` returned unmounted. That is the expected compatibility
-boundary: update does not preserve an in-middleware patch, and a marker or
-surviving data alone does not prove the patch is active.
+created and activated a new boot environment. The new BE's `/usr` came from
+the shipped update payload; the patched RC.1 `/usr` remained in the inactive
+BE. The update also copied `/root/v27-boot-pool-patch-install.json` with the
+root dataset, so its RC.1 version and bundle digest stayed stale. Path A data
+survived outside the BE but `boot-pool/user-data` returned unmounted. A marker
+or install record alone therefore does not prove the active BE has the patch.
 
 The post-update recovery contract now binds the old record to the exact RC.1
 bundle digest, requires the complete 19-file pristine nightly fingerprint set,
@@ -152,9 +153,48 @@ exported and re-imported Path B through middleware and compared the captured
 GUID and full partition table. On v28 build
 `28.0.0-MASTER+20261027-175229`, the v27-to-v28 update preserved both pool
 identities; after installing the exact v28 adapter, the same reboot/import
-proof passed. No newer v28 nightly was listed in the official feed on
-2026-10-30. See the [README status](../README.md#current-status) and the
+proof passed. The updater now lists an Oct 29 v28 Nightly that has no adapter;
+the current data-survival check against it is in the [acceptance record](../../docs/UPDATE-AND-DRIFT.md#update-survival-acceptance-q4).
+See the [README status](../README.md#current-status) and the
 [consumer commands](CONSUMERS.md#reapply-v27-after-an-update).
+
+`/usr` is a read-only ZFS dataset mounted from the active
+`boot-pool/ROOT/<BE>/usr`; it is not a live SquashFS mount. The ISO does carry a
+`rootfs.squashfs` update payload, which the updater verifies and extracts into
+the new BE. Each BE keeps its own `/usr`, `/root`, and `/data` datasets. The
+update snapshots/clones `/root` and `/data` into the new BE, then migrates the
+new `/data/freenas-v1.db`; rollback returns to the old BE's old database and
+patch. User pools such as Path A and Path B sit outside `boot-pool/ROOT`, so
+their datasets and bytes remain when a new BE is selected. Their boot-time
+mount behavior still depends on the active middleware adapter.
+
+Exact supported builds, pre/post-apply checks, upstream drift detection, and
+the minimal Path A/Path B patch sets are in the
+[update mechanics](../../docs/UPDATE-AND-DRIFT.md#update-mechanics-q1) and
+[survival acceptance](../../docs/UPDATE-AND-DRIFT.md#update-survival-acceptance-q4)
+record. The patch uses exact
+whole-file fingerprints before any patch hunk, then `--fuzz=0` dry-runs and
+post-apply reverse dry-runs. A new version is not accepted by a version prefix.
+
+### Update-survival runner boundary
+
+The three survival steps use `run-live-gate.py` for the external v1001 host,
+then delegate their verdicts to registered `run-gate.py` lanes. The wrapper
+starts one capped tester on a selected custom bridge and keeps the repository
+mount read-only. Each invocation receives a separate, mode-0700 state bind for
+the manifest, update job id, and report; that small directory is the only
+writable checkout content and carries state across the three short-lived
+runner containers. The update step alone receives explicit update and reboot
+guards. This keeps fixture state reviewable and resumable without making the
+test runner mutable over the source tree.
+
+The update step maps only registered v27/v28 RC and Nightly trains to their
+middleware update profiles (`EARLY_ADOPTER` and `DEVELOPER`, respectively). It
+checks `update.profile_choices`, reads the current `update.config`, applies the
+selected profile through middleware, and verifies it before reading the exact
+newest manifest. This keeps train discovery deterministic when the stock
+profile hides Nightlies and refuses an unregistered train before changing the
+host. The transition is printed in the evidence log.
 
 ## Source comparison
 
@@ -586,7 +626,7 @@ registered patch, read-only inventory, and partition-only gates. In the
 2026-10-18 PWMCP run, `lsblk` saw `/dev/vda4`, but middleware and browser
 `disk.query` returned only `/dev/vda`; the Disks screen had no partition
 controls, and the wizard stopped before `pool.create`. That checkpoint is
-historical. On 2026-10-30, the latest v27 nightly Path B API/UI matrix passed:
+historical. On 2026-10-30, the registered Oct 27 v27 nightly Path B API/UI matrix passed:
 the reserved partition was offered by the patched wizard, `boot-disk-data` was
 created on that partition, and downstream UI storage forms passed. The old
 [diagnostic](../artifacts/live-ui-v27-path-b-r1-after-cleanup-with-disks-screen-20261018.log)
@@ -704,15 +744,17 @@ overlay so these originals remain intact.
 
 ## Remaining validation
 
-The latest v27 nightly, `27.0.0-MASTER+20261027-173422`, passed the full Path
+The last registered v27 nightly, `27.0.0-MASTER+20261027-173422`, passed the full Path
 A/B API/UI matrix on v1001. The matrix includes reserved-partition pool
 creation, API refusal checks, dataset and zvol operations, container and VM
 flows, PWMCP wizard submission, and share page actions. The v27 reboot/import
 lane passed after a repeat RC.1-to-nightly update and digest-bound
 `reapply-after-update`. The newer selected v28 build,
 `28.0.0-MASTER+20261027-175229`, was installed through the update API; its
-exact 19-target adapter and reboot/import lane passed. No newer v28 nightly was
-listed on 2026-10-30.
+exact 19-target adapter and reboot/import lane passed. The updater now advertises
+`28.0.0-MASTER+20261029-175210`; it is not registered for patch installation.
+The user-data survival check against that stock v28 BE is recorded in
+`docs/UPDATE-AND-DRIFT.md`.
 
 The patch remains experimental because important boundaries still need direct
 evidence:
@@ -744,7 +786,7 @@ and is not evidence for either v27 or v28. See the
 The ordinary VM installer targets data pools. Separate experimental patches
 test two ways to use free space on a TrueNAS system disk: a bounded
 `boot-pool/user-data` namespace (Path A), and a separate `boot-disk-data` pool
-on a reserved GPT tail (Path B). On 2026-10-30, the latest v27 nightly passed
+on a reserved GPT tail (Path B). On 2026-10-30, the registered Oct 27 v27 nightly passed
 the full Path A/B API/UI matrix on v1001. Path B UI pool creation passed
 through the wizard after the guarded partition-reservation lane; dataset,
 zvol, container, VM-form, and SMB/NFS-page checks passed on the selected pool.
@@ -942,11 +984,12 @@ the exact v28 adapter was applied. Earlier storage results are:
 At the earlier checkpoint, the patch unit lane passed with 106 tests and 45
 subtests; see the
 [checkpoint log](../artifacts/unit-boot-pool-patch-v27-dns-retry-20261017.log).
-The v27 update replaces patched middleware files. Explicit recovery then
-reapplied the exact nightly adapter and verified the Path A root and eligible
+The v27 update selected a new BE whose `/usr` had stock middleware. Explicit
+recovery then reapplied the exact nightly adapter and verified the Path A root and eligible
 descendants mounted at boot. The v27-to-v28 update again left that root
 unmounted until the v28 adapter was installed; the v28 reboot/import lane then
-passed. No newer v28 nightly was listed on 2026-10-30. The original v28 Path B
+passed. The updater API now advertises an unregistered Oct 29 v28 nightly; its
+stock-BE survival result is in `docs/UPDATE-AND-DRIFT.md`. The original v28 Path B
 destroy-refusal failure remains preserved; a later registered gate directly
 verified that the middleware-managed dataset survived both destroy and
 snapshot attempts and that no attempted snapshot appeared. See the passing
@@ -981,8 +1024,12 @@ TrueNAS UI/middleware cache-device configuration. The provider controller has
 no disk-attach operation, so no second physical target was added or purchased.
 The remaining live gaps are actual KVM selection (`/dev/kvm` was absent), guest
 OS boot, SMB/NFS client access, pre-existing workload content/record retention
-through update, and cache configuration through TrueNAS UI/middleware. No
-newer v28 nightly was listed on 2026-10-30.
+through update, and cache configuration through TrueNAS UI/middleware. A
+bounded planted-fixture comparison now passes for v27 RC.1→Oct 27 v27 Nightly,
+patched v27 Nightly→Oct 29 v28 Nightly, and patched RC.1→Oct 27 nightly with
+reapply; it does not claim retention of arbitrary pre-existing workloads. The
+updater advertises the Oct 29 v28 nightly, which has no registered patch
+adapter. See the [survival record](../../docs/UPDATE-AND-DRIFT.md#update-survival-acceptance-q4).
 Local QEMU tests use a dedicated Docker runner under `$CGROUP_PARENT_DEV_BACKGROUND`,
 with detached testers in `$CGROUP_PARENT_DEV_GATES`; see the
 [patch investigation and evidence](../README.md).

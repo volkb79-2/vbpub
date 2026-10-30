@@ -110,6 +110,23 @@ trap 'rollback 143' TERM
 
 actual_version=$(midclt call system.info | python3 -c 'import json,sys; print(json.load(sys.stdin).get("version", ""))')
 [ "$actual_version" = "$expected_version" ] || { echo "version mismatch: $actual_version" >&2; exit 1; }
+python3 - "$patch_dir/adapter.json" "$patch_dir/targets.sha256" "$expected_version" <<'PY'
+import hashlib
+import json
+from pathlib import Path
+import sys
+manifest_path, targets_path, version = sys.argv[1:]
+manifest = json.loads(Path(manifest_path).read_text())
+expected = {
+    "id": "v28-nightly-20261014",
+    "version": "28.0.0-MASTER+20261014-230204",
+    "train": "TrueNAS-28-Nightlies",
+    "target_count": 15,
+    "target_manifest_sha256": hashlib.sha256(Path(targets_path).read_bytes()).hexdigest(),
+}
+if version != expected["version"] or manifest != expected:
+    raise SystemExit(f"adapter manifest does not match the exact supported v28 build: {manifest!r}")
+PY
 [ ! -e /dev/kvm ] || { echo 'this test requires /dev/kvm to be absent' >&2; exit 1; }
 if [ "$storage_profile" = path-a ]; then
     [ ! -e /dev/vda4 ] || { echo 'Path A test unexpectedly has /dev/vda4' >&2; exit 1; }
@@ -242,7 +259,47 @@ readonly_before=$(zfs get -H -o value readonly "$usr_dataset")
 findmnt -n -o OPTIONS /usr | tr ',' '\n' | grep -Fxq ro || { echo '/usr is not mounted read-only' >&2; exit 1; }
 
 cd "$dist_root"
-sha256sum --check "$patch_dir/targets.sha256"
+python3 - "$patch_dir/targets.sha256" <<'PY'
+import hashlib
+from pathlib import Path, PurePosixPath
+import sys
+
+manifest = Path(sys.argv[1])
+root = Path.cwd()
+issues = []
+seen = set()
+for number, line in enumerate(manifest.read_text(encoding="utf-8").splitlines(), 1):
+    fields = line.split(maxsplit=1)
+    if len(fields) != 2:
+        issues.append(f"INVALID {manifest}:{number}")
+        continue
+    expected, name = fields
+    relative = PurePosixPath(name)
+    if relative.is_absolute() or ".." in relative.parts or not relative.parts or relative.parts[0] not in {"middlewared", "truenas_pylibvirt"}:
+        issues.append(f"UNSAFE {name} expected=<relative middleware target> actual=<invalid path>")
+        continue
+    if name in seen:
+        issues.append(f"DUPLICATE {name} expected=<one target> actual=<duplicate>")
+        continue
+    seen.add(name)
+    path = root.joinpath(*relative.parts)
+    current = root
+    unsafe = False
+    for part in relative.parts:
+        current /= part
+        unsafe = unsafe or current.is_symlink()
+    if unsafe or not path.is_file():
+        issues.append(f"MISSING {name} expected={expected} actual=<missing-or-symlink>")
+        continue
+    actual = hashlib.sha256(path.read_bytes()).hexdigest()
+    if actual != expected:
+        issues.append(f"HASH {name} expected={expected} actual={actual}")
+if issues:
+    print("pre-patch source fingerprint mismatch; refusing every patch hunk:", file=sys.stderr)
+    print("\n".join(issues), file=sys.stderr)
+    raise SystemExit(1)
+PY
+sha256sum --check --strict "$patch_dir/targets.sha256"
 for helper in middlewared/plugins/boot_pool_user_data.py middlewared/plugins/vm/virtualization_support.py middlewared/plugins/pool_/boot_pool_mount.py; do
     [ ! -e "$helper" ] || { echo "unrecorded helper already exists: $helper" >&2; exit 1; }
 done
@@ -267,6 +324,9 @@ done
 install -o root -g root -m 0644 "$stage/shared/boot_pool_user_data.py" middlewared/plugins/
 install -o root -g root -m 0644 "$stage/shared/virtualization_support.py" middlewared/plugins/vm/
 install -o root -g root -m 0644 "$patch_dir/boot_pool_mount.py" middlewared/plugins/pool_/
+for patch_file in storage.patch middleware.patch boot-mount.patch; do
+    patch --dry-run --batch --fuzz=0 --reverse -p1 < "$patch_dir/$patch_file"
+done
 mapfile -t python_targets < <(sed -n 's/^[0-9a-f]\{64\}  //p' "$patch_dir/targets.sha256")
 python3 -m py_compile "${python_targets[@]}" middlewared/plugins/boot_pool_user_data.py middlewared/plugins/vm/virtualization_support.py middlewared/plugins/pool_/boot_pool_mount.py
 systemctl start middlewared.service

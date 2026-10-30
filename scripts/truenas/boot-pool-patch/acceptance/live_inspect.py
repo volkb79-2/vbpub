@@ -111,6 +111,12 @@ def main() -> int:
         check=False,
     )
     pool_health = target.shell("zpool list -H -o name,health", timeout=90).splitlines()
+    block_device_inventory = target.shell(
+        "lsblk --json --tree --paths --bytes --output "
+        "PATH,NAME,TYPE,SIZE,RO,RM,PARTN,PARTTYPE,PARTLABEL && "
+        "printf '\\n=== boot-pool leaf devices ===\\n' && zpool status -P boot-pool",
+        timeout=90,
+    )
     usr_mount = target.shell("findmnt -n -o SOURCE,OPTIONS --target /usr", timeout=45)
     root_mount = target.shell("findmnt -n -o SOURCE,FSTYPE --target /root", timeout=45)
     user_data_mountpoint_state = target.shell(
@@ -160,6 +166,7 @@ def main() -> int:
         "profile": profile,
         "middleware_pool_query": pools,
         "direct_pool_health": pool_health,
+        "direct_block_device_inventory": block_device_inventory,
         "usr_mount": usr_mount,
         "root_backup_mount": root_mount,
         "direct_user_data_mountpoint_state": user_data_mountpoint_state,

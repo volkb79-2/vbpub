@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import hashlib
+import gzip
+import io
 import json
 import os
 from pathlib import Path
@@ -90,11 +92,21 @@ def make_bundle(profile: str, version: str = EXPECTED_VERSION) -> tuple[Path, st
     ))
     if (adapter_root / "README.md").is_file():
         members.append((adapter_root / "README.md", "v27/README.md"))
-    with tarfile.open(bundle, "w:gz") as archive:
-        for source, arcname in members:
-            if not source.is_file():
-                raise RemoteError(f"v27 patch bundle input is missing: {source}")
-            archive.add(source, arcname=arcname)
+    raw = io.BytesIO()
+    with gzip.GzipFile(fileobj=raw, mode="wb", filename="", mtime=0) as compressed:
+        with tarfile.open(fileobj=compressed, mode="w", format=tarfile.USTAR_FORMAT) as archive:
+            for source, arcname in members:
+                if not source.is_file() or source.is_symlink():
+                    raise RemoteError(f"v27 patch bundle input is missing or unsafe: {source}")
+                info = tarfile.TarInfo(arcname)
+                info.size = source.stat().st_size
+                info.mode = 0o644
+                info.uid = info.gid = 0
+                info.uname = info.gname = ""
+                info.mtime = 0
+                with source.open("rb") as data:
+                    archive.addfile(info, data)
+    bundle.write_bytes(raw.getvalue())
     bundle.chmod(0o600)
     digest = hashlib.sha256(bundle.read_bytes()).hexdigest()
     return bundle, digest
