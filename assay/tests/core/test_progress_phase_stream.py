@@ -27,6 +27,7 @@ import json
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -176,6 +177,66 @@ def test_command_finished_carries_resources_when_observed(
     assert resources["throttled_us"] == 12
     assert resources["limit_events"]["pids_events_max"] == 0
     assert resources["window_s"] >= 0
+
+
+@pytest.mark.parametrize(
+    "case,observation,expected_observation,expected_pressure,expected_throttled",
+    [
+        (
+            "measured-throttling",
+            contention.ContentionObservation(
+                "clear",
+                limits=LIMITS_CLEAR,
+                pressure_us={"cgroup_cpu.throttled_usec": 12},
+            ),
+            "clear",
+            "clear",
+            12,
+        ),
+        (
+            "clear-without-throttle-counter",
+            contention.ContentionObservation("clear", limits=LIMITS_CLEAR),
+            "clear",
+            "clear",
+            0,
+        ),
+        (
+            "pressure-unavailable",
+            contention.ContentionObservation(
+                "unavailable", reasons=("cgroup-pressure-window-unavailable",)
+            ),
+            "unavailable",
+            "unavailable",
+            None,
+        ),
+        (
+            "not-requested",
+            contention.ContentionObservation("unobserved"),
+            "not_requested",
+            "not_requested",
+            None,
+        ),
+    ],
+)
+def test_resource_progress_pressure_rows(
+    case: str,
+    observation: contention.ContentionObservation,
+    expected_observation: str,
+    expected_pressure: str,
+    expected_throttled: int | None,
+) -> None:
+    result = SimpleNamespace(
+        observation=observation,
+        started="2026-08-07T12:00:00+00:00",
+        ended="2026-08-07T12:00:01+00:00",
+    )
+
+    resources = runner._resource_progress(result)
+
+    assert resources is not None, case
+    assert resources["observation"] == expected_observation, case
+    assert resources["pressure_observation"] == expected_pressure, case
+    assert resources["throttled_us"] == expected_throttled, case
 
 
 def test_fail_under_pressure_prints_one_advisory_line_and_stays_fail(
