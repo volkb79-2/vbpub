@@ -48,6 +48,12 @@ def test_shared_table_r0_and_r3_columns_match_the_contract():
         Termination.UNOBSERVED: (Outcome.ERROR, ReasonCode.EXEC_FAILED),
         Termination.INCONCLUSIVE: (Outcome.ERROR, ReasonCode.EXEC_FAILED),
     }
+    expected_r0_by_case_name = {
+        "no-measurement-without-leak": (
+            Outcome.NO_MEASUREMENT,
+            ReasonCode.TARGET_NOT_MEASURED,
+        ),
+    }
     expected_r3 = {
         Termination.PASSED: (Outcome.FAIL, ReasonCode.CANARY_SURVIVED),
         Termination.FAILED: (Outcome.PASS, None),
@@ -74,7 +80,10 @@ def test_shared_table_r0_and_r3_columns_match_the_contract():
     }
 
     for case in ALL_CASES:
-        assert (case.r0_outcome, case.r0_reason_code) == expected_r0[case.termination]
+        expected_r0_for_case = expected_r0_by_case_name.get(
+            case.name, expected_r0[case.termination]
+        )
+        assert (case.r0_outcome, case.r0_reason_code) == expected_r0_for_case
         assert (case.r3_attempt_outcome, case.r3_attempt_reason_code) == expected_r3[
             case.termination
         ]
