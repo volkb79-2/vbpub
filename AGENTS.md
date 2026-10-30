@@ -126,6 +126,34 @@ git rev-parse HEAD
 git status --short
 ```
 
+## Reviews: who reviews, how, and what a review must contain (operator, 2026-10-31)
+
+- **Reviewer routing.** Reviews of merged work go to the responsible Opus
+  session for the tool (one session per topic/tool, reused with
+  `SendMessage` for follow-ups, never a fresh reviewer per round) or, when the
+  operator names it, to reasonix. Before any release, the delta since the
+  tool's last release goes through that same Opus session.
+- **A review is more than a defect list.** The reviewer may fix low-hanging
+  fruit and obvious improvements directly (on the tool's branch, never on
+  `main`), AND must critique the chosen design: say plainly when a simpler or
+  more robust alternative exists, spell it out, and say what it would change.
+  A review that only lists defects of an unquestioned design is incomplete.
+- **Reasonix + DeepSeek.** The official DeepSeek API (reasonix model
+  `deepseek-flash-max` / `deepseek-flash`) is used only during OFF-PEAK hours:
+  its off-peak rates are half of the peak rates. Peak hours are 01:00-04:00
+  and 06:00-10:00 UTC, Monday through Friday, excluding Chinese public
+  holidays; do not start DeepSeek-API work in those windows. The OpenRouter
+  route (`openrouter-deepseek-v4.1-flash-1017/...`) is a separate, credit
+  limited path; when its credits are out, do not retry it in a loop.
+- **Reasonix workspace trust.** `reasonix run` refuses shell commands and
+  edits in a folder with no recorded trust decision and no approver. Trust is
+  recorded per workspace path (`reasonix trust --dir PATH --yes`, stored in
+  `~/.reasonix/project-grants.json`) and its OS sandbox limits writes to that
+  folder plus `[sandbox] allow_write`. Review runs use a trusted tree (the
+  worktrees directory) and a read-only brief; the finer-grained controls are
+  `[permissions]` (`deny`/`ask`/`allow` rules such as `Bash(git push*)`) and
+  `[sandbox]` in `~/.reasonix/config.toml`.
+
 ## Defaults and fallbacks are hazards (MANDATORY, estate-wide)
 
 > **A default is legitimate only when it is a policy choice that is correct in
