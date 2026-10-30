@@ -1378,6 +1378,14 @@ def test_anchor_store_rejects_huge_percent_symlinks_bad_json_and_non_private_mod
         read_anchor_store(public_file)
 
 
+def test_anchor_store_reports_read_error_for_directory_state_path(tmp_path):
+    state_path = tmp_path / "anchor-state"
+    state_path.mkdir(mode=0o700)
+
+    with pytest.raises(AnchorError, match="cannot read anchor state"):
+        read_anchor_store(state_path)
+
+
 def test_anchor_store_checks_parent_permissions_and_deduplicates_ordered_readings(tmp_path):
     state = tmp_path / "private" / "anchors.json"
     first = add_anchor(
