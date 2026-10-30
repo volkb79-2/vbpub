@@ -401,6 +401,49 @@ Progress-reporting commands accept `--progress` with `auto`, `tty`, `plain`,
 `quiet`, or `rawjson`. `auto` is the default and selects a terminal or plain
 stream based on the output destination.
 
+## Reapply the v27 adapter and verify reboot/import
+
+The live boot-pool acceptance uses a disposable external TrueNAS target, a
+pinned SSH host key, an HTTPS UI secret, and an existing custom Docker bridge
+that contains PWMCP. Follow the
+[boot-pool external-host setup](../boot-pool-patch/docs/CONSUMERS.md#use-an-external-truenas-host)
+before these commands. The reapply action is only for the exact
+`27.0.0-MASTER+20261027-173422` build after an RC.1 update has left its stale
+install record in place.
+
+```bash
+cd scripts/truenas
+source "$VENV/bin/activate"
+source /path/to/truenas-live-env.sh
+: "${DOCKER_NETWORK_INTERNAL:?set the existing custom bridge containing pwmcp}"
+export TRUENAS_STORAGE_PROFILE=path-a
+export TRUENAS_EXPECTED_VERSION='27.0.0-MASTER+20261027-173422'
+export TRUENAS_TEST_ALLOW_MUTATIONS=1
+export TRUENAS_V27_PATCH_ACTION=reapply-after-update
+export TRUENAS_TEST_ALLOW_PATCH_REAPPLY=1
+export TRUENAS_V27_EXPECTED_PRIOR_BUNDLE_SHA256=07fd9ba7e4df11349525203ac29ee6377b56ff55e1391b7b2c4b72123914895f
+python3 boot-pool-patch/run-live-gate.py live-v27-patch \
+  --docker-network "$DOCKER_NETWORK_INTERNAL" --allow-high-psi --allow-dirty
+
+export TRUENAS_TEST_ALLOW_REBOOT=1
+export TRUENAS_DISK_DEVICE=/dev/vda
+export TRUENAS_BOOT_POOL_PARTITION=/dev/vda3
+python3 boot-pool-patch/run-live-gate.py live-boot \
+  --docker-network "$DOCKER_NETWORK_INTERNAL" --allow-high-psi --allow-dirty
+unset TRUENAS_V27_PATCH_ACTION TRUENAS_TEST_ALLOW_PATCH_REAPPLY \
+  TRUENAS_TEST_ALLOW_REBOOT TRUENAS_V27_EXPECTED_PRIOR_BUNDLE_SHA256
+```
+
+The v27 reapply and reboot/import steps passed on v1001. `live-boot` requires
+the mutation and reboot guards; it verifies Path A remount plus the same Path B
+pool GUID and PARTUUID through reboot and middleware export/import. The
+separate `uninstall-stale-record` action removes only the exact RC.1 marker and
+does not apply an adapter; its contract is tested, while the live update path
+used `reapply-after-update`. See the
+[patch consumer guide](../boot-pool-patch/docs/CONSUMERS.md#reapply-v27-after-an-update)
+for the complete recovery workflow and the
+[design rationale](../boot-pool-patch/docs/DESIGN-GUIDE.md#v27-nightly-update-and-reapply).
+
 ## Version scope
 
 These scripts require the modern `/api/current` JSON-RPC endpoint and target
@@ -409,10 +452,14 @@ TrueNAS v27. The generic client passed a live smoke test against TrueNAS
 API-key authentication, runtime method discovery, event subscription, and one
 job's progress/completion. The Netcup test covered API-key authentication,
 `system.info`, and pool, dataset, and VM queries. VM installation has not been
-end-to-end tested because the live host has no data pool and lacks nested
-virtualization. VM schemas have been reviewed against v28 docs, which are
-currently Preview. A v28 host has passed the live patch/API gate, while
-storage, boot-remount, UI, and KVM acceptance remain open. TrueNAS 24.10 needs a
+end-to-end tested with the Debian cloud-image upload workflow. Separate
+patched-host tests created and started a TrueNAS VM through QEMU TCG; they did
+not boot the guest OS, select actual KVM, or exercise client share access.
+VM schemas have been reviewed against v28 docs, which are currently Preview.
+The latest checked v27 nightly passed its Path A/B API/UI matrix and reboot
+proof; v28 build `28.0.0-MASTER+20261027-175229` passed adapter installation
+and reboot/import proof after the v27-to-v28 update. No newer v28 nightly was
+listed on 2026-10-30. TrueNAS 24.10 needs a
 legacy WebSocket, authentication, and job adapter described in the
 [design guide](DESIGN-GUIDE.md#api-version-compatibility). Do not point the
 current config at a 24.10 host.

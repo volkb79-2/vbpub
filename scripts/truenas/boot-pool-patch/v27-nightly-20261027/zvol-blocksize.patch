@@ -1,0 +1,14 @@
+--- a/middlewared/plugins/pool_/dataset_info.py
++++ b/middlewared/plugins/pool_/dataset_info.py
+@@ -49,6 +49,11 @@
+                 "params": ["tank"]
+             }
+         """
++        if pool == 'boot-pool':
++            # The boot pool is excluded from pool.query. Use the existing
++            # 16K recommendation for single-disk and mirror layouts.
++            return '16K'
++
+         pool = await self.middleware.call('pool.query', [['name', '=', pool]], {'get': True})
+ 
+         """

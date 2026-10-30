@@ -14,9 +14,9 @@ available.
 |---|---|---|
 | 25.10.4 / 25.10.7 | The retained 25.10.4 patch proposal dry-runs on 25.10.7. | Its reported UI flow failed; PWMCP reproduction remains pending. It does not apply to v27+. |
 | 27.0.0-RC.1 | Path A and Path B API/UI storage and pool-creation matrices passed. Boot-pool API mutation refusals, dataset/zvol paths, Path B pool import/adoption, and reclaim/idempotence were checked on v1001. | The subsequent update to the 2026-10-27 v27 nightly replaced the patch sources. The old manifest became stale, the exact RC.1 reapply refused before source mutation, and the Path A marker survived but booted unmounted until manually mounted. This is not automatic update survival. |
-| 27.0.0-MASTER+20261027-173422 | Installed through the TrueNAS update; feed metadata, checksum, update job, and reboot were verified. This is update/reboot evidence only: the recorded full Path A/B API and PWMCP matrix is from RC.1, and no separate full matrix was run on the nightly. | The update replaced patched middleware files, left the old install record stale, and the Path A marker booted unmounted. Exact RC.1 reapplication refused before source mutation. |
+| 27.0.0-MASTER+20261027-173422 | Path A/B API and PWMCP UI matrix passed on the latest v27 nightly. After a second RC.1-to-nightly update, `reapply-after-update` verified all 19 targets, archived the stale RC.1 record, and left the Path A root and eligible descendants mounted at boot. `live-boot` verified Path A remount plus Path B reboot and export/import identity. | Patch files are replaced by an update; re-application is an explicit guarded step. `uninstall-stale-record` is available as a separately guarded recovery action. |
 | 28.0.0-MASTER+20261014-230204 | Historical adapter checks and a v27-to-v28 update were completed. | Superseded by the separate 2026-10-27 build adapter; its results do not certify the latest nightly. |
-| 28.0.0-MASTER+20261027-175229 | The exact 19-target adapter passed guarded install/replacement, Path A/B API and PWMCP UI matrices, same-bundle idempotence, and an injected-failure rollback. The v28 Path B reclaim helper returned `reclaimed`, then `already_clear`; the reserved partition was offered again and boot-pool remained ONLINE. | No later v28 nightly was installable from the official feed at the 2026-10-30 check. VM guest OS boot, actual KVM selection, share-client access, a real second-disk cache target, and general update survival remain open. |
+| 28.0.0-MASTER+20261027-175229 | The exact 19-target adapter and prior Path A/B API/UI matrix passed. The v27-to-v28 update preserved boot-pool and Path B identity; the v28 reboot/import lane verified Path A remount and Path B GUID/PARTUUID through re-import. | No newer v28 nightly was listed on the official feed at the 2026-10-30 check. VM guest OS boot, actual KVM selection, share-client access, a real second-disk cache target, and update/reinstall against a newer v28 build remain open. |
 
 The current v28 follow-up fixed three live-discovered issues: its installed
 `pool.create` schema supplies empty encryption-secret defaults that middleware
@@ -32,6 +32,23 @@ See the [v28 design decisions](docs/DESIGN-GUIDE.md#v28-20261027-pool-shim-desig
 and [v1001 consumer run](docs/CONSUMERS.md#v28-20261027-live-acceptance-on-v1001).
 Older v1001 checkpoints later in this file are historical; this table is the
 current live status.
+
+The external `live-boot` acceptance lane is available only with
+`TRUENAS_TEST_ALLOW_REBOOT=1` and a
+planned reboot of the selected disposable host. It verifies the Path A mount
+and, when present, the Path B pool's GUID/PARTUUID through reboot and
+middleware export/reimport. The runner does not restore provider snapshots;
+see the [design rationale](docs/DESIGN-GUIDE.md#v27-nightly-update-and-reapply)
+and [consumer procedure](docs/CONSUMERS.md#reapply-v27-after-an-update).
+
+The v27 nightly Path A/B API/UI matrix passed. The guarded `reapply-after-update`
+procedure also passed end to end after a repeat RC.1-to-nightly update. It
+archives only the digest-matched stale RC.1 record, verifies the full nightly
+fingerprint set, applies the exact adapter; the observed result was Path A root
+and eligible descendants mounted at boot. The guarded `uninstall-stale-record` action can
+retire that same exact stale record without installing the adapter. See the
+[post-update design](docs/DESIGN-GUIDE.md#v27-nightly-update-and-reapply) and
+[consumer commands](docs/CONSUMERS.md#reapply-v27-after-an-update).
 
 The prior v28 Path B `live-storage` attempt did not survive the host restart;
 its October 17 PASS is historical evidence only. The fresh guest
@@ -156,24 +173,24 @@ different imported pool in that setup. A separate disk-backed target and its
 import ordering have not been tested. Middleware refused boot-pool zvol role
 paths before attachment.
 
-The registered UI lane created the Path A root and child filesystem, wrote
-data to that filesystem, created VM/cache zvols, selected `boot-pool` for a
-container and checked its ZFS backing, and submitted a VM using an existing
-boot-pool zvol. The separate `live-ui-workloads` lane uses the UI to start and
-stop preserved container and VM records and checks their backing data after a
-reboot or update. It does not prove VM guest-OS boot. The UI lanes do not
-attach a user dataset to a container, grow a zvol, create shares, or test
-NFS/SMB clients. Auxiliary-vdev role selection is not accepted through the UI
-or middleware. The UI wizard still cannot create the Path B partition or pool;
-the new `preprovisioned` mode for testing downstream Path B UI operations has
-passed its registered unit gate (170 tests and 45 subtests), but its fresh live
-UI acceptance remains open. Do not report it as complete until the live gate
-passes.
-The latest clean run is
+The latest-v27 matrix passed on 2026-10-30. PWMCP created a Path A user
+dataset, container, and VM using an existing zvol; Path B additionally created
+`boot-disk-data` through the wizard after guarded partition reservation, then
+created a dataset, container, and VM against that pool. Both UI runs opened the
+SMB/NFS pages and their Add actions. API/storage acceptance separately covered
+zvol growth, share-record CRUD, and protection refusals. These checks do not
+prove guest OS boot, actual KVM selection, or SMB/NFS client access. The UI
+does not attach a user dataset to a container or configure a real second-disk
+cache target. The separate `preprovisioned` UI mode still has only its
+registered unit-gate result (170 tests and 45 subtests); it is not part of the
+current live matrix. Auxiliary-vdev role selection is not accepted through the
+UI or middleware. The earlier Path A run is
 [`live-ui-v27-path-a-clean-20261019.log`](artifacts/live-ui-v27-path-a-clean-20261019.log);
 see the [design guide](docs/DESIGN-GUIDE.md#pwmcp-storage-ui-acceptance) for
 the acceptance boundary and [consumer guide](docs/CONSUMERS.md#run-pwmcp-ui-storage-acceptance)
-for the `live-ui` and `live-ui-workloads` workflow.
+for the `live-ui` and `live-ui-workloads` workflow. Round-two text/DOM logs are
+kept outside the repository under
+`/home/vscode/vbpub-release-program-20261027/evidence/truenas-live-20261029/`.
 
 ## Project files
 

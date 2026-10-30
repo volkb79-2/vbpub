@@ -2,7 +2,7 @@
 set -euo pipefail
 
 bundle_root=${1:?usage: apply_v27_patch_remote.sh BUNDLE_ROOT}
-expected_version=27.0.0-RC.1
+expected_version=${2:-27.0.0-RC.1}
 install_root=/usr/lib/python3/dist-packages
 patch_dir="$bundle_root/v27"
 usr_dataset=
@@ -36,6 +36,10 @@ fi
 
 version=$(midclt call system.info | python3 -c 'import json,sys; print(json.load(sys.stdin).get("version", ""))')
 [ "$version" = "$expected_version" ] || fail "expected $expected_version, found $version"
+case "$expected_version" in
+    27.0.0-RC.1|27.0.0-MASTER+20261027-173422) ;;
+    *) fail "no exact v27 fresh-install adapter for $expected_version" ;;
+esac
 [ ! -e /dev/kvm ] || fail '/dev/kvm exists; this is not the intended TCG target'
 
 if zfs list -H -o name boot-pool/user-data >/dev/null 2>&1; then
@@ -90,6 +94,7 @@ install -m 0644 "$bundle_root/shared/pool_create_schema_v27.json" middlewared/pl
 python3 -m py_compile \
     middlewared/plugins/vm/info.py \
     middlewared/plugins/vm/virtualization_support.py \
+    middlewared/plugins/boot.py \
     middlewared/plugins/boot_pool_user_data.py \
     middlewared/plugins/boot_disk_partition.py \
     middlewared/plugins/disk_/availability.py \

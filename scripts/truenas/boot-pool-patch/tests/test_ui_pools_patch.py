@@ -80,12 +80,13 @@ def test_targets_apply_script_and_bundle_know_the_patch() -> None:
     assert apply_script.index("--dry-run --batch --fuzz=0 -p1 < \"$patch_dir/ui-pools.patch\"") < \
         apply_script.index("systemctl stop middlewared.service")
     assert '"$bundle_root/shared/boot_disk_partition.py" middlewared/plugins/' in apply_script
-    for compiled in ("middlewared/plugins/boot_disk_partition.py", "middlewared/plugins/disk_/availability.py",
+    for compiled in ("middlewared/plugins/boot.py", "middlewared/plugins/boot_disk_partition.py", "middlewared/plugins/disk_/availability.py",
                      "middlewared/plugins/pool_/pool.py", "middlewared/plugins/pool_/export.py"):
         assert compiled in apply_script
     controller = (PATCH_ROOT / "acceptance" / "live_v27_patch.py").read_text()
-    assert '"v27" / "ui-pools.patch"' in controller
-    assert '"shared" / "boot_disk_partition.py"' in controller
+    assert "adapter_root / name" in controller
+    assert '"ui-pools.patch"' in controller
+    assert 'PATCH_ROOT / "shared" / "boot_disk_partition.py"' in controller
 
 
 def test_patch_keeps_the_synthetic_row_safe() -> None:
@@ -243,6 +244,58 @@ def test_reserved_partition_must_share_the_boot_pool_parent_disk() -> None:
     ]}
     offered = helper.reserved_partitions_from_lsblk(tree, set(), {"/dev/vda3"})
     assert [row["path"] for row in offered] == ["/dev/vda4"]
+
+
+def test_boot_attach_refuses_marked_partitions_on_the_boot_disk_even_when_in_use() -> None:
+    helper = load_helper()
+    tree = {"blockdevices": [
+        {"path": "/dev/vda", "type": "disk", "children": [
+            part("/dev/vda3", 3, None),
+            part("/dev/vda4", 4, "boot-disk-data"),
+            part(
+                "/dev/vda5", 5, "boot-disk-data", fstype="zfs_member",
+                partuuid="22222222-2222-2222-2222-222222222222",
+            ),
+        ]},
+        {"path": "/dev/vdb", "type": "disk", "children": [
+            part(
+                "/dev/vdb4", 4, "boot-disk-data", pkname="/dev/vdb",
+                partuuid="33333333-3333-3333-3333-333333333333",
+            ),
+        ]},
+    ]}
+
+    for device in ("vda4", "/dev/vda4", f"/dev/disk/by-partuuid/{UUID}"):
+        refusal = helper.boot_attach_refusal(device, tree, {"/dev/vda3"})
+        assert refusal is not None and "/dev/vda4" in refusal
+    assert helper.boot_attach_refusal("vda5", tree, {"/dev/vda3"}) is not None
+    assert helper.boot_attach_refusal("vdb4", tree, {"/dev/vda3"}) is None
+    assert helper.boot_attach_refusal("vdb", tree, {"/dev/vda3"}) is None
+
+
+def test_boot_attach_guard_refuses_reserved_partition_and_fails_closed_on_inventory_error() -> None:
+    helper = load_helper()
+    tree = {"blockdevices": [{"path": "/dev/vda", "type": "disk", "children": [
+        part("/dev/vda3", 3, None),
+        part("/dev/vda4", 4, "boot-disk-data"),
+    ]}]}
+
+    class Available(helper.BootDiskPartitionService):
+        async def _read_lsblk(self):
+            return tree
+
+        async def _read_boot_pool_leaf_paths(self):
+            return {"/dev/vda3"}
+
+    with pytest.raises(helper.CallError, match="cannot use reserved boot-disk partition /dev/vda4"):
+        asyncio.run(Available().assert_boot_attach_allowed("vda4"))
+
+    class Unavailable(Available):
+        async def _read_lsblk(self):
+            raise OSError("lsblk unavailable")
+
+    with pytest.raises(helper.CallError, match="could not verify the boot-pool attach target"):
+        asyncio.run(Unavailable().assert_boot_attach_allowed("vda4"))
 
 
 def test_reserved_create_option_detector_refuses_each_nondefault_schema_field() -> None:

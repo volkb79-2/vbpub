@@ -73,13 +73,23 @@ def test_current_v28_compatibility_build_is_synced_across_user_docs() -> None:
         )
 
 
-def test_v27_nightly_update_is_not_reported_as_matrix_acceptance() -> None:
+def test_latest_v27_nightly_matrix_and_update_reapply_result_are_synced() -> None:
     nightly = "27.0.0-MASTER+20261027-173422"
     for path in USER_DOCS:
         source = re.sub(r"\s+", " ", markdown_source(path))
-        assert nightly in source, f"v27 update evidence is missing from {path.name}"
-        assert "is update/reboot evidence only" in source
-        assert "no separate full matrix was run on the nightly" in source
+        assert nightly in source, f"latest v27 nightly compatibility fact is missing from {path.name}"
+        assert "Path A/B API/UI matrix passed" in source, (
+            f"latest v27 nightly matrix result is missing from {path.name}"
+        )
+        assert "reapply-after-update" in source, f"post-update reapply action is missing from {path.name}"
+        assert "uninstall-stale-record" in source, f"stale-record recovery action is missing from {path.name}"
+        assert "Path A root and eligible descendants mounted at boot" in source, (
+            f"latest v27 automatic mount result is missing from {path.name}"
+        )
+        assert "No newer v28 nightly was listed" in source, (
+            f"latest v28 update availability is missing from {path.name}"
+        )
 
     combined = "\n".join(markdown_source(path) for path in USER_DOCS)
-    assert "The v27 nightly Path A/B API/UI matrix passed" not in combined
+    assert "no separate full matrix was run on the nightly" not in combined
+    assert "is update/reboot evidence only" not in combined

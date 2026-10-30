@@ -55,6 +55,15 @@ def check(key: str, ok: bool, detail: object = "") -> None:
         FAILURES.append(key)
 
 
+def boot_attach_refused(ok: bool, text: str) -> bool:
+    normalized = text.lower()
+    return (
+        not ok
+        and "cannot use reserved boot-disk partition" in normalized
+        and "as a boot-pool member" in normalized
+    )
+
+
 def attempt(target: Target, method: str, *params, job: bool = False, timeout: int = 180) -> tuple[bool, str]:
     """Return ``(succeeded, exact output or error text)``."""
     argv = ["midclt", "call"] + (["-j"] if job else []) + [method]
@@ -498,7 +507,13 @@ def run_path_b(target: Target) -> None:
             check(f"create-option-refused-{option}", not ok and expected_refusal in text, text)
 
         ok, text = attempt(target, "boot.attach", name, {}, job=True)
-        check("boot-attach-refused-unchanged", (not ok) and boot_pool_state(target) == before, text)
+        check(
+            "boot-attach-refused-unchanged",
+            boot_attach_refused(ok, text)
+            and boot_pool_state(target) == before
+            and partition_table_state(target, disk) == table_before,
+            text,
+        )
 
         pool_create_attempted = True
         ok, text = attempt(target, "pool.create", {"name": POOL, "topology": {"data": [

@@ -11,7 +11,13 @@ TRUENAS_ROOT = Path(__file__).parents[2]
 ACCEPTANCE = TRUENAS_ROOT / "boot-pool-patch" / "acceptance" / "live_boot.py"
 RUN_GATE = TRUENAS_ROOT / "run-gate.toml"
 sys.path.insert(0, str(ACCEPTANCE.parent))
-from live_boot import check_no_running_guests, unmount_mounted_user_data_tree
+from live_boot import (
+    boot_pool_state,
+    check_no_running_guests,
+    path_b_pool_identity,
+    require_path_b_pool_unchanged,
+    unmount_mounted_user_data_tree,
+)
 from remote import RemoteError
 
 
@@ -37,6 +43,58 @@ def test_live_boot_test_checks_both_mount_ownership_and_marker_survival() -> Non
     assert 'report("recovery", "boot hook mounted user-data' in source
     assert 'zfs list -H -r -t filesystem -o name,mounted' in source
     assert 'zfs unmount -r boot-pool/user-data' not in source
+
+
+def test_live_boot_pool_identity_includes_guid_health_and_vdev_topology() -> None:
+    class FakeTarget:
+        def __init__(self) -> None:
+            self.commands: list[str] = []
+
+        def shell(self, command: str, *, timeout: int = 45) -> str:
+            self.commands.append(command)
+            if command == "zpool get -H -o value guid,health boot-pool":
+                return "14641633342097355085\tONLINE"
+            if command == "zpool status -P -L boot-pool":
+                return "pool: boot-pool\n  /dev/vda3  ONLINE\n"
+            raise AssertionError(f"unexpected shell command: {command}")
+
+    target = FakeTarget()
+    assert boot_pool_state(target) == (
+        "14641633342097355085\tONLINE\npool: boot-pool\n  /dev/vda3  ONLINE\n"
+    )
+    assert target.commands == [
+        "zpool get -H -o value guid,health boot-pool",
+        "zpool status -P -L boot-pool",
+    ]
+
+
+def test_live_boot_reimports_a_reserved_partition_pool_and_checks_both_guid_boundaries() -> None:
+    source = ACCEPTANCE.read_text()
+    assert "path_b_pool_state(target, disk, boot_partition)" in source
+    assert 'target.call("pool.export"' in source
+    assert 'target.call("pool.import_find"' in source
+    assert '"pool.import_pool"' in source
+    assert "partition_table_state(target, disk)" in source
+    assert 'boot_pool_state(target) == before_boot_pool' in source
+    assert 'require_path_b_pool_unchanged(before_path_b, after_import)' in source
+
+    before = {
+        "pool_id": 7,
+        "guid": "1234567890123456789",
+        "partition": "/dev/vda4",
+        "partuuid": "12345678-1234-1234-1234-123456789abc",
+        "leaves": ("/dev/vda4",),
+        "status": "ONLINE",
+        "partition_table": "same-gpt",
+    }
+    after = {**before, "pool_id": 14}
+    require_path_b_pool_unchanged(before, after)
+    assert path_b_pool_identity(before) == path_b_pool_identity(after)
+
+    for field, value in (("guid", "other"), ("partuuid", "other"), ("status", "DEGRADED"),
+                         ("leaves", ("/dev/vda3",)), ("partition_table", "changed-gpt")):
+        with pytest.raises(RemoteError, match="Path B pool or disk layout changed"):
+            require_path_b_pool_unchanged(before, {**after, field: value})
 
 
 def test_live_boot_unmounts_only_mounted_user_data_filesystems_deepest_first() -> None:

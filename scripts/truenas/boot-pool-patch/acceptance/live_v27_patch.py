@@ -14,6 +14,7 @@ import tarfile
 import uuid
 
 from remote import RemoteError, Target
+from v27_patch_state import adapter_for_version
 
 
 PATCH_ROOT = Path(__file__).resolve().parents[1]
@@ -29,10 +30,12 @@ def report(stage: str, detail: str) -> None:
     print(f"[{stage}] {detail}", flush=True)
 
 
-def require_fresh_unpatched_target(target: Target, profile: str) -> None:
+def require_fresh_unpatched_target(
+    target: Target, profile: str, expected_version: str = EXPECTED_VERSION,
+) -> None:
     info = target.call("system.info", timeout=120)
     version = str(info.get("version", ""))
-    require(version == EXPECTED_VERSION, f"expected {EXPECTED_VERSION}, got {version!r}")
+    require(version == expected_version, f"expected {expected_version}, got {version!r}")
     require(target.shell("test ! -e /dev/kvm", timeout=30) == "",
             "fresh v27 TCG target unexpectedly has /dev/kvm")
     require(target.shell("test ! -e /root/v27-boot-pool-patch-install.json", timeout=30) == "",
@@ -59,29 +62,34 @@ def require_fresh_unpatched_target(target: Target, profile: str) -> None:
     )
 
 
-def make_bundle(profile: str) -> tuple[Path, str]:
+def make_bundle(profile: str, version: str = EXPECTED_VERSION) -> tuple[Path, str]:
+    adapter = adapter_for_version(version)
+    adapter_root = PATCH_ROOT / adapter.directory
+    require(adapter_root.is_dir(), f"exact v27 adapter directory is missing: {adapter_root}")
     artifacts = PATCH_ROOT / "artifacts"
     artifacts.mkdir(parents=True, exist_ok=True)
-    bundle = artifacts / f"v27-fresh-patch-bundle-{profile}-{uuid.uuid4().hex[:10]}.tar.gz"
-    members = (
-        (PATCH_ROOT / "v27" / "middleware.patch", "v27/middleware.patch"),
-        (PATCH_ROOT / "v27" / "storage.patch", "v27/storage.patch"),
-        (PATCH_ROOT / "v27" / "libvirt.patch", "v27/libvirt.patch"),
-        (PATCH_ROOT / "v27" / "boot-mount.patch", "v27/boot-mount.patch"),
-        (PATCH_ROOT / "v27" / "zvol-blocksize.patch", "v27/zvol-blocksize.patch"),
-        (PATCH_ROOT / "v27" / "ui-pools.patch", "v27/ui-pools.patch"),
-        (PATCH_ROOT / "v27" / "targets.sha256", "v27/targets.sha256"),
+    bundle = artifacts / f"v27-{adapter.directory}-patch-bundle-{profile}-{uuid.uuid4().hex[:10]}.tar.gz"
+    patch_files = (
+        "middleware.patch", "storage.patch", "libvirt.patch", "boot-mount.patch",
+        "zvol-blocksize.patch", "ui-pools.patch", "targets.sha256",
+    )
+    members = [
+        (adapter_root / name, f"v27/{name}") for name in patch_files
+    ]
+    if (adapter_root / "adapter.json").is_file():
+        members.append((adapter_root / "adapter.json", "v27/adapter.json"))
+    members.extend((
         (PATCH_ROOT / "shared" / "virtualization_support.py", "shared/virtualization_support.py"),
         (PATCH_ROOT / "shared" / "boot_pool_user_data.py", "shared/boot_pool_user_data.py"),
         (PATCH_ROOT / "shared" / "boot_disk_partition.py", "shared/boot_disk_partition.py"),
         (PATCH_ROOT / "shared" / "pool_create_schema_v27.json", "shared/pool_create_schema_v27.json"),
-        (PATCH_ROOT / "acceptance" / "apply_v27_patch_remote.sh",
-         "acceptance/apply_v27_patch_remote.sh"),
-        (PATCH_ROOT / "acceptance" / "repair_v27_root_create_remote.sh",
-         "acceptance/repair_v27_root_create_remote.sh"),
-        (PATCH_ROOT / "acceptance" / "repair_v27_zvol_blocksize_remote.sh",
-         "acceptance/repair_v27_zvol_blocksize_remote.sh"),
-    )
+        (PATCH_ROOT / "acceptance" / "apply_v27_patch_remote.sh", "acceptance/apply_v27_patch_remote.sh"),
+        (PATCH_ROOT / "acceptance" / "repair_v27_root_create_remote.sh", "acceptance/repair_v27_root_create_remote.sh"),
+        (PATCH_ROOT / "acceptance" / "repair_v27_zvol_blocksize_remote.sh", "acceptance/repair_v27_zvol_blocksize_remote.sh"),
+        (PATCH_ROOT / "acceptance" / "reapply_v27_after_update_remote.sh", "acceptance/reapply_v27_after_update_remote.sh"),
+    ))
+    if (adapter_root / "README.md").is_file():
+        members.append((adapter_root / "README.md", "v27/README.md"))
     with tarfile.open(bundle, "w:gz") as archive:
         for source, arcname in members:
             if not source.is_file():
@@ -328,13 +336,16 @@ def main() -> int:
     if profile not in {"path-a", "path-b"}:
         raise RemoteError("TRUENAS_STORAGE_PROFILE must be path-a or path-b")
     version = os.environ.get("TRUENAS_EXPECTED_VERSION", "")
-    require(version == EXPECTED_VERSION, f"TRUENAS_EXPECTED_VERSION must be {EXPECTED_VERSION}")
+    try:
+        adapter = adapter_for_version(version)
+    except ValueError as exc:
+        raise RemoteError(str(exc)) from exc
 
     target = Target.from_environment()
     action = os.environ.get("TRUENAS_V27_PATCH_ACTION", "install")
     require(action in {
         "install", "repair-root-create", "repair-root-parent-mountpoint",
-        "repair-zvol-blocksize",
+        "repair-zvol-blocksize", "reapply-after-update", "uninstall-stale-record",
     },
             "TRUENAS_V27_PATCH_ACTION is not a supported v27 patch action")
     bundle, digest = bundle_from_environment()
@@ -354,16 +365,44 @@ def main() -> int:
                 "TRUENAS_V27_EXPECTED_PRIOR_DATASET_SHA256 is only valid for parent-mountpoint repair")
         require(not os.environ.get("TRUENAS_V27_EXPECTED_PRIOR_DATASET_INFO_SHA256"),
                 "TRUENAS_V27_EXPECTED_PRIOR_DATASET_INFO_SHA256 is only valid for zvol blocksize repair")
-        require_fresh_unpatched_target(target, profile)
+        require_fresh_unpatched_target(target, profile, adapter.version)
         remote_script = (
             "set -euo pipefail; "
             f"tar -xzf {shlex.quote(remote_bundle)} -C {shlex.quote(remote_dir)}; "
             f"bash {shlex.quote(remote_dir + '/acceptance/apply_v27_patch_remote.sh')} "
-            f"{shlex.quote(remote_dir)}"
+            f"{shlex.quote(remote_dir)} {shlex.quote(adapter.version)}"
+        )
+    elif action in {"reapply-after-update", "uninstall-stale-record"}:
+        require(profile == "path-a", "post-update v27 recovery requires TRUENAS_STORAGE_PROFILE=path-a")
+        require(adapter.reapply_from is not None,
+                f"exact v27 adapter {adapter.version} has no post-update recovery contract")
+        expected_prior = os.environ.get("TRUENAS_V27_EXPECTED_PRIOR_BUNDLE_SHA256", "")
+        require(expected_prior == adapter.reapply_from_bundle_sha256,
+                "TRUENAS_V27_EXPECTED_PRIOR_BUNDLE_SHA256 must match the exact observed stale RC.1 record")
+        guard_name = (
+            "TRUENAS_TEST_ALLOW_PATCH_REAPPLY" if action == "reapply-after-update"
+            else "TRUENAS_TEST_ALLOW_PATCH_UNINSTALL"
+        )
+        require(os.environ.get(guard_name) == "1", f"set {guard_name}=1 only for this disposable v27 recovery")
+        other_guard = (
+            "TRUENAS_TEST_ALLOW_PATCH_UNINSTALL" if action == "reapply-after-update"
+            else "TRUENAS_TEST_ALLOW_PATCH_REAPPLY"
+        )
+        require(not os.environ.get(other_guard), f"{other_guard} is only valid for its matching recovery action")
+        require(not os.environ.get("TRUENAS_TEST_ALLOW_PATCH_REPAIR"),
+                "TRUENAS_TEST_ALLOW_PATCH_REPAIR is only valid for a source repair action")
+        remote_script = (
+            "set -euo pipefail; "
+            f"tar -xzf {shlex.quote(remote_bundle)} -C {shlex.quote(remote_dir)}; "
+            f"bash {shlex.quote(remote_dir + '/acceptance/reapply_v27_after_update_remote.sh')} "
+            f"{shlex.quote(remote_dir)} {shlex.quote(adapter.version)} "
+            f"{shlex.quote(action)} {shlex.quote(expected_prior)}"
         )
     elif action in {
         "repair-root-create", "repair-root-parent-mountpoint", "repair-zvol-blocksize",
     }:
+        require(adapter.version == EXPECTED_VERSION,
+                "digest-bound v27 source repairs are supported only on the RC.1 adapter")
         require(os.environ.get("TRUENAS_TEST_ALLOW_PATCH_REPAIR") == "1",
                 "set TRUENAS_TEST_ALLOW_PATCH_REPAIR=1 only for this disposable guest repair")
         prior_bundle, prior_digest = prior_bundle_from_environment()
@@ -429,19 +468,29 @@ def main() -> int:
     for line in output.splitlines():
         print(line, flush=True)
 
+    if action == "uninstall-stale-record":
+        require(target.shell("test ! -e /root/v27-boot-pool-patch-install.json", timeout=30) == "",
+                "stale v27 install record remains after guarded uninstall")
+        require(target.shell(
+            "findmnt -n -o SOURCE --target /mnt/boot-pool/user-data", timeout=30
+        ) == "boot-pool/user-data", "guarded uninstall did not mount the preserved Path A root")
+        report("result", f"PASS retired the stale RC.1 record on exact TrueNAS {adapter.version}; stock nightly sources and Path A data remain")
+        report("bundle", f"{bundle.name} sha256={digest}")
+        return 0
+
     record = target.call("vm.virtualization_details", timeout=120)
     require(record.get("supported") is True, f"patched TCG backend is not supported: {record!r}")
     require(target.shell("test ! -e /dev/kvm", timeout=30) == "",
             "/dev/kvm appeared after patch installation")
-    if action == "repair-zvol-blocksize":
+    if action in {"repair-zvol-blocksize", "reapply-after-update"}:
         require(target.shell(
             "zfs get -H -p -o value quota,mountpoint,canmount boot-pool/user-data",
             timeout=45,
         ).splitlines() == ["2147483648", "/mnt/boot-pool/user-data", "on"],
-            "zvol blocksize repair changed the UI-created Path A root properties")
+            "v27 recovery changed the preserved Path A root properties")
         require(target.shell(
             "findmnt -n -o SOURCE --target /mnt/boot-pool/user-data", timeout=30
-        ) == "boot-pool/user-data", "zvol blocksize repair changed the UI-created root mount")
+        ) == "boot-pool/user-data", "v27 recovery did not mount the preserved Path A root")
     else:
         require(target.shell("test ! -e /mnt/boot-pool/user-data", timeout=30) == "",
                 "patch install unexpectedly created the Path A user-data namespace")
@@ -461,6 +510,13 @@ def main() -> int:
         == "root-create-skips-parent-mountpoint-none-v1",
         f"v27 patch marker does not bind the parent mountpoint=none fix: {install_record!r}",
     )
+    if action == "reapply-after-update":
+        require(
+            install_record.get("version") == adapter.version
+            and install_record.get("reapplied_from_version") == adapter.reapply_from
+            and install_record.get("reapplied_from_bundle_sha256") == adapter.reapply_from_bundle_sha256,
+            f"reapply record does not bind the exact prior RC.1 install: {install_record!r}",
+        )
     if action == "repair-root-create":
         require(
             install_record.get("repaired_from_bundle_sha256")
@@ -500,16 +556,17 @@ def main() -> int:
     pool_rows = target.shell("zpool list -H -o name,health", timeout=90).splitlines()
     pool_health = {line.split("\t", 1)[0]: line.split("\t", 1)[1]
                    for line in pool_rows if "\t" in line}
-    require("boot-disk-data" not in pool_health,
-            "patch install unexpectedly created Path B storage")
+    if action in {"install", "repair-root-create", "repair-root-parent-mountpoint", "repair-zvol-blocksize"}:
+        require("boot-disk-data" not in pool_health,
+                "fresh-target patch action unexpectedly found Path B storage")
     storage_state = (
         "the verified UI-created Path A root remains configured"
-        if action == "repair-zvol-blocksize"
+        if action in {"repair-zvol-blocksize", "reapply-after-update"}
         else "Path A/B storage remains unconfigured"
     )
     report(
         "result",
-        f"PASS TrueNAS {EXPECTED_VERSION} Path {profile[-1:].upper()} has the v27 relaxation patch; "
+        f"PASS TrueNAS {adapter.version} Path {profile[-1:].upper()} has the v27 relaxation patch; "
         f"{storage_state}",
     )
     report("bundle", f"{bundle.name} sha256={digest}")

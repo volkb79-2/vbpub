@@ -124,6 +124,8 @@ def test_live_lanes_use_a_capped_networked_exec_runner() -> None:
     assert "live_ui_prepare_ssh.py" in " ".join(prepare_ssh["argv"])
     assert prepare_ssh["environment"] == "networked-tester"
     runner = load_runner()
+    assert "live-storage" in runner.EXTERNAL_TARGET_LANES
+    assert "live-boot" in runner.EXTERNAL_TARGET_LANES
     assert "live-ui-prepare-ssh" in runner.EXTERNAL_TARGET_LANES
     assert "live-ui-prepare-ssh" in runner.UI_LANES
     assert "live-ui-prepare-ssh" not in runner.SSH_LANES
@@ -981,11 +983,20 @@ def test_external_target_requires_an_explicit_supported_host_and_https_ui_origin
 
     monkeypatch.setenv("TRUENAS_TEST_HOST", "v1001.vxxu.de")
     try:
+        runner.external_target("live-boot")
+    except runner.RunnerError as exc:
+        assert "TRUENAS_TEST_ALLOW_REBOOT=1" in str(exc)
+    else:
+        raise AssertionError("external reboot must require its explicit mutation guard")
+
+    monkeypatch.setenv("TRUENAS_TEST_ALLOW_REBOOT", "1")
+    assert runner.external_target("live-boot") == ("v1001.vxxu.de", None)
+    try:
         runner.external_target("live-update")
     except runner.RunnerError as exc:
         assert "not enabled for an external" in str(exc)
     else:
-        raise AssertionError("external mode must not permit update/reboot workflows")
+        raise AssertionError("external mode must not permit update workflows")
 
 
 def test_v28_patch_lane_can_target_an_external_guest_through_its_guarded_runner(monkeypatch) -> None:
@@ -1530,6 +1541,40 @@ def test_live_environment_requires_owned_private_ssh_credentials(tmp_path, monke
         raise AssertionError("SSH private keys with group/world access must be refused")
 
 
+def test_live_boot_forwards_explicit_disk_identity_for_path_b_reimport(tmp_path, monkeypatch) -> None:
+    runner = load_runner()
+    key = tmp_path / "root_ed25519"
+    known_hosts = tmp_path / "known_hosts"
+    key.write_text("private test key")
+    key.chmod(0o600)
+    known_hosts.write_text("truenas ssh host key")
+    known_hosts.chmod(0o600)
+    for name, value in {
+        "TRUENAS_TEST_ALLOW_MUTATIONS": "1",
+        "TRUENAS_TEST_ALLOW_REBOOT": "1",
+        "TRUENAS_EXPECTED_VERSION": "27.0.0-MASTER+20261027-173422",
+        "TRUENAS_STORAGE_PROFILE": "path-a",
+        "TRUENAS_TEST_PORT": "2222",
+        "TRUENAS_TEST_KEY": str(key),
+        "TRUENAS_TEST_KNOWN_HOSTS": str(known_hosts),
+        "TRUENAS_DISK_DEVICE": "/dev/vda",
+        "TRUENAS_BOOT_POOL_PARTITION": "/dev/vda3",
+    }.items():
+        monkeypatch.setenv(name, value)
+
+    selected = runner.required_live_environment("live-boot", "truenas-test", tmp_path)
+    assert selected["TRUENAS_DISK_DEVICE"] == "/dev/vda"
+    assert selected["TRUENAS_BOOT_POOL_PARTITION"] == "/dev/vda3"
+
+    monkeypatch.setenv("TRUENAS_BOOT_POOL_PARTITION", "")
+    try:
+        runner.required_live_environment("live-boot", "truenas-test", tmp_path)
+    except runner.RunnerError as exc:
+        assert "must be supplied together" in str(exc)
+    else:
+        raise AssertionError("Path B reboot identity must not silently lose one disk fact")
+
+
 def test_live_boot_requires_reboot_guard_in_both_wrapper_and_lane() -> None:
     config = tomllib.loads(CONFIG.read_text())
     lane = config["lanes"]["live-boot"]
@@ -1816,7 +1861,7 @@ def test_user_docs_link_the_live_gate_and_name_all_lane_values() -> None:
         assert lane_name in all_docs, f"consumer-facing docs omit registered lane {lane_name!r}"
     for action in (
         "install", "repair-root-create", "repair-root-parent-mountpoint",
-        "repair-zvol-blocksize",
+        "repair-zvol-blocksize", "reapply-after-update", "uninstall-stale-record",
     ):
         assert action in consumers, f"consumer-facing docs omit v27 patch action {action!r}"
     for profile in ("path-a", "path-b"):
@@ -1825,6 +1870,10 @@ def test_user_docs_link_the_live_gate_and_name_all_lane_values() -> None:
         assert "repair-root-create" in document
         assert "repair-root-parent-mountpoint" in document
         assert "repair-zvol-blocksize" in document
+        assert "reapply-after-update" in document
+        assert "uninstall-stale-record" in document
+        assert "external `live-boot`" in document
+        assert "TRUENAS_TEST_ALLOW_REBOOT=1" in document
     ui_acceptance = consumers.split("## Run PWMCP UI storage acceptance", 1)[1].split(
         "## Repair the legacy v27 root-create guard", 1
     )[0]

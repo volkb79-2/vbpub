@@ -1,0 +1,689 @@
+--- a/middlewared/async_validators.py
++++ b/middlewared/async_validators.py
+@@ -1,15 +1,54 @@
+ from __future__ import annotations
+ 
+ import asyncio
++import errno
+ import ipaddress
++import os
+ import socket
+ from typing import TYPE_CHECKING
+ 
++from middlewared.api.current import ZFSResourceQuery
++from middlewared.plugins.boot_pool_user_data import (
++    USER_DATASET_COMPONENT, is_user_data_namespace_path, user_data_namespace_root,
++)
++from middlewared.service_exception import CallError
++from middlewared.utils import BOOT_POOL_NAME_VALID
+ from middlewared.utils.path import check_path_resides_within_volume_sync
+ 
+ if TYPE_CHECKING:
+     from middlewared.main import Middleware
+     from middlewared.service_exception import ValidationErrors
++
++
++async def _boot_pool_user_data_root_is_ready(middleware, root: str) -> bool:
++    if user_data_namespace_root(root, BOOT_POOL_NAME_VALID) != root:
++        return False
++
++    rows = await middleware.call2(
++        middleware.services.zfs.resource.query_impl,
++        ZFSResourceQuery(paths=[root], properties=['quota', 'mountpoint', 'canmount']),
++    )
++    if not rows:
++        return False
++
++    properties = rows[0]['properties']
++    quota = (properties.get('quota') or {}).get('value')
++    mountpoint = (properties.get('mountpoint') or {}).get('value')
++    canmount = (properties.get('canmount') or {}).get('value')
++    if (
++        type(quota) is not int or quota <= 0
++        or mountpoint != f'/mnt/{root}'
++        or canmount != 'on'
++    ):
++        return False
++
++    try:
++        mounted = await middleware.call('filesystem.statfs', mountpoint)
++    except CallError as e:
++        if e.errno == errno.ENOENT:
++            return False
++        raise
++    return mounted.get('source') == root and mounted.get('dest') == mountpoint
+ 
+ 
+ async def check_path_resides_within_volume(
+@@ -19,10 +58,48 @@
+     async wrapper around synchronous general-purpose path validation function
+     """
+     vol_names = [vol["vol_name"] for vol in await middleware.call("datastore.query", "storage.volume")]
+-    return await middleware.run_in_thread(
++    resolved_path = os.path.realpath(path)
++    ready_user_data_roots = []
++    for pool in BOOT_POOL_NAME_VALID:
++        root = f"{pool}/{USER_DATASET_COMPONENT}"
++        mountpoint = f"/mnt/{root}"
++        try:
++            inside_root = os.path.commonpath((resolved_path, mountpoint)) == mountpoint
++        except ValueError:
++            inside_root = False
++        if inside_root and await _boot_pool_user_data_root_is_ready(middleware, root):
++            if root not in vol_names:
++                vol_names.append(root)
++            ready_user_data_roots.append(root)
++
++    await middleware.run_in_thread(
+         check_path_resides_within_volume_sync,
+         verrors, schema_name, path, vol_names, must_be_dir
+     )
++
++    # Resolve the nearest existing ancestor so a missing leaf is checked against
++    # the ZFS dataset that will contain it. This keeps hidden service datasets
++    # below the boot-pool namespace unavailable to path-based consumers.
++    if ready_user_data_roots:
++        if any(
++            os.path.commonpath((resolved_path, f"/mnt/{root}")) == f"/mnt/{root}"
++            for root in ready_user_data_roots
++        ):
++            source_path = resolved_path
++            while not os.path.exists(source_path):
++                parent = os.path.dirname(source_path)
++                if parent == source_path:
++                    break
++                source_path = parent
++            statfs = await middleware.call('filesystem.statfs', source_path)
++            source = statfs.get('source') or ''
++            source_root = user_data_namespace_root(source, BOOT_POOL_NAME_VALID)
++            from middlewared.plugins.pool_.dataset_query_utils import INTERNAL_DATASETS
++
++            if source_root not in ready_user_data_roots:
++                verrors.add(schema_name, 'Path does not resolve to a boot-pool user-data dataset.')
++            elif not is_user_data_namespace_path(source, BOOT_POOL_NAME_VALID, INTERNAL_DATASETS):
++                verrors.add(schema_name, 'Path resolves to a system-managed boot-pool dataset.')
+ 
+ 
+ async def resolve_hostname(middleware, verrors, name, hostname):
+--- a/middlewared/plugins/container/container.py
++++ b/middlewared/plugins/container/container.py
+@@ -22,6 +22,7 @@
+     ZFSResourceSnapshotDestroyQuery,
+ )
+ from middlewared.plugins.zfs.exceptions import ZFSDestroyFailedException
++from middlewared.plugins.boot_pool_user_data import USER_DATASET_COMPONENT
+ from middlewared.plugins.zfs.utils import get_encryption_info
+ from middlewared.pylibvirt import gather_pylibvirt_domains_states, get_pylibvirt_domain_state
+ from middlewared.service import CallError, CRUDService, job, private, ValidationError, ValidationErrors
+@@ -459,20 +460,48 @@
+         """
+         pools = {}
+         imported_pools = await self.middleware.run_in_thread(query_imported_fast_impl)
++        imported_pool_names = {pool['name'] for pool in imported_pools.values()}
++        boot_user_data_roots = {
++            f'{pool}/{USER_DATASET_COMPONENT}'
++            for pool in BOOT_POOL_NAME_VALID
++            if pool in imported_pool_names
++        }
++        paths = [
++            pool['name']
++            for pool in imported_pools.values()
++            if pool['name'] not in BOOT_POOL_NAME_VALID
++        ] + sorted(boot_user_data_roots)
++
+         for ds in await self.call2(
+             self.s.zfs.resource.query_impl,
+             ZFSResourceQuery(
+-                paths=[
+-                    p['name']
+-                    for p in imported_pools.values()
+-                    if p['name'] not in BOOT_POOL_NAME_VALID
+-                ],
+-                properties=['encryption'],
++                paths=paths,
++                properties=['encryption', 'quota', 'mountpoint', 'canmount'],
+             )
+         ):
++            if ds['name'] in boot_user_data_roots:
++                properties = ds['properties']
++                quota = (properties.get('quota') or {}).get('value')
++                mountpoint = (properties.get('mountpoint') or {}).get('value')
++                canmount = (properties.get('canmount') or {}).get('value')
++                if (
++                    type(quota) is not int or quota <= 0
++                    or mountpoint != f"/mnt/{ds['name']}"
++                    or canmount != 'on'
++                ):
++                    continue
++                try:
++                    mounted = await self.middleware.call('filesystem.statfs', mountpoint)
++                except CallError as e:
++                    if e.errno == errno.ENOENT:
++                        continue
++                    raise
++                if mounted.get('source') != ds['name'] or mounted.get('dest') != mountpoint:
++                    continue
++
+             enc = get_encryption_info(ds['properties'])
+             if not enc.locked:
+-                pools[ds['name']] = ds['name']
++                pools[ds['pool']] = ds['pool']
+ 
+         return pools
+ 
+--- a/middlewared/plugins/container/dataset.py
++++ b/middlewared/plugins/container/dataset.py
+@@ -1,11 +1,14 @@
+ import errno
++import os
+ 
+ from middlewared.api.current import ZFSResourceQuery
+ from middlewared.service import CallError, private, Service
+ from middlewared.plugins.pool_.utils import CreateImplArgs, UpdateImplArgs
+ from middlewared.utils.filesystem.perms import enforce_dir_perms
+ 
+-from .utils import CONTAINER_DS_NAME, container_dataset, container_dataset_mountpoint
++from .utils import (
++    CONTAINER_DS_NAME, container_dataset, container_dataset_mountpoint, container_dataset_real_path,
++)
+ 
+ CONTAINER_DS_PARENT_DIR = f'/mnt/{CONTAINER_DS_NAME}'
+ 
+@@ -34,7 +37,9 @@
+         # `container_dataset_mountpoint` returns the value without the pool's `/mnt` altroot, while
+         # the value ZFS reports back has it. Both forms are needed.
+         expected_prop = container_dataset_mountpoint(pool)
+-        expected_path = f'/mnt{expected_prop}'
++        # User pools have /mnt as their ZFS altroot; boot-pool does not. The
++        # helper returns the effective property path for boot-pool directly.
++        expected_path = container_dataset_real_path(pool)
+ 
+         # Naming the dataset explicitly is load-bearing: it is an internal path, and `query_impl`
+         # only returns those when the caller asks for them by name.
+@@ -78,6 +83,7 @@
+     async def ensure_datasets(self, pool):
+         main_dataset = container_dataset(pool)
+         main_dataset_mountpoint = container_dataset_mountpoint(pool)
++        effective_main_dataset_mountpoint = container_dataset_real_path(pool)
+ 
+         datasets = [f'{main_dataset}/containers', f'{main_dataset}/images']
+ 
+@@ -119,7 +125,9 @@
+                 )
+             await self.call2(self.s.zfs.resource.mount, dataset)
+ 
+-        # ZFS auto-creates CONTAINER_DS_PARENT_DIR as a side effect of mounting the
+-        # per-pool dataset. Restrict it so non-root host users can't traverse to
+-        # any container's on-disk rootfs (UID-collision exposure for apps user etc.).
+-        await self.middleware.run_in_thread(enforce_dir_perms, CONTAINER_DS_PARENT_DIR)
++        # ZFS creates the mountpoint's parent as a side effect of mounting the
++        # per-pool dataset. Restrict it so non-root host users cannot traverse to
++        # any container's on-disk rootfs (UID-collision exposure for apps users).
++        await self.middleware.run_in_thread(
++            enforce_dir_perms, os.path.dirname(effective_main_dataset_mountpoint)
++        )
+--- a/middlewared/plugins/container/image.py
++++ b/middlewared/plugins/container/image.py
+@@ -8,7 +8,7 @@
+     ContainerImageQueryRegistryArgs, ContainerImageQueryRegistryResult, ZFSResourceQuery,
+     ZFSResourceSnapshotCreateQuery,
+ )
+-from middlewared.plugins.container.utils import container_dataset, container_dataset_mountpoint
++from middlewared.plugins.container.utils import container_dataset, container_dataset_real_path
+ from middlewared.plugins.pool_.utils import CreateImplArgs
+ from middlewared.service import CallError, job, private, Service, ValidationErrors
+ from middlewared.utils.network import INTERNET_TIMEOUT
+@@ -106,7 +106,7 @@
+ 
+                 downloaded_size = 0
+ 
+-                mountpoint = f'/mnt{container_dataset_mountpoint(pool)}/{suffix}'
++                mountpoint = os.path.join(container_dataset_real_path(pool), suffix)
+                 # Save tarball to mountpoint
+                 tarball_path = os.path.join(mountpoint, 'image.tar')
+                 try:
+--- a/middlewared/plugins/container/lifecycle.py
++++ b/middlewared/plugins/container/lifecycle.py
+@@ -19,8 +19,9 @@
+ from middlewared.utils.filesystem.perms import enforce_dir_perms
+ 
+ from .bridge import container_bridge_name, configure_container_bridge
+-from .dataset import CONTAINER_DS_PARENT_DIR
+-from .utils import container_instance_dataset_mountpoint, update_etc_hosts, write_etc_hostname
++from .utils import (
++    container_dataset_real_path, container_instance_real_path, update_etc_hosts, write_etc_hostname,
++)
+ 
+ IDMAPPED_ROOT_DIR = '/run/truenas_containers/root'
+ 
+@@ -156,10 +157,10 @@
+     @api_method(ContainerStartArgs, ContainerStartResult, roles=["CONTAINER_WRITE"])
+     def start(self, id_):
+         """Start container."""
+-        enforce_dir_perms(CONTAINER_DS_PARENT_DIR)
++        container = self.middleware.call_sync("container.get_instance", id_)
++        pool = container["dataset"].split("/")[0]
++        enforce_dir_perms(os.path.dirname(container_dataset_real_path(pool)))
+         apply_idmapped_root_acl()
+-
+-        container = self.middleware.call_sync("container.get_instance", id_)
+         configure_container_bridge(self)
+ 
+         pylibvirt_obj = self.pylibvirt_container(container, True)
+@@ -204,7 +205,7 @@
+ 
+         dataset = container.pop("dataset")
+         pool = dataset.split("/")[0]
+-        container["root"] = f"/mnt/{container_instance_dataset_mountpoint(pool, container['name'])}"
++        container["root"] = container_instance_real_path(pool, container['name'])
+         if check_ds:
+             datasets = self.call_sync2(
+                 self.s.zfs.resource.query_impl,
+--- a/middlewared/plugins/container/utils.py
++++ b/middlewared/plugins/container/utils.py
+@@ -1,5 +1,10 @@
+ import os
+ 
++from middlewared.plugins.boot_pool_user_data import (
++    USER_DATASET_COMPONENT, container_instance_real_path as _container_instance_real_path,
++    container_mountpoint_property, container_mountpoint_real_path as _container_mountpoint_real_path,
++)
++from middlewared.utils import BOOT_POOL_NAME_VALID
+ from truenas_os_pyutils.io import atomic_write
+ 
+ __all__ = (
+@@ -7,6 +12,8 @@
+     "container_dataset",
+     "container_dataset_mountpoint",
+     "container_instance_dataset_mountpoint",
++    "container_dataset_real_path",
++    "container_instance_real_path",
+     "update_etc_hosts",
+     "write_etc_hostname",
+ )
+@@ -16,17 +23,30 @@
+ 
+ def container_dataset(pool: str) -> str:
+     """Returns the ZFS filesystem path for containers in `pool`."""
+-    return f"{pool}/{CONTAINER_DS_NAME}"
++    parent = f"{pool}/{USER_DATASET_COMPONENT}" if pool in BOOT_POOL_NAME_VALID else pool
++    return f"{parent}/{CONTAINER_DS_NAME}"
+ 
+ 
+ def container_dataset_mountpoint(pool: str) -> str:
+     """Returns the mount point for the container filesystem."""
+-    return f"/{CONTAINER_DS_NAME}/{pool}"
++    return container_mountpoint_property(pool, BOOT_POOL_NAME_VALID, CONTAINER_DS_NAME)
+ 
+ 
+ def container_instance_dataset_mountpoint(pool: str, container_name: str) -> str:
+     """Returns the mount point for a specific container."""
+     return f"{container_dataset_mountpoint(pool)}/containers/{container_name}"
++
++
++def container_dataset_real_path(pool: str) -> str:
++    """Return the host-visible path for this pool's container dataset."""
++    return _container_mountpoint_real_path(pool, BOOT_POOL_NAME_VALID, CONTAINER_DS_NAME)
++
++
++def container_instance_real_path(pool: str, container_name: str) -> str:
++    """Return the host-visible rootfs path for one managed container."""
++    return _container_instance_real_path(
++        pool, container_name, BOOT_POOL_NAME_VALID, CONTAINER_DS_NAME
++    )
+ 
+ 
+ def write_etc_hostname(rootfs: str, name: str) -> None:
+--- a/middlewared/plugins/pool_/dataset.py
++++ b/middlewared/plugins/pool_/dataset.py
+@@ -10,6 +10,10 @@
+     PoolDatasetDeleteArgs, PoolDatasetDeleteResult,
+     PoolDatasetPromoteArgs, PoolDatasetPromoteResult, PoolDatasetRenameArgs, PoolDatasetRenameResult,
+     ZFSResourceQuery,
++)
++from middlewared.plugins.boot_pool_user_data import (
++    is_user_data_namespace_path, is_user_data_namespace_root,
++    user_data_root_mount_config_is_valid, user_data_namespace_root,
+ )
+ from middlewared.plugins.container.utils import CONTAINER_DS_NAME
+ from middlewared.plugins.zfs.exceptions import ZFSDestroyFailedException
+@@ -25,7 +29,9 @@
+ from middlewared.utils.filesystem import attrs as fs_attrs
+ from middlewared.utils.filter_list import filter_list
+ 
+-from .dataset_query_utils import generic_query, user_property_names_to_be_renamed
++from .dataset_query_utils import (
++    INTERNAL_DATASETS, generic_query, user_property_names_to_be_renamed,
++)
+ from .utils import (
+     CreateImplArgs,
+     CreateImplArgsDataclass,
+@@ -92,7 +98,36 @@
+         ]
+ 
+     @private
++    async def boot_pool_user_data_root_is_ready(self, name):
++        root = user_data_namespace_root(name, BOOT_POOL_NAME_VALID)
++        if root is None or not is_user_data_namespace_path(name, BOOT_POOL_NAME_VALID, INTERNAL_DATASETS):
++            return False
++
++        datasets = await self.call2(
++            self.s.zfs.resource.query_impl,
++            ZFSResourceQuery(paths=[root], properties=['quota', 'mountpoint', 'canmount']),
++        )
++        if not datasets:
++            return False
++
++        properties = datasets[0]['properties']
++        if not user_data_root_mount_config_is_valid(root, properties, BOOT_POOL_NAME_VALID):
++            return False
++        mountpoint = (properties.get('mountpoint') or {}).get('value')
++
++        try:
++            mounted = await self.middleware.call('filesystem.statfs', mountpoint)
++        except CallError as e:
++            if e.errno == errno.ENOENT:
++                return False
++            raise
++
++        return mounted.get('source') == root and mounted.get('dest') == mountpoint
++
++    @private
+     async def is_internal_dataset(self, dataset):
++        if is_user_data_namespace_path(dataset, BOOT_POOL_NAME_VALID, INTERNAL_DATASETS):
++            return False
+         pool = dataset.split('/')[0]
+         return not bool(filter_list([{'id': dataset, 'pool': pool}], await self.internal_datasets_filters()))
+ 
+@@ -148,6 +183,21 @@
+     async def __common_validation(self, verrors, schema, data, mode, parent=None, cur_dataset=None):
+         assert mode in ('CREATE', 'UPDATE')
+ 
++        if is_user_data_namespace_root(data['name'], BOOT_POOL_NAME_VALID):
++            if mode == 'UPDATE':
++                verrors.add(
++                    f'{schema}.name',
++                    'The boot-pool user-data namespace root is managed by the storage patch and cannot be changed.',
++                )
++            elif data.get('type') != 'FILESYSTEM':
++                verrors.add(f'{schema}.type', 'The boot-pool user-data namespace root must be a filesystem dataset.')
++            elif type(data.get('quota')) is not int or data['quota'] < 1024 ** 3:
++                verrors.add(
++                    f'{schema}.quota',
++                    'The boot-pool user-data namespace root requires an explicit finite quota of at least 1 GiB.',
++                )
++            verrors.check()
++
+         parents = get_dataset_parents(data['name'])
+         parent_name = None
+         if not parents:
+@@ -168,6 +218,15 @@
+             verrors.add(
+                 f'{schema}.name',
+                 f'{data["name"]!r} is using system internal managed dataset. Please specify a different parent.'
++            )
++
++        user_data_root = user_data_namespace_root(data['name'], BOOT_POOL_NAME_VALID)
++        if user_data_root and not is_user_data_namespace_root(data['name'], BOOT_POOL_NAME_VALID) and is_user_data_namespace_path(
++            data['name'], BOOT_POOL_NAME_VALID, INTERNAL_DATASETS
++        ) and not await self.boot_pool_user_data_root_is_ready(data['name']):
++            verrors.add(
++                f'{schema}.name',
++                f'{user_data_root} must exist with a finite quota, canmount=on, and mountpoint=/mnt/{user_data_root}.',
+             )
+ 
+         if not parent:
+@@ -565,6 +624,9 @@
+             )
+ 
+         parent_mp = parent_ds['mountpoint']
++        if is_user_data_namespace_root(data['name'], BOOT_POOL_NAME_VALID):
++            # boot-pool uses mountpoint=none; it is not a parent path to stat.
++            parent_mp = None
+         if parent_ds['locked'] or not parent_mp:
+             parent_st = {'acl': False}
+         else:
+@@ -746,6 +808,13 @@
+                 uprops[i.real_name] = transformed
+             else:
+                 zprops[i.real_name] = transformed
++
++        if is_user_data_namespace_root(data['name'], BOOT_POOL_NAME_VALID):
++            # The dataset UI has no mountpoint control. Pin the managed root to
++            # its required mountpoint and mount policy while preserving the UI quota.
++            zprops['quota'] = data['quota']
++            zprops['mountpoint'] = f"/mnt/{data['name']}"
++            zprops['canmount'] = 'on'
+ 
+         for up in data['user_properties']:
+             uprops[up['key']] = up['value']
+@@ -959,7 +1028,11 @@
+                 "params": ["tank/myuser"]
+             }
+         """
+-        if has_internal_path(id_):
++        allow_user_data_delete = (
++            is_user_data_namespace_path(id_, BOOT_POOL_NAME_VALID, INTERNAL_DATASETS)
++            and not is_user_data_namespace_root(id_, BOOT_POOL_NAME_VALID)
++        )
++        if has_internal_path(id_) and not allow_user_data_delete:
+             raise ValidationError('pool.dataset.delete', f'{id_} is an invalid location')
+ 
+         if not options['recursive']:
+@@ -1003,6 +1076,11 @@
+     @api_method(PoolDatasetPromoteArgs, PoolDatasetPromoteResult, roles=['DATASET_WRITE'])
+     async def promote(self, id_):
+         """Promote a cloned dataset."""
++        if is_user_data_namespace_root(id_, BOOT_POOL_NAME_VALID):
++            raise ValidationError(
++                'pool.dataset.promote',
++                'The boot-pool user-data namespace root is managed by the storage patch.',
++            )
+         return await self.call2(self.s.zfs.resource.promote, id_)
+ 
+     @api_method(
+@@ -1027,6 +1105,27 @@
+         renamed to dozer/a@new dozer/a/b@new. Renaming snapshots IS NOT recommended and can cause disruptions or \
+         service failures all the same.
+         """
++        current_is_boot_pool = id_.split('@', 1)[0].split('/', 1)[0] in BOOT_POOL_NAME_VALID
++        new_name = options['new_name']
++        new_is_boot_pool = new_name.split('@', 1)[0].split('/', 1)[0] in BOOT_POOL_NAME_VALID
++        if current_is_boot_pool or new_is_boot_pool:
++            current_is_user_data = is_user_data_namespace_path(
++                id_, BOOT_POOL_NAME_VALID, INTERNAL_DATASETS
++            ) and not is_user_data_namespace_root(id_, BOOT_POOL_NAME_VALID)
++            new_is_user_data = is_user_data_namespace_path(
++                new_name, BOOT_POOL_NAME_VALID, INTERNAL_DATASETS
++            ) and not is_user_data_namespace_root(new_name, BOOT_POOL_NAME_VALID)
++            if not (current_is_user_data and new_is_user_data):
++                raise ValidationError(
++                    'pool.dataset.rename.new_name',
++                    'Boot-pool resources may only be renamed within boot-pool/user-data descendants.',
++                )
++            if not await self.boot_pool_user_data_root_is_ready(id_):
++                raise ValidationError(
++                    'pool.dataset.rename.new_name',
++                    'The boot-pool user-data namespace is not provisioned with its required quota and mountpoint.',
++                )
++
+         if not options['force']:
+             raise ValidationError(
+                 'pool.dataset.rename.force',
+--- a/middlewared/plugins/pool_/dataset_query_utils.py
++++ b/middlewared/plugins/pool_/dataset_query_utils.py
+@@ -4,6 +4,7 @@
+ 
+ import truenas_pylibzfs
+ 
++from middlewared.plugins.boot_pool_user_data import is_user_data_namespace_path
+ from middlewared.plugins.container.utils import CONTAINER_DS_NAME
+ from middlewared.plugins.zfs.tier import get_dataset_tier_info_cached
+ from middlewared.plugins.zfs_.utils import TNUserProp
+@@ -894,8 +895,14 @@
+               False if it should be included in results
+     """
+     name = hdl.name
++    if name in BOOT_POOL_NAME_VALID:
++        # Keep the real pool root as the complete parent for the opted-in
++        # namespace. Its internal children are still pruned below.
++        return False
++    if is_user_data_namespace_path(name, BOOT_POOL_NAME_VALID, INTERNAL_DATASETS):
++        return False
+     for i in BOOT_POOL_NAME_VALID:
+-        if name == i or name.startswith(f"{i}/"):
++        if name.startswith(f"{i}/"):
+             return True
+     for i in INTERNAL_DATASETS:
+         if f"/{i}" in name:
+@@ -927,7 +934,6 @@
+         bool: True to continue iteration, False to halt iteration
+     """
+     if state.exclude_internal_datasets and is_internal_dataset(hdl):
+-        # is an internal dataset and told to exclude them from results
+         return True
+ 
+     info = build_info(hdl, state)
+--- a/middlewared/plugins/vm/vm_devices.py
++++ b/middlewared/plugins/vm/vm_devices.py
+@@ -29,9 +29,11 @@
+     VMDeviceVirtualSizeResult,
+     ZFSResourceQuery,
+ )
+-from middlewared.plugins.zfs.utils import has_internal_path
++from middlewared.plugins.boot_pool_user_data import is_user_data_namespace_path
++from middlewared.plugins.zfs.utils import INTERNAL_PATHS, has_internal_path
+ from middlewared.service import CallError, CRUDService, job, private
+ from middlewared.service_exception import InstanceNotFound, ValidationError
++from middlewared.utils import BOOT_POOL_NAME_VALID
+ from middlewared.utils.libvirt.device_factory import DeviceFactory
+ from middlewared.utils.libvirt.mixin import DeviceMixin
+ from middlewared.utils.libvirt.utils import ACTIVE_STATES
+@@ -141,7 +143,9 @@
+                     raise ValidationError(schema, f'{dip!r} is not a file', errno.EINVAL)
+ 
+                 vfs = self.middleware.call_sync('filesystem.statfs', dip)
+-                if has_internal_path(vfs['source']):
++                if has_internal_path(vfs['source']) and not is_user_data_namespace_path(
++                    vfs['source'], BOOT_POOL_NAME_VALID, INTERNAL_PATHS
++                ):
+                     raise ValidationError(
+                         schema,
+                         f'{dip!r} is in a protected system path ({vfs["source"]})',
+@@ -171,7 +175,9 @@
+                     raise ValidationError(schema, f'{sp!r} is not a directory', errno.EINVAL)
+ 
+                 vfs = self.middleware.call_sync('filesystem.statfs', dst['realpath'])
+-                if has_internal_path(vfs['source']):
++                if has_internal_path(vfs['source']) and not is_user_data_namespace_path(
++                    vfs['source'], BOOT_POOL_NAME_VALID, INTERNAL_PATHS
++                ):
+                     raise ValidationError(
+                         schema,
+                         f'{sp!r} is in a protected system path ({vfs["source"]})',
+@@ -196,7 +202,9 @@
+             raise ValidationError(schema, f'{ptn!r} does not exist', errno.ENOENT)
+         elif zv[0]['type'] != 'VOLUME':
+             raise ValidationError(schema, f'{ptn!r} is not a volume', errno.EINVAL)
+-        elif has_internal_path(ptn):
++        elif has_internal_path(ptn) and not is_user_data_namespace_path(
++            ptn, BOOT_POOL_NAME_VALID, INTERNAL_PATHS
++        ):
+             raise ValidationError(schema, f'{ptn!r} is in a protected system path', errno.EACCES)
+         elif not os.path.exists(ntp):
+             raise ValidationError(schema, f'{ntp!r} does not exist', errno.ENOENT)
+--- a/middlewared/plugins/zfs/utils.py
++++ b/middlewared/plugins/zfs/utils.py
+@@ -71,7 +71,16 @@
+     """
+     components = path.split("/")
+     if components[0] in BOOT_POOL_NAME_VALID:
+-        return True
++        # Keep the plugin helper out of zfs.utils' early import path.
++        from middlewared.plugins.boot_pool_user_data import (
++            is_user_data_namespace_path, is_user_data_namespace_root,
++        )
++        return (
++            is_user_data_namespace_root(path, BOOT_POOL_NAME_VALID)
++            or not is_user_data_namespace_path(
++                path, BOOT_POOL_NAME_VALID, INTERNAL_PATHS
++            )
++        )
+     return len(components) > 1 and components[1] in INTERNAL_PATHS
+ 
+ 
+--- a/middlewared/utils/libvirt/storage_devices.py
++++ b/middlewared/utils/libvirt/storage_devices.py
+@@ -3,7 +3,9 @@
+ from typing import Any
+ 
+ from middlewared.api.current import ZFSResourceQuery
+-from middlewared.plugins.zfs.utils import has_internal_path
++from middlewared.plugins.boot_pool_user_data import is_user_data_namespace_path
++from middlewared.plugins.zfs.utils import INTERNAL_PATHS, has_internal_path
++from middlewared.utils import BOOT_POOL_NAME_VALID
+ from middlewared.plugins.zfs.zvol_utils import zvol_name_to_path, zvol_path_to_name
+ from middlewared.plugins.zfs_.validation_utils import check_zvol_in_boot_pool_using_path
+ from middlewared.service_exception import ValidationErrors
+@@ -86,7 +88,9 @@
+             if device['attributes'].get('path'):
+                 verrors.add('attributes.path', 'The "path" attribute must not be specified when creating a zvol.')
+ 
+-            if has_internal_path(device['attributes']['zvol_name']):
++            if has_internal_path(device['attributes']['zvol_name']) and not is_user_data_namespace_path(
++                device['attributes']['zvol_name'], BOOT_POOL_NAME_VALID, INTERNAL_PATHS
++            ):
+                 # before doing anything, let's make sure the zvol
+                 # being created isn't within an internal path
+                 verrors.add(
+@@ -125,26 +129,34 @@
+                 verrors.add('attributes.path', 'Disk path is required.')
+             elif not path.startswith('/dev/zvol/'):
+                 verrors.add('attributes.path', 'Disk path must start with "/dev/zvol/".')
+-            elif check_zvol_in_boot_pool_using_path(path):
+-                verrors.add('attributes.path', 'Disk residing in boot pool cannot be consumed and is not supported.')
+             else:
+                 zvol_name = zvol_path_to_name(path)
+-                zvol = self.middleware.call_sync2(
+-                    self.middleware.services.zfs.resource.query_impl,
+-                    ZFSResourceQuery(paths=[zvol_name], properties=None),
+-                )
+-                if not zvol:
++                if (
++                    check_zvol_in_boot_pool_using_path(path)
++                    and not is_user_data_namespace_path(zvol_name, BOOT_POOL_NAME_VALID, INTERNAL_PATHS)
++                ):
+                     verrors.add(
+                         'attributes.path',
+-                        f'Zvol ({zvol_name}) path ({path}) does not exist.',
+-                        errno.ENOENT
++                        'Disk residing in boot pool cannot be consumed and is not supported.'
+                     )
+-                elif zvol[0]['type'] != 'VOLUME':
+-                    verrors.add('attributes.path', f'Path {path!r} ({zvol_name}) is not a volume.')
+-                elif has_internal_path(zvol_name):
+-                    verrors.add(
+-                        'attributes.path',
+-                        'Disk resides in an invalid location and is not supported.'
++                else:
++                    zvol = self.middleware.call_sync2(
++                        self.middleware.services.zfs.resource.query_impl,
++                        ZFSResourceQuery(paths=[zvol_name], properties=None),
+                     )
+-
++                    if not zvol:
++                        verrors.add(
++                            'attributes.path',
++                            f'Zvol ({zvol_name}) path ({path}) does not exist.',
++                            errno.ENOENT
++                        )
++                    elif zvol[0]['type'] != 'VOLUME':
++                        verrors.add('attributes.path', f'Path {path!r} ({zvol_name}) is not a volume.')
++                    elif has_internal_path(zvol_name) and not is_user_data_namespace_path(
++                        zvol_name, BOOT_POOL_NAME_VALID, INTERNAL_PATHS
++                    ):
++                        verrors.add(
++                            'attributes.path',
++                            'Disk resides in an invalid location and is not supported.'
++                        )
+         super().validate_middleware(device, verrors, old, instance, update)

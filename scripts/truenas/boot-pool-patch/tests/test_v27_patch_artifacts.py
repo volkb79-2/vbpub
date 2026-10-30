@@ -145,7 +145,7 @@ def test_v27_fresh_patch_lane_refuses_preconfigured_storage() -> None:
 
     controller = LIVE_V27_PATCH.read_text()
     compile(controller, str(LIVE_V27_PATCH), "exec")
-    assert "require_fresh_unpatched_target(target, profile)" in controller
+    assert "require_fresh_unpatched_target(target, profile, adapter.version)" in controller
     assert 'target.query("container.query"' in controller
     assert 'target.query("vm.query"' in controller
     assert 'target.call("vm.virtualization_details"' in controller
@@ -154,12 +154,18 @@ def test_v27_fresh_patch_lane_refuses_preconfigured_storage() -> None:
     assert 'target.query("pool.query"' not in controller
     assert "bundle_from_environment()" in controller
     assert "TRUENAS_V27_PATCH_BUNDLE_SHA256" in controller
+    assert 'action == "reapply-after-update"' in controller
+    assert 'action == "uninstall-stale-record"' in controller
+    assert "adapter_for_version(version)" in controller
     assert '"zvol-blocksize.patch"' in controller
     assert '"repair_v27_zvol_blocksize_remote.sh"' in controller
+    assert '"reapply_v27_after_update_remote.sh"' in controller
 
     live_runner = LIVE_GATE_RUNNER.read_text()
     assert 'if args.lane == "live-v27-patch"' in live_runner
-    assert "make_bundle(child_env[\"TRUENAS_STORAGE_PROFILE\"])" in live_runner
+    assert "make_bundle(" in live_runner
+    assert 'child_env["TRUENAS_STORAGE_PROFILE"]' in live_runner
+    assert 'child_env["TRUENAS_EXPECTED_VERSION"]' in live_runner
     assert "TRUENAS_V27_PATCH_BUNDLE" in live_runner
 
     ui = (PATCH_ROOT / "acceptance" / "live_ui.py").read_text()
@@ -217,6 +223,70 @@ def test_v27_root_create_repair_is_digest_guarded_and_transactional() -> None:
         "TRUENAS_V27_EXPECTED_PRIOR_DATASET_SHA256",
         "TRUENAS_V27_EXPECTED_PRIOR_DATASET_INFO_SHA256",
     } <= forwarded
+
+
+def test_v27_post_update_reapply_is_exact_and_transactional() -> None:
+    recovery = PATCH_ROOT / "acceptance" / "reapply_v27_after_update_remote.sh"
+    recovery_text = recovery.read_text()
+    assert subprocess.run(["bash", "-n", str(recovery)], check=False).returncode == 0
+    assert '"target_count": 19' in recovery_text
+    assert 'mode=${3:?expected mode is required}' in recovery_text
+    assert 'stale v27 install record' in recovery_text
+    assert 'sha256sum --check' in recovery_text
+    assert 'boot-pool/user-data' in recovery_text
+    assert 'zfs mount "$dataset"' in recovery_text
+    assert 'restore_previous_source' in recovery_text
+    assert 'transaction_committed=1' in recovery_text
+    assert 'middlewared.service' in recovery_text
+
+    runner = LIVE_GATE_RUNNER.read_text()
+    assert '"reapply-after-update", "uninstall-stale-record"' in runner
+    assert 'TRUENAS_TEST_ALLOW_PATCH_REAPPLY' in runner
+    assert 'TRUENAS_TEST_ALLOW_PATCH_UNINSTALL' in runner
+    assert 'TRUENAS_V27_EXPECTED_PRIOR_BUNDLE_SHA256' in runner
+
+    gate = tomllib.loads(RUN_GATE_CONFIG.read_text())
+    forwarded = set(gate["environments"]["networked-tester"]["forward_env"])
+    assert {
+        "TRUENAS_TEST_ALLOW_PATCH_REAPPLY",
+        "TRUENAS_TEST_ALLOW_PATCH_UNINSTALL",
+        "TRUENAS_V27_EXPECTED_PRIOR_BUNDLE_SHA256",
+    } <= forwarded
+
+
+def test_v27_latest_nightly_adapter_has_an_exact_version_and_19_target_manifest() -> None:
+    import json
+
+    adapter_dir = PATCH_ROOT / "v27-nightly-20261027"
+    manifest = json.loads((adapter_dir / "adapter.json").read_text())
+    assert manifest == {
+        "id": "v27-nightly-20261027",
+        "version": "27.0.0-MASTER+20261027-173422",
+        "train": "TrueNAS-27-Nightlies",
+        "reapply_from": "27.0.0-RC.1",
+        "reapply_from_bundle_sha256": "07fd9ba7e4df11349525203ac29ee6377b56ff55e1391b7b2c4b72123914895f",
+        "target_count": 19,
+    }
+    targets = [line.split(None, 1) for line in (adapter_dir / "targets.sha256").read_text().splitlines()]
+    assert len(targets) == manifest["target_count"]
+    assert len({path for _, path in targets}) == manifest["target_count"]
+    assert all(len(digest) == 64 and set(digest) <= set("0123456789abcdef") for digest, _ in targets)
+    assert any(path == "middlewared/plugins/boot.py" for _, path in targets)
+    readme = (adapter_dir / "README.md").read_text()
+    assert "19 middleware target hashes" in readme
+    assert "boot.attach" in readme and "reserved partition" in readme
+    for filename in ("middleware.patch", "storage.patch", "libvirt.patch", "boot-mount.patch", "zvol-blocksize.patch", "ui-pools.patch"):
+        assert (adapter_dir / filename).is_file()
+
+
+def test_v27_nightly_boot_attach_guard_runs_before_boot_format() -> None:
+    adapter_dir = PATCH_ROOT / "v27-nightly-20261027"
+    patch_text = (adapter_dir / "middleware.patch").read_text()
+    section = patch_section(patch_text, "middlewared/plugins/boot.py")
+    assert "boot_disk_partition.assert_boot_attach_allowed" in section
+    assert section.index("assert_boot_attach_allowed") < section.index("boot.format")
+    helper = (PATCH_ROOT / "shared" / "boot_disk_partition.py").read_text()
+    assert "cannot use reserved boot-disk partition" in helper
 
 
 def test_v27_zvol_form_repair_is_digest_bound_and_preserves_the_ui_root() -> None:

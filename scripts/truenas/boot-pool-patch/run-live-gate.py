@@ -70,7 +70,7 @@ UI_LANES = frozenset({
 })
 SSH_LANES = LIVE_LANES - {"live-ui-auth", "live-ui-prepare-ssh"}
 EXTERNAL_TARGET_LANES = frozenset({
-    "live-inspect", "live-v27-patch", "live-v28-patch", "live-path-b-provision", "live-ui-auth",
+    "live-inspect", "live-storage", "live-boot", "live-v27-patch", "live-v28-patch", "live-path-b-provision", "live-ui-auth",
     "live-ui-prepare-ssh", "live-path-b-partition", "live-ui", "live-ui-observed-v1001",
     "live-api-probe",
 })
@@ -233,6 +233,8 @@ def external_target(lane: str) -> tuple[str, str | None]:
     if (not host or host != host.strip() or host.startswith("-")
             or any(char in host for char in "/\\@\x00 \t\r\n")):
         raise RunnerError("external-host mode requires TRUENAS_TEST_HOST to be a hostname or IP address")
+    if lane == "live-boot" and os.environ.get("TRUENAS_TEST_ALLOW_REBOOT") != "1":
+        raise RunnerError("external live-boot requires TRUENAS_TEST_ALLOW_REBOOT=1 for the selected disposable host")
     if lane in UI_LANES:
         ui_url = validate_external_ui_url(os.environ.get("TRUENAS_UI_URL", ""))
     else:
@@ -264,6 +266,7 @@ def required_live_environment(
     if lane == "live-vdev-topology" and profile != "path-a":
         raise RunnerError("live-vdev-topology requires a fresh Path A guest with a UI-created boot-pool/user-data root")
     path_b_provision: dict[str, str] = {}
+    path_b_disk_identity: dict[str, str] = {}
     if lane in {"live-path-b-provision", "live-path-b-partition"} or (
         lane == "live-api-probe" and profile == "path-b"
     ):
@@ -285,6 +288,24 @@ def required_live_environment(
         if minimum_bytes <= 0:
             raise RunnerError("TRUENAS_MINIMUM_FREE_BYTES must be positive")
         path_b_provision["TRUENAS_MINIMUM_FREE_BYTES"] = str(minimum_bytes)
+    if lane == "live-boot":
+        disk = os.environ.get("TRUENAS_DISK_DEVICE", "")
+        boot_partition = os.environ.get("TRUENAS_BOOT_POOL_PARTITION", "")
+        if bool(disk) != bool(boot_partition):
+            raise RunnerError(
+                "TRUENAS_DISK_DEVICE and TRUENAS_BOOT_POOL_PARTITION must be supplied together"
+            )
+        if disk:
+            for variable, value in (
+                ("TRUENAS_DISK_DEVICE", disk),
+                ("TRUENAS_BOOT_POOL_PARTITION", boot_partition),
+            ):
+                if not value.startswith("/dev/"):
+                    raise RunnerError(f"{variable} must name an explicit /dev path")
+            path_b_disk_identity = {
+                "TRUENAS_DISK_DEVICE": disk,
+                "TRUENAS_BOOT_POOL_PARTITION": boot_partition,
+            }
     if lane in {"live-boot", "live-update"}:
         if profile != "path-a":
             raise RunnerError(f"{lane} requires TRUENAS_STORAGE_PROFILE=path-a")
@@ -295,6 +316,8 @@ def required_live_environment(
     prior_patch_bundle = ""
     v27_patch_action = ""
     v27_patch_repair_guard = ""
+    v27_patch_reapply_guard = ""
+    v27_patch_uninstall_guard = ""
     v27_prior_bundle = ""
     v27_prior_bundle_digest = ""
     v27_prior_dataset_digest = ""
@@ -303,7 +326,7 @@ def required_live_environment(
         v27_patch_action = os.environ.get("TRUENAS_V27_PATCH_ACTION", "install")
         if v27_patch_action not in {
             "install", "repair-root-create", "repair-root-parent-mountpoint",
-            "repair-zvol-blocksize",
+            "repair-zvol-blocksize", "reapply-after-update", "uninstall-stale-record",
         }:
             raise RunnerError("TRUENAS_V27_PATCH_ACTION is not a supported v27 patch action")
         v27_patch_repair_guard = os.environ.get("TRUENAS_TEST_ALLOW_PATCH_REPAIR", "")
@@ -313,9 +336,45 @@ def required_live_environment(
         v27_prior_dataset_info_digest = os.environ.get(
             "TRUENAS_V27_EXPECTED_PRIOR_DATASET_INFO_SHA256", ""
         )
-        if v27_patch_action in {
+        v27_patch_reapply_guard = os.environ.get("TRUENAS_TEST_ALLOW_PATCH_REAPPLY", "")
+        v27_patch_uninstall_guard = os.environ.get("TRUENAS_TEST_ALLOW_PATCH_UNINSTALL", "")
+        if v27_patch_action in {"reapply-after-update", "uninstall-stale-record"}:
+            if profile != "path-a":
+                raise RunnerError("post-update v27 recovery requires TRUENAS_STORAGE_PROFILE=path-a")
+            if v27_patch_repair_guard:
+                raise RunnerError("TRUENAS_TEST_ALLOW_PATCH_REPAIR is only valid for a source repair action")
+            if v27_prior_bundle or v27_prior_dataset_digest or v27_prior_dataset_info_digest:
+                raise RunnerError("post-update recovery binds its stale record by digest and does not upload an old bundle")
+            expected_guard = (
+                v27_patch_reapply_guard if v27_patch_action == "reapply-after-update"
+                else v27_patch_uninstall_guard
+            )
+            other_guard = (
+                v27_patch_uninstall_guard if v27_patch_action == "reapply-after-update"
+                else v27_patch_reapply_guard
+            )
+            if expected_guard != "1" or other_guard:
+                raise RunnerError("set only the matching v27 post-update recovery guard to 1")
+            if not re.fullmatch(r"[0-9a-f]{64}", v27_prior_bundle_digest):
+                raise RunnerError("post-update recovery requires the exact prior RC.1 bundle SHA-256")
+            acceptance_dir = worktree_root / "scripts" / "truenas" / "boot-pool-patch" / "acceptance"
+            sys.path.insert(0, str(acceptance_dir))
+            from v27_patch_state import adapter_for_version
+
+            try:
+                v27_adapter = adapter_for_version(os.environ["TRUENAS_EXPECTED_VERSION"])
+            except ValueError as exc:
+                raise RunnerError(str(exc)) from exc
+            if (
+                v27_adapter.reapply_from is None
+                or v27_prior_bundle_digest != v27_adapter.reapply_from_bundle_sha256
+            ):
+                raise RunnerError("post-update recovery digest does not match the exact selected adapter contract")
+        elif v27_patch_action in {
             "repair-root-create", "repair-root-parent-mountpoint", "repair-zvol-blocksize",
         }:
+            if v27_patch_reapply_guard or v27_patch_uninstall_guard:
+                raise RunnerError("post-update recovery guards are only valid with a recovery action")
             if profile != "path-a":
                 raise RunnerError("v27 storage repair requires TRUENAS_STORAGE_PROFILE=path-a")
             if v27_patch_repair_guard != "1":
@@ -340,8 +399,9 @@ def required_live_environment(
         elif (
             v27_patch_repair_guard or prior_bundle_path or v27_prior_bundle_digest
             or v27_prior_dataset_digest or v27_prior_dataset_info_digest
+            or v27_patch_reapply_guard or v27_patch_uninstall_guard
         ):
-            raise RunnerError("v27 repair variables require a guarded repair action")
+            raise RunnerError("v27 recovery variables require their guarded action")
     if lane == "live-v28-patch":
         patch_action = os.environ.get("TRUENAS_V28_PATCH_ACTION", "install")
         if patch_action not in {"install", "replace"}:
@@ -601,11 +661,14 @@ def required_live_environment(
         "TRUENAS_TEST_ALLOW_DISK_PROVISION": os.environ.get(
             "TRUENAS_TEST_ALLOW_DISK_PROVISION", ""
         ),
+        **path_b_disk_identity,
         "TRUENAS_V28_PATCH_ACTION": patch_action,
         "TRUENAS_TEST_ALLOW_PATCH_REPLACE": patch_replace_guard,
         "TRUENAS_V28_EXPECTED_PRIOR_BUNDLE_SHA256": prior_patch_bundle,
         "TRUENAS_V27_PATCH_ACTION": v27_patch_action,
         "TRUENAS_TEST_ALLOW_PATCH_REPAIR": v27_patch_repair_guard,
+        "TRUENAS_TEST_ALLOW_PATCH_REAPPLY": v27_patch_reapply_guard,
+        "TRUENAS_TEST_ALLOW_PATCH_UNINSTALL": v27_patch_uninstall_guard,
         "TRUENAS_V27_PRIOR_PATCH_BUNDLE": v27_prior_bundle,
         "TRUENAS_V27_EXPECTED_PRIOR_BUNDLE_SHA256": v27_prior_bundle_digest,
         "TRUENAS_V27_EXPECTED_PRIOR_DATASET_SHA256": v27_prior_dataset_digest,
@@ -969,7 +1032,9 @@ def run(args: argparse.Namespace) -> int:
         sys.path.insert(0, str(acceptance_dir))
         from live_v27_patch import make_bundle
 
-        bundle, digest = make_bundle(child_env["TRUENAS_STORAGE_PROFILE"])
+        bundle, digest = make_bundle(
+            child_env["TRUENAS_STORAGE_PROFILE"], child_env["TRUENAS_EXPECTED_VERSION"]
+        )
         child_env["TRUENAS_V27_PATCH_BUNDLE"] = str(bundle.resolve(strict=True))
         child_env["TRUENAS_V27_PATCH_BUNDLE_SHA256"] = digest
         print(f"[patch-bundle] {bundle.name} sha256={digest}", flush=True)

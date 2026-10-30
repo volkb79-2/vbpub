@@ -63,25 +63,18 @@ the nearby dataset-only field sets `refquota`. The patch pins the required
 mountpoint and mount policy. The previous apparent quota submission defect
 was the UI test filling the dataset-only `refquota` field. The corrected
 PWMCP interaction captures the actual RPC payload and verifies the finite
-`quota`; its preserved follow-up UI run created and directly verified the
-root before failing at a later VM-zvol step. The Path B `ui-wizard` route
-reserves the free-tail partition with the guarded partition-only lane, then
-asks the TrueNAS UI to create `boot-disk-data`. The current v27 wizard omits
-`/dev/vda4` from `disk.query` and creates no pool; no UI route that creates
-`/dev/vda4` itself has been demonstrated. The current worktree also adds a
-candidate `preprovisioned` mode that creates/registers the pool through the
-guarded provisioner before testing downstream dataset, zvol, container, and
-VM forms in the UI. Its registered unit gate passed on 2026-10-21 with 170
-tests and 45 subtests; fresh live UI acceptance remains open, and this mode
-fails if the browser submits any `pool.create` request. It does not demonstrate
-UI pool creation. See the [boot-pool patch design
-guide](boot-pool-patch/docs/DESIGN-GUIDE.md#pwmcp-storage-ui-acceptance) and
-[UI consumer steps](boot-pool-patch/docs/CONSUMERS.md#run-pwmcp-ui-storage-acceptance).
-The registered Path B UI run now includes the Disks screen inspection. It
-showed only the whole boot-pool disk and no partition controls. The pool wizard
-reported no available disks and stopped before `pool.create`; no UI-created
-`/dev/vda4` or `boot-disk-data` has been demonstrated. Preserve the baseline
-order of guarded partition-only lane first and TrueNAS UI pool creation second.
+`quota`. On the latest v27 nightly, the full Path A/B API/UI matrix passed on
+v1001: the Path B `ui-wizard` route reserved the free-tail partition with the
+guarded partition-only lane, then the TrueNAS UI created `boot-disk-data` from
+that partition and completed dataset, container, and VM flows. The earlier
+diagnostic where `disk.query` omitted `/dev/vda4` is historical; the current
+shim supplies the eligible reserved partition to the wizard. The separate
+`preprovisioned` mode tests downstream UI forms after the guarded provisioner
+creates/registers the pool; its registered unit gate passed on 2026-10-21
+with 170 tests and 45 subtests, but that separate mode has not had a fresh live
+run and rejects any browser `pool.create` request. See the [boot-pool patch
+design guide](boot-pool-patch/docs/DESIGN-GUIDE.md#pwmcp-storage-ui-acceptance)
+and [UI consumer steps](boot-pool-patch/docs/CONSUMERS.md#run-pwmcp-ui-storage-acceptance).
 
 For this cache use case, the durable data stays on the other disk; the
 system-disk zvol is only an optional cache device. Scripted `zpool` checks
@@ -107,51 +100,29 @@ build, so there is no need to inventory this setting as missing from the UI.
 See the official [Preferences guide](https://www.truenas.com/docs/scale/27/toptoolbar/settings/)
 and [Advanced Settings guide](https://www.truenas.com/docs/scale/27/systemsettings/advanced/advancedsettings/).
 
-The patch is experimental. Registered v27 and v28 storage gates prove that
-existing middleware-managed container datasets survive refused destroy and
-snapshot attempts, with direct ZFS checks before and after each action. Path A
-reboot/remount passed on v27 and v28; the v28 Path B partition and storage
-checks also passed. The earlier v27 Path B storage run reused a Path A COW
-guest, so it does not close fresh Path B UI acceptance. On fresh patched v27
-r4, the registered PWMCP UI created the 2 GiB `boot-pool/user-data` root with
-its pinned mountpoint, `canmount=on`, and live ZFS mount. It wrote to a
-user-created filesystem, created 128 MiB VM/cache zvols, selected `boot-pool`
-for a container and verified its direct ZFS backing, and submitted a VM wizard
-using the boot-pool zvol. The cache zvol passed add/status/remove/health/export
-checks on a temporary file-backed pool using direct `zpool` commands, not the
-TrueNAS UI. The gate cleaned its per-run objects. A registered read-only
-inventory at a later checkpoint confirmed the user filesystem and zvols, and
-`boot-pool` ONLINE. That point-in-time inventory found no container/VM records or
-probe snapshots; the middleware image cache retains
-`boot-pool/user-data/.truenas_containers/images/alpine:3.24:amd64:default:20261016_13:00@image`.
-This confirms data presence at that checkpoint, not retention through the v27
-to v28 update. SMB/NFS pages opened, but no share or client access was tested.
-A clean repeat UI lane on 2026-10-19 again passed dataset writes, zvol
-creation, boot-pool container selection/creation, and VM wizard submission
-with an existing boot-pool zvol. It also confirmed the per-user Session
-Timeout field at account menu → Preferences; the field showed 300 seconds.
-The follow-up inventory passed with no probe datasets, container records, or
-VM records. See the [UI run](boot-pool-patch/artifacts/live-ui-v27-path-a-clean-20261019.log)
-and [post-run inventory](boot-pool-patch/artifacts/live-inspect-v27-path-a-clean-20261019-post-ui.log).
-On a separate fresh patched Path B guest, the registered patch, read-only
-inventory, and partition-only lanes passed. Kernel `lsblk` sees the reserved
-4 GiB `/dev/vda4`, while middleware and browser `disk.query` return only
-`/dev/vda`. The Disks screen has no partition controls; the pool wizard reports
-zero raw capacity and no disks and submits no `pool.create`. The post-attempt
-read-only inventory confirms `boot-pool` ONLINE and no `boot-disk-data` pool or
-probe data. Evidence is in the [registered UI run](boot-pool-patch/artifacts/live-ui-v27-path-b-r1-after-cleanup-with-disks-screen-20261018.log)
-and [post-attempt inventory](boot-pool-patch/artifacts/live-inspect-v27-path-b-r1-after-disks-screen-20261018.log).
-The preprovisioned UI route passed its registered unit gate with 170 tests and
-45 subtests; its fresh live acceptance remains open.
-Path B UI partition and pool creation, downstream UI storage checks,
-reboot/import and update survival, controlled v27 reboot/update and automatic
-remount through update, retention of existing data/container/VM objects through
-v27→v28 update and reapplying the v28 patch, a real second-disk cache target,
-TrueNAS UI/middleware cache configuration, share-client access, VM guest boot,
-and actual KVM selection remain open. The v28 update test proved a ZFS marker
-survived only after the test manually mounted it; later v28 API storage tests
-created fresh objects and do not prove pre-existing workload retention. See the
-[patch handoff](boot-pool-patch/HANDOFF.md).
+Current live acceptance on v1001 covers the latest checked v27 and v28
+nightlies. The v27 build `27.0.0-MASTER+20261027-173422` passed the full Path
+A/B API/UI matrix, including Path B wizard pool creation and dataset, zvol,
+container, VM, and share forms. After a repeat RC.1-to-nightly update,
+`reapply-after-update` validated the exact 19-target adapter, archived the
+stale RC.1 record, and mounted Path A root and eligible descendants at boot.
+The guarded v27 reboot/import check passed. The host then upgraded to
+`28.0.0-MASTER+20261027-175229`; boot-pool and Path B pool identity survived,
+the exact v28 adapter installed, and its reboot/import check passed. No newer
+v28 nightly was listed on the official feed on 2026-10-30. See the patch
+[design guide](boot-pool-patch/docs/DESIGN-GUIDE.md#v27-nightly-update-and-reapply)
+and [consumer procedure](boot-pool-patch/docs/CONSUMERS.md#reapply-v27-after-an-update)
+for the update boundary and guarded commands.
+
+The patch remains experimental. v1001 has no `/dev/kvm`, so VM API acceptance
+verified a QEMU TCG process start but did not boot a guest OS or exercise actual
+KVM selection. SMB/NFS UI and record workflows passed, but a share client could
+not connect from the devcontainer. The available Netcup controller exposes
+disk inspection without a disk-attach operation, so no second disk was added
+or purchased; a real second-disk cache target and UI/middleware cache setup
+remain open. Retention of pre-existing user workloads through update also
+needs a direct content/record comparison. See the [patch handoff](boot-pool-patch/HANDOFF.md)
+for the remaining acceptance boundaries.
 
 ## Workstreams
 

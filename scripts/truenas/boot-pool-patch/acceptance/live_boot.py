@@ -8,13 +8,16 @@ disposable TrueNAS VM or host whose reboot is explicitly planned.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
+import re
 import shlex
 import sys
 import time
 import uuid
 
 from remote import RemoteError, Target, flatten_datasets
+from path_b_ui_setup import reserved_partition_four_name
 
 
 def require(condition: bool, message: str) -> None:
@@ -98,6 +101,14 @@ def require_mount(target: Target, dataset: str, mountpoint: str) -> None:
     require(mounted == "yes", f"ZFS dataset {dataset} mounted={mounted!r}")
 
 
+def boot_pool_state(target: Target) -> str:
+    """Capture boot-pool GUID, health, and resolved vdev topology for comparison."""
+    return "\n".join([
+        target.shell("zpool get -H -o value guid,health boot-pool", timeout=45),
+        target.shell("zpool status -P -L boot-pool", timeout=45),
+    ])
+
+
 def unmount_mounted_user_data_tree(target: Target, root: str) -> list[str]:
     """Unmount mounted filesystems below root, deepest first, without force."""
     listing = target.shell(
@@ -140,6 +151,141 @@ def unmount_mounted_user_data_tree(target: Target, root: str) -> list[str]:
     return ordered
 
 
+def partition_table_state(target: Target, disk: str) -> str:
+    tree = json.loads(target.run([
+        "lsblk", "-J", "--tree", "-b", "-p", "-o",
+        "PATH,PARTN,PARTLABEL,PARTTYPE,PARTUUID,SIZE,TYPE", disk,
+    ], timeout=45))
+    partitions: list[dict[str, object]] = []
+
+    def visit(node: dict[str, object]) -> None:
+        if node.get("type") == "part":
+            partitions.append({
+                key: node.get(key)
+                for key in ("path", "partn", "partlabel", "parttype", "partuuid", "size")
+            })
+        for child in node.get("children") or []:
+            if isinstance(child, dict):
+                visit(child)
+
+    roots = tree.get("blockdevices")
+    require(isinstance(roots, list) and len(roots) == 1 and isinstance(roots[0], dict),
+            f"lsblk did not return the selected whole disk {disk!r}")
+    visit(roots[0])
+    partitions.sort(key=lambda row: (int(row["partn"] or 0), str(row["path"] or "")))
+    gpt = target.run(["sgdisk", "--print", disk], timeout=45)
+    return json.dumps(partitions, sort_keys=True) + "\n" + gpt
+
+
+def path_b_pool_state(target: Target, disk: str, boot_partition: str) -> dict[str, object] | None:
+    rows = target.query("pool.query", [["name", "=", "boot-disk-data"]], timeout=90)
+    require(isinstance(rows, list), f"pool.query returned an invalid Path B inventory: {rows!r}")
+    if not rows:
+        return None
+    require(len(rows) == 1 and isinstance(rows[0], dict),
+            f"expected one registered boot-disk-data pool: {rows!r}")
+    pool = rows[0]
+    pool_id = pool.get("id")
+    require(type(pool_id) is int and pool_id > 0, f"Path B pool id is invalid: {pool!r}")
+    require(pool.get("status") == "ONLINE", f"Path B middleware status is not ONLINE: {pool!r}")
+    guid = target.run(["zpool", "get", "-H", "-o", "value", "guid", "boot-disk-data"], timeout=45)
+    require(guid.isdigit() and str(pool.get("guid")) == guid,
+            f"Path B pool GUID differs between middleware and ZFS: row={pool!r}, direct={guid!r}")
+    pool_status = target.run(["zpool", "list", "-H", "-o", "health", "boot-disk-data"], timeout=45)
+    require(pool_status == "ONLINE", f"Path B ZFS health is not ONLINE: {pool_status!r}")
+    topology = target.run(["zpool", "status", "-P", "-L", "boot-disk-data"], timeout=45)
+    leaves = tuple(sorted(re.findall(
+        r"(?m)^\s+(/dev/\S+)\s+(?:ONLINE|DEGRADED|FAULTED|UNAVAIL|OFFLINE)\b", topology
+    )))
+    expected_partition = "/dev/" + reserved_partition_four_name(disk)
+    expected_leaf = target.run(["readlink", "-f", expected_partition], timeout=30)
+    resolved_leaves = tuple(sorted(
+        target.run(["readlink", "-f", leaf], timeout=30) for leaf in leaves
+    ))
+    require(resolved_leaves == (expected_leaf,),
+            f"Path B pool is not solely on its reserved partition {expected_partition}: {leaves!r}")
+    partuuid = target.run(["lsblk", "-dnro", "PARTUUID", expected_partition], timeout=30)
+    require(re.fullmatch(r"[0-9a-fA-F-]{36}", partuuid) is not None,
+            f"reserved Path B partition has an invalid PARTUUID: {partuuid!r}")
+    boot_leaf = target.run(["readlink", "-f", boot_partition], timeout=30)
+    boot_topology = target.run(["zpool", "status", "-P", "-L", "boot-pool"], timeout=45)
+    boot_leaves = {
+        target.run(["readlink", "-f", leaf], timeout=30)
+        for leaf in re.findall(
+            r"(?m)^\s+(/dev/\S+)\s+(?:ONLINE|DEGRADED|FAULTED|UNAVAIL|OFFLINE)\b",
+            boot_topology,
+        )
+    }
+    require(boot_leaf in boot_leaves,
+            f"selected boot-pool partition is not a boot-pool leaf: {boot_partition!r}")
+    return {
+        "pool_id": pool_id,
+        "guid": guid,
+        "partition": expected_partition,
+        "partuuid": partuuid.lower(),
+        "leaves": resolved_leaves,
+        "status": pool_status,
+        "partition_table": partition_table_state(target, disk),
+    }
+
+
+def path_b_pool_identity(state: dict[str, object]) -> tuple[object, ...]:
+    return tuple(state[key] for key in (
+        "guid", "partition", "partuuid", "leaves", "status", "partition_table",
+    ))
+
+
+def require_path_b_pool_unchanged(
+    before: dict[str, object], after: dict[str, object],
+) -> None:
+    if path_b_pool_identity(before) != path_b_pool_identity(after):
+        raise RemoteError(
+            "Path B pool or disk layout changed across reboot/import: "
+            f"before={path_b_pool_identity(before)!r}, after={path_b_pool_identity(after)!r}"
+        )
+
+
+def export_path_b_pool(target: Target, state: dict[str, object]) -> None:
+    job_id = target.call("pool.export", state["pool_id"], {"destroy": False}, timeout=120)
+    require(type(job_id) is int and job_id > 0, f"pool.export returned an invalid job id: {job_id!r}")
+    target.wait_job(job_id, timeout=300, label="Path B pool.export destroy=false")
+    remaining = target.query("pool.query", [["name", "=", "boot-disk-data"]], timeout=90)
+    require(remaining == [], f"pool.export destroy=false retained a middleware row: {remaining!r}")
+    imported = target.run(["zpool", "list", "-H", "-o", "name"], timeout=45).splitlines()
+    require("boot-disk-data" not in imported,
+            f"pool.export destroy=false left Path B imported: {imported!r}")
+
+
+def reimport_path_b_pool(target: Target, expected: dict[str, object]) -> dict[str, object]:
+    find_job = target.call("pool.import_find", timeout=120)
+    require(type(find_job) is int and find_job > 0,
+            f"pool.import_find returned an invalid job id: {find_job!r}")
+    found = target.wait_job(find_job, timeout=300, label="Path B pool.import_find")
+    require(isinstance(found, list), f"pool.import_find returned an invalid result: {found!r}")
+    matches = [
+        row for row in found
+        if isinstance(row, dict)
+        and row.get("name") == "boot-disk-data"
+        and str(row.get("guid")) == str(expected["guid"])
+    ]
+    require(len(matches) == 1,
+            f"pool.import_find did not return the captured Path B GUID: {found!r}")
+    import_job = target.call(
+        "pool.import_pool", {"guid": str(expected["guid"]), "name": "boot-disk-data"}, timeout=120
+    )
+    require(type(import_job) is int and import_job > 0,
+            f"pool.import_pool returned an invalid job id: {import_job!r}")
+    target.wait_job(import_job, timeout=300, label="Path B pool.import_pool")
+    after = path_b_pool_state(
+        target,
+        disk=os.environ["TRUENAS_DISK_DEVICE"],
+        boot_partition=os.environ["TRUENAS_BOOT_POOL_PARTITION"],
+    )
+    require(after is not None, "Path B pool is missing after middleware import")
+    require_path_b_pool_unchanged(expected, after)
+    return after
+
+
 def main() -> int:
     if os.environ.get("TRUENAS_TEST_ALLOW_MUTATIONS") != "1":
         raise RemoteError("set TRUENAS_TEST_ALLOW_MUTATIONS=1 only for a disposable TrueNAS target")
@@ -157,6 +303,22 @@ def main() -> int:
     version = str(info.get("version", ""))
     require(version == expected_version, f"expected TrueNAS {expected_version}, got {version!r}")
     check_no_running_guests(target)
+
+    initial_path_b_rows = target.query(
+        "pool.query", [["name", "=", "boot-disk-data"]], timeout=90
+    )
+    require(isinstance(initial_path_b_rows, list),
+            f"pool.query returned an invalid Path B inventory: {initial_path_b_rows!r}")
+    before_path_b: dict[str, object] | None = None
+    disk = os.environ.get("TRUENAS_DISK_DEVICE", "")
+    boot_partition = os.environ.get("TRUENAS_BOOT_POOL_PARTITION", "")
+    if initial_path_b_rows:
+        require(bool(disk) and bool(boot_partition),
+                "Path B exists; TRUENAS_DISK_DEVICE and TRUENAS_BOOT_POOL_PARTITION are required to verify it")
+        before_path_b = path_b_pool_state(target, disk, boot_partition)
+        require(before_path_b is not None, "Path B inventory disappeared during read-only preflight")
+    before_boot_pool = boot_pool_state(target)
+    path_b_exported = False
 
     root = "boot-pool/user-data"
     root_mountpoint = f"/mnt/{root}"
@@ -231,6 +393,28 @@ def main() -> int:
         # explicit environment variable in addition to the mutation guard.
         reboot_and_wait("reboot")
 
+        require(boot_pool_state(target) == before_boot_pool,
+                "boot-pool GUID, health, or vdev status changed across reboot")
+        if before_path_b is not None:
+            after_reboot_path_b = path_b_pool_state(target, disk, boot_partition)
+            require(after_reboot_path_b is not None,
+                    "reserved-partition Path B pool did not return after reboot")
+            require_path_b_pool_unchanged(before_path_b, after_reboot_path_b)
+            report(
+                "path-b-reboot",
+                f"boot-disk-data GUID {before_path_b['guid']} returned ONLINE on "
+                f"{before_path_b['partition']} PARTUUID {before_path_b['partuuid']}; "
+                "boot-pool identity/status and GPT layout are unchanged",
+            )
+            export_path_b_pool(target, after_reboot_path_b)
+            path_b_exported = True
+            after_import = reimport_path_b_pool(target, before_path_b)
+            path_b_exported = False
+            require_path_b_pool_unchanged(before_path_b, after_import)
+            require(boot_pool_state(target) == before_boot_pool,
+                    "boot-pool GUID, health, or vdev status changed during Path B re-import")
+            report("path-b-reimport", "pool.import_find and pool.import_pool restored the same Path B GUID and reserved PARTUUID")
+
         require_mount(target, root, root_mountpoint)
         choices = target.call("container.pool_choices", timeout=120)
         require("boot-pool" in choices, f"container.pool_choices omits mounted boot-pool: {choices!r}")
@@ -241,6 +425,13 @@ def main() -> int:
             report("pre-reboot", f"created {marker_dataset}; marker SHA-256 {before}")
             unmount_user_data_tree()
             reboot_and_wait("persistence reboot")
+            require(boot_pool_state(target) == before_boot_pool,
+                    "boot-pool GUID, health, or vdev status changed across persistence reboot")
+            if before_path_b is not None:
+                after_second_reboot = path_b_pool_state(target, disk, boot_partition)
+                require(after_second_reboot is not None,
+                        "reserved-partition Path B pool did not return after persistence reboot")
+                require_path_b_pool_unchanged(before_path_b, after_second_reboot)
             require_mount(target, root, root_mountpoint)
             choices = target.call("container.pool_choices", timeout=120)
             require("boot-pool" in choices,
@@ -261,6 +452,13 @@ def main() -> int:
         require_mount(target, api_probe_dataset, f"/mnt/{api_probe_dataset}")
         report("post-reboot", "root and child mounts, marker hash, pool health, dataset query/create passed")
     finally:
+        if path_b_exported and before_path_b is not None:
+            try:
+                restored = reimport_path_b_pool(target, before_path_b)
+                require_path_b_pool_unchanged(before_path_b, restored)
+                path_b_exported = False
+            except Exception as exc:
+                cleanup_errors.append(f"Path B pool re-import after failed probe: {exc}")
         for name, created in (
             (api_probe_dataset, api_probe_created),
             (marker_dataset, marker_created),

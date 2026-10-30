@@ -10,6 +10,7 @@ partition vdev to its parent disk before wiping it.
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import os
 from pathlib import Path
@@ -149,6 +150,25 @@ def reserved_partitions_from_lsblk(
     return sorted(found, key=lambda row: row["path"])
 
 
+def boot_attach_refusal(
+    device: str, lsblk_json: dict, boot_pool_leaf_paths: set[str],
+) -> str | None:
+    """Return a refusal for a reserved boot-disk partition passed to boot.attach."""
+    if not isinstance(device, str) or not device:
+        return None
+    candidate = os.path.normpath(device if device.startswith("/dev/") else f"/dev/{device}")
+    by_path, by_partuuid = _node_index(lsblk_json)
+    node = _lookup_device(candidate, by_path, by_partuuid)
+    if node is None:
+        return None
+    reserved_paths = {
+        row["path"] for row in _partition_identity_rows(lsblk_json, boot_pool_leaf_paths)
+    }
+    if node.get("path") in reserved_paths:
+        return f"cannot use reserved boot-disk partition {node['path']} as a boot-pool member"
+    return None
+
+
 def unsupported_create_options(data: dict) -> list[str]:
     """Refuse every reserved-pool create field except its schema default."""
     unsupported = []
@@ -281,6 +301,20 @@ class BootDiskPartitionService(Service):
         if code:
             raise CallError(f"could not read boot-pool leaves: {err.strip()}")
         return _status_leaf_paths(status)
+
+    @private
+    async def assert_boot_attach_allowed(self, device: str) -> None:
+        """Refuse formatting a reserved boot-disk data partition as boot-pool input."""
+        try:
+            lsblk_json = await self._read_lsblk()
+            boot_pool_leaf_paths = await self._read_boot_pool_leaf_paths()
+        except Exception as exc:
+            raise CallError(
+                f"could not verify the boot-pool attach target; refusing to format it: {exc}",
+                errno.EIO,
+            ) from exc
+        if refusal := boot_attach_refusal(device, lsblk_json, boot_pool_leaf_paths):
+            raise CallError(refusal, errno.EINVAL)
 
     async def _verify_partition_identity(self, expected: dict) -> dict:
         """Re-read PARTUUID, GPT marker, and boot-disk parent before each write."""

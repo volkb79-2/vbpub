@@ -85,14 +85,17 @@ workflow.
 For a dedicated host that can be reset between runs, the wrapper can place its
 bounded tester on an explicitly selected custom Docker bridge and connect to
 the host by SSH. External mode is limited to `live-ui-auth`, `live-inspect`,
-`live-v27-patch`, `live-v28-patch`, `live-path-b-provision`, `live-path-b-partition`,
-`live-api-probe`,
+`live-storage`, `live-boot`, `live-v27-patch`, `live-v28-patch`,
+`live-path-b-provision`, `live-path-b-partition`, `live-api-probe`,
 `live-ui-prepare-ssh`, `live-ui`, and the fingerprint-pinned exploratory
-`live-ui-observed-v1001` lane. It refuses
-update, reboot, vdev-topology, and workload-resume lanes; those need a managed
-guest or stronger external-host lifecycle handling. The tester remains capped
-at 0.5 CPU / 512 MiB in `$CGROUP_PARENT_DEV_GATES`. This does not limit CPU or
-memory used by the external TrueNAS host.
+`live-ui-observed-v1001` lane. The external `live-boot` lane requires
+`TRUENAS_TEST_ALLOW_REBOOT=1`, checks VM/container state before reboot, and
+verifies the selected build and storage afterward. The wrapper does not restore
+provider snapshots, so use it only for a disposable host whose reboot is
+planned. External `live-update`, vdev-topology, and workload-resume remain
+managed-guest only. The tester remains capped at 0.5 CPU / 512 MiB in
+`$CGROUP_PARENT_DEV_GATES`. This does not limit CPU or memory used by the
+external TrueNAS host.
 
 The wrapper normally refuses if `memory PSI some/full avg10` reaches its
 admission threshold. An operator-authorized one-run `--allow-high-psi` switch
@@ -1087,15 +1090,88 @@ unset TRUENAS_V28_PATCH_ACTION TRUENAS_TEST_ALLOW_PATCH_REPLACE \
   TRUENAS_V28_EXPECTED_PRIOR_BUNDLE_SHA256
 ```
 
-The `27.0.0-MASTER+20261027-173422` result is update/reboot evidence only. The
-recorded full Path A/B API and PWMCP matrix is from `27.0.0-RC.1`; no separate
-full matrix was run on the nightly. At the 2026-10-30 check, the official feed
-offered no newer v28 nightly to install. The v27 RC.1-to-nightly update
-replaced the patched middleware source but left the old manifest; reapply
-correctly refused before mutation. The Path A marker bytes survived the update
-but were unmounted until a manual mount. Do not treat either that marker or
-the stale manifest as patch survival. These observations are summarized in the
-[README status](../README.md#current-status).
+On the latest v27 nightly, `27.0.0-MASTER+20261027-173422`, the Path A/B
+API/UI matrix passed on v1001. A later RC.1-to-nightly update reproduced the stale
+install record and unmounted Path A root; the exact digest-bound
+`reapply-after-update` workflow then passed on v1001. It verified the 19
+nightly target hashes, archived the stale RC.1 record, installed the matching
+adapter, and left Path A root and eligible descendants mounted at boot. The
+`uninstall-stale-record` action retires only that same exact stale record and
+does not install the adapter; its input/refusal contract is unit-tested, while
+the live acceptance used reapply. The v27 and v28 `live-boot` runs both passed
+Path A remount and Path B same-GUID/PARTUUID reboot plus export/import checks.
+The v27-to-v28 update to `28.0.0-MASTER+20261027-175229` preserved boot-pool
+and Path B identity. No newer v28 nightly was listed in the official feed on
+2026-10-30. See the [README status](../README.md#current-status) and the
+[v27 recovery design](DESIGN-GUIDE.md#v27-nightly-update-and-reapply).
+
+## Reapply v27 after an update
+
+An update replaces the v27 patch files. The recorded RC.1 adapter must not be
+re-applied to a different nightly. After the selected system has booted the
+exact `27.0.0-MASTER+20261027-173422` build, use the guarded action below. The
+stale-record digest is a closed compatibility fact in
+`acceptance/v27_patch_state.py`; it must also match the live marker. The runner
+builds and fingerprints the nightly bundle from this checkout.
+
+```bash
+cd scripts/truenas
+export TRUENAS_STORAGE_PROFILE=path-a
+export TRUENAS_EXPECTED_VERSION='27.0.0-MASTER+20261027-173422'
+export TRUENAS_TEST_ALLOW_MUTATIONS=1
+export TRUENAS_V27_PATCH_ACTION=reapply-after-update
+export TRUENAS_TEST_ALLOW_PATCH_REAPPLY=1
+export TRUENAS_V27_EXPECTED_PRIOR_BUNDLE_SHA256=07fd9ba7e4df11349525203ac29ee6377b56ff55e1391b7b2c4b72123914895f
+: "${TRUENAS_DOCKER_NETWORK:?set the existing custom bridge containing pwmcp}"
+
+"$VENV/bin/python" boot-pool-patch/run-live-gate.py live-v27-patch \
+  --docker-network "$TRUENAS_DOCKER_NETWORK" --allow-high-psi --allow-dirty
+unset TRUENAS_V27_PATCH_ACTION TRUENAS_TEST_ALLOW_PATCH_REAPPLY \
+  TRUENAS_V27_EXPECTED_PRIOR_BUNDLE_SHA256
+```
+
+The action validates the exact stale RC.1 install record and the complete
+pristine nightly fingerprint set before changing `/usr`. It archives the old
+record, applies the adapter transactionally, checks middleware and restores
+`/usr` read-only. It mounts Path A root and eligible descendants. The observed
+result was Path A root and eligible descendants mounted at boot.
+
+If the operator needs to remove the exact stale marker without installing the
+adapter, use `uninstall-stale-record` and its separate guard. Do not set both
+recovery guards:
+
+```bash
+export TRUENAS_V27_PATCH_ACTION=uninstall-stale-record
+export TRUENAS_TEST_ALLOW_PATCH_UNINSTALL=1
+export TRUENAS_V27_EXPECTED_PRIOR_BUNDLE_SHA256=07fd9ba7e4df11349525203ac29ee6377b56ff55e1391b7b2c4b72123914895f
+"$VENV/bin/python" boot-pool-patch/run-live-gate.py live-v27-patch \
+  --docker-network "$TRUENAS_DOCKER_NETWORK" --allow-high-psi --allow-dirty
+unset TRUENAS_V27_PATCH_ACTION TRUENAS_TEST_ALLOW_PATCH_UNINSTALL \
+  TRUENAS_V27_EXPECTED_PRIOR_BUNDLE_SHA256
+```
+
+For a post-update reboot/import check, set the exact disk facts from a
+read-only inventory. The external `live-boot` lane has its own explicit reboot
+guard and compares boot-pool, Path A mounts, and any registered Path B pool:
+
+```bash
+export TRUENAS_STORAGE_PROFILE=path-a
+export TRUENAS_EXPECTED_VERSION='27.0.0-MASTER+20261027-173422'
+export TRUENAS_TEST_ALLOW_MUTATIONS=1
+export TRUENAS_TEST_ALLOW_REBOOT=1
+export TRUENAS_DISK_DEVICE=/dev/vda
+export TRUENAS_BOOT_POOL_PARTITION=/dev/vda3
+"$VENV/bin/python" boot-pool-patch/run-live-gate.py live-boot \
+  --docker-network "$TRUENAS_DOCKER_NETWORK" --allow-high-psi --allow-dirty
+unset TRUENAS_TEST_ALLOW_REBOOT
+```
+
+The v27 external reboot lane was exercised on v1001 with Path B present. For
+v28 `28.0.0-MASTER+20261027-175229`, the exact 19-target adapter was installed
+after the v27-to-v28 update and the same reboot/import proof passed. No newer
+v28 nightly was listed on 2026-10-30, so no v28 update/reinstall to a newer
+build was possible. See the [test rationale](DESIGN-GUIDE.md#v27-nightly-update-and-reapply)
+and [current compatibility status](../README.md#current-status).
 
 ## Historical: apply the v28 2026-10-14 adapter
 
@@ -1234,20 +1310,23 @@ The updated patch unit lane passes with 121 tests and 45 subtests in
 [`unit-boot-pool-patch-root-parent-mountpoint-direct-engine-20261018.log`](../artifacts/unit-boot-pool-patch-root-parent-mountpoint-direct-engine-20261018.log),
 and the full unit lane passes with 319 tests and 45 subtests in
 [`unit-truenas-root-parent-mountpoint-20261018.log`](../artifacts/unit-truenas-root-parent-mountpoint-20261018.log).
-The cache targets in all four live gates were temporary file-backed pools.
-Path B reboot/import, automatic remount and broader data survival through
-update, actual KVM selection, a second-disk cache target, full UI submission,
-share-client access, and guest OS boot remain open.
+The cache targets in all four earlier live gates were temporary file-backed
+pools. Round-two v27 Path B reboot/import and UI pool creation passed. Actual
+KVM selection, a real second-disk cache target, share-client access, guest OS
+boot, and direct workload-content/record comparison through update remain
+open.
 
 ## Experimental single-disk storage patch
 
-Two experimental v27 paths have passed scripted API checks and limited PWMCP
-UI navigation on local `27.0.0-RC.1` guests. Fresh patched Path A submitted UI
-acceptance passed. Path B UI pool creation remains open because middleware
-and browser `disk.query` omit `/dev/vda4`, and the Disks screen has no
-partition controls. The preprovisioned downstream UI route passed its
-registered unit gate with 170 tests and 45 subtests; fresh live acceptance
-remains open. A fresh
+The earlier v27 RC.1 and 2026-10-18 diagnostics below are historical. On
+2026-10-30, the latest v27 nightly passed the full Path A/B API and PWMCP UI
+matrix on v1001. The Path B wizard created `boot-disk-data` on the reserved
+partition after the guarded partition lane. Path A and B UI runs created a
+dataset, container, and VM using an existing zvol; the API/storage probes also
+covered zvol growth, share-record CRUD, and protected-path refusal. Path A and
+Path B reboot/import proofs passed. The separate preprovisioned downstream UI
+mode has only its registered unit-gate result with 170 tests and 45 subtests;
+fresh live acceptance of that mode remains open. A fresh
 Path A live-storage run also passed with
 the disposable guest placed in a capped background Docker container and the
 tester placed separately in the gates slice. It verified dataset/zvol

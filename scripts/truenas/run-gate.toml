@@ -52,6 +52,8 @@ forward_env = [
   "TRUENAS_V27_PATCH_BUNDLE_SHA256",
   "TRUENAS_V27_PATCH_ACTION",
   "TRUENAS_TEST_ALLOW_PATCH_REPAIR",
+  "TRUENAS_TEST_ALLOW_PATCH_REAPPLY",
+  "TRUENAS_TEST_ALLOW_PATCH_UNINSTALL",
   "TRUENAS_V27_PRIOR_PATCH_BUNDLE",
   "TRUENAS_V27_EXPECTED_PRIOR_BUNDLE_SHA256",
   "TRUENAS_V27_EXPECTED_PRIOR_DATASET_SHA256",
@@ -126,7 +128,7 @@ environment = "networked-tester"
 argv = ["bash", "-c", "cd {worktree}/scripts/truenas/boot-pool-patch/acceptance && \"$TESTER_VENV/bin/python\" live_v27_patch.py"]
 budget = "40m"
 required_env = ["TRUENAS_TEST_HOST", "TRUENAS_TEST_PORT", "TRUENAS_TEST_KEY", "TRUENAS_TEST_KNOWN_HOSTS", "TRUENAS_STORAGE_PROFILE", "TRUENAS_EXPECTED_VERSION", "TRUENAS_TEST_ALLOW_MUTATIONS", "TRUENAS_V27_PATCH_BUNDLE", "TRUENAS_V27_PATCH_BUNDLE_SHA256"]
-description = "Fingerprint and install the v27 relaxation patch on a fresh guest, or run one digest-bound repair for the guarded Path A root or zvol form"
+description = "Fingerprint and install an exact v27 adapter, recover the stale RC.1 record after the pinned nightly update, or run one digest-bound Path A repair"
 
 [lanes.live-v28-patch]
 kind = "command"

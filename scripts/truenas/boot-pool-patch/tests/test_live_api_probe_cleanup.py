@@ -37,6 +37,19 @@ def test_path_a_refusal_aggregate_requires_every_expected_mutation_result() -> N
     assert not probe.all_mutations_refused([True] * 9 + [False], 10)
 
 
+@pytest.mark.parametrize(
+    ("ok", "text", "expected"),
+    [
+        (False, "[EINVAL] cannot use reserved boot-disk partition /dev/vda4 as a boot-pool member", True),
+        (False, "unsupported operand type(s) for *: 'int' and 'NoneType'", False),
+        (False, "permission denied", False),
+        (True, "", False),
+    ],
+)
+def test_boot_attach_refusal_requires_the_reserved_partition_guard(ok, text, expected) -> None:
+    assert probe.boot_attach_refused(ok, text) is expected
+
+
 class FakeTarget:
     def __init__(self):
         self.imported = True

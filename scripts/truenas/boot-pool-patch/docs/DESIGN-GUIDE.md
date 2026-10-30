@@ -32,10 +32,15 @@ SSH password authentication are disabled, then starts the service. It keeps
 other root authorized keys and preserves the automatic-start setting when
 already on. Following SSH lanes can then exercise the configured key-only
 account without enabling password logins.
-Reboot/update and the wider workload and vdev lanes remain managed-guest only
-because the wrapper has no provider lifecycle or rollback contract. The
-networked tester is still resource-capped in the gates slice; those limits do
-not constrain the external host. The explicit `--allow-high-psi` flag is
+The registered external `live-boot` lane is allowed only with
+`TRUENAS_TEST_ALLOW_REBOOT=1`; it checks guest and pool state before reboot,
+then verifies the target version, Path A mount, and optional Path B reimport.
+The wrapper does not restore provider snapshots, so use it only when the
+external host is disposable and its reboot is planned. `live-update` and the
+wider workload and vdev lanes remain managed-guest only because the wrapper has
+no provider lifecycle or rollback contract. The networked tester is still
+resource-capped in the gates slice; those limits do not constrain the external
+host. The explicit `--allow-high-psi` flag is
 restricted to external targets and one invocation. It skips only `some/full`
 PSI thresholds; readable PSI, finite memory limits, current usage below every
 hard limit, CPU quota, and the 0.5 CPU / 512 MiB tester caps remain required.
@@ -118,17 +123,38 @@ Python hunk exercised both the inner stock-source rollback and outer
 prior-adapter restore on v1001. The current bundle SHA-256 is
 `b7dbb8ca95e62ed4fad6a15ff26310ceccc342e6d33c99a62cfd44d3fbb22d23`.
 
-The `27.0.0-MASTER+20261027-173422` result is update/reboot evidence only. The
-recorded full Path A/B API and PWMCP matrix is from `27.0.0-RC.1`; no separate
-full matrix was run on the nightly. The v27-to-v27-nightly update replaced the
-patch source files but left a stale install manifest. Exact RC.1 reapplication
-refused before mutation; the Path A marker bytes survived but the dataset
-booted unmounted until manually mounted. Therefore neither a surviving marker
-nor a stale manifest means the patch survived an update. No newer v28 nightly
-was available in the official feed on 2026-10-30. The
-[README status](../README.md#current-status) summarizes live outcomes; the
-[consumer guide](CONSUMERS.md#v28-20261027-live-acceptance-on-v1001) gives the
-registered external-host commands.
+### v27 nightly update and reapply
+
+The latest checked v27 nightly is `27.0.0-MASTER+20261027-173422`. Its full
+Path A/B API/UI matrix passed on v1001. The first RC.1-to-nightly update
+replaced patched middleware files but left the RC.1 install record behind;
+the old exact-build reapply correctly refused before changing source, and
+`boot-pool/user-data` returned unmounted. That is the expected compatibility
+boundary: update does not preserve an in-middleware patch, and a marker or
+surviving data alone does not prove the patch is active.
+
+The post-update recovery contract now binds the old record to the exact RC.1
+bundle digest, requires the complete 19-file pristine nightly fingerprint set,
+and checks the bounded Path A root before changing `/usr`. It archives only
+that matched stale record, applies the exact nightly adapter transactionally,
+verifies middleware, restores `/usr` read-only, and mounts eligible datasets.
+The live `reapply-after-update` action passed after a repeated RC.1-to-nightly
+update; Path A root and eligible descendants mounted at boot. A separate
+`uninstall-stale-record` action is guarded and digest-bound for operators who
+need to retire the exact stale record without applying a patch. The latter is
+covered by the unit contract; the live update/reapply path was the one used for
+acceptance.
+
+The v27 `live-boot` lane then verified the marker and Path A mounts across a
+controlled reboot, checked boot-pool GUID/health/topology, and confirmed that
+`boot-disk-data` returned on the same reserved partition and PARTUUID. It also
+exported and re-imported Path B through middleware and compared the captured
+GUID and full partition table. On v28 build
+`28.0.0-MASTER+20261027-175229`, the v27-to-v28 update preserved both pool
+identities; after installing the exact v28 adapter, the same reboot/import
+proof passed. No newer v28 nightly was listed in the official feed on
+2026-10-30. See the [README status](../README.md#current-status) and the
+[consumer commands](CONSUMERS.md#reapply-v27-after-an-update).
 
 ## Source comparison
 
@@ -390,35 +416,28 @@ device latency, endurance, power-loss protection, physical fault tolerance,
 cache effectiveness, or production capacity. A future accepted RAIDZ1 special
 vdev requires removal by destroying its disposable target pool.
 
-Path B's required baseline still runs the guarded partition-only lane first,
-then uses the TrueNAS UI wizard to create and register `boot-disk-data`. On the
-fresh patched v27 guest, `lsblk` saw the 4 GiB `/dev/vda4`, but middleware and
-browser `disk.query` returned only `/dev/vda`. The Disks screen showed only
-the whole boot-pool disk and no partition controls; the pool wizard reported
-zero raw capacity and no disks, then stopped before `pool.create`. A registered
-post-run inventory confirmed no pool or probe data was created. UI creation of
-`/dev/vda4` itself and UI creation of `boot-disk-data` remain open. See the
+The 2026-10-18 Path B diagnostic remains a useful historical refusal: the
+wizard omitted `/dev/vda4` from `disk.query` and stopped before `pool.create`.
+On 2026-10-30, the exact v27 nightly adapter exposed the reserved partition to
+the wizard; the full Path A/B API/UI matrix passed, including `boot-disk-data`
+creation on that partition. The prior diagnostic is linked at the
 [UI run](../artifacts/live-ui-v27-path-b-r1-after-cleanup-with-disks-screen-20261018.log)
 and [post-run inventory](../artifacts/live-inspect-v27-path-b-r1-after-disks-screen-20261018.log).
-
-The topology lane is currently Path A only because it requires a UI-created
-`boot-pool/user-data` root and zvols. Do not claim Path B role testing until
-the UI creates/registers `boot-disk-data` on a fresh patched guest. The
-consumer guide records the current lane evidence and the required fresh-guest
-sequence.
+The UI still does not create the partition itself: the guarded partition-only
+lane must reserve it before the wizard runs.
 
 ## TCG VM path
 
-In both the v27 RC and the v28 nightly source, the Web UI hides the VM page
-based on `vm.virtualization_details.supported`; making that capability report
-software emulation available exposes the existing page, so a UI source change
-is not currently indicated just to make VMs selectable. PWMCP acceptance
-confirmed the VM route and wizard through the CPU/memory step, but did not
-submit it; TCG messaging remains open. The middleware create gate differs by
-release: v27 calls `vm.supports_virtualization`, while the
-inspected v28 nightly checks `kvm_supported()` directly in `vm/crud.py`. A
-shared patch therefore needs small release-specific adapters for both the
-capability report and create validation.
+In both the v27 and v28 nightly sources, the Web UI hides the VM page based on
+`vm.virtualization_details.supported`; making that capability report software
+emulation available exposes the existing page, so a UI source change is not
+currently indicated just to make VMs selectable. The latest-v27 PWMCP matrix
+opened the VM wizard using a zvol from the selected path; the storage API probe
+separately started a QEMU TCG process. Neither run booted a guest OS, and
+`/dev/kvm` was absent. The middleware create gate differs by release: v27
+calls `vm.supports_virtualization`, while the inspected v28 nightly checks
+`kvm_supported()` directly in `vm/crud.py`. The exact-build adapters cover
+those different paths; actual KVM selection and guest OS boot remain open.
 
 The v28 ISO's packaged `truenas_pylibvirt` KVM-detection and VM-domain-type
 files are byte-identical to upstream commit
@@ -429,22 +448,25 @@ absent. The same ISO rootfs contains `/usr/bin/qemu-system-x86_64` and
 for these architectures. The installed v27 RC has the same `/dev/kvm` KVM
 check, but its VM XML generator hardcodes `domain type="kvm"`; v27 therefore needs a backend XML
 change in addition to the middleware gates. The installed v27 QEMU binary is
-present. A test patch has been applied to the disposable v27 guest. With
+present. The exact v27 nightly adapter was applied to v1001. With
 `/dev/kvm` absent, middleware reported support, kept hardware CPU flags false,
 and accepted a VM backed by the new pool's zvol. The QEMU domain started and
 reported `RUNNING` with `-accel tcg`, then was shut down. `HOST-MODEL` and
 `CUSTOM` with `cpu_model: null` also reached `RUNNING` through API payloads,
 then were deleted. Filesystem dataset
 create/query/update/delete and sparse zvol create/query/grow/delete were
-verified through middleware. These checks prove backend process startup and
-storage API operations, not a guest OS boot. The v28 middleware adapter is a
-separate candidate patch in [`v28-nightly-20261014/`](../v28-nightly-20261014/);
-its source-to-ISO mapping and live checks remain pending. The v27 API tests
-also covered container lifecycle and a user dataset mounted inside a
-container, plus NFS/SMB share-record CRUD. They did not verify NFS/SMB client
-access. Keep KVM selection when available, actual guest boot, protocol-level
-sharing, full submitted VM/share UI flows, and upgrade survival as open tests.
-TCG should be visibly marked as software emulated because it can be very slow.
+verified through middleware. The 2026-10-30 latest-v27 API/UI matrix passed;
+the PWMCP run opened the VM wizard against the selected storage path. These
+checks prove backend process startup and storage API operations, not a guest
+OS boot or actual KVM selection. The 2026-10-14 v28 candidate is historical
+and superseded by the exact 19-target
+[`v28-nightly-20261027/`](../v28-nightly-20261027/) adapter, whose Path A/B
+API/UI matrix passed. The v27 API tests also covered container lifecycle and
+a user dataset mounted inside a container, plus NFS/SMB share-record CRUD.
+They did not verify NFS/SMB client access. Keep actual KVM selection when
+available, guest OS boot, protocol-level share access, and pre-existing
+workload content/record retention through update as open tests. TCG should be
+visibly marked as software emulated because it can be very slow.
 
 ## PWMCP storage UI acceptance
 
@@ -475,7 +497,9 @@ and 45 subtests; see the
 [unit log](../artifacts/unit-boot-pool-patch-path-b-ui-preprovision-mode-20261021.log)).
 The browser observer rejects any `pool.create` request in preprovisioned mode,
 including a request for a pool other than `boot-disk-data`, and checks again
-after the remaining UI workflow. Fresh live UI acceptance remains open.
+after the remaining UI workflow. This separate preprovisioned mode has not had
+a fresh live run; the 2026-10-30 `ui-wizard` matrix passed against the latest
+v27 nightly.
 
 The fresh patched Path B attempt on 2026-10-18 did not meet that UI
 precondition. Kernel `lsblk` showed `/dev/vda4` as a 4 GiB ZFS partition, but
@@ -486,12 +510,11 @@ and no available disks, and the gate stopped before pool creation. A
 post-attempt inventory passed and confirmed no test pool or probe data. See
 the [latest UI log](../artifacts/live-ui-v27-path-b-r1-after-cleanup-with-disks-screen-20261018.log)
 and [read-only inventory](../artifacts/live-inspect-v27-path-b-r1-after-disks-screen-20261018.log).
-This is a safe refusal for the `ui-wizard` mode, not a test of downstream
-Path B storage forms. Keep UI creation of `/dev/vda4` and `boot-disk-data`
-open. The new `preprovisioned` mode can exercise downstream UI operations
-after the registered provisioner creates the exact pool. Its registered unit
-gate passed on 2026-10-21; fresh live acceptance remains open. Do not select the whole disk;
-do not present the preprovisioner as UI pool-creation evidence.
+This was a safe refusal for the `ui-wizard` mode at that earlier checkpoint,
+not a test of downstream Path B storage forms. The 2026-10-30 v27 nightly
+matrix subsequently passed the wizard route after the registered partition
+reservation. The `preprovisioned` mode still has only its unit-gate evidence;
+it is not part of the current live matrix. Do not select the whole disk.
 
 On fresh patched r4, the registered UI created the root with its 2 GiB
 `quota`, pinned mountpoint, `canmount=on`, and live ZFS mount source. It also
@@ -559,22 +582,17 @@ A `pool.query` empty list is not evidence that `boot-pool` is absent: direct
 and the UI form establish whether the pool can be selected.
 
 The separate fresh Path B guest `truenas-v27-ui-b-fresh-r1-20261018` passed the
-registered patch, read-only inventory, and partition-only gates. The latest
-PWMCP UI run opened the Disks screen and pool wizard. `lsblk` sees the 4 GiB
-`/dev/vda4`, but middleware and browser `disk.query` return only `/dev/vda`;
-the Disks screen has no partition controls, and the wizard reported zero raw
-capacity and no disks before stopping without `pool.create`. Post-attempt
-registered inventory confirms no `boot-disk-data` pool or probe data. See the
-[UI run](../artifacts/live-ui-v27-path-b-r1-after-cleanup-with-disks-screen-20261018.log)
-and [post-run inventory](../artifacts/live-inspect-v27-path-b-r1-after-disks-screen-20261018.log).
-Creation of `/dev/vda4` and `boot-disk-data` through the UI remains open. The
-new `preprovisioned` Path B downstream UI route passed its registered unit
-gate, but has not yet been live tested. Real
-second-disk cache use, TrueNAS UI/middleware cache configuration, share-client
-access, VM guest boot, automatic remount through update, controlled
-reboot/update survival, and actual KVM selection remain open until direct
-evidence passes. See the [consumer instructions](CONSUMERS.md#run-pwmcp-ui-storage-acceptance)
-and [resume procedure](CONSUMERS.md#resume-a-partial-path-a-ui-run).
+registered patch, read-only inventory, and partition-only gates. In the
+2026-10-18 PWMCP run, `lsblk` saw `/dev/vda4`, but middleware and browser
+`disk.query` returned only `/dev/vda`; the Disks screen had no partition
+controls, and the wizard stopped before `pool.create`. That checkpoint is
+historical. On 2026-10-30, the latest v27 nightly Path B API/UI matrix passed:
+the reserved partition was offered by the patched wizard, `boot-disk-data` was
+created on that partition, and downstream UI storage forms passed. The old
+[diagnostic](../artifacts/live-ui-v27-path-b-r1-after-cleanup-with-disks-screen-20261018.log)
+and [inventory](../artifacts/live-inspect-v27-path-b-r1-after-disks-screen-20261018.log)
+remain useful as the pre-shim failure record. See the
+[consumer instructions](CONSUMERS.md#run-pwmcp-ui-storage-acceptance).
 
 ### Preserving UI-created workloads for reboot and update checks
 
@@ -684,69 +702,54 @@ as a 20 GiB virtual qcow2 with `corrupt` and `dirty` unset. This is metadata
 inspection, not a full cluster check. Any resumed guest must use a new CoW
 overlay so these originals remain intact.
 
-## Required validation before calling this a patch
+## Remaining validation
 
-1. Preserve the v28 ISO's embedded version/build metadata and recheck each
-   patch target's fingerprint on the exact host build. The three v28 adapter
-   targets match the selected ISO, but the ISO does not publish its middleware
-   commit. Verify the installed `truenas_pylibvirt` behavior and patch targets
-   before modifying another v27 or v28 build.
-2. Test the supported upgrade path from the current 25.10 maintenance release
-   through the 27 RC to the selected 28 nightly. TrueNAS currently labels 27
-   RC as Early Release and 28 nightlies as Experimental; the official upgrade
-   guidance says to start from the latest maintenance release of the current
-   major version. See [software status and upgrade paths](https://www.truenas.com/docs/softwarereleases/).
-3. On disposable TrueNAS VMs, complete the separate-partition pool tests and
-   compare with a boundary-aware boot-pool user-data namespace. Reboot import,
-   dataset/zvol create, query, update, and delete, normal pool-choice APIs,
-   v27 VM create/start against a zvol, container lifecycle, a persistent
-   container filesystem mount, and NFS/SMB share-record CRUD have passed.
-   Still check NFS/SMB client access, submitted VM/share UI workflows, guest
-   boot, and upgrade survival. PWMCP has already passed the limited Path A/B
-   UI checks described above.
-4. The v27 TCG API and process-start path passed with `/dev/kvm` absent. Still
-   confirm that the KVM path remains selected when `/dev/kvm` is available.
-   QEMU TCG does not by itself prove
-   this condition: the first test used `-cpu max`, exposed `svm` in the guest,
-   and created `/dev/kvm`. The masked run uses `-cpu max,-vmx,-svm` and must
-   verify the device is absent inside TrueNAS. Test the candidate v28 adapter
-   separately against the exact installed middleware files.
-5. Upgrade with custom data present. Confirm the pool, user datasets and
-   zvols survive and remain queryable; verify TrueNAS internal datasets remain
-   hidden and unmanageable.
-6. Extend PWMCP acceptance to submit a VM wizard and create/query/delete
-   dataset-backed shares through the UI. Current tests cover navigation,
-   dataset creation, pool selection, VM wizard fields, and share sections/Add
-   actions. The earlier 25.10.4 report records a separate failed UI workflow
-   and should not be treated as v27/v28 evidence.
-7. Keep release-specific middleware hunks small and fail closed on unknown
-   source revisions. Put shared path-policy logic in patch-owned files where
-   possible, then test the boundary cases against every supported release.
+The latest v27 nightly, `27.0.0-MASTER+20261027-173422`, passed the full Path
+A/B API/UI matrix on v1001. The matrix includes reserved-partition pool
+creation, API refusal checks, dataset and zvol operations, container and VM
+flows, PWMCP wizard submission, and share page actions. The v27 reboot/import
+lane passed after a repeat RC.1-to-nightly update and digest-bound
+`reapply-after-update`. The newer selected v28 build,
+`28.0.0-MASTER+20261027-175229`, was installed through the update API; its
+exact 19-target adapter and reboot/import lane passed. No newer v28 nightly was
+listed on 2026-10-30.
 
-Registered patch, boot, provisioning, and storage gates now pass on the
-inspected v27 RC and v28 nightly. Keep the adapters experimental until the
-remaining KVM, update/remount, UI, client-sharing, guest-boot, and separate-disk
-checks have direct evidence.
+The patch remains experimental because important boundaries still need direct
+evidence:
+
+1. Retention of pre-existing user data, container records, and VM records
+   across update needs before/after content and record comparison. The update
+   checks confirmed pool identity; Path A is unmounted after an update until
+   the matching adapter is applied or re-applied.
+2. `/dev/kvm` was absent on v1001. API acceptance confirmed a QEMU TCG process
+   start, but actual KVM selection and guest OS boot were not available.
+3. PWMCP share forms and API share records passed, but an SMB/NFS client could
+   not connect from the devcontainer. Client protocol access remains open.
+4. The available Netcup controller exposes disk inspection without a disk
+   attach operation. No second disk was purchased or attached, so physical
+   second-disk cache and TrueNAS UI/middleware cache configuration remain open.
+5. Any build beyond the exact v27 and v28 adapter fingerprints needs a new
+   source capture and compatibility check before patching.
+
+Keep release-specific middleware hunks small, fail closed on unknown source
+revisions, and keep the supported adapter set bound to its recorded target
+hashes. The historical 25.10.4 report records a separate failed UI workflow
+and is not evidence for either v27 or v28. See the
+[post-update design](DESIGN-GUIDE.md#v27-nightly-update-and-reapply) and
+[consumer workflow](CONSUMERS.md#reapply-v27-after-an-update).
 
 
 ## Single-disk storage patch status
 
 The ordinary VM installer targets data pools. Separate experimental patches
-now test two ways to use free space on a TrueNAS system disk: a bounded
+test two ways to use free space on a TrueNAS system disk: a bounded
 `boot-pool/user-data` namespace (Path A), and a separate `boot-disk-data` pool
-on a reserved GPT tail (Path B). Historical acceptance exercised both paths
-with scripted API checks and limited PWMCP UI navigation, using a Path B pool
-created outside the current fresh UI workflow. Fresh patched Path A submitted
-UI acceptance passed. Path B UI pool creation remains open; the new
-preprovisioned downstream UI route passed its registered unit gate and still
-needs fresh live acceptance. A fresh Path A live-storage
-acceptance also passed on 2026-10-16 from a COW guest in the separate
-`dev-background.slice` container. It verified dataset and zvol CRUD, cache-vdev
-add/remove, VM start with QEMU XML and process arguments confirming TCG,
-container dataset persistence, NFS/SMB share-record CRUD, and cleanup. The
-detached tester ran under `dev-gates.slice` with 25% CPU and 256 MiB memory/swap
-caps. The Path A guest shut down cleanly through QMP/ACPI; its COW disk and EFI
-state were retained. The 25.10.4 proposal changes
+on a reserved GPT tail (Path B). On 2026-10-30, the latest v27 nightly passed
+the full Path A/B API/UI matrix on v1001. Path B UI pool creation passed
+through the wizard after the guarded partition-reservation lane; dataset,
+zvol, container, VM-form, and SMB/NFS-page checks passed on the selected pool.
+The exact v28 build `28.0.0-MASTER+20261027-175229` also has a passing Path A/B
+API/UI matrix and its own 19-target adapter. The 25.10.4 proposal changes
 Docker and Virt middleware in ways that no longer apply cleanly to v27; v27
 also replaces the Virt middleware module with separate VM and container
 services. The v28 nightly changes those paths again, so each release needs
@@ -755,14 +758,12 @@ small adapters around shared policy and exact source fingerprints.
 The selected v28 ISO identifies its build version and time but not the
 middleware Git commit. A patch therefore cannot safely rely on the ISO's
 version string alone: it must compare the exact target files or their
-fingerprints and refuse an unknown source shape. All 15 current middleware files used
-by the candidate v28 storage, TCG, and boot-remount adapters have been
-extracted from this ISO and match the recorded fingerprints; the patches apply
-and compile against them. This binds the inspected patch targets to this ISO,
-but does not identify its full middleware checkout. The v28
-`truenas_pylibvirt` code selects QEMU when `/dev/kvm` is absent. The installed
-v27 RC's VM XML generator always selects KVM, so v27 also needs a backend
-change, in addition to middleware validation.
+fingerprints and refuse an unknown source shape. The current v28 adapter pins
+19 target files to this exact build and is separate from the earlier v28
+adapter and the v27 nightlies. The v28 `truenas_pylibvirt` code selects QEMU
+when `/dev/kvm` is absent. The v27 nightly adapter also changes its VM backend
+to select TCG on the tested host. `/dev/kvm` was absent on v1001, so these runs
+verified QEMU TCG process start, not actual KVM selection or guest OS boot.
 
 Path A also needs a boot-time remount. The v27 reboot gate showed that the
 generic ZFS mount service is disabled and the boot pool is not registered in
@@ -773,10 +774,13 @@ rootfs contains `zfs-mount.service` but no enablement link under
 `/etc/systemd/system/zfs.target.wants`. Keep the mount hook as a
 release-specific adapter around the shared path policy, and mount only after
 validating the root quota, mountpoint, `canmount`, resolved paths, and current
-mount ownership. The registered v28 Path A reboot gate passed root/child
-remount and marker persistence on the selected nightly. Automatic remount
-through a v27-to-v28 update remains open because that update's marker was
-mounted manually before verification.
+mount ownership. The 2026-10-30 v27 reapply run mounted the Path A root and
+eligible descendants after the RC.1-to-nightly update, and the v27 reboot gate
+passed remount and marker persistence. The v27-to-v28 update again left
+`boot-pool/user-data` unmounted until the exact v28 adapter was installed; the
+v28 reboot gate then passed root/child remount. Patch files still require an
+explicit post-update reapply or install step. Existing workload retention
+through update needs a direct data and record comparison.
 
 Path B uses a separately partitioned `boot-disk-data` pool because it follows
 normal data-pool API and UI paths. A local 27.0.0-RC.1 test created
@@ -804,12 +808,14 @@ create/start/stop/delete also passed through middleware. A user dataset mounted
 into an Alpine container accepted a marker written from inside the container
 and retained it at the host dataset path. NFS and SMB share-record
 create/query/delete succeeded, but client protocol access was not tested.
-The separate v27-to-v28 update gate later verified that marker bytes survived
-the upgrade, though it manually mounted the dataset before reading them.
-Automatic remount across that updated boot and a guest OS boot remain open.
-Path B partition/pool setup in the earlier acceptance was manual. The later
-registered idempotent provisioner passed on both v27 and v28; v27 Path B
-provisioning and storage used the same COW guest after its Path A run.
+The first v27-to-v28 update observation found the root unmounted until the
+matching v28 adapter was installed. The v27 post-update procedure now
+re-applies the matching adapter and mounts the eligible Path A tree; the
+subsequent v27 reboot/import proof passed. The v27-to-v28 update preserved
+boot-pool and Path B identity, and the v28 reboot/import proof passed after
+installing its exact adapter. Workload content and records still need a direct
+before/after comparison across an update. Path B setup was manual in the older
+acceptance; the registered provisioner and latest-v27 UI wizard now pass.
 
 ### Path B pool-wizard safety
 
@@ -911,22 +917,22 @@ for reconciliation; the test checks the row and ZFS pool state together.
 
 The Web UI gates the VM page on `vm.virtualization_details.supported`, so the
 middleware capability update exposes the existing page without a UI source
-change. PWMCP checks passed for the VM page and the wizard through its CPU and
-memory step; the wizard was not submitted, and a visible TCG warning remains
-open. The create gate is release-specific: v27 uses
-`vm.supports_virtualization`, while the inspected v28 nightly checks
-`kvm_supported()` directly in `vm/crud.py`.
-TCG support therefore needs a shared capability rule plus a small per-release
-create-gate adapter, and a v27-only backend XML change.
+change. The latest-v27 PWMCP matrix opened the VM wizard using a zvol from the
+selected path; the storage API probe separately started a QEMU TCG process.
+Neither run booted a guest OS, and `/dev/kvm` was absent. The create gate is
+release-specific: v27 uses `vm.supports_virtualization`, while the inspected
+v28 nightly checks `kvm_supported()` directly in `vm/crud.py`. The exact-build
+adapters cover those different paths; actual KVM selection and guest OS boot
+remain open.
 
 The adapters remain experimental rather than release-ready. Registered
-storage gates now pass on v27 and v28 for both Path A and Path B. Each proves
-that an existing middleware-managed container dataset survives refused public
-destroy and snapshot attempts, that no snapshot appears, and that public clone
-refusal remains active. Path B provisioning passed on both releases; the v27
-Path B storage run reused the Path A COW guest after provisioning. The v28
-Path A reboot gate also passed root/child remount and marker persistence. The
-four storage results are:
+storage gates pass on v27 and v28 for both paths. Each proves that an existing
+middleware-managed container dataset survives refused public destroy and
+snapshot attempts, that no snapshot appears, and that public clone refusal
+remains active. The 2026-10-30 latest-v27 run passed the full Path A/B API/UI
+matrix, including Path B wizard pool creation. Path A/B reboot/import proofs
+passed on v27 nightly and on v28 build `28.0.0-MASTER+20261027-175229` after
+the exact v28 adapter was applied. Earlier storage results are:
 
 - [v27 Path A](../artifacts/live-storage-v27-path-a-existing-container-protection-pass-20261017.log)
 - [v27 Path B](../artifacts/live-storage-v27-path-b-existing-container-protection-pass-20261017.log)
@@ -936,8 +942,11 @@ four storage results are:
 At the earlier checkpoint, the patch unit lane passed with 106 tests and 45
 subtests; see the
 [checkpoint log](../artifacts/unit-boot-pool-patch-v27-dns-retry-20261017.log).
-The v27-to-v28 update preserved marker bytes, but verification manually mounted the
-data, so automatic remount through update is open. The original v28 Path B
+The v27 update replaces patched middleware files. Explicit recovery then
+reapplied the exact nightly adapter and verified the Path A root and eligible
+descendants mounted at boot. The v27-to-v28 update again left that root
+unmounted until the v28 adapter was installed; the v28 reboot/import lane then
+passed. No newer v28 nightly was listed on 2026-10-30. The original v28 Path B
 destroy-refusal failure remains preserved; a later registered gate directly
 verified that the middleware-managed dataset survived both destroy and
 snapshot attempts and that no attempted snapshot appeared. See the passing
@@ -962,26 +971,18 @@ Preferences, with a value of 300 seconds. Its post-run inventory found no
 probe datasets, containers, or VM records. See the
 [UI run](../artifacts/live-ui-v27-path-a-clean-20261019.log) and
 [post-run inventory](../artifacts/live-inspect-v27-path-a-clean-20261019-post-ui.log).
-The current patch unit lane passed with 156 tests and 45 subtests; the full
-unit lane last passed with 362 tests and 45 subtests before this UI-helper-only
-change and was not rerun. The cache exercise used a temporary file-backed
+The registered `unit-boot-pool-patch` lane passed with 340 tests and 45
+subtests in round two. Its text log is stored outside the checkout at
+`/home/vscode/vbpub-release-program-20261027/evidence/truenas-live-20261029/unit-boot-pool-patch-final-round2.log`.
+The cache exercise used a temporary file-backed
 target pool on both Path A and Path B. This demonstrates cross-pool L2ARC
 attachment in that setup, not a separate disk-backed pool, import ordering, or
-TrueNAS UI/middleware cache-device configuration. The current preprovisioned
-Path B UI helper passed its registered unit gate with 170 tests and 45
-subtests; fresh live acceptance remains open. See the
-[unit log](../artifacts/unit-boot-pool-patch-path-b-ui-preprovision-mode-20261021.log).
-Actual KVM selection, guest OS boot, NFS/SMB client access, Path B UI pool
-creation, Path B reboot/import, automatic remount through update, and broader
-patched-update survival remain open. The latest fresh Path B UI attempt found
-that the kernel sees `/dev/vda4`, while middleware and browser `disk.query`
-omit it. The Disks screen had no partition controls, the wizard reported no
-disks, and no pool was created. Evidence:
-[registered UI diagnostic](../artifacts/live-ui-v27-path-b-r1-after-cleanup-with-disks-screen-20261018.log)
-and [post-attempt inventory](../artifacts/live-inspect-v27-path-b-r1-after-disks-screen-20261018.log).
-The latest patch unit lane passed 156 tests and 45 subtests after the UI helper
-update; its log is
-[here](../artifacts/unit-boot-pool-patch-v27-progress-dialog-20261019.log).
+TrueNAS UI/middleware cache-device configuration. The provider controller has
+no disk-attach operation, so no second physical target was added or purchased.
+The remaining live gaps are actual KVM selection (`/dev/kvm` was absent), guest
+OS boot, SMB/NFS client access, pre-existing workload content/record retention
+through update, and cache configuration through TrueNAS UI/middleware. No
+newer v28 nightly was listed on 2026-10-30.
 Local QEMU tests use a dedicated Docker runner under `$CGROUP_PARENT_DEV_BACKGROUND`,
 with detached testers in `$CGROUP_PARENT_DEV_GATES`; see the
 [patch investigation and evidence](../README.md).
@@ -1015,12 +1016,14 @@ registered live-boot gate passed twice, verifying the root and child mount
 across a reboot, marker contents, pool health, and API dataset operations. The
 latest log is
 [`live-boot-v27-path-a-20261016-r2.log`](../artifacts/live-boot-v27-path-a-20261016-r2.log).
-The update marker bytes survived a v27-to-v28 upgrade, but the gate mounted
-the saved data manually before reading it. The first v28 boot-mount hook also
-failed because it called `query_impl`, absent from the v28 service; the local
-fix uses `list_impl`. The registered v28 Path A reboot/remount gate passed
-after that fix. Automatic remount through the update and broader patched-data
-update survival remain open.
+That historical update check mounted the saved data manually before reading
+the marker. The first v28 boot-mount hook also failed because it called
+`query_impl`, absent from the v28 service; the local fix uses `list_impl`.
+Later round-two runs verified the explicit update/reapply/install sequence and
+then passed the v27 and v28 reboot/import lanes. The first boot after an update
+still leaves Path A unmounted until the matching adapter is applied or
+re-applied; direct pre-existing workload content and record comparison through
+update remains open.
 
 The reboot gate now lists mounted filesystems in the user-data dataset tree
 and unmounts them one at a time, deepest first and without force, after writing
@@ -1140,14 +1143,16 @@ manifest and left `/usr` read-only. Registered live-storage gates now pass the
 existing-container destroy/snapshot survival checks on v28 Path A and Path B;
 v27 Path A and Path B also pass. The final v28 Path B result is recorded at
 [`live-storage-v28-path-b-existing-container-protection-pass-20261017.log`](../artifacts/live-storage-v28-path-b-existing-container-protection-pass-20261017.log).
-The real second-disk cache target, full UI workflows, share-client access,
-guest OS boot, actual KVM selection, automatic remount through update, and
-broader patched-update survival remain open.
+The round-two evidence closes the latest-v27 Path B reboot/import and UI
+pool-creation items. Remaining gaps are direct pre-existing workload content
+and record comparison across update, actual KVM selection, a real second-disk
+cache target, share-client access, and guest OS boot.
 
 ## Read-only update media
 
-The v27 nightly update API redirects its train to v28, but the selected v28
-release-list endpoint currently returns 404. `update.manual` can install the
+On 2026-10-30 the v27 updater listed
+`28.0.0-MASTER+20261027-175229`, and `update.run` installed it successfully
+through the API. `update.manual` can install the
 `TrueNAS.update` payload embedded in the official ISO. That manifest requires
 10,025,572,761 bytes free in the boot pool. The tested 16 GiB boot pool has
 11,348,213,760 bytes free before staging; copying the 2.3 GiB update member to

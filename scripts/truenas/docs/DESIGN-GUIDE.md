@@ -379,3 +379,38 @@ objects. Before passing results to `cli-extended`, the CLI recursively converts
 dates and datetimes to ISO-8601 strings while preserving JSON-native values.
 Unsupported result types still fail visibly rather than being silently
 stringified.
+
+## Release-bound boot-pool patch and recovery
+
+The boot-pool patch changes middleware files inside the selected TrueNAS
+release. A version string does not identify every file shape in a nightly, so
+each adapter binds a closed target list to captured source hashes and refuses
+an unknown set. The v27 nightly and v28 nightly use separate adapters even
+though they expose related storage operations.
+
+An update replaces patched middleware files. On v1001, the first RC.1-to-v27
+nightly update left the RC.1 install record stale and Path A unmounted. The old
+exact-build installation was refused because it could not certify that stale
+record as current. The supported reapply action now checks the exact prior RC.1
+bundle digest, all 19 pristine nightly targets, and the bounded Path A root
+before it changes `/usr`. It archives the stale record, applies the selected
+adapter, verifies middleware, restores read-only protection, and mounts the
+eligible Path A tree. This explicit transition prevents a record or preserved
+dataset from claiming patch behavior that the active system does not have.
+
+The external `live-boot` lane takes two explicit mutation guards because it
+reboots the selected host. It captures boot-pool and optional Path B identities,
+unmounts eligible Path A filesystems, reboots, and checks the mount sources,
+pool health, GUIDs, PARTUUID, and partition table. It also exports Path B with
+`destroy=false`, discovers it again, and imports the captured pool through
+middleware. This keeps provider snapshot handling outside the test lane and
+requires the operator to plan the reboot on the disposable target.
+
+On 2026-10-30, the v27 nightly Path A/B API/UI matrix and the v27 and v28
+reboot/import proofs passed on v1001. The v27-to-v28 update preserved boot-pool
+and Path B identity; the exact v28 adapter was then applied before the v28
+reboot proof. No newer v28 nightly was listed in the official feed. The
+[patch design](../boot-pool-patch/docs/DESIGN-GUIDE.md#v27-nightly-update-and-reapply)
+explains the adapter and recovery contract; the
+[consumer guide](../boot-pool-patch/docs/CONSUMERS.md#reapply-v27-after-an-update)
+has the guarded commands.
