@@ -40,12 +40,32 @@ def _magic_inode(monkeypatch, *paths):
     real_stat = os.stat
     targets = {os.path.abspath(os.fspath(path)) for path in paths}
 
+    class StatResultProxy:
+        def __init__(self, result):
+            self._result = result
+
+        def __getattr__(self, name):
+            if name == "st_ino":
+                return 256
+            return getattr(self._result, name)
+
+        def __getitem__(self, index):
+            values = list(self._result)
+            values[1] = 256
+            return values[index]
+
+        def __iter__(self):
+            values = list(self._result)
+            values[1] = 256
+            return iter(values)
+
+        def __len__(self):
+            return len(self._result)
+
     def fake_stat(path, *args, **kwargs):
         result = real_stat(path, *args, **kwargs)
         if isinstance(path, (str, bytes, os.PathLike)) and os.path.abspath(os.fspath(path)) in targets:
-            values = list(result)
-            values[1] = 256
-            return os.stat_result(values)
+            return StatResultProxy(result)
         return result
 
     monkeypatch.setattr(backend_module.os, "stat", fake_stat)

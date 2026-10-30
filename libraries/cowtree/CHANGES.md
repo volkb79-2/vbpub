@@ -9,7 +9,8 @@ internal library, not a separately published release target.
 - Add the stdlib-only run API, btrfs/reflink/copy backends, input-derived
   admission, owner manifests, flock leases, conservative garbage collection,
   CLI, fake ioctl tests, and opt-in live suite.
-- Add tester-unified R0/R1 qualification with 100% line and branch coverage.
+- Add full-suite tester-unified R0/R1 qualification with 100% line and branch
+  coverage, without fail-fast truncation.
 - Require explicit external owner references and verify boot/PID identity before
   GC removes a lease-free run; remove btrfs subvolume trees through the backend
   and make snapshots of sealed templates writable for candidates. Active runs
