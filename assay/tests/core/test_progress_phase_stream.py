@@ -159,6 +159,8 @@ def test_command_finished_carries_resources_when_observed(
         git_repo.commit_all("lane")
         git_repo.git("checkout", "-q", "-b", "base")
         git_repo.git("checkout", "-q", "-b", "feature")
+        git_repo.write("pkg/thing.py", "def thing():\n    return 2\n")
+        git_repo.commit_all("feature change")
         lane_file = str(git_repo.path / "assay.toml")
 
     destination = tmp_path / "progress.jsonl"

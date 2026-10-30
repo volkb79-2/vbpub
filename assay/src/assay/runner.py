@@ -1767,7 +1767,12 @@ def _announce_r0_pressure(
 
 def _r1_after_r0(claim: Claim, baseline: termination.Termination | None) -> Claim:
     """Replace R1 with infrastructure when its R0 baseline was not judgeable."""
-    if baseline is None or baseline in termination.JUDGEABLE:
+    # Timeouts and hangs retain their existing budget/incomplete semantics;
+    # they are not reclassified as infrastructure claims at R1.
+    if baseline is None or baseline in termination.JUDGEABLE or baseline in {
+        termination.Termination.TIMED_OUT,
+        termination.Termination.HUNG,
+    }:
         return claim
     return Claim(
         rigor="R1",

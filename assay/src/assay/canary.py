@@ -673,7 +673,7 @@ def run_isolated_canary(
             outcome=control_outcome,
             reason_code=control_reason_code,
             observation=control_contention.observation,
-            require_observation=require_contention_observation,
+            observation_required=require_contention_observation,
         ):
             control_outcome = Outcome.INCONCLUSIVE
         original_bytes = prepared.read_regular_file(
@@ -770,7 +770,7 @@ def run_isolated_canary(
             outcome=transformed_outcome,
             reason_code=observed_reason_code,
             observation=transform_contention.observation,
-            require_observation=require_contention_observation,
+            observation_required=require_contention_observation,
         ):
             transformed_outcome = Outcome.INCONCLUSIVE
             observed_reason_code = ReasonCode.CANARY_INCONCLUSIVE

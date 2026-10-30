@@ -342,8 +342,8 @@ def test_r0_pass_with_limit_event_is_pass(
         (Termination.LEAKED, Outcome.PASS, Outcome.ERROR),
         (Termination.LIMIT_EVENT, Outcome.FAIL, Outcome.ERROR),
         (Termination.UNOBSERVED, Outcome.FAIL, Outcome.ERROR),
-        (Termination.TIMED_OUT, Outcome.FAIL, Outcome.ERROR),
-        (Termination.HUNG, Outcome.FAIL, Outcome.ERROR),
+        (Termination.TIMED_OUT, Outcome.FAIL, Outcome.FAIL),
+        (Termination.HUNG, Outcome.FAIL, Outcome.FAIL),
         (Termination.INCONCLUSIVE, Outcome.FAIL, Outcome.ERROR),
     ],
 )

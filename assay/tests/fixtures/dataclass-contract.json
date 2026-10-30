@@ -909,7 +909,11 @@
       }
     },
     "assay.runner.CommandResult": {
-      "fields": {},
+      "fields": {
+        "decided_by_report": {
+          "default": false
+        }
+      },
       "params": {
         "eq": true,
         "frozen": true,
