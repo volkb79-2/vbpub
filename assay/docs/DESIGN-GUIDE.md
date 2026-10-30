@@ -2707,63 +2707,43 @@ first (`b105_report_check.py --receipt-only`, phase
 report without a matching receipt. The preflight lane needs none. Run
 `run-gate tester-unified` before `run-gate self-qualification`, in the same
 worktree and with no commit in between: any later commit, a docs-only or merge
-commit included, needs a fresh `tester-unified` run first. The old host check
-took one `docker ps --no-trunc` name snapshot before the lane. It did not
-identify a container's cgroup, sample CPU or memory pressure, observe later
-starts or hold a lease; it therefore refused legitimate peer gates while
-missing contention that began after its snapshot. The replacement admits
-parallel gates and attributes failed R0 command results to the B105 lane's own
-cgroup. The observer compares pids and memory OOM event counters, cgroup PSI
-totals and `cpu.stat` throttling counters immediately before and after the
-command. Resource-limit attribution compares the candidate cgroup's subtree
-counters with visible ancestor-local counters. An ancestor-only pids/OOM event
-cannot be assigned to this run, so it makes the sample unknown and the result
-is retried. `memory.events:max` is retained as telemetry and does not alone
-withhold a result because reclaim can satisfy an allocation. A direct pids/OOM
-limit event withholds the R0 result, even if the command exited zero; an
-unavailable required sample withholds any R0 result.
-A failed assertion in a window with measured cgroup PSI or CPU throttling is
-also withheld because a time-sensitive assertion may have been affected. The
-result becomes `ERROR/EXEC_FAILED`, so the wrapper and Run-Gate retry it rather
-than report product `FAIL`. PSI/throttling alone do not overturn a completed
-PASS. Command-budget expiry,
-missing coverage artifacts, process-tree failure and incomplete witness
-results already have infrastructure outcomes and must not be folded into a
-product failure.
+commit included, needs a fresh `tester-unified` run first.
 
-R1's coverage judge compares the completed report's executable lines and
-branch arcs against its declared floor; host load does not change the
-arithmetic for an identical complete artifact. An interrupted runner, absent
-report or unparsable report cannot yield a coverage PASS and is already an
-incomplete/error path. R1 carries the same R0 command's resource window: a
-direct pids/OOM event or unavailable sample withholds either coverage status,
-and a coverage FAIL under measured cgroup pressure becomes infrastructure.
-A coverage PASS under PSI/throttling alone remains usable. R2 samples pids and
-memory OOM events around each
-mutation candidate. A limit event makes that candidate infrastructure/error
-rather than a kill; CPU and PSI pressure pauses the liveness clock, while the
-lane's absolute budget still bounds the campaign. A candidate timeout/hang is
-a budget bucket and makes the R2 claim incomplete, never a survivor or kill.
-R3 previously treated some transformed errors, timeouts or missing results as
-a canary survival. Those outcomes now remain `INCONCLUSIVE`; a direct pids/OOM
-event or unavailable sample in either canary half withholds the R3 result. A
-failed assertion with measured cgroup PSI or throttling is also `INCONCLUSIVE`;
-a completed PASS is retained without a direct resource-limit event. Observer
-sampling is lane-scoped: the observer socket is used only when it appears in
-the lane's resolved environment. A gate's ambient socket cannot alter a
-nested lane's canary verdict. Host PSI is not used for that attribution
-because unrelated work elsewhere does not show that this lane's cgroup
-stalled.
+#### Host load and verdicts
 
-The B105 launch still verifies the gates cgroup and reserves 2 GiB of
-point-in-time memory headroom. The five qualification lanes retain their shared
-Run-Gate lock and a Git-common-directory lock for B105 callers; those locks
-serialize Assay work only. `ASSAY_GATE_ALLOW_SHARED_HOST=1` is accepted as a
-legacy no-op, and other values are refused. A gate started beside other
-projects can consume shared CPU, storage or parent memory capacity: bounded
-operations may then end as infrastructure/inconclusive, and Run-Gate retries
-them. Docker names and `docker ps` success no longer decide whether evidence
-is valid.
+The command's own cgroup resource window reports `affected` only when it
+observes a direct pids-limit or memory OOM event in that cgroup's subtree.
+Ancestor-only counters are not attributed to the command, and
+`memory.events:max` alone does not count because reclaim can satisfy an
+allocation. PSI and CPU throttling do not make a window `affected` and do not
+change R0, R1 or R3 verdicts. There is no PSI percentage cutoff.
+
+A direct resource-limit event never changes a completed PASS. It makes a
+failed R0 command or R1 coverage claim an infrastructure error. An unavailable
+direct-counter observation can make a failed R0 claim an infrastructure error
+when the gate requires that evidence; PSI or CPU-stat sample availability alone
+does not withhold a failure. R1 reads the direct-limit window from its R0
+baseline. For R3, a direct limit event or unavailable required direct-counter
+observation makes a failed control or transform `INCONCLUSIVE`; completed
+PASSes remain final. Timeouts, execution errors and missing results remain
+incomplete. An `import-break` catch requires the transformed command to exit
+normally with a nonzero status and the expected `COMMAND_FAILED` reason. A
+signal death or report-derived `COMMAND_FAILED` with exit status zero is
+`INCONCLUSIVE`; Assay does not inspect
+captured output for an additional cause proof. The `uncovered-line` mechanism
+continues to use its R1 coverage comparison.
+
+R2 retains its candidate-scoped pids/OOM events and its pressure-adjusted
+liveness clock: PSI and CPU throttling pause that clock, while the lane's
+absolute budget still bounds the campaign. Candidate timeouts and hangs remain
+incomplete results.
+
+B105 admission verifies the gates cgroup and reserves 2 GiB of point-in-time
+memory headroom. The five qualification lanes share a Run-Gate lock and a
+Git-common-directory lock. Docker names do not decide admission, and no
+host-wide quiet window is required. Observer sampling is lane-scoped: the
+observer socket changes a nested lane only when that lane's resolved
+environment declares it.
 
 The full B105 R0–R3 Assay invocation has a 5-hour failure-only lane budget
 after a separately bounded 60-minute R0/R1 preflight. B114 persists one
@@ -2872,18 +2852,6 @@ The [consumer guide](CONSUMERS.md#assays-own-full-source-self-qualification-b105
 shows how to preserve the log and inspect the report. Decision A-462 records
 why this separate lane supersedes A-133's former permanent R0-only limit while
 leaving the ordinary release lane unchanged.
-
-### Parallel gate regression
-
-The registered `parallel-safety-regression` lane makes the base behavior fail
-before checking the fix: it overlays the new focused assertions onto the
-task branch's merge-base with `origin/main`, requires those named assertions
-to fail there, then runs them on the current tree. The baseline proof covers
-the false `host busy` refusal, incomplete R3 classification and R0 failure
-attribution. The current proof uses fixed cgroup samples and synthetic Docker
-responses; it does not infer correctness from elapsed-time slack or require a
-quiet host. Its pasteable invocation is in
-[CONSUMERS.md](CONSUMERS.md#parallel-gate-regression).
 
 ### Registered B110 pilot and survivor-screen lanes (B118 P7b)
 
@@ -3179,17 +3147,17 @@ build actually wires it to (§7 — an adapter existing is not a capability):
 |---|---|---|
 | `python` | R1, R2, R3 | the reference adapter; `requires_span_attribution = True` (coverage.py's multi-line-statement gap, recovered by a real AST walk) |
 | `sql` | R2 only | a stdlib lexer over DDL; no coverage tool exists for it, so no R1, and A-192 forbids R3 without R1 |
-| `javascript` | R1, R2 by ingestion (B046), R3 canary (B087) | `.js`/`.jsx`/`.ts`/`.tsx` under one name (A-340). The lane runs Stryker and Assay judges its report; native `generate_mutation_sites` remains `UNSUPPORTED`. The existing import-break and uncovered-line injectors use the shared isolated R3 runner and have local real-Vitest oracles; both dstdns canaries were qualified under Assay 9.0.0/schema v15, with retained verdicts and verifier transcripts for that release |
+| `javascript` | R1, R2 by ingestion (B046), R3 canary (B087) | `.js`/`.jsx`/`.ts`/`.tsx` under one name (A-340). The lane runs Stryker and Assay judges its report; native `generate_mutation_sites` remains `UNSUPPORTED`. The existing import-break and uncovered-line injectors use the shared isolated R3 runner and have local real-Vitest oracles; import-break expects a clean `COMMAND_FAILED`, while uncovered-line expects `UNCOVERED_LINES`. Both dstdns canaries were qualified under Assay 9.0.0/schema v15, with retained verdicts and verifier transcripts for that release |
 | `go` | R1 only (A-394) | requires the real Go toolchain for source-derived statement positions (A-217); R2 and R3 have no producer path and are not registered |
 
 **B087 registers both adapter transforms through the shared isolated canary
 runner.** `import-break` appends a top-level throw, which module evaluation
-reaches when tests import the target. `uncovered-line` appends a leading-
-semicolon wrapper call that returns an anonymous function without calling
-it; the wrapper has no target-global reads or generated module binding, and
-the function body's lines remain uncovered. The runner accepts only the
-matching `COMMAND_FAILED` or `UNCOVERED_LINES` result after a passing control,
-respectively. The live R3 oracles cover ESM and CommonJS; a separate Vitest
+reaches when tests import the target; a clean `COMMAND_FAILED` is its expected
+result. `uncovered-line` appends a leading-semicolon wrapper call that returns
+an anonymous function without calling it; the wrapper has no target-global
+reads or generated module binding, and the function body's lines remain
+uncovered. The runner checks `UNCOVERED_LINES` for that mechanism after a
+passing control. The live R3 oracles cover ESM and CommonJS; a separate Vitest
 fixture replay confirms the body lines remain missing under both Istanbul
 and V8 artifacts. Both dstdns canaries were qualified under Assay 9.0.0/schema
 v15; their retained verdicts and verifier transcripts document that release.

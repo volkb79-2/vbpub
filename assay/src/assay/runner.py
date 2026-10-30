@@ -80,6 +80,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import tomllib
 from contextlib import ExitStack, contextmanager
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -95,8 +96,6 @@ from typing import (
     Sequence,
     TextIO,
 )
-
-import tomllib
 
 from . import (
     contention,
@@ -125,7 +124,6 @@ from .config import (
 from .coverage import derive_branch_capability
 from .coverage_parsers.model import CoverageProfile
 from .errors import AssayError, LaneConfigError, Outcome, ReasonCode
-from .failure_summary import first_failing_test
 from .evaluate import (
     # (B074) `_is_test_filename` is imported rather than reproduced: R2's
     # declared-target gate below must split "test by DIRECTORY" from "test by
@@ -136,6 +134,7 @@ from .evaluate import (
     evaluate_targets,
     resolve_coverage_keys,
 )
+from .failure_summary import first_failing_test
 from .guards import is_finite_positive, is_nonempty_str, is_positive_or_inf, is_real
 from .mutation_witness import (
     MAX_INTERNAL_MANIFEST_BYTES,
@@ -1282,11 +1281,12 @@ def execute_plan(
     different KIND of judgement from "did the wrapped suite pass".
 
     *classify_resource_contention* is a separate, default-off gate option for
-    only the lane's own R0 baseline/direct command. It withholds an R0 result
-    for a direct pids/OOM event or an unavailable sample, and withholds a
-    failed command when its cgroup window records PSI or CPU throttling. A
-    completed pass under PSI/throttling alone remains accepted. R2 candidates
-    and R3 transforms keep their own classification paths.
+    only the lane's own R0 baseline/direct command. A direct pids/OOM event can
+    make a failed baseline measurement incomplete, while a completed PASS
+    remains final even when an event is observed. A failed command with an
+    unavailable required direct-counter sample is incomplete. PSI and CPU
+    throttling do not change the result. R2 candidates and R3
+    transforms keep their own classification paths.
 
     *result_report_create_missing_parents* is B006(b)'s opt-in, threaded to
     :func:`_reserve_result_report`; only the snapshot baseline passes ``True``,
@@ -1355,29 +1355,12 @@ def execute_plan(
                 if contention.withhold_r0_result(
                     observation,
                     outcome=result.outcome,
+                    require_observation=classify_resource_contention,
                 ):
-                    window_details = (
-                        f" ({', '.join(observation.reasons)})"
-                        if observation.status == "affected" and observation.reasons
-                        else ""
-                    )
-                    diagnostic = (
-                        "\nAssay R0 result withheld because its cgroup resource "
-                        f"window was {observation.status}{window_details}; treated "
-                        "as infrastructure for retry."
-                    )
-                    stderr_tail, additional_dropped = _bounded_tail(
-                        (result.stderr_tail or "") + diagnostic,
-                        sensitive_values=_plan_passthrough_values(plan),
-                    )
                     result = replace(
                         result,
                         outcome=Outcome.ERROR,
                         reason_code=ReasonCode.EXEC_FAILED,
-                        stderr_tail=stderr_tail,
-                        stderr_dropped_bytes=(
-                            result.stderr_dropped_bytes + additional_dropped
-                        ),
                     )
             else:
                 result = _execute_plan_inner(
@@ -1652,26 +1635,19 @@ def _withhold_r1_claim_for_contention(
     if not contention.withhold_r1_result(observation, outcome=claim.status):
         return claim
 
-    details = (
-        f" ({', '.join(observation.reasons)})"
-        if observation.status == "affected" and observation.reasons
-        else ""
-    )
     refusal = AssayError(
-        "R1 coverage claim withheld because its R0 cgroup resource window "
-        f"was {observation.status}{details}; treated as infrastructure for retry.",
+        "R1 coverage claim withheld because its R0 resource observation "
+        "cannot classify the failed run.",
         outcome=Outcome.ERROR,
         reason_code=ReasonCode.EXEC_FAILED,
     )
-    detail = announce_refusal(refusal, diagnostics=diagnostics)
+    announce_refusal(refusal, diagnostics=diagnostics)
     return Claim(
         rigor="R1",
         source="computed",
         status=Outcome.ERROR,
         verified_by_assay=True,
         reason_code=ReasonCode.EXEC_FAILED,
-        detail=detail.text if detail else None,
-        detail_dropped_bytes=detail.dropped_bytes if detail else None,
     )
 
 
@@ -1730,10 +1706,10 @@ def execute_command(
     ``FAIL``/``COMMAND_FAILED`` (A-073 -- an ordinary non-zero exit is a
     judged R0 FAIL, never ``EXEC_FAILED``, and never a universal PASS).
     The registered gate may opt into cgroup attribution for its own R0 call:
-    a direct pids/OOM event or unavailable resource sample withholds the R0
-    result, while a failed command in a window with measured cgroup PSI or
-    throttling is ``ERROR``/``EXEC_FAILED`` for retry. A completed pass under
-    PSI/throttling alone remains accepted.
+    a direct pids/OOM event can make a failed R0 result incomplete, while a
+    completed PASS remains final even when an event is observed. A missing
+    required direct-counter sample can likewise make only a failed result
+    incomplete. PSI and CPU throttling do not change the result.
 
     **(B078) *result_report*** defaults to the sentinel
     :data:`_LANE_DECLARED_REPORT`, meaning "use ``lane.result_report``" --

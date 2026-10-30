@@ -3444,6 +3444,13 @@ def _judge_one_attempt(attempt: Any) -> tuple[Outcome, ReasonCode | None]:
         return Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE
     if attempt.transformed_outcome is None:
         return Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE
+    if attempt.transformed_outcome in {
+        Outcome.ERROR,
+        Outcome.NO_MEASUREMENT,
+        Outcome.BUDGET_EXCEEDED,
+        Outcome.INCONCLUSIVE,
+    }:
+        return Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE
     if attempt.transformed_outcome is Outcome.PASS:
         return Outcome.FAIL, ReasonCode.CANARY_SURVIVED
     if attempt.observed_reason_code != attempt.expected_reason_code:

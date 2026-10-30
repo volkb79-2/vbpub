@@ -14,7 +14,7 @@ linking against assay itself.
   [SQL/DDL mutation testing](#sqlddl-mutation-testing-r2-only) below).
   JavaScript/TypeScript is supported at **R1, R2 by ingestion, and R3** —
   changed-line coverage, externally-generated mutation evidence (no native
-  JS mutant generator yet), and cause-sensitive canaries, see
+  JS mutant generator yet), and R3 canaries, see
   [JavaScript/TypeScript coverage, mutation ingestion and canaries](#javascripttypescript-coverage-mutation-ingestion-and-canaries)
   below. Go is supported at **R1 only** — changed-line coverage for `.go`,
   statement-granular, requiring a real Go toolchain on the judging machine;
@@ -448,7 +448,7 @@ on this module" is `mode = "whole_target"` + `require_branch = true` +
 |---|---|---|---|---|---|
 | *(any)* | ✅ language-agnostic | — | — | — | — |
 | **Python** | ✅ | ✅ registered, both scope modes | ✅ **available** — real `coverage.py` branch arcs | ✅ registered, native; Assay owns candidate generation, execution, resumable state, survivor rejudge, progress and candidate-local resource-event checks | ✅ registered |
-| **JavaScript/TypeScript** | ✅ | ✅ registered, both scope modes | ✅ **available** — real Istanbul/nyc branch arcs (declare `producer = "istanbul"`; `@vitest/coverage-v8`/`c8` report ranges, not per-arm arcs, and stay `"unavailable"` without it) | ✅ registered, **ingested path only** — an external producer such as Stryker owns candidate execution/retry; Assay scores the completed report, with no Assay candidate-state resume/rejudge or per-candidate resource-event checks | ✅ **registered and locally exercised** — R3 checks import-break and uncovered-line causes (B087); both dstdns canaries were qualified under Assay 9.0.0/schema v15, with retained verdicts and verifier transcripts for that release |
+| **JavaScript/TypeScript** | ✅ | ✅ registered, both scope modes | ✅ **available** — real Istanbul/nyc branch arcs (declare `producer = "istanbul"`; `@vitest/coverage-v8`/`c8` report ranges, not per-arm arcs, and stay `"unavailable"` without it) | ✅ registered, **ingested path only** — an external producer such as Stryker owns candidate execution/retry; Assay scores the completed report, with no Assay candidate-state resume/rejudge or per-candidate resource-event checks | ✅ **registered and locally exercised** — R3 runs import-break and uncovered-line canaries (B087); both dstdns canaries were qualified under Assay 9.0.0/schema v15, with retained verdicts and verifier transcripts for that release |
 | **Go** | ✅ | ✅ registered, both scope modes — needs a real `go` toolchain on the judge (`external_tools = ("go",)`); statement positions are re-derived from source, never trusted from the profile alone (A-217) | ❌ **structurally impossible** — `go-cover`'s own format has no branch concept; no engineering investment inside assay changes this without Go's own coverage instrumentation gaining one | ❌ **not implemented** — `generate_mutation_sites` is unconditionally `UNSUPPORTED`; other Go-ecosystem tools (e.g. `go-mutesting`) prove this is possible in principle, assay just hasn't built it | ❌ not registered |
 | **SQL/DDL** | ✅ | ❌ **not registered** — SQL's only rigor entry is R2 | — (moot) | ✅ registered, native; uses the same Assay candidate state, resume/rejudge, progress and resource-event path as Python | ❌ not registered |
 
@@ -743,7 +743,8 @@ Why the oracle is a subprocess rather than a Python rule:
 `judge.language = "javascript"` resolves at **R1, R2 by ingestion, and R3**.
 R1 measures changed-line coverage over `.js`, `.jsx`, `.ts` and `.tsx`; R2
 judges a Stryker report produced by the lane's own command (B046); R3
-checks cause-sensitive import-break and uncovered-line canaries (B087). Assay
+checks import-break and uncovered-line canaries (B087). Import-break expects a
+clean `COMMAND_FAILED`; uncovered-line checks R1's `UNCOVERED_LINES`. Assay
 does not generate native JavaScript mutants. One language name covers all four:
 TypeScript is JavaScript's own superset, JSX/TSX are syntax extensions of the
 two, and every coverage tool in the ecosystem measures them into one
@@ -853,7 +854,7 @@ the Assay snapshot; Assay then verifies and judges that report. Assay does not
 generate JavaScript mutants itself. The supported report path and its exact
 producer contract are in the
 [JavaScript consumer guide](docs/CONSUMERS.md#javascripttypescript-lanes-r1-r2-by-ingestion-and-r3-canary).
-R3 (the cause-sensitive canary) is registered for JavaScript through B087.
+R3 canaries are registered for JavaScript through B087.
 The two adapter transforms are judged by the existing isolated canary runner;
   local real-Vitest tests exercise the current code, and both dstdns canaries
   were qualified under Assay 9.0.0/schema v15; their retained verdicts and
@@ -1503,23 +1504,26 @@ you're changing assay itself:
   workspace root at both its physical host path and `/workspaces/vbpub` so
   linked-worktree Git paths resolve inside the runner, disables networking,
   and verifies the returned container ID, ownership, launch settings, and
-  `docker wait` status. The five registered
-  Assay qualification lanes share a run-gate lock; a Git-common-directory
-  lock also serializes B105 callers across container `/tmp` namespaces. Docker
-  names do not decide admission. R0/R1/R3 judgments use the lane cgroup's OOM,
-  pids, PSI and CPU-throttling counters; R2 keeps its per-candidate event
-  windows and pressure-adjusted liveness clock. A completed PASS remains a
-  PASS when its sample is observable and no direct resource limit occurred.
-  A direct pids/OOM event or unavailable sample makes R0/R1 `ERROR` for retry;
-  an R0/R1 failure with measured cgroup stalls is also retried as `ERROR`,
-  while a clear-sample failure remains product `FAIL`. R3 applies the same
-  rule to failed canary halves and marks direct-limit or unavailable samples
-  `INCONCLUSIVE`. Timeouts, execution errors and missing results remain
-  `INCONCLUSIVE`; a completed failure for the wrong cause remains
-  `CANARY_SURVIVED` when the sample is clear. Observer sampling is lane-scoped:
-  Assay uses the socket only when it appears in the lane's resolved
-  environment; a parent gate's ambient socket cannot change a nested lane's
-  verdict.
+  `docker wait` status. The five registered Assay qualification lanes share a
+  run-gate lock; a Git-common-directory lock also serializes B105 callers
+  across container `/tmp` namespaces. Docker names do not decide admission.
+  For R0/R1/R3, `affected` means a direct pids or memory OOM event in the
+  measured cgroup; PSI and CPU throttling do not change verdicts. A direct
+  event never changes a completed PASS. A direct event can make a failed
+  command or coverage claim an infrastructure error; an unavailable direct
+  counter observation can do the same when the gate requires that evidence.
+  PSI or CPU-stat sample availability alone never changes a failed verdict.
+  R2 keeps its per-candidate event windows and pressure-adjusted liveness
+  clock.
+  Import-break canaries require the transformed command to exit normally with
+  a nonzero status and the expected `COMMAND_FAILED` reason; a signal death or
+  report-derived `COMMAND_FAILED` with exit status zero is `INCONCLUSIVE`.
+  Assay does not inspect output for a separate cause proof. Timeouts, execution
+  errors and missing results remain
+  `INCONCLUSIVE`. Observer sampling is
+  lane-scoped: Assay uses the socket only when it appears in the lane's
+  resolved environment, so a parent gate's ambient socket cannot change a
+  nested lane's verdict. See [host load and verdicts](docs/DESIGN-GUIDE.md#host-load-and-verdicts).
   `ASSAY_GATE_ALLOW_SHARED_HOST=1` is a legacy no-op;
   other values are refused. B105 still requires the verified gates cgroup and
   a measured 2 GiB launch reserve, so concurrent work can make admission or a
@@ -1553,9 +1557,6 @@ you're changing assay itself:
   code imported from each isolated snapshot. See the
   [self-qualification design](docs/DESIGN-GUIDE.md#full-source-self-qualification-b105)
   and [worked invocation](docs/CONSUMERS.md#assays-own-full-source-self-qualification-b105).
-  To check the shared-host admission and pressure-attribution contract with
-  deterministic synthetic inputs, use
-  [`run-gate parallel-safety-regression`](docs/DESIGN-GUIDE.md#parallel-gate-regression).
   A standalone R0/R1 preflight has a 75-minute run-gate budget and a 90-minute
   Nyxloom outer timeout, leaving time for startup and evidence collection.
   The full-source attempt is currently unqualified: the latest run stopped at

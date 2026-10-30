@@ -106,24 +106,26 @@ its HEAD, so run both lanes in the same worktree with no commit in between: any
 later commit, a docs-only or merge commit included, needs a fresh `tester-unified`
 run. Docker container names do not block this lane. Run-Gate maps exit 3 to
 infrastructure `ERROR`; the wrapper uses it for launch failures, timeouts and
-incomplete resource evidence. A direct OOM/pids limit event withholds R0, R1
-and R3 results even if the command exited zero. An unavailable sample or an
-unassignable ancestor-only pids/OOM event withholds R0, R1 and R3 results; a
-failed R0/R1/R3 assertion in a window with measured cgroup PSI or CPU throttling is also
-retried as infrastructure, since a time-sensitive assertion may have been
-affected. PSI/throttling alone do not overturn a completed PASS. Command-budget
-expiry already produces an incomplete outcome. R1 coverage arithmetic is
-unchanged for the same complete report, and its claim uses the R0 command's
-resource window. R2 keeps its own per-candidate resource event and
-liveness evidence. For R3, an execution error, timeout or missing result is
-`INCONCLUSIVE`; a completed failure for the wrong cause is `CANARY_SURVIVED`
-when its sample is clear. Observer sampling follows the lane's resolved
-environment, so the tester gate's ambient socket cannot change a nested
-lane's result. The five registered Assay lanes share one run-gate lock,
-and a separate lock
-in the Git common directory serializes full-source qualification, pilot and
-screen callers across container `/tmp`
-namespaces. No host-wide quiet window is required.
+incomplete resource evidence. For R0/R1/R3, `affected` means a direct pids or
+memory OOM event in the measured cgroup. PSI and CPU throttling do not change
+verdicts. A direct event never changes a completed PASS. It can turn a failed
+R0 command or R1 coverage claim into an infrastructure error; an unavailable
+direct-counter observation can do the same when the gate requires it. PSI or
+CPU-stat sample availability alone never changes a failed verdict. R1 coverage
+arithmetic is unchanged for the same complete report, and its claim uses the
+R0 command's resource window. R2 keeps per-candidate resource events and its
+pressure-adjusted liveness clock.
+Import-break canaries require the transformed command to exit normally with a
+nonzero status and the expected `COMMAND_FAILED` reason; signal deaths and
+report-derived `COMMAND_FAILED` results with exit status zero are
+`INCONCLUSIVE`. Assay does not inspect output for a separate cause proof.
+Timeouts, execution errors and missing R3 results remain
+`INCONCLUSIVE`. Observer sampling follows the lane's resolved environment, so
+the tester gate's ambient socket cannot change a nested lane's result. The five
+registered lanes share a Run-Gate lock and a Git-common-directory lock; no
+host-wide quiet window is required. See
+[host load and verdicts](DESIGN-GUIDE.md#host-load-and-verdicts).
+
 `ASSAY_GATE_ALLOW_SHARED_HOST=1` is a compatibility no-op across the
 registered gate and B105 wrappers; other values are refused. The SQL phase
 starts a separate `tester-unified` container with a private
@@ -214,22 +216,6 @@ lane runs; that lock serializes Assay lanes only.
 `ASSAY_GATE_ALLOW_SHARED_HOST=1` is a compatibility no-op. CMRU's
 `--dry-run` previews a transaction without executing `run-tests`, so it cannot
 prove cgroup capacity or lane admission.
-
-### Parallel gate regression
-
-From the repository root, use this pasteable invocation to exercise the
-shared-host contract in the registered `tester-unified` environment:
-
-```bash
-cd assay
-run-gate --worktree "$(git -C .. rev-parse --show-toplevel)" parallel-safety-regression
-```
-
-It first checks that its regression cases fail against the task branch's
-`origin/main` base, then checks that they pass on the current tree. It uses
-synthetic Docker names, cgroup samples and command results; it does not run the
-release gate or an R2 campaign. Time and resource cases use fixed samples
-rather than wall-clock slack.
 
 ### Cold-witness R2 (B114)
 
@@ -2199,7 +2185,7 @@ bounded integer columns. Fixed-length
 **R1** (coverage), **R2 by evidence ingestion** — your own argv runs StrykerJS
 inside the snapshot and assay judges the report
 ([below](#r2-for-javascript-by-ingesting-strykers-report-b046)) — and **R3**
-by the existing cause-sensitive canary runner. Assay still ships no JS/TS
+by the existing canary runner. Assay still ships no JS/TS
 mutation engine, so a *native* R2 lane is still refused. B087 registers R3
 and local real-Vitest tests exercise both mechanisms. Both dstdns canaries
 were qualified under Assay 9.0.0/schema v15; their retained verdicts and
@@ -2247,7 +2233,7 @@ point at `lcov.info`).
 
 ### Add an R3 canary to a JavaScript lane
 
-R3 checks that the lane's command catches a deliberately injected cause. Use
+R3 checks that the lane's command rejects a deliberately transformed target. Use
 `import-break` when the test suite imports the target file; it must make the
 command fail with `COMMAND_FAILED`. Use `uncovered-line` when the lane also
 declares R1 coverage; the appended function body must make R1 fail with

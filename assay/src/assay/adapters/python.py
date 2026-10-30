@@ -169,7 +169,12 @@ from ..mutation import (
     byte_offset,
     line_for_offset,
 )
-from .base import Remaining, StatementBlockReport, StatementSpan
+from .base import (
+    _IMPORT_BREAK_MARKER,
+    Remaining,
+    StatementBlockReport,
+    StatementSpan,
+)
 
 __all__ = ["PythonAdapter"]
 
@@ -340,7 +345,7 @@ def _statement_spans(text: str) -> tuple[StatementSpan, ...] | None:
 #: Inserted as the first real statement of the module body (past any leading
 #: docstring/``__future__`` import, see :func:`_insertion_index_after_future`)
 #: so any test that imports the module fails on import.
-_IMPORT_BREAK_STATEMENT = 'raise AssertionError("assay-canary-import-break")\n'
+_IMPORT_BREAK_STATEMENT = f'raise AssertionError("{_IMPORT_BREAK_MARKER}")\n'
 
 #: P09's uncovered-canary function name/snippet (A-105/A-010) — adopted
 #: verbatim from nyxloom's own ``_UNCOVERED_CANARY_FUNC``/

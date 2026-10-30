@@ -1263,7 +1263,7 @@ class Coverage:
 @record
 class CanaryAttempt:
     """ONE canary target's own record (B007/A-432, schema v10): the evidence
-    a cause-sensitive canary produces for a single declared target, carried
+    an R3 canary produces for a single declared target, carried
     separately from the JUDGEMENT :mod:`assay.canary` derives from it — the
     identical split :class:`Coverage` already keeps from :class:`Claim` (this
     is its exact construction-time-validation template, restated for canary's

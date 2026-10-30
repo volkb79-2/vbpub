@@ -203,7 +203,12 @@ from typing import Literal, Sequence
 
 from ..errors import AssayError, Outcome, ReasonCode, require_advance
 from ..mutation import MutationSite
-from .base import Remaining, StatementBlockReport, StatementSpan
+from .base import (
+    _IMPORT_BREAK_MARKER,
+    Remaining,
+    StatementBlockReport,
+    StatementSpan,
+)
 from .go_modfile import find_module_declaration
 from .go_stmtpos import derive_statement_blocks
 
@@ -474,7 +479,7 @@ def _has_top_level_func_body(text: str) -> bool:
 #: SAME contract nyxloom's own mechanism established: a side effect that
 #: fires merely by the package loading/being imported.
 _IMPORT_BREAK_SNIPPET = (
-    '\n\nfunc init() {\n\tpanic("assay-canary-import-break")\n}\n'
+    f'\n\nfunc init() {{\n\tpanic("{_IMPORT_BREAK_MARKER}")\n}}\n'
 )
 _UNCOVERED_CANARY_FUNC = "_assayCanaryUnreached"
 _UNCOVERED_CANARY_SNIPPET = (

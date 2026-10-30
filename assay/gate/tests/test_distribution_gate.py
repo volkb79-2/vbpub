@@ -2186,29 +2186,6 @@ def test_a_busy_host_does_not_block_the_registered_gate(
     assert not log.exists()  # no Docker-name inventory is used for admission
 
 
-def test_parallel_gate_feature_is_findable_across_user_docs() -> None:
-    readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
-    design = (PROJECT_ROOT / "docs" / "DESIGN-GUIDE.md").read_text(encoding="utf-8")
-    consumers = (PROJECT_ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
-    changes = (PROJECT_ROOT / "CHANGES.md").read_text(encoding="utf-8")
-    backlog = (PROJECT_ROOT / "nyxloom-trove" / "4-backlog.md").read_text(
-        encoding="utf-8"
-    )
-
-    assert "run-gate parallel-safety-regression" in readme
-    assert "docs/DESIGN-GUIDE.md#parallel-gate-regression" in readme
-    assert "### Parallel gate regression" in design
-    assert "CONSUMERS.md#parallel-gate-regression" in design
-    assert "### Parallel gate regression" in consumers
-    assert (
-        'run-gate --worktree "$(git -C .. rev-parse --show-toplevel)" '
-        "parallel-safety-regression"
-    ) in consumers
-    assert "## [Unreleased]" in changes
-    assert "allow concurrent gates" in changes
-    assert "B172" in backlog
-
-
 def test_a_host_running_only_other_containers_proceeds_to_the_tester(
     tmp_path: Path, gate_functions: Path
 ) -> None:

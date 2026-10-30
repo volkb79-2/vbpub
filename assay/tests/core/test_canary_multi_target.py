@@ -29,9 +29,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
-from conftest import completed_process
 from conftest import (
     GitRepo,
+    completed_process,
     make_deadline,
     make_lane,
     make_plan,
@@ -48,11 +48,8 @@ from assay.verify import verify_document
 
 MOMENT = datetime(2026, 9, 3, 12, 0, 0, tzinfo=timezone.utc)
 
-#: The marker `PythonAdapter.inject_import_break` writes into a transformed
-#: file. Read from the adapter itself rather than restated, so the "gate"
-#: below cannot drift from the transform it is supposed to catch.
-_MARKER = PythonAdapter().inject_import_break("x = 1\n")[0].splitlines()[0]
-
+#: The injected statement marks the transformed file so the miniature gate
+#: can model an ordinary nonzero command exit without relying on diagnostics.
 TARGETS = ("pkg/greet.py", "pkg/farewell.py")
 
 
@@ -135,11 +132,16 @@ class _Gate:
     def __call__(self, argv, *, env, cwd, timeout):
         self.cwds.append(Path(cwd))
         self.timeouts.append(timeout)
-        broken = self.catches and any(
-            _MARKER in (Path(cwd) / name).read_text()
-            for name in TARGETS
-            if (Path(cwd) / name).exists()
-        )
+        broken = False
+        if self.catches:
+            for name in TARGETS:
+                source_path = Path(cwd) / name
+                if not source_path.exists():
+                    continue
+                source = source_path.read_text()
+                if "assay-canary-import-break" in source:
+                    broken = True
+                    break
         return completed_process(list(argv), 1 if broken else 0, "", "")
 
 

@@ -1,10 +1,8 @@
-"""Attribute cgroup pressure to one completed Assay command window.
+"""Sample cgroup resource events around one completed Assay command window.
 
-The result is deliberately separate from the verdict wire format. A failed
-R0/R1/R3 assertion inside a cgroup window with observed stalls is retried as
-infrastructure because the failure may be time-sensitive. A completed pass is
-retained unless a direct pids/OOM event occurred. An unavailable sample never
-certifies an R0/R1/R3 result.
+PSI and CPU throttling remain observations, but they do not make a window
+``affected`` or change a verdict. ``affected`` means a direct pids or memory
+OOM limit event was observed in the command's cgroup subtree.
 """
 
 from __future__ import annotations
@@ -17,7 +15,6 @@ from . import liveness_resources, resource_limits
 from .errors import Outcome
 from .records import positional_record
 
-
 @positional_record
 class ContentionObservation:
     status: str
@@ -29,6 +26,8 @@ class ContentionObservation:
             raise ValueError("contention status is invalid")
         if type(self.resource_limit_hit) is not bool:
             raise ValueError("resource_limit_hit must be a bool")
+        if (self.status == "affected") != self.resource_limit_hit:
+            raise ValueError("affected status must match resource_limit_hit")
         if type(self.reasons) is not tuple or any(
             not isinstance(reason, str) or not reason for reason in self.reasons
         ):
@@ -38,9 +37,10 @@ class ContentionObservation:
 class ContentionWindow:
     """Capture this process cgroup's counters immediately around one command.
 
-    The observer socket is optional for Assay consumers.  B105 provides it,
-    which makes an unavailable pre/post sample an explicit unknown rather than
-    a claim that the run was pressure-free.
+    The observer socket is optional for Assay consumers. B105 provides it,
+    which makes an unavailable direct-counter pre/post sample an explicit
+    unknown rather than a claim that the run was unaffected. PSI and CPU-stat
+    sample availability remains advisory and does not affect classification.
     """
 
     def __init__(
@@ -70,7 +70,8 @@ class ContentionWindow:
         self.observation = ContentionObservation("unobserved")
         self._before_counters: resource_limits.ResourceLimitCounters | None = None
         self._before_pressure: Mapping[str, Any] | None = None
-        self._before_error: str | None = None
+        self._before_counter_error: str | None = None
+        self._before_pressure_error: str | None = None
 
     def __enter__(self) -> Self:
         if self.observer_socket_path is None:
@@ -79,41 +80,85 @@ class ContentionWindow:
             self._before_counters = self.counters_reader(
                 observer_socket_path=self.observer_socket_path
             )
+        except Exception as exc:  # noqa: BLE001 -- any sampling failure is unknown evidence
+            self._before_counter_error = f"before-sample-unavailable:resource-counters:{type(exc).__name__}: {exc}"
+        try:
             self._before_pressure = self.pressure_reader(self.pid)
         except Exception as exc:  # noqa: BLE001 -- any sampling failure is unknown evidence
-            self._before_error = f"{type(exc).__name__}: {exc}"
+            self._before_pressure_error = (
+                f"before-sample-unavailable:cgroup-pressure:{type(exc).__name__}: {exc}"
+            )
         return self
 
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> bool:
         if self.observer_socket_path is None:
             return False
-        if self._before_error is not None:
-            self.observation = ContentionObservation(
-                "unknown", reasons=(f"before-sample-unavailable:{self._before_error}",)
-            )
-            return False
+        reasons: list[str] = []
+        after_counters = None
+        after_pressure = None
+        counter_error = self._before_counter_error
+        pressure_error = self._before_pressure_error
         try:
             after_counters = self.counters_reader(
                 observer_socket_path=self.observer_socket_path
             )
-            after_pressure = self.pressure_reader(self.pid)
-            limit_evidence = resource_limits.ResourceLimitEvidence.between(
-                self._before_counters, after_counters
+        except Exception as sample_error:  # noqa: BLE001 -- preserve other evidence
+            after_error = (
+                f"after-sample-unavailable:resource-counters:"
+                f"{type(sample_error).__name__}: {sample_error}"
             )
+            counter_error = (
+                f"{counter_error}; {after_error}"
+                if counter_error is not None
+                else after_error
+            )
+        try:
+            after_pressure = self.pressure_reader(self.pid)
+        except Exception as sample_error:  # noqa: BLE001 -- preserve other evidence
+            after_error = (
+                f"after-sample-unavailable:cgroup-pressure:"
+                f"{type(sample_error).__name__}: {sample_error}"
+            )
+            pressure_error = (
+                f"{pressure_error}; {after_error}"
+                if pressure_error is not None
+                else after_error
+            )
+        limit_evidence = None
+        if counter_error is not None:
+            reasons.append(counter_error)
+        elif self._before_counters is not None and after_counters is not None:
+            try:
+                limit_evidence = resource_limits.ResourceLimitEvidence.between(
+                    self._before_counters, after_counters
+                )
+            except Exception as sample_error:  # noqa: BLE001 -- preserve pressure evidence
+                reasons.append(
+                    "resource-counter-comparison-unavailable:"
+                    f"{type(sample_error).__name__}: {sample_error}"
+                )
+        else:
+            reasons.append("resource-counter-sample-unavailable:missing-snapshot")
+
+        pressure_status = "unknown"
+        pressure_deltas: dict[str, int] = {}
+        if pressure_error is not None:
+            reasons.append(pressure_error)
+        elif self._before_pressure is not None and after_pressure is not None:
             pressure_status, pressure_deltas = (
                 liveness_resources.compare_cgroup_resource_snapshots(
                     self._before_pressure, after_pressure
                 )
             )
-        except Exception as sample_error:  # noqa: BLE001 -- any sampling failure is unknown evidence
-            self.observation = ContentionObservation(
-                "unknown", reasons=(f"after-sample-unavailable:{type(sample_error).__name__}: {sample_error}",)
-            )
-            return False
+            if pressure_status == "unknown":
+                reasons.append("cgroup-pressure-window-unavailable")
+        else:
+            reasons.append("cgroup-pressure-window-unavailable")
 
-        resource_limit_hit = limit_evidence.limit_hit
-        reasons: list[str] = []
-        if resource_limit_hit:
+        resource_limit_hit = bool(
+            limit_evidence is not None and limit_evidence.limit_hit
+        )
+        if resource_limit_hit and limit_evidence is not None:
             reasons.extend(
                 f"{name}={counter.delta}"
                 for name, counter in (
@@ -132,16 +177,20 @@ class ContentionWindow:
             reasons.extend(
                 f"{name}={value}" for name, value in sorted(pressure_deltas.items())
             )
-        if resource_limit_hit or pressure_status == "stalled":
+
+        if resource_limit_hit:
             self.observation = ContentionObservation(
-                "affected", resource_limit_hit=resource_limit_hit, reasons=tuple(reasons)
+                "affected",
+                resource_limit_hit=True,
+                reasons=tuple(reasons),
             )
-        elif pressure_status == "clear":
-            self.observation = ContentionObservation("clear")
+        elif limit_evidence is not None:
+            # PSI and CPU-stat sampling are advisory. Once the direct
+            # pids/OOM counters are readable, their result alone determines
+            # whether a failed command can be classified.
+            self.observation = ContentionObservation("clear", reasons=tuple(reasons))
         else:
-            self.observation = ContentionObservation(
-                "unknown", reasons=("cgroup-pressure-window-unavailable",)
-            )
+            self.observation = ContentionObservation("unknown", reasons=tuple(reasons))
         return False
 
 
@@ -154,13 +203,11 @@ def withhold_canary_result(
     """Whether a canary result is unclassifiable from its resource window.
 
     A cgroup OOM or pids-limit event can directly prevent a command from
-    completing its assertion. A configured but unavailable window cannot
-    support either canary half. Consumers without an observer retain their
-    existing behavior unless the registered gate requires attribution. A
-    measured PSI/throttling interval with a failed assertion makes that
-    attempt inconclusive; an observed stall can affect a time-sensitive
-    assertion, but does not overturn a completed pass by itself.
-    Command timeouts and other incomplete outcomes are already infrastructure.
+    completing when the command failed. A required unavailable direct-counter
+    sample also prevents classifying a failed control or transform, while
+    completed passes remain usable without a sample. PSI and CPU throttling do
+    not change the result. Command timeouts and other incomplete outcomes are
+    already infrastructure.
     """
     if not isinstance(observation, ContentionObservation):
         raise TypeError("observation must be a ContentionObservation")
@@ -168,34 +215,42 @@ def withhold_canary_result(
         raise TypeError("outcome must be an Outcome")
     if type(require_observation) is not bool:
         raise TypeError("require_observation must be a bool")
+    if outcome is not Outcome.FAIL:
+        return False
+    if observation.resource_limit_hit:
+        return True
     if observation.status == "unobserved":
         return require_observation
-    if observation.resource_limit_hit or observation.status == "unknown":
-        return True
-    return outcome is Outcome.FAIL and observation.status == "affected"
+    return observation.status in {"affected", "unknown"}
 
 
 def withhold_r0_result(
     observation: ContentionObservation,
     *,
     outcome: Outcome,
+    require_observation: bool = False,
 ) -> bool:
     """Whether an R0 result is unclassifiable from its resource window.
 
-    A direct pids/OOM event or an unavailable observation makes the R0
-    measurement incomplete even if its command exited successfully. A failed
-    command under measured cgroup PSI/throttling is also withheld because a
-    time-sensitive assertion may have been affected. A completed pass under
-    PSI/throttling alone is retained. Command-budget expiry is already an
-    incomplete outcome.
+    A direct pids/OOM event makes a failed R0 measurement incomplete.
+    Completed PASS results stay final. A failed command with an unavailable
+    required direct-counter observation is incomplete. PSI and throttling do
+    not affect the result. Command-budget expiry is already an incomplete
+    outcome.
     """
     if not isinstance(observation, ContentionObservation):
         raise TypeError("observation must be a ContentionObservation")
     if not isinstance(outcome, Outcome):
         raise TypeError("outcome must be an Outcome")
-    if observation.resource_limit_hit or observation.status in {"unknown", "unobserved"}:
+    if type(require_observation) is not bool:
+        raise TypeError("require_observation must be a bool")
+    if outcome is not Outcome.FAIL:
+        return False
+    if observation.resource_limit_hit:
         return True
-    return outcome is Outcome.FAIL and observation.status == "affected"
+    return observation.status in {"affected", "unknown"} or (
+        require_observation and observation.status == "unobserved"
+    )
 
 
 def withhold_r1_result(
@@ -205,16 +260,17 @@ def withhold_r1_result(
 ) -> bool:
     """Whether an R1 coverage claim is incomplete under its R0 window.
 
-    A configured but unavailable observation and a direct pids/OOM event
-    cannot certify the coverage artifact, even when its computed claim is a
-    pass. PSI/throttling alone retain a completed pass; if coverage fails in
-    that same window, the report may reflect an interrupted or delayed test
-    path and the claim is retried as infrastructure.
+    A direct pids/OOM event can make a failed R0 command or coverage result
+    incomplete. Completed PASS results stay final. PSI and throttling do not
+    affect a completed coverage claim; an unavailable direct-counter
+    observation withholds a failed claim.
     """
     if not isinstance(observation, ContentionObservation):
         raise TypeError("observation must be a ContentionObservation")
     if not isinstance(outcome, Outcome):
         raise TypeError("outcome must be an Outcome")
-    if observation.resource_limit_hit or observation.status in {"unknown", "unobserved"}:
-        return True
-    return outcome is Outcome.FAIL and observation.status == "affected"
+    if outcome is not Outcome.FAIL:
+        return False
+    return observation.resource_limit_hit or observation.status in {
+        "unknown", "unobserved"
+    }
