@@ -99,6 +99,13 @@ image be built before `tester-unified:local` exists. The separate host-systemd
 probe remains digest-pinned and pull-disabled. The builder verifies the loaded
 image labels still name the exact wheel version and SHA-256:
 
+The image also installs Debian's `libeatmydata1` package and advertises its
+architecture-specific library path as `org.vbpub.tester.eatmydata-lib`.
+Run-Gate reads that label only for an ephemeral lane explicitly configured
+or invoked with `io_sync = "relaxed"`; the image itself does not set
+`/etc/ld.so.preload`. See the Run-Gate
+[resource settings consumer guide](../run-gate-project/CONSUMERS.md#combined-resource-settings).
+
 When called inside a CMRU release step, CMRU injects the tester resource
 settings. For a direct shell invocation, export the required
 `CMRU_TESTER_MEMORY`, `CMRU_TESTER_MEMORY_SWAP`, `CMRU_TESTER_CPUS`,

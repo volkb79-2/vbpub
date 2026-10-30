@@ -207,6 +207,16 @@ esac
   exit 2
 }
 build_args+=(--build-arg "TESTER_UNIFIED_BASE_IMAGE_ID=$expected_base_image_id")
+base_arch="$(docker image inspect --format '{{.Architecture}}' "$base_ref")"
+case "$base_arch" in
+  amd64) eatmydata_lib=/usr/lib/x86_64-linux-gnu/libeatmydata.so.1 ;;
+  arm64) eatmydata_lib=/usr/lib/aarch64-linux-gnu/libeatmydata.so.1 ;;
+  *)
+    echo "unsupported tester base architecture '$base_arch' for libeatmydata label" >&2
+    exit 2
+    ;;
+esac
+build_args+=(--build-arg "TESTER_EATMYDATA_LIB=$eatmydata_lib")
 
 docker buildx build --load --cgroup-parent "$cgroup_parent" \
   "${build_args[@]}" \
@@ -254,5 +264,13 @@ if [[ "$actual_go_toolchain" != "$PTERODACTYL_GO_IMAGE" ]]; then
   echo "loaded tester image does not record the Wings Go toolchain input" >&2
   echo "expected: $PTERODACTYL_GO_IMAGE" >&2
   echo "observed: ${actual_go_toolchain:-<no label>}" >&2
+  exit 2
+fi
+
+actual_eatmydata_lib="$(docker image inspect --format '{{index .Config.Labels "org.vbpub.tester.eatmydata-lib"}}' "$image_tag")"
+if [[ "$actual_eatmydata_lib" != "$eatmydata_lib" ]]; then
+  echo "loaded tester image does not advertise its installed libeatmydata library" >&2
+  echo "expected: $eatmydata_lib" >&2
+  echo "observed: ${actual_eatmydata_lib:-<no label>}" >&2
   exit 2
 fi
