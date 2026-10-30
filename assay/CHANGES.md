@@ -5,7 +5,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 
 ### Fixed
-- fix(assay): keep concurrent gate admission independent of Docker-name snapshots and attribute direct resource-limit events to the measured cgroup
+- fix(assay): allow concurrent gates through admission independent of Docker-name snapshots; attribute direct resource-limit events to the measured cgroup
 - fix(assay): make the R3 verifier derive incomplete transformed canary runs as INCONCLUSIVE, matching the producer
 - fix(assay): reserve `affected` for direct pids/OOM events; PSI and CPU throttling no longer change R0/R1/R3 verdicts
 - fix(assay): restore 10.0.0 import-break canary semantics, where a clean `COMMAND_FAILED` is the expected reason and no output cause proof is required

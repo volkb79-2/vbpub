@@ -194,7 +194,7 @@ def test_gate_mode_pass_verdict_has_no_stderr_tail(
     if expected_outcome is Outcome.ERROR:
         assert "R0 result withheld" in result.stderr_tail
     else:
-        assert result.stderr_tail == ""
+        assert result.stderr_tail is None
 
 
 @pytest.mark.parametrize(

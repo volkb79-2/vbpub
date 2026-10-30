@@ -132,7 +132,6 @@ class _Gate:
     def __call__(self, argv, *, env, cwd, timeout):
         self.cwds.append(Path(cwd))
         self.timeouts.append(timeout)
-        diagnostic = ""
         broken = False
         if self.catches:
             for name in TARGETS:
