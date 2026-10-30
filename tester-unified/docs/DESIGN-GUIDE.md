@@ -89,8 +89,17 @@ image on each base remains a release-lane activity.
 Beyond the Docker client step, this image adds (all before the source-built CMRU wheel, so the cmru
 Dockerfile oracle that forbids a later layer rewriting that wheel still holds): `zsh` (the mdt-cockpit
 login-hook tests exercise it), Node.js with npm and npx copied from a digest-pinned official node image
-stage (it is only a `FROM <image>@sha256:` stage, which the oracle asserts) and the **real `systemctl`
-client** from Debian's `systemd` package.
+stage (it is only a `FROM <image>@sha256:` stage, which the oracle asserts), Go from the toolchain image
+selected by `wings-patchstack/stack.conf`, and the **real `systemctl` client** from Debian's `systemd`
+package.
+
+Go is copied into this image because Wings is a Go project and its gate must
+run inside tester-unified under the same Run-Gate cgroup placement, identity,
+and resource limits as the Python suites. The builder reads
+`PTERODACTYL_GO_IMAGE` from the Wings stack configuration, passes it as a
+required build argument, records it as an image label, and verifies that label
+after loading. The Wings gate does not start a nested Go container or mount the
+host Docker socket for integration tests.
 
 Why `systemctl`: the cgroup-profiler placement probe (`scripts/cgroup-profiler/tools/gate.sh`,
 `lib/access.py` `_PLACEMENT_PROBE`, "placement verifier image must provide systemctl") starts a probe

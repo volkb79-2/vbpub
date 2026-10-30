@@ -107,10 +107,14 @@ the running binary SHA byte-for-byte. This demonstrates that the current `.3`
 series and build recipe can produce the executable in `.6`; it does not recover
 the original image's missing labels or series digest.
 
-The new local `.3` image is `wings-local:1.13.3-cgroup.7`:
+The new local `.3` image is `wings-local:1.13.3-cgroup.7`. Its source digest
+has been recomputed using the current definition, which hashes the pinned
+upstream commit and ordered patch bytes. The existing image label still holds
+the digest written by the earlier definition; both values are recorded:
 
 - Image ID: `sha256:eb10b720d51694acbfe8e777020ba83c65172caf3bdd710757e6f3f6a5797e97`
-- Series digest: `358e0116e1ceca1296daa156ea2b4e82ebf0719197d9731c6ee950523d028d66`
+- Recomputed source series digest: `3f9df8045b72c0346a0a2bc9aeac7fa1af1fb033e3e395d7c568ab22fae2558b`
+- Existing image-label series digest: `358e0116e1ceca1296daa156ea2b4e82ebf0719197d9731c6ee950523d028d66`
 - Binary version: `wings v1.13.3-cgroup.7`
 - Binary SHA-256: `0af71bce2de452a9a515b99ee5eac5318332c46e55fc5a542f2b15e106222941`
 - Provenance labels include version `1.13.3-cgroup.7`, upstream commit
@@ -123,11 +127,14 @@ settings and dependencies matched the `.6` executable's build information.
 
 ## v1.13.4 local image
 
-The local tag is `wings-local:1.13.4-cgroup.1`:
+The local tag is `wings-local:1.13.4-cgroup.1`. Its source digest has been
+recomputed using the current definition, while its existing image label keeps
+the earlier value:
 
 - Image ID: `sha256:a4ceb4632f3e93b8c1c87b7e01d71211de590d27a90b5df954d5890cc4f554ec`
 - Build date label: `2026-10-30T12:47:03Z`
-- Series digest: `923d9296e08ab5dcbaaec6a722625c99f0e14a968f424685e8c48dfc452257c7`
+- Recomputed source series digest: `fbe1fcddd19c59127f45d3afb923c532a15d054dfdd23f7d3f6c398c48838dec`
+- Existing image-label series digest: `923d9296e08ab5dcbaaec6a722625c99f0e14a968f424685e8c48dfc452257c7`
 - Binary version: `wings v1.13.4-cgroup.1`
 - Binary SHA-256: `ff35d939a2986b7813a6c37c7f5acdf6406a4df14e08f7a8b3c513c3c0ccb54c`
 - Go toolchain: 1.27.2; `-trimpath=true`; `CGO_ENABLED=0`; Linux/amd64; `GOAMD64=v1`
@@ -157,6 +164,9 @@ service were not changed. Later deployment steps are documented in
 
 - Deploy the local `.4.1` tag only during a separately planned maintenance
   window; this task did not restart the production service.
+- The `.3.7` and `.4.1` image labels retain the earlier digest definition; the
+  ledger and README separately record each recomputed source digest and its
+  existing label value. No rebuild was made to change those labels.
 - Update the existing Wings CI workflow matrix from the `.3` series to `.4` in
   a separate workflow-scoped change.
 - Monitor `TestPerUserLimitUsesAuthenticatedAccount` if its one transient

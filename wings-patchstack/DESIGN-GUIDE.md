@@ -4,8 +4,8 @@
 
 The active target moved from official Wings `v1.13.3` to `v1.13.4` on
 2026-10-30. The release tag is pinned to full commit
-`747bc4393daf5d95fdf61d76382f5e23749cffe9`; the `.3` series stays archived as
-the source record for the running image. Separate series directories keep each
+`747bc4393daf5d95fdf61d76382f5e23749cffe9`; the `.3` series stays available as
+the source record for the earlier image. Separate series directories keep each
 release's patch bytes and digest tied to the exact upstream tree.
 
 All 11 original Change-Ids remain stable across the port. Patch content changes
@@ -15,9 +15,8 @@ preserving those upstream changes. Two small v1.13.4-only guard patches were
 then needed: one keeps the upstream boot liveness check and attach timeout, and
 one handles the nil process configuration constructed by an upstream console
 test. Validation first caught the boot merge's compile errors, then the server
-test caught the nil configuration read. The unpatched v1.13.4 server tests
-passed, and the corrected patched suite passed. The patch-by-patch result is
-recorded in the [forward-port report](reports/forward-port-v1.13.3-to-v1.13.4.md).
+test caught the nil configuration read. The patch-by-patch result is recorded
+in the [forward-port report](reports/forward-port-v1.13.3-to-v1.13.4.md).
 
 The `.4` Go test container uses `golang:1.27.2-alpine`, matching the upstream
 Dockerfile's toolchain tag. The image build resolved it to
@@ -30,15 +29,14 @@ Those resolved base digests are build evidence, while `stack.conf` pins the
 versioned Go tags used by the scripts.
 
 `build-image.sh` adds `--load` because the configured remote BuildKit builder
-otherwise left the successful image only in its cache; loading imports the
-tag into the local Docker daemon, without pushing it to a registry. In this
+otherwise leaves a successful image only in its cache; loading imports the
+tag into the local Docker daemon without pushing it to a registry. In this
 environment the managed builder is resource-capped in `dev-buildkitd.slice`;
-operators run builds under `nice` and `ionice`. Go test containers require the
-host-supplied `CGROUP_PARENT_DEV_GATES` and have a three-CPU limit. The script
-fails if the variable is absent and checks `LoadState=loaded` when host systemd
-is visible; inside this devcontainer it trusts the value injected by
-`devcontainer.json`. These limits keep Wings verification from competing
-freely with production workloads.
+operators run builds under `nice` and `ionice`. The registered Wings test lane
+runs in tester-unified under `$CGROUP_PARENT_DEV_GATES`. It checks the Go build,
+vet, unit tests, workflow contracts, and integration-tag compilation without
+starting a nested Docker container. The separate registered coverage lane
+runs Assay R1 under the same gate boundary.
 
 The running `1.13.3-cgroup.6` image has no OCI labels, so its original series
 digest cannot be recovered from the image. Its binary SHA-256 was nevertheless
@@ -60,24 +58,67 @@ selected by the active scripts.
 
 The upstream ref and full commit SHA live together in `stack.conf`. A ref is a
 human-readable name; it does not prove the commit. Clone and apply fetch the
-configured ref and fail unless its resolved commit equals the pinned SHA.
-Build metadata then names that base alongside the patchseries version.
+configured ref and fail unless its resolved commit equals the pinned SHA. Build
+metadata names that base alongside the patchseries version. The equivalence
+proof remains tied to the historical `.3` base and reports that series digest;
+it does not compare trees across the `.3` and `.4` releases.
 
 ## Series digest and image suffix
 
-The digest includes the ordered patch filenames and exact bytes, the upstream
-commit SHA, and the `patchseries` version. It excludes build time. The Docker
-image still records its UTC build date, so an operator can identify a specific
-artifact without making identical source inputs look like different series.
+The series digest hashes the full pinned upstream commit followed by each
+patch's exact bytes in filename order. Each field is prefixed by its length as
+an unsigned eight-byte big-endian integer before the bytes are added to
+SHA-256. Filenames, `patchseries` version, and build time are excluded because
+they do not change the source series identity. The tool version and UTC build
+date remain separate image labels.
 
-The image suffix is derived from committed ledger history. A known digest
-reuses its suffix for the same upstream version; a new digest advances that
-upstream version's `cgroup.N`. Successful builds append the returned image ID
-and date to the ledger. The previous `cgroup.4` artifact has no recorded digest
-or image ID. The ledger now also records the observed pre-ledger `.6` image as
-the `.3` suffix floor, even though its original digest remains unknown; the next
-distinct `.3` series therefore built as `.7`. Each upstream version has its own
-suffix sequence, so the first `.4` build is `.1`.
+This definition replaced an earlier digest that also included filenames and
+tool-version metadata. The existing `.3.7` and `.4.1` image labels retain the
+earlier digests `358e0116e1ceca1296daa156ea2b4e82ebf0719197d9731c6ee950523d028d66`
+and `923d9296e08ab5dcbaaec6a722625c99f0e14a968f424685e8c48dfc452257c7`.
+Their source digests recomputed under the current definition are `3f9df8045b72c0346a0a2bc9aeac7fa1af1fb033e3e395d7c568ab22fae2558b` and
+`fbe1fcddd19c59127f45d3afb923c532a15d054dfdd23f7d3f6c398c48838dec`. The
+ledger keeps the source digest in `series_digest` and the value present in the
+already-built image label in `image_label_series_digest`; the images were not
+rebuilt to rewrite labels. The active v1.13.4 digest is `fbe1fcddd19c59127f45d3afb923c532a15d054dfdd23f7d3f6c398c48838dec`.
+
+The image suffix is derived from committed ledger history while holding an
+exclusive `flock` on the stable `image-ledger.json.lock` sidecar. The script
+persists a reservation before starting Docker, so another process sees that
+suffix as occupied. A known digest reuses its suffix for the same upstream
+version; a new digest advances that upstream version's `cgroup.N`. A
+successful build atomically records its image ID and date and consumes the
+reservation. A Docker build failure releases the reservation. If Docker has
+already produced the tag but the record step fails, the reservation remains
+active to prevent another digest from overwriting an unrecorded image; an
+operator can release it with the helper's `release` command after resolving
+that state. Atomic JSON replacement happens inside the same lock, so two
+record operations cannot overwrite each other's ledger snapshot.
+
+The v1.13.3 ledger history includes the pre-ledger `.4` and `.6` suffixes; the
+`.6` record notes the observed image ID and binary hash while leaving its
+label-less original digest unknown. The `.7` build record preserves both the
+recomputed source digest and its earlier image-label digest. v1.13.4 has its
+own suffix sequence, with `.1` recorded for its first image. The
+`current_series` entry tracks the active v1.13.4 source identity separately
+from image history.
+
+Patch export follows a fail-preserving staging process. `export-patches.sh`
+writes format-patch output into a sibling staging directory, validates all
+trailers with `patchseries check`, and only then replaces the canonical
+series directory. A failed generation or validation leaves the previous patch
+set in place.
+
+## Test gate
+
+`scripts/test.sh` invokes the registered `wings` Run-Gate lane. Run-Gate
+resolves `$CGROUP_PARENT_DEV_GATES`, verifies the loaded host slice, and runs
+the Go toolchain and workflow tests inside tester-unified. The lane does not
+launch nested Docker. Its wrapper refuses Run-Gate extra mounts and
+`DOCKER_HOST`, and its worker fails if the standard host Docker socket is
+present. `INTEGRATION=1` therefore fails with an explicit message. The
+separate registered `coverage` lane runs Assay R1 under the same placement
+boundary.
 
 ## Separate responsibilities
 

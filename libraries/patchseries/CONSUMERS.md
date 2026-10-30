@@ -14,6 +14,9 @@ risks = ["low", "medium", "high"]
 
 Add the trailers to each patch's commit message before `git format-patch`
 emits the `---` separator. An independent change uses `Requires: none`.
+Text patches, rename-only patches, and mode-only patches are supported. Binary
+patches fail with `binary patches are unsupported`. Each required patch must
+sort before the patch that requires it.
 
 ```text
 Change-Id: daemon-cgroup-parent
@@ -33,7 +36,7 @@ patchseries check path/to/series --vocabulary path/to/patchseries-vocabulary.tom
 ## Select a dependency closure
 
 `closure` takes one or more stable identifiers and prints the selected changes
-plus their transitive requirements in patch order:
+plus their transitive requirements in application order:
 
 ```bash
 patchseries closure path/to/series daemon-cgroup-parent
@@ -47,6 +50,19 @@ from patchseries import closure, parse
 
 series = parse("path/to/series")
 selected = closure(series, ["daemon-cgroup-parent"])
+```
+
+## Series digest
+
+The digest binds the ordered patch-file bytes to the exact full upstream
+commit. It does not change when a patch filename or the library version
+changes. The tool version can be recorded separately as build metadata:
+
+```python
+from patchseries import parse, series_digest
+
+series = parse("path/to/series")
+identity = series_digest(series, "6987d5e6f0612133e031255a99655e822d30579a")
 ```
 
 ## Compare and render versions

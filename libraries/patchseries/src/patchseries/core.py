@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import shlex
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -70,6 +71,10 @@ def _parse_patch(path: Path) -> Change:
     in_hunk = False
     files: list[str] = []
     old_path: str | None = None
+    fallback_path: str | None = None
+    fallback_metadata = False
+    fallback_has_file = False
+    has_binary = False
     insertions = 0
     deletions = 0
 
@@ -93,8 +98,24 @@ def _parse_patch(path: Path) -> Change:
             elif in_hunk and line.startswith("-"):
                 deletions += 1
             elif line.startswith("diff --git "):
+                if fallback_metadata and not fallback_has_file:
+                    _append_file(files, fallback_path)
                 in_hunk = False
                 old_path = None
+                fallback_metadata = False
+                fallback_has_file = False
+                try:
+                    header = shlex.split(line)
+                except ValueError as exc:
+                    raise SeriesError(f"patch has an invalid diff header: {path}") from exc
+                if len(header) >= 4:
+                    old_diff_path = _patch_path(header[2])
+                    new_diff_path = _patch_path(header[3])
+                    fallback_path = (
+                        new_diff_path if new_diff_path is not None else old_diff_path
+                    )
+                else:
+                    fallback_path = None
             elif line.startswith("--- "):
                 in_hunk = False
                 old_path = _patch_path(line[4:])
@@ -102,14 +123,33 @@ def _parse_patch(path: Path) -> Change:
                 in_hunk = False
                 new_path = _patch_path(line[4:])
                 selected = new_path if new_path is not None else old_path
-                if selected is not None and selected not in files:
-                    files.append(selected)
+                _append_file(files, selected)
+                fallback_has_file = selected is not None
                 old_path = None
+            elif line.startswith("rename from "):
+                fallback_metadata = True
+                fallback_path = _metadata_path(line[len("rename from ") :], path)
+            elif line.startswith("rename to "):
+                fallback_metadata = True
+                fallback_path = _metadata_path(line[len("rename to ") :], path)
+            elif line.startswith(
+                ("old mode ", "new mode ", "new file mode ", "deleted file mode ")
+            ):
+                fallback_metadata = True
+            elif line == "GIT binary patch" or line.startswith("Binary files "):
+                has_binary = True
+
+    if fallback_metadata and not fallback_has_file:
+        _append_file(files, fallback_path)
 
     if not subject:
         raise SeriesError(f"patch has no Subject header: {path}")
+    if has_binary:
+        raise SeriesError(f"binary patches are unsupported: {path}")
     if not in_diff or not files:
-        raise SeriesError(f"patch has no unified diff: {path}")
+        raise SeriesError(
+            f"patch has no supported file-change metadata (text, rename, or mode): {path}"
+        )
     for key in _TRAILER_KEYS[:-1]:
         if len(fields[key]) > 1:
             raise SeriesError(f"patch has duplicate {key} trailer: {path}")
@@ -159,6 +199,22 @@ def _patch_path(value: str) -> str | None:
     if value.startswith(("a/", "b/")):
         return value[2:]
     return value
+
+
+def _metadata_path(value: str, patch_path: Path) -> str:
+    """Parse a Git rename path, retaining spaces in an unquoted path."""
+    try:
+        fields = shlex.split(value)
+    except ValueError as exc:
+        raise SeriesError(f"patch has invalid rename metadata: {patch_path}") from exc
+    if len(fields) == 1:
+        return fields[0]
+    return value
+
+
+def _append_file(files: list[str], value: str | None) -> None:
+    if value is not None and value not in files:
+        files.append(value)
 
 
 def load_vocabulary(path: Path | str) -> dict[str, frozenset[str]]:
@@ -260,9 +316,19 @@ def check(changes: Sequence[Change], vocabulary: Mapping[str, Iterable[str]]) ->
     for change_id in by_id:
         visit(change_id)
 
+    positions = {change.change_id: index for index, change in enumerate(changes)}
+    for change in changes:
+        assert change.change_id is not None and change.requires is not None
+        for dependency in change.requires:
+            if positions[dependency] >= positions[change.change_id]:
+                raise SeriesError(
+                    f"required Change-Id {dependency!r} must appear before dependent "
+                    f"Change-Id {change.change_id!r}"
+                )
+
 
 def closure(changes: Sequence[Change], selected: Iterable[str]) -> list[Change]:
-    """Return selected changes and their transitive requirements in series order."""
+    """Return selected changes and requirements in valid application order."""
     by_id: dict[str, Change] = {}
     for change in changes:
         if change.change_id is None:
@@ -286,7 +352,32 @@ def closure(changes: Sequence[Change], selected: Iterable[str]) -> list[Change]:
 
     for change_id in selected:
         include(change_id)
-    return [change for change in changes if change.change_id in included]
+
+    positions = {change.change_id: index for index, change in enumerate(changes)}
+    dependencies: dict[str, set[str]] = {}
+    dependents: dict[str, set[str]] = defaultdict(set)
+    for change_id in included:
+        requires = by_id[change_id].requires or ()
+        dependencies[change_id] = set(requires) & included
+        for dependency in dependencies[change_id]:
+            dependents[dependency].add(change_id)
+
+    ready = sorted(
+        (change_id for change_id in included if not dependencies[change_id]),
+        key=positions.__getitem__,
+    )
+    ordered: list[Change] = []
+    while ready:
+        change_id = ready.pop(0)
+        ordered.append(by_id[change_id])
+        for dependent in sorted(dependents[change_id], key=positions.__getitem__):
+            dependencies[dependent].remove(change_id)
+            if not dependencies[dependent]:
+                ready.append(dependent)
+                ready.sort(key=positions.__getitem__)
+    if len(ordered) != len(included):
+        raise SeriesError("dependency cycle in selected closure")
+    return ordered
 
 
 def render(
@@ -369,18 +460,17 @@ def _unique_index(changes: Sequence[Change]) -> dict[str, Change]:
     return indexed
 
 
-def series_digest(changes: Sequence[Change], upstream_commit: str, version: str) -> str:
-    """Hash ordered patch bytes, the exact upstream commit and library version.
+def series_digest(changes: Sequence[Change], upstream_commit: str) -> str:
+    """Hash the exact upstream commit and ordered patch bytes.
 
     Length-prefixed fields make the encoding unambiguous. No clock or build
-    date is accepted, so rebuild metadata cannot perturb the series identity.
+    date, filename or library version is accepted, so unrelated metadata
+    cannot perturb the series identity.
     """
     if not _UPSTREAM_COMMIT.fullmatch(upstream_commit):
         raise SeriesError(
             "upstream commit must be a full 40- or 64-character lowercase SHA"
         )
-    if not version:
-        raise SeriesError("patchseries version must not be empty")
     digest = hashlib.sha256()
 
     def add(value: bytes) -> None:
@@ -388,8 +478,6 @@ def series_digest(changes: Sequence[Change], upstream_commit: str, version: str)
         digest.update(value)
 
     add(upstream_commit.encode("ascii"))
-    add(version.encode("utf-8"))
     for change in changes:
-        add(change.path.name.encode("utf-8"))
         add(change.path.read_bytes())
     return digest.hexdigest()

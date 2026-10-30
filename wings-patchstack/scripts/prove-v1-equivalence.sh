@@ -1,15 +1,41 @@
 #!/usr/bin/env bash
-# Prove the 2026-10 canonical-layout migration for v1.13.3. This is deliberately
-# tied to the historical base, not the currently active upstream in stack.conf.
+# Prove the canonical-layout migration for v1.13.3 against its historical base.
+# This remains tied to v1.13.3 even though stack.conf now targets v1.13.4.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-STACK_DIR="$(dirname "$SCRIPT_DIR")"
+source "$SCRIPT_DIR/common.sh"
 
 OLD_SERIES="$STACK_DIR/archive/deployed-v1/pterodactyl-v1.13.3"
 NEW_SERIES="$STACK_DIR/patches/pterodactyl-v1.13.3"
 [[ -d "$OLD_SERIES" ]] || { echo "archived deployed series missing: $OLD_SERIES" >&2; exit 1; }
 [[ -d "$NEW_SERIES" ]] || { echo "canonical v1.13.3 series missing: $NEW_SERIES" >&2; exit 1; }
 source "$OLD_SERIES/UPSTREAM-BASE.conf"
+
+SERIES_DIGEST="$(PYTHONPATH="$VBPUB_ROOT/libraries/patchseries/src" python3 - "$NEW_SERIES" "$UPSTREAM_COMMIT" "$STACK_DIR/image-ledger.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+from patchseries import parse, series_digest
+
+series_dir = Path(sys.argv[1])
+upstream_commit = sys.argv[2]
+ledger = json.loads(Path(sys.argv[3]).read_text(encoding="utf-8"))
+digest = series_digest(parse(series_dir), upstream_commit)
+matches = [
+    item
+    for item in ledger["builds"]
+    if item["upstream"] == "1.13.3" and item["suffix"] == "cgroup.7"
+]
+if len(matches) != 1 or matches[0]["series_digest"] != digest:
+    raise SystemExit("v1.13.3 cgroup.7 source digest does not match image-ledger.json")
+print(digest)
+PY
+)"
+[[ "$SERIES_DIGEST" =~ ^[0-9a-f]{64}$ ]] || {
+    echo "patchseries returned an invalid series digest" >&2
+    exit 1
+}
 
 TEMP_DIR="$(mktemp -d)"
 cleanup() { rm -rf "$TEMP_DIR"; }
@@ -37,6 +63,7 @@ NEW_HEAD="$(git -C "$NEW_TREE" rev-parse HEAD)"
 OLD_TREE_SHA="$(git -C "$OLD_TREE" rev-parse 'HEAD^{tree}')"
 NEW_TREE_SHA="$(git -C "$NEW_TREE" rev-parse 'HEAD^{tree}')"
 printf 'upstream commit: %s\n' "$UPSTREAM_COMMIT"
+printf 'series digest: %s\n' "$SERIES_DIGEST"
 printf 'old series HEAD: %s\n' "$OLD_HEAD"
 printf 'new series HEAD: %s\n' "$NEW_HEAD"
 printf 'old tree: %s\n' "$OLD_TREE_SHA"

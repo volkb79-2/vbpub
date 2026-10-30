@@ -76,6 +76,20 @@ def test_documented_role_vocabulary_is_complete() -> None:
         assert f'"{value}"' in content
 
 
+def test_patch_shapes_dependency_order_and_digest_contract_are_documented() -> None:
+    readme = (DOCS / "README.md").read_text(encoding="utf-8")
+    design = (DOCS / "DESIGN-GUIDE.md").read_text(encoding="utf-8")
+    consumers = (DOCS / "CONSUMERS.md").read_text(encoding="utf-8")
+
+    assert "rename-only" in readme and "mode-only" in readme
+    assert "binary patches are unsupported" in design
+    assert "must appear earlier" in design
+    assert "ordered patch bytes" in design
+    assert "Filenames and the `patchseries` package version are not" in design
+    assert "series_digest(series," in consumers
+    assert "library version" in consumers
+
+
 def test_distribution_and_digest_versions_match() -> None:
     project = tomllib.loads((DOCS / "pyproject.toml").read_text(encoding="utf-8"))
 
@@ -89,6 +103,10 @@ def test_wings_readme_inventory_matches_rendered_patch_trailers() -> None:
         (
             "pterodactyl-v1.13.3",
             parse(wings / "patches/pterodactyl-v1.13.3"),
+        ),
+        (
+            "pterodactyl-v1.13.4",
+            parse(wings / "patches/pterodactyl-v1.13.4"),
         ),
         (
             "filesystem-pterodactyl-v1.13.1",

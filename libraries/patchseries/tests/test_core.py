@@ -114,14 +114,14 @@ def test_parse_rejects_patch_without_subject_or_diff(tmp_path: Path) -> None:
         tmp_path / "no-diff",
         [("0001-no-diff.patch", "Subject: plain subject\n\n---\nbody only\n")],
     )
-    with pytest.raises(SeriesError, match="no unified diff"):
+    with pytest.raises(SeriesError, match="no supported file-change metadata"):
         parse(root)
 
     root = write_series(
         tmp_path / "no-separator",
         [("0001-no-separator.patch", "Subject: Present subject\nno separator\n")],
     )
-    with pytest.raises(SeriesError, match="no unified diff"):
+    with pytest.raises(SeriesError, match="no supported file-change metadata"):
         parse(root)
 
 
@@ -167,8 +167,151 @@ def test_parse_tracks_deleted_files_and_refuses_a_diff_without_a_real_path(
     no_file = no_file.replace("--- a/pkg/file.go", "--- /dev/null")
     no_file = no_file.replace("+++ b/pkg/file.go", "+++ /dev/null")
     no_file_root = write_series(tmp_path / "no-file", [("0001-no-file.patch", no_file)])
-    with pytest.raises(SeriesError, match="no unified diff"):
+    with pytest.raises(SeriesError, match="no supported file-change metadata"):
         parse(no_file_root)
+
+
+def test_parse_accepts_rename_only_and_mode_only_format_patches(
+    tmp_path: Path,
+) -> None:
+    headers = (
+        "Change-Id: change\nCapability: placement\nRole: enable\n"
+        "Risk: low\nRequires: none\n\n---\n"
+    )
+    rename = (
+        "Subject: Rename file\n\n"
+        + headers
+        + "diff --git a/old/path b/new/path\n"
+        + "similarity index 100%\n"
+        + "rename from old/path\n"
+        + "rename to new/path\n"
+    )
+    mode = (
+        "Subject: Make script executable\n\n"
+        + headers
+        + "diff --git a/bin/tool b/bin/tool\n"
+        + "old mode 100644\n"
+        + "new mode 100755\n"
+    )
+    root = write_series(
+        tmp_path / "metadata-only",
+        [("0001-rename.patch", rename), ("0002-mode.patch", mode)],
+    )
+
+    changes = parse(root)
+
+    assert changes[0].files == ("new/path",)
+    assert changes[1].files == ("bin/tool",)
+    assert (changes[0].insertions, changes[0].deletions) == (0, 0)
+    assert (changes[1].insertions, changes[1].deletions) == (0, 0)
+
+    rename_with_hunks = rename + (
+        "--- a/old/path\n"
+        "+++ b/new/path\n"
+        "@@ -1 +1 @@\n"
+        "-before\n"
+        "+after\n"
+    )
+    with_hunks = write_series(
+        tmp_path / "rename-with-hunks",
+        [("0001-rename.patch", rename_with_hunks)],
+    )
+    assert parse(with_hunks)[0].files == ("new/path",)
+
+    multiple_files = rename + (
+        "diff --git a/second/file b/second/file\n"
+        "--- a/second/file\n"
+        "+++ b/second/file\n"
+        "@@ -1 +1 @@\n"
+        "-before\n"
+        "+after\n"
+    )
+    multiple_root = write_series(
+        tmp_path / "rename-and-text",
+        [("0001-multiple.patch", multiple_files)],
+    )
+    assert parse(multiple_root)[0].files == ("new/path", "second/file")
+
+    spaced_rename = rename.replace(
+        "rename from old/path\nrename to new/path\n",
+        "rename from old path\nrename to new path\n",
+    )
+    spaced_root = write_series(
+        tmp_path / "spaced-rename", [("0001-spaced.patch", spaced_rename)]
+    )
+    assert parse(spaced_root)[0].files == ("new path",)
+
+    prefixed_rename = rename.replace(
+        "rename from old/path\nrename to new/path\n",
+        "rename from a/old/path\nrename to a/new/path\n",
+    )
+    prefixed_root = write_series(
+        tmp_path / "prefixed-rename", [("0001-prefixed.patch", prefixed_rename)]
+    )
+    assert parse(prefixed_root)[0].files == ("a/new/path",)
+
+
+def test_parse_rejects_binary_patch_with_specific_error(tmp_path: Path) -> None:
+    binary = (
+        "Subject: Binary asset\n\n"
+        "Change-Id: binary\nCapability: placement\nRole: enable\n"
+        "Risk: low\nRequires: none\n\n---\n"
+        "diff --git a/image.bin b/image.bin\n"
+        "index 1111111..2222222 100644\n"
+        "GIT binary patch\n"
+        "literal 3\nabc\n"
+    )
+    root = write_series(tmp_path / "binary", [("0001-binary.patch", binary)])
+
+    with pytest.raises(SeriesError, match="binary patches are unsupported"):
+        parse(root)
+
+    binary_files = binary.replace(
+        "GIT binary patch\nliteral 3\nabc\n",
+        "Binary files a/image.bin and b/image.bin differ\n",
+    )
+    root = write_series(
+        tmp_path / "binary-files", [("0001-binary.patch", binary_files)]
+    )
+    with pytest.raises(SeriesError, match="binary patches are unsupported"):
+        parse(root)
+
+
+def test_parse_reports_malformed_diff_and_rename_metadata(tmp_path: Path) -> None:
+    malformed_header = patch_text("malformed-header").replace(
+        "diff --git a/pkg/file.go b/pkg/file.go",
+        'diff --git "unterminated b/pkg/file.go',
+    )
+    root = write_series(
+        tmp_path / "malformed-header",
+        [("0001-malformed.patch", malformed_header)],
+    )
+    with pytest.raises(SeriesError, match="invalid diff header"):
+        parse(root)
+
+    short_header = patch_text("short-header").replace(
+        "diff --git a/pkg/file.go b/pkg/file.go", "diff --git "
+    ).replace("--- a/pkg/file.go\n+++ b/pkg/file.go\n", "")
+    root = write_series(
+        tmp_path / "short-header", [("0001-short.patch", short_header)]
+    )
+    with pytest.raises(SeriesError, match="no supported file-change metadata"):
+        parse(root)
+
+    malformed_rename = (
+        "Subject: Bad rename metadata\n\n"
+        "Change-Id: rename\nCapability: placement\nRole: enable\n"
+        "Risk: low\nRequires: none\n\n---\n"
+        "diff --git a/old b/new\n"
+        'rename from "unterminated\n'
+        "rename to new\n"
+    )
+    root = write_series(
+        tmp_path / "malformed-rename",
+        [("0001-malformed-rename.patch", malformed_rename)],
+    )
+    with pytest.raises(SeriesError, match="invalid rename metadata"):
+        parse(root)
 
 
 def test_parse_rejects_invalid_utf8_and_empty_requires_items(tmp_path: Path) -> None:
@@ -312,6 +455,23 @@ def test_check_rejects_duplicate_requires_and_dependency_cycles(tmp_path: Path) 
         check(parse(cyclic), VOCABULARY)
 
 
+def test_check_rejects_requirement_that_sorts_after_its_dependent(
+    tmp_path: Path,
+) -> None:
+    out_of_order = parse(
+        write_series(
+            tmp_path / "out-of-order",
+            [
+                ("0001-child.patch", patch_text("child", requires="base")),
+                ("0002-base.patch", patch_text("base")),
+            ],
+        )
+    )
+
+    with pytest.raises(SeriesError, match="required Change-Id 'base'.*before"):
+        check(out_of_order, VOCABULARY)
+
+
 def test_check_rejects_missing_vocabulary_categories(tmp_path: Path) -> None:
     changes = parse(sample_series(tmp_path))
 
@@ -345,6 +505,37 @@ def test_closure_is_transitive_ordered_and_rejects_unknown_selection(
     with pytest.raises(SeriesError, match="unknown selected Change-Id"):
         closure(changes, ["missing"])
     assert [item.change_id for item in closure(changes, ["base"])] == ["base"]
+
+    out_of_order = parse(
+        write_series(
+            tmp_path / "out-of-order-closure",
+            [
+                ("0001-child.patch", patch_text("child", requires="base")),
+                ("0002-base.patch", patch_text("base")),
+            ],
+        )
+    )
+    assert [
+        item.change_id for item in closure(out_of_order, ["child"])
+    ] == ["base", "child"]
+
+    multiple_requirements = parse(
+        write_series(
+            tmp_path / "multiple-requirements",
+            [
+                ("0001-first.patch", patch_text("first")),
+                ("0002-second.patch", patch_text("second")),
+                (
+                    "0003-child.patch",
+                    patch_text("child", requires="first, second"),
+                ),
+            ],
+        )
+    )
+    assert [
+        item.change_id
+        for item in closure(multiple_requirements, ["child"])
+    ] == ["first", "second", "child"]
 
     duplicate = parse(
         write_series(
@@ -386,6 +577,18 @@ def test_closure_is_transitive_ordered_and_rejects_unknown_selection(
     )
     with pytest.raises(SeriesError, match="unknown selected Change-Id or dependency"):
         closure(dangling, ["leaf"])
+
+    cyclic = parse(
+        write_series(
+            tmp_path / "cyclic-closure",
+            [
+                ("0001-first.patch", patch_text("first", requires="second")),
+                ("0002-second.patch", patch_text("second", requires="first")),
+            ],
+        )
+    )
+    with pytest.raises(SeriesError, match="dependency cycle in selected closure"):
+        closure(cyclic, ["first"])
 
 
 def test_render_outputs_capability_and_role_tables_with_columns(
@@ -517,22 +720,37 @@ def test_delta_rejects_duplicate_change_ids(tmp_path: Path) -> None:
         delta(missing_id, [])
 
 
-def test_series_digest_is_framed_and_includes_order_base_and_tool_version(
+def test_series_digest_uses_ordered_patch_bytes_and_upstream_only(
     tmp_path: Path,
 ) -> None:
     first = parse(sample_series(tmp_path))
     reversed_changes = list(reversed(first))
-    baseline = series_digest(first, "a" * 40, "0.1.0")
+    baseline = series_digest(first, "a" * 40)
 
-    assert baseline == series_digest(first, "a" * 40, "0.1.0")
-    assert baseline != series_digest(reversed_changes, "a" * 40, "0.1.0")
-    assert baseline != series_digest(first, "b" * 40, "0.1.0")
-    assert baseline != series_digest(first, "a" * 40, "0.1.1")
+    assert baseline == series_digest(first, "a" * 40)
+    assert baseline != series_digest(reversed_changes, "a" * 40)
+    assert baseline != series_digest(first, "b" * 40)
     assert len(baseline) == 64
+
+    renamed = write_series(
+        tmp_path / "renamed-series",
+        [
+            ("renamed-child.patch", (first[1].path).read_text(encoding="utf-8")),
+            ("renamed-base.patch", (first[0].path).read_text(encoding="utf-8")),
+        ],
+    )
+    assert baseline == series_digest(parse(renamed), "a" * 40)
+
+    changed = write_series(
+        tmp_path / "changed-series",
+        [
+            ("0001-base.patch", (first[0].path).read_text(encoding="utf-8") + "\n"),
+            ("0002-child.patch", (first[1].path).read_text(encoding="utf-8")),
+        ],
+    )
+    assert baseline != series_digest(parse(changed), "a" * 40)
     with pytest.raises(SeriesError, match="upstream commit"):
-        series_digest(first, "not-a-commit", "0.1.0")
-    with pytest.raises(SeriesError, match="version"):
-        series_digest(first, "a" * 40, "")
+        series_digest(first, "not-a-commit")
 
 
 def test_load_vocabulary_refuses_io_toml_schema_and_item_errors(tmp_path: Path) -> None:

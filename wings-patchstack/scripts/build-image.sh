@@ -30,12 +30,27 @@ PYTHONPATH="$VBPUB_ROOT/libraries/patchseries/src" python3 -m patchseries check 
 CHECK_TEMP="$(mktemp -d)"
 CHECK_BRANCH="provenance-check-$$"
 CHECK_TREE="$CHECK_TEMP/source"
+RESERVATION_ID=""
+IMAGE_BUILT=0
 cleanup() {
+    local status=$?
+    trap - EXIT
+    if [[ -n "$RESERVATION_ID" && "$IMAGE_BUILT" -eq 0 ]]; then
+        if ! PYTHONPATH="$VBPUB_ROOT/libraries/patchseries/src" python3 "$SCRIPT_DIR/provenance.py" release \
+            --reservation-id "$RESERVATION_ID"; then
+            echo "warning: could not release failed build reservation $RESERVATION_ID" >&2
+        fi
+    elif [[ -n "$RESERVATION_ID" ]]; then
+        echo "warning: image build succeeded but its reservation remains active: $RESERVATION_ID" >&2
+    fi
     git -C "$SRC_DIR" worktree remove --force "$CHECK_TREE" >/dev/null 2>&1 || true
     git -C "$SRC_DIR" branch -D "$CHECK_BRANCH" >/dev/null 2>&1 || true
     rm -rf "$CHECK_TEMP"
+    return "$status"
 }
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 git -C "$SRC_DIR" worktree add --quiet -b "$CHECK_BRANCH" "$CHECK_TREE" "$UPSTREAM_COMMIT"
 git -C "$CHECK_TREE" am "$PATCH_DIR"/*.patch
 EXPECTED_TREE="$(git -C "$CHECK_TREE" rev-parse 'HEAD^{tree}')"
@@ -45,12 +60,12 @@ if [[ "$EXPECTED_TREE" != "$ACTUAL_TREE" ]]; then
     exit 1
 fi
 
-PROVENANCE="$(PYTHONPATH="$VBPUB_ROOT/libraries/patchseries/src" python3 "$SCRIPT_DIR/provenance.py" prepare \
+PROVENANCE="$(PYTHONPATH="$VBPUB_ROOT/libraries/patchseries/src" python3 "$SCRIPT_DIR/provenance.py" reserve \
     --series "$PATCH_DIR" \
     --upstream-version "${REF#v}" \
     --upstream-commit "$UPSTREAM_COMMIT")"
-IFS=$'\t' read -r VERSION SUFFIX SERIES_DIGEST PATCHSERIES_VERSION PINNED_COMMIT <<< "$PROVENANCE"
-[[ -n "$VERSION" && -n "$SUFFIX" && -n "$SERIES_DIGEST" && -n "$PATCHSERIES_VERSION" ]] || {
+IFS=$'\t' read -r VERSION SUFFIX SERIES_DIGEST PATCHSERIES_VERSION PINNED_COMMIT RESERVATION_ID <<< "$PROVENANCE"
+[[ -n "$VERSION" && -n "$SUFFIX" && -n "$SERIES_DIGEST" && -n "$PATCHSERIES_VERSION" && -n "$RESERVATION_ID" ]] || {
     echo "provenance helper returned an incomplete record" >&2
     exit 1
 }
@@ -71,12 +86,15 @@ tar --exclude='.git' -cf - . | docker build \
     --label "org.vbpub.wings.patchseries-version=$PATCHSERIES_VERSION" \
     --label "org.vbpub.wings.build-date=$BUILD_DATE" \
     --build-arg "VERSION=$VERSION" -t "$TAG" -
+IMAGE_BUILT=1
 
 IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$TAG")"
 PYTHONPATH="$VBPUB_ROOT/libraries/patchseries/src" python3 "$SCRIPT_DIR/provenance.py" record \
     --upstream-version "${REF#v}" \
     --suffix "$SUFFIX" \
     --series-digest "$SERIES_DIGEST" \
+    --reservation-id "$RESERVATION_ID" \
     --image-id "$IMAGE_ID" \
     --built-at "$BUILD_DATE"
+RESERVATION_ID=""
 echo "built: $TAG ($IMAGE_ID)"

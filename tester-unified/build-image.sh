@@ -2,6 +2,11 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$repo_root/wings-patchstack/stack.conf"
+[[ -n "${PTERODACTYL_GO_IMAGE:-}" ]] || {
+  echo "wings-patchstack/stack.conf must define PTERODACTYL_GO_IMAGE" >&2
+  exit 2
+}
 wheel_dir="$repo_root/run-gate-project/dist"
 wheel_dir_given=0
 image_tag="tester-unified:local"
@@ -47,7 +52,7 @@ done
 published_stage=""
 wheel_stage=""
 trap 'rm -rf ${published_stage:+"$published_stage"} ${wheel_stage:+"$wheel_stage"}' EXIT
-build_args=()
+build_args=(--build-arg "WINGS_GO_TOOLCHAIN_IMAGE=$PTERODACTYL_GO_IMAGE")
 if [[ -n "$pip_min_release_age" ]]; then
   [[ "$pip_min_release_age" =~ ^P[0-9]+D$ ]] || {
     echo "--pip-min-release-age must be an ISO-8601 day duration such as P14D" >&2
@@ -241,5 +246,13 @@ if [[ "$actual_base_image_id" != "$expected_base_image_id" ]]; then
   echo "loaded tester image does not record the identity of the base it was built on" >&2
   echo "expected: $expected_base_image_id" >&2
   echo "observed: ${actual_base_image_id:-<no label>}" >&2
+  exit 2
+fi
+
+actual_go_toolchain="$(docker image inspect --format '{{index .Config.Labels "org.vbpub.tester-unified.go-toolchain-image"}}' "$image_tag")"
+if [[ "$actual_go_toolchain" != "$PTERODACTYL_GO_IMAGE" ]]; then
+  echo "loaded tester image does not record the Wings Go toolchain input" >&2
+  echo "expected: $PTERODACTYL_GO_IMAGE" >&2
+  echo "observed: ${actual_go_toolchain:-<no label>}" >&2
   exit 2
 fi

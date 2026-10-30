@@ -27,9 +27,9 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GENERATOR = REPO_ROOT / "tester-unified" / "gen-requirements.py"
-# The real Dockerfile's final stage. Stage 0 is the digest-pinned `node-source` stage (MDTC-02 D-004),
-# so the tester image is stage 1; fixtures below that spell "stage-0" are self-contained.
-TESTER_STAGE = "stage-1"
+# The real Dockerfile's final stage. Stages 0 and 1 are the node and Go toolchain
+# source images; fixtures below that spell "stage-0" are self-contained.
+TESTER_STAGE = "stage-2"
 DOCKERFILE = REPO_ROOT / "tester-unified" / "Dockerfile"
 RUN_GATE_WHEEL_VERSION_HELPER = REPO_ROOT / "tester-unified" / "run-gate-wheel-version.py"
 NYXLOOM_DOCKERFILE = REPO_ROOT / "nyxloom" / "nyxloomd" / "Dockerfile"
@@ -838,22 +838,26 @@ def _dockerfile_copy_specs_before_command(
             ):
                 if run_sensitive_sources and source.parts[:1] == ("__stage_copy__",):
                     context_or_stage = source.parts[1] if len(source.parts) > 1 else ""
-                    # A declared stage is refused (its content is unproven) unless it is named as
-                    # a pure-image stage: a stage that is only `FROM <digest-pinned image>` and so
-                    # cannot have rewritten a wheel input (the node-source stage; its pin is
-                    # asserted by test_tester_unified_has_no_systemctl_stub_...).
+                    # A declared stage is refused (its content is unproven) unless it is named as a
+                    # pure-image stage. node-source is digest-pinned; go-source is one FROM using
+                    # the explicitly selected Wings toolchain image. Neither stage can rewrite a
+                    # wheel input before the COPY into the isolated toolchain directory.
                     if context_or_stage in allowed_pure_image_stages:
-                        # Verified, not trusted by name: the stage is exactly one digest-pinned FROM.
+                        # Verified, not trusted by name: each allowed stage has exactly one FROM.
                         body = [
                             text for _o, selector, _i, text in instructions
                             if selector == context_or_stage
                         ]
-                        if len(body) != 1 or not re.fullmatch(
-                            rf"(?i)FROM\s+\S+@sha256:[0-9a-f]{{64}}\s+AS\s+{re.escape(context_or_stage)}",
-                            body[0],
-                        ):
+                        if context_or_stage == "node-source":
+                            valid = len(body) == 1 and re.fullmatch(
+                                rf"(?i)FROM\s+\S+@sha256:[0-9a-f]{{64}}\s+AS\s+{re.escape(context_or_stage)}",
+                                body[0],
+                            )
+                        else:
+                            valid = body == ["FROM ${WINGS_GO_TOOLCHAIN_IMAGE} AS go-source"]
+                        if not valid:
                             raise ValueError(
-                                f"stage {context_or_stage!r} is not a lone digest-pinned FROM; "
+                                f"stage {context_or_stage!r} is not an allowed single-FROM image; "
                                 "cannot allow it as a pure-image stage"
                             )
                     if (
@@ -3979,7 +3983,7 @@ def test_dockerfile_copies_every_cmru_wheel_input_before_build():
         run_sensitive_sources=("cmru", "libraries/worktree"),
         allowed_pre_sensitive_run_bodies=CMRU_PRE_SENSITIVE_RUN_BODIES,
         allowed_external_contexts=("run-gate-wheel",),
-        allowed_pure_image_stages=("node-source",),
+        allowed_pure_image_stages=("node-source", "go-source"),
         allowed_shell_prefix=(
             "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CMRU=0.0.0+tester.unified",
         ),
@@ -4323,7 +4327,7 @@ def test_tester_cmru_and_worktree_package_source_trees_are_nonempty():
         # (`COPY --from=run-gate-wheel`); it is not a CMRU input. Declared or
         # intermediate stages are still refused.
         allowed_external_contexts=("run-gate-wheel",),
-        allowed_pure_image_stages=("node-source",),
+        allowed_pure_image_stages=("node-source", "go-source"),
         allowed_shell_prefix=(
             "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CMRU=0.0.0+tester.unified",
         ),
@@ -4460,15 +4464,15 @@ def test_tester_unified_path_is_its_own_venv_then_the_base_path():
 
 
 def test_a_pure_image_stage_must_be_a_lone_digest_pinned_from():
-    """The allowance for the node-source stage is verified: add a RUN, drop the digest or add a COPY
-    to that stage and the oracle refuses to allow it."""
+    """Each allowed source stage must stay a single FROM with its declared source."""
     base = "FROM docker.io/library/node:26@sha256:" + "a" * 64 + " AS node-source\n"
     final = "FROM base:latest\nCOPY --from=node-source /a /a\nCOPY cmru/ /src/cmru/\nRUN pip wheel /src/cmru\n"
 
     def run(first_stage):
         return _dockerfile_copy_specs_before_command(
             first_stage + final, "stage-1", r"pip wheel[\s\S]*?/src/cmru",
-            run_sensitive_sources=("cmru",), allowed_pure_image_stages=("node-source",),
+            run_sensitive_sources=("cmru",),
+            allowed_pure_image_stages=("node-source", "go-source"),
             expected_run_body="pip wheel /src/cmru",
         )
 
@@ -4476,6 +4480,8 @@ def test_a_pure_image_stage_must_be_a_lone_digest_pinned_from():
     for bad in (
         base + "RUN echo tampered > /a\n",
         "FROM docker.io/library/node:26 AS node-source\n",
+        "FROM ${WINGS_GO_TOOLCHAIN_IMAGE} AS go-source\nRUN go version\n",
+        "FROM docker.io/library/golang:1.24 AS go-source\n",
         base + "COPY x /a\n",
     ):
         with pytest.raises(ValueError, match="pure-image stage|not a lone"):
@@ -4509,6 +4515,27 @@ def test_tester_unified_has_no_systemctl_stub_and_installs_what_its_suites_run()
     for tool in ("npm", "npx"):
         assert f"/usr/local/bin/{tool}" in code
     assert re.search(r"^FROM docker\.io/library/node:26\.\d+\.\d+-trixie@sha256:[0-9a-f]{64} AS node-source$", code, re.MULTILINE)
+
+
+def test_go_toolchain_is_selected_by_wings_configuration_and_recorded():
+    dockerfile = DOCKERFILE.read_text(encoding="utf-8")
+    builder = (REPO_ROOT / "tester-unified" / "build-image.sh").read_text(encoding="utf-8")
+    stack = (REPO_ROOT / "wings-patchstack" / "stack.conf").read_text(encoding="utf-8")
+    readme = (REPO_ROOT / "tester-unified" / "README.md").read_text(encoding="utf-8")
+    design = (REPO_ROOT / "tester-unified" / "docs" / "DESIGN-GUIDE.md").read_text(encoding="utf-8")
+    consumers = (REPO_ROOT / "tester-unified" / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+
+    selected = re.search(r'^PTERODACTYL_GO_IMAGE="([^"]+)"$', stack, re.MULTILINE)
+    assert selected
+    assert 'source "$repo_root/wings-patchstack/stack.conf"' in builder
+    assert '"WINGS_GO_TOOLCHAIN_IMAGE=$PTERODACTYL_GO_IMAGE"' in builder
+    assert "FROM ${WINGS_GO_TOOLCHAIN_IMAGE} AS go-source" in dockerfile
+    assert "COPY --from=go-source /usr/local/go /usr/local/go" in dockerfile
+    assert 'LABEL org.vbpub.tester-unified.go-toolchain-image="${WINGS_GO_TOOLCHAIN_IMAGE}"' in dockerfile
+    assert "org.vbpub.tester-unified.go-toolchain-image" in builder
+    assert "RUN go version" in dockerfile
+    for document in (readme, design, consumers):
+        assert "Go" in document and "wings" in document.lower()
 
 
 def host_environment_users(config_text: str) -> list[str]:
@@ -4744,6 +4771,11 @@ def _run_build_image(tmp_path, *args, stub_fetcher=None, env=None):
     """Run a COPY of build-image.sh whose repo root is a scratch tree (exit 2 happens before docker)."""
     root = tmp_path / "repo"
     (root / "tester-unified").mkdir(parents=True)
+    (root / "wings-patchstack").mkdir()
+    (root / "wings-patchstack" / "stack.conf").write_text(
+        (REPO_ROOT / "wings-patchstack" / "stack.conf").read_text("utf-8"),
+        encoding="utf-8",
+    )
     source = GENERATOR.parent
     (root / "tester-unified" / "build-image.sh").write_text((source / "build-image.sh").read_text("utf-8"))
     (root / "tester-unified" / "Dockerfile").write_text((source / "Dockerfile").read_text("utf-8"))
