@@ -243,11 +243,16 @@ def test_inspect_screenshot_writes_requested_image_type_and_full_page(
     ],
 )
 def test_inspect_rejects_invalid_inputs_before_connecting(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     args: list[str],
     message: str,
 ) -> None:
+    # A compare-swapped suffix guard can let the invalid page.gif case reach
+    # the browser and write relative to cwd. Keep every such mutant side effect
+    # outside the repository tree.
+    monkeypatch.chdir(tmp_path)
     calls = _install_cli_browser(monkeypatch)
     assert cli_module.main(["inspect", *args]) == 1
     captured = capsys.readouterr()
