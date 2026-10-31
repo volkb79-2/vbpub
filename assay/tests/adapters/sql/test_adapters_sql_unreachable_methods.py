@@ -55,7 +55,9 @@ def test_statement_spans_raises_not_implemented_naming_r2_only_reachability():
 
 def test_inject_import_break_raises_not_implemented_naming_r2_only_reachability():
     with pytest.raises(NotImplementedError, match="inject_import_break"):
-        ADAPTER.inject_import_break("CREATE TABLE t (a INT);")
+        ADAPTER.inject_import_break(
+            "CREATE TABLE t (a INT);", nonce="0123456789abcdef0123456789abcdef"
+        )
 
 
 def test_inject_uncovered_line_raises_not_implemented_naming_r2_only_reachability():
@@ -73,7 +75,9 @@ def test_every_raise_names_the_r2_only_rigor_fact_not_just_the_method():
         lambda: ADAPTER.has_executable_code("x.sql", "x"),
         lambda: ADAPTER.normalize_coverage_key("x"),
         lambda: ADAPTER.statement_spans("x"),
-        lambda: ADAPTER.inject_import_break("x"),
+        lambda: ADAPTER.inject_import_break(
+            "x", nonce="0123456789abcdef0123456789abcdef"
+        ),
         lambda: ADAPTER.inject_uncovered_line("x"),
     ):
         with pytest.raises(NotImplementedError) as excinfo:

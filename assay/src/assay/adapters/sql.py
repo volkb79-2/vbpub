@@ -5489,7 +5489,7 @@ class SqlAdapter:
     ) -> StatementBlockReport | None:
         raise NotImplementedError(_UNREACHABLE.format(name="statement_blocks"))
 
-    def inject_import_break(self, text: str) -> tuple[str, str]:
+    def inject_import_break(self, text: str, *, nonce: str) -> tuple[str, str]:
         raise NotImplementedError(_UNREACHABLE.format(name="inject_import_break"))
 
     def inject_uncovered_line(self, text: str) -> tuple[str, str]:

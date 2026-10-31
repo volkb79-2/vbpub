@@ -31,6 +31,11 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   test or treating R0 execution errors as measured test failures (B181).
 
 ### Changed
+- Require a matching execution receipt for an R3 `import-break` result, and
+  preserve a clean control `FAIL` in the attempt evidence. Lanes whose lint or
+  type-check step rejects transformed source before tests execute should use
+  `uncovered-line` when R1 is declared; those import-break attempts are now
+  `INCONCLUSIVE` instead of receiving false catch credit.
 - Add the pure termination classifier and separate resource-limit evidence,
   pressure telemetry, and observation availability in the internal command
   model. R0/R1/R3 verdict paths keep their 10.0.1 behavior in this WP1 step;

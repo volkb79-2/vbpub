@@ -40,6 +40,7 @@ from assay.errors import AssayError, Outcome, ReasonCode
 from termination_table import LIMITS_CLEAR, LIMITS_HIT
 
 MOMENT = datetime(2026, 8, 10, 12, 0, 0, tzinfo=timezone.utc)
+NONCE = "0123456789abcdef0123456789abcdef"
 
 
 def _clock() -> datetime:
@@ -93,7 +94,7 @@ class _NoOpTransformAdapter(PythonAdapter):
     is already an unconditional raise), and the honest answer is then "nothing
     to judge", never a transform half run against identical bytes."""
 
-    def inject_import_break(self, text: str) -> tuple[str, str]:
+    def inject_import_break(self, text: str, *, nonce: str) -> tuple[str, str]:
         return text, "injected nothing at all"
 
 
@@ -228,6 +229,7 @@ def _run_import_break_with_resource_observations(
     control_returncode: int | None = None,
     transformed_returncode: int | None = None,
 ):
+    monkeypatch.setattr(canary.secrets, "token_hex", lambda size: NONCE)
     monkeypatch.setenv("ASSAY_GATE_REQUIRE_RESOURCE_OBSERVATION", "1")
     monkeypatch.setenv("ASSAY_RESOURCE_OBSERVER_SOCKET", "/observer.sock")
     head_rev = _seed(git_repo)
@@ -260,6 +262,9 @@ def _run_import_break_with_resource_observations(
     def process(argv, *, env, cwd, timeout):
         source = (Path(cwd) / "pkg/mod.py").read_text()
         broken = "assay-canary-import-break" in source
+        receipt_path = env.get("ASSAY_CANARY_RECEIPT")
+        if broken and receipt_path is not None:
+            Path(receipt_path).write_text(NONCE, encoding="ascii")
         if broken:
             returncode = (
                 transformed_returncode

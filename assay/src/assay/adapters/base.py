@@ -10,10 +10,11 @@ extension reserved for it (A-084/A-097's own note):
 :meth:`LanguageAdapter.statement_spans` and the new :class:`StatementSpan`
 type. P09 (this package, A-084/A-105) adds the second deliberate extension:
 :meth:`LanguageAdapter.inject_import_break` and
-:meth:`LanguageAdapter.inject_uncovered_line`, the pure ``(text) -> (text,
-description)`` transforms :mod:`assay.canary` drives to build its
-R3 canary (A-010 — nyxloom's own versions of these two write the
-file directly; these do not touch a filesystem). P11 (this package,
+:meth:`LanguageAdapter.inject_uncovered_line`, the pure transforms
+:mod:`assay.canary` drives to build its R3 canary (A-010 — nyxloom's own
+versions of these two write the file directly; these do not touch a
+filesystem). Import-break also receives the per-attempt nonce written to its
+receipt immediately before raising. P11 (this package,
 A-084/A-112/A-114) adds the THIRD and final deliberate extension DESIGN-GUIDE
 §11 sketches: mutation construction — construction only; P12 consumes the
 result to actually run tests against it (A-114's own "construct, never
@@ -68,16 +69,18 @@ from ..mutation import MutationSite
 from ..statement_attribution import StatementBlock
 
 __all__ = [
+    "CANARY_RECEIPT_ENV",
     "HelperInvocation",
     "LanguageAdapter",
     "StatementBlockReport",
     "StatementSpan",
 ]
 
-# Shared diagnostic included in each import-break error message. The canary
-# checks the command outcome and reason code; it does not use this text to
-# attribute a failure to the injected source.
+# Shared diagnostic included in each import-break error message. It is not
+# evidence that the injected statement ran; R3 uses the per-attempt receipt
+# file named by :data:`CANARY_RECEIPT_ENV` for that attribution.
 _IMPORT_BREAK_MARKER = "assay-canary-import-break"
+CANARY_RECEIPT_ENV = "ASSAY_CANARY_RECEIPT"
 
 
 @record
@@ -448,7 +451,7 @@ class LanguageAdapter(Protocol):
         """
         ...
 
-    def inject_import_break(self, text: str) -> tuple[str, str]:
+    def inject_import_break(self, text: str, *, nonce: str) -> tuple[str, str]:
         """A MINIMAL, valid-as-source, known-bad transform of *text* that
         should make any test importing/loading it fail outright (P09,
         A-010/A-105) — proves a gate rejects broken code AT ALL, the R0-level
@@ -458,7 +461,10 @@ class LanguageAdapter(Protocol):
         a filesystem. *description* is a short, human-readable account of
         what changed (e.g. "inserted `raise AssertionError(...)` at line
         4"), carried into :class:`~assay.verdict.CanaryResult` for
-        diagnosis — never parsed back apart by any caller.
+        diagnosis — never parsed back apart by any caller. *nonce* is written
+        to the per-attempt receipt path from :data:`CANARY_RECEIPT_ENV` by
+        the injected statement immediately before it raises; it is never
+        included in the returned description.
 
         The mechanism is deliberately language-specific (this is the one
         place a language's own rule for "where can a side effect legally go"
