@@ -9,6 +9,28 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [24.2.0] - 2026-10-31
+<!-- cmru: generated -->
+<!-- cmru: source-end=4d165498d46077dc72619d79b0175dc8b2ec08cb -->
+
+### Fixed
+- fix(run-gate): review fixes for CoW/io_sync delta (root alias guard, preload validation, history modes) (0a91bb36d)
+- fix(run-gate): validate bind paths and resource overrides (a2141addf)
+
+### Changed
+- Cover resource validation and preload cleanup (f8693ddea)
+- Fix resource gate selftest regressions (2ca6fc287)
+- Add combined resource settings and IO sync delivery (da11e76b7)
+
+### Documentation
+- docs(backlog): file PWMCP and Run-Gate review findings (7b71b7748)
+
+### Testing
+- test(run-gate): cover non-text and empty mount path refusal (4d165498d)
+
+<!-- cmru: pending release notes begin -->
 - **CW4/IO1:** add combined `[resources]` settings with closed consumer
   subtables, CoW root pass-through, strict/durable/relaxed `io_sync`, and
   history separated by I/O mode. The bounded history count applies across
@@ -24,8 +46,7 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 - **IO1:** install `libeatmydata1` in tester-unified and publish its
   architecture-specific library path as an image label; mark IOBench R0–R1
   and R2 lanes `io_sync = "durable"`.
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [24.1.3] - 2026-10-30
 <!-- cmru: generated -->
