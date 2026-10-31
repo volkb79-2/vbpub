@@ -1153,7 +1153,9 @@ def _execute(tmp_path, monkeypatch, steps, *, plan=_ECHO_PLAN, jobs_list=None, *
 
     A step is a CommandResult or an exception to raise."""
     monkeypatch.setattr(mutation, "_snapshot_left_dirt", lambda *a, **k: None)
-    queue = iter(steps)
+    # An unresolved candidate is retried once serially (WP7); the retry sees the last
+    # step again unless the test scripts a distinct retry result.
+    queue = itertools.chain(steps, itertools.repeat(steps[-1]) if steps else ())
 
     def execute_plan(attempt_plan, **_kwargs):
         step = next(queue)
