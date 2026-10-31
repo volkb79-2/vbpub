@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+import signal
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -123,3 +125,52 @@ def test_package_install_restores_resolver_when_apt_fails(
 
     assert resolver.is_symlink()
     assert resolver.readlink() == original_target
+
+
+@pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGHUP])
+def test_build_signal_cleans_resolver_and_restores_previous_handler(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    signum: signal.Signals,
+) -> None:
+    rootfs = tmp_path / "rootfs"
+    resolver = rootfs / "etc" / "resolv.conf"
+    resolver.parent.mkdir(parents=True)
+    original_target = "/run/systemd/resolve/stub-resolv.conf"
+    resolver.symlink_to(original_target)
+    build_resolver = tmp_path / "build-resolv.conf"
+    build_resolver.write_text("nameserver 127.0.0.11\n", encoding="ascii")
+    monkeypatch.setattr(STEP2, "BUILD_RESOLV_CONF", build_resolver)
+    monkeypatch.setattr(STEP2, "mount_chroot", lambda _args: None)
+
+    def unexpected_prior_handler(_signum, _frame):
+        raise AssertionError("build did not replace the prior signal handler")
+
+    previous_handler = signal.getsignal(signum)
+    signal.signal(signum, unexpected_prior_handler)
+    try:
+        def interrupt_during_apt(argv: list[str], **_kwargs: object):
+            if argv[0] == "chroot":
+                assert resolver.read_text(encoding="ascii") == "nameserver 127.0.0.11\n"
+                signal.raise_signal(signum)
+            return STEP2.subprocess.CompletedProcess(argv, 0, "", "")
+
+        monkeypatch.setattr(STEP2, "run", interrupt_during_apt)
+
+        def build(_args: object) -> None:
+            STEP2.install_runtime_packages(rootfs, "trixie")
+
+        monkeypatch.setattr(
+            STEP2,
+            "make_parser",
+            lambda: SimpleNamespace(
+                parse_args=lambda _argv: SimpleNamespace(command="build", func=build),
+            ),
+        )
+
+        assert STEP2.main(["build"]) == 128 + int(signum)
+        assert resolver.is_symlink()
+        assert resolver.readlink().as_posix() == original_target
+        assert signal.getsignal(signum) is unexpected_prior_handler
+    finally:
+        signal.signal(signum, previous_handler)

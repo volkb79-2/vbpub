@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import nullcontext
 from pathlib import Path
 import subprocess
 import sys
@@ -59,6 +60,70 @@ def test_pwmcp_network_derivation_ignores_null_docker_aliases(monkeypatch) -> No
     monkeypatch.setattr(accept.subprocess, "run", lambda *args, **kwargs: outputs.pop(0))
 
     assert accept._pwmcp_network() == "test-bridge"
+
+
+def _mock_snapshot_restore(monkeypatch, tmp_path: Path, dry_run_uuid: str) -> list[list[str]]:
+    name = "tn-v27rc1-20g-stock-ssh-ready-20261031"
+    calls: list[list[str]] = []
+    monkeypatch.setattr(accept, "_host_lock", nullcontext)
+
+    def provider_command(args, *, env, log_path):
+        calls.append(args)
+        if "--dry-run" in args:
+            payload = {"wouldRevert": {"name": name, "uuid": dry_run_uuid}}
+            log_path.write_text(json.dumps(payload), encoding="utf-8")
+        elif "--yes" in args:
+            log_path.write_text(
+                json.dumps({"uuid": "11111111-1111-4111-8111-111111111111"}),
+                encoding="utf-8",
+            )
+        elif args[0] == "server-details":
+            log_path.write_text(
+                json.dumps({"serverLiveInfo": {"state": "RUNNING"}}),
+                encoding="utf-8",
+            )
+        return {"exit_code": 0}
+
+    monkeypatch.setattr(accept, "_provider_command", provider_command)
+    monkeypatch.setattr(
+        accept, "_stream_command", lambda *args, **kwargs: {"exit_code": 0},
+    )
+    monkeypatch.setattr(accept, "_wait_for_ssh", lambda _env: None)
+    return calls
+
+
+def test_restore_snapshot_refuses_same_name_with_different_uuid(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    name = "tn-v27rc1-20g-stock-ssh-ready-20261031"
+    calls = _mock_snapshot_restore(
+        monkeypatch, tmp_path, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    )
+
+    try:
+        accept._restore_snapshot(name, env={}, run_dir=tmp_path)
+    except accept.AcceptError as exc:
+        assert "UUID" in str(exc)
+    else:
+        raise AssertionError("restore accepted a same-name snapshot with a different UUID")
+
+    assert len(calls) == 1
+    assert "--dry-run" in calls[0]
+    assert "--yes" not in calls[0]
+
+
+def test_restore_snapshot_proceeds_when_dry_run_uuid_matches_catalog(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    name = "tn-v27rc1-20g-stock-ssh-ready-20261031"
+    expected_uuid = accept.SNAPSHOT_CATALOG[name]["uuid"]
+    calls = _mock_snapshot_restore(monkeypatch, tmp_path, expected_uuid)
+
+    results = accept._restore_snapshot(name, env={}, run_dir=tmp_path)
+
+    assert len(results) == 3
+    assert any("--dry-run" in args for args in calls)
+    assert any("--yes" in args for args in calls)
 
 
 def test_v27_post_update_uses_digest_bound_reapply_for_existing_patch_record(

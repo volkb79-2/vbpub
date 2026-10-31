@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -51,6 +52,12 @@ BUILD_RESOLV_CONF = Path("/etc/resolv.conf")
 
 class BuildError(RuntimeError):
     pass
+
+
+class BuildInterrupted(Exception):
+    def __init__(self, signum: int) -> None:
+        self.signum = signum
+        super().__init__(signal.Signals(signum).name)
 
 
 def log(message: str) -> None:
@@ -521,6 +528,24 @@ def install_runtime_packages(rootfs: Path, suite: str) -> None:
                 raise BuildError("failed to unmount chroot paths: " + ", ".join(failures))
 
 
+@contextmanager
+def build_termination_signals() -> Iterator[None]:
+    """Turn termination signals into exceptions so build cleanup can run."""
+    watched = (signal.SIGTERM, signal.SIGHUP)
+    previous = {signum: signal.getsignal(signum) for signum in watched}
+
+    def interrupt(signum: int, _frame: object) -> None:
+        raise BuildInterrupted(signum)
+
+    try:
+        for signum in watched:
+            signal.signal(signum, interrupt)
+        yield
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+
+
 def write_runtime_files(rootfs: Path, webhook: str) -> None:
     runtime_script = RUNTIME_DIR / "truenas-restore.py"
     service_source = RUNTIME_DIR / "truenas-restore.service"
@@ -907,7 +932,14 @@ def make_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = make_parser().parse_args(argv)
     try:
-        args.func(args)
+        if getattr(args, "command", None) == "build":
+            with build_termination_signals():
+                args.func(args)
+        else:
+            args.func(args)
+    except BuildInterrupted as exc:
+        print(f"Interrupted by {signal.Signals(exc.signum).name}.", file=sys.stderr)
+        return 128 + exc.signum
     except BuildError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2

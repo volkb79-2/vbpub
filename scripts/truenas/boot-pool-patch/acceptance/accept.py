@@ -352,6 +352,21 @@ def _restore_snapshot(name: str, *, env: dict[str, str], run_dir: Path) -> list[
         selected = plan.get("wouldRevert")
         if not isinstance(selected, dict) or selected.get("name") != name:
             raise AcceptError(f"provider dry-run did not select the requested snapshot {name!r}: {plan!r}")
+        catalog_uuid = SNAPSHOT_CATALOG[name].get("uuid")
+        selected_uuid = selected.get("uuid")
+        try:
+            uuid_matches = (
+                isinstance(catalog_uuid, str)
+                and isinstance(selected_uuid, str)
+                and uuid.UUID(catalog_uuid) == uuid.UUID(selected_uuid)
+            )
+        except ValueError:
+            uuid_matches = False
+        if not uuid_matches:
+            raise AcceptError(
+                f"provider dry-run snapshot UUID {selected_uuid!r} does not match "
+                f"catalog UUID {catalog_uuid!r} for {name!r}; refusing restore"
+            )
 
         revert_log = run_dir / "provider-revert.json"
         reverted = _provider_command(
