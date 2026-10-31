@@ -1095,29 +1095,22 @@ def test_candidate_counter_delta_is_persisted_and_overrides_a_kill(
     )
     assert baseline.outcome is Outcome.PASS
 
+    zero = ResourceLimitCounters(
+        pids_max=0,
+        memory_max=0,
+        memory_oom=0,
+        memory_oom_kill=0,
+        memory_oom_group_kill=0,
+    )
+    first_event = replace(zero, pids_max=1)
+    retry_event = replace(zero, pids_max=2)
     samples = iter(
         (
-            ResourceLimitCounters(
-                pids_max=0,
-                memory_max=0,
-                memory_oom=0,
-                memory_oom_kill=0,
-                memory_oom_group_kill=0,
-            ),  # mutation preflight
-            ResourceLimitCounters(
-                pids_max=0,
-                memory_max=0,
-                memory_oom=0,
-                memory_oom_kill=0,
-                memory_oom_group_kill=0,
-            ),  # before candidate
-            ResourceLimitCounters(
-                pids_max=1,
-                memory_max=0,
-                memory_oom=0,
-                memory_oom_kill=0,
-                memory_oom_group_kill=0,
-            ),  # after candidate
+            zero,  # mutation preflight
+            zero,  # before first candidate attempt
+            first_event,  # after first candidate attempt
+            first_event,  # before serial retry
+            retry_event,  # after serial retry
         )
     )
     monkeypatch.setattr(
@@ -1125,7 +1118,10 @@ def test_candidate_counter_delta_is_persisted_and_overrides_a_kill(
         lambda **_kwargs: next(samples),
     )
 
+    candidate_calls: list[tuple[str, ...]] = []
+
     def failing_candidate_runner(argv, *, env, cwd, timeout):
+        candidate_calls.append(tuple(argv))
         result = completed_process(list(argv), returncode=1)
         from assay.process_tree import ProcessTreeEvidence
 
@@ -1163,6 +1159,7 @@ def test_candidate_counter_delta_is_persisted_and_overrides_a_kill(
         )
 
     assert not isinstance(result, str)
+    assert len(candidate_calls) == 2
     assert result.killed == ()
     assert len(result.crashed) == result.total == 1
     expected = _evidence(pids=(0, 1)).to_dict()
@@ -1471,7 +1468,18 @@ def test_candidate_observer_loss_is_recorded_without_aborting_the_campaign(
         before_window,
         limit_values=((None, 8192),),
     )
-    reads = iter((before_window, before_window, changed_limit, changed_limit))
+    # Two values cover the retry's fresh before/after window after either
+    # observer-loss point; the retry sees a stable limit value.
+    reads = iter(
+        (
+            before_window,
+            before_window,
+            changed_limit,
+            changed_limit,
+            changed_limit,
+            changed_limit,
+        )
+    )
     read_count = 0
 
     def read_counters(**_kwargs):
@@ -1520,22 +1528,19 @@ def test_candidate_observer_loss_is_recorded_without_aborting_the_campaign(
             progress_artifact=progress_path,
         )
 
-    assert len(candidate_calls) == 2
+    assert len(candidate_calls) == 3
     assert len(mutation.survived) == 1
     assert mutation.survived[0].resource_limit_evidence is not None
     assert mutation.killed == ()
     assert len(mutation.crashed) == 1
-    assert mutation.crashed[0].resource_limit_evidence is None
+    assert mutation.crashed[0].resource_limit_evidence is not None
+    assert not mutation.crashed[0].resource_limit_evidence.limit_hit
     state_records = [
         json.loads(path.read_text(encoding="utf-8"))
         for path in state_root.glob("*.json")
     ]
-    unobserved_state = [record for record in state_records if "resource_observation" in record]
-    assert len(unobserved_state) == 1
-    assert all("resource_limit_evidence" not in record for record in unobserved_state)
-    assert any(f"observer disappeared {failure_endpoint} candidate 2" in record["resource_observation"]["reason"]
-               for record in unobserved_state)
-    assert any(record.get("resource_limit_evidence") is not None for record in state_records)
+    assert len(state_records) == 2
+    assert all(record.get("resource_limit_evidence") is not None for record in state_records)
     progress_records = [
         json.loads(line)
         for line in progress_path.read_text(encoding="utf-8").splitlines()
@@ -1554,6 +1559,15 @@ def test_candidate_observer_loss_is_recorded_without_aborting_the_campaign(
     assert candidate_records[1]["resource_limit_changes"] == []
     assert "resource_limit_evidence" in candidate_records[0]
     assert candidate_records[1]["resource_observation"]["status"] == "unobserved"
+    assert (
+        f"observer disappeared {failure_endpoint} candidate 2"
+        in candidate_records[1]["resource_observation"]["reason"]
+    )
+    retry_events = [
+        record for record in progress_records if record.get("event") == "candidate_retry"
+    ]
+    assert len(retry_events) == 1
+    assert retry_events[0]["first_bucket"] == retry_events[0]["final_bucket"] == "crashed"
     advisory_lines = capsys.readouterr().err.splitlines()
     assert sum("limit values changed" in line for line in advisory_lines) == 1
     assert sum("resource-limit window unobserved" in line for line in advisory_lines) == 1
@@ -1684,7 +1698,8 @@ def test_witnessed_kill_with_limit_event_is_crashed_end_to_end(
     _install_clean_failed_call_capture(monkeypatch)
     before = _candidate_resource_counters()
     after = replace(before, pids_max=1)
-    samples = iter((before, before, after))
+    retry_after = replace(before, pids_max=2)
+    samples = iter((before, before, after, after, retry_after))
     monkeypatch.setattr(
         mutation_module,
         "read_candidate_resource_counters",
@@ -1711,7 +1726,7 @@ def test_witnessed_kill_with_limit_event_is_crashed_end_to_end(
             progress_artifact=tmp_path / "progress.jsonl",
         )
 
-    assert len(candidate_calls) == 1
+    assert len(candidate_calls) == 2
     assert mutation.killed == ()
     assert len(mutation.crashed) == 1
     assert mutation.crashed[0].resource_limit_evidence is not None
@@ -1728,7 +1743,8 @@ def test_resume_of_witnessed_limit_kill_record_is_rerun_not_reused(
     _install_clean_failed_call_capture(monkeypatch)
     before = _candidate_resource_counters()
     after = replace(before, pids_max=1)
-    first_samples = iter((before, before, after))
+    retry_after = replace(before, pids_max=2)
+    first_samples = iter((before, before, after, after, retry_after))
     monkeypatch.setattr(
         mutation_module,
         "read_candidate_resource_counters",
@@ -1789,7 +1805,7 @@ def test_resume_of_witnessed_limit_kill_record_is_rerun_not_reused(
             progress_artifact=tmp_path / "progress-resume.jsonl",
         )
 
-    assert len(candidate_calls) == 2
+    assert len(candidate_calls) == 3
     assert len(resumed.survived) == 1
     assert resumed.killed == ()
     assert resumed.crashed == ()
@@ -2029,7 +2045,9 @@ def test_run_mutation_ancestor_local_pids_event_is_attributed_to_candidate(
         memory_oom_group_kill=0,
         path_event_counters=(leaf_after, parent_after),
     )
-    samples = iter((before, before, after))
+    retry_parent_after = ("/gates", 2, 0, 0, 0, 0, 2, 0, 0, 0, 0)
+    retry_after = replace(after, path_event_counters=(leaf_after, retry_parent_after))
+    samples = iter((before, before, after, after, retry_after))
     monkeypatch.setattr(
         mutation_module,
         "read_candidate_resource_counters",
@@ -2062,7 +2080,7 @@ def test_run_mutation_ancestor_local_pids_event_is_attributed_to_candidate(
             progress_artifact=progress_path,
         )
 
-    assert len(candidate_calls) == 1
+    assert len(candidate_calls) == (2 if report_outcome == "FAIL" else 1)
     bucket = mutation.crashed if expected_bucket == "crashed" else mutation.survived
     other_bucket = mutation.survived if expected_bucket == "crashed" else mutation.crashed
     assert len(bucket) == 1

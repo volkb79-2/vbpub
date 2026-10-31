@@ -1733,7 +1733,7 @@ def test_resume_reexecutes_incomplete_budget_record(
         lane_file, candidates, state_dir, progress
     )
     assert first_code == 4, first_stderr
-    assert mutant_runs == 1
+    assert mutant_runs == 2, "AP-5 retries the unresolved candidate once"
 
     record_path = state_dir / f"{selected}.json"
     broken_record = json.loads(record_path.read_text(encoding="utf-8"))
@@ -1748,7 +1748,7 @@ def test_resume_reexecutes_incomplete_budget_record(
         extra=("--resume",),
     )
     assert resumed_code == 4, resumed_stderr
-    assert mutant_runs == 2, "an incomplete timeout cache must execute the candidate again"
+    assert mutant_runs == 4, "each invocation retries its unresolved candidate once"
     assert json.loads(resumed_stdout)["unresolved"] == []
     assert any(
         event.get("event") == "resume" and event.get("rejected_total") == 1
