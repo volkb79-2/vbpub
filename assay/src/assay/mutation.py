@@ -4521,6 +4521,17 @@ def _execute_mutation_jobs(
                         resource_limits_before, resource_limits_after
                     )
                 if execution_error is not None:
+                    if (
+                        resource_limit_evidence is not None
+                        and resource_limit_evidence.limit_hit
+                        and target_node_id is None
+                    ):
+                        raise AssayError(
+                            "cgroup resource-limit event during native R2 attempt; "
+                            "refusing to classify this candidate",
+                            outcome=Outcome.ERROR,
+                            reason_code=ReasonCode.EXEC_FAILED,
+                        ) from execution_error
                     raise execution_error
                 assert result is not None
                 if result.process_tree_evidence is None:

@@ -423,6 +423,11 @@ def _candidate_counter_deltas(
                 and ancestor_delta.delta > 0
                 and leaf_value == 0
             ):
+                if leaf_delta is None:
+                    raise ResourceLimitObservationError(
+                        "a shared ancestor resource event cannot be attributed "
+                        "because the candidate counter is unavailable"
+                    )
                 # The event may belong to another candidate sharing this
                 # ancestor, but it proves this command window overlapped a
                 # limit hit. Conservatively withhold kill credit.
