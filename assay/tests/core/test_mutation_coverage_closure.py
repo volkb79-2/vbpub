@@ -585,7 +585,6 @@ _KILL_OK = {"artifact": "k", "present": True}
         (_terminal(kill_signal_evidence=_KILL_OK), {"kill_signal_artifact": "k"}, True),
         (_terminal(kill_signal_evidence=_KILL_OK), {}, False),
         (_terminal(), {"cold_witness": True}, False),
-        (_terminal(execution={"mode": "full", "witness": {**_GOOD_WITNESS, "when": "setup"}}), {"cold_witness": True}, False),
         (_terminal(execution={"mode": "full", "witness": _GOOD_WITNESS}), {"cold_witness": True}, True),
         (_terminal(), {"process_tree_evidence": None}, False),
     ],
@@ -597,6 +596,23 @@ def test_terminal_matcher_cache_decisions(payload, kwargs, expected):
         **kwargs,
     }
     assert mutation._terminal_result_matches_bucket(payload, **kwargs) is expected
+
+
+def test_terminal_matcher_refuses_a_non_call_witness_as_corruption():
+    payload = _terminal(
+        execution={
+            "mode": "full",
+            "witness": {**_GOOD_WITNESS, "when": "setup"},
+        }
+    )
+
+    with pytest.raises(ValueError, match="failed call-phase report"):
+        mutation._terminal_result_matches_bucket(
+            payload,
+            process_tree_evidence=_tree(),
+            resource_limit_evidence=_OBSERVED_LIMITS,
+            cold_witness=True,
+        )
 
 
 def test_terminal_matcher_maps_a_judgeable_nonexited_leader_to_crashed():
