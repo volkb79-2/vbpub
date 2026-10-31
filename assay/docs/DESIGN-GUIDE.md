@@ -2792,70 +2792,38 @@ commit included, needs a fresh `tester-unified` run first.
 
 #### Host load and verdicts
 
-The command's own cgroup resource window stores direct pids-limit and memory
-OOM evidence separately from pressure telemetry. Ancestor-only counters are
-not attributed to the command, and `memory.events:max` alone does not count
-because reclaim can satisfy an allocation. `ContentionObservation.status ==
-"clear"` means the direct counters were sampled successfully; it does not say
-that no limit event occurred. Callers inspect `limits.limit_hit` for that.
-PSI and CPU throttling do not change R0, R1 or R3 verdicts. There is no PSI
-percentage cutoff.
+Assay separates direct limit evidence from pressure telemetry. Failure-relevant
+evidence is a positive pids or OOM event in the candidate's counters or a
+visible ancestor's own local counter; `memory.events:max` alone remains
+telemetry because reclaim can satisfy an allocation. An ancestor's aggregate
+counter is not attributed to the command. A configured `pids.max` or
+`memory.max` value change preserves the sampled window, while a missing sample
+or changed cgroup identity after preflight makes that R2 window unobserved.
+`ContentionObservation.status == "clear"` means direct counters were sampled;
+it does not mean no limit event occurred. PSI and CPU throttling are pressure
+telemetry, not direct limit evidence. The detailed counter contract is in
+[Native R2 cgroup resource-limit events](#native-r2-cgroup-resource-limit-events-b145).
 
-A direct resource-limit event never changes a completed PASS. It makes a
-failed R0 command an `ERROR/EXEC_FAILED`, with `Claim.detail` naming the
-counter delta. External `SIGKILL`, `SIGTERM`, `SIGINT` or `SIGHUP` also makes
-R0 `ERROR/EXEC_FAILED`, with the signal number in the detail. A self-inflicted
-fatal signal such as `SIGSEGV` remains a judged `FAIL/COMMAND_FAILED`; a direct
-limit event takes precedence over that signal. A complete report failure takes
-precedence over a signal. An unavailable direct-counter observation can make a
-failed R0 claim infrastructure when the gate requires that evidence. PSI and
-CPU-stat sample availability alone never withhold a failure. Timeouts retain
-their existing `BUDGET_EXCEEDED/LANE_TIMEOUT` status. Library callers of
-`execute_command()` receive this R0 classification by default.
+| Evidence or condition | R0 | R1 | R2 | R3 | Credit or blocking effect |
+|---|---|---|---|---|---|
+| Completed PASS with an exited leader, including a direct event or unavailable resource sample | PASS | Apply the ordinary coverage judgment | `survived` | PASS | A completed pass keeps its credit. |
+| Judgeable failure without a failure-relevant event | `FAIL/COMMAND_FAILED` | Apply the ordinary coverage judgment | `killed` only with a current-run pytest failed-call witness and clean leader exit | Import-break still needs its receipt | Functional-failure credit requires the evidence each rigor owns. |
+| Failed result with a direct failure-relevant limit event | `ERROR/EXEC_FAILED`; limit evidence takes precedence over a report failure or self-signal | Inherits the non-judgeable R0 termination as `ERROR/EXEC_FAILED` | `crashed` | `INCONCLUSIVE` for the affected failed half | No R2 kill or R3 caught credit; R0 blocks. |
+| Failed result terminated by an external signal, or failed with required direct-counter evidence unavailable | `ERROR/EXEC_FAILED`, with deterministic signal or observation detail | Inherits `ERROR/EXEC_FAILED`; a `NOT_RUN` baseline is also an error | External termination is `crashed`; an unobserved window follows the next row | `INCONCLUSIVE` | Infrastructure cannot earn functional-failure credit. |
+| R2 candidate window becomes unavailable or changes identity after preflight | — | — | Continue as unobserved; `killed` requires ordinary exit 1, a current-run pytest failed-call witness and a clean leader exit; other failures are `crashed` | — | Unobserved telemetry does not abort the campaign or create kill credit by itself. |
+| Self-inflicted fatal signal such as `SIGSEGV`, with no direct limit event | `FAIL/COMMAND_FAILED` | Apply the ordinary coverage judgment from the judgeable R0 run | `crashed` | `INCONCLUSIVE` | R0 records a functional failure; R2 and R3 grant no credit. |
+| PSI or CPU-throttling pressure without a failure-relevant event | Does not change verdict | Does not change verdict | Pauses the pressure-adjusted liveness clock; the absolute campaign budget still applies | Does not change verdict | Pressure alone neither blocks nor grants credit. |
 
-R1 inherits a non-judgeable infrastructure termination from R0 as
-`ERROR/EXEC_FAILED`, with deterministic detail identifying the R0 termination;
-it does not issue a separate coverage claim from that baseline. A `NOT_RUN`
-baseline also yields `ERROR/EXEC_FAILED`, because R1 cannot judge coverage for
-a command that never started. Timeouts and hangs retain their existing
-incomplete semantics. When R0 is judgeable, R1 still judges the coverage
-artifact with its existing rules. Resource-window data is progress-only:
-`command_finished.resources` carries the window duration, observation status,
-PSI deltas, CPU throttling duration, and direct limit-event deltas. A failed
-R0 with pressure measurements prints one advisory line with deltas and their
-share of the command window. Telemetry never mutates the captured command tail
-or adds that tail to `Claim.detail`; the existing first-failing-test summary
-is unchanged. For R3, a direct limit event or unavailable required
-direct-counter observation makes a failed control or transform
-`INCONCLUSIVE`; completed PASSes remain final. An `import-break` catch
-requires the transformed command to exit normally with a nonzero status, the
-expected `COMMAND_FAILED` reason, and a matching execution receipt written by
-the injected statement. A signal death, a report-derived `COMMAND_FAILED` with
-exit status zero, or a static check that fails before the statement runs is
-`INCONCLUSIVE`; Assay does not inspect captured output for cause attribution.
-The `uncovered-line` mechanism continues to use its R1 coverage comparison.
-
-R2 retains its candidate-scoped pids/OOM events and its pressure-adjusted
-liveness clock: PSI and CPU throttling pause that clock, while the lane's
-absolute budget still bounds the campaign. Candidate timeouts and hangs remain
-incomplete results.
-
-The shared classifier applies the design precedence table. A direct limit
-event takes precedence over a self-inflicted fatal signal; without a limit
-event, SIGSEGV/SIGABRT/SIGBUS/SIGFPE/SIGILL remain functional failures. An
-already `INCONCLUSIVE` command outcome maps to a non-judgeable termination:
-R0/R1 refuse it as `ERROR/EXEC_FAILED`, R2 places it in `crashed`, and R3
-keeps the attempt `INCONCLUSIVE`. R0/R1 and both isolated-canary resource-window
-callers consume this classification. R3 import-break attribution also requires
-the WP3 execution receipt.
-
-The three `withhold_*` compatibility helpers and their type guards are
-deleted. The sampler filters `cgroup_cpu.nr_throttled` from `pressure_us`;
-that count is not telemetry, while duration fields such as `throttled_usec`
-remain. `detail()` takes an optional `returncode` argument so external-signal
-details can include the signal number. `ContentionObservation` is unhashable
-because its `pressure_us` mapping is read-only, and its status alone cannot
-certify that the command had no direct limit event.
+Timeouts and hangs keep their existing incomplete outcomes. A failed R0 with
+measured PSI or CPU throttling prints one advisory line. `command_finished`
+progress records the resource window, and causal infrastructure evidence may
+appear in deterministic claim detail; pressure telemetry never enters verdict
+fields, command tails or canary descriptions. `execute_command()` applies the
+R0 mapping by default for library callers. Import-break R3 also requires its
+injected statement's matching receipt; see
+[R3 import-break receipt attribution](#r3-import-break-receipt-attribution).
+For R2 witness-prefix fallback and serial retry, see
+[serial tail retries](#serial-tail-retries-for-native-r2-b179).
 
 B105 admission verifies the gates cgroup and reserves 2 GiB of point-in-time
 memory headroom. The five qualification lanes share a Run-Gate lock and a
@@ -2926,9 +2894,11 @@ The gate checks the first H2 release heading after `## [Unreleased]` because
 the release tag does not exist when CMRU runs `run-tests`. It refuses a
 malformed or unsupported first heading without searching historical sections,
 and requires the heading to match CMRU's protected planned transaction version.
-The only permitted interval is `10.0.0 <= version < 10.1.0`; a visible stable
-`assay-vX.Y.Z` tag is also required, and the latest visible tag must be below
-10.1.0. Missing, unreadable, or unparseable tag state refuses the waiver.
+The only permitted interval is `10.0.0 <= version < 10.2.0`; the operator
+extended the original 2026-10-27 waiver on 2026-10-31 to include the 10.1.0
+release. A visible stable `assay-vX.Y.Z` tag is also required, and the latest
+visible tag must be below 10.2.0. Missing, unreadable, or unparseable tag state
+refuses the waiver.
 
 The bare-host wrapper removes an old postponement marker before its own
 dirty-tree and host-admission checks. Run-Gate can refuse admission before the

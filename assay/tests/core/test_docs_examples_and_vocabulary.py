@@ -977,6 +977,17 @@ def test_wave1_new_anchors_are_present_and_resolve():
         )
 
 
+def test_host_load_verdict_contract_is_linked_from_reader_docs():
+    anchor = "host-load-and-verdicts"
+    assert anchor in _design_guide_anchors()
+    assert "Credit or blocking effect" in DESIGN_GUIDE.read_text(encoding="utf-8")
+    for document in (README, CONSUMERS):
+        text = document.read_text(encoding="utf-8")
+        assert f"DESIGN-GUIDE.md#{anchor}" in text, (
+            f"{document.name} does not point to the shared host-load contract"
+        )
+
+
 def test_provisional_self_qualification_is_documented_across_the_public_docs():
     for document in DOCS:
         text = document.read_text(encoding="utf-8")
@@ -989,7 +1000,7 @@ def test_provisional_self_qualification_is_documented_across_the_public_docs():
         "the R3 canary",
         ".assay/mutation-postponed-assay.json",
         '"result": "provisional"',
-        "10.0.0 <= version < 10.1.0",
+        "10.0.0 <= version < 10.2.0",
         "CMRU's isolated `run-tests` step",
     ):
         assert required in consumer_text, f"CONSUMERS.md omits provisional lane fact {required!r}"

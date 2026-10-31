@@ -812,8 +812,8 @@ from pathlib import Path
 
 marker, commit, tree, version = sys.argv[1:]
 TRACKING_ID = "B169"
-DECISION = "operator decision 2026-10-27: R2 mutation waived for the release wave"
-WINDOW = ((10, 0, 0), (10, 1, 0))  # `>= 10.0.0`, `< 10.1.0`
+DECISION = "operator decision 2026-10-27; extended by operator on 2026-10-31: R2 mutation waived for the release wave"
+WINDOW = ((10, 0, 0), (10, 2, 0))  # `>= 10.0.0`, `< 10.2.0`
 VERSION_RE = re.compile(
     r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
 )
@@ -884,7 +884,7 @@ def version_tuple(value):
 release_version_tuple = version_tuple(prepared_release_version)
 if not WINDOW[0] <= release_version_tuple < WINDOW[1]:
     raise SystemExit(
-        "the R2 postponement B169 is authorized only for assay >= 10.0.0, < 10.1.0; "
+        "the R2 postponement B169 is authorized only for assay >= 10.0.0, < 10.2.0; "
         f"prepared changelog release is {prepared_release_version}. "
         "Run the full self-qualification lane."
     )
@@ -927,7 +927,7 @@ document = {
     "rigor_postponed": "R2",
     "tracking_id": TRACKING_ID,
     "decision": DECISION,
-    "window": "assay >= 10.0.0, < 10.1.0",
+    "window": "assay >= 10.0.0, < 10.2.0",
     "target_version": prepared_release_version,
     "cmru_release_gate_version_bound": transaction_version is not None,
     "commit": commit,
