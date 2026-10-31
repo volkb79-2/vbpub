@@ -299,12 +299,13 @@ def test_leaf_resource_delta_is_attributed_when_ancestor_is_quiet_or_matches(par
     assert evidence.pids_events_max.delta == 1
 
 
-def test_missing_leaf_counter_cannot_be_inferred_from_ancestor():
+def test_missing_leaf_counter_attributes_positive_ancestor_event():
     zero = (0, 0, 0, 0, 0)
     before = _path_counters((None, 0, 0, 0, 0), zero, zero, zero)
     after = _path_counters((None, 0, 0, 0, 0), (1, 0, 0, 0, 0), zero, zero)
-    with pytest.raises(ResourceLimitObservationError, match="shared ancestor resource event"):
-        _between(before, after)
+    evidence = _between(before, after)
+    assert evidence.pids_events_max.delta == 1
+    assert evidence.limit_hit
 
 
 def test_cgroup_ancestry_change_and_decreasing_leaf_counter_refuse():
