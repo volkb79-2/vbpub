@@ -33,8 +33,12 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   unavailable observation on a failed R0 command as `ERROR/EXEC_FAILED` with
   deterministic detail; preserve self-inflicted fatal signals such as
   `SIGSEGV` as `FAIL/COMMAND_FAILED`, and keep completed PASS results final.
+  `execute_command()` applies this R0 classification by default for library
+  callers.
 - Make R1 inherit a non-judgeable R0 termination as `ERROR/EXEC_FAILED`, so a
   coverage artifact cannot mask an infrastructure failure in its baseline.
+  This also covers `NOT_RUN` when the R0 command never started, and the R1
+  claim carries deterministic detail naming the inherited R0 termination.
 
 ### Changed
 - Include observed resource windows in `command_finished` progress events and

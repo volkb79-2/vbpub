@@ -89,6 +89,7 @@ from types import MappingProxyType
 from typing import (
     Any,
     Callable,
+    cast,
     ContextManager,
     Iterator,
     Mapping,
@@ -1656,7 +1657,7 @@ def _classify_r0_result(
         ),
         observation_required=observation_required,
     )
-    if result.outcome is Outcome.FAIL and term not in termination.JUDGEABLE:
+    if result.outcome is Outcome.FAIL and term not in termination.BLOCKING_JUDGEABLE:
         return replace(
             result,
             outcome=Outcome.ERROR,
@@ -1773,12 +1774,19 @@ def _r1_after_r0(claim: Claim, baseline: termination.Termination | None) -> Clai
         termination.Termination.HUNG,
     }:
         return claim
+    baseline_detail = termination.detail(baseline) or baseline.value
+    detail = cast(
+        RefusalDetail,
+        refusal_detail(f"inherited from R0: {baseline_detail}"),
+    )
     return Claim(
         rigor="R1",
         source="computed",
         status=Outcome.ERROR,
         verified_by_assay=True,
         reason_code=ReasonCode.EXEC_FAILED,
+        detail=detail.text,
+        detail_dropped_bytes=detail.dropped_bytes,
     )
 
 

@@ -111,10 +111,13 @@ in the measured cgroup is a limit event. PSI and CPU throttling do not change
 verdicts. A direct event never changes a completed PASS. It can turn a failed
 R0 command or R1 coverage claim into an infrastructure error; an unavailable
 direct-counter observation can do the same when the gate requires it. PSI or
-CPU-stat sample availability alone never changes a failed verdict. R1 coverage
+CPU-stat sample availability alone never changes a failed verdict. If R0 never
+starts, R1 also returns `ERROR/EXEC_FAILED`; its claim detail identifies the
+inherited R0 termination. Correct the R0 refusal and rerun the lane. R1 coverage
 arithmetic is unchanged for the same complete report, and its claim uses the
-R0 command's resource window. R2 keeps per-candidate resource events and its
-pressure-adjusted liveness clock.
+R0 command's resource window. Library callers of `execute_command()` receive
+the R0 termination mapping by default. R2 keeps per-candidate resource events
+and its pressure-adjusted liveness clock.
 Import-break canaries require the transformed command to exit normally with a
 nonzero status, the expected `COMMAND_FAILED` reason, and a matching receipt
 written by the injected statement. Signal deaths, report-derived failures with

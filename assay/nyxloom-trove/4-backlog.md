@@ -13294,7 +13294,7 @@ contract and follow-on WP1–WP8 backlog entries.
 
 ## B173 — one termination classifier for R0, R1, R2 and R3
 
-**Status: WP1–WP3 implemented; AP-4 R0/R1 corrections in progress; OPEN for WP4.** Add
+**Status: WP1–WP3 implemented; AP-4 R0/R1 corrections implemented; OPEN for WP4.** Add
 the pure classifier and shared table from the
 Opus design so producer paths can classify process outcomes from exit, report,
 process-tree and resource-limit evidence. WP1 adds the decision table and
@@ -13348,9 +13348,10 @@ windows are emitted on `command_finished`, and a failed R0 with pressure data
 gets one diagnostic advisory. The progress renderer is kept in `runner.py`:
 WP1's `ContentionObservation` has no `to_progress()` method, despite the
 design's initial call-site wording. WP3 requires a matching execution receipt
-for `import-break` and classifies both canary halves. AP-4 corrects the R0
-judgeable set for self-signaled failures and adds deterministic R1 inherited
-detail. WP4 mutation bucket/state alignment remains separate work.
+for `import-break` and classifies both canary halves. AP-4 makes self-signaled
+R0 failures judgeable, adds deterministic R1 inherited detail, and records the
+`NOT_RUN` inheritance behavior. WP4 mutation bucket/state alignment remains
+separate work.
 
 ## B174 — wire load-independent termination and progress telemetry through R0/R1
 

@@ -1550,7 +1550,10 @@ you're changing assay itself:
   an infrastructure error; R1 inherits an infrastructure termination from
   its R0 baseline. External SIGKILL, SIGTERM, SIGINT or SIGHUP also makes a
   failed R0 command infrastructure, while a self-inflicted fatal signal such
-  as SIGSEGV remains a judged failure. An unavailable direct-counter
+  as SIGSEGV remains a judged failure. An R1 claim also inherits the R0 error
+  when the R0 command never started, and its detail names that termination.
+  Library callers of `execute_command()` get R0 termination classification by
+  default. An unavailable direct-counter
   observation can make a failed command infrastructure when the gate requires
   that evidence. PSI or CPU-stat sample availability alone never changes a
   failed verdict. The design guide records the precedence rules, progress

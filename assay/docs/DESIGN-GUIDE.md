@@ -2782,7 +2782,8 @@ limit event takes precedence over that signal. A complete report failure takes
 precedence over a signal. An unavailable direct-counter observation can make a
 failed R0 claim infrastructure when the gate requires that evidence. PSI and
 CPU-stat sample availability alone never withhold a failure. Timeouts retain
-their existing `BUDGET_EXCEEDED/LANE_TIMEOUT` status.
+their existing `BUDGET_EXCEEDED/LANE_TIMEOUT` status. Library callers of
+`execute_command()` receive this R0 classification by default.
 
 R1 inherits a non-judgeable infrastructure termination from R0 as
 `ERROR/EXEC_FAILED`, with deterministic detail identifying the R0 termination;
