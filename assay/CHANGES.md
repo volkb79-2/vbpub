@@ -31,6 +31,10 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   test or treating R0 execution errors as measured test failures (B181).
 
 ### Changed
+- Add per-candidate resource metrics to R2 progress and resumable state:
+  process-tree write bytes, nested CPU and peak RSS values, and the Assay
+  judge's resident memory sample. Missing procfs I/O remains unavailable
+  telemetry; verdicts and candidate classification are unchanged (AP-6).
 - Add the pure termination classifier and separate resource-limit evidence,
   pressure telemetry, and observation availability in the internal command
   model. R0/R1/R3 verdict paths keep their 10.0.1 behavior in this WP1 step;

@@ -272,6 +272,21 @@ MUTATION_STATE_RECORD_LIMIT = 1024 * 1024
 #: on B088 rather than widened into this change.)
 MUTATION_STATE_SCHEMA_VERSION = 1
 
+_STATE_RESOURCE_KEYS = frozenset(
+    {
+        "cpu_seconds",
+        "peak_rss_bytes",
+        "write_bytes",
+        "judge_rss_bytes",
+        "phase_seconds",
+        "startup_seconds",
+    }
+)
+_STATE_RESOURCE_PHASE_KEYS = frozenset(
+    {"materialize", "command", "integrity", "teardown"}
+)
+_STATE_RESOURCE_STARTUP_KEYS = frozenset({"to_session_start", "to_first_test"})
+
 #: (B088) The serialization label folded into :func:`judge_sha256`, so a
 #: future change to WHAT the judge identity covers yields visibly different
 #: digests instead of silently comparable ones.
@@ -2409,6 +2424,63 @@ def _load_validated_state_record(
         # source_sha256 specifically) would discard exactly the evidence
         # this check exists to surface.
         raise MutationStateError(f"mutation-state record {identity} has stale {key}")
+    if "resources" in payload:
+        raw_resources = payload["resources"]
+        if not isinstance(raw_resources, Mapping):
+            raise MutationStateError(
+                f"mutation-state record {identity} resources must be an object"
+            )
+        unknown_resource_keys = set(raw_resources) - _STATE_RESOURCE_KEYS
+        if unknown_resource_keys:
+            raise MutationStateError(
+                f"mutation-state record {identity} resources has unknown fields "
+                f"{sorted(unknown_resource_keys)}"
+            )
+        if (
+            "cpu_seconds" in raw_resources
+            and raw_resources["cpu_seconds"] is not None
+        ):
+            cpu_seconds = liveness._finite_number(raw_resources["cpu_seconds"])
+            if cpu_seconds is None or cpu_seconds < 0:
+                raise MutationStateError(
+                    f"mutation-state record {identity} resources.cpu_seconds "
+                    "must be a non-negative number or null"
+                )
+        for field in ("peak_rss_bytes", "write_bytes", "judge_rss_bytes"):
+            if field in raw_resources and raw_resources[field] is not None:
+                value = raw_resources[field]
+                if type(value) is not int or value < 0:
+                    raise MutationStateError(
+                        f"mutation-state record {identity} resources.{field} "
+                        "must be a non-negative integer or null"
+                    )
+        for field, expected_keys, nullable_values in (
+            ("phase_seconds", _STATE_RESOURCE_PHASE_KEYS, False),
+            ("startup_seconds", _STATE_RESOURCE_STARTUP_KEYS, True),
+        ):
+            if field not in raw_resources or raw_resources[field] is None:
+                continue
+            nested = raw_resources[field]
+            if not isinstance(nested, Mapping):
+                raise MutationStateError(
+                    f"mutation-state record {identity} resources.{field} "
+                    "must be an object or null"
+                )
+            if set(nested) != expected_keys:
+                raise MutationStateError(
+                    f"mutation-state record {identity} resources.{field} "
+                    "has missing or unknown fields"
+                )
+            for name, value in nested.items():
+                if value is None and nullable_values:
+                    continue
+                finite_value = liveness._finite_number(value)
+                if finite_value is None or finite_value < 0:
+                    nullable_suffix = " or null" if nullable_values else ""
+                    raise MutationStateError(
+                        f"mutation-state record {identity} resources.{field}.{name} "
+                        f"must be a non-negative number{nullable_suffix}"
+                    )
     resource_limit_evidence: ResourceLimitEvidence | None = None
     if "resource_limit_evidence" in payload:
         raw_resource_evidence = payload["resource_limit_evidence"]
@@ -2939,12 +3011,15 @@ class _MutantRun:
     #: B107: exact CPU/PSI evidence retained when the liveness runner stops
     #: a candidate. A resource stall never becomes a functional bucket.
     liveness_resource_evidence: Mapping[str, Any] | None = None
-    #: B111 diagnostic evidence (never a classification input): the sampled
-    #: tree CPU / peak sum-RSS lower bounds and the startup gaps read from
-    #: the liveness sidecar and events file (`None` off a liveness lane), and
-    #: the worker's own monotonic phase split (always measured).
+    #: B111/AP-6 diagnostic evidence (never a classification input): sampled
+    #: tree CPU, peak sum-RSS and write-byte lower bounds, startup gaps read
+    #: from the liveness sidecar and events file (`None` off a liveness lane),
+    #: one point-in-time RSS sample of the assay judge, and the worker's own
+    #: monotonic phase split (always measured).
     cpu_seconds: float | None = None
     peak_rss_bytes: int | None = None
+    write_bytes: int | None = None
+    judge_rss_bytes: int | None = None
     phase_seconds: Mapping[str, float] | None = None
     startup_seconds: Mapping[str, float | None] | None = None
     execution: MutationExecution = MutationExecution(mode="full")
@@ -3005,24 +3080,38 @@ def _zero_window_resource_limit_evidence(
 
 def _measured_resources(
     events_path: Path,
-) -> tuple[float | None, int | None, dict[str, float | None]]:
-    """``(cpu_seconds, peak_rss_bytes, startup_seconds)`` for one liveness
-    candidate, from its resource sidecar and events file. Anything absent or
-    ill-typed is ``None``: diagnostics never fail a candidate."""
+) -> tuple[float | None, int | None, int | None, dict[str, float | None]]:
+    """``(cpu_seconds, peak_rss_bytes, write_bytes, startup_seconds)`` for
+    one liveness candidate, from its resource sidecar and events file.
+    Anything absent, negative, or ill-typed is ``None``: diagnostics never
+    fail a candidate."""
     sidecar = liveness.read_resource_sidecar(events_path) or {}
     spawned_at = liveness._finite_number(sidecar.get("spawned_at"))
     cpu_seconds = liveness._finite_number(sidecar.get("cpu_seconds"))
     peak_rss = liveness._finite_number(sidecar.get("peak_rss_bytes"))
+    write_bytes = sidecar.get("write_bytes")
+    cpu_seconds = cpu_seconds if cpu_seconds is not None and cpu_seconds >= 0 else None
     session_start, first_test = liveness.first_event_times(events_path)
+    to_session_start = (
+        None if session_start is None or spawned_at is None else session_start - spawned_at
+    )
+    to_first_test = (
+        None if first_test is None or spawned_at is None else first_test - spawned_at
+    )
     return (
         cpu_seconds,
-        peak_rss if isinstance(peak_rss, int) else None,
+        peak_rss if isinstance(peak_rss, int) and peak_rss >= 0 else None,
+        write_bytes if type(write_bytes) is int and write_bytes >= 0 else None,
         {
             "to_session_start": (
-                None if session_start is None or spawned_at is None else session_start - spawned_at
+                to_session_start
+                if to_session_start is not None and to_session_start >= 0
+                else None
             ),
             "to_first_test": (
-                None if first_test is None or spawned_at is None else first_test - spawned_at
+                to_first_test
+                if to_first_test is not None and to_first_test >= 0
+                else None
             ),
         },
     )
@@ -4581,6 +4670,7 @@ def _execute_mutation_jobs(
             tests_completed: int | None = None
             cpu_seconds: float | None = None
             peak_rss_bytes: int | None = None
+            write_bytes: int | None = None
             startup_seconds: dict[str, float | None] | None = None
             if liveness_events_dir is not None:
                 candidate_events = liveness.candidate_events_path(
@@ -4588,9 +4678,12 @@ def _execute_mutation_jobs(
                     resolve_run_cwd(snapshot.project_root, plan),
                 )
                 tests_completed = liveness.count_test_events(candidate_events)
-                cpu_seconds, peak_rss_bytes, startup_seconds = _measured_resources(
-                    candidate_events
-                )
+                (
+                    cpu_seconds,
+                    peak_rss_bytes,
+                    write_bytes,
+                    startup_seconds,
+                ) = _measured_resources(candidate_events)
             integrity_started_monotonic = time.monotonic()
             # P26/A-212: the ONE lane deadline IS forwarded here, so this
             # check's own Git children are bounded by the same budget as
@@ -4645,6 +4738,7 @@ def _execute_mutation_jobs(
         # bucket until cleanup has completed within the lane budget.
         deadline.remaining()
         teardown_finished_monotonic = time.monotonic()
+        judge_rss_bytes = liveness.process_rss_bytes(os.getpid())
         run = _MutantRun(
             result=result,
             equivalence_bytes=equivalence_bytes,
@@ -4654,6 +4748,8 @@ def _execute_mutation_jobs(
             liveness_resource_evidence=result.liveness_resource_evidence,
             cpu_seconds=cpu_seconds,
             peak_rss_bytes=peak_rss_bytes,
+            write_bytes=write_bytes,
+            judge_rss_bytes=judge_rss_bytes,
             phase_seconds={
                 "materialize": entered_monotonic - started_monotonic,
                 "command": command_finished_monotonic - command_started_monotonic,
@@ -4934,13 +5030,15 @@ def _execute_mutation_jobs(
         # Classification itself is main-thread work and can cross the lane
         # boundary. Refuse before staging a candidate progress event or state.
         deadline.remaining()
-        # B111: diagnostic evidence only (never a classification input), built
-        # once so progress and state carry the identical resources object.
+        # B111/AP-6: diagnostic evidence only (never a classification input),
+        # built once so progress and state carry identical measured values.
         resources = {
             "cpu_seconds": (
                 round(run.cpu_seconds, 3) if run.cpu_seconds is not None else None
             ),
             "peak_rss_bytes": run.peak_rss_bytes,
+            "write_bytes": run.write_bytes,
+            "judge_rss_bytes": run.judge_rss_bytes,
             "phase_seconds": (
                 {name: round(value, 3) for name, value in run.phase_seconds.items()}
                 if run.phase_seconds is not None
@@ -5108,7 +5206,20 @@ def _execute_mutation_jobs(
             "elapsed_seconds": round(run.elapsed_seconds, 3),
             "tests_completed": run.tests_completed,
             "resource_limit_changes": list(run.resource_limit_changes),
-            **resources,
+            "resources": {
+                key: resources[key]
+                for key in ("cpu_seconds", "peak_rss_bytes", "write_bytes")
+            },
+            "judge_rss_bytes": resources["judge_rss_bytes"],
+            **{
+                key: resources[key]
+                for key in (
+                    "cpu_seconds",
+                    "peak_rss_bytes",
+                    "phase_seconds",
+                    "startup_seconds",
+                )
+            },
             **(
                 {"resource_limit_evidence": resource_limit_evidence.to_dict()}
                 if resource_limit_evidence is not None

@@ -678,6 +678,42 @@ def _pid_cpu_ticks(pid: int) -> int:
     return _pid_stat(pid).ticks
 
 
+def _pid_io_write_bytes(pid: int, *, proc_root: Path = Path("/proc")) -> int | None:
+    """Return ``write_bytes`` from ``/proc/<pid>/io``, or ``None`` if absent."""
+    try:
+        raw = (proc_root / str(pid) / "io").read_text(
+            encoding="ascii", errors="replace"
+        )
+    except OSError:
+        return None
+    for line in raw.splitlines():
+        key, _, value = line.partition(":")
+        if key == "write_bytes":
+            try:
+                write_bytes = int(value.strip())
+            except ValueError:
+                return None
+            return write_bytes if write_bytes >= 0 else None
+    return None
+
+
+def process_rss_bytes(pid: int, *, proc_root: Path = Path("/proc")) -> int | None:
+    """Read one process's resident bytes from ``/proc/<pid>/statm``.
+
+    This is diagnostic-only; a missing or malformed procfs record is unknown,
+    never a candidate failure.
+    """
+    try:
+        statm = proc_root / str(pid) / "statm"
+        fields = statm.read_text(encoding="ascii", errors="replace").split()
+        resident_pages = int(fields[1])
+    except (OSError, IndexError, ValueError):
+        return None
+    if resident_pages < 0:
+        return None
+    return resident_pages * os.sysconf("SC_PAGE_SIZE")
+
+
 def _pid_children_via_task(pid: int) -> list[int]:
     """``/proc/<pid>/task/*/children`` -- the cheap, race-free enumeration
     (Linux >= 3.5) of a process's own direct children, unioned across every
@@ -779,11 +815,14 @@ class TreeSample(NamedTuple):
     monotone (a mid-walk reap, reparenting out of the tree and children
     auto-reaped under ``SIGCHLD=SIG_IGN`` all make it dip), and CPU spent
     after the last sample is missing. ``rss_bytes`` is the sum of resident
-    set sizes, which overcounts shared and copy-on-write pages.
+    set sizes, which overcounts shared and copy-on-write pages. ``write_bytes``
+    is the sum of readable ``/proc/<pid>/io`` counters across the live tree, or
+    ``None`` if any process in that sample lacks a readable counter.
     """
 
     cpu_seconds: float
     rss_bytes: int
+    write_bytes: int | None = None
 
 
 def tree_sample(root_pid: int) -> TreeSample:
@@ -791,10 +830,21 @@ def tree_sample(root_pid: int) -> TreeSample:
 
     Same walk and same raise contract as :func:`tree_cpu_seconds`.
     """
-    stats = _walk_tree(root_pid, _pid_stat)
+    samples = _walk_tree(
+        root_pid,
+        lambda pid: (_pid_stat(pid), _pid_io_write_bytes(pid)),
+    )
+    stats = [sample[0] for sample in samples]
+    write_counters = [sample[1] for sample in samples]
+    write_bytes = (
+        sum(value for value in write_counters if value is not None)
+        if all(value is not None for value in write_counters)
+        else None
+    )
     return TreeSample(
         sum(stat.ticks + stat.child_ticks for stat in stats) / os.sysconf("SC_CLK_TCK"),
         sum(stat.rss_pages for stat in stats) * os.sysconf("SC_PAGE_SIZE"),
+        write_bytes,
     )
 
 
@@ -1533,11 +1583,18 @@ class _ResourceTally:
         self.samples = 0
         self.cpu_seconds: float | None = None
         self.peak_rss_bytes: int | None = None
+        self.write_bytes: int | None = None
 
     def add(self, sample: TreeSample) -> None:
         cpu, rss = sample.cpu_seconds, sample.rss_bytes
         cpu = cpu if self.cpu_seconds is None else max(self.cpu_seconds, cpu)
         rss = rss if self.peak_rss_bytes is None else max(self.peak_rss_bytes, rss)
+        if sample.write_bytes is not None:
+            self.write_bytes = (
+                sample.write_bytes
+                if self.write_bytes is None
+                else max(self.write_bytes, sample.write_bytes)
+            )
         self.samples += 1
         self.cpu_seconds, self.peak_rss_bytes = cpu, rss
 
@@ -1837,6 +1894,7 @@ class LivenessRunner:
                         "samples": tally.samples,
                         "cpu_seconds": tally.cpu_seconds,
                         "peak_rss_bytes": tally.peak_rss_bytes,
+                        "write_bytes": tally.write_bytes,
                         "spawned_at": spawned_at,
                     }
                 )

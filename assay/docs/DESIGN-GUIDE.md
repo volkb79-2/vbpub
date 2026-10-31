@@ -595,26 +595,35 @@ bounded at 1024 samples; once truncated, that idle interval cannot certify a
 hang, and a configured-budget expiry remains incomplete. Cached `hung`
 records without a structurally valid complete trace are refused and rerun.
 
-**Per-candidate resource, phase and startup evidence (B111).** Every candidate
-records `phase_seconds` (`materialize`, `command`, `integrity`, `teardown`, the
-worker's own monotonic split); a liveness candidate also records `cpu_seconds`
-and `peak_rss_bytes` of its process tree and `startup_seconds`
-(`to_session_start`, `to_first_test`). `cpu_seconds` is the maximum over 1 Hz
-samples of utime+stime+cutime+cstime summed over the live tree, a lower bound
-(the series is not monotone, and CPU after the last sample is missing);
-`peak_rss_bytes` is a 1 Hz lower bound on peak Σ RSS, and Σ RSS overcounts
-shared and copy-on-write pages, so it is not a bound on true peak memory use.
-All four describe the attempt that produced the bucket; a witness replay that
-did not kill counts only in `elapsed_seconds`. They ride on the `candidate`
-progress event and, as the
-identical object, in the state record's `resources`; the baseline `test` events
-carry the tests' own `setup_s`/`teardown_s`. The monitor writes a
-`<events>.resources.json` sidecar on every exit path (a `try/finally` around the
-poll loop), and the sampler runs after the B107 resource read, so it can never
-feed the CPU-growth or hang decision. The values are measured once, are
-`None` when unavailable, and never enter a classification, a verdict or the
-`judge_sha256` inputs; they exist so a campaign can be sized from measurement
-rather than from the declared budget.
+#### Per-candidate resource, phase and startup evidence (B111, AP-6)
+
+Every candidate records `phase_seconds` (`materialize`, `command`, `integrity`,
+`teardown`, the worker's own monotonic split); a liveness candidate also
+records `cpu_seconds`, `peak_rss_bytes`, `write_bytes` for its process tree,
+and `startup_seconds` (`to_session_start`, `to_first_test`). `cpu_seconds` is
+the maximum over 1 Hz samples of utime+stime+cutime+cstime summed over the
+live tree, a lower bound (the series is not monotone, and CPU after the last
+sample is missing); `peak_rss_bytes` is a 1 Hz lower bound on peak Σ RSS, and
+Σ RSS overcounts shared and copy-on-write pages, so it is not a bound on true
+peak memory use. `write_bytes` is the maximum sampled sum of each live
+process's `/proc/<pid>/io` counter. A sample is `None` if any process lacks a
+readable I/O counter; the maximum of available samples remains a lower bound
+because a child can exit between samples. `judge_rss_bytes` is one sample of
+the Assay process's resident memory after candidate teardown, independent of
+the candidate process tree.
+
+The `candidate` progress event adds a nested `resources` object with
+`cpu_seconds`, `peak_rss_bytes`, and `write_bytes`, plus `judge_rss_bytes`.
+The previous flat CPU/RSS and phase/startup fields remain for existing
+readers. The state record's `resources` map carries these measurements with
+the phase and startup fields. The baseline `test` events carry the tests' own
+`setup_s`/`teardown_s`. The monitor writes a `<events>.resources.json`
+sidecar on every exit path (a `try/finally` around the poll loop), and the
+sampler runs after the B107 resource read, so it can never feed the CPU-growth
+or hang decision. The values are measured once, are `None` when unavailable,
+and never enter a classification, a verdict or the `judge_sha256` inputs;
+they exist so a campaign can be sized from measurement rather than from the
+declared budget.
 
 #### Native R2 cgroup resource-limit events (B145)
 
