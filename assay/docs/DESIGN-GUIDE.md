@@ -770,7 +770,7 @@ form the window identity. A change to that identity makes the window
 unobserved. Configured `pids.max` and `memory.max` values are compared
 separately: a value change does not invalidate monotonic event counters, so
 the candidate keeps its resource evidence and progress carries one advisory
-line plus the additive `resource_limit_changes` field. Every candidate
+line plus the additive `resource_limit_changes` field. Every `candidate`
 progress event includes this field, as an empty list when no values changed.
 Counter attribution selects active event files independently of whether either
 configured limit is finite.
@@ -1615,9 +1615,8 @@ stay the mutation's identity so one shared `--state-dir` keeps working — and
 both its absence (a pre-B088 record) and a mismatch are cache misses, checked
 *after* every tamper check so a routine test edit cannot mask corruption.
 A new Assay build re-executes resumed campaign state because the Assay version
-is part of the judge identity. Until WP7, recover crashed candidates with
-`assay run <lane> --resume --rejudge crashed`; every candidate progress event
-also carries `resource_limit_changes`, including an empty list when unchanged.
+is part of the judge identity. Each `candidate` progress event also carries
+`resource_limit_changes`, including an empty list when unchanged.
 The decoded JSON root is validated before required fields are read: only an
 object can be a state record. A present `null`, scalar, or array is an
 `ERROR`/`UNREADABLE_ARTIFACT`, preserving a structured refusal instead of
@@ -1628,6 +1627,26 @@ Those limits are preserved and their refusal remains a structured error.
 Shards assign by keyed digest of the candidate ID. Their merge is
 a manifest-level set proof: exact index coverage, one schema/lane/commit/count,
 and duplicate-free IDs—not bucket-count arithmetic.
+
+### Serial tail retries for native R2 (B179)
+
+After the first sweep, Assay retries once, serially, each candidate executed in
+that invocation whose result is `crashed`, per-candidate `budget_exceeded`, or
+`hung`. Reaching the campaign-deadline mask closes the retry phase; masked and
+never-started candidates are outside the retry set. Every candidate therefore
+gets its first attempt before remaining campaign time is spent on retries. Each
+retry uses the same runner and classifier; its result replaces the first result
+in the final buckets and overwrites that candidate's state record using the
+existing schema. The additive `candidate_retry` progress event records
+`candidate_id`,
+`first_bucket`, and `final_bucket`.
+
+This ordering reserves the initial campaign budget for full candidate coverage
+and keeps resource-event windows serial. A retry result is evidence from the
+current invocation, so `--resume` reuses a matching cached `crashed` record
+without starting another retry. Use `--resume --rejudge crashed` when an
+operator intends to execute those saved candidates again; a rejudged candidate
+can receive the same one retry if its fresh result remains unresolved.
 
 ### Non-qualifying candidate pilots (B118)
 

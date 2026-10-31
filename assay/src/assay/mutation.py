@@ -1218,6 +1218,7 @@ PROGRESS_EVENTS = frozenset(
         "resume",
         "baseline",
         "candidate",
+        "candidate_retry",
         "resume_merged",
         # --- mutation sweep, judged by progress not by time (B091/D-23) ---
         "plan",  # the sweep's own first record: what the baseline measured
@@ -5132,6 +5133,7 @@ def _execute_mutation_jobs(
                 write_progress(event)
 
     results: list[_MutantRun | None] = [None] * total
+    executed_runs: dict[int, _MutantRun] = {}
     budget_exceeded_mask = [False] * total
     fatals: dict[int, AssayError] = {}
     stop_submitting = False
@@ -5183,6 +5185,7 @@ def _execute_mutation_jobs(
                     if run is None:
                         event_buffer.resolve_without_event(position)
                     else:
+                        executed_runs[position] = run
                         event_buffer.stage(position, _record_candidate(position, run))
                 _emit_ready(event_buffer.drain_contiguous())
 
@@ -5203,6 +5206,37 @@ def _execute_mutation_jobs(
     # the lane's terminal cause.
     if fatals:
         raise fatals[min(fatals)]
+
+    # (B179/AP-5) Let every candidate get its first attempt before spending any
+    # remaining campaign time on infrastructure outcomes. A campaign-deadline
+    # mask means the sweep already reached its boundary, so it cannot open a
+    # retry window. `executed_runs` contains only candidates executed in this
+    # invocation; resumed records never enter this list.
+    if not any(budget_exceeded_mask):
+        for position in sorted(executed_runs):
+            first_run = executed_runs[position]
+            first_bucket = bucket_for_run(first_run)
+            if first_bucket not in {"crashed", "budget_exceeded", "hung"}:
+                continue
+
+            deadline.remaining()
+            retry_run = _run_one(position)
+            final_bucket = bucket_for_run(retry_run)
+            results[position] = retry_run
+            # Persist the retry through the same schema and boundary as the
+            # first run. Do not duplicate the first `candidate` event; the
+            # additive retry event below names the changed classification.
+            _record_candidate(position, retry_run)
+            _emit_ready(
+                (
+                    {
+                        "event": "candidate_retry",
+                        "candidate_id": candidate_id(job_list[position]),
+                        "first_bucket": first_bucket,
+                        "final_bucket": final_bucket,
+                    },
+                )
+            )
 
     # (B091/RW-33, P7 A3) Built generically from `MUTATION_BUCKETS`, matching
     # the ingested path's own construction a few hundred lines down --

@@ -18,14 +18,21 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   failure. An ancestor-local event still counts when the corresponding
   candidate counter is unavailable throughout the stable window;
   `memory.events:max` remains telemetry. Limit-value changes preserve
-  observation and are reported in every candidate progress event as
+  observation and are reported in each `candidate` progress event as
   `resource_limit_changes` (an empty list when unchanged); identity changes
   make the window unobserved. Only a
   completed witness-prefix replay with a positive event falls back to a full
   command with a fresh window; replay errors propagate. A new Assay build
   re-executes resumed campaign state because the Assay version is part of the
-  judge identity. Until WP7, recover crashed candidates with
-  `--resume --rejudge crashed` (B182).
+  judge identity. A matching cached `crashed` record is reused on `--resume`;
+  select it explicitly with `--resume --rejudge crashed` to execute it again
+  (B182/B179).
+- After each native R2 sweep, retry once and serially any candidate executed in
+  that invocation whose result is `crashed`, per-candidate `budget_exceeded`,
+  or `hung`, while the campaign deadline allows. The retry uses the same
+  classifier, replaces the saved candidate state, and emits a `candidate_retry`
+  progress event with the first and final buckets. A campaign-deadline mask
+  closes the retry phase; cached records require explicit rejudge (B179).
 - Sort declared whole-target paths when building R1 and native/ingested R2
   verdicts; avoid reporting pytest-cov's platform banner as the first failing
   test or treating R0 execution errors as measured test failures (B181).
