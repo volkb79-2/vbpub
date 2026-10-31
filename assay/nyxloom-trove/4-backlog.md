@@ -13522,3 +13522,31 @@ classification, report-backed kill credit, state revalidation, positive replay
 fallback, and verifier rejection of a positive event on a witnessed kill.
 The registered `self-qualification-preflight` and `tester-unified` gates are
 controller-owned for this branch; record their run IDs after acceptance.
+
+## B183 — local-environment-only test failures in a devcontainer run
+
+**Status: OPEN (note).** Outside the registered container gate, eight tests fail
+in the devcontainer and pass in `tester-unified`: the four
+`tests/core/test_campaign_termination_real.py::test_sigterm_leaves_r2_candidate_unclassified_and_dead`
+cases (they need the cgroup observer and a SIGTERM/subreaper environment), the
+four `tests/core/test_mutation_witness_unit.py` Hypothesis-hook cases (a local
+Hypothesis version pin mismatch), and in `gate/tests` the standalone
+`test_a_real_r2_*` cases, four B105 subprocess cases (the isolated interpreter has no
+installed `assay.cli`) and one cgroup-visibility probe. The registered container gate at the
+release commit is the verdict; make these skip with a precise reason when the
+environment cannot support them, or run them only in the tester image.
+
+## B184 — synthetic 10.0.1-shape crashed and budget_exceeded resume fixtures
+
+**Status: OPEN.** `tests/fixtures/mutation-state-10.0.1/` holds real IOBench
+`killed` and `survived` records only; PWMCP left no records. Add synthetic
+`crashed` and `budget_exceeded` 10.0.1-shape records so the resume validator's
+rejection (state recorded under another assay version is re-executed, never
+raised on) is proven for every bucket.
+
+## B185 — product-definition still carries a stale "no Go toolchain" claim
+
+**Status: OPEN.** `nyxloom-trove/2-product-definition.md` (around line 285 in the
+verification ledger) still describes Go behaviour as unavailable in the judge
+environment although `tester-unified-go` runs real Go. Reconcile the claim with the Go R1
+lane that is qualified end to end (A-217).

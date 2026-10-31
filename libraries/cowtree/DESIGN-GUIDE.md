@@ -135,3 +135,13 @@ Default `gc` scans only the configured area's run directory. Plain-mode runs
 are created under the selected temporary directory and require an explicit
 `gc --scan DIR`; the CLI logs that instruction instead of implying it scanned
 those runs.
+
+## Known limitation: owner manifest ahead of memory after a failed reserve write
+
+`run.py` `_write_manifest` replaces `owner.json` and then fsyncs the directory.
+If the directory fsync (or any step after `os.replace`) raises `BackendFailed`, the
+manifest on disk already carries the new `reserved_bytes` while the in-memory
+reservation is unchanged. A retry recomputes from memory and rewrites the
+manifest, so the window is self-healing, but a crash in between leaves the
+ledger ahead of reality until the next successful write. Fix: do the in-memory
+update before the final directory fsync, or re-read the manifest on error.
