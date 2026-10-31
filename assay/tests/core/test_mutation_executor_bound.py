@@ -2032,6 +2032,63 @@ def test_retry_respects_campaign_deadline(tmp_path, monkeypatch):
     assert len(partial.budget_exceeded) == 2
 
 
+@pytest.mark.parametrize(
+    ("elapsed_after_first", "expected_attempts", "expected_bucket"),
+    (
+        (6.0, 1, "crashed"),
+        (4.0, 2, "survived"),
+    ),
+    ids=("less-than-one-retry-budget", "enough-for-one-retry"),
+)
+def test_serial_retry_requires_a_full_candidate_budget_to_fit(
+    tmp_path,
+    monkeypatch,
+    elapsed_after_first: float,
+    expected_attempts: int,
+    expected_bucket: str,
+):
+    now = [0.0]
+    deadline = make_deadline(budget_seconds=10.0, monotonic=lambda: now[0])
+    state_root = tmp_path / "retry-budget-fit-state"
+    calls = 0
+
+    def crash_then_pass(argv, cwd):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            now[0] = elapsed_after_first
+            return _signaled_process(argv, signal.SIGKILL)
+        return completed_process(list(argv), 0, "", "")
+
+    result = _run_queue_case(
+        tmp_path,
+        monkeypatch,
+        name="retry-budget-fit",
+        targets=_TARGET_A,
+        text=_TEXT3,
+        jobs=1,
+        process_runner=_decide5(tmp_path, {"a": crash_then_pass}),
+        state_root=state_root,
+        budget_per_candidate_seconds=5.0,
+        deadline=deadline,
+    )
+
+    assert calls == expected_attempts
+    assert len(getattr(result, expected_bucket)) == 1
+    assert result.budget_exceeded == ()
+
+    job = collect_mutation_sites(
+        _TARGET_A,
+        adapter=PythonAdapter(),
+        operators=("python:bool-const-flip",),
+        limit=50,
+    )[0]
+    record = json.loads(
+        (state_root / f"{candidate_id(job)}.json").read_text(encoding="utf-8")
+    )
+    assert record["outcome_bucket"] == expected_bucket
+
+
 def test_retry_overwrites_state_record_and_resume_reuses_it(tmp_path, monkeypatch):
     state_root = tmp_path / "retry-state"
     calls = 0
