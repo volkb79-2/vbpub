@@ -25,6 +25,7 @@ import tomllib
 from pathlib import Path
 
 import pytest
+from assay.verdict import VERDICT_SCHEMA_VERSION
 from gate.tests.support import PROJECT_ROOT, requires_parent_repository
 from gate.tests.test_distribution_gate import (
     HEX40,
@@ -850,7 +851,7 @@ def test_compare_with_witness_names_the_differing_json_path() -> None:
 
 def test_the_witness_is_the_current_schema_and_says_what_it_judged() -> None:
     document = json.loads(_WITNESS_PATH.read_text(encoding="utf-8"))
-    assert document["schema_version"] == q.VERDICT_SCHEMA_VERSION
+    assert document["schema_version"] == VERDICT_SCHEMA_VERSION
     assert document["judgment"]["r2"]["mode"] == "changed_lines"
     assert document["judgment"]["resolved"]["language"] == "sql"
     assert document["judgment"]["resolved"]["source_roots"] == ["db/schema"]

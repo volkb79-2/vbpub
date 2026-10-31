@@ -85,7 +85,6 @@ sys.path.insert(0, str(_SRC_ROOT))
 from assay.adapters.sql import SqlAdapter  # noqa: E402
 from assay.config import LANE_SCHEMA_VERSION  # noqa: E402
 from assay.mutation import MutationSite  # noqa: E402
-from assay.verdict import VERDICT_SCHEMA_VERSION  # noqa: E402,F401  (pinned by the witness-schema test)
 
 #: The locally present PostgreSQL 18.6 image, by digest. Never pulled (A-480).
 IMAGE = "postgres:18-alpine@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2"

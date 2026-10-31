@@ -169,6 +169,7 @@ items:
   - {id: B187, title: "R0 result classification maps observation status by hand instead of using contention.observation_input", type: refactor, component: execution, context_estimate: small}
   - {id: B188, title: "R2 coverage exclusions are keyed by line number rather than stable source identity", type: bugfix, component: mutation, context_estimate: small}
   - {id: B189, title: "Release and qualification sparse clones omitted the sibling cowtree source required by Assay's wheel", type: bugfix, component: distribution, context_estimate: small}
+  - {id: B190, title: "CW8 integration left B105 target ordering, workspace record, and cleanup coverage out of sync", type: bugfix, component: gate, context_estimate: small}
 ---
 
 # assay — backlog
@@ -13582,3 +13583,15 @@ clones therefore omitted a declared package and silently produced artifacts
 without `cowtree`. All three clone paths now include `libraries/cowtree/`;
 focused clone and real wheel/zipapp acceptance tests prove the package is
 present, while unrelated projects remain excluded.
+
+## B190 — keep CW8 workspace contracts in the B105 gate
+
+**Status: CLOSED by the CW8 gate repair (2026-10-31).** The new workspace
+estimate was declared with raw `dataclasses.dataclass` instead of Assay's
+`positional_record`; `assay.toml` placed `workspace.py` before `verify.py` and
+`vocabulary.py` in all three whole-source inventories; and the coverage
+exclusion map still named the pre-CW8 lines. The workspace cleanup branch also
+had no CoW leak test, while a runner cleanup test's monkeypatch did not accept
+the new `workspace` keyword. Aligning those contracts restores the registered
+preflight and tester checks. The sparse clone helpers already include
+`libraries/cowtree/` (B189); that was not the cause of this gate run.

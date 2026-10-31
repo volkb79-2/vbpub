@@ -9,12 +9,13 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Protocol
 
+from .records import positional_record
 
-@dataclass(frozen=True)
+
+@positional_record
 class WorkspaceEstimate:
     """Input-derived admission values for one prepared snapshot workspace."""
 

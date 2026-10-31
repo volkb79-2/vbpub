@@ -2235,10 +2235,8 @@ def prepare_snapshot(
         # Already failing: close and discard best-effort. Neither a cleanup
         # failure nor the live-child programmer error may mask the terminal
         # the caller is actually about to see.
-        for leaked in _close_repository(repository):
-            if repository is None:
-                shutil.rmtree(leaked, ignore_errors=True)
-            else:
+        if repository is not None:
+            for leaked in _close_repository(repository):
                 repository._discard_materialization(leaked)
         shutil.rmtree(child, ignore_errors=True)
         workspace_stack.__exit__(type(exc), exc, exc.__traceback__)
@@ -2250,10 +2248,7 @@ def prepare_snapshot(
         # leak the terminal table forbids -- so the misused children are
         # removed first and the programmer error is still raised.
         for leaked in live:
-            if repository is None:
-                shutil.rmtree(leaked, ignore_errors=True)
-            else:
-                repository._discard_materialization(leaked)
+            repository._discard_materialization(leaked)
         _remove_owned_tree(child)
         if live:
             error = RuntimeError(
