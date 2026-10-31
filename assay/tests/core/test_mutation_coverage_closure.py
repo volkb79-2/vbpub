@@ -402,7 +402,7 @@ def test_backup_removal_failure_after_acceptance_keeps_the_accepted_record(tmp_p
 
 def test_directory_sync_failure_after_backup_removal_keeps_the_accepted_record(tmp_path, monkeypatch):
     _put(tmp_path, _record(description="previous"))
-    real_fsync = os.fsync
+    real_fsync = mutation._durable.fsync
     calls = []
 
     def flaky(fd):
@@ -411,7 +411,7 @@ def test_directory_sync_failure_after_backup_removal_keeps_the_accepted_record(t
             raise OSError("cannot sync directory")
         return real_fsync(fd)
 
-    monkeypatch.setattr(mutation.os, "fsync", flaky)
+    monkeypatch.setattr(mutation._durable, "fsync", flaky)
     with pytest.raises(OSError, match="cannot sync directory"):
         mutation._write_mutation_state_record(tmp_path, _record(description="new"))
     monkeypatch.undo()

@@ -556,13 +556,13 @@ def test_ensure_pilot_state_wraps_an_unopenable_state_directory(tmp_path):
 def test_ensure_pilot_state_refuses_a_sentinel_that_appears_during_creation(tmp_path, monkeypatch):
     root = tmp_path / "state"
     root.mkdir()
-    real_fsync = os.fsync
+    real_fsync = cli._durable.fsync
 
     def racing_fsync(fd):
         real_fsync(fd)
         (root / "PILOT-STATE").write_text("raced")
 
-    monkeypatch.setattr(cli.os, "fsync", racing_fsync)
+    monkeypatch.setattr(cli._durable, "fsync", racing_fsync)
     with pytest.raises(cli.PilotStateError, match="appeared while the pilot state was being created"):
         cli._ensure_pilot_state(root, lane="package", selection_sha256="b" * 64)
     assert [p.name for p in root.iterdir()] == ["PILOT-STATE"]  # temp file removed
