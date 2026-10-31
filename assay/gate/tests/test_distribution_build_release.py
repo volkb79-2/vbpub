@@ -171,6 +171,27 @@ def _commit(path: Path, name: str) -> None:
     subprocess.run(["git", "commit", "-qm", name], cwd=path, check=True, capture_output=True)
 
 
+def test_private_clone_includes_the_same_repo_cowtree_source(tmp_path: Path):
+    repo = _repo(tmp_path / "r")
+    assay_init = repo / "assay" / "src" / "assay" / "__init__.py"
+    cowtree_init = repo / "libraries" / "cowtree" / "src" / "cowtree" / "__init__.py"
+    assay_init.parent.mkdir(parents=True)
+    cowtree_init.parent.mkdir(parents=True)
+    assay_init.write_text("", encoding="utf-8")
+    cowtree_init.write_text("", encoding="utf-8")
+    (repo / "ciu" / "private.py").parent.mkdir(parents=True)
+    (repo / "ciu" / "private.py").write_text("", encoding="utf-8")
+    _commit(repo, "add-packages.txt")
+
+    scratch = tmp_path / "scratch"
+    build_release.make_exact_oid_clone(repo, scratch)
+
+    clone = scratch / "clone"
+    assert (clone / "assay" / "src" / "assay" / "__init__.py").is_file()
+    assert (clone / "libraries" / "cowtree" / "src" / "cowtree" / "__init__.py").is_file()
+    assert not (clone / "ciu").exists()
+
+
 def test_head_release_tag_finds_a_matching_tag_on_head(tmp_path: Path):
     repo = _repo(tmp_path / "r")
     subprocess.run(["git", "tag", "-a", "assay-v1.2.3", "-m", "r"], cwd=repo,

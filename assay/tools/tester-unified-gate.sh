@@ -71,7 +71,7 @@ make_exact_oid_clone() {
 
   assay_git clone --no-local --no-checkout --quiet "$worktree" "$scratch/clone"
   assay_git -C "$scratch/clone" sparse-checkout init --cone
-  assay_git -C "$scratch/clone" sparse-checkout set assay
+  assay_git -C "$scratch/clone" sparse-checkout set assay libraries/cowtree
   assay_git -C "$scratch/clone" checkout --quiet --detach "$oid"
 
   clone_head="$(assay_git -C "$scratch/clone" rev-parse HEAD)"

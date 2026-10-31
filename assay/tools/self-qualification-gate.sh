@@ -582,7 +582,7 @@ trap cleanup EXIT
 echo "B105_PHASE=clone-exact-source"
 assay_git clone --no-local --no-checkout --quiet "$worktree" "$scratch/source"
 assay_git -C "$scratch/source" sparse-checkout init --cone
-assay_git -C "$scratch/source" sparse-checkout set assay
+assay_git -C "$scratch/source" sparse-checkout set assay libraries/cowtree
 assay_git -C "$scratch/source" checkout --quiet --detach "$source_commit"
 [[ "$(assay_git -C "$scratch/source" rev-parse HEAD)" == "$source_commit" ]] \
   || die "private clone HEAD differs from selected source commit"

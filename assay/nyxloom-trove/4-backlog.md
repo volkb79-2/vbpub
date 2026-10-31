@@ -168,6 +168,7 @@ items:
   - {id: B186, title: "Malformed diagnostic resources in R2 state abort resume instead of causing candidate re-execution", type: bugfix, component: mutation, context_estimate: small}
   - {id: B187, title: "R0 result classification maps observation status by hand instead of using contention.observation_input", type: refactor, component: execution, context_estimate: small}
   - {id: B188, title: "R2 coverage exclusions are keyed by line number rather than stable source identity", type: bugfix, component: mutation, context_estimate: small}
+  - {id: B189, title: "Release and qualification sparse clones omitted the sibling cowtree source required by Assay's wheel", type: bugfix, component: distribution, context_estimate: small}
 ---
 
 # assay — backlog
@@ -13571,3 +13572,13 @@ using `contention.observation_input`; route it through the shared mapping.
 **Status: OPEN.** Coverage exclusions are keyed by line number, so a source
 edit can silently move an exclusion to a different site. Key exclusions by
 stable source identity.
+
+## B189 — include the same-repository cowtree source in sparse build clones
+
+**Status: CLOSED by CW8.** Assay's wheel maps `cowtree` to the sibling
+`libraries/cowtree/src` tree, but the release, tester-unified and
+self-qualification builders checked out only `assay/`. Their clean sparse
+clones therefore omitted a declared package and silently produced artifacts
+without `cowtree`. All three clone paths now include `libraries/cowtree/`;
+focused clone and real wheel/zipapp acceptance tests prove the package is
+present, while unrelated projects remain excluded.

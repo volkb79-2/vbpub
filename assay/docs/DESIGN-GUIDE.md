@@ -4590,12 +4590,13 @@ picks up whatever `__pycache__`/`*.egg-info`/`build/` residue happens to sit
 in the working tree, and a *reproducible* contaminated wheel is still
 contaminated (P24's own first probe did exactly this: a byte-identical but
 582,556-byte wheel instead of the correct 232,651 bytes). So the registered
-gate records the worktree's exact HEAD OID, makes a `--no-local
---no-checkout` clone of the worktree itself (no hardlinks/alternates back to
-the caller's object store), sparse-checks out only `assay/`, and checks out
-that exact OID detached — verifying the clone's own HEAD before building.
-Ignored residue in the caller's tree structurally cannot reach a clone built
-from committed objects.
+gate and release builder record the worktree's exact HEAD OID, make a
+`--no-local --no-checkout` clone of the worktree itself (no hardlinks/alternates
+back to the caller's object store), sparse-check out `assay/` and the sibling
+`libraries/cowtree/` source used by the wheel, and check out that exact OID
+detached — verifying the clone's own HEAD before building. Ignored residue in
+the caller's tree structurally cannot reach a clone built from committed
+objects.
 
 **Verification is not installation.** `gate/distribution/release_wheel.py` is
 a standalone, stdlib-only tool a consumer runs *before* Assay is installed:
