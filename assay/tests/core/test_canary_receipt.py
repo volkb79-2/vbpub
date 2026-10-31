@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import stat
+import sys
+import tempfile
 from datetime import datetime
 from inspect import signature
 from pathlib import Path
@@ -27,10 +29,10 @@ from assay.adapters.python import PythonAdapter
 from assay.adapters.sql import SqlAdapter
 from assay.config import CanaryConfig
 from assay.contention import ContentionObservation
-from assay.errors import Outcome, ReasonCode
-from assay.process_tree import ProcessTreeEvidence
-from assay.runner import CommandResult, default_process_runner
-from assay.termination import Termination
+from assay.errors import AssayError, Outcome, ReasonCode
+from assay.process_tree import ProcessTreeEvidence, ProcessTreeProcessRunner
+from assay.runner import CommandResult, default_process_runner, execute_plan
+from assay.termination import CREDIT_JUDGEABLE, Termination
 from assay.verdict import CanaryAttempt
 from termination_table import LIMITS_CLEAR, PRECEDENCE_CASES, TERMINATION_CASES
 
@@ -106,6 +108,35 @@ def test_sql_adapter_keeps_import_break_unreachable_with_the_new_signature():
         SqlAdapter().inject_import_break("SELECT 1;", nonce=NONCE)
 
 
+def test_python_import_break_is_one_line_and_preserves_line2_cookie():
+    source = (
+        "#!/usr/bin/env python3\n"
+        "# -*- coding: latin-1 -*-\n"
+        "value = 1\n"
+    )
+
+    transformed, _description = PythonAdapter().inject_import_break(
+        source, nonce=NONCE
+    )
+
+    lines = transformed.splitlines()
+    assert lines[:2] == source.splitlines()[:2]
+    assert len(lines) == len(source.splitlines()) + 1
+    assert 'raise AssertionError("assay-canary-import-break")' in lines[2]
+
+
+def test_js_import_break_is_one_line_with_ts_ignore():
+    transformed, _description = JavaScriptAdapter().inject_import_break(
+        "export const value = 1\n", nonce=NONCE
+    )
+
+    lines = transformed.splitlines()
+    ts_ignore = lines.index("// @ts-ignore")
+    assert lines[ts_ignore + 1].startswith(";(() => {")
+    assert "getBuiltinModule" in lines[ts_ignore + 1]
+    assert lines[ts_ignore + 2] == 'throw new Error("assay-canary-import-break")'
+
+
 def _attempt(
     *,
     outcome: Outcome,
@@ -179,8 +210,31 @@ def test_canary_command_classification_matches_the_shared_termination_table(case
     )
 
     assert classified is case.termination
-    assert canary._attribute_control(classified) is (
-        Outcome.PASS if case.termination is Termination.PASSED else Outcome.INCONCLUSIVE
+    expected_control = (
+        Outcome.PASS
+        if case.termination is Termination.PASSED
+        else Outcome.FAIL
+        if case.termination in CREDIT_JUDGEABLE
+        else Outcome.INCONCLUSIVE
+    )
+    assert canary._attribute_control(classified) is expected_control
+
+
+def test_control_clean_fail_is_recorded_as_fail():
+    control_outcome = canary._attribute_control(Termination.FAILED)
+
+    assert control_outcome is Outcome.FAIL
+    attempt = CanaryAttempt(
+        target="pkg/mod.py",
+        description="control failed before the canary transform",
+        control_outcome=control_outcome,
+        transformed_outcome=Outcome.INCONCLUSIVE,
+        expected_reason_code=ReasonCode.COMMAND_FAILED,
+        observed_reason_code=ReasonCode.CANARY_INCONCLUSIVE,
+    )
+    assert canary.judge_attempt(attempt) == (
+        Outcome.INCONCLUSIVE,
+        ReasonCode.CANARY_INCONCLUSIVE,
     )
 
 
@@ -550,6 +604,72 @@ def test_receipt_env_is_transform_only_and_receipt_dir_is_external_and_removed(
     assert canary.judge_attempt(attempt) == (Outcome.PASS, None)
 
 
+def test_legacy_receipt_dir_is_system_temp(
+    git_repo: GitRepo, tmp_path: Path, monkeypatch
+):
+    head = _seed(git_repo)
+    system_temp = tmp_path / "system-temp"
+    system_temp.mkdir()
+    monkeypatch.setattr(
+        canary.tempfile, "gettempdir", lambda: os.fspath(system_temp)
+    )
+    real_mkdtemp = tempfile.mkdtemp
+    receipt_dirs: list[tuple[Path, str | None]] = []
+
+    def capture_mkdtemp(*, prefix: str, dir: str | None = None) -> str:
+        path = Path(real_mkdtemp(prefix=prefix, dir=dir))
+        receipt_dirs.append((path, dir))
+        return os.fspath(path)
+
+    monkeypatch.setattr(canary.tempfile, "mkdtemp", capture_mkdtemp)
+    lane = _lane(git_repo)
+
+    def process(argv, *, env, cwd, timeout):
+        receipt_path = env.get(RECEIPT_ENV)
+        if receipt_path is not None:
+            Path(receipt_path).write_bytes(NONCE.encode("ascii"))
+        return completed_process(list(argv), 1 if receipt_path else 0, "", "")
+
+    pipeline_calls = 0
+
+    def pipeline(lane, *, project_root, process_runner, **_kwargs):
+        nonlocal pipeline_calls
+        pipeline_calls += 1
+        transformed = "assay-canary-import-break" in (
+            project_root / "pkg/mod.py"
+        ).read_text(encoding="utf-8")
+        if transformed:
+            process_runner(("check",), env={}, cwd=project_root, timeout=None)
+        outcome = Outcome.FAIL if transformed else Outcome.PASS
+        reason = ReasonCode.COMMAND_FAILED if transformed else None
+        return outcome, reason, _command_result(
+            outcome=outcome,
+            reason_code=reason,
+            returncode=1 if transformed else 0,
+            process_tree=None,
+        )
+
+    monkeypatch.setattr(canary, "_run_pipeline", pipeline)
+    canary.run_python_canary(
+        lane,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        base_commit=head,
+        target_path="pkg/mod.py",
+        adapter=PythonAdapter(),
+        mechanism="import-break",
+        process_runner=process,
+        clock=lambda: datetime.fromisoformat(MOMENT_TEXT),
+    )
+
+    assert pipeline_calls == 2
+    assert len(receipt_dirs) == 1
+    receipt_dir, dir_argument = receipt_dirs[0]
+    assert dir_argument is None
+    assert receipt_dir.parent == system_temp
+    assert not receipt_dir.exists()
+
+
 def test_echoed_nonce_without_receipt_does_not_attribute_failure(
     git_repo: GitRepo, tmp_path: Path, monkeypatch
 ):
@@ -634,3 +754,112 @@ def test_node_esm_import_break_canary_writes_a_receipt(
     assert "receipt matched" in attempt.description
     assert NONCE not in attempt.description
     assert canary.judge_attempt(attempt) == (Outcome.PASS, None)
+
+
+@pytest.mark.parametrize(
+    "process_runner",
+    (default_process_runner, ProcessTreeProcessRunner()),
+    ids=("default", "process-tree"),
+)
+def test_real_pytest_import_break_writes_receipt(
+    git_repo: GitRepo, tmp_path: Path, monkeypatch, process_runner
+):
+    _seed(git_repo)
+    git_repo.write(".gitignore", "__pycache__/\n.pytest_cache/\n")
+    git_repo.write(
+        "tests/test_import_target.py",
+        "from pkg import mod\n\n\ndef test_imported_value():\n    assert mod.value() == 1\n",
+    )
+    head = git_repo.commit_all("add real pytest importer")
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.setattr(
+        canary, "secrets", SimpleNamespace(token_hex=lambda size: NONCE), raising=False
+    )
+    lane = _lane(
+        git_repo,
+        argv=(sys.executable, "-m", "pytest", "tests", "-q"),
+    )
+
+    with prepared_snapshot(git_repo, commit=head, scratch_root=scratch) as prepared:
+        result = canary.run_isolated_canary(
+            lane,
+            prepared=prepared,
+            plan=make_plan(lane),
+            deadline=make_deadline(),
+            project_root=git_repo.path,
+            resolved_base=None,
+            mechanism="import-break",
+            target="pkg/mod.py",
+            adapter=PythonAdapter(),
+            process_runner=process_runner,
+            clock=lambda: datetime.fromisoformat(MOMENT_TEXT),
+        )
+
+    attempt = result.attempts[0]
+    assert attempt.control_outcome is Outcome.PASS
+    assert attempt.transformed_outcome is Outcome.FAIL
+    assert attempt.observed_reason_code is ReasonCode.COMMAND_FAILED
+    assert "receipt matched" in attempt.description
+    assert NONCE not in attempt.description
+    assert canary.judge_attempt(attempt) == (Outcome.PASS, None)
+
+
+def test_node_cjs_import_break_canary_writes_a_receipt(
+    git_repo: GitRepo, tmp_path: Path
+):
+    git_repo.write("src/mod.cjs", "exports.value = 1\n")
+    head = git_repo.commit_all("seed CommonJS receipt canary target")
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    lane = _lane(
+        git_repo,
+        target="src/mod.cjs",
+        language="javascript",
+        argv=("node", "-e", "require('./src/mod.cjs')"),
+        path=True,
+    )
+
+    with prepared_snapshot(git_repo, commit=head, scratch_root=scratch) as prepared:
+        result = canary.run_isolated_canary(
+            lane,
+            prepared=prepared,
+            plan=make_plan(lane, passthrough_source={"PATH": os.environ["PATH"]}),
+            deadline=make_deadline(),
+            project_root=git_repo.path,
+            resolved_base=None,
+            mechanism="import-break",
+            target="src/mod.cjs",
+            adapter=JavaScriptAdapter(),
+            process_runner=default_process_runner,
+            clock=lambda: datetime.fromisoformat(MOMENT_TEXT),
+        )
+
+    attempt = result.attempts[0]
+    assert attempt.control_outcome is Outcome.PASS
+    assert attempt.transformed_outcome is Outcome.FAIL
+    assert attempt.observed_reason_code is ReasonCode.COMMAND_FAILED
+    assert "receipt matched" in attempt.description
+    assert canary.judge_attempt(attempt) == (Outcome.PASS, None)
+
+
+def test_transform_oserror_through_receipt_wrapper_is_lane_error(tmp_path: Path):
+    class ProcessTreeRunner:
+        is_process_tree_runner = True
+
+        def __call__(self, argv, *, env, cwd, timeout):
+            raise OSError("process-tree observer failed")
+
+    lane = make_lane()
+    plan = make_plan(lane)
+    wrapped_runner = canary._receipt_runner(
+        ProcessTreeRunner(), tmp_path / "receipt"
+    )
+
+    with pytest.raises(AssayError, match="process execution infrastructure failed"):
+        execute_plan(
+            plan,
+            cwd=tmp_path,
+            timeout=1,
+            process_runner=wrapped_runner,
+        )
