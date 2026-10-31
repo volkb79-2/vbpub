@@ -165,6 +165,9 @@ items:
   - {id: B180, title: "Move remaining host-varying process evidence out of verdict v16", type: feature, component: evidence, context_estimate: medium}
   - {id: B181, title: "whole-target R2 start failures: unsorted R1 targets, coverage banner reported as the first failing test, leaked test children and maxfail in IOBench", type: bugfix, component: execution, context_estimate: medium}
   - {id: B182, title: "R2 campaigns stop when candidate cgroup resource windows change or the observer disappears", type: bugfix, component: mutation, context_estimate: medium}
+  - {id: B186, title: "Malformed diagnostic resources in R2 state abort resume instead of causing candidate re-execution", type: bugfix, component: mutation, context_estimate: small}
+  - {id: B187, title: "R0 result classification maps observation status by hand instead of using contention.observation_input", type: refactor, component: execution, context_estimate: small}
+  - {id: B188, title: "R2 coverage exclusions are keyed by line number rather than stable source identity", type: bugfix, component: mutation, context_estimate: small}
 ---
 
 # assay — backlog
@@ -13383,9 +13386,10 @@ bounds/errors, adapter protocol parity, raw control-failure attribution,
 system-temp placement for the legacy path, and process-tree error forwarding.
 Python injection is one physical line and preserves PEP 263 cookie placement;
 JavaScript/TypeScript uses a one-line IIFE preceded by `// @ts-ignore`. Vitest
-is not installed in the available tester image, so the Node ESM and CommonJS
-subprocess oracles are the acceptance witnesses allowed by WP3. The pre-change
-tester run was red on the receipt contract; record the final preflight/tester
+is not covered by the real-runner tests and is not installed in the available
+tester image, so the Node ESM and CommonJS subprocess oracles are the
+acceptance witnesses allowed by WP3. The pre-change tester run was red on the
+receipt contract; record the final preflight/tester
 Run-Gate IDs and source-tree SHA here after they complete. See the
 [Opus design](reports/ASSAY-DESIGN-OPUS-2026-10-30.md), §§3, 6.4 and 7/WP3.
 
@@ -13550,3 +13554,20 @@ raised on) is proven for every bucket.
 verification ledger) still describes Go behaviour as unavailable in the judge
 environment although `tester-unified-go` runs real Go. Reconcile the claim with the Go R1
 lane that is qualified end to end (A-217).
+
+## B186 — malformed diagnostic resources make R2 state resume fatal
+
+**Status: OPEN.** In `mutation.py:2428-2484`, malformed diagnostic-only
+`resources` fields raise `MutationStateError` before judge-identity
+revalidation. Treat these fields as a cache miss so the candidate is re-run.
+
+## B187 — use the shared R0 observation mapping
+
+**Status: OPEN.** `_classify_r0_result` hand-maps observation status instead of
+using `contention.observation_input`; route it through the shared mapping.
+
+## B188 — key R2 coverage exclusions by stable source identity
+
+**Status: OPEN.** Coverage exclusions are keyed by line number, so a source
+edit can silently move an exclusion to a different site. Key exclusions by
+stable source identity.
