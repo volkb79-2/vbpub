@@ -78,6 +78,23 @@ def test_shim_mapping_detector_distinguishes_a_real_mapping():
     assert not _durable._shim_is_mapped("7f00 r-xp 0 /usr/lib/libc.so.6\n")
 
 
+@pytest.mark.parametrize(
+    ("mappings", "expected"),
+    [
+        ("7f00 r-xp 0 /usr/lib/libeatmydata.so\n", True),
+        ("7f00 r-xp 0 /usr/lib/libc.so.6\n", False),
+    ],
+)
+def test_preload_mapping_reads_process_maps(monkeypatch, mappings, expected):
+    monkeypatch.setattr(
+        _durable.Path,
+        "read_text",
+        lambda _self, *, encoding=None: mappings,
+    )
+
+    assert _durable._preload_shim_mapped() is expected
+
+
 def test_preload_mapping_read_failure_refuses_unknown_arch_fallback(monkeypatch):
     def unreadable(self, *, encoding=None):
         raise OSError(errno.EACCES, "maps denied")

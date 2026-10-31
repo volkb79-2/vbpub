@@ -30,6 +30,7 @@ import resource
 import shutil
 import stat
 import subprocess
+from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path, PurePosixPath
 
@@ -306,6 +307,104 @@ def test_repository_root_project_materializes_every_literal_exactly(
             # the zero-byte blob is a real, present, empty regular file
             assert (snapshot.root / "empty.txt").read_bytes() == b""
     assert list(scratch.iterdir()) == []
+
+
+def _snapshot_file_signature(root: Path) -> tuple[tuple[object, ...], ...]:
+    """Describe the materialized worktree without Git's private metadata."""
+    signature = []
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root)
+        if relative.parts[0] == ".git":
+            continue
+        mode = stat.S_IMODE(path.lstat().st_mode)
+        if path.is_symlink():
+            signature.append((relative.as_posix(), "symlink", os.readlink(path), mode))
+        elif path.is_dir():
+            signature.append((relative.as_posix(), "directory", mode))
+        else:
+            signature.append((relative.as_posix(), "file", path.read_bytes(), mode))
+    return tuple(signature)
+
+
+class _CopyingWorkspace:
+    """A controlled stand-in for Run that records Level A file clones."""
+
+    def __init__(self, root: Path):
+        self.root = root
+        self.trees = root / "trees"
+        self.trees.mkdir(parents=True)
+        self.cloned_files: list[tuple[Path, Path]] = []
+        self._next_tree = 0
+
+    def ingest_tree(self, source: Path, name: str) -> Path:
+        destination = self.trees / name
+        shutil.copytree(source, destination)
+        return destination
+
+    def make_tree(self) -> Path:
+        self._next_tree += 1
+        destination = self.trees / f"snapshot-{self._next_tree}"
+        destination.mkdir()
+        return destination
+
+    def clone_file(self, source: Path, destination: Path) -> None:
+        assert source.is_relative_to(self.trees)
+        assert destination.is_relative_to(self.trees)
+        shutil.copyfile(source, destination)
+        self.cloned_files.append((source, destination))
+
+    def delete_tree(self, path: Path) -> None:
+        shutil.rmtree(path)
+
+
+class _CopyingWorkspaceProvider:
+    def __init__(self, root: Path):
+        self.root = root
+        self.estimate = None
+        self.workspace = None
+
+    @contextmanager
+    def open(self, estimate, *, scratch_root):
+        self.estimate = estimate
+        self.root.mkdir()
+        self.workspace = _CopyingWorkspace(self.root)
+        try:
+            yield self.workspace
+        finally:
+            shutil.rmtree(self.root)
+
+
+def test_workspace_materialization_matches_plain_snapshot_and_clones_pack_files(
+    tmp_path: Path,
+) -> None:
+    repo, commit = _root_repo(tmp_path)
+    plain_scratch = _scratch(tmp_path)
+    cow_scratch = tmp_path / "cow-scratch"
+    cow_scratch.mkdir()
+    provider = _CopyingWorkspaceProvider(tmp_path / "cow-run")
+
+    with prepare_snapshot(_spec(repo, plain_scratch, commit), timeout=TIMEOUT) as plain:
+        plain_tree_sha256 = plain.tree_sha256
+        with plain.materialize(timeout=TIMEOUT) as snapshot:
+            plain_signature = _snapshot_file_signature(snapshot.root)
+            plain_commit = snapshot.commit
+
+    with prepare_snapshot(
+        _spec(repo, cow_scratch, commit), timeout=TIMEOUT, workspace=provider
+    ) as cow:
+        assert cow.tree_sha256 == plain_tree_sha256
+        with cow.materialize(timeout=TIMEOUT) as snapshot:
+            cow_signature = _snapshot_file_signature(snapshot.root)
+            cow_commit = snapshot.commit
+
+    assert cow_signature == plain_signature
+    assert cow_commit == plain_commit == commit
+    assert provider.estimate.ingest_bytes > 0
+    assert provider.estimate.per_clone_bytes > 0
+    assert provider.estimate.max_live_clones == 2
+    assert provider.workspace.cloned_files
+    assert list(plain_scratch.iterdir()) == []
+    assert list(cow_scratch.iterdir()) == []
 
 
 def test_sibling_pycache_directories_do_not_omit_committed_sources(
