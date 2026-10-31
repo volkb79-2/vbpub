@@ -989,7 +989,7 @@ def test_provisional_self_qualification_is_documented_across_the_public_docs():
         "the R3 canary",
         ".assay/mutation-postponed-assay.json",
         '"result": "provisional"',
-        "10.0.0 <= version < 10.1.0",
+        "10.0.0 <= version < 10.2.0",
         "CMRU's isolated `run-tests` step",
     ):
         assert required in consumer_text, f"CONSUMERS.md omits provisional lane fact {required!r}"

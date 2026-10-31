@@ -2034,7 +2034,8 @@ def test_the_postponement_marker_is_keyed_windowed_and_cleared_by_the_full_lane(
 
     assert 'TRACKING_ID = "B169"' in body
     assert "operator decision 2026-10-27" in body
-    assert "WINDOW = ((10, 0, 0), (10, 1, 0))" in body
+    assert "extended by operator on 2026-10-31" in body
+    assert "WINDOW = ((10, 0, 0), (10, 2, 0))" in body
     assert '"result": "provisional"' in body and '"rigor_postponed": "R2"' in body
     assert '"cmru_release_gate_version_bound": transaction_version is not None' in body
     assert "not an R2 pass" in body
@@ -2179,16 +2180,19 @@ def test_the_postponement_marker_records_a_provisional_result_inside_its_window(
 
 
 def test_the_postponement_is_refused_once_the_window_has_closed(tmp_path):
-    proc, marker = _run_postponement(tmp_path, ["assay-v10.0.0", "assay-v10.1.0"])
+    proc, marker = _run_postponement(tmp_path, ["assay-v10.0.0", "assay-v10.2.0"])
 
     assert proc.returncode != 0
-    assert "valid only below assay 10.1.0" in proc.stderr
+    assert "valid only below assay 10.2.0" in proc.stderr
     assert not marker.exists()
 
 
 @pytest.mark.parametrize(
     "prepared_version,allowed",
-    [("10.0.0", True), ("10.0.1", True), ("10.1.0", False), ("9.9.9", False)],
+    [
+        ("10.0.0", True), ("10.0.1", True), ("10.1.0", True),
+        ("10.2.0", False), ("9.9.9", False),
+    ],
 )
 def test_the_prepared_release_version_must_be_inside_the_postponement_window(
     tmp_path, prepared_version, allowed,
@@ -2200,7 +2204,7 @@ def test_the_prepared_release_version_must_be_inside_the_postponement_window(
     assert (proc.returncode == 0) is allowed, proc.stderr
     assert marker.exists() is allowed
     if not allowed:
-        assert "authorized only for assay >= 10.0.0, < 10.1.0" in proc.stderr
+        assert "authorized only for assay >= 10.0.0, < 10.2.0" in proc.stderr
     if allowed:
         import json
 
