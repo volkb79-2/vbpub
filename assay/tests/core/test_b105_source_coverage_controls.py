@@ -102,7 +102,7 @@ def test_every_language_adapter_protocol_stub_is_executed(tmp_path):
     assert adapter.normalize_coverage_key("src/sample.py") is None
     assert adapter.statement_spans("pass\n") is None
     assert adapter.statement_blocks(tmp_path, ("src/sample.py",)) is None
-    assert adapter.inject_import_break("pass\n") is None
+    assert adapter.inject_import_break("pass\n", nonce="test") is None
     assert adapter.inject_uncovered_line("pass\n") is None
     assert adapter.generate_mutation_sites(
         "pass\n", set(), operators=(), limit=0
