@@ -13138,10 +13138,11 @@ R2 pass is claimed. The CHANGES release notes say so.
 The provisional-release exception is bounded by the first dated release
 heading after `Unreleased`, which must match CMRU's protected transaction
 version, not only by tags that exist before the gate: B169 is valid for release
-versions `>= 10.0.0` and `< 10.1.0`. The gate also requires at least one
-listable stable `assay-vX.Y.Z` tag and refuses if the latest visible tag is
-10.1.0 or newer. Thus a prepared 10.1.0 release is refused before its tag is
-created, and missing or unreadable tag state cannot authorize the waiver.
+versions `>=10.0.0,<10.2.0`; the operator extended the original waiver on
+2026-10-31. The gate also requires at least one listable stable
+`assay-vX.Y.Z` tag and refuses if the latest visible tag is 10.2.0 or newer.
+Thus a prepared 10.2.0 release is refused before its tag is created, and
+missing or unreadable tag state cannot authorize the waiver.
 
 **Close when:** one full `self-qualification` run and one `analysis-r2` run are
 completed against the exact `assay-v10.0.0` tag through the registered
@@ -13167,8 +13168,9 @@ qualification rigor runs. `self-qualification-provisional` (`assay.toml`,
 R0, R1 (whole-target 100% line and branch over `src/assay`) and the R3 canary.
 After the lane is verified it records `.assay/mutation-postponed-assay.json`
 (`result: provisional`, tracking id B169, valid only for a prepared release
-version `>= 10.0.0` and `< 10.1.0`; a newer `assay-v10.1.0` or later tag also
-refuses it). The full lane is unchanged and deletes the marker; the marker
+version `>= 10.0.0` and `< 10.2.0`; extended by operator on 2026-10-31; a
+newer `assay-v10.2.0` or later tag also refuses it). The full lane is unchanged
+and deletes the marker; the marker
 cannot satisfy an R2 request.
 
 The prepared release version is read from the first dated `CHANGES.md` heading
@@ -13294,7 +13296,8 @@ contract and follow-on WP1–WP8 backlog entries.
 
 ## B173 — one termination classifier for R0, R1, R2 and R3
 
-**Status: WP1–WP3 implemented; AP-4 R0/R1 corrections implemented; OPEN for WP4.** Add
+**Status: IMPLEMENTED across AP-1, AP-3 and AP-4; exact-tip registered
+acceptance remains with the controller.** Add
 the pure classifier and shared table from the
 Opus design so producer paths can classify process outcomes from exit, report,
 process-tree and resource-limit evidence. WP1 adds the decision table and
@@ -13350,13 +13353,14 @@ WP1's `ContentionObservation` has no `to_progress()` method, despite the
 design's initial call-site wording. WP3 requires a matching execution receipt
 for `import-break` and classifies both canary halves. AP-4 makes self-signaled
 R0 failures judgeable, adds deterministic R1 inherited detail, and records the
-`NOT_RUN` inheritance behavior. WP4 mutation bucket/state alignment remains
-separate work.
+`NOT_RUN` inheritance behavior. AP-1 completes WP4 mutation bucket/state
+alignment; the registered coverage preflight remains pending controller
+acceptance.
 
 ## B174 — wire load-independent termination and progress telemetry through R0/R1
 
-**Status: WP2 implemented; exact-tip `self-qualification-preflight` and
-`tester-unified` are the acceptance gates.** Apply the classifier to the R0
+**Status: IMPLEMENTED by AP-4; exact-tip registered acceptance remains with
+the controller.** Apply the classifier to the R0
 result and R1's inherited baseline, place resource observations in progress,
 and print one advisory line for a failed run with pressure measurements. Keep
 host measurements out of verdict evidence and command tails. Acceptance
@@ -13366,7 +13370,8 @@ full-source preflight. See the [Opus design](reports/ASSAY-DESIGN-OPUS-2026-10-3
 
 ## B175 — use execution receipts to attribute import-break R3 canaries
 
-**Status: IMPLEMENTED on `assay-wp3-20261030`; registered acceptance pending.**
+**Status: IMPLEMENTED by AP-3; exact-tip registered acceptance remains with
+the controller.**
 Replace the temporary 10.0.0 reason-code contract with a per-attempt receipt
 written by the injected import-break statement. Pass only a clean expected
 failure with the matching receipt; classify accepted transforms and unrelated
@@ -13386,7 +13391,8 @@ Run-Gate IDs and source-tree SHA here after they complete. See the
 
 ## B176 — align R2 mutation buckets and resume validation with termination evidence
 
-**Status: OPEN; WP4 follow-up.** Derive candidate buckets and state-record
+**Status: IMPLEMENTED by AP-1; registered acceptance remains with the
+controller.** Derive candidate buckets and state-record
 revalidation from the shared classifier, applying existing equivalence and
 kill-signal refinements only to judgeable results. Re-run old records whose
 bucket no longer matches. Keep SQL qualification's independent derivation.
@@ -13396,21 +13402,21 @@ the shared outcome table. See the [Opus design](reports/ASSAY-DESIGN-OPUS-2026-1
 
 ## B177 — consolidate load-verdict documentation and retire the merged-baseline regression lane
 
-**Status: OPEN; WP5 follow-up.** After WP2–WP4 land, remove the
-parallel-safety regression lane whose `origin/main` red-first premise is stale
-after merge. Keep one canonical design-guide section and synchronize the
-README, CONSUMERS, changelog and backlog with the resulting behavior. Acceptance
-runs the integrated tester and provisional qualification gates and checks all
-cross-document anchors. See the [Opus design](reports/ASSAY-DESIGN-OPUS-2026-10-30.md),
-§§6.7–6.8 and 7/WP5.
+**Status: CLOSED by AP-8 (2026-10-31).** The parallel-safety regression lane
+was removed before this consolidation because its `origin/main` red-first
+premise no longer held. The shared design section, README and CONSUMERS
+pointers, release notes and backlog now describe the integrated behavior.
+Cross-document anchors are checked by the docs suite. See the
+[Opus design](reports/ASSAY-DESIGN-OPUS-2026-10-30.md), §§6.7–6.8 and 7/WP5.
 
 ## B178 — reuse a passing lane baseline for the R3 canary control
 
-**Status: OPEN; optional WP6 follow-up.** When the same commit and plan already
-passed R0 and R1, provide that baseline result to the isolated canary and skip
-the duplicate control execution. Re-run the control when the baseline is not a
-pass. Acceptance compares command counts and outcomes for both paths. See the
-[Opus design](reports/ASSAY-DESIGN-OPUS-2026-10-30.md), §§6.3, 7/WP6.
+**Status: OPEN; deferred to 10.2.0 and not part of 10.1.0.** When the same
+commit and plan already passed R0 and R1, provide that baseline result to the
+isolated canary and skip the duplicate control execution. Re-run the control
+when the baseline is not a pass. Acceptance compares command counts and
+outcomes for both paths. See the
+[Opus design](reports/ASSAY-DESIGN-OPUS-2026-10-30.md), §§6.3 and 7.
 
 ## B179 — retry unresolved R2 infrastructure candidates serially at sweep end
 
@@ -13474,8 +13480,9 @@ campaign worktrees untouched.
 
 ## B182 — R2 campaigns stop when candidate cgroup resource windows change or the observer disappears
 
-**Status: FIX ROUND 2 IMPLEMENTED in `assay-r2fix-20261030`; final registered
-gate acceptance is part of this change.** The PWMCP log
+**Status: IMPLEMENTED by AP-1; both requested local suites completed with only
+known environment-dependent failures, and registered gate acceptance remains
+with the controller.** The PWMCP log
 `/tmp/run-gate/lanes/r2/47f333762a526841379559a959b0cfbc.log` and IOBench's
 `.assay/progress-r2.jsonl` retained only the generic comparison failure, not
 the before/after signatures, so the exact field in those historical windows
@@ -13513,5 +13520,5 @@ identity drift, limit-value changes, observer loss, campaign continuation,
 PASS with a positive event, unobserved bare exit-1 and shell-137
 classification, report-backed kill credit, state revalidation, positive replay
 fallback, and verifier rejection of a positive event on a witnessed kill.
-Run the registered
-`self-qualification-preflight` and `tester-unified` gates before push.
+The registered `self-qualification-preflight` and `tester-unified` gates are
+controller-owned for this branch; record their run IDs after acceptance.

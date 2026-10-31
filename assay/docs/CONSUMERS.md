@@ -183,7 +183,7 @@ the extra time covers admission, startup, and evidence collection.
 
 ### Provisional release qualification B169 B170
 
-For the explicitly waived 10.0.x release, CMRU's isolated `run-tests` step
+For a release inside the operator-authorized B169 window, CMRU's isolated `run-tests` step
 runs `tools/tester-unified-gate.sh` first and then invokes
 `run-gate self-qualification-provisional` before it creates the release tag.
 The lane runs R0, R1 over all of `src/assay` with 100% whole-target line and
@@ -200,10 +200,11 @@ The gate reads the first H2 release heading after `## [Unreleased]` in
 refuses that heading if it is malformed or unsupported, even when an older
 heading is valid. CMRU passes the transaction's planned version as a protected
 gate input; the heading must match it. The accepted target interval is
-`10.0.0 <= version < 10.1.0`; at least one stable `assay-vX.Y.Z` tag must be
-listable, and its latest version must be below 10.1.0. A release at 9.9.9,
-10.1.0 or later, an unreadable tag list, or no visible stable tag refuses the
-waiver.
+`10.0.0 <= version < 10.2.0`; at least one stable `assay-vX.Y.Z` tag must be
+listable, and its latest version must be below 10.2.0. A release at 9.9.9,
+10.2.0 or later, an unreadable tag list, or no visible stable tag refuses the
+waiver. The operator extended the original 2026-10-27 waiver on 2026-10-31 to
+cover the 10.1.0 release; no R2 pass is claimed.
 
 Once the bare-host wrapper starts for the full or provisional lane, it removes
 an old postponement marker before its dirty-tree and cgroup-capacity checks. A
@@ -355,6 +356,10 @@ A red preflight is a verified failure report and stops the full gate before
 mutation begins.
 
 ### Native R2 resource-limit observation (B145)
+
+For the shared R0/R1/R2/R3 credit and blocking rules, see the
+[Host load and verdicts design](DESIGN-GUIDE.md#host-load-and-verdicts). This
+section gives the native R2 observation contract and consumer setup.
 
 Native R2 requires visible cgroup v2 event counters and limit configuration
 through the hierarchy. These checks are separate from the mutation score:

@@ -4,72 +4,72 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
-### Fixed
-- Continue native R2 campaigns when a post-preflight candidate resource window
-  is unavailable or unstable. Assay records the reason as unobserved telemetry,
-  keeps the initial cgroup capability probe fail-closed, and gives no kill
-  credit to a bare failed exit when that window is unobserved: only a normal
-  exit 1 with a current-run pytest failed-call witness can remain `killed`.
-  A PASS with an exited leader remains `survived`; a PASS with a signaled
-  leader is `crashed`. Unobserved bare nonzero failures and shell-wrapped
-  signal statuses such as 137 are also `crashed`. Any observed positive pids
-  or OOM-related delta in the candidate's counters or an ancestor's own local
-  counter makes a non-PASS candidate `crashed`, including a report-backed
-  failure. An ancestor-local event still counts when the corresponding
-  candidate counter is unavailable throughout the stable window;
-  `memory.events:max` remains telemetry. Limit-value changes preserve
-  observation and are reported in each `candidate` progress event as
-  `resource_limit_changes` (an empty list when unchanged); identity changes
-  make the window unobserved. Only a
-  completed witness-prefix replay with a positive event falls back to a full
-  command with a fresh window; replay errors propagate. A new Assay build
-  re-executes resumed campaign state because the Assay version is part of the
-  judge identity. A matching cached `crashed` record is reused on `--resume`;
-  select it explicitly with `--resume --rejudge crashed` to execute it again
-  (B182/B179).
-- After each native R2 sweep, retry once and serially any candidate executed in
-  that invocation whose result is `crashed`, per-candidate `budget_exceeded`,
-  or `hung`, while the campaign deadline allows. The retry uses the same
-  classifier, replaces the saved candidate state, and emits a `candidate_retry`
-  progress event with the first and final buckets. A campaign-deadline mask
-  closes the retry phase; cached records require explicit rejudge (B179).
-- Sort declared whole-target paths when building R1 and native/ingested R2
-  verdicts; avoid reporting pytest-cov's platform banner as the first failing
-  test or treating R0 execution errors as measured test failures (B181).
-- Classify an external signal, direct resource-limit event, or required
-  unavailable observation on a failed R0 command as `ERROR/EXEC_FAILED` with
-  deterministic detail; preserve self-inflicted fatal signals such as
-  `SIGSEGV` as `FAIL/COMMAND_FAILED`, and keep completed PASS results final.
-  `execute_command()` applies this R0 classification by default for library
+### R0 and R1
+- On a failed R0 command, an external signal, direct resource-limit event, or
+  required unavailable observation produces `ERROR/EXEC_FAILED` with
+  deterministic detail. A self-inflicted fatal signal such as `SIGSEGV`
+  remains `FAIL/COMMAND_FAILED`; a completed PASS remains PASS. A complete
+  report failure stays a functional failure unless a higher-precedence limit
+  event was observed. `execute_command()` applies this R0 mapping for library
   callers.
-- Make R1 inherit a non-judgeable R0 termination as `ERROR/EXEC_FAILED`, so a
-  coverage artifact cannot mask an infrastructure failure in its baseline.
-  This also covers `NOT_RUN` when the R0 command never started, and the R1
-  claim carries deterministic detail naming the inherited R0 termination.
+- R1 inherits a non-judgeable R0 termination as `ERROR/EXEC_FAILED`, including
+  `NOT_RUN`; it cannot use a coverage artifact to mask that infrastructure
+  failure. When R0 is judgeable, R1 applies its usual coverage rules. Declared
+  whole-target paths are sorted in R1 and native/ingested R2 verdicts, and R0
+  execution errors are not reported as measured test failures (B181).
 
-### Changed
-- Add per-candidate resource metrics to R2 progress and resumable state:
-  process-tree write bytes, nested CPU and peak RSS values, and the Assay
-  judge's resident memory sample. Missing procfs I/O remains unavailable
-  telemetry; verdicts and candidate classification are unchanged (AP-6).
-- Include observed resource windows in `command_finished` progress events and
-  print one advisory line when a failed R0 ran under measured PSI or CPU
-  throttling. Keep host measurements out of verdict fields, claim details
-  except for causal infrastructure evidence, and command output tails (B173).
-- Require a matching execution receipt for an R3 `import-break` result, and
-  preserve a clean control `FAIL` in the attempt evidence. Lanes whose lint or
-  type-check step rejects transformed source before tests execute should use
-  `uncovered-line` when R1 is declared; those import-break attempts are now
-  `INCONCLUSIVE` instead of receiving false catch credit.
-- Add the pure termination classifier and separate resource-limit evidence,
-  pressure telemetry, and observation availability in the internal command
-  model. R0/R1/R3 verdict paths keep their 10.0.1 behavior in this WP1 step;
-  classifier wiring follows in WP2–WP4 (B173).
+### R2
+- A PASS with an exited leader remains `survived` even when a direct limit
+  event is observed; a PASS with a signaled leader is `crashed`. Any positive
+  failure-relevant pids or OOM event makes a non-PASS candidate `crashed` and
+  denies kill credit, even with a failed-call witness. After the fail-closed
+  initial capability probe, an unavailable or identity-changed candidate
+  window is recorded as unobserved telemetry and the campaign continues. A
+  `killed` result requires an ordinary exit 1, a current-run pytest failed-call
+  witness and clean leader exit. That is the only failure shape that earns
+  kill credit with an unobserved window; bare nonzero exits, signals and
+  shell-wrapped statuses such as 137 are `crashed`. A configured limit-value
+  change keeps the window observed. A completed
+  witness-prefix replay with a positive event is discarded in favor of a full
+  command with a fresh window; replay errors still propagate.
+- After the initial sweep, Assay retries once and serially each candidate run
+  in the current invocation that ends `crashed`, per-candidate
+  `budget_exceeded`, or `hung`, while the campaign deadline permits. The retry
+  uses the shared classifier and replaces saved candidate state; the deadline
+  mask closes the retry phase (B179).
 
-### Compatibility
-- Compatibility: v16 schema relaxation — optional native R2
-  `resource_limit_evidence` is accepted as operator decision D2's recorded
-  exception to A-477. No verdict key or schema version was added.
+### R3
+- An `import-break` catch requires a normal nonzero exit, the expected
+  `COMMAND_FAILED` reason and a matching receipt written by the injected
+  statement. Signal deaths, report-derived failures with exit status zero, and
+  static checks that fail before the statement runs are `INCONCLUSIVE`; lanes
+  that lint or type-check before tests should use `uncovered-line` when R1 is
+  declared. A clean control `FAIL` remains visible in the attempt evidence,
+  and the verifier derives incomplete transformed runs as `INCONCLUSIVE`.
+
+### Progress and diagnostics
+- Native R2 candidate progress and resumable state add process-tree
+  `write_bytes`, nested `cpu_seconds` and `peak_rss_bytes`, and the judge's
+  `judge_rss_bytes`; unavailable procfs measurements remain null. Candidate
+  progress reports configured limit changes in `resource_limit_changes` (an
+  empty list when unchanged), and each serial retry emits `candidate_retry`
+  with the first and final buckets.
+- `command_finished.resources` carries the window duration, observation
+  status, PSI deltas, CPU-throttling duration and direct limit-event deltas.
+  R0 emits one advisory line after a failed command with measured PSI or CPU
+  throttling. Pressure telemetry stays out of verdict fields, claim details,
+  canary descriptions and captured output tails; causal infrastructure
+  evidence remains in deterministic claim detail.
+
+### Schema compatibility
+- Native R2 accepts optional `resource_limit_evidence` within verdict schema
+  v16, the recorded D2 exception to A-477. No verdict key or schema version
+  changed.
+
+### Resume state
+- A new Assay build re-executes resumed campaign state because the Assay
+  version is part of the judge identity. A matching cached `crashed` record is
+  reused on `--resume`; use `--resume --rejudge crashed` to execute it again.
 
 <!-- cmru: release history -->
 
@@ -299,7 +299,8 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ### Release notes
 - 10.0.0 is a provisional release for mutation purposes: the R2 mutation campaign
-  was waived by operator decision on 2026-10-27 (release wave waiver; see B169).
+  was waived by operator decision on 2026-10-27 and extended by the operator on
+  2026-10-31 through the 10.1.0 release (see B169).
   No R2 pass is claimed. Every other gate (R0, R1 line and branch coverage, the
   analysis lane, the independent self-hosting witness and the distribution build)
   ran.
@@ -307,15 +308,16 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   step, `cmru.toml` `run-tests`): the full qualification minus R2. It runs R0,
   R1 over all of `src/assay` (whole-target 100% line and branch) and the R3
   canary, and records `.assay/mutation-postponed-assay.json` (tracking id B169,
-  operator decision 2026-10-27, valid only for a prepared release version in
-  `[10.0.0, 10.1.0)`, result `provisional`, never an R2 pass). The marker check
+  operator decision 2026-10-27, extended by operator on 2026-10-31, valid only
+  for a prepared release version in `[10.0.0, 10.2.0)`, result `provisional`,
+  never an R2 pass). The marker check
   reads the first dated release heading after `Unreleased`, requires it to
   match CMRU's protected release-transaction version, and requires a visible
-  stable `assay-vX.Y.Z` tag below 10.1.0; it refuses when no stable tag can be
+  stable `assay-vX.Y.Z` tag below 10.2.0; it refuses when no stable tag can be
   listed. Its `cmru_release_gate_version_bound` boolean records whether the
   protected transaction version was received and matched.
   CMRU runs this lane after the self-hosted gate and before tagging, so the
-  prepared version check also refuses the 10.1.0 release before its tag exists.
+  prepared version check also refuses the 10.2.0 release before its tag exists.
   The 210-minute lane requires the gate coordinator to keep other registered
   gates serial across projects; Run-Gate's Assay resource lock covers only
   Assay lanes. The full `self-qualification` lane is unchanged and clears the

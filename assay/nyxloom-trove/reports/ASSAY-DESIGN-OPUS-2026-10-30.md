@@ -376,3 +376,23 @@ Merge conflicts between WP2/3/4 are limited to `contention.py` imports and docs.
 4. **R3 control reuses the baseline unit (WP6)?** This partly overrides the old "independent control" rationale (O2, `canary.py:716-725`). Default **yes, in 10.1**: it halves the provisional lane's runtime and its exposure to load.
 5. **Version and waiver for the redesign.** Default: **10.1.0 with the B169 window extended to `<10.2.0`** (an operator decision recorded in B169 plus `self-qualification-gate.sh:816`). The alternative is running the full R2 campaign first, which is infeasible soon (B105/B110).
 6. **Should Run-Gate auto-retry Assay ERROR/exit-3 once?** Default **no automatic retry now**. Fix the false "retried" comment, and file an opt-in `retries` key for command lanes in the Run-Gate backlog (CIU/RG convention), so infrastructure retries are explicit and counted.
+
+## AP-8 addendum — 10.1.0 preparation (2026-10-31)
+
+The current AP-8 contract and operator decisions D1–D8 are recorded in
+`/home/vscode/vbpub-release-program-20261027/reports/ASSAY-OPUS-REVIEW-AND-PLAN-2026-10-31.md`
+(sections `AP-8` and 4). That brief supersedes this report's earlier release
+sequence and optional control-reuse timing for the current integration:
+
+- The consumer-visible changes consolidated here prepare release **10.1.0**;
+  the earlier 10.0.2 option is not the target for this package.
+- Operator decision D5 extends B169 on 2026-10-31. The provisional window is
+  `>=10.0.0,<10.2.0`, which permits the 10.1.0 release while still refusing a
+  prepared 10.2.0 release.
+- B178 lane-baseline reuse remains open and is deferred to **10.2.0**. It is
+  not included in the 10.1.0 behavior described by this addendum.
+
+AP-8 also consolidates the shared host-load/verdict rules, synchronizes the
+README, CONSUMERS and `[Unreleased]` notes, and records the current B173–B179
+and B182 dispositions in the backlog. Registered gate results remain with the
+release controller.
