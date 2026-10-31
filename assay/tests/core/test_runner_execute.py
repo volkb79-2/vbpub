@@ -337,6 +337,9 @@ def test_r0_pass_with_limit_event_is_pass(
         (None, Outcome.FAIL, Outcome.FAIL),
         (Termination.PASSED, Outcome.FAIL, Outcome.FAIL),
         (Termination.FAILED, Outcome.FAIL, Outcome.FAIL),
+        # A self-inflicted signal is a judged R0 FAIL (blocking judgeable),
+        # so R1 keeps its own coverage judgement instead of inheriting ERROR.
+        (Termination.SELF_SIGNALED, Outcome.FAIL, Outcome.FAIL),
         (Termination.NOT_RUN, Outcome.FAIL, Outcome.ERROR),
         (Termination.KILLED_EXTERNALLY, Outcome.FAIL, Outcome.ERROR),
         (Termination.LEAKED, Outcome.PASS, Outcome.ERROR),
