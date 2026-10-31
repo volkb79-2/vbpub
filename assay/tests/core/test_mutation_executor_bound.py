@@ -13,10 +13,15 @@ module (AUTHORING.md §3b.A).
 
 from __future__ import annotations
 
-from conftest import completed_process, timeout_expired
+from conftest import (
+    completed_process,
+    process_tree_evidence_dict,
+    timeout_expired,
+)
 
 import json
 import os
+import signal
 import stat
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -27,7 +32,7 @@ import pytest
 from conftest import GitRepo, make_deadline, make_lane, make_plan, prepared_snapshot
 
 from assay.adapters.python import PythonAdapter
-from assay import isolation as isolation_module
+from assay import isolation as isolation_module, liveness
 from assay import mutation as mutation_module, runner as runner_module
 from assay.errors import AssayError, Outcome, ReasonCode
 from assay.process_tree import ProcessTreeError
@@ -60,6 +65,9 @@ _TEXT3 = (
 )
 _TARGETS3 = (
     MutationTarget(path="pkg/flags.py", text=_TEXT3, lines=frozenset({2, 3, 4})),
+)
+_TARGET_A = (
+    MutationTarget(path="pkg/flags.py", text=_TEXT3, lines=frozenset({2})),
 )
 _TEXT5 = _TEXT
 _TARGETS5 = _TARGETS
@@ -1777,3 +1785,343 @@ def test_resumed_pending_indices_remain_monotonic_under_reverse_completion(
         if event.get("event") == "candidate"
     ] == [0, 1, 2]
     assert len(list(state_root.glob("*.json"))) == 5
+
+
+def _signaled_process(argv, signum):
+    result = completed_process(list(argv), -signum, "", "")
+    result.process_tree_evidence = process_tree_evidence_dict(
+        leader_status="signaled"
+    )
+    return result
+
+
+def _raise_candidate_hung(argv, timeout):
+    error = liveness.LivenessHungExpired(
+        cmd=list(argv),
+        timeout=timeout,
+        output=b"",
+        stderr=b"",
+        resource_evidence={},
+    )
+    error.process_tree_evidence = process_tree_evidence_dict(
+        leader_status="timeout-killed"
+    )
+    raise error
+
+
+def test_infra_buckets_retried_once_serially(tmp_path, monkeypatch):
+    calls = {name: 0 for name in "abc"}
+    first_attempts = threading.Barrier(3)
+    lock = threading.Lock()
+    active_retries = 0
+    max_active_retries = 0
+
+    def action(name):
+        def run(argv, cwd):
+            nonlocal active_retries, max_active_retries
+            with lock:
+                calls[name] += 1
+                attempt = calls[name]
+                if attempt > 1:
+                    active_retries += 1
+                    max_active_retries = max(max_active_retries, active_retries)
+            try:
+                if attempt == 1:
+                    first_attempts.wait(timeout=10)
+                    if name == "a":
+                        return _signaled_process(argv, signal.SIGKILL)
+                    if name == "b":
+                        _raise_candidate_hung(argv, timeout=1.0)
+                    raise timeout_expired(list(argv), timeout=1.0, output=b"")
+                return completed_process(list(argv), 0, "", "")
+            finally:
+                if attempt > 1:
+                    with lock:
+                        active_retries -= 1
+
+        return run
+
+    result = _run_queue_case(
+        tmp_path,
+        monkeypatch,
+        name="serial-tail-retry",
+        targets=_TARGETS3,
+        text=_TEXT3,
+        jobs=3,
+        process_runner=_decide5(
+            tmp_path, {name: action(name) for name in "abc"}
+        ),
+        budget_per_candidate_seconds=1.0,
+    )
+
+    assert calls == {name: 2 for name in "abc"}
+    assert max_active_retries == 1
+    assert len(result.survived) == 3
+    assert result.crashed == result.budget_exceeded == result.hung == ()
+
+
+@pytest.mark.parametrize(
+    ("retry_kind", "expected_bucket"),
+    (
+        ("pass", "survived"),
+        ("fail", "killed"),
+        ("signal", "crashed"),
+        ("hung", "hung"),
+        ("budget", "budget_exceeded"),
+    ),
+)
+def test_retry_classified_by_same_rules(
+    tmp_path, monkeypatch, retry_kind, expected_bucket
+):
+    calls = 0
+
+    def action(argv, cwd):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return _signaled_process(argv, signal.SIGKILL)
+        if retry_kind == "pass":
+            return completed_process(list(argv), 0, "", "")
+        if retry_kind == "fail":
+            return completed_process(list(argv), 1, "", "")
+        if retry_kind == "signal":
+            return _signaled_process(argv, signal.SIGTERM)
+        if retry_kind == "hung":
+            _raise_candidate_hung(argv, timeout=1.0)
+        raise timeout_expired(list(argv), timeout=1.0, output=b"")
+
+    result = _run_queue_case(
+        tmp_path,
+        monkeypatch,
+        name=f"retry-classifier-{retry_kind}",
+        targets=_TARGET_A,
+        text=_TEXT3,
+        jobs=1,
+        process_runner=_decide5(tmp_path, {"a": action}),
+        budget_per_candidate_seconds=(1.0 if retry_kind == "budget" else None),
+    )
+
+    assert calls == 2
+    assert len(getattr(result, expected_bucket)) == 1
+    assert all(
+        not getattr(result, bucket)
+        for bucket in {"killed", "survived", "crashed", "budget_exceeded", "hung"}
+        - {expected_bucket}
+    )
+
+
+def test_judged_buckets_never_retried(tmp_path, monkeypatch):
+    repo = _seed_repo(tmp_path, "judged-tail-retry", _TEXT3)
+    repo.write(".gitignore", "pkg/equivalence.json\n")
+    repo.commit_all("ignore generated equivalence artifact")
+    calls = {name: 0 for name in "abc"}
+
+    def crashed_then_killed(argv, cwd):
+        calls["a"] += 1
+        if calls["a"] == 1:
+            return _signaled_process(argv, signal.SIGKILL)
+        (cwd / "pkg/equivalence.json").write_text("changed", encoding="utf-8")
+        return completed_process(list(argv), 1, "", "")
+
+    def survived(argv, cwd):
+        calls["b"] += 1
+        (cwd / "pkg/equivalence.json").write_text("changed", encoding="utf-8")
+        return completed_process(list(argv), 0, "", "")
+
+    def equivalent(argv, cwd):
+        calls["c"] += 1
+        (cwd / "pkg/equivalence.json").write_text("baseline", encoding="utf-8")
+        return completed_process(list(argv), 1, "", "")
+
+    result = _run_queue_case(
+        tmp_path,
+        monkeypatch,
+        name="judged-tail-retry-run",
+        repo=repo,
+        targets=_TARGETS3,
+        text=_TEXT3,
+        jobs=1,
+        process_runner=_decide5(
+            tmp_path,
+            {
+                "a": crashed_then_killed,
+                "b": survived,
+                "c": equivalent,
+            },
+        ),
+        equivalence_artifact="pkg/equivalence.json",
+        baseline_equivalence=b"baseline",
+    )
+
+    assert calls == {"a": 2, "b": 1, "c": 1}
+    assert len(result.survived) == 1
+    assert len(result.equivalent) == 1
+    assert len(result.killed) == 1
+    assert result.crashed == ()
+
+
+def test_retry_respects_campaign_deadline(tmp_path, monkeypatch):
+    now = [0.0]
+    deadline = make_deadline(budget_seconds=10.0, monotonic=lambda: now[0])
+
+    class ExpireAfterRetryEvent(list):
+        def append(self, event):
+            super().append(event)
+            if event.get("event") == "candidate_retry":
+                now[0] = 11.0
+
+    events = ExpireAfterRetryEvent()
+    calls = {name: 0 for name in "abc"}
+
+    def action(name):
+        def run(argv, cwd):
+            calls[name] += 1
+            if name == "c":
+                return completed_process(list(argv), 0, "", "")
+            if calls[name] == 1:
+                return _signaled_process(argv, signal.SIGKILL)
+            return _signaled_process(argv, signal.SIGTERM)
+
+        return run
+
+    with pytest.raises(AssayError) as caught:
+        _run_queue_case(
+            tmp_path,
+            monkeypatch,
+            name="retry-deadline",
+            targets=_TARGETS3,
+            text=_TEXT3,
+            jobs=1,
+            process_runner=_decide5(
+                tmp_path, {name: action(name) for name in "abc"}
+            ),
+            progress_events=events,
+            deadline=deadline,
+        )
+
+    assert caught.value.reason_code is ReasonCode.LANE_TIMEOUT
+    assert calls == {"a": 2, "b": 1, "c": 1}
+
+    masked_calls = {name: 0 for name in "abc"}
+
+    def masked_action(name):
+        def run(argv, cwd):
+            masked_calls[name] += 1
+            if name == "a":
+                return _signaled_process(argv, signal.SIGKILL)
+            if name == "b":
+                raise timeout_expired(list(argv), timeout=10.0, output=b"")
+            return completed_process(list(argv), 0, "", "")
+
+        return run
+
+    partial = _run_queue_case(
+        tmp_path,
+        monkeypatch,
+        name="retry-deadline-mask",
+        targets=_TARGETS3,
+        text=_TEXT3,
+        jobs=1,
+        process_runner=_decide5(
+            tmp_path, {name: masked_action(name) for name in "abc"}
+        ),
+        deadline=make_deadline(),
+    )
+    assert masked_calls == {"a": 1, "b": 1, "c": 0}
+    assert len(partial.crashed) == 1
+    assert len(partial.budget_exceeded) == 2
+
+
+def test_retry_overwrites_state_record_and_resume_reuses_it(tmp_path, monkeypatch):
+    state_root = tmp_path / "retry-state"
+    calls = 0
+
+    def action(argv, cwd):
+        nonlocal calls
+        calls += 1
+        return _signaled_process(
+            argv, signal.SIGKILL if calls == 1 else signal.SIGTERM
+        )
+
+    first = _run_queue_case(
+        tmp_path,
+        monkeypatch,
+        name="retry-state-first",
+        targets=_TARGET_A,
+        text=_TEXT3,
+        jobs=1,
+        process_runner=_decide5(tmp_path, {"a": action}),
+        state_root=state_root,
+    )
+
+    job = collect_mutation_sites(
+        _TARGET_A,
+        adapter=PythonAdapter(),
+        operators=("python:bool-const-flip",),
+        limit=50,
+    )[0]
+    record_path = state_root / f"{candidate_id(job)}.json"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    assert len(first.crashed) == 1
+    assert calls == 2
+    assert record["outcome_bucket"] == "crashed"
+    assert record["terminal_result"]["returncode"] == -signal.SIGTERM
+
+    def unexpected_candidate_run(argv, *, env, cwd, timeout):
+        raise AssertionError("resume must reuse the saved crashed record")
+
+    resumed = _run_queue_case(
+        tmp_path,
+        monkeypatch,
+        name="retry-state-resume",
+        targets=_TARGET_A,
+        text=_TEXT3,
+        jobs=1,
+        process_runner=unexpected_candidate_run,
+        repo=_seed_repo(tmp_path, "retry-state-resume-repo", _TEXT3),
+        state_root=state_root,
+        resume=True,
+    )
+
+    assert len(resumed.crashed) == 1
+    assert calls == 2
+
+
+def test_progress_emits_candidate_retry(tmp_path, monkeypatch):
+    calls = 0
+    events: list[dict] = []
+
+    def action(argv, cwd):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return _signaled_process(argv, signal.SIGKILL)
+        return completed_process(list(argv), 0, "", "")
+
+    _run_queue_case(
+        tmp_path,
+        monkeypatch,
+        name="retry-progress",
+        targets=_TARGET_A,
+        text=_TEXT3,
+        jobs=1,
+        process_runner=_decide5(tmp_path, {"a": action}),
+        progress_events=events,
+    )
+
+    job = collect_mutation_sites(
+        _TARGET_A,
+        adapter=PythonAdapter(),
+        operators=("python:bool-const-flip",),
+        limit=50,
+    )[0]
+    (retry_event,) = [event for event in events if event.get("event") == "candidate_retry"]
+    assert {
+        "event",
+        "candidate_id",
+        "first_bucket",
+        "final_bucket",
+    } <= set(retry_event)
+    assert retry_event["candidate_id"] == candidate_id(job)
+    assert retry_event["first_bucket"] == "crashed"
+    assert retry_event["final_bucket"] == "survived"
