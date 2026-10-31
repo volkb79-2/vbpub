@@ -42,6 +42,8 @@ REQUIRED_TOOLS = {
         "umount",
     ],
 }
+GIB_BYTES = 1024**3
+MIN_GOLDEN_DISK_BYTES = 16 * GIB_BYTES
 
 
 class BuildError(RuntimeError):
@@ -280,8 +282,7 @@ def inspect_golden_image(image: Path) -> dict[str, object]:
     if not image.is_file():
         raise BuildError(f"golden raw image not found: {image}")
     raw_size = image.stat().st_size
-    if raw_size < 16 * 1024 * 1024 * 1024 or raw_size % 512:
-        raise BuildError("golden image must be a sector-aligned whole disk of at least 16 GiB")
+    golden_image_payload_name(raw_size)
     result = run(["sgdisk", "--print", str(image)])
     disk_match = re.search(
         r"Disk identifier \(GUID\):\s*([0-9A-Fa-f-]{36})",
@@ -337,6 +338,20 @@ def inspect_golden_image(image: Path) -> dict[str, object]:
         "disk_guid": disk_match.group(1).lower(),
         "partitions": partitions,
     }
+
+
+def golden_image_payload_name(raw_size_bytes: int) -> str:
+    if (
+        isinstance(raw_size_bytes, bool)
+        or not isinstance(raw_size_bytes, int)
+        or raw_size_bytes < MIN_GOLDEN_DISK_BYTES
+        or raw_size_bytes % GIB_BYTES
+        or raw_size_bytes % 512
+    ):
+        raise BuildError(
+            "golden image must be a whole-GiB, sector-aligned disk of at least 16 GiB"
+        )
+    return f"truenas-27-{raw_size_bytes // GIB_BYTES}GiB-golden.raw.zst"
 
 
 def compress_image(image: Path, output: Path, raw_size: int) -> tuple[str, str]:
@@ -632,7 +647,7 @@ def create_iso(
     payload.mkdir()
     cleared_checksums = work / "empty-md5sum.txt"
     cleared_checksums.write_text("", encoding="ascii")
-    shutil.copy2(compressed_image, payload / "truenas-27-16GiB-golden.raw.zst")
+    shutil.copy2(compressed_image, payload / compressed_image.name)
     (payload / "manifest.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
@@ -785,7 +800,9 @@ def build(args: argparse.Namespace) -> None:
         dir=str(output.parent),
     ) as temp_name:
         work = Path(temp_name)
-        compressed = work / "truenas-27-16GiB-golden.raw.zst"
+        compressed = work / golden_image_payload_name(
+            int(image_facts["raw_image_size_bytes"])
+        )
         raw_sha, compressed_sha = compress_image(
             image,
             compressed,

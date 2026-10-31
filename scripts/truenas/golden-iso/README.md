@@ -18,6 +18,12 @@ then has two scripts:
    validates a Debian Live base ISO, embeds the golden disk and restore runtime,
    and produces the unattended restore ISO.
 
+The captured QCOW2 is the size authority: step 1 accepts whole-GiB source disks
+of at least 16 GiB and captures that exact virtual size. Its preferred source,
+raw-image, and sidecar names use 20 GiB. Step 2 names the compressed payload
+from the recorded image size, and restore writes exactly that many bytes. It
+does not resize the captured ZFS partition or boot pool.
+
 Use the [consumer guide](docs/CONSUMERS.md) for the tested manual installation,
 source preparation, ISO build, QEMU replay, and Netcup install commands. The
 [design guide](docs/DESIGN-GUIDE.md) records restore boundaries, safeguards,
@@ -34,15 +40,29 @@ host-side credential is separate from the golden source-image sidecar.
 
 ## Current artifact status
 
-As of 2026-10-21, `artifacts/` contains only the protected TOML sidecar; there
-is no raw golden disk or unattended restore ISO to inspect or install. The
-retained source QCOW2 is the 16 GiB TrueNAS `27.0.0-RC.1` VM disk dated
-2026-10-15. It does not establish a current v27+ golden, and the official
-[TrueNAS 28 nightly index](https://iso.sys.truenas.net/TrueNAS-28-Nightlies/)
-already lists newer nightlies than the one used for the existing patch
-comparison. Re-run source preparation and ISO construction before treating
-the workflow as current. The historical build and replay records are in the
-[consumer guide](docs/CONSUMERS.md).
+The 2026-10-31 rebuild installed vanilla TrueNAS `27.0.0-RC.1` on a 20 GiB
+source disk and captured a 20 GiB raw image. The source installer SHA-256 is
+`515a0252e72f1a6c86d603fa4d1661333029fe9a4804d0a7a28d24fe4f63498e`; the raw
+image SHA-256 is `721a8b22698f7be66d853c3719351849dacfc59271d023734a846615ebc6b1d7`.
+At first boot `boot-pool` was 19 GiB with 15.1 GiB free. Step 1 completed and
+the sidecar is mode 0600. The TCG admission guard refused three starts under
+high memory PSI; the fourth start passed after pressure subsided. The guard
+was not bypassed.
+
+Step 2 verified the signed Debian Live 13.7.0 base, then failed twice while
+installing `sgdisk`, `efibootmgr`, and `eject` inside the Debian chroot:
+`apt-get` could not resolve `deb.debian.org`. Host DNS and an HTTP request to
+the Debian repository succeeded during diagnosis, but the documented chroot
+build continued to fail. No restore ISO, local restore replay, v1001 install,
+new provider snapshot, or 20 GiB acceptance run exists. Keep the existing
+16 GiB provider snapshot as the only available base until step 2, local replay,
+and v1001 install finish. The exact logs and hashes are in the operator
+evidence directory under `truenas-live-20261031`.
+
+The earlier 16 GiB source run and restore payload remain historical evidence.
+The official [TrueNAS 28 nightly index](https://iso.sys.truenas.net/TrueNAS-28-Nightlies/)
+advances independently of the RC.1 source used here; record exact build and
+installer hashes for each compatibility run.
 
 The capture workflow does **not** apply the boot-pool relaxation patch. It
 captures the source disk as it is. A patched source would require a separate,

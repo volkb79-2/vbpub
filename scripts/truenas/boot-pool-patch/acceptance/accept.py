@@ -720,6 +720,10 @@ def _result_index(results_dir: Path, target_versions: list[str]) -> str:
         "| `tn-v27rc1-path-a-patched-20261030` | Older Path A snapshot; found to contain stale survival fixtures, so it is excluded from acceptance starts. |",
         "| `tn-v27rc1-path-a-patched-clean-20261030` | v27 RC.1 patched with an empty Path A root; clean acceptance start state. |",
         "",
+        "## 2026-10-31 20 GiB capacity-rebuild attempt",
+        "",
+        "A vanilla `27.0.0-RC.1` source install and step 1 capture succeeded on a 20 GiB disk after three managed TCG admissions were refused at 22.57%, 30.72%, and 38.47% memory PSI. The boot pool was 19 GiB with 15.1 GiB free; the 20 GiB raw image SHA-256 is `721a8b22698f7be66d853c3719351849dacfc59271d023734a846615ebc6b1d7`. Step 2 verified the signed Debian base but failed twice when chroot `apt-get` could not resolve `deb.debian.org`; host DNS and HTTP access worked during diagnosis. The documented build was not modified or bypassed. No restore ISO, local replay, v1001 install, provider snapshot, or 20 GiB acceptance run exists, so the matrix above has no new-base scenario. See `scripts/truenas/golden-iso/docs/CONSUMERS.md` and the external `truenas-live-20261031` evidence directory for details.",
+        "",
     ])
 
 

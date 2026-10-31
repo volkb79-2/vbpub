@@ -49,15 +49,28 @@ Keep the feature summary in [`README.md`](README.md), adoption commands in
 ## Current artifact discrepancy
 
 The consumer guide records the v6 runtime's `lsblk --tree` correction and its
-regression test. The earlier v5 incident text says the v6 ISO was still being
-rebuilt. As of 2026-10-21, the ignored `artifacts/` directory contains only
-the mode-0600 TOML sidecar: the raw golden disk and unattended restore ISO are
-absent. The v6 artifact and its final replay/provider result are therefore not
-available to verify from this checkout. The retained source QCOW2 is dated
-2026-10-15 and uses TrueNAS 27.0.0-RC.1; it is not a current v27+ golden
-artifact. PWMCP inspection of the official v28 nightly index found builds
-through `28.0.0-MASTER+20261019-175231`. The live v1001 host has two custom
-middleware modules matching this worktree but 14 of 15 release-adapter source
-targets differ, with no patch-install record. This does not establish that the
-custom code came from the golden image; the missing raw image and ISO prevent
-provenance verification. Step 1 and step 2 must be rerun before another install.
+regression test. On 2026-10-31, vanilla TrueNAS `27.0.0-RC.1` installed and
+booted on the 20 GiB source disk. The first three managed TCG starts were
+refused because memory PSI `some avg10` at `/dev.slice/dev-gates.slice` was
+22.57%, 30.72%, and 38.47%, above the 10% admission limit. A later admission
+passed after pressure subsided; the guard was not bypassed. The source pool
+reported 19 GiB size and 15.1 GiB free. Step 1 captured a 21,474,836,480-byte
+raw image with SHA-256
+`721a8b22698f7be66d853c3719351849dacfc59271d023734a846615ebc6b1d7`; its
+sidecar remains mode 0600.
+
+Step 2 verified the signed Debian Live base but failed twice while installing
+`sgdisk`, `efibootmgr`, and `eject` in its chroot. Both runs ended with
+`Temporary failure resolving 'deb.debian.org'`; host DNS and an HTTP HEAD
+request succeeded during diagnosis. Do not inject a resolver or package
+archive into the chroot as a manual workaround. Retry the documented builder
+when the environment permits it. No restore ISO, local replay, v1001 install,
+new snapshot, or 20 GiB acceptance run exists.
+
+Remaining environment-bound work: finish step 2 and replay the ISO locally;
+install it on v1001 under `v1001.lock`; record the new snapshot ID; then run the
+blocked update-survival matrix from fresh patched states. The existing 16 GiB
+provider snapshot remains the only usable base. The live v1001 host still has
+two custom middleware modules matching this worktree but 14 of 15
+release-adapter source targets differ, with no patch-install record; that does
+not establish that the custom code came from the historical golden image.

@@ -2,6 +2,19 @@
 
 ## Golden disk restore ISO
 
+### Source disk size is the restore size
+
+Step 1 reads the QCOW2's virtual size and captures that exact whole disk. The
+workflow accepts whole-GiB source disks from 16 GiB upward; its preferred
+source, raw image, and sidecar use 20 GiB. Step 2 verifies the same size from
+the raw file, names the compressed payload from that size, and records the
+byte count in the manifest. The runtime selects the payload from the manifest
+and writes exactly the recorded number of bytes. This supports an update that
+needs more boot-pool headroom while keeping image geometry a fact of the
+installed source. A restore onto a larger provider disk moves only the backup
+GPT header; it does not grow partition 3 or the ZFS pool. A smaller target is
+refused before any write.
+
 The bare-metal restore path starts from a configured TrueNAS whole-disk raw
 image. A Debian Live ISO provides the boot environment; the image is compressed
 with a Zstandard frame checksum and shipped inside the ISO. The builder verifies

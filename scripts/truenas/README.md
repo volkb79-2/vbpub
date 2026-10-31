@@ -154,9 +154,11 @@ flowchart LR
   and [consumer guide](boot-pool-patch/docs/CONSUMERS.md).
 - [Golden ISO](golden-iso/README.md) configures a source installation, captures
   its whole disk with a sibling secret TOML, and builds an unattended restore
-  ISO. Restore keeps the captured partition sizes. Patch application is a
-  separate step. See its [design guide](golden-iso/docs/DESIGN-GUIDE.md) and
-  [consumer guide](golden-iso/docs/CONSUMERS.md).
+  ISO. The preferred source disk is 20 GiB to provide more boot-pool update
+  headroom; restore keeps that captured partition size. A larger provider disk
+  retains its remaining tail for later Path B provisioning. Patch application
+  is a separate step. See its [design guide](golden-iso/docs/DESIGN-GUIDE.md)
+  and [consumer guide](golden-iso/docs/CONSUMERS.md).
 - [Vanilla ISO patcher](vanilla-iso-patcher/README.md) edits a stock TrueNAS
   installer to cap partition 3 and leave a free tail for Path B. It does not
   create a data partition or pool. See its [consumer procedure](vanilla-iso-patcher/CONSUMERS.md)
@@ -200,12 +202,13 @@ flowchart LR
   controller owns provider-side ISO upload, attachment, boot order, and power
   operations. Guest-side eject does not detach Netcup virtual media.
 
-The vanilla ISO patcher can reserve the tail needed by Path B during a fresh
-install. The golden-image workflow instead restores a previously configured
-system disk without resizing its ZFS partition; Path A can use existing
-boot-pool space, while Path B needs a tail that was reserved before capture.
-The patch can be applied after restore, or manually before capturing the
-golden image. The API tools can inspect or operate the resulting host.
+The vanilla ISO patcher can reserve a tail for Path B during a fresh install.
+The golden-image workflow restores a previously configured system disk without
+resizing its ZFS partition. Path A uses existing boot-pool space. Path B needs
+unallocated space after the captured boot partition on the restore target; a
+larger target disk can provide that tail. The patch can be applied after
+restore, or manually before capturing the golden image. The API tools can
+inspect or operate the resulting host.
 
 All release evidence is scoped to the exact ISO or middleware fingerprints
 named in each subproject. Check each subproject's current status and open

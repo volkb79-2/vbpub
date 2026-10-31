@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare an installed 16 GiB TrueNAS VM and capture its whole boot disk.
+"""Prepare an installed TrueNAS VM and capture its whole boot disk.
 
 The TrueNAS installer itself is interactive. Install the VM once using the
 serial/VNC procedure in README.md, then this script configures the administrator
@@ -34,15 +34,16 @@ sys.path.insert(0, str(HERE.parent))
 from truenas_api_client import TrueNASAPIClient, TrueNASAPIError, TrueNASSettings
 
 
-DEFAULT_VM_DISK = HERE / "vm" / "truenas-27.qcow2"
-DEFAULT_VM_VARS = HERE / "vm" / "OVMF_VARS_4M.fd"
+DEFAULT_VM_DISK = HERE / "artifacts" / "truenas-27-20GiB-source.qcow2"
+DEFAULT_VM_VARS = HERE / "vm" / "truenas-27-20GiB-OVMF_VARS.fd"
 DEFAULT_VM_KEY = HERE / "vm" / "root_ed25519"
-DEFAULT_KNOWN_HOSTS = HERE / "vm" / "known_hosts"
-DEFAULT_IMAGE = HERE / "artifacts" / "truenas-27-16GiB-golden.raw"
-DEFAULT_SECRETS = HERE / "artifacts" / "truenas-27-16GiB-golden.secrets.toml"
+DEFAULT_KNOWN_HOSTS = HERE / "vm" / "truenas-27-20GiB-known_hosts"
+DEFAULT_IMAGE = HERE / "artifacts" / "truenas-27-20GiB-golden.raw"
+DEFAULT_SECRETS = HERE / "artifacts" / "truenas-27-20GiB-golden.secrets.toml"
 DEFAULT_QEMU_LOG = HERE / "vm" / "step1-source-console.log"
-DISK_BYTES = 16 * 1024**3
-API_KEY_NAME = "truenas-27-golden-image"
+GIB_BYTES = 1024**3
+MIN_GOLDEN_DISK_BYTES = 16 * GIB_BYTES
+API_KEY_NAME = "truenas-27-20GiB-golden-image"
 SSH_HOST = "127.0.0.1"
 SSH_PORT = 2222
 API_PORT = 8443
@@ -522,14 +523,27 @@ def find_ovmf_code() -> Path:
     raise StepError("could not find OVMF_CODE_4M.fd; install the host OVMF package")
 
 
-def start_source_vm(args: argparse.Namespace, disk: Path) -> subprocess.Popen[bytes]:
+def source_disk_size_bytes(info: dict[str, Any]) -> int:
+    size = info.get("virtual-size")
+    if (
+        isinstance(size, bool)
+        or not isinstance(size, int)
+        or size < MIN_GOLDEN_DISK_BYTES
+        or size % GIB_BYTES
+    ):
+        raise StepError("source VM disk must be a whole-GiB QCOW2 disk of at least 16 GiB")
+    return size
+
+
+def start_source_vm(args: argparse.Namespace, disk: Path) -> tuple[subprocess.Popen[bytes], int]:
     if not disk.is_file():
         raise StepError(f"source VM disk not found: {disk}")
     if not args.vm_vars.is_file():
         raise StepError(f"source VM UEFI variable store not found: {args.vm_vars}")
     info = json_result(run(["qemu-img", "info", "--output=json", str(disk)]).stdout, "qemu-img info")
-    if info.get("format") != "qcow2" or info.get("virtual-size") != DISK_BYTES:
-        raise StepError("source VM disk must be a 16 GiB QCOW2 disk")
+    if info.get("format") != "qcow2":
+        raise StepError("source VM disk must be QCOW2")
+    disk_size_bytes = source_disk_size_bytes(info)
     check_disk_not_in_use(disk)
     check_port_available(SSH_PORT)
     check_port_available(API_PORT)
@@ -569,7 +583,10 @@ def start_source_vm(args: argparse.Namespace, disk: Path) -> subprocess.Popen[by
         "-serial",
         f"file:{args.qemu_log}",
     ]
-    log("Starting the installed 16 GiB source VM with loopback-only SSH/API forwards.")
+    log(
+        f"Starting the installed {disk_size_bytes // GIB_BYTES} GiB source VM "
+        "with loopback-only SSH/API forwards."
+    )
     log(f"QEMU serial log: {args.qemu_log}")
     try:
         log_stream = args.qemu_log.open("ab")
@@ -578,7 +595,7 @@ def start_source_vm(args: argparse.Namespace, disk: Path) -> subprocess.Popen[by
         raise StepError(f"could not start QEMU: {type(exc).__name__}") from None
     # QEMU owns the duplicated descriptor after exec; close our copy.
     log_stream.close()
-    return process
+    return process, disk_size_bytes
 
 
 def api_uri() -> str:
@@ -589,10 +606,10 @@ def api_block_is_valid(document: dict[str, Any]) -> bool:
     return isinstance(document.get("truenas_api"), dict)
 
 
-def verify_raw_layout(image: Path) -> None:
+def verify_raw_layout(image: Path, expected_size_bytes: int) -> None:
     size = image.stat().st_size
-    if size != DISK_BYTES:
-        raise StepError(f"captured raw disk is {size} bytes, expected {DISK_BYTES}")
+    if size != expected_size_bytes:
+        raise StepError(f"captured raw disk is {size} bytes, expected {expected_size_bytes}")
     table = run(["sgdisk", "--print", str(image)]).stdout
     if "Disk identifier (GUID):" not in table:
         raise StepError("captured raw disk has no readable GPT identifier")
@@ -622,7 +639,13 @@ def verify_raw_layout(image: Path) -> None:
         raise StepError("captured EFI partition does not contain EFI/BOOT/BOOTX64.EFI")
 
 
-def capture_image(source: Path, output: Path, *, force: bool) -> str:
+def capture_image(
+    source: Path,
+    output: Path,
+    *,
+    expected_size_bytes: int,
+    force: bool,
+) -> str:
     if output.exists() and not force:
         raise StepError(f"refusing to replace existing raw image without --force: {output}")
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -637,11 +660,13 @@ def capture_image(source: Path, output: Path, *, force: bool) -> str:
             timeout=3600,
         )
         info = json_result(run(["qemu-img", "info", "--output=json", str(stage)]).stdout, "qemu-img info")
-        if info.get("format") != "raw" or info.get("virtual-size") != DISK_BYTES:
-            raise StepError("captured image is not a 16 GiB raw whole-disk image")
+        if info.get("format") != "raw" or info.get("virtual-size") != expected_size_bytes:
+            raise StepError(
+                f"captured image is not a {expected_size_bytes}-byte raw whole-disk image"
+            )
         log("Comparing the raw capture with the guest-visible QCOW2 sectors.")
         run(["qemu-img", "compare", "-f", "qcow2", "-F", "raw", str(source), str(stage)], timeout=3600)
-        verify_raw_layout(stage)
+        verify_raw_layout(stage, expected_size_bytes)
         digest = sha256_file(stage)
         os.chmod(stage, 0o600)
         os.replace(stage, output)
@@ -700,7 +725,7 @@ def run_step(args: argparse.Namespace) -> None:
     qemu: subprocess.Popen[bytes] | None = None
     with exclusive_lock(disk.with_suffix(disk.suffix + ".step1.lock")):
         try:
-            qemu = start_source_vm(args, disk)
+            qemu, disk_size_bytes = start_source_vm(args, disk)
             source = SourceVM(args, key_path, qemu)
             source.wait_for_root_ssh()
             source.wait_for_middleware()
@@ -753,8 +778,13 @@ def run_step(args: argparse.Namespace) -> None:
             # revoke it after the VM has shut down and strand the source config.
             sidecar_changed = False
             created_id = None
-            digest = capture_image(disk, image, force=args.force)
-            log(f"Golden raw image: {image} ({DISK_BYTES} bytes)")
+            digest = capture_image(
+                disk,
+                image,
+                expected_size_bytes=disk_size_bytes,
+                force=args.force,
+            )
+            log(f"Golden raw image: {image} ({disk_size_bytes} bytes)")
             log(f"Golden raw SHA-256: {digest}")
             log(f"Protected secret sidecar: {secrets_path} (mode 0600)")
         except Exception:

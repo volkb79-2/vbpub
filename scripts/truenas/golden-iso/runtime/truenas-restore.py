@@ -23,9 +23,10 @@ from typing import Any, Iterator
 
 MEDIA_ROOT = Path("/run/live/medium")
 INSTALL_ROOT = MEDIA_ROOT / "truenas-restore"
-IMAGE_PATH = INSTALL_ROOT / "truenas-27-16GiB-golden.raw.zst"
 MANIFEST_PATH = INSTALL_ROOT / "manifest.json"
 RUNTIME_CONFIG = Path("/etc/truenas-unattended-restore/runtime.json")
+GIB_BYTES = 1024**3
+MIN_GOLDEN_DISK_BYTES = 16 * GIB_BYTES
 GPT_LOADER = r"\EFI\BOOT\BOOTX64.EFI"
 PARTITION_TYPE_CODES = {
     "21686148-6449-6e6f-744e-656564454649": "EF02",
@@ -38,6 +39,20 @@ RESTORE_RECEIPT_RELATIVE_PATH = Path("EFI") / "TRUENAS-RESTORE" / "manifest.json
 
 class RestoreError(RuntimeError):
     pass
+
+
+def golden_image_payload_name(raw_size_bytes: int) -> str:
+    if (
+        isinstance(raw_size_bytes, bool)
+        or not isinstance(raw_size_bytes, int)
+        or raw_size_bytes < MIN_GOLDEN_DISK_BYTES
+        or raw_size_bytes % GIB_BYTES
+        or raw_size_bytes % 512
+    ):
+        raise RestoreError(
+            "restore manifest image size must be a whole-GiB, sector-aligned disk of at least 16 GiB"
+        )
+    return f"truenas-27-{raw_size_bytes // GIB_BYTES}GiB-golden.raw.zst"
 
 
 def log(message: str) -> None:
@@ -80,6 +95,9 @@ class Installer:
         self.webhook = self.config["mattermost_webhook_url"]
         self._notification_retry_after = 0.0
         self.manifest = self._read_manifest()
+        self.image_path = INSTALL_ROOT / golden_image_payload_name(
+            self.manifest["raw_image_size_bytes"]
+        )
         self.media_device = self._mounted_media_device()
 
     def _read_runtime_config(self) -> dict[str, Any]:
@@ -112,8 +130,8 @@ class Installer:
         partitions = manifest.get("partitions")
         if (
             not isinstance(image_size, int)
-            or image_size < 1024 * 1024 * 1024
-            or image_size % 512
+            or image_size < MIN_GOLDEN_DISK_BYTES
+            or image_size % GIB_BYTES
             or not isinstance(raw_sha, str)
             or not re.fullmatch(r"[0-9a-f]{64}", raw_sha)
             or not isinstance(compressed_sha, str)
@@ -485,9 +503,9 @@ class Installer:
         return True
 
     def _verify_compressed_image(self) -> None:
-        if not IMAGE_PATH.is_file():
-            raise RestoreError(f"bundled image not found at {IMAGE_PATH}")
-        image_size = IMAGE_PATH.stat().st_size
+        if not self.image_path.is_file():
+            raise RestoreError(f"bundled image not found at {self.image_path}")
+        image_size = self.image_path.stat().st_size
         self.notify(
             "image preflight",
             f"Compressed image: {image_size} bytes\n"
@@ -496,12 +514,12 @@ class Installer:
             "Checking the Zstandard frame checksum before writing any target sectors.",
         )
         digest = hashlib.sha256()
-        with IMAGE_PATH.open("rb") as source:
+        with self.image_path.open("rb") as source:
             for chunk in iter(lambda: source.read(16 * 1024 * 1024), b""):
                 digest.update(chunk)
         if digest.hexdigest() != self.manifest["compressed_image_sha256"]:
             raise RestoreError("bundled compressed image SHA-256 does not match manifest")
-        run(["zstd", "--test", "--quiet", str(IMAGE_PATH)], timeout=1800)
+        run(["zstd", "--test", "--quiet", str(self.image_path)], timeout=1800)
 
     def _verify_uefi_boot_environment(self) -> None:
         if not Path("/sys/firmware/efi/efivars").is_dir():
@@ -530,7 +548,7 @@ class Installer:
         )
         try:
             decompressor = subprocess.Popen(
-                ["zstd", "--quiet", "--decompress", "--stdout", str(IMAGE_PATH)],
+                ["zstd", "--quiet", "--decompress", "--stdout", str(self.image_path)],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
