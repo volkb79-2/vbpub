@@ -142,14 +142,15 @@ SPEC §9.
 | RG-122 | `pytest-cov --cov-fail-under` can exit successfully while printing a raw coverage result below the floor because its exit check rounds to configured precision; a `kind = "command"` Run-Gate lane trusts that exit status | Medium | OPEN (filed 2026-10-29 from tnt TNT-53; consumer precision-2 workaround documented there) |
 | RG-123 | Assay's merged-baseline parallel-safety regression lane has a stale red-first premise after merge; consolidate the load-verdict docs and retire the lane | Low | OPEN; Assay B177 WP5 follow-up after WP2–WP4 |
 | RG-124 | `RUN_GATE_EXTRA_MOUNTS` used `-v`, which can create a missing bind source as an empty host directory | Minor | FIXED IN THIS BRANCH (CW4); see `extra_mount_flags()` and `TestExtraMounts::test_extra_mount_flags_use_mount_form_for_missing_source_refusal` |
-| RG-125 | host-mode resource resolution rejects mount delimiters in `MDT_COW_ROOT` although no bind is built | Minor | OPEN 2026-10-30; review `rg3.out` |
-| RG-126 | the `MDT_COW_ROOT` refusal calls a host-mode value a Docker mount path | Minor | OPEN 2026-10-30; review `rg3.out` |
-| RG-127 | extra-mount validation runs before an attached-container return and is repeated then discarded in dispatch | Minor | OPEN 2026-10-30; review `rg3.out` |
-| RG-128 | `container_mount_flags()` can raise `TypeError` for a missing worktree instead of `GateError` | Minor | OPEN 2026-10-30; review `rg3.out` |
-| RG-129 | `dual_mount_flags()` validates the alias namespace path twice | Minor | OPEN 2026-10-30; review `rg3.out` |
-| RG-130 | users are not told that Run-Gate has no `--ram-target` option | Minor | OPEN 2026-10-30; review `rg3.out` |
+| RG-125 | host-mode resource resolution rejects mount delimiters in `MDT_COW_ROOT` although no bind is built | Minor | FIXED IN THIS BRANCH (RG-241); `test_host_cow_root_pass_through_does_not_apply_docker_delimiters` |
+| RG-126 | the `MDT_COW_ROOT` refusal calls a host-mode value a Docker mount path | Minor | FIXED IN THIS BRANCH (RG-241); validation is limited to ephemeral bind sources and names that context |
+| RG-127 | extra-mount validation runs before an attached-container return and is repeated then discarded in dispatch | Minor | FIXED IN THIS BRANCH (RG-241); `test_attached_ephemeral_lane_ignores_unused_extra_mounts` |
+| RG-128 | `container_mount_flags()` can raise `TypeError` for a missing worktree instead of `GateError` | Minor | FIXED IN THIS BRANCH (RG-241); `test_container_mount_flags_missing_worktree_is_a_gate_error` |
+| RG-129 | `dual_mount_flags()` validates the alias namespace path twice | Minor | FIXED IN THIS BRANCH (RG-241); `test_dual_mount_alias_namespace_is_validated_once` |
+| RG-130 | users are not told that Run-Gate has no `--ram-target` option | Minor | FIXED IN THIS BRANCH (RG-241); consumer docs and `test_ram_target_docs_name_the_supported_toml_surface` |
 | RG-131 | the planned R2 worker-count policy is not implemented | Enhancement | OPEN 2026-10-30; PR3 residual |
 | RG-132 | per-candidate resource metrics are not yet carried into Run-Gate history and footprint data | Enhancement | OPEN 2026-10-30; PR0 residual |
+| RG-133 | the translated generated preload source path was not checked against Docker mount delimiters | Minor | FIXED IN THIS BRANCH (RG-241); `test_relaxed_preload_rejects_translated_source_delimiters` |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -6721,7 +6722,7 @@ oracle is `tests/test_run_gate.py::TestExtraMounts::test_extra_mount_flags_use_m
 
 ## RG-125 — host-mode resource resolution rejects mount delimiters in `MDT_COW_ROOT`
 
-**Status:** OPEN. Severity: minor. Filed 2026-10-30 from `reviews/rg3.out`.
+**Status:** FIXED IN THIS BRANCH (RG-241). Severity: minor.
 
 **Observed.** `run_gate.py:1831-1839,1849-1857` calls
 `_validate_cow_root()` for an auto-mode CoW setting whenever `MDT_COW_ROOT` is
@@ -6730,24 +6731,30 @@ a value containing a comma, colon, or newline even though host mode passes it
 directly to the process and builds no Docker bind for it. `CONSUMERS.md:323-324`
 describes the restriction as applying to paths used in bind mounts.
 
-**Proposed fix.** Apply the delimiter check only when an ephemeral bind will
-be built; keep host-mode pass-through behavior unchanged.
+**Fix and oracle.** Apply the Docker-source validation only when an ephemeral
+bind will be built; host-mode and exec-mode pass-through keeps the supplied
+value unchanged. `tests/test_run_gate.py::TestCowtreeAndIoSyncResources::
+test_host_cow_root_pass_through_does_not_apply_docker_delimiters` constructs a
+host-mode value containing comma and colon and checks it is forwarded without
+producing a bind.
 
 ## RG-126 — the CoW root refusal names Docker mount paths in host mode
 
-**Status:** OPEN. Severity: minor. Filed 2026-10-30 from `reviews/rg3.out`.
+**Status:** FIXED IN THIS BRANCH (RG-241). Severity: minor.
 
 **Observed.** The error at `run_gate.py:1855-1857` says “Docker mount paths”
 cannot contain delimiters. The same validator is reached during host-mode
 resource resolution, where `MDT_COW_ROOT` is not used as a mount path, so the
 message describes a condition that is not true for that invocation.
 
-**Proposed fix.** Use context-neutral wording in `_validate_cow_root()`, or
-emit Docker-specific wording only from the ephemeral bind path.
+**Fix and oracle.** `_validate_cow_root()` now runs for this setting only when
+Run-Gate will use it as an ephemeral Docker bind source, and its refusal says
+"Docker bind source" at that point. The RG-125 host pass-through oracle also
+proves this refusal is not issued for a host-mode value.
 
 ## RG-127 — extra-mount validation runs before attachment is resolved and is discarded in dispatch
 
-**Status:** OPEN. Severity: minor. Filed 2026-10-30 from `reviews/rg3.out`.
+**Status:** FIXED IN THIS BRANCH (RG-241). Severity: minor.
 
 **Observed.** `run_gate.py:13532` computes `extra_mount_flags()` before
 `resolve_inflight()` can return an already-running container at `:13540-13546`;
@@ -6756,13 +6763,16 @@ can therefore refuse an invocation that will not build a Docker command. The
 ephemeral dispatch path also calls `extra_mount_flags()` at `:16032-16033` and
 discards its result before the runner computes it again.
 
-**Proposed fix.** Resolve attachment before constructing or validating
-mounts, and keep one validation/build call at the point where a new container
-will consume the flags.
+**Fix and oracle.** Remove the discarded dispatch-time parse and parse the
+extra mounts only after `resolve_inflight()` determines a new container is
+needed. `tests/test_run_gate.py::TestCowtreeAndIoSyncResources::
+test_attached_ephemeral_lane_ignores_unused_extra_mounts` exercises the
+dispatcher and runner together with an attached result and an otherwise
+malformed unused mount value.
 
 ## RG-128 — a missing worktree can escape `container_mount_flags()` as `TypeError`
 
-**Status:** OPEN. Severity: minor. Filed 2026-10-30 from `reviews/rg3.out`.
+**Status:** FIXED IN THIS BRANCH (RG-241). Severity: minor.
 
 **Observed.** `validate_resource_mount_inputs()` explicitly tolerates
 `worktree is None` (`run_gate.py:1840-1844`), but
@@ -6770,24 +6780,27 @@ will consume the flags.
 `validate_docker_mount_path()` (`:11922-11940`). With a missing value,
 `os.fspath()` raises `TypeError` instead of Run-Gate's named `GateError`.
 
-**Proposed fix.** Validate that a worktree is present at the public helper
-boundary and raise a specific `GateError` before calling `os.fspath()`.
+**Fix and oracle.** `validate_docker_mount_path()` converts invalid path-like
+inputs into a named `GateError`; the public mount helper now refuses a missing
+worktree through that path. The focused test asserts the error class and
+message.
 
 ## RG-129 — `dual_mount_flags()` validates the alias namespace path twice
 
-**Status:** OPEN. Severity: minor. Filed 2026-10-30 from `reviews/rg3.out`.
+**Status:** FIXED IN THIS BRANCH (RG-241). Severity: minor.
 
 **Observed.** `run_gate.py:11596-11597` validates `namespace`, then the
 `root == repo` branch validates the same value again as `mount alias path` at
 `:11602-11603`. This duplicates the same delimiter check on the ordinary
 repository-alias path.
 
-**Proposed fix.** Validate the final alias target once after its derivation,
-while preserving validation for the subpath branch.
+**Fix and oracle.** Remove the duplicate validation in the root-alias branch;
+the namespace path is still validated before either branch returns. The
+focused test counts validation calls for that alias target.
 
 ## RG-130 — the consumer docs do not say that Run-Gate has no `--ram-target` option
 
-**Status:** OPEN. Severity: minor. Filed 2026-10-30 from `reviews/rg3.out`.
+**Status:** FIXED IN THIS BRANCH (RG-241). Severity: minor.
 
 **Observed.** Run-Gate accepts `ram_target` as resource metadata, but there is
 no `--ram-target` command-line option. `CONSUMERS.md:331-334` explains the
@@ -6795,9 +6808,10 @@ metadata behavior without warning an operator who tries the flag; argparse
 returns only its generic unrecognized-argument error. The worker-policy text
 in `docs/DESIGN-GUIDE.md:948-951` is also silent about the absent option.
 
-**Proposed fix.** State in `CONSUMERS.md` that no `--ram-target` flag exists
-and show the supported `[resources].ram_target` configuration form; consider
-a named refusal only if a CLI alias is intentionally supported.
+**Fix and oracle.** `CONSUMERS.md`, `README.md`, `docs/DESIGN-GUIDE.md`, and
+the unreleased notes state that `ram_target` is configured in TOML and has no
+`--ram-target` command-line option. The user-documentation oracle pins the
+consumer-facing statement.
 
 ## RG-131 — the planned R2 worker-count policy is not implemented
 
@@ -6832,3 +6846,98 @@ currently available through Run-Gate's resource metadata.
 Assay, ingest those per-candidate samples into Run-Gate history, and publish
 the reviewed average through `run-gate footprint`. Add the PR0 event,
 rolling-mean, and footprint oracles before enabling RG-131.
+
+## RG-133 — the generated preload source was not validated after path translation
+
+**Status:** FIXED IN THIS BRANCH (RG-241). Severity: minor.
+
+**Finding.** Relaxed I/O creates a generated file under the project history
+directory, translates that file with `physical_path()`, and inserts the result
+directly into Docker's comma-delimited `--mount` value. A translated host path
+containing a comma could change the mount options even when the repository
+path itself passed validation (for example, when the generated file lives
+through an existing directory alias).
+
+**Fix and oracle.** Validate the translated source path before composing the
+Docker argument. On refusal, close and remove the generated file. The focused
+test supplies a translated path containing a comma and asserts both the
+`GateError` and cleanup.
+
+## RG-134 — history reports measurements but labels them as commits
+
+**Status:** FIXED IN THIS BRANCH (RG-241). Severity: minor.
+
+**Finding.** I/O-mode history can contain multiple measurements for the same
+lane and commit, but the human report said “N of at most K commit(s).” That
+label contradicted both the `(lane, commit, io_sync)` replacement identity and
+the total measurement retention limit.
+
+**Fix and oracle.** The report now says “measurement(s),” and the consumer
+example shows the `IO_SYNC` column and current history version. The focused
+history-report and user-documentation oracles pin those details.
+
+## RG-135 — CLI CoW overrides were still eligible for history
+
+**Status:** FIXED IN THIS BRANCH (RG-241). Severity: minor.
+
+**Finding.** `--cow off` changes the lane's resource behavior for one
+invocation, but run records only marked CLI `--io-sync` overrides as
+ineligible. A clean completed CoW-override run could therefore replace or add
+a normal measurement under the same `(lane, commit, io_sync)` identity.
+
+**Fix and oracle.** Run records now persist whether a CoW override was used,
+and `finish_run_record()` excludes it from history. The focused oracle
+constructs a completed record with `cow_override=True` and checks its
+exclusion reason.
+
+## RG-136 — footprint policy mixes statistics from different I/O modes
+
+**Status:** OPEN. Severity: medium. Filed 2026-10-31 during RG-241 review.
+
+**Finding.** `lane_history_report()` now exposes statistics grouped by
+`io_sync`, but it also retains combined `stats.passes` and `stats.completed`.
+Policy and baseline consumers still read the combined fields:
+`print_footprint_line()` uses `stats.passes.memory_peak_bytes`, `doctor`
+compares that same aggregate to the committed manifest, and
+`build_footprint_manifest()` builds its lane statistics from all modes
+together. After a lane has strict and relaxed measurements, those consumers
+can report or write a baseline that mixes the two measurement conditions,
+even though history output correctly keeps their trends separate.
+
+**Proposed fix.** Carry the I/O mode in footprint manifest entries and make
+footprint display, `doctor`, and manifest writing select the same mode as the
+declared/effective lane policy. Define a migration rule for existing manifests
+that lack a mode. Add strict/relaxed mixed-history oracles for each consumer
+before removing or narrowing the legacy aggregate statistics.
+
+## RG-137 — consumer docs omitted a closed VM disk-cache value
+
+**Status:** FIXED IN THIS BRANCH (RG-241). Severity: minor.
+
+**Finding.** The shipped loader accepts `unsafe|writeback` for
+`[resources.vm] disk_cache`, but the adopter explanation only named the
+`unsafe` example. A consumer who needed the other supported value could not
+discover it from the user-facing docs.
+
+**Fix and oracle.** `CONSUMERS.md` now lists both values and the forwarded
+`VM_DISK_CACHE` key. `TestUserDocumentationOracles::
+test_closed_public_vocabularies_are_documented` checks every value in the
+public closed vocabulary appears in the adopter-facing document set.
+
+## RG-138 — a double-slash CoW root bypasses the non-root bind guard
+
+**Status:** FIXED IN THIS BRANCH (RG-241). Severity: high.
+
+**Finding.** `_validate_cow_root()` rejects `/` and requires
+`os.path.normpath(root) == root`, but POSIX `normpath("//")` preserves the
+double-slash root spelling. Docker/host path handling resolves `//` to the
+filesystem root, so `MDT_COW_ROOT=//` could pass the guard and request a
+same-path bind of the host root into every ephemeral lane using auto CoW.
+`//..` is another spelling that survives `normpath()` as `//..` while
+resolving to root.
+
+**Fix and oracle.** Reject double-slash-prefixed roots before composing the
+bind, while retaining lexical validation without statting a namespace-
+translated host path. `TestCowtreeAndIoSyncResources::
+test_cow_refuses_bad_root_value` now includes both `//` and `//..`; the
+oracle was run red before the guard change.

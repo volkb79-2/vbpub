@@ -11,11 +11,13 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 - **CW4/IO1:** add combined `[resources]` settings with closed consumer
   subtables, CoW root pass-through, strict/durable/relaxed `io_sync`, and
-  history separated by I/O mode. Relaxed ephemeral lanes receive a generated,
+  history separated by I/O mode. The bounded history count applies across
+  modes. Relaxed ephemeral lanes receive a generated,
   read-only `/etc/ld.so.preload` from the tester image's eatmydata label;
-  durable lanes refuse every `--io-sync` override, including `strict`.
-  `ram_target` and `candidate_ram` are
-  parsed and recorded as metadata only.
+  durable lanes refuse every `--io-sync` override, including `strict`; CLI
+  I/O and CoW overrides are recorded and excluded from history.
+  `ram_target` and `candidate_ram` are parsed and recorded as metadata only;
+  `ram_target` has no command-line override.
 - **CW4:** switch `RUN_GATE_EXTRA_MOUNTS` to Docker `--mount type=bind`, which
   refuses missing host sources instead of creating empty directories; reject
   mount delimiters in CoW, repository, and extra-mount paths before Docker.

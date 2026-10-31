@@ -292,7 +292,9 @@ with sqlfluff in a command lane if the project wants it.
   count is decided by the CONTAINER's visible CPU count (which nothing
   capped) while the actual budget is decided by whatever else is running
   on the shared host; `doctor` names the gap when it sees one.
-- Resource policy and consumer facts share `[resources]`. Use
+- Resource policy and consumer facts share `[resources]` on member lanes;
+  sequence lanes have no runner of their own and reject a `resources` table.
+  Use
   `io_sync = "durable"` for any lane that judges fsync, crash consistency,
   or storage durability; it is lane-only and rejects every `--io-sync`
   override, including `strict`. Use

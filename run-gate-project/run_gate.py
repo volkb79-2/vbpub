@@ -1822,7 +1822,12 @@ def resolve_resource_settings(lane: dict, project: dict, central: dict,
 
 def validate_docker_mount_path(path: Path | str, label: str) -> None:
     """Refuse host paths that Docker's comma/colon mount grammars cannot encode."""
-    value = os.fspath(path)
+    try:
+        value = os.fspath(path)
+    except TypeError:
+        fail(f"{label} must be a filesystem path")
+    if not isinstance(value, str) or not value:
+        fail(f"{label} must be a non-empty filesystem path")
     if any(char in value for char in (",", ":", "\n", "\r", "\x00")):
         fail(f"{label} {value!r} is invalid for Docker mount syntax: paths "
              "cannot contain commas, colons, or newlines")
@@ -1833,7 +1838,8 @@ def validate_resource_mount_inputs(settings: dict, mode: str,
                                    worktree: Path | None = None) -> None:
     """Validate paths that resource translation or container binds will use."""
     cowtree = settings.get("cowtree", {})
-    if isinstance(cowtree, dict) and cowtree.get("mode", "auto") == "auto":
+    if (mode == "ephemeral" and isinstance(cowtree, dict)
+            and cowtree.get("mode", "auto") == "auto"):
         root = os.environ.get(MDT_COW_ROOT_ENV_VAR)
         if root is not None:
             _validate_cow_root(root)
@@ -1848,13 +1854,14 @@ def validate_resource_mount_inputs(settings: dict, mode: str,
 
 def _validate_cow_root(root: str) -> None:
     if (not isinstance(root, str) or not root or not root.startswith("/")
-            or "\x00" in root or os.path.normpath(root) != root
+            or root.startswith("//") or "\x00" in root
+            or os.path.normpath(root) != root
             or root == "/"):
         fail("MDT_COW_ROOT is invalid: must be an absolute normalized path "
              "other than '/'")
     if any(char in root for char in (",", ":", "\n", "\r")):
-        fail("MDT_COW_ROOT is invalid: Docker mount paths cannot contain "
-             "commas, colons, or newlines")
+        fail("MDT_COW_ROOT is invalid as a Docker bind source: paths cannot "
+             "contain commas, colons, or newlines")
 
 
 def cowtree_mount_flags(settings: dict, mode: str) -> list[str]:
@@ -1882,7 +1889,8 @@ def resource_forwarded_env(settings: dict, mode: str,
             forwarded["COWTREE_MODE"] = cowtree["mode"]
             root = os.environ.get(MDT_COW_ROOT_ENV_VAR)
             if cowtree["mode"] == "auto" and root is not None:
-                _validate_cow_root(root)
+                if mode == "ephemeral":
+                    _validate_cow_root(root)
                 forwarded[MDT_COW_ROOT_ENV_VAR] = root
     if consumer is None or consumer == "vm":
         vm = settings.get("vm", {})
@@ -1931,6 +1939,7 @@ def relaxed_io_sync_mount_flags(docker: str, image: str,
         os.fchmod(preload.fileno(), 0o444)
         os.fsync(preload.fileno())
         source = physical_path(Path(preload.name))
+        validate_docker_mount_path(source, "eatmydata preload source")
         flags = ["--mount", f"type=bind,source={source},"
                  "target=/etc/ld.so.preload,readonly"]
         return flags, preload
@@ -4851,9 +4860,9 @@ def check_clean_tree(worktree: Path) -> None:
 #
 #   latest  — the most recent invocation, WHATEVER happened to it (pass, fail,
 #             tool error, Ctrl-C, dirty tree, mid-rebase). Diagnostics.
-#   history — a curated trend series keyed by (lane, commit), bounded to the
-#             last `keep` commits. ONLY runs whose (commit, duration) pairing
-#             is actually meaningful get in.
+#   history — a curated trend series keyed by (lane, commit, io_sync), bounded
+#             to the last `keep` measurements across modes. ONLY runs whose
+#             (commit, duration) pairing is actually meaningful get in.
 #
 # Letting the second inherit the first's permissiveness is the named trap: a
 # dirty-tree run's duration attributed to a commit that never ran it, silently
@@ -4972,7 +4981,8 @@ def start_run_record(lane_name: str, worktree: Path, repo: Path, *,
                      central_config_path: Path | None = None,
                      central_config_sha256: str | None = None,
                      io_sync: str | None = "strict",
-                     io_sync_override: bool = False) -> dict:
+                     io_sync_override: bool = False,
+                     cow_override: bool = False) -> dict:
     """Sample the state that is ABOUT to be judged, BEFORE the lane runs.
 
     Sampling afterwards would be a different tree: a lane may commit, stash,
@@ -4995,6 +5005,7 @@ def start_run_record(lane_name: str, worktree: Path, repo: Path, *,
         "excluded_reason": None,
         "io_sync": io_sync,
         "io_sync_override": io_sync_override,
+        "cow_override": cow_override,
         # RG-55/C8: these are nullable telemetry facts, not verdict inputs.
         # Keeping the keys on every invocation makes history JSON shape
         # stable even when profiling is disabled or unavailable.
@@ -5099,6 +5110,8 @@ def finish_run_record(record: dict, *, exit_code: int | None = None,
         reasons.append("selective lane arguments do not certify the whole lane")
     if record.get("io_sync_override"):
         reasons.append("io_sync override is not history-eligible")
+    if record.get("cow_override"):
+        reasons.append("CoW override is not history-eligible")
     if reasons:
         record["excluded_reason"] = (record["excluded_reason"] or
                                      "; ".join(reasons))
@@ -6452,7 +6465,7 @@ def _print_lane_history(lane_name: str, report: dict, keep: int) -> None:
     if not hist:
         print(f"  history: (empty; keep={keep})")
     else:
-        print(f"  history: {len(hist)} of at most {keep} commit(s), "
+        print(f"  history: {len(hist)} of at most {keep} measurement(s), "
               f"oldest first")
         print(f"    {'COMMIT':<14}{'IO_SYNC':<9}{'OUTCOME':<9}"
               f"{'DURATION':>9}  STARTED")
@@ -11600,7 +11613,6 @@ def dual_mount_flags(repo: Path, phys: Path,
         fail(f"${MOUNT_ALIAS_ENV_VAR} declares host path {host!r} but this gate's "
              f"repo root is {root} — the alias names THIS repo's namespace view")
     if root == repo:
-        validate_docker_mount_path(namespace, "mount alias path")
         return ["-v", f"{phys}:{phys}", "-v", f"{phys}:{namespace}"]
     # RG-NARROW: a sub-path of the aliased root (the judged worktree, the git
     # directory) takes the same namespace prefix; anything outside the root has
@@ -13529,7 +13541,6 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     resource_settings = resource_settings or {}
     validate_resource_mount_inputs(resource_settings, "ephemeral", repo,
                                    worktree)
-    extra_flags = extra_mount_flags()
     docker = shutil.which("docker")
     if not docker:
         fail_infra("docker not found on PATH — container lanes need it")
@@ -13544,6 +13555,7 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
             run_record.get("image_selection") if run_record else None,
         )
         return attached
+    extra_flags = extra_mount_flags()
     resource_env = resource_forwarded_env(resource_settings, "ephemeral")
     preload_file = None
     preload_flags = []
@@ -14957,8 +14969,8 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "          report names it (RG-30))",
         "       run-gate history [LANE] [--worktree PATH] [--json]",
         "         (RG-27: what each lane most recently did — ANY outcome, dirty or",
-        "          aborted runs included — and its bounded per-commit duration",
-        "          series. Reads the store, runs no lane, decides no policy.",
+        "          aborted runs included — and its bounded per-commit/per-mode",
+        "          duration series. Reads the store, runs no lane, decides no policy.",
         "          --worktree redirects the READ exactly as it redirects a run:",
         "          the answer describes THAT tree\'s store, and says so)",
         "       run-gate footprint [LANE] [--worktree PATH] [--json] [--write]",
@@ -15123,8 +15135,9 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "              and says so rather than dirtying the tree for the next lane)",
         "  read scope  the same one: `history --worktree B` reads B's store, never",
         "              the invoking checkout's, and names the tree in its output",
-        f"  retention   [history] keep = <int>, default {HISTORY_KEEP_DEFAULT} commits per lane;",
-        "              project [history] shadows the central one (R-09's rule)",
+        f"  retention   [history] keep = <int>, default {HISTORY_KEEP_DEFAULT} measurements per lane;",
+        "              the bound applies across I/O modes; project [history] shadows",
+        "              the central one (R-09's rule)",
         "  eligibility  history keeps COMPLETED runs (passes AND fails) on a clean,",
         "              committed tree; aborted, errored, dirty-tree and mid-rebase",
         "              runs update `latest` only, with the exclusion reason recorded",
@@ -15468,7 +15481,8 @@ def _dispatch_sequence(name: str, lane: dict, args: argparse.Namespace,
             central_config_path=central_path,
             central_config_sha256=central_cfg_sha256,
             io_sync=sequence_io_sync,
-            io_sync_override=args.io_sync is not None)
+            io_sync_override=args.io_sync is not None,
+            cow_override=args.cow is not None)
         record["_project_dir"] = effective_project
         record["_keep"] = resolve_history_keep(
             cfg, cfg_path, central, central_path)[0]
@@ -16029,8 +16043,6 @@ def _dispatch(argv: list[str] | None = None, *,
             lane, cfg, central, env_declaration,
             mode=env.get("mode", env_declaration.get("mode", "host")),
             io_sync_override=args.io_sync, cow_override=args.cow)
-        if env.get("mode") == "ephemeral":
-            extra_mount_flags()
         # RG-17/19: declared inputs verified BEFORE anything runs — presence
         # in the invoking environment for every kind; for container lanes
         # also that the names are on the forward_env allowlist at all.
@@ -16106,7 +16118,8 @@ def _dispatch(argv: list[str] | None = None, *,
                 central_config_path=central_path,
                 central_config_sha256=central_cfg_sha256,
                 io_sync=resource_settings["io_sync"],
-                io_sync_override=args.io_sync is not None)
+                io_sync_override=args.io_sync is not None,
+                cow_override=args.cow is not None)
             record["_project_dir"] = eff_proj
             record["resource_settings"] = resource_settings
             record["resource_sources"] = resource_sources

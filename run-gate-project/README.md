@@ -130,7 +130,8 @@ overrides. `io_sync` defaults to `strict`; `durable` is lane-only, and
 `relaxed` is allowed only for ephemeral lanes whose image advertises the
 eatmydata library label. Relaxed runs mount a generated, read-only
 `/etc/ld.so.preload` file and do not join history when selected by CLI
-override. A durable lane refuses every `--io-sync` override, including
+override. `--cow off` is also recorded and excluded from history. A durable
+lane refuses every `--io-sync` override, including
 `--io-sync strict`; its lane declaration is absolute. CoW mode comes from
 `[resources.cowtree] mode` and maps to
 `COWTREE_MODE`; `MDT_COW_ROOT`, when set, is bound at the same path for an
@@ -141,7 +142,8 @@ lane-level `candidate_ram` are accepted and validated as configuration
 metadata; they do not currently select worker counts or change container
 capacity. A mixed-mode sequence is stored per
 member and excluded as an aggregate history measurement. See the [resource settings design](docs/DESIGN-GUIDE.md#combined-resource-settings)
-and [consumer examples](CONSUMERS.md#combined-resource-settings).
+and [consumer examples](CONSUMERS.md#combined-resource-settings). Resource
+RAM targets are TOML metadata; there is no `--ram-target` command-line option.
 
 **Interrupting a run (SIGTERM / Ctrl-C; RG-109).** A client stopped
 gracefully while it waits on its lane removes the container it started and
@@ -693,8 +695,9 @@ the tool's reason to exist and MUST be implemented + tested:
 - **Lane cost is measured, not remembered (RG-27):** every run leaves a
   record in a per-(judged worktree × project) `.run-gate/history.json` — a
   `latest` slot holding the most recent invocation whatever happened to it,
-  and a bounded per-commit trend series that only trustworthy measurements
-  join (completed, clean tree, no rebase in flight, real commit). Read it
+  and a bounded per-commit/per-I/O-mode trend series that only trustworthy
+  measurements join (completed, clean tree, no rebase in flight, real commit).
+  `[history].keep` bounds the total measurement count across modes. Read it
   with `run-gate history [LANE] [--worktree PATH] [--json]` — the read
   scope follows `--worktree` exactly as the write scope does, and the answer
   names the tree it describes. run-gate MEASURES; the

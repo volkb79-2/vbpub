@@ -3515,7 +3515,7 @@ class TestExtraMounts:
                            match="RUN_GATE_EXTRA_MOUNTS.*invalid"):
             run_gate.extra_mount_flags()
 
-    def test_container_runner_refuses_extra_mount_injection_before_docker(
+    def test_container_runner_refuses_extra_mount_injection_before_container_start(
             self, tmp_path, monkeypatch):
         monkeypatch.setenv(run_gate.EXTRA_MOUNT_ENV_VAR, "/a,readonly=/b")
         docker_checks = []
@@ -3524,7 +3524,7 @@ class TestExtraMounts:
                             lambda name: lookups.append(name) or "/bin/docker")
         monkeypatch.setattr(run_gate, "resolve_inflight",
                             lambda *_args, **_kwargs:
-                            docker_checks.append("resolve_inflight"))
+                            docker_checks.append("resolve_inflight") or None)
 
         with pytest.raises(run_gate.GateError,
                            match="RUN_GATE_EXTRA_MOUNTS.*invalid"):
@@ -3535,8 +3535,8 @@ class TestExtraMounts:
                 "fixture", "dev-gates.slice", "fixture", dry_run=True,
                 resource_settings={"io_sync": "strict",
                                    "cowtree": {"mode": "off"}})
-        assert lookups == []
-        assert docker_checks == []
+        assert lookups == ["docker"]
+        assert docker_checks == ["resolve_inflight"]
 
 
 class TestRG99LockFreeSafeDirectory:
@@ -15091,7 +15091,7 @@ class TestHistoryQueryVerb:
         assert out.returncode == 0, out.stderr
         assert "lane suite" in out.stdout
         assert "latest:  pass exit 0  100.0s" in out.stdout
-        assert "history: 2 of at most 10 commit(s)" in out.stdout
+        assert "history: 2 of at most 10 measurement(s)" in out.stdout
         assert "median 55.0s" in out.stdout      # the SERIES, not the outlier
         assert "max 100.0s" in out.stdout
 
@@ -15190,7 +15190,7 @@ class TestHistoryInProcess:
         assert "lane suite" in out
         assert "latest:  pass exit 0" in out
         assert sha[:12] in out
-        assert "history: 1 of at most 10 commit(s)" in out
+        assert "history: 1 of at most 10 measurement(s)" in out
         assert "passes: n=1 median" in out
         assert "completed (passes + fails): n=1" in out
 
@@ -32124,12 +32124,19 @@ class TestUserDocumentationOracles:
             "exit_map verdict": {"PASS", "FAIL", "ERROR"},
             "admission unreadable_policy": {"refuse", "unbudgeted"},
             "resource observer": {"cgprofile"},
+            "io_sync": {"strict", "relaxed", "durable"},
+            "CoW mode": {"auto", "off"},
+            "VM disk_cache": {"unsafe", "writeback"},
             "run-gate result": set(run_gate.VERDICT_EXIT_CODES),
             "NOT_RUN reason": set(run_gate.NOT_RUN_REASONS),
         }
         for name, values in vocabularies.items():
             missing = sorted(value for value in values if value not in corpus)
             assert not missing, f"docs omit {name} values: {missing}"
+
+    def test_ram_target_docs_name_the_supported_toml_surface(self):
+        consumer_docs = (RUN_GATE_DIR / "CONSUMERS.md").read_text()
+        assert "There is no `--ram-target` option" in consumer_docs
 
     def test_worktree_runner_remedy_documents_ciu_version_floor(self):
         documents = (*self.DOCS, RUN_GATE_DIR / "SPEC.md",
@@ -35323,7 +35330,8 @@ class TestCowtreeAndIoSyncResources:
             "COWTREE_MODE": "off", "RUN_GATE_IO_SYNC": "strict"}
 
     def test_cow_refuses_bad_root_value(self, monkeypatch):
-        for value in ("", "relative/path", "/", "/mnt/cow/../elsewhere"):
+        for value in ("", "relative/path", "/", "//", "//..",
+                      "/mnt/cow/../elsewhere"):
             monkeypatch.setenv("MDT_COW_ROOT", value)
             with pytest.raises(
                     run_gate.GateError,
@@ -35963,6 +35971,50 @@ class TestCowtreeAndIoSyncResources:
         assert "10.0s" in output and "4.0s" in output
         assert "IO_SYNC" in output and "strict" in output and "relaxed" in output
 
+    def test_history_human_report_counts_mode_measurements(self, capsys):
+        store = run_gate._empty_history_store()
+        for mode in ("strict", "relaxed"):
+            run_gate._apply_record(store, {
+                "lane": "unit", "commit": "same-commit", "outcome": "pass",
+                "duration_seconds": 1.0, "history_eligible": True,
+                "io_sync": mode}, keep=10)
+
+        run_gate._print_lane_history(
+            "unit", run_gate.lane_history_report(store, "unit"), 10)
+
+        assert "history: 2 of at most 10 measurement(s)" in capsys.readouterr().out
+
+    def test_cow_cli_override_is_not_history_eligible(self):
+        record = {
+            "_started_monotonic": time.monotonic(), "duration_seconds": None,
+            "dirty": False, "git_operation": None, "commit": "abc123",
+            "verdict": "PASS", "io_sync": "strict", "cow_override": True,
+        }
+
+        finished = run_gate.finish_run_record(record, exit_code=0)
+
+        assert finished["history_eligible"] is False
+        assert "CoW override" in finished["excluded_reason"]
+
+    def test_sequence_lane_cannot_declare_ignored_resources(self):
+        config = {
+            "schema_version": 1,
+            "environments": {
+                "runner": {"mode": "ephemeral", "image": "runner:local"},
+            },
+            "lanes": {
+                "gate": {"kind": "sequence", "lanes": ["unit"],
+                         "resources": {"io_sync": "durable"}},
+                "unit": {"kind": "command", "environment": "runner",
+                         "argv": ["true"]},
+            },
+        }
+
+        with pytest.raises(run_gate.GateError,
+                           match="sequence does not accept resources.*members"):
+            run_gate._validate_config(
+                config, Path("run-gate.toml"), central=False)
+
     def test_relaxed_preload_is_mapped_in_test_process(self):
         if os.environ.get("RUN_GATE_IO_SYNC") != "relaxed":
             return
@@ -36279,3 +36331,92 @@ class TestCowtreeAndIoSyncResources:
                in lane_error
         assert str(tmp_path) in lane_error
         assert "loads config from the current working directory" in lane_error
+
+    def test_host_cow_root_pass_through_does_not_apply_docker_delimiters(
+            self, monkeypatch):
+        root = "/host/cow,zone:archive"
+        monkeypatch.setenv(run_gate.MDT_COW_ROOT_ENV_VAR, root)
+
+        settings, _sources = run_gate.resolve_resource_settings(
+            {}, {}, {}, {}, mode="host")
+        forwarded = run_gate.resource_forwarded_env(settings, "host")
+
+        assert forwarded[run_gate.MDT_COW_ROOT_ENV_VAR] == root
+        assert run_gate.cowtree_mount_flags(settings, "host") == []
+
+    def test_attached_ephemeral_lane_ignores_unused_extra_mounts(
+            self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        project = repo / "run-gate-project"
+        project.mkdir()
+        (project / "run-gate.toml").write_text(textwrap.dedent("""\
+            schema_version = 1
+
+            [environments.runner]
+            mode = "ephemeral"
+            image = "runner:local"
+            cgroup_slice = "dev-gates.slice"
+
+            [lanes.suite]
+            kind = "command"
+            environment = "runner"
+            argv = ["true"]
+            clean_tree = false
+            profile = false
+            """))
+        monkeypatch.chdir(project)
+        monkeypatch.setenv(run_gate.EXTRA_MOUNT_ENV_VAR,
+                           "/source,readonly=/target")
+        monkeypatch.setattr(run_gate.shutil, "which",
+                            lambda _name: "/bin/docker")
+        monkeypatch.setattr(run_gate, "resolve_inflight",
+                            lambda *_args, **_kwargs: 0)
+        monkeypatch.setattr(run_gate, "run_lane_with_cgroup_event_guard",
+                            lambda _name, run, **_kwargs: run())
+
+        assert run_gate.main(["suite"]) == 0
+
+    def test_container_mount_flags_missing_worktree_is_a_gate_error(
+            self, tmp_path):
+        with pytest.raises(run_gate.GateError,
+                           match="worktree path.*filesystem path"):
+            run_gate.container_mount_flags(
+                tmp_path, None, {"mode": "ephemeral"})
+
+    def test_dual_mount_alias_namespace_is_validated_once(
+            self, tmp_path, monkeypatch):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        namespace = "/workspaces/repo"
+        monkeypatch.setenv(run_gate.MOUNT_ALIAS_ENV_VAR,
+                           f"{repo}={namespace}")
+        real_validate = run_gate.validate_docker_mount_path
+        calls = []
+
+        def observe(path, label):
+            calls.append((os.fspath(path), label))
+            return real_validate(path, label)
+
+        monkeypatch.setattr(run_gate, "validate_docker_mount_path", observe)
+        assert run_gate.dual_mount_flags(repo, repo) == [
+            "-v", f"{repo}:{repo}", "-v", f"{repo}:{namespace}"]
+        assert sum(value == namespace for value, _label in calls) == 1
+
+    def test_relaxed_preload_rejects_translated_source_delimiters(
+            self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            run_gate.subprocess, "run",
+            lambda *_a, **_k: SimpleNamespace(
+                returncode=0,
+                stdout="/usr/lib/x86_64-linux-gnu/libeatmydata.so.1\n",
+                stderr=""))
+        monkeypatch.setattr(
+            run_gate, "physical_path",
+            lambda *_a, **_k: Path("/host/run-gate,readonly/preload"))
+
+        with pytest.raises(run_gate.GateError,
+                           match="preload source.*invalid for Docker mount syntax"):
+            run_gate.relaxed_io_sync_mount_flags(
+                "docker", "tester:local", tmp_path)
+
+        assert list((tmp_path / ".run-gate").iterdir()) == []

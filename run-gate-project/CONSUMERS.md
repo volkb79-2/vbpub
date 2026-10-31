@@ -312,15 +312,19 @@ an image carrying `org.vbpub.tester.eatmydata-lib`; Run-Gate creates and
 read-only binds `/etc/ld.so.preload` from that label. You can make a one-run
 comparison with `run-gate r2 --io-sync relaxed`; command-line I/O overrides
 are recorded and excluded from history. The `history` output keeps modes
-separate. A sequence whose members use different modes keeps history per
-member and excludes its aggregate measurement.
+separate; `[history].keep` bounds the total measurements across modes. A
+sequence whose members use different modes keeps history per member and
+excludes its aggregate measurement.
 
 `[resources.cowtree] mode = "auto"` forwards `COWTREE_MODE=auto`. If
 `MDT_COW_ROOT` is set, ephemeral lane containers bind that host path to the
 same path inside the container; Run-Gate does not stat or translate it. Use
-`run-gate r2 --cow off` for a one-run CoW opt-out. Set `disk_cache` only on a
-host-mode VM lane; the consumer default remains its own policy when the key
-is absent. `MDT_COW_ROOT` and repository paths used in bind mounts cannot
+`run-gate r2 --cow off` for a one-run CoW opt-out; command-line CoW overrides
+are recorded and excluded from history. Set `disk_cache` only on a host-mode
+VM lane; accepted values are `unsafe` and `writeback`, which Run-Gate forwards
+as `VM_DISK_CACHE`. The consumer default remains its own policy when the key
+is absent.
+`MDT_COW_ROOT` and repository paths used in bind mounts cannot
 contain commas, colons, or newlines; Run-Gate refuses them before Docker.
 
 `RUN_GATE_EXTRA_MOUNTS` uses explicit Docker `--mount type=bind` entries, so
@@ -331,6 +335,8 @@ colon separates the `host=container` entries.
 `ram_target` accepts a size or a percentage, and `candidate_ram` accepts a
 size on a lane. Run-Gate parses and validates these values as resource
 metadata; they do not currently affect worker count or container capacity.
+There is no `--ram-target` option; configure `ram_target` in `[resources]` or
+a lane's `resources` table instead.
 
 ### Per-invocation image selection
 
@@ -1734,9 +1740,9 @@ The lane verdict and mapped exit status are untouched either way: telemetry
 is a note in the margin, never the product. The vbpub root `.gitignore` already
 carries the entry for internal projects; an external project must add it.
 
-Optionally declare how much trend to keep (default 10 commits per lane; a
-central `run-gate.root.toml` may declare it once and a project shadows it whole,
-the R-09 rule):
+Optionally declare how many history measurements to keep (default 10 per lane,
+across I/O modes; a central `run-gate.root.toml` may declare it once and a
+project shadows it whole, the R-09 rule):
 
 <!-- run-gate-config -->
 ```toml
@@ -1751,18 +1757,18 @@ keep = 20
 
 ```console
 $ run-gate history selftest
-run-gate 24.0.0 — lane invocation history
+run-gate 24.2.0 — lane invocation history
 store: /workspaces/vbpub/run-gate-project/.run-gate/history.json
 keep:  10  (default (10))
 
 lane selftest
   latest:  pass exit 0  61.4s  4c6eb2b6a1f0  2026-08-31T11:02:17Z
            worktree /workspaces/vbpub
-  history: 3 of at most 10 commit(s), oldest first
-    COMMIT        OUTCOME   DURATION  STARTED
-    9f1c0aa41b3d  pass         58.9s  2026-08-30T18:44:02Z
-    b2884e76c0d1  fail          7.2s  2026-08-31T09:15:30Z
-    4c6eb2b6a1f0  pass         61.4s  2026-08-31T11:02:17Z
+  history: 3 of at most 10 measurement(s), oldest first
+    COMMIT        IO_SYNC  OUTCOME  DURATION  STARTED
+    9f1c0aa41b3d  strict   pass       58.9s  2026-08-30T18:44:02Z
+    b2884e76c0d1  strict   fail        7.2s  2026-08-31T09:15:30Z
+    4c6eb2b6a1f0  strict   pass       61.4s  2026-08-31T11:02:17Z
     passes: n=2 median 60.2s (min 58.9s, max 61.4s)
     completed (passes + fails): n=3 median 58.9s (min 7.2s, max 61.4s)
 ```
@@ -1849,7 +1855,7 @@ run-gate history selftest --json \
 | slot | what it holds | when it updates |
 |---|---|---|
 | `latest` | the most recent invocation, **whatever happened to it** — pass, fail, tool error, Ctrl-C, dirty tree, mid-rebase | every invocation, always |
-| `history` | a curated trend series keyed by **(lane, commit)**, bounded to the last `keep` commits | only when the measurement is trustworthy (below) |
+| `history` | a curated trend series keyed by **(lane, commit, io_sync)**, bounded to the last `keep` measurements across modes | only when the measurement is trustworthy (below) |
 
 A run reaches `history` only if it **completed with its own exit status**, on
 a **clean** tree, with **no git operation in flight**, at a **resolvable

@@ -781,8 +781,10 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   flushes and fsyncs it, and bind-mounts it read-only at
   `/etc/ld.so.preload`. It also passes `RUN_GATE_IO_SYNC=<effective value>`
   into the lane. `--io-sync strict|relaxed` is a per-invocation override on
-  non-durable lanes and any such override makes the run ineligible for
-  history. History replacement identity is `(lane, commit, io_sync)`; old
+  non-durable lanes; `--cow off` is a per-invocation CoW override. Either
+  command-line override makes the run ineligible for history. History
+  replacement identity is `(lane, commit, io_sync)`; `[history].keep` bounds
+  total measurements across I/O modes. Old
   entries without the field mean
   `strict`, and history JSON/human output separates statistics by mode.
   A sequence with members on different modes is excluded as an aggregate
@@ -1485,8 +1487,9 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   - **`R-36a` Two slots per lane, two different contracts.** `latest` holds
     the MOST RECENT invocation whatever happened to it — pass, fail, tool
     error, Ctrl-C, dirty tree, mid-rebase — for immediate diagnostics.
-    `history` is a curated trend series keyed by **(lane, commit)** and
-    bounded to the last `keep` commits (`[history] keep`, default 10, R-06).
+    `history` is a curated trend series keyed by **(lane, commit, io_sync)**
+    and bounded to the last `keep` measurements across I/O modes
+    (`[history] keep`, default 10, R-06).
     Letting the second inherit the first's permissiveness is the defect this
     requirement exists to prevent: a dirty-tree duration attributed to a
     commit that never ran it, silently overwriting the real measurement.

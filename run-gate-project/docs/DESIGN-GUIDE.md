@@ -938,9 +938,10 @@ selected image must carry `org.vbpub.tester.eatmydata-lib`; Run-Gate uses that
 image fact to write a lane-scoped preload file and mounts it read-only at
 `/etc/ld.so.preload`. This avoids accepting a caller-supplied library path,
 keeps the default image behavior unchanged, and lets the loader apply the
-shim to the lane's dynamic processes. A CLI-selected I/O override is recorded
-and excluded from history. History retains one measurement per
-`(lane, commit, io_sync)` so relaxed and strict timings are not collapsed.
+shim to the lane's dynamic processes. A CLI-selected I/O or CoW override is
+recorded and excluded from history. History retains one measurement per
+`(lane, commit, io_sync)` so relaxed and strict timings are not collapsed;
+`[history].keep` bounds the total number of measurements across I/O modes.
 A sequence with members on different I/O modes has no single aggregate mode,
 so its aggregate record is excluded from history while each member retains its
 own measurement.
@@ -949,4 +950,5 @@ own measurement.
 size on a lane. Both are parsed and validated resource metadata. They do not
 currently select worker counts or change container caps; this is the shipped
 contract until a separate worker-policy change defines the derivation and its
-evidence.
+evidence. Configure `ram_target` in TOML; there is no `--ram-target` command-
+line option.
