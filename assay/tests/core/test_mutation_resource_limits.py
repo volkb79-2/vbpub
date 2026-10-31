@@ -7,6 +7,7 @@ import threading
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -26,7 +27,6 @@ from assay.errors import AssayError, Outcome, ReasonCode
 from assay.process_tree import ProcessTreeError, ProcessTreeEvidence
 from assay.mutation import (
     MutationTarget,
-    _resource_limit_bucket,
     judge_mutation,
     run_mutation,
 )
@@ -46,6 +46,10 @@ _REAL_MOUNT_ID_FOR_FD = resource_limits._mount_id_for_fd
 _REAL_INSPECT_CURRENT_CGROUP_OBSERVATION = (
     resource_limits.inspect_current_cgroup_observation
 )
+
+
+def _between(before, after):
+    return ResourceLimitEvidence.between(before, after)[0]
 
 
 def test_cgroup_capability_probe_uses_a_worker_thread(monkeypatch):
@@ -181,9 +185,10 @@ def test_reader_resolves_current_cgroup_from_kernel_mount_records(tmp_path: Path
         memory_oom_kill=6,
         memory_oom_group_kill=1,
         limit_signature=(
-            (str(cgroup_dir), 31, True, None, True, None, True, True, True, True, False, False),
-            (str(parent_dir), 31, True, 12, True, 4096, True, True, True, True, False, False),
+            (str(cgroup_dir), 31, True, True, True, True, True, True, False, False),
+            (str(parent_dir), 31, True, True, True, True, True, True, False, False),
         ),
+        limit_values=((None, None), (12, 4096)),
         path_event_counters=(
             (str(cgroup_dir), 2, 1, 1, 2, 0, 2, 1, 1, 2, 0),
             (str(parent_dir), 3, 2, 3, 4, 1, 3, 2, 3, 4, 1),
@@ -622,7 +627,7 @@ def test_reader_refuses_a_writable_cgroup_mount(tmp_path: Path):
         )
 
 
-def test_limit_configuration_change_invalidates_candidate_window():
+def test_resource_limit_value_delta_is_reported_separately():
     before = ResourceLimitCounters(
         pids_max=0,
         memory_max=0,
@@ -630,18 +635,48 @@ def test_limit_configuration_change_invalidates_candidate_window():
         memory_oom_kill=0,
         memory_oom_group_kill=0,
         limit_signature=(
-            ("/worker/lane", 31, True, 12, True, 4096, True, True, True, True, False, False),
+            ("/worker/lane", 31, True, True, True, True, True, True, False, False),
         ),
+        limit_values=((12, 4096),),
+    )
+    after = replace(before, pids_max=1, limit_values=((24, 8192),))
+
+    evidence, changes = ResourceLimitEvidence.between(before, after)
+
+    assert evidence.pids_events_max.delta == 1
+    assert evidence.limit_hit is True
+    assert changes == (
+        "cgroup[0].pids.max changed: 12 -> 24",
+        "cgroup[0].memory.max changed: 4096 -> 8192",
+    )
+
+
+def test_identity_change_is_unobserved():
+    before = ResourceLimitCounters(
+        pids_max=0,
+        memory_max=0,
+        memory_oom=0,
+        memory_oom_kill=0,
+        memory_oom_group_kill=0,
+        limit_signature=(
+            ("/worker/lane", 31, True, True, True, True, True, True, False, False),
+        ),
+        limit_values=((12, 4096),),
     )
     after = replace(
         before,
         limit_signature=(
-            ("/worker/lane", 31, True, None, True, 4096, True, True, True, True, False, False),
+            ("/worker/lane", 32, True, True, True, True, True, True, False, False),
         ),
     )
 
-    with pytest.raises(ResourceLimitObservationError, match="changed"):
-        ResourceLimitEvidence.between(before, after)
+    evidence, reason, changes = mutation_module._candidate_resource_limit_evidence(
+        before, after
+    )
+
+    assert evidence is None
+    assert reason is not None and "mount_id changed" in reason
+    assert changes == ()
 
 
 def test_event_interface_change_invalidates_candidate_window():
@@ -652,18 +687,19 @@ def test_event_interface_change_invalidates_candidate_window():
         memory_oom_kill=0,
         memory_oom_group_kill=0,
         limit_signature=(
-            ("/worker/lane", 31, False, None, False, None, True, True, True, True, False, False),
+            ("/worker/lane", 31, False, False, False, False, True, True, False, False),
         ),
+        limit_values=((None, None),),
     )
     after = replace(
         before,
         limit_signature=(
-            ("/worker/lane", 31, False, None, False, None, False, True, False, True, False, False),
+            ("/worker/lane", 31, False, False, False, False, False, True, False, False),
         ),
     )
 
     with pytest.raises(ResourceLimitObservationError, match="changed"):
-        ResourceLimitEvidence.between(before, after)
+        _between(before, after)
 
 
 def test_mount_identity_change_invalidates_candidate_window():
@@ -674,18 +710,19 @@ def test_mount_identity_change_invalidates_candidate_window():
         memory_oom_kill=0,
         memory_oom_group_kill=0,
         limit_signature=(
-            ("/worker/lane", 31, True, 12, True, 4096, True, True, True, True, False, False),
+            ("/worker/lane", 31, True, True, True, True, True, True, False, False),
         ),
+        limit_values=((12, 4096),),
     )
     after = replace(
         before,
         limit_signature=(
-            ("/worker/lane", 32, True, 12, True, 4096, True, True, True, True, False, False),
+            ("/worker/lane", 32, True, True, True, True, True, True, False, False),
         ),
     )
 
-    with pytest.raises(ResourceLimitObservationError, match="mount identities"):
-        ResourceLimitEvidence.between(before, after)
+    with pytest.raises(ResourceLimitObservationError, match=r"\.mount_id changed: 31 -> 32"):
+        _between(before, after)
 
 
 def test_resource_evidence_parser_rejects_forged_counter_arithmetic():
@@ -703,28 +740,10 @@ def test_shared_ancestor_memory_max_is_telemetry_not_attribution_failure():
     before = replace(_zero_counters(), path_event_counters=(leaf, parent_before))
     after = replace(_zero_counters(), path_event_counters=(leaf, parent_after))
 
-    evidence = ResourceLimitEvidence.between(before, after)
+    evidence = _between(before, after)
 
     assert evidence.memory_events_max.delta == 0
     assert evidence.limit_hit is False
-
-
-@pytest.mark.parametrize(
-    "evidence",
-    [
-        _evidence(pids=(0, 1)),
-        _evidence(oom=(0, 1)),
-        _evidence(oom_kill=(1, 2)),
-        _evidence(oom_group_kill=(0, 1)),
-    ],
-)
-def test_any_resource_limit_delta_overrides_a_test_failure(evidence):
-    assert _resource_limit_bucket("killed", evidence) == "crashed"
-    assert _resource_limit_bucket("survived", evidence) == "crashed"
-
-
-def test_unchanged_counters_leave_a_real_test_failure_killed():
-    assert _resource_limit_bucket("killed", _evidence()) == "killed"
 
 
 def test_successful_reclaim_memory_max_event_is_conservatively_not_a_kill():
@@ -734,7 +753,6 @@ def test_successful_reclaim_memory_max_event_is_conservatively_not_a_kill():
     assert evidence.memory_events_max.delta == 1
     assert evidence.memory_events_oom.delta == 0
     assert evidence.memory_events_oom_kill.delta == 0
-    assert _resource_limit_bucket("killed", evidence) == "killed"
 
 
 def test_crashed_resource_limited_outcome_makes_r2_an_error():
@@ -780,7 +798,7 @@ def test_model_rejects_a_resource_limited_candidate_as_killed():
         ),
         resource_limit_evidence=_evidence(oom_kill=(3, 4)),
     )
-    with pytest.raises(ValueError, match="must be in crashed"):
+    with pytest.raises(ValueError, match="cannot be classified as killed"):
         Mutation(
             candidate_count=1,
             total=1,
@@ -792,7 +810,7 @@ def test_model_rejects_a_resource_limited_candidate_as_killed():
         )
 
 
-def test_native_outcome_requires_resource_evidence():
+def test_native_outcome_can_omit_an_unobserved_resource_window():
     outcome = native_outcome(
         path="src/mod.py",
         lineno=1,
@@ -803,8 +821,10 @@ def test_native_outcome_requires_resource_evidence():
         description="x < y",
     )
 
-    with pytest.raises(ValueError, match="requires resource_limit_evidence"):
-        replace(outcome, resource_limit_evidence=None)
+    unobserved = replace(outcome, resource_limit_evidence=None)
+
+    assert unobserved.resource_limit_evidence is None
+    assert "resource_limit_evidence" not in unobserved.to_dict()
 
 
 def test_ingested_outcome_cannot_claim_local_resource_evidence():
@@ -885,6 +905,24 @@ def test_raw_verifier_accepts_a_positive_counter_delta_in_crashed():
     assert failures == []
 
 
+def test_raw_verifier_accepts_a_positive_counter_delta_in_survived():
+    entry = native_outcome(
+        path="src/mod.py",
+        lineno=1,
+        start_byte=0,
+        end_byte=1,
+        replacement_sha256="a" * 64,
+        operator="python:compare-swap",
+        description="x < y",
+    ).to_dict()
+    entry["resource_limit_evidence"] = _evidence(pids=(0, 1)).to_dict()
+    failures: list[str] = []
+
+    _check_b145_resource_limit_evidence("survived", entry, failures)
+
+    assert failures == []
+
+
 def test_raw_verifier_refuses_evidence_missing_memory_max_without_raising():
     entry = native_outcome(
         path="src/mod.py",
@@ -903,6 +941,111 @@ def test_raw_verifier_refuses_evidence_missing_memory_max_without_raising():
     _check_b145_resource_limit_evidence("crashed", entry, failures)
 
     assert any("invalid memory_events evidence" in failure for failure in failures)
+
+
+def test_native_verdict_may_omit_an_unobserved_candidate_window():
+    outcome = native_outcome(
+        path="src/mod.py",
+        lineno=1,
+        start_byte=0,
+        end_byte=1,
+        replacement_sha256="a" * 64,
+        operator="python:compare-swap",
+        description="x < y",
+    )
+    unobserved = replace(outcome, resource_limit_evidence=None)
+
+    assert "resource_limit_evidence" not in unobserved.to_dict()
+
+
+def test_raw_verifier_accepts_omitted_resource_evidence_after_preflight():
+    entry = native_outcome(
+        path="src/mod.py",
+        lineno=1,
+        start_byte=0,
+        end_byte=1,
+        replacement_sha256="a" * 64,
+        operator="python:compare-swap",
+        description="x < y",
+    ).to_dict()
+    del entry["resource_limit_evidence"]
+    failures: list[str] = []
+
+    _check_b145_resource_limit_evidence("survived", entry, failures)
+
+    assert failures == []
+
+
+def test_raw_verifier_rejects_unobserved_kill_without_a_clean_report():
+    entry = native_outcome(
+        path="src/mod.py",
+        lineno=1,
+        start_byte=0,
+        end_byte=1,
+        replacement_sha256="a" * 64,
+        operator="python:compare-swap",
+        description="x < y",
+    ).to_dict()
+    del entry["resource_limit_evidence"]
+    failures: list[str] = []
+
+    _check_b145_resource_limit_evidence("killed", entry, failures)
+
+    assert any("clean failed-call witness" in failure for failure in failures)
+
+
+def test_raw_verifier_accepts_unobserved_kill_with_a_clean_report():
+    entry = native_outcome(
+        path="src/mod.py",
+        lineno=1,
+        start_byte=0,
+        end_byte=1,
+        replacement_sha256="a" * 64,
+        operator="python:compare-swap",
+        description="x < y",
+    ).to_dict()
+    del entry["resource_limit_evidence"]
+    entry["execution"]["witness"] = {
+        "node_id": "tests/test_mod.py::test_case",
+        "when": "call",
+        "outcome": "failed",
+        "session_exit_status": 1,
+        "process_exit_status": 1,
+    }
+    failures: list[str] = []
+
+    _check_b145_resource_limit_evidence("killed", entry, failures)
+
+    assert failures == []
+
+
+def test_raw_verifier_rejects_a_positive_limit_event_even_with_a_report():
+    entry = native_outcome(
+        path="src/mod.py",
+        lineno=1,
+        start_byte=0,
+        end_byte=1,
+        replacement_sha256="a" * 64,
+        operator="python:compare-swap",
+        description="x < y",
+    ).to_dict()
+    entry["resource_limit_evidence"]["pids_events"]["max"].update(
+        before=0, after=1, delta=1
+    )
+    entry["execution"]["witness"] = {
+        "node_id": "tests/test_mod.py::test_case",
+        "when": "call",
+        "outcome": "failed",
+        "session_exit_status": 1,
+        "process_exit_status": 1,
+    }
+    failures: list[str] = []
+
+    _check_b145_resource_limit_evidence("killed", entry, failures)
+
+    assert any(
+        "positive failed-fork or OOM counter delta" in item for item in failures
+    )
 
 
 @pytest.mark.parametrize(
@@ -1238,13 +1381,15 @@ def test_mutation_counter_reader_delegates_and_wraps_observer_failures(
     assert failure.value.outcome is Outcome.NO_MEASUREMENT
     assert failure.value.reason_code is ReasonCode.CGROUP_OBSERVATION_UNAVAILABLE
 
-    with pytest.raises(AssayError, match="during native R2 candidate execution") as failure:
-        mutation_module._read_candidate_resource_counters_during_campaign()
-    assert failure.value.outcome is Outcome.ERROR
-    assert failure.value.reason_code is ReasonCode.EXEC_FAILED
+    counters, reason = mutation_module._read_candidate_resource_counters_during_campaign()
+    assert counters is None
+    assert reason == (
+        "cannot observe the required cgroup v2 process and memory limit events "
+        "for native R2 candidate execution: observer unavailable"
+    )
 
 
-def test_candidate_counter_comparison_failure_is_infrastructure_error(
+def test_candidate_counter_comparison_failure_is_unobserved_telemetry(
     monkeypatch: pytest.MonkeyPatch,
 ):
     def refused(*_args, **_kwargs):
@@ -1258,10 +1403,396 @@ def test_candidate_counter_comparison_failure_is_infrastructure_error(
         memory_oom_kill=0,
         memory_oom_group_kill=0,
     )
-    with pytest.raises(AssayError, match="shared parent event is ambiguous") as failure:
-        mutation_module._candidate_resource_limit_evidence(counters, counters)
-    assert failure.value.outcome is Outcome.ERROR
-    assert failure.value.reason_code is ReasonCode.EXEC_FAILED
+    evidence, reason, changes = mutation_module._candidate_resource_limit_evidence(
+        counters, counters
+    )
+    assert evidence is None
+    assert reason == "shared parent event is ambiguous"
+    assert changes == ()
+
+
+def test_limit_signature_detail_names_removed_and_added_cgroups():
+    entry = (
+        "/candidate",
+        31,
+        True,
+        True,
+        True,
+        True,
+        True,
+        True,
+        False,
+        False,
+    )
+
+    def counters(signature):
+        return ResourceLimitCounters(
+            pids_max=0,
+            memory_oom=0,
+            memory_max=0,
+            memory_oom_kill=0,
+            memory_oom_group_kill=0,
+            limit_signature=signature,
+            limit_values=((None, 4096),) if signature else (),
+        )
+
+    assert resource_limits._limit_signature_change_detail(
+        counters((entry,)), counters(())
+    ) == "cgroup[0] removed: path=/candidate, mount_id=31"
+    assert resource_limits._limit_signature_change_detail(
+        counters(()), counters((entry,))
+    ) == "cgroup[0] added: path=/candidate, mount_id=31"
+
+
+@pytest.mark.parametrize(
+    ("failure_read", "failure_endpoint"),
+    [(4, "before"), (5, "after")],
+)
+def test_candidate_observer_loss_is_recorded_without_aborting_the_campaign(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    failure_read: int,
+    failure_endpoint: str,
+):
+    source = "def flags():\n    return True and False\n"
+    repo, lane, baseline, scratch_root = _run_mutation_observation_fixture(
+        tmp_path, source
+    )
+    zero = _zero_counters()
+    before_window = replace(
+        zero,
+        limit_signature=(
+            ("/candidate", 31, True, True, True, True, True, True, False, False),
+        ),
+        limit_values=((None, 4096),),
+    )
+    changed_limit = replace(
+        before_window,
+        limit_values=((None, 8192),),
+    )
+    reads = iter((before_window, before_window, changed_limit, changed_limit))
+    read_count = 0
+
+    def read_counters(**_kwargs):
+        nonlocal read_count
+        read_count += 1
+        if read_count == failure_read:
+            raise ResourceLimitObservationError(
+                f"observer disappeared {failure_endpoint} candidate 2"
+            )
+        return next(reads)
+
+    monkeypatch.setattr(mutation_module, "read_candidate_resource_counters", read_counters)
+    candidate_calls: list[tuple[str, ...]] = []
+
+    def run_candidate(argv, *, env, cwd, timeout):
+        candidate_calls.append(tuple(argv))
+        result = completed_process(list(argv), returncode=0 if len(candidate_calls) == 1 else 1)
+        result.process_tree_evidence = ProcessTreeEvidence(
+            leader_status="exited",
+            group_signalled_before_reap=False,
+            outliving_descendants=0,
+            descendants_signalled=0,
+            cleanup_seconds=0.001,
+            clean=True,
+        ).to_dict()
+        return result
+
+    state_root = tmp_path / "state"
+    progress_path = tmp_path / "progress.jsonl"
+    with prepared_snapshot(repo, scratch_root=scratch_root) as prepared:
+        mutation = run_mutation(
+            baseline=baseline,
+            prepared=prepared,
+            plan=make_plan(lane),
+            deadline=make_deadline(),
+            targets=(MutationTarget(
+                path="pkg/flags.py", text=source, lines=frozenset({2})
+            ),),
+            adapter=PythonAdapter(),
+            jobs=1,
+            max_mutants=10,
+            operators=("python:bool-const-flip",),
+            process_runner=run_candidate,
+            clock=lambda: datetime(2026, 10, 5, tzinfo=timezone.utc),
+            state_root=state_root,
+            progress_artifact=progress_path,
+        )
+
+    assert len(candidate_calls) == 2
+    assert len(mutation.survived) == 1
+    assert mutation.survived[0].resource_limit_evidence is not None
+    assert mutation.killed == ()
+    assert len(mutation.crashed) == 1
+    assert mutation.crashed[0].resource_limit_evidence is None
+    state_records = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in state_root.glob("*.json")
+    ]
+    unobserved_state = [record for record in state_records if "resource_observation" in record]
+    assert len(unobserved_state) == 1
+    assert all("resource_limit_evidence" not in record for record in unobserved_state)
+    assert any(f"observer disappeared {failure_endpoint} candidate 2" in record["resource_observation"]["reason"]
+               for record in unobserved_state)
+    assert any(record.get("resource_limit_evidence") is not None for record in state_records)
+    progress_records = [
+        json.loads(line)
+        for line in progress_path.read_text(encoding="utf-8").splitlines()
+    ]
+    candidate_records = [
+        record for record in progress_records if record.get("event") == "candidate"
+    ]
+    assert len(candidate_records) == 2
+    assert sorted(record["outcome_bucket"] for record in candidate_records) == [
+        "crashed",
+        "survived",
+    ]
+    assert candidate_records[0]["resource_limit_changes"] == [
+        "cgroup[0].memory.max changed: 4096 -> 8192"
+    ]
+    assert candidate_records[1]["resource_limit_changes"] == []
+    assert "resource_limit_evidence" in candidate_records[0]
+    assert candidate_records[1]["resource_observation"]["status"] == "unobserved"
+    advisory_lines = capsys.readouterr().err.splitlines()
+    assert sum("limit values changed" in line for line in advisory_lines) == 1
+    assert sum("resource-limit window unobserved" in line for line in advisory_lines) == 1
+    assert any(f"observer disappeared {failure_endpoint} candidate 2" in line for line in advisory_lines)
+
+
+def test_pass_with_a_limit_event_remains_survived(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    source = "def flags():\n    return True\n"
+    repo, lane, baseline, scratch_root = _run_mutation_observation_fixture(
+        tmp_path, source
+    )
+    before = _zero_counters()
+    after = replace(before, pids_max=1)
+    samples = iter((before, before, after))
+    monkeypatch.setattr(
+        mutation_module,
+        "read_candidate_resource_counters",
+        lambda **_kwargs: next(samples),
+    )
+    candidate_calls: list[tuple[str, ...]] = []
+    state_root = tmp_path / "state"
+    with prepared_snapshot(repo, scratch_root=scratch_root) as prepared:
+        mutation = run_mutation(
+            baseline=baseline,
+            prepared=prepared,
+            plan=make_plan(lane),
+            deadline=make_deadline(),
+            targets=(MutationTarget(
+                path="pkg/flags.py", text=source, lines=frozenset({2})
+            ),),
+            adapter=PythonAdapter(),
+            jobs=1,
+            max_mutants=1,
+            operators=("python:bool-const-flip",),
+            process_runner=_clean_candidate_runner(candidate_calls),
+            clock=lambda: datetime(2026, 10, 5, tzinfo=timezone.utc),
+            state_root=state_root,
+            progress_artifact=tmp_path / "progress.jsonl",
+        )
+
+    assert mutation.survived[0].resource_limit_evidence is not None
+    assert mutation.survived[0].resource_limit_evidence.limit_hit is True
+    assert mutation.crashed == ()
+
+
+def test_limit_value_change_keeps_window_observed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    source = "def flags():\n    return True\n"
+    repo, lane, baseline, scratch_root = _run_mutation_observation_fixture(
+        tmp_path, source
+    )
+    before = ResourceLimitCounters(
+        pids_max=0,
+        memory_oom=0,
+        memory_max=0,
+        memory_oom_kill=0,
+        memory_oom_group_kill=0,
+        limit_signature=(
+            ("/candidate", 31, True, True, True, True, True, True, False, False),
+            ("/parent", 31, True, True, True, True, True, True, False, False),
+        ),
+        limit_values=((None, None), (None, 4096)),
+    )
+    after = replace(before, limit_values=((None, None), (None, 8192)))
+    samples = iter((before, before, after))
+    monkeypatch.setattr(
+        mutation_module,
+        "read_candidate_resource_counters",
+        lambda **_kwargs: next(samples),
+    )
+    candidate_calls: list[tuple[str, ...]] = []
+    progress_path = tmp_path / "progress.jsonl"
+    with prepared_snapshot(repo, scratch_root=scratch_root) as prepared:
+        mutation = run_mutation(
+            baseline=baseline,
+            prepared=prepared,
+            plan=make_plan(lane),
+            deadline=make_deadline(),
+            targets=(MutationTarget(
+                path="pkg/flags.py", text=source, lines=frozenset({2})
+            ),),
+            adapter=PythonAdapter(),
+            jobs=1,
+            max_mutants=1,
+            operators=("python:bool-const-flip",),
+            process_runner=_clean_candidate_runner(candidate_calls),
+            clock=lambda: datetime(2026, 10, 5, tzinfo=timezone.utc),
+            state_root=tmp_path / "state",
+            progress_artifact=progress_path,
+        )
+
+    assert len(candidate_calls) == 1
+    assert len(mutation.survived) == 1
+    assert mutation.survived[0].resource_limit_evidence is not None
+    assert not mutation.survived[0].resource_limit_evidence.limit_hit
+    events = [
+        json.loads(line)
+        for line in progress_path.read_text(encoding="utf-8").splitlines()
+    ]
+    candidate = next(event for event in events if event.get("event") == "candidate")
+    assert candidate["resource_limit_changes"] == [
+        "cgroup[1].memory.max changed: 4096 -> 8192"
+    ]
+    assert "resource_limit_evidence" in candidate
+    state_record = json.loads(
+        next((tmp_path / "state").glob("*.json")).read_text(encoding="utf-8")
+    )
+    assert "resource_limit_changes" not in state_record
+    assert "resource_limit_changes" not in mutation.survived[0].to_dict()
+    advisories = [
+        line for line in capsys.readouterr().err.splitlines()
+        if "limit values changed" in line
+    ]
+    assert len(advisories) == 1
+    assert "cgroup[1].memory.max changed: 4096 -> 8192" in advisories[0]
+
+
+def test_witnessed_kill_with_limit_event_is_crashed_end_to_end(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source = "def flags():\n    return True\n"
+    repo, lane, baseline, scratch_root = _run_mutation_observation_fixture(
+        tmp_path, source
+    )
+    _install_clean_failed_call_capture(monkeypatch)
+    before = _candidate_resource_counters()
+    after = replace(before, pids_max=1)
+    samples = iter((before, before, after))
+    monkeypatch.setattr(
+        mutation_module,
+        "read_candidate_resource_counters",
+        lambda **_kwargs: next(samples),
+    )
+    candidate_calls: list[tuple[str, ...]] = []
+
+    with prepared_snapshot(repo, scratch_root=scratch_root) as prepared:
+        mutation = run_mutation(
+            baseline=baseline,
+            prepared=prepared,
+            plan=make_plan(lane),
+            deadline=make_deadline(),
+            targets=(MutationTarget(
+                path="pkg/flags.py", text=source, lines=frozenset({2})
+            ),),
+            adapter=PythonAdapter(),
+            jobs=1,
+            max_mutants=1,
+            operators=("python:bool-const-flip",),
+            process_runner=_clean_failure_runner(candidate_calls),
+            clock=lambda: datetime(2026, 10, 5, tzinfo=timezone.utc),
+            state_root=tmp_path / "state",
+            progress_artifact=tmp_path / "progress.jsonl",
+        )
+
+    assert len(candidate_calls) == 1
+    assert mutation.killed == ()
+    assert len(mutation.crashed) == 1
+    assert mutation.crashed[0].resource_limit_evidence is not None
+    assert mutation.crashed[0].resource_limit_evidence.limit_hit
+
+
+def test_resume_of_witnessed_limit_kill_record_is_rerun_not_reused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source = "def flags():\n    return True\n"
+    repo, lane, baseline, scratch_root = _run_mutation_observation_fixture(
+        tmp_path, source
+    )
+    _install_clean_failed_call_capture(monkeypatch)
+    before = _candidate_resource_counters()
+    after = replace(before, pids_max=1)
+    first_samples = iter((before, before, after))
+    monkeypatch.setattr(
+        mutation_module,
+        "read_candidate_resource_counters",
+        lambda **_kwargs: next(first_samples),
+    )
+    candidate_calls: list[tuple[str, ...]] = []
+    state_root = tmp_path / "state"
+    with prepared_snapshot(repo, scratch_root=scratch_root) as prepared:
+        first = run_mutation(
+            baseline=baseline,
+            prepared=prepared,
+            plan=make_plan(lane),
+            deadline=make_deadline(),
+            targets=(MutationTarget(
+                path="pkg/flags.py", text=source, lines=frozenset({2})
+            ),),
+            adapter=PythonAdapter(),
+            jobs=1,
+            max_mutants=1,
+            operators=("python:bool-const-flip",),
+            process_runner=_clean_failure_runner(candidate_calls),
+            clock=lambda: datetime(2026, 10, 5, tzinfo=timezone.utc),
+            state_root=state_root,
+            progress_artifact=tmp_path / "progress-first.jsonl",
+        )
+    assert len(first.crashed) == 1
+
+    records = list(state_root.glob("*.json"))
+    assert len(records) == 1
+    cached = json.loads(records[0].read_text(encoding="utf-8"))
+    cached["outcome_bucket"] = "killed"
+    cached["execution"]["witness"] = dict(_CLEAN_FAILED_CALL)
+    records[0].write_text(json.dumps(cached), encoding="utf-8")
+
+    second_samples = iter((before, before, before))
+    monkeypatch.setattr(
+        mutation_module,
+        "read_candidate_resource_counters",
+        lambda **_kwargs: next(second_samples),
+    )
+    with prepared_snapshot(repo, scratch_root=scratch_root) as prepared:
+        resumed = run_mutation(
+            baseline=baseline,
+            prepared=prepared,
+            plan=make_plan(lane),
+            deadline=make_deadline(),
+            targets=(MutationTarget(
+                path="pkg/flags.py", text=source, lines=frozenset({2})
+            ),),
+            adapter=PythonAdapter(),
+            jobs=1,
+            max_mutants=1,
+            operators=("python:bool-const-flip",),
+            process_runner=_clean_candidate_runner(candidate_calls),
+            clock=lambda: datetime(2026, 10, 5, tzinfo=timezone.utc),
+            state_root=state_root,
+            resume=True,
+            progress_artifact=tmp_path / "progress-resume.jsonl",
+        )
+
+    assert len(candidate_calls) == 2
+    assert len(resumed.survived) == 1
+    assert resumed.killed == ()
+    assert resumed.crashed == ()
 
 
 def _run_mutation_observation_fixture(tmp_path: Path, source: str):
@@ -1300,6 +1831,70 @@ def _clean_candidate_runner(calls: list[tuple[str, ...]]):
     return run
 
 
+_CLEAN_FAILED_CALL = {
+    "node_id": "tests/test_flags.py::test_flags",
+    "when": "call",
+    "outcome": "failed",
+    "session_exit_status": 1,
+    "process_exit_status": 1,
+}
+
+
+def _install_clean_failed_call_capture(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Capture:
+        write_fd = -1
+
+        def finish(self):
+            return {}
+
+    monkeypatch.setattr(mutation_module, "supports_sequential_pytest", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        mutation_module,
+        "_inject_witness_plugin",
+        lambda plan, **_kwargs: SimpleNamespace(active=True, plan=plan),
+    )
+    monkeypatch.setattr(
+        mutation_module, "_make_witness_attempt_plan", lambda plan, **_kwargs: plan
+    )
+    monkeypatch.setattr(mutation_module, "ReceiptCapture", Capture)
+    monkeypatch.setattr(
+        mutation_module,
+        "_witness_from_receipt",
+        lambda *_args, **_kwargs: dict(_CLEAN_FAILED_CALL),
+    )
+
+
+def _candidate_resource_counters(*, pids: int = 0, memory_limit: int | None = 4096):
+    return ResourceLimitCounters(
+        pids_max=pids,
+        memory_oom=0,
+        memory_max=0,
+        memory_oom_kill=0,
+        memory_oom_group_kill=0,
+        limit_signature=(
+            ("/candidate", 31, True, True, True, True, True, True, False, False),
+        ),
+        limit_values=((None, memory_limit),),
+    )
+
+
+def _clean_failure_runner(calls: list[tuple[str, ...]]):
+    def run(argv, *, env, cwd, timeout):
+        calls.append(tuple(argv))
+        result = completed_process(list(argv), returncode=1)
+        result.process_tree_evidence = ProcessTreeEvidence(
+            leader_status="exited",
+            group_signalled_before_reap=False,
+            outliving_descendants=0,
+            descendants_signalled=0,
+            cleanup_seconds=0.001,
+            clean=True,
+        ).to_dict()
+        return result
+
+    return run
+
+
 def _zero_counters() -> ResourceLimitCounters:
     return ResourceLimitCounters(
         pids_max=0,
@@ -1310,7 +1905,7 @@ def _zero_counters() -> ResourceLimitCounters:
     )
 
 
-def test_run_mutation_observer_loss_after_second_candidate_has_no_bucket(
+def test_run_mutation_observer_loss_after_second_candidate_is_recorded(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ):
     source = "def flags():\n    return True and False\n"
@@ -1332,51 +1927,96 @@ def test_run_mutation_observer_loss_after_second_candidate_has_no_bucket(
     state_root = tmp_path / "state"
     progress_path = tmp_path / "progress.jsonl"
     with prepared_snapshot(repo, scratch_root=scratch_root) as prepared:
-        with pytest.raises(AssayError, match="during native R2 candidate execution") as failure:
-            run_mutation(
-                baseline=baseline,
-                prepared=prepared,
-                plan=make_plan(lane),
-                deadline=make_deadline(),
-                targets=(MutationTarget(
-                    path="pkg/flags.py", text=source, lines=frozenset({2})
-                ),),
-                adapter=PythonAdapter(),
-                jobs=1,
-                max_mutants=10,
-                operators=("python:bool-const-flip",),
-                process_runner=_clean_candidate_runner(candidate_calls),
-                clock=lambda: datetime(2026, 10, 5, tzinfo=timezone.utc),
-                state_root=state_root,
-                progress_artifact=progress_path,
-            )
+        mutation = run_mutation(
+            baseline=baseline,
+            prepared=prepared,
+            plan=make_plan(lane),
+            deadline=make_deadline(),
+            targets=(MutationTarget(
+                path="pkg/flags.py", text=source, lines=frozenset({2})
+            ),),
+            adapter=PythonAdapter(),
+            jobs=1,
+            max_mutants=10,
+            operators=("python:bool-const-flip",),
+            process_runner=_clean_candidate_runner(candidate_calls),
+            clock=lambda: datetime(2026, 10, 5, tzinfo=timezone.utc),
+            state_root=state_root,
+            progress_artifact=progress_path,
+        )
 
-    assert failure.value.outcome is Outcome.ERROR
-    assert failure.value.reason_code is ReasonCode.EXEC_FAILED
     assert len(candidate_calls) == 2
+    assert len(mutation.survived) == 2
+    assert mutation.survived[0].resource_limit_evidence is not None
+    assert mutation.survived[1].resource_limit_evidence is None
     saved_records = [
         json.loads(path.read_text(encoding="utf-8"))
         for path in state_root.glob("*.json")
     ]
-    assert len(saved_records) == 1
+    assert len(saved_records) == 2
+    unobserved = [record for record in saved_records if "resource_observation" in record]
+    assert len(unobserved) == 1
+    assert unobserved[0]["resource_observation"] == {
+        "status": "unobserved",
+        "reason": "after: cannot observe the required cgroup v2 process and memory limit events for native R2 candidate execution: observer disappeared after candidate 2",
+    }
     progress_records = [
         json.loads(line)
         for line in progress_path.read_text(encoding="utf-8").splitlines()
     ]
-    assert [record for record in progress_records if record.get("event") == "candidate"]
-    assert len([
+    candidate_records = [
         record for record in progress_records if record.get("event") == "candidate"
-    ]) == 1
+    ]
+    assert len(candidate_records) == 2
+    assert sum("resource_observation" in record for record in candidate_records) == 1
 
 
-def test_run_mutation_parent_event_between_refuses_without_candidate_bucket(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    ("candidate_pids_available", "report_outcome", "expected_bucket"),
+    [
+        (True, "FAIL", "crashed"),
+        (True, "PASS", "survived"),
+        (False, "FAIL", "crashed"),
+        (False, "PASS", "survived"),
+    ],
+)
+def test_run_mutation_ancestor_local_pids_event_is_attributed_to_candidate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    candidate_pids_available: bool,
+    report_outcome: str,
+    expected_bucket: str,
 ):
     source = "def flags():\n    return True\n"
     repo, lane, baseline, scratch_root = _run_mutation_observation_fixture(
         tmp_path, source
     )
-    leaf_before = ("/candidate", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    leaf_before = (
+        "/candidate",
+        0 if candidate_pids_available else None,
+        0,
+        0,
+        0,
+        0,
+        0 if candidate_pids_available else None,
+        0,
+        0,
+        0,
+        0,
+    )
+    leaf_after = (
+        "/candidate",
+        0 if candidate_pids_available else None,
+        0,
+        1,
+        0,
+        0,
+        0 if candidate_pids_available else None,
+        0,
+        1,
+        0,
+        0,
+    )
     parent_before = ("/gates", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
     parent_after = ("/gates", 1, 0, 0, 0, 0, 1, 0, 0, 0, 0)
     before = ResourceLimitCounters(
@@ -1385,9 +2025,9 @@ def test_run_mutation_parent_event_between_refuses_without_candidate_bucket(
         path_event_counters=(leaf_before, parent_before),
     )
     after = ResourceLimitCounters(
-        pids_max=1, memory_oom=0, memory_max=0, memory_oom_kill=0,
+        pids_max=0, memory_oom=0, memory_max=0, memory_oom_kill=0,
         memory_oom_group_kill=0,
-        path_event_counters=(leaf_before, parent_after),
+        path_event_counters=(leaf_after, parent_after),
     )
     samples = iter((before, before, after))
     monkeypatch.setattr(
@@ -1398,35 +2038,50 @@ def test_run_mutation_parent_event_between_refuses_without_candidate_bucket(
     candidate_calls: list[tuple[str, ...]] = []
     state_root = tmp_path / "state"
     progress_path = tmp_path / "progress.jsonl"
+    if report_outcome == "FAIL":
+        _install_clean_failed_call_capture(monkeypatch)
+        process_runner = _clean_failure_runner(candidate_calls)
+    else:
+        process_runner = _clean_candidate_runner(candidate_calls)
     with prepared_snapshot(repo, scratch_root=scratch_root) as prepared:
-        with pytest.raises(AssayError, match="shared ancestor resource event") as failure:
-            run_mutation(
-                baseline=baseline,
-                prepared=prepared,
-                plan=make_plan(lane),
-                deadline=make_deadline(),
-                targets=(MutationTarget(
-                    path="pkg/flags.py", text=source, lines=frozenset({2})
-                ),),
-                adapter=PythonAdapter(),
-                jobs=1,
-                max_mutants=10,
-                operators=("python:bool-const-flip",),
-                process_runner=_clean_candidate_runner(candidate_calls),
-                clock=lambda: datetime(2026, 10, 5, tzinfo=timezone.utc),
-                state_root=state_root,
-                progress_artifact=progress_path,
-            )
+        mutation = run_mutation(
+            baseline=baseline,
+            prepared=prepared,
+            plan=make_plan(lane),
+            deadline=make_deadline(),
+            targets=(MutationTarget(
+                path="pkg/flags.py", text=source, lines=frozenset({2})
+            ),),
+            adapter=PythonAdapter(),
+            jobs=1,
+            max_mutants=10,
+            operators=("python:bool-const-flip",),
+            process_runner=process_runner,
+            clock=lambda: datetime(2026, 10, 5, tzinfo=timezone.utc),
+            state_root=state_root,
+            progress_artifact=progress_path,
+        )
 
-    assert failure.value.outcome is Outcome.ERROR
-    assert failure.value.reason_code is ReasonCode.EXEC_FAILED
     assert len(candidate_calls) == 1
-    assert list(state_root.glob("*.json")) == []
+    bucket = mutation.crashed if expected_bucket == "crashed" else mutation.survived
+    other_bucket = mutation.survived if expected_bucket == "crashed" else mutation.crashed
+    assert len(bucket) == 1
+    assert other_bucket == ()
+    assert bucket[0].resource_limit_evidence is not None
+    assert bucket[0].resource_limit_evidence.limit_hit is True
+    assert bucket[0].resource_limit_evidence.memory_events_oom.delta == 1
     progress_records = [
         json.loads(line)
         for line in progress_path.read_text(encoding="utf-8").splitlines()
     ]
-    assert not any(record.get("event") == "candidate" for record in progress_records)
+    candidate_records = [
+        record for record in progress_records if record.get("event") == "candidate"
+    ]
+    assert len(candidate_records) == 1
+    assert (
+        candidate_records[0]["resource_limit_evidence"]["pids_events"]["max"]["delta"]
+        == 1
+    )
 
 
 def test_run_mutation_cleanup_error_takes_precedence_over_after_read_failure(
@@ -1483,7 +2138,7 @@ def test_run_mutation_cleanup_error_takes_precedence_over_after_read_failure(
     assert not any(record.get("event") == "candidate" for record in progress_records)
 
 
-def test_run_mutation_comparison_error_preserves_execution_error_cause(
+def test_run_mutation_comparison_error_does_not_replace_execution_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ):
     source = "def flags():\n    return True\n"
@@ -1492,14 +2147,17 @@ def test_run_mutation_comparison_error_preserves_execution_error_cause(
     )
     leaf = ("/candidate", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
     parent_before = ("/gates", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
-    parent_after = ("/gates", 1, 0, 0, 0, 0, 1, 0, 0, 0, 0)
+    # Force a genuine observation-comparison failure. A positive ancestor-local
+    # event is now attributed to the candidate and is no longer a comparison
+    # error to suppress in favor of the command failure.
+    parent_after = ("/changed-gates", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
     before = ResourceLimitCounters(
         pids_max=0, memory_oom=0, memory_max=0, memory_oom_kill=0,
         memory_oom_group_kill=0,
         path_event_counters=(leaf, parent_before),
     )
     after = ResourceLimitCounters(
-        pids_max=1, memory_oom=0, memory_max=0, memory_oom_kill=0,
+        pids_max=0, memory_oom=0, memory_max=0, memory_oom_kill=0,
         memory_oom_group_kill=0,
         path_event_counters=(leaf, parent_after),
     )
@@ -1516,7 +2174,7 @@ def test_run_mutation_comparison_error_preserves_execution_error_cause(
     state_root = tmp_path / "state"
     progress_path = tmp_path / "progress.jsonl"
     with prepared_snapshot(repo, scratch_root=scratch_root) as prepared:
-        with pytest.raises(AssayError, match="shared ancestor resource event") as failure:
+        with pytest.raises(RuntimeError, match="candidate runner failed"):
             run_mutation(
                 baseline=baseline,
                 prepared=prepared,
@@ -1535,7 +2193,4 @@ def test_run_mutation_comparison_error_preserves_execution_error_cause(
                 progress_artifact=progress_path,
             )
 
-    assert failure.value.outcome is Outcome.ERROR
-    assert failure.value.reason_code is ReasonCode.EXEC_FAILED
-    assert isinstance(failure.value.__cause__, RuntimeError)
     assert list(state_root.glob("*.json")) == []

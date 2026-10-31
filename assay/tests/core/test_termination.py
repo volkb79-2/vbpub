@@ -8,6 +8,8 @@ import pytest
 
 from assay.errors import Outcome, ReasonCode
 from assay.termination import (
+    BLOCKING_JUDGEABLE,
+    CREDIT_JUDGEABLE,
     EXTERNAL_SIGNALS,
     JUDGEABLE,
     Termination,
@@ -15,7 +17,7 @@ from assay.termination import (
     detail,
     r2_bucket,
 )
-from termination_table import ALL_CASES, LIMITS_HIT, TERMINATION_CASES
+from termination_table import ALL_CASES, LIMITS_HIT, TERMINATION_CASES, r0_outcome
 
 
 def test_shared_table_has_one_base_row_for_each_termination():
@@ -30,15 +32,14 @@ def test_each_termination_has_a_shared_decision_row(case):
 
     assert classified is case.termination
     assert r2_bucket(classified) == case.r2_bucket
-    assert (classified in JUDGEABLE) is (
-        classified in {Termination.PASSED, Termination.FAILED}
-    )
+    assert (classified in JUDGEABLE) is (classified in CREDIT_JUDGEABLE)
 
 
 def test_shared_table_r0_and_r3_columns_match_the_contract():
     expected_r0 = {
         Termination.PASSED: (Outcome.PASS, None),
         Termination.FAILED: (Outcome.FAIL, ReasonCode.COMMAND_FAILED),
+        Termination.SELF_SIGNALED: (Outcome.FAIL, ReasonCode.COMMAND_FAILED),
         Termination.TIMED_OUT: (Outcome.BUDGET_EXCEEDED, ReasonCode.LANE_TIMEOUT),
         Termination.HUNG: (Outcome.BUDGET_EXCEEDED, ReasonCode.CANDIDATE_HUNG),
         Termination.NOT_RUN: (Outcome.ERROR, ReasonCode.EXEC_FAILED),
@@ -64,6 +65,10 @@ def test_shared_table_r0_and_r3_columns_match_the_contract():
             Outcome.INCONCLUSIVE,
             ReasonCode.CANARY_INCONCLUSIVE,
         ),
+        Termination.SELF_SIGNALED: (
+            Outcome.INCONCLUSIVE,
+            ReasonCode.CANARY_INCONCLUSIVE,
+        ),
         Termination.LEAKED: (Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE),
         Termination.LIMIT_EVENT: (
             Outcome.INCONCLUSIVE,
@@ -83,6 +88,7 @@ def test_shared_table_r0_and_r3_columns_match_the_contract():
         expected_r0_for_case = expected_r0_by_case_name.get(
             case.name, expected_r0[case.termination]
         )
+        assert r0_outcome(case) == expected_r0_for_case
         assert (case.r0_outcome, case.r0_reason_code) == expected_r0_for_case
         assert (case.r3_attempt_outcome, case.r3_attempt_reason_code) == expected_r3[
             case.termination
@@ -108,7 +114,12 @@ def test_inconclusive_outcome_is_not_judgeable():
 @pytest.mark.parametrize("case", ALL_CASES, ids=lambda case: case.name)
 def test_termination_precedence_table(case):
     assert classify(**case.inputs) is case.termination
-    assert r2_bucket(case.termination) == case.r2_bucket
+    terminal_bucket = (
+        "survived"
+        if case.termination is Termination.PASSED
+        else case.r2_bucket
+    )
+    assert r2_bucket(case.termination) == terminal_bucket
 
 
 @pytest.mark.parametrize(
@@ -116,6 +127,7 @@ def test_termination_precedence_table(case):
     [
         (Termination.PASSED, None, (), 0, None),
         (Termination.FAILED, None, (), 1, None),
+        (Termination.SELF_SIGNALED, None, (), -signal.SIGSEGV, None),
         (Termination.TIMED_OUT, None, (), None, None),
         (Termination.HUNG, None, (), None, None),
         (Termination.NOT_RUN, None, (), None, None),
@@ -172,6 +184,7 @@ def test_termination_precedence_table(case):
     ids=[
         "passed",
         "failed",
+        "self-signaled",
         "timeout",
         "hung",
         "not-run",
@@ -194,3 +207,10 @@ def test_external_signal_vocabulary_is_closed():
     assert EXTERNAL_SIGNALS == frozenset(
         {signal.SIGKILL, signal.SIGTERM, signal.SIGINT, signal.SIGHUP}
     )
+
+
+def test_blocking_and_credit_judgeable_sets_keep_self_signals_out_of_credit():
+    assert CREDIT_JUDGEABLE == JUDGEABLE == frozenset(
+        {Termination.PASSED, Termination.FAILED}
+    )
+    assert BLOCKING_JUDGEABLE == CREDIT_JUDGEABLE | {Termination.SELF_SIGNALED}

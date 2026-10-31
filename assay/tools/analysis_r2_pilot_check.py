@@ -628,7 +628,7 @@ def _check_pilot_state(
         if not _terminal_result_matches_bucket(
             record,
             cold_witness=True,
-            resource_limit_hit=False,
+            resource_limit_evidence=resources,
             process_tree_evidence=process_tree_evidence,
         ):
             raise ValueError(f"pilot state record {identity} terminal result disagrees with its bucket")
