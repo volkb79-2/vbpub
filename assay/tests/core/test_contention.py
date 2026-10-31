@@ -90,7 +90,7 @@ def _window(monkeypatch, *, limits=None, pressure=None, hit=False):
     pressure_values = iter(pressure)
 
     def limit_evidence(*_args, **_kwargs):
-        return _limit_evidence(hit=hit)
+        return _limit_evidence(hit=hit), ()
 
     monkeypatch.setattr(
         resource_limits.ResourceLimitEvidence,
@@ -103,6 +103,19 @@ def _window(monkeypatch, *, limits=None, pressure=None, hit=False):
         pressure_reader=lambda pid: next(pressure_values),
         pid=41,
     )
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        ("unobserved", "not_requested"),
+        ("clear", "clear"),
+        ("unavailable", "unavailable"),
+    ],
+)
+def test_observation_input_maps_contention_status(status, expected):
+    observation = _observation(status)
+    assert contention.observation_input(observation) == expected
 
 
 def test_contention_observation_rejects_malformed_values():

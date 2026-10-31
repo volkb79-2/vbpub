@@ -28,6 +28,10 @@ LEAF = f"{GATES}/run-gate-r2-test.scope"
 MEMORY = {"max": 0, "oom": 0, "oom_kill": 0, "oom_group_kill": 0}
 
 
+def _between(before, after):
+    return ResourceLimitEvidence.between(before, after)[0]
+
+
 def _document(thread_id: int) -> dict:
     cgroups = []
     for path in (LEAF, GATES, "/dev.slice", "/"):
@@ -68,9 +72,10 @@ def _path_counters(leaf, *ancestors, local=None):
         memory_oom_kill=sum(value[3] or 0 for value in values),
         memory_oom_group_kill=sum(value[4] or 0 for value in values),
         limit_signature=tuple(
-            (path, 31, True, None, True, None, True, True, True, True, False, False)
+            (path, 31, True, True, True, True, True, True, False, False)
             for path in paths
         ),
+        limit_values=((None, None),) * len(paths),
         path_event_counters=tuple(
             (path, *value, *local)
             for path, value, local in zip(paths, values, local_values, strict=True)
@@ -84,8 +89,9 @@ def test_observer_response_becomes_strict_ancestry_bound_counters():
     assert counters.pids_max == 0
     assert counters.memory_max == 0
     assert counters.limit_signature[0] == (
-        LEAF, 31, True, None, True, None, True, True, True, True, False, False
+        LEAF, 31, True, True, True, True, True, True, False, False
     )
+    assert counters.limit_values[0] == (None, None)
     assert counters.path_event_counters[0] == (LEAF, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
     assert counters.path_event_counters[-1] == ("/", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
 
@@ -139,8 +145,8 @@ def test_observer_localevents_regular_file_supplies_local_counters():
 
     counters = resource_limits._resource_counters_from_observer(document, 77)
 
-    assert counters.limit_signature[0][8] is False
-    assert counters.limit_signature[0][10] is True
+    assert counters.limit_signature[0][8] is True
+    assert counters.limit_signature[0][9] is True
     assert counters.path_event_counters[0][1] == counters.path_event_counters[0][6]
 
 
@@ -203,8 +209,8 @@ def test_ancestor_only_and_mixed_sibling_deltas_abort_without_evidence():
     mixed = _path_counters((1, 0, 0, 0, 0), (2, 0, 0, 0, 0), zero, zero)
 
     with pytest.raises(ResourceLimitObservationError, match="shared ancestor resource event"):
-        ResourceLimitEvidence.between(before, ancestor_only)
-    mixed_evidence = ResourceLimitEvidence.between(before, mixed)
+        _between(before, ancestor_only)
+    mixed_evidence = _between(before, mixed)
     assert mixed_evidence.limit_hit
 
 
@@ -219,7 +225,7 @@ def test_sibling_hierarchical_delta_does_not_change_ancestor_local_sample():
         local=(zero,) * 4,
     )
 
-    evidence = ResourceLimitEvidence.between(before, sibling_only)
+    evidence = _between(before, sibling_only)
     assert not evidence.limit_hit
     assert evidence.pids_events_max.delta == 0
 
@@ -233,7 +239,7 @@ def test_candidate_local_delta_is_detected_if_regular_read_misses_it():
         local=(candidate_local, zero, zero, zero),
     )
 
-    evidence = ResourceLimitEvidence.between(before, after)
+    evidence = _between(before, after)
 
     assert evidence.pids_events_max.delta == 1
     assert evidence.limit_hit
@@ -270,11 +276,11 @@ def test_candidate_delta_refuses_counter_availability_drift_and_handles_absent_l
     before = _path_counters((None, 0, 0, 0, 0), zero, zero, zero)
     after = _path_counters((0, 0, 0, 0, 0), zero, zero, zero)
     with pytest.raises(ResourceLimitObservationError, match="availability changed"):
-        ResourceLimitEvidence.between(before, after)
+        _between(before, after)
 
     absent = (None, None, None, None, None)
     no_counters = _path_counters(absent, absent, absent, absent)
-    evidence = ResourceLimitEvidence.between(no_counters, no_counters)
+    evidence = _between(no_counters, no_counters)
     assert not evidence.limit_hit
     assert evidence.pids_events_max == resource_limits.CounterDelta(
         before=0, after=0, delta=0
@@ -287,7 +293,7 @@ def test_leaf_resource_delta_is_attributed_when_ancestor_is_quiet_or_matches(par
     before = _path_counters(zero, zero, zero, zero)
     after = _path_counters((1, 0, 0, 0, 0), (parent_delta, 0, 0, 0, 0), zero, zero)
 
-    evidence = ResourceLimitEvidence.between(before, after)
+    evidence = _between(before, after)
     assert evidence.limit_hit
     assert evidence.pids_events_max.delta == 1
 
@@ -297,7 +303,7 @@ def test_missing_leaf_counter_cannot_be_inferred_from_ancestor():
     before = _path_counters((None, 0, 0, 0, 0), zero, zero, zero)
     after = _path_counters((None, 0, 0, 0, 0), (1, 0, 0, 0, 0), zero, zero)
     with pytest.raises(ResourceLimitObservationError, match="shared ancestor resource event"):
-        ResourceLimitEvidence.between(before, after)
+        _between(before, after)
 
 
 def test_cgroup_ancestry_change_and_decreasing_leaf_counter_refuse():
@@ -311,7 +317,7 @@ def test_cgroup_ancestry_change_and_decreasing_leaf_counter_refuse():
         ),
     )
     with pytest.raises(ResourceLimitObservationError, match="ancestry samples changed"):
-        ResourceLimitEvidence.between(before, changed)
+        _between(before, changed)
 
     with pytest.raises(ValueError, match="non-negative integer"):
         _path_counters((-1, 0, 0, 0, 0), zero, zero, zero)

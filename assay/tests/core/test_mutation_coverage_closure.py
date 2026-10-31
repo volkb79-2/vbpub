@@ -604,6 +604,15 @@ def test_terminal_matcher_maps_a_judgeable_nonexited_leader_to_crashed():
         outcome="PASS", reason=None, returncode=0, bucket="crashed"
     )
     assert mutation._terminal_result_matches_bucket(
+        payload, process_tree_evidence=_tree("timeout-killed")
+    )
+
+
+def test_terminal_matcher_keeps_a_pass_with_a_signaled_leader_survived():
+    payload = _terminal(
+        outcome="PASS", reason=None, returncode=0, bucket="survived"
+    )
+    assert mutation._terminal_result_matches_bucket(
         payload, process_tree_evidence=_tree("signaled")
     )
 
@@ -1221,7 +1230,7 @@ def test_process_tree_converter_preserves_an_already_typed_proof():
 def test_unobserved_candidate_record_without_a_reason_is_refused(tmp_path, monkeypatch):
     monkeypatch.setattr(mutation, "_read_candidate_resource_counters", _zero_counters)
     monkeypatch.setattr(
-        mutation, "_candidate_resource_limit_evidence", lambda *_args: (None, None)
+        mutation, "_candidate_resource_limit_evidence", lambda *_args: (None, None, ())
     )
     with pytest.raises(
         mutation.MutationStateError,
@@ -1276,12 +1285,12 @@ def test_observer_loss_after_a_failed_command_does_not_replace_command_failure(t
 def test_a_resource_limit_event_during_a_failed_command_stops_the_claim(tmp_path, monkeypatch):
     zero = _zero_counters()
     _counters_sequence(monkeypatch, zero, zero)
-    hit = mutation.ResourceLimitEvidence.between(zero, zero)
+    hit, _changes = mutation.ResourceLimitEvidence.between(zero, zero)
     hit = mutation._dataclass_replace(
         hit, pids_events_max=mutation.CounterDelta(before=0, after=1, delta=1)
     )
     monkeypatch.setattr(
-        mutation, "_candidate_resource_limit_evidence", lambda *_a: (hit, None)
+        mutation, "_candidate_resource_limit_evidence", lambda *_a: (hit, None, ())
     )
     command_failure = RuntimeError("command failed to run")
     with pytest.raises(AssayError, match="resource-limit event during native R2 attempt") as caught:
@@ -1296,9 +1305,23 @@ def test_surviving_descendants_make_a_completed_candidate_crashed(tmp_path, monk
     assert result.killed == ()
 
 
-def test_judgeable_pass_with_a_signaled_leader_is_classified_as_crashed(
+def test_judgeable_pass_with_a_non_signaled_nonterminal_leader_is_crashed(
     tmp_path, monkeypatch
 ):
+    result = mutation._dataclass_replace(
+        _result(_ECHO_PLAN, outcome="PASS", returncode=0, reason=None),
+        process_tree_evidence={
+            **process_tree_evidence_dict(),
+            "leader_status": "timeout-killed",
+        },
+    )
+    mutation_result, complete = _execute(tmp_path, monkeypatch, [result])
+    assert complete
+    assert len(mutation_result.crashed) == 1
+    assert mutation_result.survived == ()
+
+
+def test_judgeable_pass_with_a_signaled_leader_is_survived(tmp_path, monkeypatch):
     result = mutation._dataclass_replace(
         _result(_ECHO_PLAN, outcome="PASS", returncode=0, reason=None),
         process_tree_evidence={
@@ -1308,8 +1331,8 @@ def test_judgeable_pass_with_a_signaled_leader_is_classified_as_crashed(
     )
     mutation_result, complete = _execute(tmp_path, monkeypatch, [result])
     assert complete
-    assert len(mutation_result.crashed) == 1
-    assert mutation_result.survived == ()
+    assert len(mutation_result.survived) == 1
+    assert mutation_result.crashed == ()
 
 
 def test_a_non_mapping_process_tree_proof_never_reaches_a_recorded_bucket(tmp_path, monkeypatch):
@@ -1322,9 +1345,9 @@ def test_a_non_mapping_process_tree_proof_never_reaches_a_recorded_bucket(tmp_pa
 @pytest.mark.parametrize(
     ("classifier", "kwargs", "message"),
     [
-        ("_classify_mutant_result", {}, "equivalent candidate lacks a declared equivalence artifact"),
+        ("_bucket_for_run", {}, "equivalent candidate lacks a declared equivalence artifact"),
         (
-            "_classify_mutant_result_with_equivalence",
+            "_equivalence_bucket",
             {"equivalence_artifact": "eq.txt", "baseline_equivalence": b"baseline"},
             "equivalent candidate lacks matching declared artifact evidence",
         ),
@@ -1456,7 +1479,7 @@ def test_cold_failure_proof_does_not_override_a_non_kill_classifier_result(
     receipts.facts[0] = _facts(_SHA_R2)
     monkeypatch.setattr(
         mutation,
-        "_classify_mutant_result_with_equivalence",
+        "_equivalence_bucket",
         lambda *_args, **_kwargs: "equivalent",
     )
     result, _ = _cold_run(
@@ -1563,6 +1586,36 @@ def test_witness_prefix_replay_without_a_clean_process_tree_falls_back(
 
     assert _bucket_of(result) == "survived"
     assert _only(result).execution.mode == "full"
+
+
+def test_witness_prefix_replay_limit_event_falls_back_to_full_command(
+    tmp_path, monkeypatch, capsys
+):
+    receipts = _Receipts(monkeypatch)
+    zero = _zero_counters()
+    after_hit = mutation._dataclass_replace(zero, pids_max=1)
+    _counters_sequence(monkeypatch, zero, after_hit, zero, zero)
+    monkeypatch.setattr(mutation, "_read_candidate_resource_counters", _zero_counters)
+    reuse = {mutation.candidate_id(_job()): ("a" * 64, "t::n")}
+
+    result, complete = _execute(
+        tmp_path,
+        monkeypatch,
+        [
+            _result(_PYTEST_PLAN),
+            _result(_PYTEST_PLAN, outcome="PASS", returncode=0, reason=None),
+        ],
+        plan=_PYTEST_PLAN,
+        reuse_witnesses=reuse,
+    )
+
+    assert complete
+    assert _bucket_of(result) == "survived"
+    assert _only(result).execution.mode == "full"
+    assert any(
+        "witness-prefix replay" in line and "falling back to the full command" in line
+        for line in capsys.readouterr().err.splitlines()
+    )
 
 
 # --------------------------------------------------------------------------

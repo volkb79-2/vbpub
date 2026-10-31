@@ -1396,9 +1396,9 @@ def test_verify_refuses_every_non_current_schema_version_with_one_diagnostic(ver
     ]
 
 
-#: A-477: pin the exact current verdict schema bytes. B145 deliberately makes
-#: native R2 resource telemetry optional while keeping schema version 16;
-#: version 17 remains reserved for WP8.
+#: A-477: pin the exact current verdict schema bytes. Operator decision D2
+#: accepts optional native R2 resource telemetry in schema v16 as a recorded
+#: A-477 exception; version 17 remains reserved for WP8.
 _VERDICT_SCHEMA_SHA256 = {
     16: "90ede44619a92a77519344cfb45bd382db405299f42b7ebb9b4c13cab3be5f89",
 }

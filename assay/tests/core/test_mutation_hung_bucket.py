@@ -1,13 +1,13 @@
 """B091/RW-33, P7 A3 -- the `hung` bucket's own classification and closed-
-vocabulary threading: :func:`~assay.mutation._classify_mutant_result` and
-:func:`~assay.mutation._classify_mutant_result_with_equivalence` must map a
+vocabulary threading: :func:`~assay.mutation._bucket_for_run` and
+:func:`~assay.mutation._equivalence_bucket` must map a
 `BUDGET_EXCEEDED` result with `reason_code = CANDIDATE_HUNG` to `"hung"`, and
 `LANE_TIMEOUT` (or any other `BUDGET_EXCEEDED` reason) to the unchanged
 `"budget_exceeded"` -- the exact `LivenessHungExpired`-vs-plain-
 `TimeoutExpired` distinction `runner._execute_plan_inner` makes, one layer
 up.
 
-Kept as a direct UNIT test against the two classifier functions (never a
+Kept as a direct UNIT test against the shared bucket helper (never a
 real subprocess, never a real mutation sweep). The liveness monitor's
 clock/process/resource decisions are covered by deterministic injected
 observations in `test_liveness_runner_monitor.py`; the mutation pipeline's
@@ -23,8 +23,15 @@ from datetime import datetime, timezone
 from conftest import make_lane, make_plan
 
 from assay.errors import Outcome, ReasonCode
-from assay.mutation import _classify_mutant_result, _classify_mutant_result_with_equivalence
+from assay.mutation import (
+    _MutantRun,
+    _bucket_for_run,
+    _equivalence_bucket,
+)
+from assay.process_tree import ProcessTreeEvidence
+from assay.resource_limits import CounterDelta, ResourceLimitEvidence
 from assay.runner import CommandResult
+from assay.termination import Termination
 
 _MOMENT = datetime(2026, 9, 12, 0, 0, 0, tzinfo=timezone.utc)
 
@@ -42,14 +49,44 @@ def _result(outcome: Outcome, reason_code: ReasonCode | None) -> CommandResult:
     )
 
 
+def _run(result: CommandResult) -> _MutantRun:
+    return _MutantRun(
+        result=result,
+        resource_limit_evidence=ResourceLimitEvidence(
+            pids_events_max=CounterDelta(before=0, after=0, delta=0),
+            memory_events_max=CounterDelta(before=0, after=0, delta=0),
+            memory_events_oom=CounterDelta(before=0, after=0, delta=0),
+            memory_events_oom_kill=CounterDelta(before=0, after=0, delta=0),
+            memory_events_oom_group_kill=CounterDelta(before=0, after=0, delta=0),
+        ),
+        process_tree_evidence=ProcessTreeEvidence(
+            leader_status="exited",
+            group_signalled_before_reap=False,
+            outliving_descendants=0,
+            descendants_signalled=0,
+            cleanup_seconds=0.0,
+            clean=True,
+        ),
+    )
+
+
+def _bucket(result: CommandResult) -> str:
+    return _bucket_for_run(
+        _run(result),
+        equivalence_artifact=None,
+        baseline_equivalence=None,
+        kill_signal_artifact=None,
+    )
+
+
 # --------------------------------------------------------------------------
-# _classify_mutant_result
+# _bucket_for_run
 # --------------------------------------------------------------------------
 
 
 def test_candidate_hung_reason_code_classifies_as_hung() -> None:
     result = _result(Outcome.BUDGET_EXCEEDED, ReasonCode.CANDIDATE_HUNG)
-    assert _classify_mutant_result(result) == "hung"
+    assert _bucket(result) == "hung"
 
 
 def test_lane_timeout_reason_code_still_classifies_as_budget_exceeded() -> None:
@@ -60,31 +97,33 @@ def test_lane_timeout_reason_code_still_classifies_as_budget_exceeded() -> None:
     accidentally swallow the pre-existing case".
     """
     result = _result(Outcome.BUDGET_EXCEEDED, ReasonCode.LANE_TIMEOUT)
-    assert _classify_mutant_result(result) == "budget_exceeded"
+    assert _bucket(result) == "budget_exceeded"
 
 
 def test_other_outcomes_unaffected_by_the_hung_branch() -> None:
-    assert _classify_mutant_result(_result(Outcome.PASS, None)) == "survived"
-    assert _classify_mutant_result(_result(Outcome.FAIL, ReasonCode.COMMAND_FAILED)) == "killed"
-    assert _classify_mutant_result(_result(Outcome.ERROR, ReasonCode.EXEC_FAILED)) == "crashed"
+    assert _bucket(_result(Outcome.PASS, None)) == "survived"
+    assert _bucket(_result(Outcome.FAIL, ReasonCode.COMMAND_FAILED)) == "killed"
+    assert _bucket(_result(Outcome.ERROR, ReasonCode.EXEC_FAILED)) == "crashed"
 
 
 # --------------------------------------------------------------------------
-# _classify_mutant_result_with_equivalence -- same split, equivalence-blind
+# _equivalence_bucket -- same split, equivalence-blind
 # --------------------------------------------------------------------------
 
 
 def test_candidate_hung_with_equivalence_lane_still_classifies_as_hung() -> None:
-    result = _result(Outcome.BUDGET_EXCEEDED, ReasonCode.CANDIDATE_HUNG)
-    bucket = _classify_mutant_result_with_equivalence(
-        result, equivalence_bytes=b"whatever", baseline_equivalence=b"whatever"
+    bucket = _equivalence_bucket(
+        Termination.HUNG,
+        equivalence_bytes=b"whatever",
+        baseline_equivalence=b"whatever",
     )
     assert bucket == "hung"
 
 
 def test_lane_timeout_with_equivalence_lane_still_budget_exceeded() -> None:
-    result = _result(Outcome.BUDGET_EXCEEDED, ReasonCode.LANE_TIMEOUT)
-    bucket = _classify_mutant_result_with_equivalence(
-        result, equivalence_bytes=None, baseline_equivalence=b"x"
+    bucket = _equivalence_bucket(
+        Termination.TIMED_OUT,
+        equivalence_bytes=None,
+        baseline_equivalence=b"x",
     )
     assert bucket == "budget_exceeded"

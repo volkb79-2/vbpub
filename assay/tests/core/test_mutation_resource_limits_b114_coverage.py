@@ -69,6 +69,10 @@ def _read(tree) -> ResourceLimitCounters:
     return read_current_cgroup_counters(cgroup_file=tree[3], mountinfo_file=tree[4])
 
 
+def _between(before, after):
+    return ResourceLimitEvidence.between(before, after)[0]
+
+
 def _clean_evidence() -> ResourceLimitEvidence:
     before = ResourceLimitCounters(
         pids_max=4, memory_oom=8, memory_max=6,
@@ -78,7 +82,7 @@ def _clean_evidence() -> ResourceLimitEvidence:
         pids_max=4, memory_oom=8, memory_max=6,
         memory_oom_kill=10, memory_oom_group_kill=12,
     )
-    return ResourceLimitEvidence.between(before, after)
+    return _between(before, after)
 
 
 def test_valid_combined_process_and_memory_observation_round_trips(cgroup_tree):
@@ -90,9 +94,10 @@ def test_valid_combined_process_and_memory_observation_round_trips(cgroup_tree):
         memory_oom_kill=10,
         memory_oom_group_kill=12,
         limit_signature=(
-            (str(cgroup_tree[2]), 31, True, 16, True, 4096, True, True, True, True, False, False),
-            (str(cgroup_tree[1]), 31, True, 16, True, 4096, True, True, True, True, False, False),
+            (str(cgroup_tree[2]), 31, True, True, True, True, True, True, False, False),
+            (str(cgroup_tree[1]), 31, True, True, True, True, True, True, False, False),
         ),
+        limit_values=((16, 4096), (16, 4096)),
         path_event_counters=(
             (str(cgroup_tree[2]), 2, 3, 4, 5, 6, 2, 3, 4, 5, 6),
             (str(cgroup_tree[1]), 2, 3, 4, 5, 6, 2, 3, 4, 5, 6),
@@ -102,7 +107,7 @@ def test_valid_combined_process_and_memory_observation_round_trips(cgroup_tree):
     (cgroup_tree[2] / "memory.events").write_text(
         "max 4\noom 4\noom_kill 5\noom_group_kill 7\n", encoding="ascii"
     )
-    evidence = ResourceLimitEvidence.between(before, _read(cgroup_tree))
+    evidence = _between(before, _read(cgroup_tree))
     assert evidence.limit_hit is True
     assert evidence.pids_events_max.delta == 1
     assert evidence.memory_events_max.delta == 1
@@ -118,7 +123,7 @@ def test_hierarchical_sibling_delta_does_not_invalidate_candidate(cgroup_tree):
         "max 4\noom 4\noom_kill 5\noom_group_kill 6\n", encoding="ascii"
     )
 
-    evidence = ResourceLimitEvidence.between(before, _read(cgroup_tree))
+    evidence = _between(before, _read(cgroup_tree))
 
     assert evidence.limit_hit is False
 
@@ -128,7 +133,7 @@ def test_parent_local_event_without_candidate_event_withholds_outcome(cgroup_tre
     (cgroup_tree[1] / "pids.events.local").write_text("max 3\n", encoding="ascii")
 
     with pytest.raises(ResourceLimitObservationError, match="shared ancestor resource event"):
-        ResourceLimitEvidence.between(before, _read(cgroup_tree))
+        _between(before, _read(cgroup_tree))
 
 
 def test_reader_binds_localevents_mode_and_requires_candidate_leaf(cgroup_tree):
@@ -173,7 +178,7 @@ def test_localevents_regular_counter_supplies_local_ancestor_evidence(cgroup_tre
     (parent / "pids.events").write_text("max 3\n", encoding="ascii")
 
     with pytest.raises(ResourceLimitObservationError, match="shared ancestor resource event"):
-        ResourceLimitEvidence.between(before, _read(cgroup_tree))
+        _between(before, _read(cgroup_tree))
 
 
 @pytest.mark.parametrize("name", ["pids.events.local", "memory.events.local"])
@@ -277,9 +282,9 @@ def test_inactive_child_controller_keeps_valid_parent_evidence(cgroup_tree):
     counters = _read(cgroup_tree)
     assert (counters.pids_max, counters.memory_max, counters.memory_oom) == (2, 3, 4)
     assert counters.limit_signature[0] == (
-        str(child), 31, False, None, False, None,
-        False, False, False, False, False, False,
+        str(child), 31, False, False, False, False, False, False, False, False,
     )
+    assert counters.limit_values[0] == (None, None)
 
 
 @pytest.mark.parametrize(
@@ -634,10 +639,10 @@ def test_evidence_model_refuses_untyped_delta():
 @pytest.mark.parametrize(
     "entry",
     [
-        ("/lane", 0, True, 16, True, 4096, True, True, True, True, False, False),
-        ("/lane", 31, False, 16, True, 4096, True, True, True, True, False, False),
-        ("/lane", 31, True, 16, True, 4096, False, True, True, True, False, False),
-        ("/lane", 31, True, 16, True, 4096, True, False, True, True, False, False),
+        ("/lane", 0, True, True, True, True, True, True, False, False),
+        ("/lane", 31, True, True, False, True, True, True, False, False),
+        ("/lane", 31, True, True, True, True, False, True, False, False),
+        ("/lane", 31, True, True, True, False, True, True, False, False),
     ],
 )
 def test_counter_signature_refuses_unbound_or_missing_limit_evidence(entry):
