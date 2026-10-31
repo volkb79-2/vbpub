@@ -296,7 +296,7 @@ def test_r0_external_sigkill_is_exec_failed_with_detail(tmp_path: Path):
     assert "the command's final output" not in claim.detail
 
 
-def test_r0_sigsegv_is_fail(tmp_path: Path):
+def test_r0_sigsegv_stays_fail_with_self_signaled_termination(tmp_path: Path):
     result = runner.execute_command(
         make_lane(argv=("fake-command",)),
         cwd=tmp_path,
@@ -306,7 +306,7 @@ def test_r0_sigsegv_is_fail(tmp_path: Path):
 
     assert result.outcome is Outcome.FAIL
     assert result.reason_code is ReasonCode.COMMAND_FAILED
-    assert result.termination is Termination.FAILED
+    assert result.termination is Termination.SELF_SIGNALED
 
 
 def test_r0_pass_with_limit_event_is_pass(

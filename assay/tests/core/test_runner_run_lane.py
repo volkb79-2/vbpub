@@ -943,7 +943,7 @@ def test_run_lane_r1_still_judges_coverage_when_r0_fails(git_repo: GitRepo):
     assert isinstance(verdict.judgment, Judgment), "R1 really was judged, so its policy is recorded"
 
 
-def test_run_lane_r1_inherits_r0_infra_when_r0_never_starts(git_repo: GitRepo):
+def test_inherited_r1_error_carries_r0_detail(git_repo: GitRepo):
     """An unpermitted argv append never launches (A-095); R1 inherits the
     R0 infrastructure termination instead of issuing a separate coverage
     refusal from an artifact that this run could not produce."""
@@ -971,6 +971,7 @@ def test_run_lane_r1_inherits_r0_infra_when_r0_never_starts(git_repo: GitRepo):
     assert verdict.claims[0].reason_code is ReasonCode.EXEC_FAILED
     assert verdict.claims[1].status is Outcome.ERROR
     assert verdict.claims[1].reason_code is ReasonCode.EXEC_FAILED
+    assert verdict.claims[1].detail == "inherited from R0: not_run"
     assert verdict.outcome is Outcome.ERROR
 
 
