@@ -103,9 +103,10 @@ def test_import_break_appends_a_top_level_throw():
     # inside the function above it -- a nested throw would only fire if that
     # function were called, which is a different claim entirely.
     added = transformed[len(MODULE) :]
-    assert added.strip().startswith(";(() => {\n  const _assayCanaryProcess")
+    assert added.strip().startswith("// @ts-ignore\n;(() => { const p = globalThis.process;")
     assert added.rstrip().endswith('throw new Error("assay-canary-import-break")')
     assert "\n  throw" not in added
+    assert added.strip().count("\n") == 2  # ts-ignore comment, IIFE, throw: one line each
 
 
 def test_uncovered_line_appends_a_never_called_portable_function_value():
