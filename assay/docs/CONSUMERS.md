@@ -377,7 +377,7 @@ candidate window. A change to this identity makes the window unobserved.
 Configured `pids.max` and `memory.max` values are tracked separately: changing
 a value leaves the window observed and preserves its monotonic event evidence.
 Candidate progress reports changed values in `resource_limit_changes`, with
-one advisory line. Every candidate progress event includes
+one advisory line. Every `candidate` progress event includes
 `resource_limit_changes`, an empty list when no configured values changed. The
 full hierarchy preflight still refuses before any candidate when required
 counters are unavailable.
@@ -1554,6 +1554,29 @@ untracked path inside it is a `NO_MEASUREMENT`/`DIRTY_TREE` of the gate's own
 making. (assay's own registered gate does this to itself, in
 `tools/tester-unified-gate.sh`.)
 
+### Retry unresolved native-R2 candidates at sweep end (B179)
+
+After every candidate has received its first attempt, Assay makes one serial
+retry for each candidate executed in this invocation whose bucket is
+`crashed`, per-candidate `budget_exceeded`, or `hung`, as long as the campaign
+deadline allows. Reaching the campaign-deadline mask closes the retry phase;
+masked candidates and candidates never started do not enter the retry set.
+The retry uses the same classification rules and updates the candidate's saved
+state. Progress emits
+`candidate_retry` with the candidate ID and its first and final buckets.
+
+`--resume` reuses matching saved records, including records bucketed
+`crashed`; those records do not receive an automatic tail retry. To explicitly
+execute cached crashes again, pass `--rejudge crashed` with `--resume`:
+
+```sh
+assay run <lane> --resume --rejudge crashed \
+  --progress .assay/progress-<lane>.jsonl
+```
+
+Each rejudged candidate gets the normal current-invocation retry if its new
+result is still `crashed`, per-candidate `budget_exceeded`, or `hung`.
+
 ### Where resume state lives: `--state-dir PATH`
 
 By default, mutation resume records live in
@@ -1617,15 +1640,11 @@ mutant was never re-executed against the assertion that kills it.
   produced by different classification logic.
 
 A new Assay build re-executes resumed campaign state because the Assay version
-is part of the judge identity. Until WP7, recover crashed candidates on a retry
-with:
+is part of the judge identity. A matching cached `crashed` record is reused by
+`--resume`; see [B179](#retry-unresolved-native-r2-candidates-at-sweep-end-b179)
+for the explicit `--rejudge crashed` command.
 
-```sh
-assay run <lane> --resume --rejudge crashed \
-  --progress .assay/progress-<lane>.jsonl
-```
-
-Every native R2 candidate progress event includes `resource_limit_changes`,
+Every native R2 `candidate` progress event includes `resource_limit_changes`,
 with an empty list when no configured limit values changed.
 
 Three consequences worth planning around:

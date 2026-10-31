@@ -13393,11 +13393,17 @@ pass. Acceptance compares command counts and outcomes for both paths. See the
 
 ## B179 — retry unresolved R2 infrastructure candidates serially at sweep end
 
-**Status: OPEN; optional WP7 follow-up.** Re-run each infrastructure, exceeded
-budget or uncertified candidate once, serially, after the main sweep. Classify
-the retry with the same rules and never retry already judged buckets.
-Acceptance verifies one retry per eligible candidate and no parallel retry
-execution. See the [Opus design](reports/ASSAY-DESIGN-OPUS-2026-10-30.md),
+**Status: CLOSED by AP-5 (WP7 serial tail retry).** After the first sweep,
+Assay retries once, serially, each candidate executed in the current invocation
+whose bucket is `crashed`, per-candidate `budget_exceeded`, or `hung`. Reaching
+the campaign-deadline mask closes the retry phase; masked and never-started
+candidates are excluded. The same runner and classifier produce the
+replacement result; the state record is overwritten in
+the existing schema and progress emits `candidate_retry` with the first and
+final buckets. Matching cached `crashed` records are reused on resume; operators
+select them explicitly with `--resume --rejudge crashed`. Acceptance verifies
+one retry per eligible candidate, no parallel retry execution, deadline
+handling, state replacement and resume reuse. See the [Opus design](reports/ASSAY-DESIGN-OPUS-2026-10-30.md),
 §§6.5, 7/WP7.
 
 ## B180 — move remaining host-varying process evidence out of verdict v16
