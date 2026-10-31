@@ -14,11 +14,13 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   leader is `crashed`. Unobserved bare nonzero failures and shell-wrapped
   signal statuses such as 137 are also `crashed`. Any observed positive pids
   or OOM-related delta in the candidate's counters or an ancestor's own local
-  counter makes a non-PASS candidate
-  `crashed`, including a report-backed failure; `memory.events:max` remains
-  telemetry. Limit-value changes preserve observation and are reported in
-  every candidate progress event as `resource_limit_changes` (an empty list
-  when unchanged); identity changes make the window unobserved. Only a
+  counter makes a non-PASS candidate `crashed`, including a report-backed
+  failure. An ancestor-local event still counts when the corresponding
+  candidate counter is unavailable throughout the stable window;
+  `memory.events:max` remains telemetry. Limit-value changes preserve
+  observation and are reported in every candidate progress event as
+  `resource_limit_changes` (an empty list when unchanged); identity changes
+  make the window unobserved. Only a
   completed witness-prefix replay with a positive event falls back to a full
   command with a fresh window; replay errors propagate. A new Assay build
   re-executes resumed campaign state because the Assay version is part of the

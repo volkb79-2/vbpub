@@ -757,12 +757,13 @@ withholds only R2 and preserves completed R0/R1 claims.
 The candidate and ancestor-local comparison is the sole event classifier;
 there is no separate gate-wide `memory.events` OOM check around a candidate,
 because that aggregate can include an unrelated sibling's event. A positive
-event in an ancestor's own local counter with a zero candidate counter is
-conservatively counted against the candidate: it may be shared with other
-work, but the command window overlapped a real limit event. The exception is
-`memory.events:max`, which remains telemetry at every level. A hierarchical-
-only ancestor delta still does not count, because it can originate in a
-sibling subtree.
+event in an ancestor's own local counter with no positive candidate delta is
+conservatively counted against the candidate, including when that candidate
+counter is unavailable throughout the stable window. The event may be shared
+with other work, but the command window overlapped a real limit event. The
+exception is `memory.events:max`, which remains telemetry at every level. A
+hierarchical-only ancestor delta still does not count, because it can originate
+in a sibling subtree.
 
 The cgroup path, mount identity, controller-file presence and localevents mode
 form the window identity. A change to that identity makes the window

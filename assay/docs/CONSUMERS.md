@@ -409,13 +409,14 @@ and its local event files, then reads each visible ancestor's
 increment between the sequential reads. A sibling's event can change a shared
 ancestor's hierarchical count without changing its local count, so a
 hierarchical-only ancestor delta does not invalidate an unaffected candidate.
-A positive local failure-relevant event in an ancestor's own counter, with a
-zero candidate counter, counts conservatively as a limit hit for that
-candidate. The event may be shared with other work at the ancestor, but the
-candidate window overlapped a real limit event, so kill credit is withheld. A
-hierarchical-only ancestor delta does not count because it can originate in a
-sibling subtree. A changed path, mount identity, controller file, missing
-endpoint, or uncomparable window is recorded as unobserved telemetry; a
+A positive local failure-relevant event in an ancestor's own counter, with no
+positive candidate delta, counts conservatively as a limit hit for that
+candidate. This includes a candidate counter that is unavailable throughout
+the stable window. The event may be shared with other work at the ancestor,
+but the candidate window overlapped a real limit event, so kill credit is
+withheld. A hierarchical-only ancestor delta does not count because it can
+originate in a sibling subtree. A changed path, mount identity, controller
+file, missing endpoint, or uncomparable window is recorded as unobserved telemetry; a
 configured limit-value change preserves observation. A PASS with a signaled
 leader is `crashed`, including when its command reports PASS.
 On mounts using `pids_localevents` or `memory_localevents`, the

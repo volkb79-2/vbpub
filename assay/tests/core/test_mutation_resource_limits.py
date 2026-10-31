@@ -1972,12 +1972,18 @@ def test_run_mutation_observer_loss_after_second_candidate_is_recorded(
 
 
 @pytest.mark.parametrize(
-    ("report_outcome", "expected_bucket"),
-    [("FAIL", "crashed"), ("PASS", "survived")],
+    ("candidate_pids_available", "report_outcome", "expected_bucket"),
+    [
+        (True, "FAIL", "crashed"),
+        (True, "PASS", "survived"),
+        (False, "FAIL", "crashed"),
+        (False, "PASS", "survived"),
+    ],
 )
 def test_run_mutation_ancestor_local_pids_event_is_attributed_to_candidate(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    candidate_pids_available: bool,
     report_outcome: str,
     expected_bucket: str,
 ):
@@ -1985,7 +1991,32 @@ def test_run_mutation_ancestor_local_pids_event_is_attributed_to_candidate(
     repo, lane, baseline, scratch_root = _run_mutation_observation_fixture(
         tmp_path, source
     )
-    leaf_before = ("/candidate", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    leaf_before = (
+        "/candidate",
+        0 if candidate_pids_available else None,
+        0,
+        0,
+        0,
+        0,
+        0 if candidate_pids_available else None,
+        0,
+        0,
+        0,
+        0,
+    )
+    leaf_after = (
+        "/candidate",
+        0 if candidate_pids_available else None,
+        0,
+        1,
+        0,
+        0,
+        0 if candidate_pids_available else None,
+        0,
+        1,
+        0,
+        0,
+    )
     parent_before = ("/gates", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
     parent_after = ("/gates", 1, 0, 0, 0, 0, 1, 0, 0, 0, 0)
     before = ResourceLimitCounters(
@@ -1996,7 +2027,7 @@ def test_run_mutation_ancestor_local_pids_event_is_attributed_to_candidate(
     after = ResourceLimitCounters(
         pids_max=0, memory_oom=0, memory_max=0, memory_oom_kill=0,
         memory_oom_group_kill=0,
-        path_event_counters=(leaf_before, parent_after),
+        path_event_counters=(leaf_after, parent_after),
     )
     samples = iter((before, before, after))
     monkeypatch.setattr(
@@ -2038,6 +2069,7 @@ def test_run_mutation_ancestor_local_pids_event_is_attributed_to_candidate(
     assert other_bucket == ()
     assert bucket[0].resource_limit_evidence is not None
     assert bucket[0].resource_limit_evidence.limit_hit is True
+    assert bucket[0].resource_limit_evidence.memory_events_oom.delta == 1
     progress_records = [
         json.loads(line)
         for line in progress_path.read_text(encoding="utf-8").splitlines()
