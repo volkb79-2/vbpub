@@ -32,10 +32,11 @@ from gate.tests.support import PROJECT_ROOT, Standalone
 
 PACKAGE_DIR = PROJECT_ROOT / "src" / "assay"
 ANALYSIS_PACKAGE_DIR = PROJECT_ROOT / "analysis" / "src" / "assay_analysis"
+COWTREE_PACKAGE_DIR = PROJECT_ROOT.parent / "libraries" / "cowtree" / "src" / "cowtree"
 
 #: Everything the walk is allowed to see: the standard library of the running
-#: interpreter, plus the names of the two packages the one distribution holds.
-ALLOWED_ROOTS = set(sys.stdlib_module_names) | {"assay", "assay_analysis"}
+#: interpreter, plus the names of the three packages the one distribution holds.
+ALLOWED_ROOTS = set(sys.stdlib_module_names) | {"assay", "assay_analysis", "cowtree"}
 
 TAINTED_MODULE = '''\
 """A module that is deliberately not pure, used to prove the check can fail."""
@@ -161,6 +162,18 @@ def test_the_analysis_package_imports_nothing_outside_the_stdlib_and_assay():
     }
 
 
+def test_embedded_cowtree_imports_nothing_outside_the_stdlib():
+    files, offenders = scan_package(COWTREE_PACKAGE_DIR)
+
+    assert offenders == {}, f"non-stdlib imports found: {offenders}"
+    assert {path.name for path in files} >= {
+        "__init__.py",
+        "detect.py",
+        "run.py",
+        "space.py",
+    }
+
+
 def test_every_scanned_file_parses_and_declares_at_least_one_import():
     files, _ = scan_package(PACKAGE_DIR)
     with_imports = [p for p in files if import_roots(p.read_text(encoding="utf-8"))]
@@ -178,12 +191,19 @@ def test_pyproject_declares_zero_runtime_dependencies():
     assert load_pyproject()["project"]["dependencies"] == []
 
 
-def test_pyproject_ships_both_packages_from_one_distribution():
-    # A-478: the wheel holds `assay` and `assay_analysis`; without `package-dir`
-    # the egg-info lands at the unignored project root (DIRTY_TREE).
+def test_pyproject_ships_all_packages_from_one_distribution():
+    # A-478 plus the in-repository coworker: without `package-dir` the egg-info
+    # lands at the unignored project root (DIRTY_TREE).
     setuptools = load_pyproject()["tool"]["setuptools"]
-    assert setuptools["package-dir"] == {"": "src"}
-    assert setuptools["packages"]["find"]["where"] == ["src", "analysis/src"]
+    assert setuptools["package-dir"] == {
+        "": "src",
+        "cowtree": "../libraries/cowtree/src/cowtree",
+    }
+    assert setuptools["packages"]["find"]["where"] == [
+        "src",
+        "analysis/src",
+        "../libraries/cowtree/src",
+    ]
 
 
 def test_pyproject_declares_a_test_extra_with_the_validator():

@@ -4,6 +4,12 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Added
+- Auto-detect a user-owned btrfs workspace for higher-rigor snapshots and reflink packed Git objects through cowtree, with the existing copy path retained when no CoW area is configured.
+
+### Fixed
+- Use the Linux fsync syscall directly for mutation state, pilot state, and verdict writes, so replacing `os.fsync` cannot bypass durability.
+
 <!-- cmru: release history -->
 
 ## [10.1.0] - 2026-10-31

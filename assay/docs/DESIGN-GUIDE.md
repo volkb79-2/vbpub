@@ -1953,6 +1953,26 @@ inert, byte-faithful repository seed from a full commit and use it concurrently
 for independent base and replacement repositories without ever returning to
 consumer-controlled Git state.*
 
+#### The optional CoW workspace affects storage, not snapshot identity
+
+Higher-rigor lanes may use the same-repository `cowtree` library when
+`MDT_COW_ROOT` is present. `cowtree.detect()` validates the existing root,
+caller ownership and mount table; Assay activates it only for a btrfs area
+with the btrfs backend. The initial seed is ingested into the leased run, and
+each materialized Git repository is created under that run so `Run.clone_file`
+can FICLONE its packed object files. Assay never hardlinks the objects or
+shares a Git alternate. The filesystem copy path remains in use when no area
+is configured, with cowtree's single INFO notice. An invalid configured area,
+space refusal or failed reflink is an `ERROR/EXEC_FAILED` with the refusal
+detail carried on the claim.
+
+Admission uses the validated manifest's regular-file sizes and the seed pack
+sizes; the per-clone estimate uses the full materialized tree, and the live
+clone bound comes from the lane's declared jobs plus the one prepared baseline
+workspace. A reflink does not change the bytes Assay writes, the manifest
+digest, or the Git checks; it only changes how packed objects occupy storage.
+Level B template cloning is a separate step and is not part of this seam.
+
 **Why the commit rather than the tree.** Copying the working tree carries
 whatever happens to be lying in it — a stale coverage artifact from a previous
 run, a build cache, a FIFO — and makes repeatability depend on facts the

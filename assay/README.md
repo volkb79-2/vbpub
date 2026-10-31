@@ -202,6 +202,14 @@ assay exists to close that gap mechanically, not by policy:
   `snapshot_history = "full"`; project-level `[isolation.limits]` ceilings
   bound the seed and materialized trees. See [§6, snapshot history and seed
   limits](docs/DESIGN-GUIDE.md#snapshot-history-and-seed-limits-b101).
+- **Higher-rigor snapshots can use a CoW workspace automatically.** When
+  `MDT_COW_ROOT` names an existing, caller-owned btrfs area, Assay reflink-clones
+  packed Git object files into each private snapshot. An absent area keeps the
+  existing copy path and emits one INFO line; a configured but invalid area or
+  failed reflink refuses the lane with `ERROR/EXEC_FAILED` and a claim detail.
+  This changes storage only; snapshot bytes and judgment buckets stay the same.
+  See the [CoW workspace design](docs/DESIGN-GUIDE.md#the-optional-cow-workspace-affects-storage-not-snapshot-identity)
+  and [consumer setup](docs/CONSUMERS.md#optional-cow-storage-for-p22-snapshots-cw8).
 - **Snapshot dirt is explicit and auditable.** Project-level
   `[isolation].dirty_ignore` may cover known ledger/output paths using the
   same repo-top-relative POSIX glob grammar as `identity_exclude`. Other dirty

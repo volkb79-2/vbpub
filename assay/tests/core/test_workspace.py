@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from assay import workspace
+from assay import _cow_workspace, workspace
 
 
 @pytest.mark.parametrize(
@@ -30,8 +30,8 @@ def test_workspace_factory_imports_implementation_only_when_opened(tmp_path, mon
     active = object()
 
     @contextmanager
-    def opener(estimate, *, scratch_root, max_live_clones):
-        calls.append((estimate, scratch_root, max_live_clones))
+    def opener(estimate, *, scratch_root):
+        calls.append((estimate, scratch_root))
         yield active
 
     monkeypatch.setattr(workspace, "_cow_workspace_opener", lambda: opener)
@@ -41,7 +41,17 @@ def test_workspace_factory_imports_implementation_only_when_opened(tmp_path, mon
     with factory.open(estimate, scratch_root=tmp_path) as selected:
         assert selected is active
 
-    assert calls == [(estimate, tmp_path, 3)]
+    assert calls == [(estimate, tmp_path)]
+
+
+def test_workspace_adapter_module_import_is_lazy():
+    assert workspace._cow_workspace_opener() is _cow_workspace.open_workspace
+
+
+@pytest.mark.parametrize("max_live_clones", [True, 0, 1.5])
+def test_workspace_factory_rejects_invalid_live_clone_bounds(max_live_clones):
+    with pytest.raises(ValueError, match="positive integer"):
+        workspace.WorkspaceFactory(max_live_clones=max_live_clones)
 
 
 def test_factory_for_lane_derives_live_clones_from_declared_jobs():

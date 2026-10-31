@@ -103,12 +103,25 @@ def _install(monkeypatch, cowtree):
     monkeypatch.setattr(_cow_workspace, "_load_cowtree", lambda: cowtree)
 
 
+def test_cowtree_import_is_lazy_and_names_the_embedded_package(monkeypatch):
+    module = object()
+    calls = []
+    monkeypatch.setattr(
+        _cow_workspace.importlib,
+        "import_module",
+        lambda name: calls.append(name) or module,
+    )
+
+    assert _cow_workspace._load_cowtree() is module
+    assert calls == ["cowtree"]
+
+
 def test_no_detected_area_yields_plain_behavior_without_opening_run(tmp_path, monkeypatch):
     cowtree = FakeCowtree(area=None)
     _install(monkeypatch, cowtree)
 
     with _cow_workspace.open_workspace(
-        WorkspaceEstimate(10, 20, 2), scratch_root=tmp_path, max_live_clones=2
+        WorkspaceEstimate(10, 20, 2), scratch_root=tmp_path
     ) as selected:
         assert selected is None
 
@@ -128,13 +141,13 @@ def test_detected_area_requires_btrfs_ficlone_backend(
 
     with pytest.raises(AssayError) as caught:
         with _cow_workspace.open_workspace(
-            WorkspaceEstimate(10, 20, 2), scratch_root=tmp_path, max_live_clones=2
+            WorkspaceEstimate(10, 20, 2), scratch_root=tmp_path
         ):
             pytest.fail("an unsupported CoW area must be refused")
 
     assert caught.value.outcome is Outcome.ERROR
     assert caught.value.reason_code is ReasonCode.EXEC_FAILED
-    assert "requires a btrfs filesystem with the btrfs backend" in str(caught.value)
+    assert "btrfs filesystem with the btrfs backend" in str(caught.value)
     assert cowtree.open_calls == []
 
 
@@ -147,14 +160,15 @@ def test_active_workspace_forwards_estimate_and_run_operations(tmp_path, monkeyp
     source.mkdir()
     (source / "seed.pack").write_bytes(b"seed pack")
     clone_source = run.trees / "seed" / "seed.pack"
-    clone_destination = run.trees / "snapshot" / "pack"
 
     with _cow_workspace.open_workspace(
-        estimate, scratch_root=tmp_path, max_live_clones=3
+        estimate, scratch_root=tmp_path
     ) as selected:
         ingested = selected.ingest_tree(source, "seed")
-        snapshot = selected.make_tree("snapshot")
+        snapshot = selected.make_tree()
+        clone_destination = snapshot / "pack"
         selected.clone_file(clone_source, clone_destination)
+        cloned_bytes = clone_destination.read_bytes()
         selected.delete_tree(snapshot)
 
     assert cowtree.open_calls == [
@@ -162,7 +176,7 @@ def test_active_workspace_forwards_estimate_and_run_operations(tmp_path, monkeyp
     ]
     assert Path(ingested) == run.trees / "seed"
     assert run.clones == [(clone_source, clone_destination)]
-    assert clone_destination.read_bytes() == b"seed pack"
+    assert cloned_bytes == b"seed pack"
     assert run.closed
 
 
@@ -171,9 +185,9 @@ def test_workspace_refuses_if_open_run_loses_btrfs_backend(tmp_path, monkeypatch
     cowtree = FakeCowtree(area=_area(), run=run)
     _install(monkeypatch, cowtree)
 
-    with pytest.raises(AssayError, match="requires a btrfs filesystem with the btrfs backend"):
+    with pytest.raises(AssayError, match="btrfs filesystem with the btrfs backend"):
         with _cow_workspace.open_workspace(
-            WorkspaceEstimate(1, 1, 2), scratch_root=tmp_path, max_live_clones=2
+            WorkspaceEstimate(1, 1, 2), scratch_root=tmp_path
         ):
             pytest.fail("a changed backend must be refused")
 
@@ -192,7 +206,7 @@ def test_cow_errors_become_exec_failed_assay_errors(tmp_path, monkeypatch, failu
 
     with pytest.raises(AssayError) as caught:
         with _cow_workspace.open_workspace(
-            WorkspaceEstimate(1, 1, 2), scratch_root=tmp_path, max_live_clones=2
+            WorkspaceEstimate(1, 1, 2), scratch_root=tmp_path
         ):
             pytest.fail("cowtree errors must be mapped")
 
@@ -213,7 +227,7 @@ def test_cow_errors_from_reflink_operation_become_exec_failed(tmp_path, monkeypa
 
     with pytest.raises(AssayError) as caught:
         with _cow_workspace.open_workspace(
-            WorkspaceEstimate(1, 1, 2), scratch_root=tmp_path, max_live_clones=2
+            WorkspaceEstimate(1, 1, 2), scratch_root=tmp_path
         ) as selected:
             selected.clone_file(source, destination / "pack")
 

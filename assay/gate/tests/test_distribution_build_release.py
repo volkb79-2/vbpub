@@ -540,8 +540,7 @@ def test_the_zipapp_propagates_a_nonzero_exit_from_a_failing_lane(built, tmp_pat
 
 
 def test_the_zipapp_runs_analyze_from_the_one_archive(built):
-    """(A-478) One zipapp holds both packages: `analyze` finds `assay_analysis`
-    inside the archive, prints the headline, and keeps its exit codes."""
+    """(A-478) The zipapp carries Assay's packages and can import them alone."""
     artifacts = built["first"]
 
     # `-S`: no site-packages, so an `assay_analysis` installed in the running
@@ -569,12 +568,24 @@ def test_the_zipapp_runs_analyze_from_the_one_archive(built):
     assert origin.returncode == 0, origin.stderr
     assert str(artifacts.zipapp) in origin.stdout, origin.stdout
 
+    cowtree_origin = subprocess.run(
+        [sys.executable, "-S", "-c", "import cowtree; print(cowtree.__file__)"],
+        env={"PYTHONPATH": str(artifacts.zipapp), "PATH": "/usr/bin:/bin"},
+        capture_output=True, text=True, timeout=120,
+    )
+    assert cowtree_origin.returncode == 0, cowtree_origin.stderr
+    assert str(artifacts.zipapp) in cowtree_origin.stdout, cowtree_origin.stdout
 
-def test_the_wheel_holds_both_packages_their_schemas_and_no_tests(built):
+
+def test_the_wheel_holds_all_packages_their_schemas_and_no_tests(built):
     with zipfile.ZipFile(built["first"].wheel) as archive:
         names = set(archive.namelist())
 
     for required in (
+        "cowtree/__init__.py",
+        "cowtree/detect.py",
+        "cowtree/run.py",
+        "cowtree/space.py",
         "assay_analysis/__init__.py",
         "assay_analysis/campaign.py",
         "assay_analysis/cli.py",

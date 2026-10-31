@@ -360,6 +360,7 @@ class _CopyingWorkspace:
 class _CopyingWorkspaceProvider:
     def __init__(self, root: Path):
         self.root = root
+        self.max_live_clones = 2
         self.estimate = None
         self.workspace = None
 
