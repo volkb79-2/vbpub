@@ -1435,15 +1435,35 @@ _EXPECTED_OUTCOME = {
     "hung": ("LivenessHungExpired",),
     "timeout": ("TimeoutExpired",),
 }
-_SIDECAR_KEYS = {"format", "samples", "cpu_seconds", "peak_rss_bytes", "spawned_at"}
+_SIDECAR_KEYS = {
+    "format",
+    "samples",
+    "cpu_seconds",
+    "peak_rss_bytes",
+    "write_bytes",
+    "spawned_at",
+}
 
 
 def _constant_sampler(pid: int) -> liveness.TreeSample:
-    return liveness.TreeSample(1e9, 10**12)
+    return liveness.TreeSample(1e9, 10**12, 2048)
 
 
 def _raising_sampler(pid: int) -> liveness.TreeSample:
     raise OSError("no /proc")
+
+
+@pytest.mark.parametrize(
+    ("write_samples", "expected"),
+    [((100, 50), 100), ((None, None), None), ((100, None), 100)],
+)
+def test_resource_tally_keeps_the_maximum_available_write_counter(
+    write_samples: tuple[int | None, int | None], expected: int | None
+) -> None:
+    tally = liveness._ResourceTally()
+    for write_bytes in write_samples:
+        tally.add(liveness.TreeSample(1.0, 1024, write_bytes))
+    assert tally.write_bytes == expected
 
 
 def _row(tmp_path: Path, row: str, *, sampler, log: list[str] | None = None):
@@ -1565,6 +1585,7 @@ def test_o7_the_sidecar_is_written_on_every_exit_path(tmp_path: Path, row: str) 
     assert returned["n"] >= 2
     assert sidecar["cpu_seconds"] == 1e9
     assert sidecar["peak_rss_bytes"] == 10**12
+    assert sidecar["write_bytes"] == 2048
     assert isinstance(sidecar["spawned_at"], float)
 
 
@@ -1572,14 +1593,24 @@ def test_o7_a_sampler_that_always_raises_leaves_null_measurements(tmp_path: Path
     _outcome, _clock, runner, cwd = _row(tmp_path, "hung", sampler=_raising_sampler)
     sidecar = liveness.read_resource_sidecar(runner._events_path_for_cwd(cwd))
     assert sidecar is not None
-    assert (sidecar["samples"], sidecar["cpu_seconds"], sidecar["peak_rss_bytes"]) == (0, None, None)
+    assert (
+        sidecar["samples"],
+        sidecar["cpu_seconds"],
+        sidecar["peak_rss_bytes"],
+        sidecar["write_bytes"],
+    ) == (0, None, None, None)
 
 
 def test_o7_no_sampler_still_writes_a_sidecar_with_null_measurements(tmp_path: Path) -> None:
     _outcome, _clock, runner, cwd = _row(tmp_path, "normal", sampler=None)
     sidecar = liveness.read_resource_sidecar(runner._events_path_for_cwd(cwd))
     assert sidecar is not None
-    assert (sidecar["samples"], sidecar["cpu_seconds"], sidecar["peak_rss_bytes"]) == (0, None, None)
+    assert (
+        sidecar["samples"],
+        sidecar["cpu_seconds"],
+        sidecar["peak_rss_bytes"],
+        sidecar["write_bytes"],
+    ) == (0, None, None, None)
 
 
 def test_o7_a_later_call_whose_popen_raises_leaves_no_stale_sidecar(tmp_path: Path) -> None:

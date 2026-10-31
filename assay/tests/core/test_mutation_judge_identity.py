@@ -668,6 +668,125 @@ def _store(tmp_path: Path, job, payload: dict) -> Path:
     return root
 
 
+def test_state_record_resources_roundtrip(tmp_path: Path):
+    job = _job()
+    resources = {
+        "cpu_seconds": 1.5,
+        "peak_rss_bytes": 2048,
+        "write_bytes": 4096,
+        "judge_rss_bytes": 8192,
+        "phase_seconds": {
+            "materialize": 0.1,
+            "command": 1.0,
+            "integrity": 0.2,
+            "teardown": 0.3,
+        },
+        "startup_seconds": {"to_session_start": 0.1, "to_first_test": 0.4},
+    }
+    root = _store(tmp_path, job, _record(job, judge="j" * 64, resources=resources))
+
+    loaded = mutation._load_validated_state_record(root, job, judge="j" * 64)
+
+    assert isinstance(loaded, dict)
+    assert loaded["resources"] == resources
+
+
+def test_state_record_resources_roundtrip_with_unavailable_measurements(
+    tmp_path: Path,
+):
+    job = _job()
+    resources = {
+        "cpu_seconds": None,
+        "peak_rss_bytes": None,
+        "write_bytes": None,
+        "judge_rss_bytes": None,
+        "phase_seconds": None,
+        "startup_seconds": {"to_session_start": None, "to_first_test": None},
+    }
+    root = _store(tmp_path, job, _record(job, judge="j" * 64, resources=resources))
+
+    loaded = mutation._load_validated_state_record(root, job, judge="j" * 64)
+
+    assert isinstance(loaded, dict)
+    assert loaded["resources"] == resources
+
+
+@pytest.mark.parametrize(
+    ("resources", "message"),
+    [
+        ("not-an-object", "resources must be an object"),
+        ({"cpu_seconds": 1.0, "unrecognized": 2}, "resources has unknown fields"),
+        (
+            {"cpu_seconds": True},
+            "resources.cpu_seconds must be a non-negative number or null",
+        ),
+        (
+            {"cpu_seconds": "not-a-number"},
+            "resources.cpu_seconds must be a non-negative number or null",
+        ),
+        (
+            {"cpu_seconds": float("inf")},
+            "resources.cpu_seconds must be a non-negative number or null",
+        ),
+        (
+            {"cpu_seconds": -1.0},
+            "resources.cpu_seconds must be a non-negative number or null",
+        ),
+        (
+            {"write_bytes": 1.5},
+            "resources.write_bytes must be a non-negative integer or null",
+        ),
+        (
+            {"write_bytes": -1},
+            "resources.write_bytes must be a non-negative integer or null",
+        ),
+        (
+            {"phase_seconds": "not-an-object"},
+            "resources.phase_seconds must be an object or null",
+        ),
+        (
+            {"phase_seconds": {}},
+            "resources.phase_seconds has missing or unknown fields",
+        ),
+        (
+            {
+                "phase_seconds": {
+                    "materialize": 0.0,
+                    "command": None,
+                    "integrity": 0.0,
+                    "teardown": 0.0,
+                }
+            },
+            "resources.phase_seconds.command must be a non-negative number",
+        ),
+        (
+            {"startup_seconds": "not-an-object"},
+            "resources.startup_seconds must be an object or null",
+        ),
+        (
+            {"startup_seconds": {}},
+            "resources.startup_seconds has missing or unknown fields",
+        ),
+        (
+            {"startup_seconds": {"to_session_start": "bad", "to_first_test": None}},
+            "resources.startup_seconds.to_session_start must be a non-negative number or null",
+        ),
+    ],
+)
+def test_state_record_resources_are_strictly_validated(
+    tmp_path: Path, resources, message: str
+):
+    job = _job()
+    root = _store(
+        tmp_path,
+        job,
+        _record(job, judge="j" * 64, resources=resources),
+    )
+
+    with pytest.raises(MutationStateError, match=message):
+        mutation._load_validated_state_record(root, job, judge="j" * 64)
+
+
 def test_hung_record_without_resource_evidence_is_rejected(tmp_path: Path):
     job = _job()
     root = _store(
