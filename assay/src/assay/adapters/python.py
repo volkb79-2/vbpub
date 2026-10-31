@@ -345,19 +345,26 @@ def _statement_spans(text: str) -> tuple[StatementSpan, ...] | None:
 #: P09's canary statement (A-105/A-010) — adapted from nyxloom's own
 #: ``_ASSERT_STMT`` to write a per-attempt execution receipt before failing.
 #: Inserted as the first real statement of the module body (past any leading
-#: docstring/``__future__`` import, see :func:`_insertion_index_after_future`)
-#: so any test that imports the module fails on import.
+#: docstring/``__future__`` import and PEP 263 cookie, see
+#: :func:`_insertion_index_after_future`) so any test that imports the module
+#: fails on import.
 def _import_break_statement(nonce: str) -> str:
-    """The first module statement writes this attempt's receipt, then fails."""
+    """The one-line failure statement writes this attempt's receipt first."""
     quoted_nonce = json.dumps(nonce)
     return (
-        f"_assay_canary_receipt = __import__(\"os\").environ.get("
-        f"{json.dumps(CANARY_RECEIPT_ENV)})\n"
-        "if _assay_canary_receipt:\n"
-        "    __import__(\"pathlib\").Path(_assay_canary_receipt).write_text("
-        f"{quoted_nonce}, encoding=\"ascii\")\n"
+        "_assay_canary_receipt = "
+        '__import__("os").environ.get('
+        f'{json.dumps(CANARY_RECEIPT_ENV)}); '
+        "_assay_canary_receipt and "
+        '__import__("pathlib").Path(_assay_canary_receipt).write_text('
+        f'{quoted_nonce}, encoding="ascii"); '
         f'raise AssertionError("{_IMPORT_BREAK_MARKER}")\n'
     )
+
+
+_ENCODING_COOKIE_RE = re.compile(
+    r"^[ \t\f]*#.*?coding[:=][ \t]*[-_.a-zA-Z0-9]+"
+)
 
 #: P09's uncovered-canary function name/snippet (A-105/A-010) — adopted
 #: verbatim from nyxloom's own ``_UNCOVERED_CANARY_FUNC``/
@@ -376,21 +383,30 @@ _UNCOVERED_CANARY_SNIPPET = (
 def _insertion_index_after_future(source: str) -> int:
     """1-based line count to skip before inserting the canary statement —
     past any leading module docstring and/or ``from __future__ import ...``
-    line(s), so the injected line never trips ``SyntaxError: from __future__
-    imports must occur at the beginning of the file``.
+    line(s), and after an encoding cookie in the first two lines, so the
+    injected line neither trips ``SyntaxError: from __future__ imports must
+    occur at the beginning of the file`` nor moves the cookie out of position.
 
     Adopted verbatim (mechanism only, A-105/A-010) from nyxloom's
     ``gate_canary._insertion_index_after_future``. Falls back to 0 (prepend)
     on anything that is not a clean docstring/future-import prefix, and on
-    an unparseable source (the insertion still happens; a syntax-broken
-    source is not this function's problem — it is exactly the kind of input
-    :meth:`PythonAdapter.inject_import_break` is allowed to receive and
-    still return something for, pure and total).
+    an unparseable source (the insertion still happens after any encoding
+    cookie; a syntax-broken source is not this function's problem — it is
+    exactly the kind of input :meth:`PythonAdapter.inject_import_break` is
+    allowed to receive and still return something for, pure and total).
     """
+    encoding_cookie_line = next(
+        (
+            line_number
+            for line_number, line in enumerate(source.splitlines()[:2], start=1)
+            if _ENCODING_COOKIE_RE.match(line)
+        ),
+        0,
+    )
     try:
         tree = ast.parse(source)
     except (SyntaxError, ValueError):
-        return 0
+        return encoding_cookie_line
     idx = 0
     for i, node in enumerate(tree.body):
         if (
@@ -405,7 +421,7 @@ def _insertion_index_after_future(source: str) -> int:
             idx = node.end_lineno
             continue
         break
-    return idx
+    return max(idx, encoding_cookie_line)
 
 
 def _inject_import_break(text: str, *, nonce: str) -> tuple[str, str]:

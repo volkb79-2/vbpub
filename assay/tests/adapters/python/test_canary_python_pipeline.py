@@ -294,7 +294,9 @@ def test_a_broken_control_renders_inconclusive_not_a_silent_pass(git_repo: GitRe
         mechanism=canary.MECHANISM_UNCOVERED_LINE,
     )
 
-    assert result.attempts[0].control_outcome is Outcome.INCONCLUSIVE
+    # The attempt retains the raw judgeable control result, while the claim
+    # remains inconclusive because its baseline is not known-good.
+    assert result.attempts[0].control_outcome is Outcome.FAIL
 
     claim = canary.build_canary_claim(result)
     assert claim.status is Outcome.INCONCLUSIVE

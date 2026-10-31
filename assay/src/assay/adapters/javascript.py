@@ -216,21 +216,13 @@ def _import_break_snippet(nonce: str) -> str:
     """A top-level failure that first writes its private execution receipt."""
     quoted_nonce = json.dumps(nonce)
     return (
-        "\n\n;(() => {\n"
-        "  const _assayCanaryProcess = globalThis.process;\n"
-        "  const _assayCanaryReceiptPath = _assayCanaryProcess && "
-        "_assayCanaryProcess.env && _assayCanaryProcess.env["
-        f"{json.dumps(CANARY_RECEIPT_ENV)}];\n"
-        "  const _assayCanaryFs = _assayCanaryReceiptPath && (\n"
-        "    typeof _assayCanaryProcess.getBuiltinModule === \"function\"\n"
-        '      ? _assayCanaryProcess.getBuiltinModule("node:fs")\n'
-        '      : (typeof require === "function" ? require("node:fs") : null)\n'
-        "  );\n"
-        "  if (_assayCanaryFs) {\n"
-        "    _assayCanaryFs.writeFileSync(_assayCanaryReceiptPath, "
-        f"{quoted_nonce}, {{ encoding: \"ascii\" }});\n"
-        "  }\n"
-        "})()\n"
+        "\n\n// @ts-ignore\n"
+        ";(() => { const p = globalThis.process; const f = p && p.env && p.env["
+        f"{json.dumps(CANARY_RECEIPT_ENV)}]; const fs = f && (typeof "
+        'p.getBuiltinModule === "function" ? p.getBuiltinModule("node:fs") : '
+        '(typeof require === "function" ? require("node:fs") : null)); '
+        'if (fs) fs.writeFileSync(f, '
+        f"{quoted_nonce}, {{ encoding: \"ascii\" }}); }})()\n"
         f'throw new Error("{_IMPORT_BREAK_MARKER}")\n'
     )
 _UNCOVERED_CANARY_SNIPPET = (

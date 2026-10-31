@@ -13361,12 +13361,16 @@ written by the injected import-break statement. Pass only a clean expected
 failure with the matching receipt; classify accepted transforms and unrelated
 failures using the design's table. Do not parse stdout or stderr. Behavioural
 coverage includes the shared termination table, Python's real subprocess
-pipeline, a real Node ESM import canary, transform-only environment injection,
-receipt bounds/errors, and adapter protocol parity. Vitest is not installed in
-the available tester image, so the acceptance witness is Node ESM as allowed
-by WP3. The pre-change tester run was red on the new receipt contract; record
-the final preflight/tester Run-Gate IDs and source-tree SHA here after they
-complete. See the
+pipeline through both the default and process-tree runners, real Node ESM and
+CommonJS import canaries, transform-only environment injection, receipt
+bounds/errors, adapter protocol parity, raw control-failure attribution,
+system-temp placement for the legacy path, and process-tree error forwarding.
+Python injection is one physical line and preserves PEP 263 cookie placement;
+JavaScript/TypeScript uses a one-line IIFE preceded by `// @ts-ignore`. Vitest
+is not installed in the available tester image, so the Node ESM and CommonJS
+subprocess oracles are the acceptance witnesses allowed by WP3. The pre-change
+tester run was red on the receipt contract; record the final preflight/tester
+Run-Gate IDs and source-tree SHA here after they complete. See the
 [Opus design](reports/ASSAY-DESIGN-OPUS-2026-10-30.md), §§3, 6.4 and 7/WP3.
 
 ## B176 — align R2 mutation buckets and resume validation with termination evidence

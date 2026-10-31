@@ -2782,10 +2782,11 @@ baseline. For R3, a direct limit event or unavailable required direct-counter
 observation makes a failed control or transform `INCONCLUSIVE`; completed
 PASSes remain final. Timeouts, execution errors and missing results remain
 incomplete. An `import-break` catch requires the transformed command to exit
-normally with a nonzero status and the expected `COMMAND_FAILED` reason. A
-signal death or report-derived `COMMAND_FAILED` with exit status zero is
-`INCONCLUSIVE`; Assay does not inspect
-captured output for an additional cause proof. The `uncovered-line` mechanism
+normally with a nonzero status, the expected `COMMAND_FAILED` reason, and a
+matching execution receipt written by the injected statement. A signal death,
+a report-derived `COMMAND_FAILED` with exit status zero, or a static check that
+fails before the statement runs is `INCONCLUSIVE`; Assay does not inspect
+captured output for cause attribution. The `uncovered-line` mechanism
 continues to use its R1 coverage comparison.
 
 R2 retains its candidate-scoped pids/OOM events and its pressure-adjusted
@@ -3225,6 +3226,31 @@ build actually wires it to (§7 — an adapter existing is not a capability):
 | `sql` | R2 only | a stdlib lexer over DDL; no coverage tool exists for it, so no R1, and A-192 forbids R3 without R1 |
 | `javascript` | R1, R2 by ingestion (B046), R3 canary (B087) | `.js`/`.jsx`/`.ts`/`.tsx` under one name (A-340). The lane runs Stryker and Assay judges its report; native `generate_mutation_sites` remains `UNSUPPORTED`. The existing import-break and uncovered-line injectors use the shared isolated R3 runner and have local real-Vitest oracles; import-break expects a clean `COMMAND_FAILED`, while uncovered-line expects `UNCOVERED_LINES`. Both dstdns canaries were qualified under Assay 9.0.0/schema v15, with retained verdicts and verifier transcripts for that release |
 | `go` | R1 only (A-394) | requires the real Go toolchain for source-derived statement positions (A-217); R2 and R3 have no producer path and are not registered |
+
+### R3 import-break receipt attribution
+
+A nonzero exit with `COMMAND_FAILED` alone does not prove that the transformed
+statement ran: a static checker or an unrelated import can fail before the
+target is evaluated. For `import-break`, only the transformed command receives
+`ASSAY_CANARY_RECEIPT`; the injected statement writes its per-attempt nonce
+before raising. Assay reads at most 65 bytes, compares the exact nonce, and
+removes the private receipt directory in `finally`. The isolated runner keeps
+that directory outside the snapshot; the legacy Python entry point uses the
+system temporary directory instead of placing it beside the caller's repo.
+Stdout and stderr are never part of attribution.
+
+The control attempt retains its raw judgeable result: `PASS` or `FAIL`. A clean
+control `FAIL` is still recorded as `FAIL`, while the overall canary attempt is
+`INCONCLUSIVE` because its baseline is not known-good.
+
+The injected statements stay compact for the source formats they enter.
+Python uses one physical line and inserts after a PEP 263 encoding cookie, so a
+cookie on line one or two keeps its recognized position and tracebacks gain one
+line. JavaScript/TypeScript uses a one-line IIFE preceded by `// @ts-ignore`,
+so missing Node ambient types do not make a TypeScript checker reject the
+transform before tests execute. A lane that runs lint or type-check before the
+test process should use `uncovered-line` when R1 is declared; without receipt
+execution, `import-break` is honestly `INCONCLUSIVE`.
 
 **B087 registers both adapter transforms through the shared isolated canary
 runner.** `import-break` appends a top-level throw, which module evaluation

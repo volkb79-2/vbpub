@@ -108,21 +108,32 @@ def test_sql_adapter_keeps_import_break_unreachable_with_the_new_signature():
         SqlAdapter().inject_import_break("SELECT 1;", nonce=NONCE)
 
 
-def test_python_import_break_is_one_line_and_preserves_line2_cookie():
-    source = (
-        "#!/usr/bin/env python3\n"
-        "# -*- coding: latin-1 -*-\n"
-        "value = 1\n"
-    )
+@pytest.mark.parametrize(
+    ("source", "header_lines"),
+    (
+        (
+            "#!/usr/bin/env python3\n"
+            "# -*- coding: latin-1 -*-\n"
+            "value = 1\n",
+            2,
+        ),
+        ("# coding: latin-1\nvalue = 1\n", 1),
+        ("# ordinary comment\nvalue = 1\n", 0),
+    ),
+    ids=("line-two-cookie", "line-one-cookie", "no-cookie"),
+)
+def test_python_import_break_is_one_line_and_preserves_line2_cookie(
+    source: str, header_lines: int
+):
 
     transformed, _description = PythonAdapter().inject_import_break(
         source, nonce=NONCE
     )
 
     lines = transformed.splitlines()
-    assert lines[:2] == source.splitlines()[:2]
+    assert lines[:header_lines] == source.splitlines()[:header_lines]
     assert len(lines) == len(source.splitlines()) + 1
-    assert 'raise AssertionError("assay-canary-import-break")' in lines[2]
+    assert 'raise AssertionError("assay-canary-import-break")' in lines[header_lines]
 
 
 def test_js_import_break_is_one_line_with_ts_ignore():
@@ -843,9 +854,14 @@ def test_node_cjs_import_break_canary_writes_a_receipt(
     assert canary.judge_attempt(attempt) == (Outcome.PASS, None)
 
 
-def test_transform_oserror_through_receipt_wrapper_is_lane_error(tmp_path: Path):
-    class ProcessTreeRunner:
-        is_process_tree_runner = True
+@pytest.mark.parametrize("is_process_tree_runner", (False, True), ids=("plain", "tree"))
+def test_transform_oserror_through_receipt_wrapper_is_lane_error(
+    tmp_path: Path, is_process_tree_runner: bool
+):
+    marker = is_process_tree_runner
+
+    class MarkerRunner:
+        is_process_tree_runner = marker
 
         def __call__(self, argv, *, env, cwd, timeout):
             raise OSError("process-tree observer failed")
@@ -853,13 +869,25 @@ def test_transform_oserror_through_receipt_wrapper_is_lane_error(tmp_path: Path)
     lane = make_lane()
     plan = make_plan(lane)
     wrapped_runner = canary._receipt_runner(
-        ProcessTreeRunner(), tmp_path / "receipt"
+        MarkerRunner(), tmp_path / "receipt"
     )
 
-    with pytest.raises(AssayError, match="process execution infrastructure failed"):
-        execute_plan(
+    if is_process_tree_runner:
+        with pytest.raises(
+            AssayError, match="process execution infrastructure failed"
+        ):
+            execute_plan(
+                plan,
+                cwd=tmp_path,
+                timeout=1,
+                process_runner=wrapped_runner,
+            )
+    else:
+        result = execute_plan(
             plan,
             cwd=tmp_path,
             timeout=1,
             process_runner=wrapped_runner,
         )
+        assert result.outcome is Outcome.ERROR
+        assert result.reason_code is ReasonCode.EXEC_FAILED

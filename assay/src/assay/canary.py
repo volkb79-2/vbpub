@@ -116,7 +116,11 @@ from .verdict import (
     CanaryResult,
     Claim,
 )
-from .termination import Termination, classify as classify_termination
+from .termination import (
+    CREDIT_JUDGEABLE,
+    Termination,
+    classify as classify_termination,
+)
 
 __all__ = [
     "CANARY_MECHANISMS",
@@ -167,8 +171,8 @@ def _classify_result(
     )
     observation_status = (
         "not_requested"
-        if observation is None or observation.status == "unobserved"
-        else observation.status
+        if observation is None
+        else contention.observation_input(observation)
     )
     return classify_termination(
         outcome=outcome,
@@ -183,9 +187,11 @@ def _classify_result(
 
 
 def _attribute_control(termination: Termination) -> Outcome:
-    """A control is usable only when the shared classifier says it passed."""
+    """Keep a judgeable control failure visible in the attempt evidence."""
     if termination is Termination.PASSED:
         return Outcome.PASS
+    if termination in CREDIT_JUDGEABLE:
+        return Outcome.FAIL
     return Outcome.INCONCLUSIVE
 
 
@@ -203,6 +209,8 @@ def _receipt_runner(process_runner: ProcessRunner, path: Path) -> ProcessRunner:
         child_env[CANARY_RECEIPT_ENV] = os.fspath(path)
         return process_runner(argv, env=child_env, cwd=cwd, timeout=timeout)
 
+    if getattr(process_runner, "is_process_tree_runner", False):
+        setattr(run, "is_process_tree_runner", True)
     return run
 
 
@@ -241,7 +249,7 @@ def _attribute_transform(
             return Outcome.PASS, None, f"{description}; {passed_note}"
         return Outcome.PASS, None, description
 
-    if termination is not Termination.FAILED:
+    if termination not in CREDIT_JUDGEABLE:
         final_description = (
             f"{description}; {receipt_note}"
             if mechanism == MECHANISM_IMPORT_BREAK
@@ -263,8 +271,8 @@ def _attribute_transform(
     return Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE, final_description
 
 
-def _create_receipt(parent: Path) -> tuple[Path, Path]:
-    """Create a private receipt directory beside the disposable snapshot."""
+def _create_receipt(parent: Path | None = None) -> tuple[Path, Path]:
+    """Create a private receipt directory in the requested temp location."""
     directory = Path(tempfile.mkdtemp(prefix="assay-canary-", dir=parent))
     return directory, directory / "receipt"
 
@@ -505,7 +513,7 @@ def run_python_canary(
             expected_reason_code=expected_reason,
         )
 
-    receipt_dir, receipt_path = _create_receipt(repo.resolve().parent)
+    receipt_dir, receipt_path = _create_receipt()
     try:
         target.write_text(transformed_text, encoding="utf-8")
         git.run(repo, "add", "-A")
