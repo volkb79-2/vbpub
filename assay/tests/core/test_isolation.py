@@ -334,6 +334,8 @@ class _CopyingWorkspace:
         self.trees = root / "trees"
         self.trees.mkdir(parents=True)
         self.cloned_files: list[tuple[Path, Path]] = []
+        self.delete_calls: list[Path] = []
+        self.delete_error: Exception | None = None
         self._next_tree = 0
 
     def ingest_tree(self, source: Path, name: str) -> Path:
@@ -354,6 +356,9 @@ class _CopyingWorkspace:
         self.cloned_files.append((source, destination))
 
     def delete_tree(self, path: Path) -> None:
+        self.delete_calls.append(path)
+        if self.delete_error is not None:
+            raise self.delete_error
         shutil.rmtree(path)
 
 
@@ -486,6 +491,29 @@ def test_a_leaked_materialization_raises_at_context_exit(tmp_path: Path) -> None
     assert "1 live snapshot context(s)" in str(caught.value)
     # The guard removes the leaked trees before raising, so the programmer
     # error never doubles as a state leak.
+    assert list(scratch.iterdir()) == []
+
+
+@pytest.mark.parametrize("delete_fails", [False, True], ids=["deleted", "delete-error"])
+def test_a_leaked_cow_materialization_uses_best_effort_workspace_cleanup(
+    tmp_path: Path, delete_fails: bool
+) -> None:
+    repo, commit = _root_repo(tmp_path)
+    scratch = _scratch(tmp_path)
+    provider = _CopyingWorkspaceProvider(tmp_path / "cow-run")
+
+    with pytest.raises(RuntimeError, match="close every materialization first"):
+        with prepare_snapshot(
+            _spec(repo, scratch, commit), timeout=TIMEOUT, workspace=provider
+        ) as prepared:
+            assert provider.workspace is not None
+            if delete_fails:
+                provider.workspace.delete_error = OSError("workspace cleanup failed")
+            leaked = prepared.materialize(timeout=TIMEOUT)
+            snapshot = leaked.__enter__()
+
+    assert provider.workspace is not None
+    assert provider.workspace.delete_calls == [snapshot.root]
     assert list(scratch.iterdir()) == []
 
 
