@@ -1971,8 +1971,15 @@ def test_run_mutation_observer_loss_after_second_candidate_is_recorded(
     assert sum("resource_observation" in record for record in candidate_records) == 1
 
 
-def test_run_mutation_unattributable_ancestor_event_keeps_candidate(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    ("report_outcome", "expected_bucket"),
+    [("FAIL", "crashed"), ("PASS", "survived")],
+)
+def test_run_mutation_ancestor_local_pids_event_is_attributed_to_candidate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    report_outcome: str,
+    expected_bucket: str,
 ):
     source = "def flags():\n    return True\n"
     repo, lane, baseline, scratch_root = _run_mutation_observation_fixture(
@@ -1987,7 +1994,7 @@ def test_run_mutation_unattributable_ancestor_event_keeps_candidate(
         path_event_counters=(leaf_before, parent_before),
     )
     after = ResourceLimitCounters(
-        pids_max=1, memory_oom=0, memory_max=0, memory_oom_kill=0,
+        pids_max=0, memory_oom=0, memory_max=0, memory_oom_kill=0,
         memory_oom_group_kill=0,
         path_event_counters=(leaf_before, parent_after),
     )
@@ -2000,6 +2007,11 @@ def test_run_mutation_unattributable_ancestor_event_keeps_candidate(
     candidate_calls: list[tuple[str, ...]] = []
     state_root = tmp_path / "state"
     progress_path = tmp_path / "progress.jsonl"
+    if report_outcome == "FAIL":
+        _install_clean_failed_call_capture(monkeypatch)
+        process_runner = _clean_failure_runner(candidate_calls)
+    else:
+        process_runner = _clean_candidate_runner(candidate_calls)
     with prepared_snapshot(repo, scratch_root=scratch_root) as prepared:
         mutation = run_mutation(
             baseline=baseline,
@@ -2013,25 +2025,19 @@ def test_run_mutation_unattributable_ancestor_event_keeps_candidate(
             jobs=1,
             max_mutants=10,
             operators=("python:bool-const-flip",),
-            process_runner=_clean_candidate_runner(candidate_calls),
+            process_runner=process_runner,
             clock=lambda: datetime(2026, 10, 5, tzinfo=timezone.utc),
             state_root=state_root,
             progress_artifact=progress_path,
         )
 
     assert len(candidate_calls) == 1
-    assert len(mutation.survived) == 1
-    assert mutation.survived[0].resource_limit_evidence is None
-    state_records = [
-        json.loads(path.read_text(encoding="utf-8"))
-        for path in state_root.glob("*.json")
-    ]
-    assert len(state_records) == 1
-    assert state_records[0]["resource_observation"]["status"] == "unobserved"
-    assert (
-        "shared ancestor resource event is not attributable"
-        in state_records[0]["resource_observation"]["reason"]
-    )
+    bucket = mutation.crashed if expected_bucket == "crashed" else mutation.survived
+    other_bucket = mutation.survived if expected_bucket == "crashed" else mutation.crashed
+    assert len(bucket) == 1
+    assert other_bucket == ()
+    assert bucket[0].resource_limit_evidence is not None
+    assert bucket[0].resource_limit_evidence.limit_hit is True
     progress_records = [
         json.loads(line)
         for line in progress_path.read_text(encoding="utf-8").splitlines()
@@ -2040,7 +2046,10 @@ def test_run_mutation_unattributable_ancestor_event_keeps_candidate(
         record for record in progress_records if record.get("event") == "candidate"
     ]
     assert len(candidate_records) == 1
-    assert candidate_records[0]["resource_observation"]["status"] == "unobserved"
+    assert (
+        candidate_records[0]["resource_limit_evidence"]["pids_events"]["max"]["delta"]
+        == 1
+    )
 
 
 def test_run_mutation_cleanup_error_takes_precedence_over_after_read_failure(

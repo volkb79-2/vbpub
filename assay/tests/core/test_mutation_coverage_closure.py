@@ -624,11 +624,11 @@ def test_terminal_matcher_maps_a_judgeable_nonexited_leader_to_crashed():
     )
 
 
-def test_terminal_matcher_keeps_a_pass_with_a_signaled_leader_survived():
+def test_terminal_matcher_does_not_reuse_a_pass_with_a_signaled_leader_as_survived():
     payload = _terminal(
         outcome="PASS", reason=None, returncode=0, bucket="survived"
     )
-    assert mutation._terminal_result_matches_bucket(
+    assert not mutation._terminal_result_matches_bucket(
         payload, process_tree_evidence=_tree("signaled")
     )
 
@@ -1337,7 +1337,7 @@ def test_judgeable_pass_with_a_non_signaled_nonterminal_leader_is_crashed(
     assert mutation_result.survived == ()
 
 
-def test_judgeable_pass_with_a_signaled_leader_is_survived(tmp_path, monkeypatch):
+def test_judgeable_pass_with_a_signaled_leader_is_crashed(tmp_path, monkeypatch):
     result = mutation._dataclass_replace(
         _result(_ECHO_PLAN, outcome="PASS", returncode=0, reason=None),
         process_tree_evidence={
@@ -1347,8 +1347,8 @@ def test_judgeable_pass_with_a_signaled_leader_is_survived(tmp_path, monkeypatch
     )
     mutation_result, complete = _execute(tmp_path, monkeypatch, [result])
     assert complete
-    assert len(mutation_result.survived) == 1
-    assert mutation_result.crashed == ()
+    assert mutation_result.survived == ()
+    assert len(mutation_result.crashed) == 1
 
 
 def test_a_non_mapping_process_tree_proof_never_reaches_a_recorded_bucket(tmp_path, monkeypatch):
@@ -1605,7 +1605,7 @@ def test_witness_prefix_replay_without_a_clean_process_tree_falls_back(
 
 
 @pytest.mark.parametrize("replay_behavior", ["returns", "raises"])
-def test_witness_prefix_replay_limit_event_falls_back_to_full_command(
+def test_witness_prefix_limit_fallback_only_follows_a_completed_replay(
     tmp_path, monkeypatch, capsys, replay_behavior
 ):
     zero = _zero_counters()
@@ -1628,6 +1628,20 @@ def test_witness_prefix_replay_limit_event_falls_back_to_full_command(
         if replay_behavior == "raises"
         else _result(_PYTEST_PLAN)
     )
+
+    if replay_behavior == "raises":
+        with pytest.raises(RuntimeError, match="replay command failed"):
+            _execute(
+                tmp_path,
+                monkeypatch,
+                [replay_step],
+                plan=_PYTEST_PLAN,
+                reuse_witnesses=reuse,
+                kill_signal_artifact="kill.txt",
+            )
+        assert closed == ["kill.txt"]
+        assert "falling back to the full command" not in capsys.readouterr().err
+        return
 
     result, complete = _execute(
         tmp_path,

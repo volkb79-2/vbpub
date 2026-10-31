@@ -34,6 +34,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path, PurePosixPath
+from types import SimpleNamespace
 
 import pytest
 from conftest import GitRepo, make_lane, make_plan, zero_resource_limit_evidence_dict
@@ -2098,3 +2099,78 @@ def test_the_worst_case_record_still_fits_the_readers_own_limit():
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     assert len(encoded) < mutation.MUTATION_STATE_RECORD_LIMIT, len(encoded)
+
+
+@pytest.mark.parametrize(
+    ("fixture_name", "expected_bucket"),
+    [
+        ("iobench-killed.json", "killed"),
+        ("iobench-survived.json", "survived"),
+    ],
+)
+def test_real_10_0_1_state_records_are_rejected_for_a_new_judge(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fixture_name: str,
+    expected_bucket: str,
+):
+    """Old campaign records with either terminal bucket become routine cache misses.
+
+    The fixture retains the real persisted record. The source and replacement
+    bytes are not part of that format, so a minimal job supplies their recorded
+    digests while the terminal evidence and execution provenance are parsed as-is.
+    """
+    fixture = (
+        Path(__file__).parents[1]
+        / "fixtures"
+        / "mutation-state-10.0.1"
+        / fixture_name
+    )
+    payload = json.loads(fixture.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == mutation.MUTATION_STATE_SCHEMA_VERSION
+    assert payload["outcome_bucket"] == expected_bucket
+
+    job = SimpleNamespace(
+        candidate_id=payload["candidate_id"],
+        path=payload["path"],
+        site=SimpleNamespace(
+            operator=payload["operator"],
+            replacement=b"fixture-replacement",
+        ),
+        original_text="fixture-source",
+    )
+    real_hashlib = mutation.hashlib
+
+    def fixture_hash(data: bytes, *args, **kwargs):
+        if data == b"fixture-source":
+            digest = payload["source_sha256"]
+        elif data == b"fixture-replacement":
+            digest = payload["replacement_sha256"]
+        else:
+            return real_hashlib.sha256(data, *args, **kwargs)
+        return SimpleNamespace(hexdigest=lambda: digest)
+
+    monkeypatch.setattr(
+        mutation, "hashlib", SimpleNamespace(sha256=fixture_hash)
+    )
+    monkeypatch.setattr(
+        mutation, "candidate_id", lambda candidate: candidate.candidate_id
+    )
+
+    state_root = tmp_path / "state"
+    state_root.mkdir()
+    (state_root / f"{payload['candidate_id']}.json").write_bytes(fixture.read_bytes())
+    current_judge = "f" * 64
+    assert payload["judge_sha256"] != current_judge
+
+    try:
+        loaded = mutation._load_validated_state_record(
+            state_root, job, judge=current_judge
+        )
+    except mutation.MutationStateError as exc:
+        pytest.fail(
+            "old state record should be REJECTED for its judge mismatch, not "
+            f"raise {type(exc).__name__}: {exc}"
+        )
+
+    assert loaded is mutation._RECORD_REJECTED
