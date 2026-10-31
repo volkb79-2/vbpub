@@ -1174,13 +1174,14 @@ def test_candidate_counter_delta_is_persisted_and_overrides_a_kill(
     progress_record, = [
         record for record in progress_records if record.get("event") == "candidate"
     ]
+    first_attempt_evidence = _evidence(pids=(0, 1)).to_dict()
     assert (
         state_record["outcome_bucket"]
         == progress_record["outcome_bucket"]
         == "crashed"
     )
     assert state_record["resource_limit_evidence"] == expected
-    assert progress_record["resource_limit_evidence"] == expected
+    assert progress_record["resource_limit_evidence"] == first_attempt_evidence
 
 
 def test_worker_start_failure_is_a_payload_free_execution_error(
@@ -1532,16 +1533,20 @@ def test_candidate_observer_loss_is_recorded_without_aborting_the_campaign(
     assert len(candidate_calls) == 3
     assert len(mutation.survived) == 1
     assert mutation.survived[0].resource_limit_evidence is not None
-    assert mutation.killed == ()
-    assert len(mutation.crashed) == 1
-    assert mutation.crashed[0].resource_limit_evidence is not None
-    assert not mutation.crashed[0].resource_limit_evidence.limit_hit
+    assert len(mutation.killed) == 1
+    assert mutation.killed[0].resource_limit_evidence is not None
+    assert not mutation.killed[0].resource_limit_evidence.limit_hit
+    assert mutation.crashed == ()
     state_records = [
         json.loads(path.read_text(encoding="utf-8"))
         for path in state_root.glob("*.json")
     ]
     assert len(state_records) == 2
     assert all(record.get("resource_limit_evidence") is not None for record in state_records)
+    assert sorted(record["outcome_bucket"] for record in state_records) == [
+        "killed",
+        "survived",
+    ]
     progress_records = [
         json.loads(line)
         for line in progress_path.read_text(encoding="utf-8").splitlines()
@@ -1568,7 +1573,8 @@ def test_candidate_observer_loss_is_recorded_without_aborting_the_campaign(
         record for record in progress_records if record.get("event") == "candidate_retry"
     ]
     assert len(retry_events) == 1
-    assert retry_events[0]["first_bucket"] == retry_events[0]["final_bucket"] == "crashed"
+    assert retry_events[0]["first_bucket"] == "crashed"
+    assert retry_events[0]["final_bucket"] == "killed"
     advisory_lines = capsys.readouterr().err.splitlines()
     assert sum("limit values changed" in line for line in advisory_lines) == 1
     assert sum("resource-limit window unobserved" in line for line in advisory_lines) == 1
