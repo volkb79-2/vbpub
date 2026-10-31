@@ -154,18 +154,6 @@ TERMINATION_CASES = (
         None,
     ),
     _case(
-        "pass-with-signaled-leader-is-crashed",
-        _inputs(
-            outcome=Outcome.PASS,
-            process_tree=_tree(leader_status="signaled"),
-            limits=_limits(),
-        ),
-        Termination.PASSED,
-        Outcome.PASS,
-        None,
-        r2_bucket_override="crashed",
-    ),
-    _case(
         "failed",
         _inputs(
             outcome=Outcome.FAIL,
@@ -285,6 +273,18 @@ TERMINATION_CASES = (
 
 
 PRECEDENCE_CASES = (
+    _case(
+        "pass-with-signaled-leader-is-crashed",
+        _inputs(
+            outcome=Outcome.PASS,
+            process_tree=_tree(leader_status="signaled"),
+            limits=_limits(),
+        ),
+        Termination.PASSED,
+        Outcome.PASS,
+        None,
+        r2_bucket_override="crashed",
+    ),
     _case(
         "leak-beats-pass",
         _inputs(
