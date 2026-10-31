@@ -404,6 +404,8 @@ def _run_pipeline(
         # `_execute_snapshot_unit`'s canary callers get the same exclusion for
         # free, by keeping `result_report`'s default there.
         result_report=None,
+        # The legacy canary pipeline is R3 evidence, not an R0 verdict.
+        classify_r0_termination=False,
     )
     r0_claim = build_r0_claim(result)
     if _r1_unreached(r0_claim, lane):

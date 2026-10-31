@@ -1153,7 +1153,9 @@ def _execute(tmp_path, monkeypatch, steps, *, plan=_ECHO_PLAN, jobs_list=None, *
 
     A step is a CommandResult or an exception to raise."""
     monkeypatch.setattr(mutation, "_snapshot_left_dirt", lambda *a, **k: None)
-    queue = iter(steps)
+    # An unresolved candidate is retried once serially (WP7); the retry sees the last
+    # step again unless the test scripts a distinct retry result.
+    queue = itertools.chain(steps, itertools.repeat(steps[-1]) if steps else ())
 
     def execute_plan(attempt_plan, **_kwargs):
         step = next(queue)
@@ -1478,13 +1480,15 @@ def test_cold_signalled_command_is_crashed_and_keeps_only_matching_r2_evidence(t
 def test_cold_failure_with_a_proof_but_dirty_process_tree_is_not_a_witnessed_kill(tmp_path, monkeypatch):
     receipts = _Receipts(monkeypatch)
     receipts.cold_proof = (_GOOD, 1, 0)
+    # The serial tail retry makes a fresh cold attempt and gets a fresh receipt.
     receipts.facts[0] = _facts(_SHA_R2)
+    receipts.facts[1] = _facts(_SHA_R2)
     result, _ = _cold_run(
         tmp_path, monkeypatch, receipts, [_result(_PYTEST_PLAN, tree="outliving")]
     )
     assert _bucket_of(result) == "crashed"
     assert _only(result).execution.mode == "full"
-    assert _only(result).evidence is not None
+    assert _only(result).evidence.command == "r2"
 
 
 def test_cold_failure_proof_does_not_override_a_non_kill_classifier_result(
@@ -1544,8 +1548,15 @@ def test_declared_rerun_signalled_command_is_crashed(tmp_path, monkeypatch):
 
 def test_declared_rerun_with_a_non_command_outcome_keeps_its_evidence_and_bucket(tmp_path, monkeypatch):
     receipts = _Receipts(monkeypatch)
+    # The first pass and serial retry each run cold R2, then the declared plan.
+    # Receipt tokens are fresh on every command, so script all four receipts.
+    receipts.facts[0] = _facts(_SHA_R2)
     receipts.facts[1] = _facts(_SHA_DECLARED)
+    receipts.facts[2] = _facts(_SHA_R2)
+    receipts.facts[3] = _facts(_SHA_DECLARED)
     steps = [
+        _result(_PYTEST_PLAN),
+        _result(_PYTEST_PLAN, outcome="ERROR", returncode=None, reason="EXEC_FAILED"),
         _result(_PYTEST_PLAN),
         _result(_PYTEST_PLAN, outcome="ERROR", returncode=None, reason="EXEC_FAILED"),
     ]

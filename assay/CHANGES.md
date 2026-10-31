@@ -18,23 +18,44 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   failure. An ancestor-local event still counts when the corresponding
   candidate counter is unavailable throughout the stable window;
   `memory.events:max` remains telemetry. Limit-value changes preserve
-  observation and are reported in every candidate progress event as
+  observation and are reported in each `candidate` progress event as
   `resource_limit_changes` (an empty list when unchanged); identity changes
   make the window unobserved. Only a
   completed witness-prefix replay with a positive event falls back to a full
   command with a fresh window; replay errors propagate. A new Assay build
   re-executes resumed campaign state because the Assay version is part of the
-  judge identity. Until WP7, recover crashed candidates with
-  `--resume --rejudge crashed` (B182).
+  judge identity. A matching cached `crashed` record is reused on `--resume`;
+  select it explicitly with `--resume --rejudge crashed` to execute it again
+  (B182/B179).
+- After each native R2 sweep, retry once and serially any candidate executed in
+  that invocation whose result is `crashed`, per-candidate `budget_exceeded`,
+  or `hung`, while the campaign deadline allows. The retry uses the same
+  classifier, replaces the saved candidate state, and emits a `candidate_retry`
+  progress event with the first and final buckets. A campaign-deadline mask
+  closes the retry phase; cached records require explicit rejudge (B179).
 - Sort declared whole-target paths when building R1 and native/ingested R2
   verdicts; avoid reporting pytest-cov's platform banner as the first failing
   test or treating R0 execution errors as measured test failures (B181).
+- Classify an external signal, direct resource-limit event, or required
+  unavailable observation on a failed R0 command as `ERROR/EXEC_FAILED` with
+  deterministic detail; preserve self-inflicted fatal signals such as
+  `SIGSEGV` as `FAIL/COMMAND_FAILED`, and keep completed PASS results final.
+  `execute_command()` applies this R0 classification by default for library
+  callers.
+- Make R1 inherit a non-judgeable R0 termination as `ERROR/EXEC_FAILED`, so a
+  coverage artifact cannot mask an infrastructure failure in its baseline.
+  This also covers `NOT_RUN` when the R0 command never started, and the R1
+  claim carries deterministic detail naming the inherited R0 termination.
 
 ### Changed
 - Add per-candidate resource metrics to R2 progress and resumable state:
   process-tree write bytes, nested CPU and peak RSS values, and the Assay
   judge's resident memory sample. Missing procfs I/O remains unavailable
   telemetry; verdicts and candidate classification are unchanged (AP-6).
+- Include observed resource windows in `command_finished` progress events and
+  print one advisory line when a failed R0 ran under measured PSI or CPU
+  throttling. Keep host measurements out of verdict fields, claim details
+  except for causal infrastructure evidence, and command output tails (B173).
 - Require a matching execution receipt for an R3 `import-break` result, and
   preserve a clean control `FAIL` in the attempt evidence. Lanes whose lint or
   type-check step rejects transformed source before tests execute should use

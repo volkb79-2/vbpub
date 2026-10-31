@@ -111,10 +111,13 @@ in the measured cgroup is a limit event. PSI and CPU throttling do not change
 verdicts. A direct event never changes a completed PASS. It can turn a failed
 R0 command or R1 coverage claim into an infrastructure error; an unavailable
 direct-counter observation can do the same when the gate requires it. PSI or
-CPU-stat sample availability alone never changes a failed verdict. R1 coverage
+CPU-stat sample availability alone never changes a failed verdict. If R0 never
+starts, R1 also returns `ERROR/EXEC_FAILED`; its claim detail identifies the
+inherited R0 termination. Correct the R0 refusal and rerun the lane. R1 coverage
 arithmetic is unchanged for the same complete report, and its claim uses the
-R0 command's resource window. R2 keeps per-candidate resource events and its
-pressure-adjusted liveness clock.
+R0 command's resource window. Library callers of `execute_command()` receive
+the R0 termination mapping by default. R2 keeps per-candidate resource events
+and its pressure-adjusted liveness clock.
 Import-break canaries require the transformed command to exit normally with a
 nonzero status, the expected `COMMAND_FAILED` reason, and a matching receipt
 written by the injected statement. Signal deaths, report-derived failures with
@@ -381,7 +384,7 @@ candidate window. A change to this identity makes the window unobserved.
 Configured `pids.max` and `memory.max` values are tracked separately: changing
 a value leaves the window observed and preserves its monotonic event evidence.
 Candidate progress reports changed values in `resource_limit_changes`, with
-one advisory line. Every candidate progress event includes
+one advisory line. Every `candidate` progress event includes
 `resource_limit_changes`, an empty list when no configured values changed. The
 full hierarchy preflight still refuses before any candidate when required
 counters are unavailable.
@@ -1558,6 +1561,29 @@ untracked path inside it is a `NO_MEASUREMENT`/`DIRTY_TREE` of the gate's own
 making. (assay's own registered gate does this to itself, in
 `tools/tester-unified-gate.sh`.)
 
+### Retry unresolved native-R2 candidates at sweep end (B179)
+
+After every candidate has received its first attempt, Assay makes one serial
+retry for each candidate executed in this invocation whose bucket is
+`crashed`, per-candidate `budget_exceeded`, or `hung`, as long as the campaign
+deadline allows. Reaching the campaign-deadline mask closes the retry phase;
+masked candidates and candidates never started do not enter the retry set.
+The retry uses the same classification rules and updates the candidate's saved
+state. Progress emits
+`candidate_retry` with the candidate ID and its first and final buckets.
+
+`--resume` reuses matching saved records, including records bucketed
+`crashed`; those records do not receive an automatic tail retry. To explicitly
+execute cached crashes again, pass `--rejudge crashed` with `--resume`:
+
+```sh
+assay run <lane> --resume --rejudge crashed \
+  --progress .assay/progress-<lane>.jsonl
+```
+
+Each rejudged candidate gets the normal current-invocation retry if its new
+result is still `crashed`, per-candidate `budget_exceeded`, or `hung`.
+
 ### Where resume state lives: `--state-dir PATH`
 
 By default, mutation resume records live in
@@ -1621,15 +1647,11 @@ mutant was never re-executed against the assertion that kills it.
   produced by different classification logic.
 
 A new Assay build re-executes resumed campaign state because the Assay version
-is part of the judge identity. Until WP7, recover crashed candidates on a retry
-with:
+is part of the judge identity. A matching cached `crashed` record is reused by
+`--resume`; see [B179](#retry-unresolved-native-r2-candidates-at-sweep-end-b179)
+for the explicit `--rejudge crashed` command.
 
-```sh
-assay run <lane> --resume --rejudge crashed \
-  --progress .assay/progress-<lane>.jsonl
-```
-
-Every native R2 candidate progress event includes `resource_limit_changes`,
+Every native R2 `candidate` progress event includes `resource_limit_changes`,
 with an empty list when no configured limit values changed.
 
 Three consequences worth planning around:

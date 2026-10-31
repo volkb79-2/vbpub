@@ -292,8 +292,8 @@ assay exists to close that gap mechanically, not by policy:
   event blocks `killed` credit. Only a completed replay with a positive delta
   falls back to the full command with a new resource window; replay errors
   propagate. Configured `pids.max` and `memory.max` value changes keep
-  the window observed and appear as `resource_limit_changes` in candidate
-  progress.
+  the window observed and appear as `resource_limit_changes` in the
+  `candidate` progress event.
   Assay requires
   read-only cgroup mounts and verifies that the candidate cannot write
   `cgroup.procs` on its cgroup or ancestors; incomplete or writable cgroup
@@ -478,17 +478,17 @@ on this module" is `mode = "whole_target"` + `require_branch = true` +
 | Language | R0 | R1 — line coverage | R1 — branch coverage | R2 — mutation | R3 — canary/parity |
 |---|---|---|---|---|---|
 | *(any)* | ✅ language-agnostic | — | — | — | — |
-| **Python** | ✅ | ✅ registered, both scope modes | ✅ **available** — real `coverage.py` branch arcs | ✅ registered, native; Assay owns candidate generation, execution, resumable state, survivor rejudge, progress and candidate-local resource-event checks | ✅ registered |
+| **Python** | ✅ | ✅ registered, both scope modes | ✅ **available** — real `coverage.py` branch arcs | ✅ registered, native; Assay owns candidate generation, execution, resumable state, survivor rejudge, one serial tail retry for current-run `crashed`, per-candidate `budget_exceeded` and `hung` results, progress and candidate-local resource-event checks | ✅ registered |
 | **JavaScript/TypeScript** | ✅ | ✅ registered, both scope modes | ✅ **available** — real Istanbul/nyc branch arcs (declare `producer = "istanbul"`; `@vitest/coverage-v8`/`c8` report ranges, not per-arm arcs, and stay `"unavailable"` without it) | ✅ registered, **ingested path only** — an external producer such as Stryker owns candidate execution/retry; Assay scores the completed report, with no Assay candidate-state resume/rejudge or per-candidate resource-event checks | ✅ **registered and locally exercised** — R3 runs import-break and uncovered-line canaries (B087); import-break requires a matching execution receipt, so lanes that type-check or lint before tests should use uncovered-line; see the [receipt rationale](docs/DESIGN-GUIDE.md#r3-import-break-receipt-attribution). Both dstdns canaries were qualified under Assay 9.0.0/schema v15, with retained verdicts and verifier transcripts for that release |
 | **Go** | ✅ | ✅ registered, both scope modes — needs a real `go` toolchain on the judge (`external_tools = ("go",)`); statement positions are re-derived from source, never trusted from the profile alone (A-217) | ❌ **structurally impossible** — `go-cover`'s own format has no branch concept; no engineering investment inside assay changes this without Go's own coverage instrumentation gaining one | ❌ **not implemented** — `generate_mutation_sites` is unconditionally `UNSUPPORTED`; other Go-ecosystem tools (e.g. `go-mutesting`) prove this is possible in principle, assay just hasn't built it | ❌ not registered |
-| **SQL/DDL** | ✅ | ❌ **not registered** — SQL's only rigor entry is R2 | — (moot) | ✅ registered, native; uses the same Assay candidate state, resume/rejudge, progress and resource-event path as Python | ❌ not registered |
+| **SQL/DDL** | ✅ | ❌ **not registered** — SQL's only rigor entry is R2 | — (moot) | ✅ registered, native; uses the same Assay candidate state, resume/rejudge, one serial tail retry for current-run `crashed`, per-candidate `budget_exceeded` and `hung` results, progress and resource-event path as Python | ❌ not registered |
 
 #### Cross-cutting capabilities beyond language adapters
 
 | Capability | Current support | Limit |
 |---|---|---|
-| Native R2 resource-event attribution | Assay checks candidate counters and each visible ancestor's own local counters. A positive ancestor-local pids or OOM event counts conservatively for the candidate when the corresponding candidate counter is zero or unavailable throughout the stable window; `memory.events:max` remains telemetry. When a private cgroup namespace hides ancestors, Run-Gate can opt an ephemeral native R2 lane into cgprofile's read-only observer contract 2. | If required observation is unavailable before candidate execution, R2 is `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE`. After preflight, a lost or identity-changed candidate window is recorded as unobserved telemetry and the campaign continues. Configured limit-value changes preserve the window. Every candidate progress event includes `resource_limit_changes` (empty when unchanged). PASS with an exited leader remains `survived`; a PASS with a signaled leader is `crashed`. An unobserved FAIL needs a current-run failed-call witness to count as `killed`, while any observed positive failure event makes a non-PASS candidate `crashed`, even with a witness. Only a completed witness replay with a positive event falls back to the full command; a replay error propagates. A new Assay build re-executes resumed campaign state because the Assay version is part of the judge identity. Until WP7, recover crashed candidates with `--resume --rejudge crashed`. R0/R1 evidence remains valid. The observer does not expose the daemon control socket. |
-| Per-test liveness and process measurements | Native R2 only, when the declared command activates a supported liveness monitor. Candidate progress adds `resources.cpu_seconds`, `resources.peak_rss_bytes`, `resources.write_bytes`, and `judge_rss_bytes`; unavailable measurements are `null`. | These are execution features, not language-wide guarantees; see [resource measurement details](docs/DESIGN-GUIDE.md#per-candidate-resource-phase-and-startup-evidence-b111-ap-6) and the [candidate progress example](docs/CONSUMERS.md#the-progress-stream). |
+| Native R2 resource-event attribution and serial tail retry | Assay checks candidate counters and each visible ancestor's own local counters. A positive ancestor-local pids or OOM event counts conservatively for the candidate when the corresponding candidate counter is zero or unavailable throughout the stable window; `memory.events:max` remains telemetry. When a private cgroup namespace hides ancestors, Run-Gate can opt an ephemeral native R2 lane into cgprofile's read-only observer contract 2. | If required observation is unavailable before candidate execution, R2 is `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE`. After preflight, a lost or identity-changed candidate window is recorded as unobserved telemetry and the campaign continues. Configured limit-value changes preserve the window. Each `candidate` progress event includes `resource_limit_changes` (empty when unchanged). PASS with an exited leader remains `survived`; a PASS with a signaled leader is `crashed`. An unobserved FAIL needs a current-run failed-call witness to count as `killed`, while any observed positive failure event makes a non-PASS candidate `crashed`, even with a witness. Only a completed witness replay with a positive event falls back to the full command; a replay error propagates. A new Assay build re-executes resumed campaign state because the Assay version is part of the judge identity. After the sweep, each current-invocation `crashed`, per-candidate `budget_exceeded` or `hung` result gets one serial retry while campaign time remains. A campaign-deadline mask closes the retry phase. Matching cached `crashed` records are reused on `--resume`; pass `--resume --rejudge crashed` to re-execute them explicitly. See the [retry rationale](docs/DESIGN-GUIDE.md#serial-tail-retries-for-native-r2-b179) and [consumer guidance](docs/CONSUMERS.md#retry-unresolved-native-r2-candidates-at-sweep-end-b179). R0/R1 evidence remains valid. The observer does not expose the daemon control socket. |
+| Per-test liveness and process measurements | Native R2 only, when the declared command activates a supported liveness monitor. Pytest test events and `tests_completed` are command-shape-specific; otherwise candidate progress remains available but those fields can be `null`. Candidate progress adds `resources.cpu_seconds`, `resources.peak_rss_bytes`, `resources.write_bytes`, and `judge_rss_bytes`; unavailable measurements are `null`. | These are execution features, not language-wide guarantees; see [resource measurement details](docs/DESIGN-GUIDE.md#per-candidate-resource-phase-and-startup-evidence-b111-ap-6), the [campaign lifecycle comparison](docs/DESIGN-GUIDE.md#native-and-ingested-r2-campaign-features) and [consumer guidance](docs/CONSUMERS.md#r2-for-javascript-by-ingesting-strykers-report-b046). |
 | Bounded native R2 pilots | B118 provides a plan-bound candidate selector and report checks. | A bounded pilot measures a selected subset; it does not qualify the full lane. |
 | Analysis-package R2 | B131 has a dedicated whole-target lane and bounded pilot path. | The analysis package is not qualified for a full R2 campaign until the full plan is completed and reviewed. |
 | Campaign closeout | `assay analyze campaign` implements the phase-1 analysis of plan, progress, verdict, and supplied coverage inputs. | B108 remains open: phase-1 acceptance and documentation have residuals, and phase 2—Run-Gate's automatic post-lane closeout and SPEC wiring—is not implemented. |
@@ -1546,10 +1546,18 @@ you're changing assay itself:
   across container `/tmp` namespaces. Docker names do not decide admission.
   For R0/R1/R3, a direct pids or memory OOM event in the measured cgroup is
   a limit event. PSI and CPU throttling do not change verdicts. A direct event
-  never changes a completed PASS. A direct event can make a failed
-  command or coverage claim an infrastructure error; an unavailable direct
-  counter observation can do the same when the gate requires that evidence.
-  PSI or CPU-stat sample availability alone never changes a failed verdict.
+  never changes a completed PASS. A direct event can make a failed R0 command
+  an infrastructure error; R1 inherits an infrastructure termination from
+  its R0 baseline. External SIGKILL, SIGTERM, SIGINT or SIGHUP also makes a
+  failed R0 command infrastructure, while a self-inflicted fatal signal such
+  as SIGSEGV remains a judged failure. An R1 claim also inherits the R0 error
+  when the R0 command never started, and its detail names that termination.
+  Library callers of `execute_command()` get R0 termination classification by
+  default. An unavailable direct-counter
+  observation can make a failed command infrastructure when the gate requires
+  that evidence. PSI or CPU-stat sample availability alone never changes a
+  failed verdict. The design guide records the precedence rules, progress
+  fields and advisory diagnostic.
   R2 keeps its per-candidate event windows and pressure-adjusted liveness
   clock.
   Import-break canaries require the transformed command to exit normally with
