@@ -2115,14 +2115,17 @@ def test_run_mutation_comparison_error_does_not_replace_execution_error(
     )
     leaf = ("/candidate", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
     parent_before = ("/gates", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
-    parent_after = ("/gates", 1, 0, 0, 0, 0, 1, 0, 0, 0, 0)
+    # Force a genuine observation-comparison failure. A positive ancestor-local
+    # event is now attributed to the candidate and is no longer a comparison
+    # error to suppress in favor of the command failure.
+    parent_after = ("/changed-gates", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
     before = ResourceLimitCounters(
         pids_max=0, memory_oom=0, memory_max=0, memory_oom_kill=0,
         memory_oom_group_kill=0,
         path_event_counters=(leaf, parent_before),
     )
     after = ResourceLimitCounters(
-        pids_max=1, memory_oom=0, memory_max=0, memory_oom_kill=0,
+        pids_max=0, memory_oom=0, memory_max=0, memory_oom_kill=0,
         memory_oom_group_kill=0,
         path_event_counters=(leaf, parent_after),
     )
