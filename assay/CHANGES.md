@@ -48,6 +48,10 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   claim carries deterministic detail naming the inherited R0 termination.
 
 ### Changed
+- Add per-candidate resource metrics to R2 progress and resumable state:
+  process-tree write bytes, nested CPU and peak RSS values, and the Assay
+  judge's resident memory sample. Missing procfs I/O remains unavailable
+  telemetry; verdicts and candidate classification are unchanged (AP-6).
 - Include observed resource windows in `command_finished` progress events and
   print one advisory line when a failed R0 ran under measured PSI or CPU
   throttling. Keep host measurements out of verdict fields, claim details

@@ -120,6 +120,7 @@ _SIDECAR = {
     "samples": 3,
     "cpu_seconds": 1.5,
     "peak_rss_bytes": 1024,
+    "write_bytes": 2048,
     "spawned_at": 1790000000.5,
 }
 
@@ -209,6 +210,7 @@ def test_measured_resources_are_the_sidecar_values_and_the_stamp_differences(tmp
     assert mutation._measured_resources(path) == (
         1.5,
         1024,
+        2048,
         {"to_session_start": 0.25, "to_first_test": 1.5},
     )
 
@@ -224,7 +226,7 @@ def test_measured_resources_are_the_sidecar_values_and_the_stamp_differences(tmp
 def test_measured_resources_startup_gaps_are_none_when_an_operand_is_missing(
     tmp_path: Path, sidecar: dict[str, Any] | None, events: list[dict[str, Any]] | None
 ) -> None:
-    _cpu, _rss, startup = mutation._measured_resources(
+    _cpu, _rss, _write_bytes, startup = mutation._measured_resources(
         _startup_fixture(tmp_path, sidecar=sidecar, events=events)
     )
     assert startup == {"to_session_start": None, "to_first_test": None}
@@ -233,11 +235,105 @@ def test_measured_resources_startup_gaps_are_none_when_an_operand_is_missing(
 def test_measured_resources_refuse_ill_typed_sidecar_values(tmp_path: Path) -> None:
     path = _startup_fixture(
         tmp_path,
-        sidecar={**_SIDECAR, "cpu_seconds": True, "peak_rss_bytes": 1024.0},
+        sidecar={
+            **_SIDECAR,
+            "cpu_seconds": True,
+            "peak_rss_bytes": 1024.0,
+            "write_bytes": True,
+        },
         events=_STAMPED_EVENTS,
     )
-    cpu, rss, _startup = mutation._measured_resources(path)
-    assert (cpu, rss) == (None, None)
+    cpu, rss, write_bytes, _startup = mutation._measured_resources(path)
+    assert (cpu, rss, write_bytes) == (None, None, None)
+
+
+def test_measured_resources_refuse_negative_measurements(tmp_path: Path) -> None:
+    path = _startup_fixture(
+        tmp_path,
+        sidecar={
+            **_SIDECAR,
+            "spawned_at": 102.0,
+            "cpu_seconds": -1.0,
+            "peak_rss_bytes": -1,
+            "write_bytes": -1,
+        },
+        events=_STAMPED_EVENTS,
+    )
+
+    cpu, rss, write_bytes, startup = mutation._measured_resources(path)
+
+    assert (cpu, rss, write_bytes) == (None, None, None)
+    assert startup == {"to_session_start": None, "to_first_test": None}
+
+
+@pytest.mark.parametrize(
+    ("contents", "expected"),
+    [
+        ("read_bytes: 10\nwrite_bytes: 25\n", 25),
+        ("read_bytes: 10\n", None),
+        ("write_bytes: not-a-number\n", None),
+        ("write_bytes: -1\n", None),
+    ],
+)
+def test_proc_io_write_bytes_reads_only_a_nonnegative_counter(
+    tmp_path: Path, contents: str, expected: int | None
+) -> None:
+    (tmp_path / "321").mkdir()
+    (tmp_path / "321" / "io").write_text(contents, encoding="ascii")
+    assert liveness._pid_io_write_bytes(321, proc_root=tmp_path) == expected
+
+
+def test_missing_proc_io_is_null_not_error(tmp_path: Path) -> None:
+    (tmp_path / "321").mkdir()
+    assert liveness._pid_io_write_bytes(321, proc_root=tmp_path) is None
+
+
+@pytest.mark.parametrize(
+    ("contents", "resident_pages"),
+    [
+        ("100 2 1 0 0 0 0\n", 2),
+        ("100\n", None),
+        ("100 invalid 1\n", None),
+        ("100 -1 1\n", None),
+        (None, None),
+    ],
+)
+def test_process_rss_bytes_reads_resident_pages_or_returns_none(
+    tmp_path: Path, contents: str | None, resident_pages: int | None
+) -> None:
+    (tmp_path / "321").mkdir()
+    if contents is not None:
+        (tmp_path / "321" / "statm").write_text(contents, encoding="ascii")
+    expected = None if resident_pages is None else resident_pages * os.sysconf("SC_PAGE_SIZE")
+    assert liveness.process_rss_bytes(321, proc_root=tmp_path) == expected
+
+
+@pytest.mark.parametrize(
+    ("io_values", "expected"),
+    [((20, 30), 50), ((20, None), None)],
+)
+def test_tree_sample_sums_write_bytes_or_marks_the_tree_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+    io_values: tuple[int | None, int | None],
+    expected: int | None,
+) -> None:
+    monkeypatch.setattr(
+        liveness,
+        "_walk_tree",
+        lambda root_pid, reader: [reader(1), reader(2)],
+    )
+    monkeypatch.setattr(
+        liveness,
+        "_pid_stat",
+        lambda pid: liveness._PidStat(ticks=1, child_ticks=0, rss_pages=2),
+    )
+    monkeypatch.setattr(
+        liveness,
+        "_pid_io_write_bytes",
+        lambda pid: io_values[pid - 1],
+    )
+
+    assert liveness.tree_sample(1).write_bytes == expected
 
 
 # --------------------------------------------------------------------------
@@ -335,7 +431,7 @@ def _seed_two_candidate_lane(repo: GitRepo) -> tuple[str, str]:
     return base, repo.commit_all("two compare-swap mutation sites")
 
 
-def test_o8_every_candidate_carries_resource_evidence_in_progress_and_state(
+def test_candidate_event_has_peak_rss_and_write_bytes(
     git_repo: GitRepo, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     base, head = _seed_two_candidate_lane(git_repo)
@@ -389,7 +485,8 @@ def test_o8_every_candidate_carries_resource_evidence_in_progress_and_state(
         if json.loads(line)["event"] == "candidate"
     ]
     records = [
-        json.loads(path.read_text(encoding="utf-8")) for path in sorted(state_dir.glob("*.json"))
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in sorted(state_dir.glob("*.json"))
     ]
     assert len(events) == 2
     assert len(records) == len(events)
@@ -398,19 +495,41 @@ def test_o8_every_candidate_carries_resource_evidence_in_progress_and_state(
         assert set(keys) <= set(event)
         cpu, rss = event["cpu_seconds"], event["peak_rss_bytes"]
         assert cpu is None or (isinstance(cpu, float) and cpu >= 0)
-        assert rss is None or (isinstance(rss, int) and not isinstance(rss, bool) and rss >= 0)
+        assert rss is None or (
+            isinstance(rss, int) and not isinstance(rss, bool) and rss >= 0
+        )
         phases = event["phase_seconds"]
         assert set(phases) == {"materialize", "command", "integrity", "teardown"}
         assert all(isinstance(value, float) and value >= 0 for value in phases.values())
         startup = event["startup_seconds"]
         assert set(startup) == {"to_session_start", "to_first_test"}
-        assert all(value is None or isinstance(value, float) for value in startup.values())
-    assert sorted(
-        (record["resources"] for record in records), key=lambda item: json.dumps(item, sort_keys=True)
-    ) == sorted(
-        ({key: event[key] for key in keys} for event in events),
-        key=lambda item: json.dumps(item, sort_keys=True),
-    )
+        assert all(
+            value is None or isinstance(value, float) for value in startup.values()
+        )
+        resources = event["resources"]
+        assert set(resources) == {"cpu_seconds", "peak_rss_bytes", "write_bytes"}
+        assert resources["cpu_seconds"] == event["cpu_seconds"]
+        assert resources["peak_rss_bytes"] == event["peak_rss_bytes"]
+        write_bytes = resources["write_bytes"]
+        assert write_bytes is None or (
+            isinstance(write_bytes, int)
+            and not isinstance(write_bytes, bool)
+            and write_bytes >= 0
+        )
+        judge_rss = event["judge_rss_bytes"]
+        assert judge_rss is None or (
+            isinstance(judge_rss, int)
+            and not isinstance(judge_rss, bool)
+            and judge_rss >= 0
+        )
+    records_by_id = {record["candidate_id"]: record for record in records}
+    for event in events:
+        record = records_by_id[event["candidate_id"]]
+        assert {key: record["resources"][key] for key in keys} == {
+            key: event[key] for key in keys
+        }
+        assert record["resources"]["write_bytes"] == event["resources"]["write_bytes"]
+        assert record["resources"]["judge_rss_bytes"] == event["judge_rss_bytes"]
 
     # A resumed run reuses the state records (the loader accepts `resources`)
     # and classifies identically.
@@ -419,8 +538,11 @@ def test_o8_every_candidate_carries_resource_evidence_in_progress_and_state(
     assert resumed.outcome is Outcome.PASS
     assert resumed.to_dict()["claims"] == verdict.to_dict()["claims"]
     resumed_events = [
-        json.loads(line) for line in resumed_progress.read_text(encoding="utf-8").splitlines()
+        json.loads(line)
+        for line in resumed_progress.read_text(encoding="utf-8").splitlines()
     ]
     resume = [event for event in resumed_events if event["event"] == "resume"]
-    assert [(event["resumed_total"], event["rejected_total"]) for event in resume] == [(2, 0)]
+    assert [(event["resumed_total"], event["rejected_total"]) for event in resume] == [
+        (2, 0)
+    ]
     assert [event for event in resumed_events if event["event"] == "candidate"] == []
