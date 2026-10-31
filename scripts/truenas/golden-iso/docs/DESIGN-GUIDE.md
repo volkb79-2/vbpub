@@ -22,6 +22,24 @@ the Debian base ISO against its signed SHA-512 list, customizes the live
 filesystem with the restore service and its tools, and replays the original
 BIOS/UEFI hybrid boot metadata with xorriso.
 
+### Chroot package networking
+
+The Live builder installs a few Debian packages inside the extracted root with
+`chroot` and `apt`. A chroot shares the builder's network namespace, but does
+not automatically receive the builder's resolver configuration. Step 2 reads
+the build environment's `/etc/resolv.conf`, temporarily copies those bytes to
+the Live root for the apt phase, then restores the base image's original
+`/etc/resolv.conf` entry before squashfs is created. The restoration also runs
+when apt fails. This uses the build environment's configured DNS (including a
+container resolver such as Docker's `127.0.0.11`) without hardcoding a
+nameserver or shipping builder-specific DNS in the restore ISO.
+
+The copy is scoped to package installation because the runtime must boot with
+the Live base's resolver behavior, not an address that only exists in the ISO
+builder's network. Tests cover original symlink, regular-file, and absent
+resolver entries and verify both successful and failed apt cleanup. The 2026-
+10-31 build also compared the final squashfs resolver against the signed base.
+
 Changing an ISO's GRUB menu is a valid way to choose a different boot program,
 but the menu does not supply the restore program's Python runtime, storage
 utilities, TLS client, system service manager, or required packages. Debian
@@ -84,6 +102,18 @@ its first host action, then save the host-specific value in a protected,
 gitignored TOML file for later test connections. Keep this credential outside
 the golden source-image sidecar: that sidecar describes the reusable source
 image, while the new password belongs to one deployed host.
+
+### Post-restore preseed
+
+The restore ISO contains the source image's administrator password hash and
+root SSH settings. A provider reinstall that must preserve an established test
+identity needs to reapply that host's protected `truenas_admin` password and
+root public key after the disk boots. `step3-apply-restored-preseed.py` checks
+the exact expected TrueNAS build and pinned SSH host key, refuses a patch
+install record, updates the password through `midclt`'s stdin payload form,
+and verifies the root key plus password-authentication settings. The private
+password is never placed in the SSH command line or printed in errors. The
+provider caller still holds the host lock around this mutation.
 
 Step 1 and step 2 do not apply the separate boot-pool relaxation patch. They
 capture and restore the source disk's existing state. A manually patched source

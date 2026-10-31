@@ -860,6 +860,17 @@ def test_read_only_inventory_lane_does_not_require_mutation_guard(tmp_path, monk
     selected = runner.required_live_environment("live-inspect", "truenas-test", tmp_path)
     assert selected["TRUENAS_TEST_ALLOW_MUTATIONS"] == ""
 
+    monkeypatch.setenv("TRUENAS_STORAGE_PROFILE", "both")
+    selected = runner.required_live_environment("live-inspect", "truenas-test", tmp_path)
+    assert selected["TRUENAS_STORAGE_PROFILE"] == "both"
+    monkeypatch.setenv("TRUENAS_STORAGE_PROFILE", "path-a+b")
+    try:
+        runner.required_live_environment("live-inspect", "truenas-test", tmp_path)
+    except runner.RunnerError as exc:
+        assert "path-a, path-b, or both" in str(exc)
+    else:
+        raise AssertionError("live-inspect accepted an unknown storage profile")
+
 
 def test_read_only_inventory_script_uses_only_query_operations() -> None:
     source = LIVE_INSPECT.read_text()
@@ -913,6 +924,51 @@ def test_read_only_inventory_reports_exact_direct_root_and_pool_presence() -> No
     assert path_b["direct_user_data_descendants"] == ["boot-pool/user-data/probe"]
     assert path_b["direct_boot_disk_data_pool_present"] is True
     assert path_b["direct_boot_disk_data_dataset_names"] == ["boot-disk-data"]
+
+
+def test_read_only_inventory_validates_exact_storage_profile_shapes() -> None:
+    sys.path.insert(0, str(LIVE_INSPECT.parent))
+    spec = importlib.util.spec_from_file_location("truenas_live_inspect_profile", LIVE_INSPECT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    shapes = {
+        "path-a": (True, False),
+        "path-b": (False, True),
+        "both": (True, True),
+    }
+    for profile, expected in shapes.items():
+        module.validate_storage_profile(profile, {
+            "direct_user_data_root_present": expected[0],
+            "direct_boot_disk_data_pool_present": expected[1],
+        })
+    for profile, observed in (
+        ("path-a", (False, False)),
+        ("path-a", (True, True)),
+        ("path-b", (False, False)),
+        ("path-b", (True, True)),
+        ("both", (True, False)),
+        ("both", (False, True)),
+    ):
+        try:
+            module.validate_storage_profile(profile, {
+                "direct_user_data_root_present": observed[0],
+                "direct_boot_disk_data_pool_present": observed[1],
+            })
+        except module.RemoteError as exc:
+            assert "expected Path A/Path B presence" in str(exc)
+        else:
+            raise AssertionError(f"profile {profile!r} accepted presence shape {observed!r}")
+    try:
+        module.validate_storage_profile("path-a+b", {
+            "direct_user_data_root_present": True,
+            "direct_boot_disk_data_pool_present": True,
+        })
+    except module.RemoteError as exc:
+        assert "must be path-a, path-b, or both" in str(exc)
+    else:
+        raise AssertionError("inventory accepted an unknown storage profile")
 
 
 def test_pwmcp_alias_must_exist_on_the_selected_guest_network(monkeypatch) -> None:
@@ -1990,7 +2046,7 @@ def test_user_docs_link_the_live_gate_and_name_all_lane_values() -> None:
         "repair-zvol-blocksize", "reapply-after-update", "uninstall-stale-record",
     ):
         assert action in consumers, f"consumer-facing docs omit v27 patch action {action!r}"
-    for profile in ("path-a", "path-b"):
+    for profile in ("path-a", "path-b", "both"):
         assert profile in all_docs, f"consumer-facing docs omit storage profile {profile!r}"
     for document in (readme, consumers, design):
         assert "repair-root-create" in document

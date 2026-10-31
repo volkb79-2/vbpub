@@ -50,11 +50,37 @@ STORAGE_PROFILE = {
 SNAPSHOT_CATALOG = {
     "tn-v27rc1-stock-ssh-ready-20261027": {
         "version": "27.0.0-RC.1", "start_state": "vanilla",
-        "description": "stock v27 RC.1, SSH ready",
+        "description": "legacy 16 GiB stock v27 RC.1, SSH ready",
+        "uuid": "aaffa906-45b0-4715-af99-db55a35093a3",
+    },
+    "tn-v27rc1-20g-stock-ssh-ready-20261031": {
+        "version": "27.0.0-RC.1", "start_state": "vanilla",
+        "description": "preferred 20 GiB stock v27 RC.1, admin and key-only SSH ready",
+        "uuid": "1239b205-b170-42ab-9c26-de95b4c7f37e",
+        "restore_certified": False,
     },
     "tn-v27rc1-path-a-patched-clean-20261030": {
         "version": "27.0.0-RC.1", "start_state": "path-a",
         "description": "v27 RC.1 patched with an empty Path A root; verified clean of survival fixtures",
+        "uuid": "74f27b57-cf7e-4dd1-a182-e5f6b9eb4e3e",
+    },
+    "tn-v27rc1-20g-path-a-patched-clean-20261031": {
+        "version": "27.0.0-RC.1", "start_state": "path-a",
+        "description": "20 GiB v27 RC.1 with the exact adapter and an empty Path A root",
+        "uuid": "c5fb654d-f9bf-44e5-9959-6436377aed64",
+        "restore_certified": False,
+    },
+    "tn-v27rc1-20g-path-b-patched-clean-20261031-r2": {
+        "version": "27.0.0-RC.1", "start_state": "path-b",
+        "description": "20 GiB v27 RC.1 with the exact adapter and registered Path B pool",
+        "uuid": "4aa2c7f1-a057-4ac4-a10c-9a77baed21ae",
+        "restore_certified": False,
+    },
+    "tn-v27rc1-20g-path-ab-patched-clean-20261031": {
+        "version": "27.0.0-RC.1", "start_state": "path-a+b",
+        "description": "20 GiB v27 RC.1 with the exact adapter, empty Path A root, and registered Path B pool",
+        "uuid": "1d96aced-ad3c-4675-b7d4-b441c729eb2c",
+        "restore_certified": False,
     },
 }
 
@@ -565,9 +591,10 @@ def _patch_after_update(
             network=network, allow_high_psi=allow_high_psi,
         )
     if target_version.startswith("28."):
-        # v28 has a separate install record. Its installer validates either
-        # persistent root directly, including an already-created Path B pool.
-        patch_profile = "path-a" if start_state == "path-a" else "path-b"
+        # The v27-to-v28 BE transition leaves Path A unmounted. For A+B,
+        # anchor the v28 adapter on Path A so its boot mount integration is
+        # restored; a Path B-only source keeps its backup on that pool.
+        patch_profile = "path-b" if start_state == "path-b" else "path-a"
         lane_env = dict(base_env)
         lane_env.update({
             "TRUENAS_STORAGE_PROFILE": patch_profile,
@@ -703,6 +730,24 @@ def _result_index(results_dir: Path, target_versions: list[str]) -> str:
                     f"{statuses['survival']} | {statuses['patch']} | {statuses['api']} | "
                     f"{statuses['ui']} | {evidence} |"
                 )
+    snapshot_rows = []
+    for name, snapshot in SNAPSHOT_CATALOG.items():
+        details = str(snapshot["description"])
+        snapshot_uuid = snapshot.get("uuid")
+        if isinstance(snapshot_uuid, str):
+            details += f" Netcup UUID `{snapshot_uuid}`."
+        if snapshot.get("restore_certified") is False:
+            details += (
+                " The ISO completion notification was unavailable; the supported disk-boot "
+                "recovery verified root SSH and an ONLINE boot-pool, but left restore certification unset."
+            )
+        snapshot_rows.append(f"| `{name}` | {details} |")
+    snapshot_rows.append(
+        "| `tn-v27rc1-path-a-patched-20261030` | Older Path A snapshot with stale survival fixtures; excluded from acceptance starts (Netcup UUID `e918cbe5-7ed7-4c2e-beb3-71f938c4e184`). |"
+    )
+    snapshot_rows.append(
+        "| `tn-v27rc1-20g-path-b-patched-clean-20261031` | Retained but excluded: captured before the v27 adapter was installed, so its install record did not match the Path B start-state contract (Netcup UUID `e4e72242-c079-4a5f-8454-d0d2ac2900a5`). Use the corrected `-r2` snapshot above. |"
+    )
     return "\n".join([
         "# TrueNAS update acceptance results",
         "",
@@ -716,13 +761,12 @@ def _result_index(results_dir: Path, target_versions: list[str]) -> str:
         "",
         "| Snapshot | Meaning |",
         "|---|---|",
-        "| `tn-v27rc1-stock-ssh-ready-20261027` | Stock v27 RC.1 with SSH configured; original provider snapshot. |",
-        "| `tn-v27rc1-path-a-patched-20261030` | Older Path A snapshot; found to contain stale survival fixtures, so it is excluded from acceptance starts. |",
-        "| `tn-v27rc1-path-a-patched-clean-20261030` | v27 RC.1 patched with an empty Path A root; clean acceptance start state. |",
+        *snapshot_rows,
         "",
-        "## 2026-10-31 20 GiB capacity-rebuild attempt",
+        "## 2026-10-31 20 GiB capacity rebuild",
         "",
-        "A vanilla `27.0.0-RC.1` source install and step 1 capture succeeded on a 20 GiB disk after three managed TCG admissions were refused at 22.57%, 30.72%, and 38.47% memory PSI. The boot pool was 19 GiB with 15.1 GiB free; the 20 GiB raw image SHA-256 is `721a8b22698f7be66d853c3719351849dacfc59271d023734a846615ebc6b1d7`. Step 2 verified the signed Debian base but failed twice when chroot `apt-get` could not resolve `deb.debian.org`; host DNS and HTTP access worked during diagnosis. The documented build was not modified or bypassed. No restore ISO, local replay, v1001 install, provider snapshot, or 20 GiB acceptance run exists, so the matrix above has no new-base scenario. See `scripts/truenas/golden-iso/docs/CONSUMERS.md` and the external `truenas-live-20261031` evidence directory for details.",
+        "The vanilla `27.0.0-RC.1` source install and 20 GiB image capture passed. Boot-pool was 19 GiB with 15.1 GiB free. Raw image SHA-256: `721a8b22698f7be66d853c3719351849dacfc59271d023734a846615ebc6b1d7`. Step 2 now copies the builder resolver into the Debian Live chroot only for apt, restores the signed base resolver before squashfs creation, and has resolver cleanup tests. The ISO SHA-256 is `33b88469c677635c6085de6670368cdf35ddb204b431d44986e2eb98b8ad92bd`; the local TCG replay booted TrueNAS RC.1 with a 19 GiB pool and 15.1 GiB free.",
+        "On v1001, the provider completion notification was unavailable, so the workflow used its documented `recover --try-disk-boot` path instead of asserting a notification. Netcup then reported RUNNING with no pending configuration change; pinned root SSH verified RC.1 and an ONLINE boot-pool. Provider pool size was 20,401,094,656 bytes and free space was 16,163,876,864 bytes. Restore certification remains explicitly unset. The preferred clean base is `tn-v27rc1-20g-stock-ssh-ready-20261031` (`1239b205-b170-42ab-9c26-de95b4c7f37e`). See the golden-image consumer guide and external `truenas-live-20261031` evidence for the full result.",
         "",
     ])
 

@@ -81,6 +81,18 @@ pool uses `pool.export` with `destroy=false`, then the guarded helper verifies
 the pool GUID and partition PARTUUID, clears only that partition with
 `zpool labelclear`, and confirms that `disk.details` offers it again.
 
+The read-only `live-inspect` lane accepts `TRUENAS_STORAGE_PROFILE=path-a`,
+`path-b`, or `both` and compares the selected profile with direct ZFS dataset
+and pool inventory before reporting PASS. The [design guide](docs/DESIGN-GUIDE.md#read-only-storage-profile-checks)
+explains the presence contract; the [consumer guide](docs/CONSUMERS.md#inspect-and-prove-a-series)
+shows how to inspect a combined Path A and Path B guest.
+
+For v27-to-v28 survival acceptance from a combined Path A and Path B source,
+the runner stores and applies the v28 adapter through Path A so the new boot
+environment restores Path A's automatic mount integration. Path B-only runs
+keep the adapter backup on Path B. See the [design rationale](docs/DESIGN-GUIDE.md#combined-layout-update-routing)
+and [consumer workflow](docs/CONSUMERS.md#update-and-reapply-workflow).
+
 The UI path values are `ui-wizard` and `preprovisioned`. Patch actions include
 `install`, `replace`, `repair-root-create`, `repair-root-parent-mountpoint`,
 `repair-zvol-blocksize`, `reapply-after-update`, `install-after-update`, and

@@ -174,6 +174,30 @@ restricted to external targets and one invocation. It skips only `some/full`
 PSI thresholds; readable PSI, finite memory limits, current usage below every
 hard limit, CPU quota, and the 0.5 CPU / 512 MiB tester caps remain required.
 
+### Read-only storage profile checks
+
+`live-inspect` accepts `path-a`, `path-b`, and `both`. It derives Path A
+presence from the exact `boot-pool/user-data` dataset and Path B presence from
+the exact `boot-disk-data` pool reported by direct guest commands. It requires
+the observed pair to match the selected profile: Path A only, Path B only, or
+both. Middleware query counts are not used as proof of absence. This check
+lets acceptance inventory a combined start state before planting fixtures or
+changing the guest. The [consumer guide](CONSUMERS.md#inspect-and-prove-a-series)
+shows the profile setting, and the [README feature summary](../README.md#truenas-boot-pool-storage-patch)
+links this rationale from the feature surface.
+
+### Combined layout update routing
+
+An update to a new boot environment leaves the v27 Path A root unmounted until
+the v28 middleware adapter restores its boot mount integration. The v28
+adapter writes its backup and install record to one persistent root. For a
+combined Path A and Path B source, acceptance therefore selects Path A as the
+adapter location; Path B remains an independently mounted ZFS pool. A
+Path B-only source keeps its adapter backup on Path B. This routing is checked
+by the state-aware acceptance tests and by the A+B survival cell. The
+[consumer workflow](CONSUMERS.md#update-and-reapply-workflow) shows how the
+registered runner applies this policy.
+
 ### Historical v1001 observed-source exploration (2026-10-21)
 
 The `live-ui-observed-v1001` lane was a narrow exception for UI exploration on
@@ -645,6 +669,12 @@ workload content/record retention through update as open tests. TCG should be
 visibly marked as software emulated because it can be very slow.
 
 ## PWMCP storage UI acceptance
+
+The registered browser lanes use the Playwright version declared by the
+deployed PWMCP contract. The browser protocol and client API are versioned
+together, so a stale tester pin must fail before the UI workflow runs rather
+than report a misleading browser failure. The consumer guide shows where the
+contract value is read and which requirements file must match it.
 
 The registered `live-ui` lane is built around fresh, unconfigured v27 guests
 after the relaxation patch is installed. On Path A, it opens the `boot-pool`

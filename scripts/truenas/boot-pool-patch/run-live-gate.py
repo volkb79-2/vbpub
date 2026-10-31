@@ -336,7 +336,11 @@ def required_live_environment(
     if not os.environ.get("TRUENAS_EXPECTED_VERSION"):
         raise RunnerError("TRUENAS_EXPECTED_VERSION is required")
     profile = os.environ.get("TRUENAS_STORAGE_PROFILE", "")
-    allowed_profiles = {"path-a", "path-b", "both"} if lane in SURVIVAL_LANES else {"path-a", "path-b"}
+    allowed_profiles = (
+        {"path-a", "path-b", "both"}
+        if lane in SURVIVAL_LANES or lane == "live-inspect"
+        else {"path-a", "path-b"}
+    )
     if lane == "live-v27-patch" and os.environ.get("TRUENAS_V27_PATCH_ACTION") in {
         "reapply-after-update", "install-after-update", "uninstall-stale-record",
     }:

@@ -3,17 +3,17 @@
 This records a historical successful install of TrueNAS `27.0.0-RC.1` in an
 x86_64 QEMU TCG VM and the 2026-10-31 20 GiB source rebuild. The vanilla RC.1
 install, first boot, root SSH setup, API-key provisioning, and raw whole-disk
-capture succeeded. The restore ISO build then stopped twice because package
-installation inside the Debian Live chroot could not resolve
-`deb.debian.org`. Host DNS and an HTTP request to the Debian repository worked
-during diagnosis. No restore ISO, local restore replay, v1001 install, new
-provider snapshot, or 20 GiB acceptance run exists yet. The existing 16 GiB
-provider snapshot remains the only usable base. See the dated status below and
+capture succeeded. The restore ISO build now succeeds after step 2 supplies the
+builder resolver to the Live chroot only for apt, then restores the signed
+base's original resolver entry before repacking. Local restore replay and the
+v1001 restore/preseed sequence completed; restore certification remains unset
+because the provider completion notification was unavailable. The stock and
+patched-state snapshots are recorded below and in the acceptance matrix. See
 the operator text evidence under
 `/home/vscode/vbpub-release-program-20261027/evidence/truenas-live-20261031/`.
 
-The result sections below describe historical 16 GiB restore payloads and
-their provider results. They do not certify the incomplete 20 GiB restore.
+Historical result sections describe 16 GiB restore payloads. They do not
+replace the 20 GiB evidence or certify its provider restore.
 
 ## 20 GiB source install and capture (2026-10-31)
 
@@ -30,14 +30,37 @@ their provider results. They do not certify the incomplete 20 GiB restore.
   key, and captured exactly 21,474,836,480 bytes. The raw SHA-256 is
   `721a8b22698f7be66d853c3719351849dacfc59271d023734a846615ebc6b1d7`; the
   secret sidecar is mode 0600.
-- Step 2 verified the detached Debian Live signature and SHA-512 checksum and
-  compressed the raw image, but failed twice while installing `sgdisk`,
-  `efibootmgr`, and `eject` inside the Debian Live chroot. Both runs reported
-  `Temporary failure resolving 'deb.debian.org'`. Host DNS and an HTTP HEAD
-  request succeeded during diagnosis; the documented builder still failed.
-- No 20 GiB restore ISO or local replay was produced. No v1001 provider action,
-  snapshot, or acceptance run was started. Resume at the documented step 2
-  build, then verify the local restore before using the image on v1001.
+- Step 2 verified the detached Debian Live signature and SHA-512 checksum,
+  supplied the build environment resolver only during the apt phase, then
+  restored the original Live root resolver entry. The final squashfs
+  `/etc/resolv.conf` matched the signed base (empty regular file, mode 0644),
+  with no builder resolver content carried into the ISO.
+- The ISO is 4,395,958,272 bytes, SHA-256
+  `33b88469c677635c6085de6670368cdf35ddb204b431d44986e2eb98b8ad92bd`.
+  Chroot apt update and installation of `gdisk`, `efibootmgr`, and `eject`
+  succeeded. Local replay and v1001 restore details are below.
+
+## 20 GiB restore and v1001 snapshot (2026-10-31)
+
+- Local QEMU TCG replay restored and booted TrueNAS `27.0.0-RC.1` from the
+  generated ISO. The boot-pool was about 19 GiB with 16,159,768,576 bytes free;
+  replay evidence SHA-256:
+  `7c9c30a8e970cdd33e91055eb853e987c68a4522d2f0ca93459e0a6dd1857d04`.
+- The ISO was installed on v1001 (Netcup server `804027`) through the
+  documented provider workflow under `v1001.lock`. The expected completion
+  notification did not arrive. The documented `recover --try-disk-boot` path
+  restored disk boot; pinned root SSH verified the exact RC.1 build, an ONLINE
+  boot-pool, and cleared pending provider configuration.
+- The protected post-restore preseed was reapplied with
+  [`step3-apply-restored-preseed.py`](../step3-apply-restored-preseed.py).
+  Root SSH uses the registered key and SSH password login remains disabled.
+  The stock provider snapshot is `tn-v27rc1-20g-stock-ssh-ready-20261031`,
+  Netcup UUID `1239b205-b170-42ab-9c26-de95b4c7f37e`.
+- Restore certification remains `false`: the supported recovery and guest
+  checks passed, but the missing provider completion notification is not
+  replaced by an operator assertion. Subsequent Path A, Path B, and Path A+B
+  patched acceptance sources are listed in the
+  [acceptance matrix](../../docs/ACCEPTANCE-RESULTS.md).
 
 ## Result
 
@@ -220,7 +243,7 @@ python3 tcg_vm.py start \
   --state-dir .vm/truenas-27rc1-20g-source \
   --image "$TRUENAS_TCG_IMAGE" \
   --network "$DOCKER_NETWORK_INTERNAL" \
-  --cgroup-parent "$CGROUP_PARENT_DEV_GATES" \
+  --cgroup-parent "$CGROUP_PARENT_DEV_BACKGROUND" \
   --max-concurrent-guests 1 \
   --readonly-media golden-iso/artifacts/TrueNAS-27.0.0-RC.1.iso \
   --vnc-console --serial-console
@@ -442,6 +465,14 @@ the detached signature with
 `gpgv --keyring /usr/share/keyrings/debian-role-keys.pgp SHA512SUMS.sign SHA512SUMS`
 and verify the ISO's SHA-512 against that file before building.
 
+The chroot shares the builder's network namespace but does not inherit its
+resolver file. The builder temporarily copies its own `/etc/resolv.conf` into
+the Live root while apt updates and installs packages, then restores the
+resolver entry that came from the signed base before creating squashfs. The
+builder environment must have working DNS; do not add a fixed nameserver to
+the ISO. The [design guide](DESIGN-GUIDE.md#chroot-package-networking) explains
+the lifecycle and regression coverage.
+
 Run the builder as root so the repacked Debian Live filesystem retains its
 ownership. It checks the signed base ISO, raw GPT layout, EFI fallback loader,
 and secret sidecar; then embeds the compressed raw image, restore service, and
@@ -474,6 +505,38 @@ webhook, so keep it private.
 
 Use a disposable 20 GiB raw target to verify the 20 GiB restore. Copy fresh
 UEFI variables before starting the VM:
+
+The shared runner places the QEMU guest in the configured background slice,
+caps its memory and CPU, and attaches the restore ISO read-only. Use this path
+when `/dev/kvm` is absent or when replaying the unattended restore:
+
+```bash
+cd /workspaces/vbpub/scripts/truenas
+mkdir -p .vm/truenas-20g-restore
+qemu-img create -f qcow2 golden-iso/vm/restore-target-20g.qcow2 20G
+cp /usr/share/OVMF/OVMF_VARS_4M.fd golden-iso/vm/restore-vars-20g.fd
+export TRUENAS_TCG_IMAGE='debian-install-vm:<installed-image-tag>'
+python3 tcg_vm.py start \
+  --name truenas-20g-restore \
+  --base-disk golden-iso/vm/restore-target-20g.qcow2 \
+  --ovmf-code /usr/share/OVMF/OVMF_CODE_4M.fd \
+  --ovmf-vars golden-iso/vm/restore-vars-20g.fd \
+  --state-dir .vm/truenas-20g-restore \
+  --image "$TRUENAS_TCG_IMAGE" \
+  --network "$DOCKER_NETWORK_INTERNAL" \
+  --cgroup-parent "$CGROUP_PARENT_DEV_BACKGROUND" \
+  --ssh-port 2223 --https-port 8444 \
+  --max-concurrent-guests 1 \
+  --readonly-media golden-iso/artifacts/truenas-27-20GiB-unattended-restore.iso \
+  --serial-console
+```
+
+The runner's admission guard may defer a start while host memory pressure is
+high; wait for it to admit the guest rather than weakening the guard. Follow
+the guest with `python3 tcg_vm.py status --name truenas-20g-restore --state-dir
+.vm/truenas-20g-restore` and inspect `.vm/truenas-20g-restore/serial.log` for
+restore progress. The direct QEMU command below records the historical manual
+replay recipe.
 
 ```sh
 qemu-img create -f raw vm/restore-target.raw 20G
@@ -742,8 +805,10 @@ cd /workspaces/vbpub/scripts/netcup
 ./.venv/bin/python scp-api.py servers
 ./.venv/bin/python install-restore-iso.py start 804027 \
   --iso ../truenas/golden-iso/artifacts/truenas-27-20GiB-unattended-restore.iso \
+  --state-file .state/restore-804027-20g-20261031.json \
   --yes --progress plain
-./.venv/bin/python install-restore-iso.py status 804027
+./.venv/bin/python install-restore-iso.py status 804027 \
+  --state-file .state/restore-804027-20g-20261031.json
 ```
 
 Wait for Mattermost's restore-complete notification, then detach the provider
@@ -757,6 +822,7 @@ ISO, restore the saved boot order, cold-cycle the server, and verify SSH and
   --ssh-host-key-alias '[127.0.0.1]:2223' \
   --ssh-identity-file ../truenas/golden-iso/vm/root_ed25519 \
   --ssh-known-hosts ../truenas/golden-iso/vm/restore-known_hosts \
+  --state-file .state/restore-804027-20g-20261031.json \
   --yes --progress plain
 ```
 
@@ -765,3 +831,29 @@ disk activity, or matching GPT identifiers do not prove the restore completed.
 Guest `CDROMEJECT` does not detach Netcup's ISO. The provider workflow owns
 attach/detach, boot order, and power controls; see the
 [Netcup restore guide](../../../netcup/CONSUMERS.md#restore-a-truenas-golden-disk).
+
+## Apply the post-restore preseed
+
+For the v1001 compatibility base, restore the protected admin password and
+root SSH key used by its existing acceptance tools after the provider restore
+has booted. Prepare a pinned `v1001.known_hosts` entry from the captured
+TrueNAS source host key; do not accept a new key without comparing its
+fingerprint to the source key. Hold the provider lock while applying the
+preseed. The command reads the mode-0600 admin TOML locally and sends the
+password as a `midclt` stdin payload:
+
+```bash
+cd scripts/netcup
+flock -x /home/vscode/vbpub-release-program-20261027/v1001.lock \
+  python3 ../truenas/golden-iso/step3-apply-restored-preseed.py \
+    --host v1001.vxxu.de \
+    --ssh-identity ../truenas/boot-pool-patch/artifacts/.live-test-root-key \
+    --known-hosts ../truenas/boot-pool-patch/artifacts/v1001.known_hosts \
+    --admin-secrets ../truenas/boot-pool-patch/artifacts/v1001-ui-secrets.toml \
+    --root-public-key ../truenas/boot-pool-patch/artifacts/.live-test-root-key.pub \
+    --expected-version 27.0.0-RC.1 --yes
+```
+
+The step refuses a different build or an existing v27 patch record. Follow it
+with the registered `live-ui-auth` and `live-ui-prepare-ssh` gates to verify
+the saved UI credentials and key-only SSH behavior before taking a snapshot.

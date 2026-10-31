@@ -371,6 +371,22 @@ Snapshot the host through its provider before disk or pool changes, then
 restore that snapshot after testing if a clean baseline is required. The
 wrapper does not power off, reboot, reinstall, or restore an external host.
 
+For a combined layout, set `TRUENAS_STORAGE_PROFILE=both` before the read-only
+`live-inspect` invocation. The lane checks that both the exact
+`boot-pool/user-data` root and the `boot-disk-data` pool exist; it refuses if
+either is missing or if an extra one is present for a single-path profile.
+Use `path-a` for only the Path A root and `path-b` for only the Path B pool.
+The [design guide](DESIGN-GUIDE.md#read-only-storage-profile-checks) explains
+why these checks use direct guest inventory.
+
+The update-survival runner uses `path-a+b` as the start-state label and
+`both` for its inventory and fixture profile. When it reaches a v28 target,
+it applies the v28 adapter through Path A to restore automatic mounting in the
+new boot environment; Path B remains present and is checked during survival
+verification. A Path B-only run keeps the adapter backup on Path B. This route
+is selected automatically by `accept.py`; do not run the Path B adapter lane a
+second time on the same active `/usr`.
+
 ### Exploratory UI check on v1001
 
 Use this lane only for the exact v1001 `27.0.0-RC.1` state captured in
@@ -959,6 +975,8 @@ and owned by the same non-root UID as the SSH key. The `playwright` dependency
 is installed in the ephemeral tester from the pinned
 [`requirements-live-ui.txt`](../acceptance/requirements-live-ui.txt); set its
 version to the `playwright_version` reported by `pwmcp contract`.
+The gate checks that pin against the PWMCP contract before opening the browser;
+update the requirements pin whenever the deployed contract changes.
 The earlier 2026-10-18 Path B `ui-wizard` diagnostic stopped safely because
 the unmodified middleware did not offer its reserved partition. On
 2026-10-28, the v27 shim passed the stricter registered API and UI reruns: the

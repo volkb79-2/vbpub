@@ -78,12 +78,35 @@ def direct_storage_inventory(filesystems: list[str], pool_health: list[str]) -> 
     }
 
 
+def validate_storage_profile(profile: str, inventory: dict[str, Any]) -> None:
+    """Require the exact Path A root and Path B pool shape requested by the caller."""
+    expected = {
+        "path-a": (True, False),
+        "path-b": (False, True),
+        "both": (True, True),
+    }
+    if profile not in expected:
+        raise RemoteError("TRUENAS_STORAGE_PROFILE must be path-a, path-b, or both")
+    observed = (
+        inventory["direct_user_data_root_present"],
+        inventory["direct_boot_disk_data_pool_present"],
+    )
+    if observed != expected[profile]:
+        raise RemoteError(
+            f"storage profile {profile!r} expected Path A/Path B presence "
+            f"{expected[profile]}, got {observed}"
+        )
+
+
 def main() -> int:
     target = Target.from_environment()
     profile = os.environ.get("TRUENAS_STORAGE_PROFILE", "")
     expected = os.environ.get("TRUENAS_EXPECTED_VERSION", "")
-    if profile not in {"path-a", "path-b"} or not expected:
-        raise RemoteError("TRUENAS_STORAGE_PROFILE and TRUENAS_EXPECTED_VERSION are required")
+    if profile not in {"path-a", "path-b", "both"} or not expected:
+        raise RemoteError(
+            "TRUENAS_STORAGE_PROFILE must be path-a, path-b, or both; "
+            "TRUENAS_EXPECTED_VERSION is also required"
+        )
 
     info = target.call("system.info", timeout=120)
     version = str(info.get("version", ""))
@@ -161,6 +184,7 @@ def main() -> int:
     ]
     flattened = flatten_datasets(datasets)
     direct_storage = direct_storage_inventory(filesystems, pool_health)
+    validate_storage_profile(profile, direct_storage)
     report("readonly-inventory", {
         "version": version,
         "profile": profile,

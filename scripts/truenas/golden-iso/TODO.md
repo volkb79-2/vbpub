@@ -59,18 +59,22 @@ raw image with SHA-256
 `721a8b22698f7be66d853c3719351849dacfc59271d023734a846615ebc6b1d7`; its
 sidecar remains mode 0600.
 
-Step 2 verified the signed Debian Live base but failed twice while installing
-`sgdisk`, `efibootmgr`, and `eject` in its chroot. Both runs ended with
-`Temporary failure resolving 'deb.debian.org'`; host DNS and an HTTP HEAD
-request succeeded during diagnosis. Do not inject a resolver or package
-archive into the chroot as a manual workaround. Retry the documented builder
-when the environment permits it. No restore ISO, local replay, v1001 install,
-new snapshot, or 20 GiB acceptance run exists.
+Step 2 copies the builder resolver into the Debian Live chroot only for apt,
+then restores the signed base's original `/etc/resolv.conf` entry before
+squashfs creation. Chroot DNS resolution, package installation, resolver
+non-leak, and local QEMU restore replay all passed. The raw image SHA-256 is
+`721a8b22698f7be66d853c3719351849dacfc59271d023734a846615ebc6b1d7`; the ISO
+SHA-256 is `33b88469c677635c6085de6670368cdf35ddb204b431d44986e2eb98b8ad92bd`.
 
-Remaining environment-bound work: finish step 2 and replay the ISO locally;
-install it on v1001 under `v1001.lock`; record the new snapshot ID; then run the
-blocked update-survival matrix from fresh patched states. The existing 16 GiB
-provider snapshot remains the only usable base. The live v1001 host still has
-two custom middleware modules matching this worktree but 14 of 15
-release-adapter source targets differ, with no patch-install record; that does
-not establish that the custom code came from the historical golden image.
+On v1001, the provider completion notification was unavailable. The documented
+`recover --try-disk-boot` procedure brought the restored RC.1 host up, pinned
+SSH and ONLINE boot-pool checks passed, and the post-restore preseed was
+reapplied. The stock snapshot is
+`tn-v27rc1-20g-stock-ssh-ready-20261031`, UUID
+`1239b205-b170-42ab-9c26-de95b4c7f37e`. Restore certification remains unset.
+Path A and Path B update-survival cells passed. The Path A+B cell also passed
+on v28 after the acceptance router was corrected to anchor the v28 adapter on
+Path A, restoring its automatic mount integration in the new boot environment.
+Two attempts were stopped by registered PSI admission without bypass; the
+successful run began from the already-reverted clean A+B snapshot. See the
+acceptance results and consumer guide for the matrix and run IDs.

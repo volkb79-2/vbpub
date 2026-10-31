@@ -84,6 +84,8 @@ with 170 tests and 45 subtests, but that separate mode has not had a fresh live
 run and rejects any browser `pool.create` request. See the [boot-pool patch
 design guide](boot-pool-patch/docs/DESIGN-GUIDE.md#pwmcp-storage-ui-acceptance)
 and [UI consumer steps](boot-pool-patch/docs/CONSUMERS.md#run-pwmcp-ui-storage-acceptance).
+Registered UI lanes pair their Playwright pin with the deployed PWMCP contract;
+the consumer guide documents how to keep them aligned.
 
 For this cache use case, the durable data stays on the other disk; the
 system-disk zvol is only an optional cache device. Scripted `zpool` checks

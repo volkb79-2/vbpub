@@ -38,6 +38,11 @@ def test_playwright_version_comes_from_pwmcp_contract_python_field(
     assert accept._playwright_version() == "1.62.0"
 
 
+def test_repository_live_ui_playwright_pin_matches_pwmcp_contract() -> None:
+    contract = json.loads((accept.WORKTREE_ROOT / "pwmcp" / "pwmcp.contract.json").read_text())
+    assert accept._playwright_version() == contract["playwright"]["python"]
+
+
 def test_pwmcp_network_derivation_ignores_null_docker_aliases(monkeypatch) -> None:
     outputs = [
         subprocess.CompletedProcess([], 0, "other\npwmcp\n", ""),
@@ -106,7 +111,34 @@ def test_v27_post_update_uses_guarded_install_when_existing_pool_has_no_stale_ma
     assert "TRUENAS_V27_EXPECTED_PRIOR_BUNDLE_SHA256" not in seen["env"]
 
 
-def test_v28_post_update_checks_existing_path_b_root(tmp_path: Path, monkeypatch) -> None:
+def test_v28_path_a_and_combined_sources_anchor_adapter_on_path_a(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"schema_version": 1}), encoding="utf-8")
+    seen: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        accept, "_lane_command",
+        lambda lane, *, env, **kwargs: seen.append({"lane": lane, "env": env}) or {"lane": lane},
+    )
+
+    for start_state in ("path-a", "path-a+b"):
+        seen.clear()
+        result = accept._patch_after_update(
+            "28.0.0-MASTER+20261029-175210", start_state=start_state,
+            patched_target="reapply", source_record=None,
+            manifest_path=manifest, base_env={}, run_dir=tmp_path,
+            network="test-bridge", allow_high_psi=False,
+        )
+
+        assert result == {"lane": "live-v28-patch"}
+        assert len(seen) == 1
+        assert seen[0]["lane"] == "live-v28-patch"
+        assert seen[0]["env"]["TRUENAS_STORAGE_PROFILE"] == "path-a"
+        assert seen[0]["env"]["TRUENAS_V28_PATCH_ACTION"] == "install"
+
+
+def test_v28_path_b_only_source_keeps_adapter_on_path_b(tmp_path: Path, monkeypatch) -> None:
     manifest = tmp_path / "manifest.json"
     manifest.write_text(json.dumps({"schema_version": 1}), encoding="utf-8")
     seen = {}
@@ -116,13 +148,12 @@ def test_v28_post_update_checks_existing_path_b_root(tmp_path: Path, monkeypatch
     )
 
     accept._patch_after_update(
-        "28.0.0-MASTER+20261029-175210", start_state="path-a+b",
+        "28.0.0-MASTER+20261029-175210", start_state="path-b",
         patched_target="reapply", source_record=None,
         manifest_path=manifest, base_env={}, run_dir=tmp_path,
         network="test-bridge", allow_high_psi=False,
     )
 
-    assert seen["lane"] == "live-v28-patch"
     assert seen["env"]["TRUENAS_STORAGE_PROFILE"] == "path-b"
     assert seen["env"]["TRUENAS_V28_PATCH_ACTION"] == "install"
 
@@ -161,3 +192,4 @@ def test_acceptance_index_reports_each_gate_and_keeps_latest_failure(tmp_path: P
     )
 
     assert "| path-a | 27.0.0-RC.1 | 28.0.0-MASTER+20261029-175210 | reapply | PASS | PASS | PASS | FAIL |" in index
+    assert "tn-v27rc1-20g-path-b-patched-clean-20261031` | Retained but excluded" in index

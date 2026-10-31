@@ -9,7 +9,7 @@ sidecar beside the image; the ISO contains the full disk and notification
 webhook, so both remain private artifacts.
 
 Start with a manual vanilla TrueNAS installation on a source VM. The workflow
-then has two scripts:
+has three scripts:
 
 1. [`step1-install-prepare-truenas.py`](step1-install-prepare-truenas.py)
    configures the installed source VM, creates and validates its API key,
@@ -17,6 +17,11 @@ then has two scripts:
 2. [`step2-build-unattended-restore-iso.py`](step2-build-unattended-restore-iso.py)
    validates a Debian Live base ISO, embeds the golden disk and restore runtime,
    and produces the unattended restore ISO.
+3. [`step3-apply-restored-preseed.py`](step3-apply-restored-preseed.py)
+   reapplies a protected administrator password and root-key SSH settings to a
+   restored host over pinned SSH. It sends the password through middleware
+   stdin, not command arguments; see the [design guide](docs/DESIGN-GUIDE.md#post-restore-preseed)
+   and [consumer procedure](docs/CONSUMERS.md#apply-the-post-restore-preseed).
 
 The captured QCOW2 is the size authority: step 1 accepts whole-GiB source disks
 of at least 16 GiB and captures that exact virtual size. Its preferred source,
@@ -24,13 +29,20 @@ raw-image, and sidecar names use 20 GiB. Step 2 names the compressed payload
 from the recorded image size, and restore writes exactly that many bytes. It
 does not resize the captured ZFS partition or boot pool.
 
+During its Debian Live package-install phase, step 2 temporarily copies the
+build environment's `/etc/resolv.conf` into the chroot so `apt` can resolve
+Debian mirrors. It restores the signed base image's original resolver entry
+before repacking the Live filesystem. See the [design guide](docs/DESIGN-GUIDE.md#chroot-package-networking)
+for the reason and the [consumer guide](docs/CONSUMERS.md#build-the-unattended-restore-iso)
+for the build procedure.
+
 Use the [consumer guide](docs/CONSUMERS.md) for the tested manual installation,
 source preparation, ISO build, QEMU replay, and Netcup install commands. The
 [design guide](docs/DESIGN-GUIDE.md) records restore boundaries, safeguards,
 and unresolved compatibility evidence. The workflow is separate from the
 [boot-pool patch](../boot-pool-patch/README.md): a restored host can be patched
 after boot, while patching the source before capture requires a manual step;
-the two scripts do not invoke the patch workflow.
+the golden-image scripts do not invoke the patch workflow.
 
 Treat the bootstrap `truenas_admin` password as public once a golden recipe is
 published. Immediately after booting a live test host, change it to a fresh
@@ -49,15 +61,20 @@ the sidecar is mode 0600. The TCG admission guard refused three starts under
 high memory PSI; the fourth start passed after pressure subsided. The guard
 was not bypassed.
 
-Step 2 verified the signed Debian Live 13.7.0 base, then failed twice while
-installing `sgdisk`, `efibootmgr`, and `eject` inside the Debian chroot:
-`apt-get` could not resolve `deb.debian.org`. Host DNS and an HTTP request to
-the Debian repository succeeded during diagnosis, but the documented chroot
-build continued to fail. No restore ISO, local restore replay, v1001 install,
-new provider snapshot, or 20 GiB acceptance run exists. Keep the existing
-16 GiB provider snapshot as the only available base until step 2, local replay,
-and v1001 install finish. The exact logs and hashes are in the operator
-evidence directory under `truenas-live-20261031`.
+Step 2 verified the signed Debian Live 13.7.0 base and installed `gdisk`,
+`efibootmgr`, and `eject` in the Debian chroot after temporarily supplying the
+builder resolver. The resolver entry was restored before repacking; extracting
+`/etc/resolv.conf` from the signed base and finished squashfs showed identical
+empty files, so the builder's resolver was not carried into the ISO. The ISO
+is 4,395,958,272 bytes with SHA-256
+`33b88469c677635c6085de6670368cdf35ddb204b431d44986e2eb98b8ad92bd`. Local
+restore replay passed with a 19 GiB boot-pool and about 16.16 GB free. On
+v1001, the completion notification was unavailable, so the documented
+disk-boot recovery path was used before reapplying the preseed. Pinned root SSH
+verified RC.1 and an ONLINE boot-pool. The provider stock snapshot is
+`tn-v27rc1-20g-stock-ssh-ready-20261031`
+(`1239b205-b170-42ab-9c26-de95b4c7f37e`); restore certification remains
+explicitly unset. The consumer guide records the full sequence and evidence.
 
 The earlier 16 GiB source run and restore payload remain historical evidence.
 The official [TrueNAS 28 nightly index](https://iso.sys.truenas.net/TrueNAS-28-Nightlies/)
@@ -65,22 +82,23 @@ advances independently of the RC.1 source used here; record exact build and
 installer hashes for each compatibility run.
 
 The capture workflow does **not** apply the boot-pool relaxation patch. It
-captures the source disk as it is. A patched source would require a separate,
-manual patch step before capture. The raw golden and restore ISO are absent, so
-the captured image's contents cannot currently be inspected. A read-only check
-of v1001 found two custom middleware modules matching files in this worktree,
-14 of 15 adapter targets differing from the current v27 adapter, and no patch
-install record. That proves v1001 has unrecorded/custom code, but does not show
-whether it came from the historical golden image or a later manual change. Do
-not treat the historical source QCOW2 or any prior ISO as a verified patched
-golden.
+captures the source disk as it is. The current 20 GiB source is vanilla TrueNAS
+`27.0.0-RC.1`; its raw digest is recorded above, and step 2 has built a matching
+restore ISO. The pre-reinstall read-only inventory found two custom middleware
+modules matching files in this worktree, 14 of 15 adapter targets differing
+from the current v27 adapter, and no patch install record. That inventory does
+not establish whether the custom code came from the historical golden image
+or a later manual change; the new provider snapshot is recorded as stock RC.1.
+See the [20 GiB outcome](docs/CONSUMERS.md#20-gib-restore-and-v1001-snapshot-2026-10-31)
+and [acceptance matrix](../docs/ACCEPTANCE-RESULTS.md) for the subsequent
+patched-state update results.
 
-The official [TrueNAS 28 nightly index](https://iso.sys.truenas.net/TrueNAS-28-Nightlies/)
-currently lists builds through `28.0.0-MASTER+20261019-175231`; the retained
-source VM is v27 RC.1 dated 2026-10-15. The golden is therefore not current for
-the v28 nightly test matrix. Re-run step 1 from a freshly installed, selected
-TrueNAS release, then step 2, and record the exact source version and ISO
-hashes before using it as a test fixture.
+The boot-pool patch's
+[`supported-builds.json`](../boot-pool-patch/supported-builds.json) records
+the exact source and target builds used by acceptance. The v27 RC.1 source is
+intentionally older than its registered v28 nightly update target; retain the
+source installer and image digests with each run rather than treating the
+golden image as a rolling release.
 
 The v28 nightly ISO used for patch work belongs under
 `../boot-pool-patch/artifacts/`, not in this golden-image project. Its

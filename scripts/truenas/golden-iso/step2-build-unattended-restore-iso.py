@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -16,6 +17,7 @@ import sys
 import tempfile
 import tomllib
 from pathlib import Path
+from typing import Iterator
 from urllib.parse import urlsplit
 
 
@@ -44,6 +46,7 @@ REQUIRED_TOOLS = {
 }
 GIB_BYTES = 1024**3
 MIN_GOLDEN_DISK_BYTES = 16 * GIB_BYTES
+BUILD_RESOLV_CONF = Path("/etc/resolv.conf")
 
 
 class BuildError(RuntimeError):
@@ -412,6 +415,55 @@ def mount_chroot(args: list[str]) -> None:
     run(["mount", *args])
 
 
+@contextmanager
+def temporary_chroot_resolver(rootfs: Path) -> Iterator[None]:
+    """Expose the builder's resolver only while package installation runs."""
+    resolver = rootfs / "etc" / "resolv.conf"
+    try:
+        build_resolver = BUILD_RESOLV_CONF.read_bytes()
+    except OSError as exc:
+        raise BuildError(
+            f"cannot read build environment resolver {BUILD_RESOLV_CONF}: "
+            f"{type(exc).__name__}"
+        ) from None
+
+    if resolver.is_symlink():
+        original: tuple[str, str] | tuple[str, bytes, int] | None = (
+            "symlink",
+            os.readlink(resolver),
+        )
+    elif resolver.exists():
+        if not resolver.is_file():
+            raise BuildError("Debian Live /etc/resolv.conf is not a file or symlink")
+        original = (
+            "file",
+            resolver.read_bytes(),
+            stat.S_IMODE(resolver.stat().st_mode),
+        )
+    else:
+        original = None
+
+    try:
+        if original is not None:
+            resolver.unlink()
+        resolver.write_bytes(build_resolver)
+        os.chmod(resolver, 0o644)
+        yield
+    finally:
+        if resolver.is_symlink() or resolver.exists():
+            if not resolver.is_file() and not resolver.is_symlink():
+                raise BuildError(
+                    "temporary Debian Live /etc/resolv.conf was replaced by a non-file"
+                )
+            resolver.unlink()
+        if original is not None:
+            if original[0] == "symlink":
+                resolver.symlink_to(original[1])
+            else:
+                resolver.write_bytes(original[1])
+                os.chmod(resolver, original[2])
+
+
 def install_runtime_packages(rootfs: Path, suite: str) -> None:
     apt = rootfs / "etc" / "apt"
     sources = apt / "sources.list"
@@ -430,68 +482,43 @@ def install_runtime_packages(rootfs: Path, suite: str) -> None:
         ),
         encoding="utf-8",
     )
-    resolver = rootfs / "etc" / "resolv.conf"
-    original_resolver_link = os.readlink(resolver) if resolver.is_symlink() else None
-    original_resolver = (
-        resolver.read_bytes()
-        if resolver.exists() and not resolver.is_symlink()
-        else None
-    )
-    original_resolver_mode = (
-        stat.S_IMODE(resolver.stat().st_mode)
-        if resolver.exists() and not resolver.is_symlink()
-        else 0o644
-    )
-    if resolver.exists() or resolver.is_symlink():
-        resolver.unlink()
-    resolver.write_text(
-        Path("/etc/resolv.conf").read_text(encoding="utf-8"),
-        encoding="utf-8",
-    )
-
     mounted: list[Path] = []
-    try:
-        for source, target, options in (
-            ("/dev", rootfs / "dev", ["--bind", "/dev", str(rootfs / "dev")]),
-            ("proc", rootfs / "proc", ["-t", "proc", "proc", str(rootfs / "proc")]),
-            ("sysfs", rootfs / "sys", ["-t", "sysfs", "sysfs", str(rootfs / "sys")]),
-        ):
-            target.mkdir(parents=True, exist_ok=True)
-            mount_chroot(options)
-            mounted.append(target)
-        log("Installing sgdisk, efibootmgr, and eject into the Debian Live root.")
-        run(["chroot", str(rootfs), "/usr/bin/apt-get", "update"], timeout=1800)
-        run(
-            [
-                "chroot",
-                str(rootfs),
-                "/usr/bin/apt-get",
-                "install",
-                "--yes",
-                "--no-install-recommends",
-                "gdisk",
-                "efibootmgr",
-                "eject",
-            ],
-            timeout=1800,
-        )
-        run(["chroot", str(rootfs), "/usr/bin/apt-get", "clean"], timeout=300)
-    finally:
-        failures: list[str] = []
-        for target in reversed(mounted):
-            result = run(["umount", str(target)], check=False, timeout=60)
-            if result.returncode != 0:
-                failures.append(str(target))
-        if failures:
-            raise BuildError("failed to unmount chroot paths: " + ", ".join(failures))
-        if resolver.exists() or resolver.is_symlink():
-            resolver.unlink()
-        if original_resolver_link is not None:
-            resolver.symlink_to(original_resolver_link)
-        elif original_resolver is not None:
-            resolver.write_bytes(original_resolver)
-            os.chmod(resolver, original_resolver_mode)
-        shutil.rmtree(rootfs / "var" / "lib" / "apt" / "lists", ignore_errors=True)
+    with temporary_chroot_resolver(rootfs):
+        try:
+            for source, target, options in (
+                ("/dev", rootfs / "dev", ["--bind", "/dev", str(rootfs / "dev")]),
+                ("proc", rootfs / "proc", ["-t", "proc", "proc", str(rootfs / "proc")]),
+                ("sysfs", rootfs / "sys", ["-t", "sysfs", "sysfs", str(rootfs / "sys")]),
+            ):
+                target.mkdir(parents=True, exist_ok=True)
+                mount_chroot(options)
+                mounted.append(target)
+            log("Installing sgdisk, efibootmgr, and eject into the Debian Live root.")
+            run(["chroot", str(rootfs), "/usr/bin/apt-get", "update"], timeout=1800)
+            run(
+                [
+                    "chroot",
+                    str(rootfs),
+                    "/usr/bin/apt-get",
+                    "install",
+                    "--yes",
+                    "--no-install-recommends",
+                    "gdisk",
+                    "efibootmgr",
+                    "eject",
+                ],
+                timeout=1800,
+            )
+            run(["chroot", str(rootfs), "/usr/bin/apt-get", "clean"], timeout=300)
+        finally:
+            failures: list[str] = []
+            for target in reversed(mounted):
+                result = run(["umount", str(target)], check=False, timeout=60)
+                if result.returncode != 0:
+                    failures.append(str(target))
+            shutil.rmtree(rootfs / "var" / "lib" / "apt" / "lists", ignore_errors=True)
+            if failures:
+                raise BuildError("failed to unmount chroot paths: " + ", ".join(failures))
 
 
 def write_runtime_files(rootfs: Path, webhook: str) -> None:
