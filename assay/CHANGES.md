@@ -4,6 +4,101 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [10.1.0] - 2026-10-31
+<!-- cmru: generated -->
+<!-- cmru: source-end=33123538c07316632b618c8e3587dbee881c65e5 -->
+
+### Added
+- feat(assay): retry unresolved R2 candidates serially (bb440b2df)
+- feat(assay): add PR0 candidate resource metrics (4680e0054)
+- feat(assay): require receipt for R3 import-break (76ac1371e)
+- feat(assay): add WP1 termination classifier (aa3adbcf4)
+
+### Fixed
+- fix(assay): keep retries inside candidate budget (8cfee5ad3)
+- fix(assay): keep R1 judged after a self-signaled R0 FAIL (ff9f8046c)
+- fix(assay): correct AP-4 R0 and R1 wiring (a6e1c8ef7)
+- fix(assay): complete WP3 receipt canary fixes (1c11a5b71)
+- fix(assay): attribute ancestor events with missing candidate counters (9f8595e47)
+- fix(assay): preserve replay errors and unknown counters (a636d5fe5)
+- fix(assay): apply AP-1 review corrections (d5cf8a82b)
+- fix(assay): align replay and state revalidation (4f37c0116)
+- fix(assay): refresh coverage exclusion line map (1e42dec6d)
+- fix(assay): align R2 termination and resource evidence (415b35f1d)
+- fix(assay): preserve canary and timeout semantics (065091320)
+- fix(assay): withhold kill credit from unobserved failures (da3fe963c)
+- fix(assay): wire R0 termination and telemetry (72acc0573)
+- fix(assay): correct real-Go qualification rationale (034d04269)
+- fix(assay): align R2 pilot checks with optional limits (62bf8805b)
+- fix(assay): preserve non-clean R2 terminal classifications (3f8c5cd00)
+- fix(assay): refresh coverage exclusion line inventory (051598e14)
+- fix(assay): keep unstable R2 resource windows as telemetry (6451f7fcd)
+- fix(assay): cover the WP1 classifier target (3524c7a98)
+- fix(assay): construct contention evidence in tests (b6137aedc)
+- fix: repair merged R2 gate failures (80e3d81fd)
+- fix: repair whole-source R2 start failures (5b042b60b)
+
+### Changed
+- Merge origin/main into assay-pr0-20261031 (9fe1b72d4)
+- Merge origin/main into assay-wp2-20261030 (a8511d0f4)
+- Merge origin/main into assay-pr0-20261031 (6b8f3a4dd)
+- Merge origin/main into assay-wp7-20261031 (3b979e252)
+- Merge origin/main into assay-wp2-20261030 (e57dfc9ca)
+- Merge remote-tracking branch 'origin/main' into assay-wp3-20261030 (40183f724)
+- Merge assay AP-1 r2fix (termination classifier, limit-window identity/value split, P2-c) (5f9a8af68)
+- Cover WP2 telemetry branches and evidence (702b8cc30)
+- Merge remote-tracking branch 'origin/main' into assay-r2fix-20261030 (f29d10373)
+- keep Assay Go preflight fixture portable (2bb8ed461)
+- Fix WP1 P3 documentation findings (391c71931)
+- assay: key no-measurement table projection by row name (d7e30981e)
+- assay: assert termination table's no-measurement projection (cfe56b189)
+- assay: reconcile WP1 termination contract and targets (e3395f81f)
+- Merge R2 start fixes: sorted R1 targets (PWMCP), failure summary ignores coverage banner, IOBench leak and maxfail; backlog id renumbered B171 -> B181 against the descendant-evidence entry (646d445ed)
+
+### Documentation
+- docs(assay): close release review notes (c204f1371)
+- docs: file assay B183-B185 backlog notes and cowtree owner-manifest known limitation (239403475)
+- docs(assay): consolidate WP5 and prepare 10.1.0 (05911789c)
+- docs(assay): record WP1 preflight acceptance (3518847f4)
+- docs(assay): record WP1 gate status (6d828e37a)
+- docs: record R2 triage gate evidence (d909cd3d5)
+
+### Testing
+- test(assay): cover retry budget and import-break exit (c62cef169)
+- test(assay): update B169 waiver window expectations (160d06484)
+- test(assay): capture AP-4 R0 and R1 regressions (9c5a31935)
+- test(assay): align standalone R3 lane expectations with receipt semantics (2a1f035b9)
+- test(assay): update python import-break statement expectation to the one-line form (360611e43)
+- test(assay): pin final AP-5 retry evidence (c6003baa3)
+- test(assay): assert retry resource windows (42a60be49)
+- test(assay): align fixtures with AP-5 retries (2cb4a73a1)
+- test(assay): script AP-5 retry receipts (572348121)
+- test(assay): update JS import-break shape assertion to the one-line ts-ignore form (46e8a9773)
+- test(assay): let the mutation test driver repeat its last step for the serial retry (36ccf72d7)
+- test(assay): specify PR0 candidate resource metrics (258a82365)
+- test(assay): cover AP-5 serial tail retries (37e9dd2b5)
+- test(assay): add AP-3 receipt canary regressions (43bc47d71)
+- test(assay): update stale missing-leaf-counter observer test to ancestor attribution (0e3356019)
+- test(assay): keep comparison error fixture uncomparable (e80cdce8a)
+- test(assay): align ancestor event expectations (f20891239)
+- test(assay): separate terminal projections from classifier rows (acaf0410e)
+- test(assay): pin AP-1 regressions before fixes (c3c00ea13)
+- test(assay): close AP-1 coverage gaps (b2e97da29)
+- test(assay): expect refusal for malformed witness (ea6562dea)
+- test(assay): add AP-1 classifier and resource alignment oracles (81b36baab)
+- test(assay): expect inconclusive for unattributed canary failures (9efe81b9d)
+- test(assay): cover unobserved state revalidation branches (3625c4de7)
+- test(assay): distinguish unobserved cached kills (3c678368a)
+- test(assay): specify receipt-backed R3 canary (f4c194b15)
+- test(assay): add WP2 R0/R1 oracles (66c663559)
+- test(assay): use immutable command result fixtures (cf6afce5d)
+- test(assay): close R2 telemetry coverage gaps (90317aa32)
+- test(assay): cover degradable R2 resource observations (a2cd5d48c)
+- test(assay): define WP1 termination decision table (3faa78781)
+
+<!-- cmru: pending release notes begin -->
 ### R0 and R1
 - On a failed R0 command, an external signal, direct resource-limit event, or
   required unavailable observation produces `ERROR/EXEC_FAILED` with
@@ -73,8 +168,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - A new Assay build re-executes resumed campaign state because the Assay
   version is part of the judge identity. A matching cached `crashed` record is
   reused on `--resume`; use `--resume --rejudge crashed` to execute it again.
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [10.0.1] - 2026-10-30
 <!-- cmru: generated -->
