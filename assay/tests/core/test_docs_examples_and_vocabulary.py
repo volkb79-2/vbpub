@@ -997,3 +997,21 @@ def test_provisional_self_qualification_is_documented_across_the_public_docs():
     assert expected_anchor in _design_guide_anchors()
     assert expected_anchor in _document_anchors(CONSUMERS)
     assert expected_anchor in _readme_design_guide_links()
+
+
+def test_native_r2_resume_and_progress_contract_is_documented_across_public_docs():
+    build_note = (
+        "A new Assay build re-executes resumed campaign state because the Assay "
+        "version is part of the judge identity."
+    )
+    for document in DOCS:
+        text = document.read_text(encoding="utf-8")
+        assert build_note in " ".join(text.split()), (
+            f"{document.name} omits the new-build resume behavior"
+        )
+        assert "--resume --rejudge crashed" in text, (
+            f"{document.name} omits the crashed-candidate recovery command"
+        )
+        assert "resource_limit_changes" in text, (
+            f"{document.name} omits the candidate progress field"
+        )

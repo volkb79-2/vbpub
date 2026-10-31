@@ -35,9 +35,7 @@ LimitSignatureEntry = tuple[
     str,
     int,
     bool,
-    int | None,
     bool,
-    int | None,
     bool,
     bool,
     bool,
@@ -45,11 +43,71 @@ LimitSignatureEntry = tuple[
     bool,
     bool,
 ]
+LimitValueEntry = tuple[int | None, int | None]
+
+_LIMIT_SIGNATURE_FIELDS = (
+    "path",
+    "mount_id",
+    "pids.max.present",
+    "memory.max.present",
+    "pids.events.present",
+    "memory.events.present",
+    "pids.events.local.present",
+    "memory.events.local.present",
+    "pids_localevents",
+    "memory_localevents",
+)
 
 _RESOURCE_OBSERVER_REQUEST_TIMEOUT_SECONDS = 5.0
 _RESOURCE_OBSERVER_PREFLIGHT_JOIN_GRACE_SECONDS = 1.0
 _RESOURCE_OBSERVER_RESTART_RETRY_SECONDS = 30.0
 _RESOURCE_OBSERVER_RETRY_INTERVAL_SECONDS = 0.2
+
+
+def _limit_signature_change_detail(
+    before: ResourceLimitCounters, after: ResourceLimitCounters
+) -> str:
+    changes: list[str] = []
+    for index, (old, new) in enumerate(
+        zip(before.limit_signature, after.limit_signature)
+    ):
+        changes.extend(
+            f"cgroup[{index}].{name} changed: {old_value} -> {new_value}"
+            for name, old_value, new_value in zip(_LIMIT_SIGNATURE_FIELDS, old, new)
+            if old_value != new_value
+        )
+    for index in range(len(after.limit_signature), len(before.limit_signature)):
+        old = before.limit_signature[index]
+        changes.append(
+            f"cgroup[{index}] removed: path={old[0]}, mount_id={old[1]}"
+        )
+    for index in range(len(before.limit_signature), len(after.limit_signature)):
+        new = after.limit_signature[index]
+        changes.append(
+            f"cgroup[{index}] added: path={new[0]}, mount_id={new[1]}"
+        )
+    return "; ".join(changes) or "signature changed without a field-level difference"
+
+
+def _limit_value_changes(
+    before: ResourceLimitCounters, after: ResourceLimitCounters
+) -> tuple[str, ...]:
+    return tuple(
+        f"cgroup[{index}].{name} changed: {_format_limit_value(old_value)} -> "
+        f"{_format_limit_value(new_value)}"
+        for index, (old, new) in enumerate(
+            zip(before.limit_values, after.limit_values, strict=True)
+        )
+        for name, old_value, new_value in (
+            ("pids.max", old[0], new[0]),
+            ("memory.max", old[1], new[1]),
+        )
+        if old_value != new_value
+    )
+
+
+def _format_limit_value(value: int | None) -> str:
+    return "max" if value is None else str(value)
 
 
 class ResourceLimitObservationError(RuntimeError):
@@ -83,11 +141,11 @@ class ResourceLimitCounters:
     memory_max: int
     memory_oom_kill: int
     memory_oom_group_kill: int
-    # This is an in-process pre/post binding, not verdict evidence. It makes a
-    # changed cgroup path, mount identity, limit/event interface availability,
-    # or configured limit during one candidate an infrastructure error instead
-    # of hiding a counter from the aggregate merely because it became unlimited.
+    # This is an in-process pre/post identity binding, not verdict evidence.
+    # Configured pids.max and memory.max values live separately below because
+    # changing a value does not invalidate monotonic event counters.
     limit_signature: tuple[LimitSignatureEntry, ...] = ()
+    limit_values: tuple[LimitValueEntry, ...] = ()
     # Internal per-cgroup snapshots used only to attribute events. Each row is
     # path, regular pids/memory events, then effective local pids/memory events.
     # They are never serialized into mutation verdicts.
@@ -115,29 +173,33 @@ class ResourceLimitCounters:
         for entry in self.limit_signature:
             if (
                 type(entry) is not tuple
-                or len(entry) != 12
+                or len(entry) != 10
                 or not isinstance(entry[0], str)
                 or type(entry[1]) is not int
                 or entry[1] <= 0
-                or type(entry[2]) is not bool
-                or (
-                    entry[3] is not None
-                    and (type(entry[3]) is not int or entry[3] < 0)
-                )
-                or type(entry[4]) is not bool
-                or (
-                    entry[5] is not None
-                    and (type(entry[5]) is not int or entry[5] < 0)
-                )
-                or type(entry[6]) is not bool
-                or type(entry[7]) is not bool
-                or any(type(value) is not bool for value in entry[8:12])
-                or (not entry[2] and entry[3] is not None)
-                or (not entry[4] and entry[5] is not None)
-                or (entry[2] and (not entry[6] or (not entry[8] and not entry[10])))
-                or (entry[4] and (not entry[7] or (not entry[9] and not entry[11])))
+                or any(type(value) is not bool for value in entry[2:])
+                or (entry[2] and (not entry[4] or (not entry[6] and not entry[8])))
+                or (entry[3] and (not entry[5] or (not entry[7] and not entry[9])))
             ):
                 raise ValueError("limit_signature entries are malformed")
+        if type(self.limit_values) is not tuple or len(self.limit_values) != len(
+            self.limit_signature
+        ):
+            raise ValueError("limit_values must match the limit_signature entries")
+        for identity, values in zip(
+            self.limit_signature, self.limit_values, strict=True
+        ):
+            if (
+                type(values) is not tuple
+                or len(values) != 2
+                or any(
+                    value is not None and (type(value) is not int or value < 0)
+                    for value in values
+                )
+                or (not identity[2] and values[0] is not None)
+                or (not identity[3] and values[1] is not None)
+            ):
+                raise ValueError("limit_values entries are malformed")
         if type(self.path_event_counters) is not tuple:
             raise ValueError("path_event_counters must be a tuple")
         seen_paths: set[str] = set()
@@ -220,21 +282,29 @@ class ResourceLimitEvidence:
     @classmethod
     def between(
         cls, before: ResourceLimitCounters, after: ResourceLimitCounters
-    ) -> ResourceLimitEvidence:
+    ) -> tuple[ResourceLimitEvidence, tuple[str, ...]]:
+        """Compare event counters across one stable cgroup identity.
+
+        Configured limit changes are returned separately as advisory details;
+        they do not invalidate the event-counter window.
+        """
         if before.limit_signature != after.limit_signature:
             raise ResourceLimitObservationError(
-                "cgroup paths, mount identities, controller files, or resource "
-                "limits changed during a candidate command"
+                "cgroup resource-limit observation changed during a candidate "
+                f"command: {_limit_signature_change_detail(before, after)}"
             )
         pids, memory_max, memory_oom, memory_oom_kill, memory_oom_group_kill = (
             _candidate_counter_deltas(before, after)
         )
-        return cls(
-            pids_events_max=pids,
-            memory_events_max=memory_max,
-            memory_events_oom=memory_oom,
-            memory_events_oom_kill=memory_oom_kill,
-            memory_events_oom_group_kill=memory_oom_group_kill,
+        return (
+            cls(
+                pids_events_max=pids,
+                memory_events_max=memory_max,
+                memory_events_oom=memory_oom,
+                memory_events_oom_kill=memory_oom_kill,
+                memory_events_oom_group_kill=memory_oom_group_kill,
+            ),
+            _limit_value_changes(before, after),
         )
 
     @classmethod
@@ -353,10 +423,14 @@ def _candidate_counter_deltas(
                 and ancestor_delta.delta > 0
                 and leaf_value == 0
             ):
-                raise ResourceLimitObservationError(
-                    "a shared ancestor resource event is not attributable to the "
-                    "candidate cgroup; mutation outcomes are withheld"
-                )
+                # The event may belong to another candidate sharing this
+                # ancestor, but it proves this command window overlapped a
+                # limit hit. Counter availability is fixed for the window, so
+                # an unavailable candidate counter does not change this
+                # conservative attribution.
+                leaf_delta = ancestor_delta
+                leaf_value = ancestor_delta.delta
+                break
         if leaf_delta is None:
             candidate_deltas.append(CounterDelta(before=0, after=0, delta=0))
         else:
@@ -851,6 +925,7 @@ def read_current_cgroup_counters(
     memory_local_samples: dict[int, dict[str, int]] = {}
     limits: list[tuple[bool, int | None, bool, int | None]] = []
     limit_signature: list[LimitSignatureEntry] = []
+    limit_values: list[LimitValueEntry] = []
     for directory in directories:
         pids_limit_present, pids_limit = _read_limit_file(
             directory / "pids.max", expected_mount_id=mount_id
@@ -933,7 +1008,8 @@ def read_current_cgroup_counters(
             (
                 str(directory),
                 mount_id,
-                *limits[index],
+                limits[index][0],
+                limits[index][2],
                 pids_events is not None,
                 memory_events is not None,
                 pids_events_local is not None,
@@ -942,6 +1018,7 @@ def read_current_cgroup_counters(
                 memory_localevents,
             )
         )
+        limit_values.append((limits[index][1], limits[index][3]))
 
     if not pids_samples:
         raise ResourceLimitObservationError(
@@ -982,6 +1059,7 @@ def read_current_cgroup_counters(
         memory_oom_kill=memory_oom_kill,
         memory_oom_group_kill=memory_oom_group_kill,
         limit_signature=tuple(limit_signature),
+        limit_values=tuple(limit_values),
         path_event_counters=path_event_counters,
     )
 
@@ -1149,6 +1227,7 @@ def _resource_counters_from_observer(
         raise ResourceLimitObservationError("resource observer cgroups must be a non-empty list")
 
     signatures: list[LimitSignatureEntry] = []
+    limit_values: list[LimitValueEntry] = []
     path_counters: list[
         tuple[
             str,
@@ -1218,13 +1297,21 @@ def _resource_counters_from_observer(
             required=frozenset({"max", "oom", "oom_kill", "oom_group_kill"}),
             controller="memory",
         )
-        signatures.append((
-            str(path_value), raw["mount_id"], pids_present, pids_limit,
-            memory_present, memory_limit,
-            pids_events is not None, memory_events is not None,
-            pids_events_local is not None, memory_events_local is not None,
-            pids_localevents, memory_localevents,
-        ))
+        signatures.append(
+            (
+                str(path_value),
+                raw["mount_id"],
+                pids_present,
+                memory_present,
+                pids_events is not None,
+                memory_events is not None,
+                pids_events_local is not None,
+                memory_events_local is not None,
+                pids_localevents,
+                memory_localevents,
+            )
+        )
+        limit_values.append((pids_limit, memory_limit))
         path_counters.append((
             str(path_value),
             None if pids_events is None else pids_events["max"],
@@ -1262,6 +1349,7 @@ def _resource_counters_from_observer(
         memory_oom_kill=memory_totals[2],
         memory_oom_group_kill=memory_totals[3],
         limit_signature=tuple(signatures),
+        limit_values=tuple(limit_values),
         path_event_counters=tuple(path_counters),
     )
 

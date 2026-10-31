@@ -1396,13 +1396,11 @@ def test_verify_refuses_every_non_current_schema_version_with_one_diagnostic(ver
     ]
 
 
-#: A-477: exactly one verdict schema is supported, so its bytes are frozen per
-#: version. An edit to `verdict.schema.json` without a VERDICT_SCHEMA_VERSION
-#: bump fails here; a bump fails with a KeyError until its digest is added.
-#: Carries forward the retired W9 gate phase's
-#: `test_shipped_schema_is_byte_identical_to_the_locked_v16_asset`.
+#: A-477: pin the exact current verdict schema bytes. Operator decision D2
+#: accepts optional native R2 resource telemetry in schema v16 as a recorded
+#: A-477 exception; version 17 remains reserved for WP8.
 _VERDICT_SCHEMA_SHA256 = {
-    16: "440f28e477a1fb9ecc0b94b793e94279f2d1a8f8d39b73e06b6b4e74a33a0fe6",
+    16: "15f7d159fc698dcdb55e32a8b4b02e87a5727a8ddc61af2bed128f8d7ecf604c",
 }
 
 

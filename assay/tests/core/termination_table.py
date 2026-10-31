@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from assay.errors import Outcome, ReasonCode
 from assay.process_tree import ProcessTreeEvidence
 from assay.resource_limits import CounterDelta, ResourceLimitEvidence
-from assay.termination import Termination
+from assay.termination import BLOCKING_JUDGEABLE, Termination
 
 
 def _tree(
@@ -46,6 +46,7 @@ _R2_BUCKET = {
     Termination.HUNG: "hung",
     Termination.NOT_RUN: "crashed",
     Termination.KILLED_EXTERNALLY: "crashed",
+    Termination.SELF_SIGNALED: "crashed",
     Termination.LEAKED: "crashed",
     Termination.LIMIT_EVENT: "crashed",
     Termination.UNOBSERVED: "crashed",
@@ -61,6 +62,10 @@ _R3_ATTEMPT = {
     Termination.HUNG: (Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE),
     Termination.NOT_RUN: (Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE),
     Termination.KILLED_EXTERNALLY: (
+        Outcome.INCONCLUSIVE,
+        ReasonCode.CANARY_INCONCLUSIVE,
+    ),
+    Termination.SELF_SIGNALED: (
         Outcome.INCONCLUSIVE,
         ReasonCode.CANARY_INCONCLUSIVE,
     ),
@@ -86,12 +91,27 @@ class TerminationCase:
     r3_attempt_reason_code: ReasonCode | None
 
 
+def r0_outcome(case: TerminationCase) -> tuple[Outcome, ReasonCode | None]:
+    """Project the shared termination row onto R0's blocking outcome."""
+    if case.termination is Termination.PASSED:
+        return Outcome.PASS, None
+    if case.termination in BLOCKING_JUDGEABLE:
+        return Outcome.FAIL, ReasonCode.COMMAND_FAILED
+    if case.termination in {Termination.TIMED_OUT, Termination.HUNG}:
+        return case.inputs["outcome"], case.inputs["reason_code"]
+    if case.termination is Termination.NOT_RUN and case.inputs["outcome"] is Outcome.NO_MEASUREMENT:
+        return Outcome.NO_MEASUREMENT, ReasonCode.TARGET_NOT_MEASURED
+    return Outcome.ERROR, ReasonCode.EXEC_FAILED
+
+
 def _case(
     name: str,
     inputs: dict[str, object],
     termination: Termination,
     r0_outcome: Outcome,
     r0_reason_code: ReasonCode | None,
+    *,
+    r2_bucket_override: str | None = None,
 ) -> TerminationCase:
     r3_outcome, r3_reason_code = _R3_ATTEMPT[termination]
     return TerminationCase(
@@ -100,7 +120,11 @@ def _case(
         termination=termination,
         r0_outcome=r0_outcome,
         r0_reason_code=r0_reason_code,
-        r2_bucket=_R2_BUCKET[termination],
+        r2_bucket=(
+            _R2_BUCKET[termination]
+            if r2_bucket_override is None
+            else r2_bucket_override
+        ),
         r3_attempt_outcome=r3_outcome,
         r3_attempt_reason_code=r3_reason_code,
     )
@@ -139,6 +163,17 @@ TERMINATION_CASES = (
             limits=_limits(),
         ),
         Termination.FAILED,
+        Outcome.FAIL,
+        ReasonCode.COMMAND_FAILED,
+    ),
+    _case(
+        "self-signaled",
+        _inputs(
+            outcome=Outcome.FAIL,
+            reason_code=ReasonCode.COMMAND_FAILED,
+            returncode=-signal.SIGSEGV,
+        ),
+        Termination.SELF_SIGNALED,
         Outcome.FAIL,
         ReasonCode.COMMAND_FAILED,
     ),
@@ -239,6 +274,18 @@ TERMINATION_CASES = (
 
 PRECEDENCE_CASES = (
     _case(
+        "pass-with-signaled-leader-is-crashed",
+        _inputs(
+            outcome=Outcome.PASS,
+            process_tree=_tree(leader_status="signaled"),
+            limits=_limits(),
+        ),
+        Termination.PASSED,
+        Outcome.PASS,
+        None,
+        r2_bucket_override="crashed",
+    ),
+    _case(
         "leak-beats-pass",
         _inputs(
             outcome=Outcome.PASS,
@@ -266,7 +313,9 @@ PRECEDENCE_CASES = (
             outcome=Outcome.BUDGET_EXCEEDED,
             reason_code=ReasonCode.LANE_TIMEOUT,
             returncode=None,
-            process_tree=_tree(outliving_descendants=1),
+            process_tree=_tree(
+                leader_status="timeout-killed", outliving_descendants=1
+            ),
         ),
         Termination.LEAKED,
         Outcome.ERROR,
@@ -285,23 +334,25 @@ PRECEDENCE_CASES = (
         ReasonCode.COMMAND_FAILED,
     ),
     _case(
-        "report-fail-beats-limit",
+        "limit-beats-report",
         _inputs(
             outcome=Outcome.FAIL,
             reason_code=ReasonCode.COMMAND_FAILED,
             returncode=1,
             decided_by_report=True,
             limits=LIMITS_HIT,
+            process_tree=_tree(),
         ),
-        Termination.FAILED,
-        Outcome.FAIL,
-        ReasonCode.COMMAND_FAILED,
+        Termination.LIMIT_EVENT,
+        Outcome.ERROR,
+        ReasonCode.EXEC_FAILED,
     ),
     _case(
         "pass-beats-limit",
         _inputs(
             outcome=Outcome.PASS,
             limits=LIMITS_HIT,
+            process_tree=_tree(),
         ),
         Termination.PASSED,
         Outcome.PASS,
@@ -313,6 +364,7 @@ PRECEDENCE_CASES = (
             outcome=Outcome.PASS,
             observation="unavailable",
             observation_required=True,
+            process_tree=_tree(),
         ),
         Termination.PASSED,
         Outcome.PASS,
@@ -323,19 +375,31 @@ PRECEDENCE_CASES = (
         _inputs(
             outcome=Outcome.PASS,
             returncode=-signal.SIGKILL,
+            process_tree=_tree(),
         ),
         Termination.PASSED,
         Outcome.PASS,
         None,
     ),
     _case(
-        "sigsegv-is-a-functional-failure",
+        "pass-with-nonterminal-leader-is-crashed",
+        _inputs(
+            outcome=Outcome.PASS,
+            process_tree=_tree(leader_status="timeout-killed"),
+        ),
+        Termination.PASSED,
+        Outcome.PASS,
+        None,
+        r2_bucket_override="crashed",
+    ),
+    _case(
+        "sigsegv-is-self-signaled",
         _inputs(
             outcome=Outcome.FAIL,
             reason_code=ReasonCode.COMMAND_FAILED,
             returncode=-signal.SIGSEGV,
         ),
-        Termination.FAILED,
+        Termination.SELF_SIGNALED,
         Outcome.FAIL,
         ReasonCode.COMMAND_FAILED,
     ),
@@ -358,7 +422,7 @@ PRECEDENCE_CASES = (
             returncode=-signal.SIGSEGV,
             process_tree=_tree(leader_status="signaled"),
         ),
-        Termination.FAILED,
+        Termination.SELF_SIGNALED,
         Outcome.FAIL,
         ReasonCode.COMMAND_FAILED,
     ),
@@ -434,14 +498,14 @@ PRECEDENCE_CASES = (
         ReasonCode.LANE_TIMEOUT,
     ),
     _case(
-        "signal-beats-limit",
+        "limit-beats-external-signal",
         _inputs(
             outcome=Outcome.FAIL,
             reason_code=ReasonCode.COMMAND_FAILED,
             returncode=-signal.SIGTERM,
             limits=_limits(hit=True),
         ),
-        Termination.KILLED_EXTERNALLY,
+        Termination.LIMIT_EVENT,
         Outcome.ERROR,
         ReasonCode.EXEC_FAILED,
     ),
@@ -469,6 +533,49 @@ PRECEDENCE_CASES = (
         Termination.FAILED,
         Outcome.FAIL,
         ReasonCode.COMMAND_FAILED,
+    ),
+    _case(
+        "unobserved-bare-nonzero-fail-is-not-a-kill",
+        _inputs(
+            outcome=Outcome.FAIL,
+            reason_code=ReasonCode.COMMAND_FAILED,
+            returncode=1,
+            process_tree=_tree(),
+            observation="unavailable",
+            observation_required=True,
+        ),
+        Termination.UNOBSERVED,
+        Outcome.ERROR,
+        ReasonCode.EXEC_FAILED,
+    ),
+    _case(
+        "clean-report-fail-beats-unobserved-window",
+        _inputs(
+            outcome=Outcome.FAIL,
+            reason_code=ReasonCode.COMMAND_FAILED,
+            returncode=1,
+            decided_by_report=True,
+            process_tree=_tree(),
+            observation="unavailable",
+            observation_required=True,
+        ),
+        Termination.FAILED,
+        Outcome.FAIL,
+        ReasonCode.COMMAND_FAILED,
+    ),
+    _case(
+        "unobserved-shell-wrapped-signal-is-not-a-kill",
+        _inputs(
+            outcome=Outcome.FAIL,
+            reason_code=ReasonCode.COMMAND_FAILED,
+            returncode=137,
+            process_tree=_tree(),
+            observation="unavailable",
+            observation_required=True,
+        ),
+        Termination.UNOBSERVED,
+        Outcome.ERROR,
+        ReasonCode.EXEC_FAILED,
     ),
 )
 

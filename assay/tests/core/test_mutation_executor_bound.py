@@ -1153,15 +1153,15 @@ def test_deadline_expiring_during_candidate_classification_emits_no_progress(
     one_target = (
         MutationTarget(path="pkg/flags.py", text=_TEXT3, lines=frozenset({2})),
     )
-    classify = mutation_module._classify_mutant_result
+    classify = mutation_module._bucket_for_run
     progress_events = []
 
-    def classify_then_expire(result):
-        bucket = classify(result)
+    def classify_then_expire(run, **kwargs):
+        bucket = classify(run, **kwargs)
         now[0] = 11.0
         return bucket
 
-    monkeypatch.setattr(mutation_module, "_classify_mutant_result", classify_then_expire)
+    monkeypatch.setattr(mutation_module, "_bucket_for_run", classify_then_expire)
     with pytest.raises(AssayError) as caught:
         _run_queue_case(
             tmp_path,
@@ -1187,18 +1187,18 @@ def test_deadline_expiring_during_final_bucket_does_not_return_completed_result(
     one_target = (
         MutationTarget(path="pkg/flags.py", text=_TEXT3, lines=frozenset({2})),
     )
-    classify = mutation_module._classify_mutant_result
+    classify = mutation_module._bucket_for_run
     calls = 0
 
-    def classify_then_expire(result):
+    def classify_then_expire(run, **kwargs):
         nonlocal calls
-        bucket = classify(result)
+        bucket = classify(run, **kwargs)
         calls += 1
         if calls == 2:
             now[0] = 11.0
         return bucket
 
-    monkeypatch.setattr(mutation_module, "_classify_mutant_result", classify_then_expire)
+    monkeypatch.setattr(mutation_module, "_bucket_for_run", classify_then_expire)
     with pytest.raises(AssayError) as caught:
         _run_queue_case(
             tmp_path,
@@ -1223,12 +1223,12 @@ def test_termination_during_final_bucket_does_not_return_completed_result(
     one_target = (
         MutationTarget(path="pkg/flags.py", text=_TEXT3, lines=frozenset({2})),
     )
-    classify = mutation_module._classify_mutant_result
+    classify = mutation_module._bucket_for_run
     calls = 0
 
-    def classify_then_request_termination(result):
+    def classify_then_request_termination(run, **kwargs):
         nonlocal calls
-        bucket = classify(result)
+        bucket = classify(run, **kwargs)
         calls += 1
         if calls == 2:
             termination[0] = True
@@ -1239,7 +1239,7 @@ def test_termination_during_final_bucket_does_not_return_completed_result(
     )
     monkeypatch.setattr(
         mutation_module,
-        "_classify_mutant_result",
+        "_bucket_for_run",
         classify_then_request_termination,
     )
     with pytest.raises(AssayError) as caught:

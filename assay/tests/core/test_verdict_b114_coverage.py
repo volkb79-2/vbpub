@@ -792,7 +792,6 @@ def test_witness_prefix_serializes_its_prior_and_current_node_binding():
         ({"candidate_id": "bad"}, "candidate_id must be a lowercase SHA-256"),
         ({"candidate_id": "f" * 64}, "candidate_id does not match"),
         ({"execution": object()}, "execution has the wrong type"),
-        ({"resource_limit_evidence": None}, "requires resource_limit_evidence"),
     ],
 )
 def test_native_outcome_requires_real_identity_and_bounded_execution(changes, message):
@@ -818,14 +817,17 @@ def test_ingested_outcome_cannot_smuggle_native_evidence_or_resource_counters():
         )
 
 
-def test_mutation_model_rejects_false_limit_hit_bucket_and_inventory():
-    mutation = _plain_verdict().claims[-1].mutation
+def test_mutation_model_rejects_limit_hit_kill_but_allows_survivor_telemetry():
+    mutation = _survivor_verdict().claims[-1].mutation
     killed = mutation.killed[0]
     counters = killed.resource_limit_evidence
     hit = replace(counters, pids_events_max=CounterDelta.between(1, 2))
-    with pytest.raises(ValueError, match="resource-limit-affected.*crashed"):
+    with pytest.raises(ValueError, match="cannot be classified as killed"):
         replace(mutation, killed=(replace(killed, resource_limit_evidence=hit),
                                   *mutation.killed[1:]))
+    survived = mutation.survived[0]
+    survived_hit = replace(survived, resource_limit_evidence=hit)
+    assert replace(mutation, survived=(survived_hit,)).survived == (survived_hit,)
     with pytest.raises(ValueError, match="candidate_ids entry must be a 64-character"):
         replace(mutation, candidate_ids=("bad",))
     with pytest.raises(ValueError, match="candidate_ids contains a duplicate"):
