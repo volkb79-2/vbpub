@@ -713,8 +713,9 @@ candidate-local event files, then the ancestors' local event files. A positive
 candidate `pids.events:max`, `memory.events:oom`, `oom_kill`, or
 `oom_group_kill` delta is evidence for the shared termination classifier; a
 clean PASS remains final, while a non-clean test failure with the event becomes
-infrastructure-affected. A complete failed-call report has the classifier's
-declared precedence over a later event. A `memory.events:max` delta remains
+infrastructure-affected. The observed event takes precedence over a
+report-backed FAIL, even when the current run has a clean failed-call witness.
+A `memory.events:max` delta remains
 telemetry because the kernel can satisfy the allocation through reclaim. The
 local sample also
 covers an increment between sequential reads of the regular and local files.
@@ -756,6 +757,15 @@ The candidate and ancestor-local comparison is the sole event classifier;
 there is no separate gate-wide `memory.events` OOM check around a candidate,
 because that aggregate can include an unrelated sibling's event.
 
+The cgroup path, mount identity, controller-file presence and localevents mode
+form the window identity. A change to that identity makes the window
+unobserved. Configured `pids.max` and `memory.max` values are compared
+separately: a value change does not invalidate monotonic event counters, so
+the candidate keeps its resource evidence and progress carries one advisory
+line plus the additive `resource_limit_changes` field. Counter attribution
+selects active event files independently of whether either configured limit is
+finite.
+
 For each started full candidate command, Assay tries to read the selected
 counters immediately before and after it. If the lane stops before a full
 command starts, that candidate remains `budget_exceeded` and may carry a
@@ -768,25 +778,27 @@ After the required pre-candidate capability probe succeeds, a missing endpoint
 or an uncomparable window is telemetry with status `unobserved`. Assay records
 the reason in the private mutation state and candidate progress stream, emits
 one advisory line, omits `resource_limit_evidence` from that candidate's v16
-verdict entry, and continues the campaign. A changed signature reports the
-specific cgroup index, path or mount, controller file, and before/after value
-so a later occurrence is diagnosable. The candidate is classified with
+verdict entry, and continues the campaign. An identity change reports the
+specific cgroup index, path or mount, controller file, or observation-mode
+field that changed. A configured limit-value change leaves the window
+observed; progress reports its old and new values in `resource_limit_changes`.
+The candidate is classified with
 `termination.classify()` and no limit-event evidence: a surviving PASS remains
 `survived`. A bare nonzero exit without resource evidence is `crashed`, because
 the missing window cannot rule out a limit-caused failure. The report exception
 is narrow: only a current-run pytest failed-call witness with session and
 process exit status 1, paired with a clean process-tree leader exit, counts as
 `killed` without resource evidence. This is the complete structured report
-precedence from §2; a shell-wrapped signal status such as 137 is not such a
-report. Process, timeout, and other infrastructure outcomes keep their
-classifier buckets. An observed failure-relevant event changes a candidate
-only where classifier precedence places it above the command result. A clean
-PASS remains final, while a non-clean command failure with a direct event is
-`crashed`. A positive `memory.events:max` delta alone stays telemetry.
+exception for an unobserved window, as §2 specifies; a shell-wrapped signal
+status such as 137 is not such a report. Process, timeout, and other
+infrastructure outcomes keep their classifier buckets. Any positive
+failure-relevant event makes a non-PASS candidate `crashed`, with or without a
+failed-call report. A clean PASS remains final. A positive
+`memory.events:max` delta alone stays telemetry.
 
-A positive event during witness-prefix replay still stops the lane with
-payload-free `ERROR/EXEC_FAILED` before retry, so that event cannot be hidden by
-a later command. The full hierarchy preflight remains fail-closed: an
+A positive event during witness-prefix replay discards the replay and falls
+back to the full command, which receives its own resource window. The full
+hierarchy preflight remains fail-closed: an
 unavailable local view or explicit observer after R0/R1 preserves those claims
 and marks only R2 as unmeasured before any candidate starts. Empty or
 unsupported candidate sets do not require observation, and inventory failures
@@ -799,7 +811,8 @@ does not detect per-process limits such as `RLIMIT_NPROC` or `RLIMIT_AS`.
 `assay verify` independently checks the evidence shape, subtraction, and
 bucket. An omitted candidate resource field is valid after preflight for a
 PASS, and for a `killed` result only when its current-run failed-call witness
-proves the normal test failure. Resume state carries an explicit unobserved
+proves the normal test failure. Any positive failure-relevant delta on a
+`killed` entry is rejected even when a witness is present. Resume state carries an explicit unobserved
 marker and reason; a cached bare nonzero FAIL without the witness is rejected
 and rerun as `crashed`. Records with no evidence form or with contradictory
 terminal evidence are also refused for reuse. In particular, an old `crashed`

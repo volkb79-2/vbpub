@@ -11,9 +11,12 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   credit to a bare failed exit when that window is unobserved: only a normal
   exit 1 with a current-run pytest failed-call witness can remain `killed`.
   PASS remains `survived`; unobserved bare nonzero failures and shell-wrapped
-  signal statuses such as 137 are `crashed`.
-  Detailed signature differences identify the changed cgroup field (B182).
-  The verdict schema stays v16.
+  signal statuses such as 137 are `crashed`. Any observed positive pids or
+  OOM-related delta makes a non-PASS candidate `crashed`, including a
+  report-backed failure. Limit-value changes preserve observation and are
+  reported in candidate progress; identity changes make the window unobserved.
+  A positive witness-prefix replay event falls back to a full command with a
+  fresh window (B182).
 - Sort declared whole-target paths when building R1 and native/ingested R2
   verdicts; avoid reporting pytest-cov's platform banner as the first failing
   test or treating R0 execution errors as measured test failures (B181).
@@ -23,6 +26,11 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   pressure telemetry, and observation availability in the internal command
   model. R0/R1/R3 verdict paths keep their 10.0.1 behavior in this WP1 step;
   classifier wiring follows in WP2–WP4 (B173).
+
+### Compatibility
+- Compatibility: v16 schema relaxation — optional native R2
+  `resource_limit_evidence` is accepted as operator decision D2's recorded
+  exception to A-477. No verdict key or schema version was added.
 
 <!-- cmru: release history -->
 

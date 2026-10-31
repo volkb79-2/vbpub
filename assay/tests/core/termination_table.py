@@ -301,7 +301,9 @@ PRECEDENCE_CASES = (
             outcome=Outcome.BUDGET_EXCEEDED,
             reason_code=ReasonCode.LANE_TIMEOUT,
             returncode=None,
-            process_tree=_tree(outliving_descendants=1),
+            process_tree=_tree(
+                leader_status="timeout-killed", outliving_descendants=1
+            ),
         ),
         Termination.LEAKED,
         Outcome.ERROR,

@@ -13447,8 +13447,8 @@ campaign worktrees untouched.
 
 ## B182 — R2 campaigns stop when candidate cgroup resource windows change or the observer disappears
 
-**Status: IMPLEMENTED in `assay-r2fix-20261030`; registered gate acceptance is
-part of this change.** The PWMCP log
+**Status: FIX ROUND 2 IMPLEMENTED in `assay-r2fix-20261030`; final registered
+gate acceptance is part of this change.** The PWMCP log
 `/tmp/run-gate/lanes/r2/47f333762a526841379559a959b0cfbc.log` and IOBench's
 `.assay/progress-r2.jsonl` retained only the generic comparison failure, not
 the before/after signatures, so the exact field in those historical windows
@@ -13460,25 +13460,31 @@ then promoted comparison failure or post-preflight observer loss to
 `ERROR/EXEC_FAILED`, stopping the campaign.
 
 **Contract:** Keep the full pre-candidate cgroup capability probe fail-closed.
-After that probe, a missing sample or uncomparable window is unobserved
-telemetry for that candidate: omit `resource_limit_evidence`, preserve the
-reason in state/progress, print one advisory line, and continue using
-`termination.classify()` without limit-event evidence. PASS remains survived.
-Without resource evidence, a FAIL is `killed` only when the current run has a
-pytest failed-call witness (session and process status 1) and the process-tree
-proof shows a clean leader exit; this is the complete-report precedence in the
-design. A bare nonzero exit, a signal, or a shell-wrapped status such as 137
-has no kill credit and is `crashed`. State revalidation and `assay verify`
-apply the same rule. With observed evidence, a complete report retains its
-classifier precedence over a failure-relevant event; other clean failures and
-limit events follow the shared classifier. A positive event during
-saved-witness replay remains lane-fatal. Keep verdict schema v16; v17 remains
-WP8.
+After that probe, a missing sample or identity change is unobserved telemetry
+for that candidate: omit `resource_limit_evidence`, preserve the reason in
+state/progress, print one advisory line, and continue using
+`termination.classify()` without limit-event evidence. Configured
+`pids.max`/`memory.max` value changes leave the window observed, preserve event
+evidence, print one advisory line, and add only the progress key
+`resource_limit_changes`. Event-counter attribution selects cgroups
+independently of limit finiteness. PASS remains survived. Without resource
+evidence, a FAIL is `killed` only when the current run has a pytest failed-call
+witness (session and process status 1) and the process-tree proof shows a clean
+leader exit. A bare nonzero exit, a signal, or a shell-wrapped status such as
+137 has no kill credit and is `crashed`. Any observed positive failure-relevant
+delta makes a non-PASS candidate `crashed`, whether or not the failed-call
+witness is present. State revalidation and `assay verify` apply the same rule.
+A positive event during saved-witness replay discards that optimization and
+falls back to the full command with a fresh resource window. Keep verdict
+schema v16; v17 remains WP8. Operator decision D2 accepts optional
+`resource_limit_evidence` in v16 as the recorded A-477 exception; CHANGES names
+that compatibility fact.
 
-**Acceptance:** Real comparison-error text names each changed cgroup field and
-its old/new value. Tests cover signature drift, observer loss, campaign
-continuation, PASS with a positive event, unobserved bare exit-1 and shell-137
-classification, report-backed kill credit, state revalidation, and verifier
-acceptance of omitted optional evidence only for PASS or a clean failed-call
-witness. Run the registered
+**Acceptance:** Real identity-comparison errors name the changed cgroup field;
+limit-value changes return their old/new values separately. Tests cover
+identity drift, limit-value changes, observer loss, campaign continuation,
+PASS with a positive event, unobserved bare exit-1 and shell-137
+classification, report-backed kill credit, state revalidation, positive replay
+fallback, and verifier rejection of a positive event on a witnessed kill.
+Run the registered
 `self-qualification-preflight` and `tester-unified` gates before push.

@@ -639,12 +639,16 @@ def test_resource_limit_value_delta_is_reported_separately():
         ),
         limit_values=((12, 4096),),
     )
-    after = replace(before, limit_values=((12, 8192),))
+    after = replace(before, pids_max=1, limit_values=((24, 8192),))
 
     evidence, changes = ResourceLimitEvidence.between(before, after)
 
-    assert evidence.limit_hit is False
-    assert changes == ("cgroup[0].memory.max changed: 4096 -> 8192",)
+    assert evidence.pids_events_max.delta == 1
+    assert evidence.limit_hit is True
+    assert changes == (
+        "cgroup[0].pids.max changed: 12 -> 24",
+        "cgroup[0].memory.max changed: 4096 -> 8192",
+    )
 
 
 def test_identity_change_is_unobserved():
@@ -1657,6 +1661,11 @@ def test_limit_value_change_keeps_window_observed(
         "cgroup[1].memory.max changed: 4096 -> 8192"
     ]
     assert "resource_limit_evidence" in candidate
+    state_record = json.loads(
+        next((tmp_path / "state").glob("*.json")).read_text(encoding="utf-8")
+    )
+    assert "resource_limit_changes" not in state_record
+    assert "resource_limit_changes" not in mutation.survived[0].to_dict()
     advisories = [
         line for line in capsys.readouterr().err.splitlines()
         if "limit values changed" in line

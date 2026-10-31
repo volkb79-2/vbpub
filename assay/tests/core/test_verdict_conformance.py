@@ -1400,7 +1400,7 @@ def test_verify_refuses_every_non_current_schema_version_with_one_diagnostic(ver
 #: accepts optional native R2 resource telemetry in schema v16 as a recorded
 #: A-477 exception; version 17 remains reserved for WP8.
 _VERDICT_SCHEMA_SHA256 = {
-    16: "90ede44619a92a77519344cfb45bd382db405299f42b7ebb9b4c13cab3be5f89",
+    16: "15f7d159fc698dcdb55e32a8b4b02e87a5727a8ddc61af2bed128f8d7ecf604c",
 }
 
 

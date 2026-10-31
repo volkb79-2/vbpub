@@ -1922,15 +1922,17 @@ class MutantOutcome:
     #: deltas observed around this native candidate's full command. Omitted
     #: when post-preflight telemetry could not be observed or compared; that
     #: candidate is still classified from its termination. A positive
-    #: failed-fork or OOM-related delta cannot accompany `killed`;
+    #: failed-fork or OOM-related delta always denies `killed` credit;
     #: `memory.events:max` remains telemetry. A positive
-    #: failed-fork or OOM-related delta during witness-prefix replay instead
-    #: stops the lane with payload-free `ERROR/EXEC_FAILED` before retry. A
-    #: `budget_exceeded` candidate whose full command did not start may carry
+    #: failed-fork or OOM-related delta during witness-prefix replay discards
+    #: that optimization and falls back to a full command with a fresh window.
+    #: A `budget_exceeded` candidate whose full command did not start may carry
     #: the shared zero-duration sweep-close sample. Replacement materialization
     #: or a witness-prefix replay may already have run; that sample does not
     #: describe the earlier work. Ingested outcomes have no per-candidate
     #: execution and therefore cannot carry this field.
+    #: Configured pids.max/memory.max value changes are advisory progress only
+    #: and are not serialized in this verdict evidence.
     resource_limit_evidence: ResourceLimitEvidence | None = None
     #: B162/schema v16: process-tree proof for each native executed candidate.
     process_tree_evidence: ProcessTreeEvidence | None = None

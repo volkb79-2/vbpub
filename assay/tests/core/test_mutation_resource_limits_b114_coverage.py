@@ -641,6 +641,8 @@ def test_evidence_model_refuses_untyped_delta():
     [
         ("/lane", 0, True, True, True, True, True, True, False, False),
         ("/lane", 31, True, True, False, True, True, True, False, False),
+        ("/lane", 31, True, 1, True, True, True, True, False, False),
+        ("/lane", 31, True, True, True, "yes", True, True, False, False),
         ("/lane", 31, True, True, True, True, False, True, False, False),
         ("/lane", 31, True, True, True, False, True, True, False, False),
     ],

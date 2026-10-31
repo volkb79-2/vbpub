@@ -372,10 +372,13 @@ runtime; it does not run candidates and may use a larger worker count:
 
 Assay also reads `pids.max` and `memory.max` along the visible path, checks
 that required counters exist for finite limits, and compares the cgroup path,
-controller availability, mount identity, and configured limits across the
-candidate window. If they change, that candidate's window is marked
-unobserved instead of deciding the candidate. The full hierarchy preflight
-still refuses before any candidate when required counters are unavailable.
+controller availability, mount identity, and localevents mode across the
+candidate window. A change to this identity makes the window unobserved.
+Configured `pids.max` and `memory.max` values are tracked separately: changing
+a value leaves the window observed and preserves its monotonic event evidence.
+Candidate progress reports changed values in `resource_limit_changes`, with
+one advisory line. The full hierarchy preflight still refuses before any
+candidate when required counters are unavailable.
 Assay requires read-only cgroup mounts and checks that the candidate cannot
 write `cgroup.procs` on itself or an ancestor. These checks are needed because
 an ancestor may impose a stricter effective limit than the container's own
@@ -387,7 +390,8 @@ These are event checks, not measurements of current or peak usage. A
 command continue; it does not invalidate the mutation result without an OOM
 event. Observed `pids.events:max` or OOM-related events are inputs to the shared
 termination classifier: a clean PASS remains `survived`, while a non-clean
-test failure accompanied by a failure-relevant event becomes `crashed`.
+test failure accompanied by a failure-relevant event becomes `crashed`, even
+when a current-run failed-call report is present.
 Timeout, hang, process-tree, and external-signal precedence follow the same
 classifier. The bounded pilots record `memory.events:max` under their
 configured envelope. B145 does not use `pids.current`, `memory.current`,
@@ -470,12 +474,12 @@ the v16 verdict, and continues the campaign. PASS remains `survived`. A FAIL
 without resource evidence counts as `killed` only when a current-run pytest
 failed-call witness records a normal exit status of 1 and process-tree evidence
 proves a clean leader exit; otherwise it is `crashed`, including a bare
-nonzero exit or a shell-wrapped signal status such as 137. This complete
-failed-call report follows the termination design's report precedence. A
-positive resource event during a clean PASS remains `survived`; observed
-failures follow the shared termination classifier. A positive delta during a
-saved-witness replay still stops the lane with payload-free `ERROR/EXEC_FAILED`
-before Assay can retry the candidate. Every visible
+nonzero exit or a shell-wrapped signal status such as 137. A positive
+failure-relevant resource delta always makes a non-PASS candidate `crashed`,
+even when a failed-call report is present. A positive resource event during a
+clean PASS remains `survived`; `memory.events:max` alone is telemetry. A
+positive delta during saved-witness replay discards that optimization and
+falls back to the full command with a new resource window. Every visible
 cgroup2 mount exposing the hierarchy must also be read-only. Assay checks the
 underlying `cgroup.procs` inode permissions on the candidate cgroup and all
 ancestors, since a read-only mount alone does not block
@@ -485,8 +489,9 @@ sampled cgroup path also refuses native R2. There is no Assay config switch for
 this. This protection observes cgroup v2 events; it does not observe
 per-process limits such as `RLIMIT_NPROC` or `RLIMIT_AS`, so consumers must not
 rely on it to distinguish failures caused by those limits. A candidate window
-whose visible cgroup path, controller availability, or configured limits
-change is marked unobserved, with its reason in progress and state.
+whose cgroup identity changes is marked unobserved, with its reason in
+progress and state. Configured limit-value changes preserve the window and
+appear in `resource_limit_changes`.
 `memory.events:max` remains telemetry at ancestors too and does not block the
 candidate by itself. A hierarchical-only ancestor change does not block the
 candidate. To inspect unobserved candidate windows after a run:
@@ -495,9 +500,15 @@ candidate. To inspect unobserved candidate windows after a run:
 jq -c 'select(.event == "candidate" and .resource_observation.status == "unobserved") | {candidate_id, resource_observation}' .assay/progress-r2.jsonl
 ```
 
-If the full preflight refuses or a positive witness-replay event stops the
-lane, fix the runner's cgroup visibility or process/memory limit pressure,
-then rerun. If the lane budget expires before a candidate's full command
+To inspect configured limit values that changed while the window remained
+observed:
+
+```bash
+jq -c 'select(.event == "candidate" and (.resource_limit_changes | length > 0)) | {candidate_id, resource_limit_changes}' .assay/progress-r2.jsonl
+```
+
+If the full preflight refuses, fix the runner's cgroup visibility or
+process/memory limit pressure, then rerun. If the lane budget expires before a candidate's full command
 starts, it stays `budget_exceeded`. Replacement
 materialization or a saved-witness replay may already have run. The zero-duration
 sample shared by `budget_exceeded` entries is taken after already-submitted work

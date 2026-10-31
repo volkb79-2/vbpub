@@ -5,18 +5,15 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-
 from assay.errors import Outcome
-from assay.mutation import _MutantRun, _bucket_for_run, _terminal_result_matches_bucket
-from assay.process_tree import ProcessTreeEvidence
-from assay.resource_limits import ResourceLimitEvidence
+from assay.mutation import _bucket_for_run, _MutantRun, _terminal_result_matches_bucket
 from assay.termination import Termination
 from assay.verdict import (
     MUTATION_BUCKETS,
+    MutantOutcome,
     Mutation,
     MutationExecution,
     MutationWitnessReceipt,
-    MutantOutcome,
     candidate_id_from_fields,
 )
 from assay.verify import (
@@ -24,7 +21,6 @@ from assay.verify import (
     _check_b162_process_tree_evidence,
 )
 from termination_table import ALL_CASES
-
 
 _WITNESS = {
     "node_id": "tests/test_subject.py::test_subject",

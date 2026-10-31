@@ -2264,11 +2264,7 @@ def _check_b145_resource_limit_evidence(
         positive_limit_delta = positive_limit_delta or (
             invalidates_candidate and delta > 0
         )
-    if (
-        positive_limit_delta
-        and bucket == "killed"
-        and not _has_clean_failed_call_report(entry)
-    ):
+    if positive_limit_delta and bucket == "killed":
         failures.append(
             f"native mutation.{bucket} entry has a positive failed-fork or OOM "
             "counter delta; it cannot be classified as a test kill"
