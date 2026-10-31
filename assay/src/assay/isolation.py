@@ -1158,10 +1158,8 @@ class SnapshotRepository:
                 f"directory in {commit}"
             )
 
-def _close_repository(repository: "SnapshotRepository | None") -> set[Path]:
+def _close_repository(repository: "SnapshotRepository") -> set[Path]:
     """Close *repository* and return the snapshot roots still live at closure."""
-    if repository is None:
-        return set()
     with repository._lock:
         live = set(repository._live)
         repository._live.clear()
