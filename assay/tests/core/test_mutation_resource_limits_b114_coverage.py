@@ -128,12 +128,13 @@ def test_hierarchical_sibling_delta_does_not_invalidate_candidate(cgroup_tree):
     assert evidence.limit_hit is False
 
 
-def test_parent_local_event_without_candidate_event_withholds_outcome(cgroup_tree):
+def test_parent_local_event_without_candidate_event_counts_as_limit_hit(cgroup_tree):
     before = _read(cgroup_tree)
     (cgroup_tree[1] / "pids.events.local").write_text("max 3\n", encoding="ascii")
 
-    with pytest.raises(ResourceLimitObservationError, match="shared ancestor resource event"):
-        _between(before, _read(cgroup_tree))
+    evidence = _between(before, _read(cgroup_tree))
+    assert evidence.limit_hit is True
+    assert evidence.pids_events_max.delta == 1
 
 
 def test_reader_binds_localevents_mode_and_requires_candidate_leaf(cgroup_tree):
@@ -166,7 +167,7 @@ def test_localevents_on_inactive_candidate_controller_does_not_block_child(cgrou
     assert counters.path_event_counters[0][6] is None
 
 
-def test_localevents_regular_counter_supplies_local_ancestor_evidence(cgroup_tree):
+def test_localevents_regular_counter_attributes_local_ancestor_event(cgroup_tree):
     root, parent, _candidate, _cgroup, mountinfo = cgroup_tree
     mountinfo.write_text(
         f"31 23 0:28 / {root} ro - cgroup2 cgroup rw,pids_localevents\n",
@@ -177,8 +178,9 @@ def test_localevents_regular_counter_supplies_local_ancestor_evidence(cgroup_tre
     before = _read(cgroup_tree)
     (parent / "pids.events").write_text("max 3\n", encoding="ascii")
 
-    with pytest.raises(ResourceLimitObservationError, match="shared ancestor resource event"):
-        _between(before, _read(cgroup_tree))
+    evidence = _between(before, _read(cgroup_tree))
+    assert evidence.limit_hit is True
+    assert evidence.pids_events_max.delta == 1
 
 
 @pytest.mark.parametrize("name", ["pids.events.local", "memory.events.local"])

@@ -202,14 +202,15 @@ def test_observer_error_document_must_be_structured():
         resource_limits._resource_counters_from_observer(["not", "an", "object"], 77)
 
 
-def test_ancestor_only_and_mixed_sibling_deltas_abort_without_evidence():
+def test_ancestor_local_and_candidate_deltas_count_as_limit_hits():
     zero = (0, 0, 0, 0, 0)
     before = _path_counters(zero, zero, zero, zero)
     ancestor_only = _path_counters(zero, (1, 0, 0, 0, 0), zero, zero)
     mixed = _path_counters((1, 0, 0, 0, 0), (2, 0, 0, 0, 0), zero, zero)
 
-    with pytest.raises(ResourceLimitObservationError, match="shared ancestor resource event"):
-        _between(before, ancestor_only)
+    ancestor_evidence = _between(before, ancestor_only)
+    assert ancestor_evidence.limit_hit
+    assert ancestor_evidence.pids_events_max.delta == 1
     mixed_evidence = _between(before, mixed)
     assert mixed_evidence.limit_hit
 

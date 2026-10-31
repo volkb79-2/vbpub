@@ -1006,7 +1006,7 @@ def test_native_r2_resume_and_progress_contract_is_documented_across_public_docs
     )
     for document in DOCS:
         text = document.read_text(encoding="utf-8")
-        assert build_note in text, (
+        assert build_note in " ".join(text.split()), (
             f"{document.name} omits the new-build resume behavior"
         )
         assert "--resume --rejudge crashed" in text, (
