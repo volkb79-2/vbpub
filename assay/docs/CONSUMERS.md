@@ -377,8 +377,10 @@ candidate window. A change to this identity makes the window unobserved.
 Configured `pids.max` and `memory.max` values are tracked separately: changing
 a value leaves the window observed and preserves its monotonic event evidence.
 Candidate progress reports changed values in `resource_limit_changes`, with
-one advisory line. The full hierarchy preflight still refuses before any
-candidate when required counters are unavailable.
+one advisory line. Every candidate progress event includes
+`resource_limit_changes`, an empty list when no configured values changed. The
+full hierarchy preflight still refuses before any candidate when required
+counters are unavailable.
 Assay requires read-only cgroup mounts and checks that the candidate cannot
 write `cgroup.procs` on itself or an ancestor. These checks are needed because
 an ancestor may impose a stricter effective limit than the container's own
@@ -391,7 +393,8 @@ command continue; it does not invalidate the mutation result without an OOM
 event. Observed `pids.events:max` or OOM-related events are inputs to the shared
 termination classifier: a clean PASS remains `survived`, while a non-clean
 test failure accompanied by a failure-relevant event becomes `crashed`, even
-when a current-run failed-call report is present.
+when a current-run failed-call report is present. A PASS with a signaled
+leader is `crashed`; only a PASS with an exited leader is `survived`.
 Timeout, hang, process-tree, and external-signal precedence follow the same
 classifier. The bounded pilots record `memory.events:max` under their
 configured envelope. B145 does not use `pids.current`, `memory.current`,
@@ -406,10 +409,15 @@ and its local event files, then reads each visible ancestor's
 increment between the sequential reads. A sibling's event can change a shared
 ancestor's hierarchical count without changing its local count, so a
 hierarchical-only ancestor delta does not invalidate an unaffected candidate.
-A positive local ancestor event without a candidate event is ambiguous, so
-Assay records that candidate's resource window as unobserved. A changed path,
-mount identity, controller file, or limit has the same disposition. The
-candidate remains classified from its termination and the campaign continues.
+A positive local failure-relevant event in an ancestor's own counter, with a
+zero candidate counter, counts conservatively as a limit hit for that
+candidate. The event may be shared with other work at the ancestor, but the
+candidate window overlapped a real limit event, so kill credit is withheld. A
+hierarchical-only ancestor delta does not count because it can originate in a
+sibling subtree. A changed path, mount identity, controller file, missing
+endpoint, or uncomparable window is recorded as unobserved telemetry; a
+configured limit-value change preserves observation. A PASS with a signaled
+leader is `crashed`, including when its command reports PASS.
 On mounts using `pids_localevents` or `memory_localevents`, the
 candidate's ordinary file for that active controller is local; Assay then
 requires the candidate cgroup to have no child cgroups. It binds the mount
@@ -470,16 +478,18 @@ preflight. After it succeeds, a later observer loss or unstable before/after
 window is candidate telemetry: Assay emits one advisory line, records
 `resource_observation.status = "unobserved"` and the reason in progress and
 resume state, omits that candidate's optional `resource_limit_evidence` from
-the v16 verdict, and continues the campaign. PASS remains `survived`. A FAIL
+the v16 verdict, and continues the campaign. A PASS with an exited leader
+remains `survived`; a PASS with a signaled leader is `crashed`. A FAIL
 without resource evidence counts as `killed` only when a current-run pytest
 failed-call witness records a normal exit status of 1 and process-tree evidence
 proves a clean leader exit; otherwise it is `crashed`, including a bare
 nonzero exit or a shell-wrapped signal status such as 137. A positive
 failure-relevant resource delta always makes a non-PASS candidate `crashed`,
 even when a failed-call report is present. A positive resource event during a
-clean PASS remains `survived`; `memory.events:max` alone is telemetry. A
-positive delta during saved-witness replay discards that optimization and
-falls back to the full command with a new resource window. Every visible
+clean PASS with an exited leader remains `survived`; `memory.events:max` alone
+is telemetry. A positive delta during a completed saved-witness replay
+discards that optimization and falls back to the full command with a new
+resource window; a replay execution error propagates. Every visible
 cgroup2 mount exposing the hierarchy must also be read-only. Assay checks the
 underlying `cgroup.procs` inode permissions on the candidate cgroup and all
 ancestors, since a read-only mount alone does not block
@@ -1604,6 +1614,18 @@ mutant was never re-executed against the assertion that kills it.
 * **assay's own version** — the code that classifies a result is part of the
   judge, so an assay upgrade re-executes rather than replaying verdicts
   produced by different classification logic.
+
+A new Assay build re-executes resumed campaign state because the Assay version
+is part of the judge identity. Until WP7, recover crashed candidates on a retry
+with:
+
+```sh
+assay run <lane> --resume --rejudge crashed \
+  --progress .assay/progress-<lane>.jsonl
+```
+
+Every native R2 candidate progress event includes `resource_limit_changes`,
+with an empty list when no configured limit values changed.
 
 Three consequences worth planning around:
 

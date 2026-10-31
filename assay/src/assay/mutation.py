@@ -2276,6 +2276,8 @@ def _terminal_result_matches_bucket(
         if observed_digest is None
         else bytes.fromhex(observed_digest)
     )
+    # Keep this projection minimal: a new CommandResult field read in
+    # _bucket_for_run will raise AttributeError until supplied here.
     run = _MutantRun(
         result=SimpleNamespace(
             outcome=outcome,
@@ -2313,7 +2315,7 @@ def _terminal_result_matches_bucket(
             return False
     if expected_bucket in {"killed", "survived", "equivalent"} and (
         process_tree_evidence is None
-        or process_tree_evidence.leader_status not in {"exited", "signaled"}
+        or process_tree_evidence.leader_status != "exited"
         or process_tree_evidence.outliving_descendants != 0
     ):
         return False
@@ -3084,7 +3086,7 @@ def _non_exited_judgeable_terminal(
 ) -> bool:
     return (
         process_tree is not None
-        and process_tree.leader_status not in {"exited", "signaled"}
+        and process_tree.leader_status != "exited"
         and terminal is _termination.Termination.PASSED
     )
 
@@ -4519,24 +4521,6 @@ def _execute_mutation_jobs(
                         resource_limits_before, resource_limits_after
                     )
                 if execution_error is not None:
-                    if (
-                        resource_limit_evidence is not None
-                        and resource_limit_evidence.limit_hit
-                    ):
-                        if target_node_id is not None:
-                            sys.stderr.write(
-                                "Assay advisory: cgroup resource-limit event during "
-                                "native R2 witness-prefix replay; falling back to "
-                                "the full command\n"
-                            )
-                            _close_attempt_reservations()
-                            return None
-                        raise AssayError(
-                            "cgroup resource-limit event during native R2 attempt; "
-                            "refusing to classify this candidate",
-                            outcome=Outcome.ERROR,
-                            reason_code=ReasonCode.EXEC_FAILED,
-                        ) from execution_error
                     raise execution_error
                 assert result is not None
                 if result.process_tree_evidence is None:

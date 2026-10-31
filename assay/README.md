@@ -273,21 +273,24 @@ assay exists to close that gap mechanically, not by policy:
   replacement materialization or a saved-witness replay may already have run,
   and that sample does not describe that earlier work. The shared WP1
   termination classifier uses observed candidate events alongside the command
-  result: a clean PASS remains `survived`, while a non-PASS result with a
-  failure-relevant event is `crashed`, even with a failed-call witness. Assay reads each ancestor's `.local` event files: a
-  positive local ancestor delta with no candidate event is ambiguous and
-  makes that candidate window unobserved; a hierarchical-only ancestor delta can come
-  from a sibling and does not invalidate the candidate.
+  result: a PASS with an exited leader remains `survived`, while a PASS with a
+  signaled leader is `crashed`; a non-PASS result with a failure-relevant event
+  is `crashed`, even with a failed-call witness. Assay reads each ancestor's
+  `.local` event files: a positive local pids or OOM delta with no candidate
+  event counts conservatively as a limit hit for that candidate. A
+  hierarchical-only ancestor delta can come from a sibling and does not count;
+  `memory.events:max` remains telemetry at every level.
   A post-preflight sample loss or an unstable window omits that candidate's
   resource evidence, records `resource_observation.status = "unobserved"` with
   its reason in progress and resume state, prints one advisory line, and lets
   the campaign continue. An unobserved window gives no kill credit to a bare
   nonzero exit, including a shell-wrapped signal status such as 137: that
   candidate is `crashed`. A normal exit 1 with a current-run failed-call
-  witness may be `killed` only when the resource window is unobserved; PASS
-  remains `survived`. Any observed positive failure event blocks `killed`
-  credit. A positive replay delta falls back to the full command with a new
-  resource window. Configured `pids.max` and `memory.max` value changes keep
+  witness may be `killed` only when the resource window is unobserved; a PASS
+  with an exited leader remains `survived`. Any observed positive failure
+  event blocks `killed` credit. Only a completed replay with a positive delta
+  falls back to the full command with a new resource window; replay errors
+  propagate. Configured `pids.max` and `memory.max` value changes keep
   the window observed and appear as `resource_limit_changes` in candidate
   progress.
   Assay requires
@@ -344,16 +347,18 @@ assay exists to close that gap mechanically, not by policy:
   report current availability. See the
   [design](docs/DESIGN-GUIDE.md#native-r2-cgroup-observation-b148a-494)
   and [consumer guidance](docs/CONSUMERS.md#native-r2-cgroup-observation-b148a-494).
-  If a sample is lost, becomes ambiguous, or the cgroup identity changes after
-  the pre-candidate check, Assay records that candidate's limits as unobserved
-  and classifies the candidate from its termination. Configured limit-value
-  changes preserve the window and appear in `resource_limit_changes`. PASS
-  remains `survived`; an unobserved FAIL needs a current-run failed-call
-  witness, while an observed positive failure event makes a non-PASS candidate
+  If a sample is lost or the cgroup identity changes after the pre-candidate
+  check, Assay records that candidate's limits as unobserved and classifies the
+  candidate from its termination. Configured limit-value changes preserve the
+  window and appear in `resource_limit_changes`. PASS with an exited leader
+  remains `survived`; PASS with a signaled leader is `crashed`. An unobserved
+  FAIL needs a current-run failed-call witness, while an observed positive
+  failure event makes a non-PASS candidate
   `crashed` even with a witness. The v16 verdict omits its optional
   `resource_limit_evidence` when the window is unobserved; progress and resume
-  state retain the reason. A positive witness-replay event falls back to the
-  full command with a new resource window.
+  state retain the reason. A positive event during a completed witness replay
+  falls back to the full command with a new resource window; replay errors
+  propagate.
   Run-Gate reports the pre-candidate
   `CGROUP_OBSERVATION_UNAVAILABLE` refusal as infrastructure `ERROR` when all
   other claims and evidence pass; it preserves any independent budget or
@@ -481,7 +486,7 @@ on this module" is `mode = "whole_target"` + `require_branch = true` +
 
 | Capability | Current support | Limit |
 |---|---|---|
-| Native R2 resource-event attribution | Assay checks candidate-local counters and relevant enforcing ancestors. When a private cgroup namespace hides ancestors, Run-Gate can opt an ephemeral native R2 lane into cgprofile's read-only observer contract 2. | If required observation is unavailable before candidate execution, R2 is `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE`. After preflight, a lost or identity-changed candidate window is recorded as unobserved telemetry and the campaign continues. Configured limit-value changes preserve the window and appear in candidate progress as `resource_limit_changes`. PASS remains `survived`; an unobserved FAIL needs a current-run failed-call witness to count as `killed`, while any observed positive failure event makes a non-PASS candidate `crashed`, even with a witness. A positive witness-replay event falls back to the full command. R0/R1 evidence remains valid. The observer does not expose the daemon control socket. |
+| Native R2 resource-event attribution | Assay checks candidate counters and each visible ancestor's own local counters. A positive ancestor-local pids or OOM event counts conservatively for the candidate when its own counter is zero; `memory.events:max` remains telemetry. When a private cgroup namespace hides ancestors, Run-Gate can opt an ephemeral native R2 lane into cgprofile's read-only observer contract 2. | If required observation is unavailable before candidate execution, R2 is `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE`. After preflight, a lost or identity-changed candidate window is recorded as unobserved telemetry and the campaign continues. Configured limit-value changes preserve the window. Every candidate progress event includes `resource_limit_changes` (empty when unchanged). PASS with an exited leader remains `survived`; a PASS with a signaled leader is `crashed`. An unobserved FAIL needs a current-run failed-call witness to count as `killed`, while any observed positive failure event makes a non-PASS candidate `crashed`, even with a witness. Only a completed witness replay with a positive event falls back to the full command; a replay error propagates. A new Assay build re-executes resumed campaign state because the Assay version is part of the judge identity. Until WP7, recover crashed candidates with `--resume --rejudge crashed`. R0/R1 evidence remains valid. The observer does not expose the daemon control socket. |
 | Per-test liveness and process measurements | Native R2 only, when the declared command activates a supported liveness monitor. Pytest test events and `tests_completed` are command-shape-specific; otherwise candidate progress remains available but those fields can be `null`. | These are execution features, not language-wide guarantees; see the [campaign lifecycle comparison](docs/DESIGN-GUIDE.md#native-and-ingested-r2-campaign-features) and [consumer guidance](docs/CONSUMERS.md#r2-for-javascript-by-ingesting-strykers-report-b046). |
 | Bounded native R2 pilots | B118 provides a plan-bound candidate selector and report checks. | A bounded pilot measures a selected subset; it does not qualify the full lane. |
 | Analysis-package R2 | B131 has a dedicated whole-target lane and bounded pilot path. | The analysis package is not qualified for a full R2 campaign until the full plan is completed and reviewed. |

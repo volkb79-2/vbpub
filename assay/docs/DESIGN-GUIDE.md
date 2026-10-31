@@ -720,12 +720,13 @@ telemetry because the kernel can satisfy the allocation through reclaim. The
 local sample also
 covers an increment between sequential reads of the regular and local files.
 A sibling can change a shared ancestor's hierarchical count without changing
-that ancestor's local count, so that
-hierarchical-only change does not invalidate an unaffected candidate. A
-positive local failure-relevant event at a shared ancestor with no candidate
-event makes that candidate window unobserved; it does not withhold the
-candidate outcome or stop the campaign. `memory.events:max` is telemetry,
-including at ancestors, so it does not create attribution ambiguity by itself.
+that ancestor's local count, so that hierarchical-only change does not
+invalidate an unaffected candidate. A positive local failure-relevant event at
+an ancestor with no candidate event counts conservatively as a limit hit for
+that candidate. This may include an event from other work sharing the ancestor,
+but the candidate window overlapped a real limit event, so Assay withholds kill
+credit. `memory.events:max` remains telemetry, including at ancestors, and is
+excluded from this attribution rule.
 The candidate's ordinary event file
 becomes local when `pids_localevents` or `memory_localevents` is enabled. For
 each active controller in that mode, Assay requires the candidate cgroup to
@@ -755,16 +756,23 @@ a local event file nor its verified localevents option is available, preflight
 withholds only R2 and preserves completed R0/R1 claims.
 The candidate and ancestor-local comparison is the sole event classifier;
 there is no separate gate-wide `memory.events` OOM check around a candidate,
-because that aggregate can include an unrelated sibling's event.
+because that aggregate can include an unrelated sibling's event. A positive
+event in an ancestor's own local counter with a zero candidate counter is
+conservatively counted against the candidate: it may be shared with other
+work, but the command window overlapped a real limit event. The exception is
+`memory.events:max`, which remains telemetry at every level. A hierarchical-
+only ancestor delta still does not count, because it can originate in a
+sibling subtree.
 
 The cgroup path, mount identity, controller-file presence and localevents mode
 form the window identity. A change to that identity makes the window
 unobserved. Configured `pids.max` and `memory.max` values are compared
 separately: a value change does not invalidate monotonic event counters, so
 the candidate keeps its resource evidence and progress carries one advisory
-line plus the additive `resource_limit_changes` field. Counter attribution
-selects active event files independently of whether either configured limit is
-finite.
+line plus the additive `resource_limit_changes` field. Every candidate
+progress event includes this field, as an empty list when no values changed.
+Counter attribution selects active event files independently of whether either
+configured limit is finite.
 
 For each started full candidate command, Assay tries to read the selected
 counters immediately before and after it. If the lane stops before a full
@@ -782,9 +790,9 @@ verdict entry, and continues the campaign. An identity change reports the
 specific cgroup index, path or mount, controller file, or observation-mode
 field that changed. A configured limit-value change leaves the window
 observed; progress reports its old and new values in `resource_limit_changes`.
-The candidate is classified with
-`termination.classify()` and no limit-event evidence: a surviving PASS remains
-`survived`. A bare nonzero exit without resource evidence is `crashed`, because
+The candidate is classified with `termination.classify()`: a PASS with an
+exited leader remains `survived`, while a PASS with a signaled leader is
+`crashed`. A bare nonzero exit without resource evidence is `crashed`, because
 the missing window cannot rule out a limit-caused failure. The report exception
 is narrow: only a current-run pytest failed-call witness with session and
 process exit status 1, paired with a clean process-tree leader exit, counts as
@@ -792,12 +800,13 @@ process exit status 1, paired with a clean process-tree leader exit, counts as
 exception for an unobserved window, as §2 specifies; a shell-wrapped signal
 status such as 137 is not such a report. Process, timeout, and other
 infrastructure outcomes keep their classifier buckets. Any positive
-failure-relevant event makes a non-PASS candidate `crashed`, with or without a
-failed-call report. A clean PASS remains final. A positive
-`memory.events:max` delta alone stays telemetry.
+failure-relevant event in the candidate or an ancestor's own local counter
+makes a non-PASS candidate `crashed`, with or without a failed-call report. A
+positive `memory.events:max` delta alone stays telemetry.
 
-A positive event during witness-prefix replay discards the replay and falls
-back to the full command, which receives its own resource window. The full
+A positive event during a completed witness-prefix replay discards the replay
+and falls back to the full command, which receives its own resource window. A
+replay execution error propagates and does not trigger this fallback. The full
 hierarchy preflight remains fail-closed: an
 unavailable local view or explicit observer after R0/R1 preserves those claims
 and marks only R2 as unmeasured before any candidate starts. Empty or
@@ -840,11 +849,15 @@ caller's explicitly configured observer-only socket. This lets test containers
 retain private cgroup namespaces without turning the full host hierarchy into
 their interface. Assay does not choose a Docker cgroup namespace or add a lane
 override for this fact. This no-measurement result is limited to the pre-
-candidate capability check. Once candidate execution begins, a missing sample,
-changed hierarchy, changed limit, or ambiguous shared-ancestor event is
-`ERROR/EXEC_FAILED`: the attempt has started, but Assay cannot safely attribute
-its resource window. A process-tree cleanup failure keeps precedence over a
-counter-read failure because an unclosed command window leaves cleanup unknown.
+candidate capability check. Once candidate execution begins, a missing sample
+or identity-changed window is unobserved telemetry; configured limit-value
+changes preserve the window. Positive ancestor-local failure events count as
+limit hits for the candidate when its own counter is zero, while
+`memory.events:max` remains telemetry. The campaign continues and classifies
+from the termination result and any observed event. A PASS with a signaled
+leader is `crashed`; a PASS with an exited leader remains `survived`. A
+process-tree cleanup failure keeps precedence over a counter-read failure
+because an unclosed command window leaves cleanup unknown.
 
 The top-level Assay rollup gives `NO_MEASUREMENT` precedence over a budget
 stop or product failure, so an R2 observer refusal can hide an independent R1
@@ -1600,6 +1613,10 @@ deliberately not folded into the candidate digest — a record's filename must
 stay the mutation's identity so one shared `--state-dir` keeps working — and
 both its absence (a pre-B088 record) and a mismatch are cache misses, checked
 *after* every tamper check so a routine test edit cannot mask corruption.
+A new Assay build re-executes resumed campaign state because the Assay version
+is part of the judge identity. Until WP7, recover crashed candidates with
+`assay run <lane> --resume --rejudge crashed`; every candidate progress event
+also carries `resource_limit_changes`, including an empty list when unchanged.
 The decoded JSON root is validated before required fields are read: only an
 object can be a state record. A present `null`, scalar, or array is an
 `ERROR`/`UNREADABLE_ARTIFACT`, preserving a structured refusal instead of

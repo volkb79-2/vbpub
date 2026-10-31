@@ -423,10 +423,12 @@ def _candidate_counter_deltas(
                 and ancestor_delta.delta > 0
                 and leaf_value == 0
             ):
-                raise ResourceLimitObservationError(
-                    "a shared ancestor resource event is not attributable to the "
-                    "candidate cgroup; mutation outcomes are withheld"
-                )
+                # The event may belong to another candidate sharing this
+                # ancestor, but it proves this command window overlapped a
+                # limit hit. Conservatively withhold kill credit.
+                leaf_delta = ancestor_delta
+                leaf_value = ancestor_delta.delta
+                break
         if leaf_delta is None:
             candidate_deltas.append(CounterDelta(before=0, after=0, delta=0))
         else:
