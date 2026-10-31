@@ -32,7 +32,10 @@ from conftest import FakeAdapter, GitRepo, fixed_clock, make_lane, make_r1_judge
 
 from assay import runner, safeio
 from assay.config import ResultReportConfig
+from assay.contention import ContentionObservation
 from assay.errors import Outcome, ReasonCode
+from assay.termination import Termination
+from termination_table import LIMITS_HIT
 
 MOMENT_A = datetime(2026, 9, 8, 10, 0, 0, tzinfo=timezone.utc)
 MOMENT_B = datetime(2026, 9, 8, 10, 0, 1, tzinfo=timezone.utc)
@@ -174,6 +177,51 @@ def test_verified_complete_report_naming_failures_fails_with_a_nonzero_exit(
     assert result.outcome is Outcome.FAIL
     assert result.reason_code is ReasonCode.COMMAND_FAILED
     assert result.returncode == 1
+
+
+def test_r0_report_fail_with_limit_event(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """A direct limit event remains the top-priority R0 cause even when the
+    structured report independently confirms test failures.
+    """
+    observation = ContentionObservation(
+        "clear", limits=LIMITS_HIT, reasons=("pids_events_max=1",)
+    )
+
+    class Window:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    window = Window()
+    window.observation = observation
+    monkeypatch.setenv("ASSAY_RESOURCE_OBSERVER_SOCKET", "/observer.sock")
+    monkeypatch.setattr(
+        runner.contention, "ContentionWindow", lambda **kwargs: window
+    )
+    lane = make_lane(
+        argv=shell_writing(
+            vitest_document(total=10, failed=1, success=False), exit_code=0
+        ),
+        result_report=VITEST_REPORT,
+    )
+
+    result = runner.execute_command(
+        lane,
+        cwd=tmp_path,
+        clock=fixed_clock(MOMENT_A, MOMENT_B),
+        classify_resource_contention=True,
+        classify_r0_termination=True,
+    )
+
+    assert result.decided_by_report is True
+    assert result.outcome is Outcome.ERROR
+    assert result.reason_code is ReasonCode.EXEC_FAILED
+    assert result.termination is Termination.LIMIT_EVENT
+    assert runner.build_r0_claim(result).detail == (
+        "resource-limit-event:pids_events_max=1"
+    )
 
 
 def test_a_report_claiming_success_while_naming_failures_still_fails(

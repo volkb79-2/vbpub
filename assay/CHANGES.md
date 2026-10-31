@@ -36,8 +36,22 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - Sort declared whole-target paths when building R1 and native/ingested R2
   verdicts; avoid reporting pytest-cov's platform banner as the first failing
   test or treating R0 execution errors as measured test failures (B181).
+- Classify an external signal, direct resource-limit event, or required
+  unavailable observation on a failed R0 command as `ERROR/EXEC_FAILED` with
+  deterministic detail; preserve self-inflicted fatal signals such as
+  `SIGSEGV` as `FAIL/COMMAND_FAILED`, and keep completed PASS results final.
+  `execute_command()` applies this R0 classification by default for library
+  callers.
+- Make R1 inherit a non-judgeable R0 termination as `ERROR/EXEC_FAILED`, so a
+  coverage artifact cannot mask an infrastructure failure in its baseline.
+  This also covers `NOT_RUN` when the R0 command never started, and the R1
+  claim carries deterministic detail naming the inherited R0 termination.
 
 ### Changed
+- Include observed resource windows in `command_finished` progress events and
+  print one advisory line when a failed R0 ran under measured PSI or CPU
+  throttling. Keep host measurements out of verdict fields, claim details
+  except for causal infrastructure evidence, and command output tails (B173).
 - Require a matching execution receipt for an R3 `import-break` result, and
   preserve a clean control `FAIL` in the attempt evidence. Lanes whose lint or
   type-check step rejects transformed source before tests execute should use
