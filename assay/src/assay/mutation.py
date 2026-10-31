@@ -3030,7 +3030,7 @@ def _has_clean_failure_report(
     *,
     outcome: Outcome,
     returncode: int | None,
-    witness: MutationWitnessReceipt | Mapping[str, Any] | None,
+    witness: MutationWitnessReceipt | None,
     process_tree: ProcessTreeEvidence | None,
 ) -> bool:
     """Whether a normal pytest failed-call receipt independently proves FAIL."""
@@ -3045,8 +3045,6 @@ def _has_clean_failure_report(
         return False
     if isinstance(witness, MutationWitnessReceipt):
         report = witness.to_dict()
-    elif isinstance(witness, Mapping):
-        report = witness
     else:
         return False
     return (

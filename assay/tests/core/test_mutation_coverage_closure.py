@@ -1604,31 +1604,50 @@ def test_witness_prefix_replay_without_a_clean_process_tree_falls_back(
     assert _only(result).execution.mode == "full"
 
 
+@pytest.mark.parametrize("replay_behavior", ["returns", "raises"])
 def test_witness_prefix_replay_limit_event_falls_back_to_full_command(
-    tmp_path, monkeypatch, capsys
+    tmp_path, monkeypatch, capsys, replay_behavior
 ):
     zero = _zero_counters()
     after_hit = mutation._dataclass_replace(zero, pids_max=1)
     _counters_sequence(monkeypatch, zero, after_hit, zero, zero)
     monkeypatch.setattr(mutation, "_read_candidate_resource_counters", _zero_counters)
+    closed = []
+    real_reserve = mutation._arm_artifact_reservation
+
+    def tracking_reservation(root, artifact, *, limit):
+        reservation = real_reserve(root, artifact, limit=limit)
+        original_close = reservation.close
+        reservation.close = lambda: (closed.append(artifact), original_close())[1]
+        return reservation
+
+    monkeypatch.setattr(mutation, "_arm_artifact_reservation", tracking_reservation)
     reuse = {mutation.candidate_id(_job()): ("a" * 64, "t::n")}
+    replay_step = (
+        RuntimeError("replay command failed")
+        if replay_behavior == "raises"
+        else _result(_PYTEST_PLAN)
+    )
 
     result, complete = _execute(
         tmp_path,
         monkeypatch,
         [
-            _result(_PYTEST_PLAN),
+            replay_step,
             _result(_PYTEST_PLAN, outcome="PASS", returncode=0, reason=None),
         ],
         plan=_PYTEST_PLAN,
         reuse_witnesses=reuse,
+        kill_signal_artifact="kill.txt",
     )
 
     assert complete
     assert _bucket_of(result) == "survived"
     assert _only(result).execution.mode == "full"
+    assert closed == ["kill.txt", "kill.txt"]
     assert any(
-        "witness-prefix replay" in line and "falling back to the full command" in line
+        "native R2 witness-prefix replay" in line
+        and "falling back to the full command" in line
         for line in capsys.readouterr().err.splitlines()
     )
 

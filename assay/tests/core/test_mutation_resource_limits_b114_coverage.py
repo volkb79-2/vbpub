@@ -654,3 +654,58 @@ def test_counter_signature_refuses_unbound_or_missing_limit_evidence(entry):
             memory_oom_kill=0, memory_oom_group_kill=0,
             limit_signature=(entry,),
         )
+
+
+_ACTIVE_LIMIT_SIGNATURE = (
+    "/lane", 31, True, True, True, True, True, True, False, False
+)
+_PIDS_ABSENT_LIMIT_SIGNATURE = (
+    "/lane", 31, False, True, False, True, False, True, False, False
+)
+
+
+@pytest.mark.parametrize(
+    ("signature", "values"),
+    [
+        pytest.param((), [], id="values-not-a-tuple"),
+        pytest.param((_ACTIVE_LIMIT_SIGNATURE,), (), id="missing-row"),
+        pytest.param((), ((12, 4096),), id="extra-row"),
+    ],
+)
+def test_counter_limit_values_refuse_shape_mismatch(signature, values):
+    with pytest.raises(
+        ValueError, match="limit_values must match the limit_signature entries"
+    ):
+        ResourceLimitCounters(
+            pids_max=0,
+            memory_oom=0,
+            memory_max=0,
+            memory_oom_kill=0,
+            memory_oom_group_kill=0,
+            limit_signature=signature,
+            limit_values=values,
+        )
+
+
+@pytest.mark.parametrize(
+    ("signature", "values"),
+    [
+        pytest.param((_ACTIVE_LIMIT_SIGNATURE,), ((12,),), id="wrong-value-pair-size"),
+        pytest.param((_ACTIVE_LIMIT_SIGNATURE,), ((True, 4096),), id="boolean-value"),
+        pytest.param((_ACTIVE_LIMIT_SIGNATURE,), ((-1, 4096),), id="negative-value"),
+        pytest.param(
+            (_PIDS_ABSENT_LIMIT_SIGNATURE,), ((12, 4096),), id="value-for-absent-limit"
+        ),
+    ],
+)
+def test_counter_limit_values_refuse_malformed_entries(signature, values):
+    with pytest.raises(ValueError, match="limit_values entries are malformed"):
+        ResourceLimitCounters(
+            pids_max=0,
+            memory_oom=0,
+            memory_max=0,
+            memory_oom_kill=0,
+            memory_oom_group_kill=0,
+            limit_signature=signature,
+            limit_values=values,
+        )
