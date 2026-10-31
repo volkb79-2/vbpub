@@ -36383,6 +36383,12 @@ class TestCowtreeAndIoSyncResources:
             run_gate.container_mount_flags(
                 tmp_path, None, {"mode": "ephemeral"})
 
+    @pytest.mark.parametrize("value", [b"/bytes/path", ""])
+    def test_mount_path_must_be_non_empty_text(self, value):
+        with pytest.raises(run_gate.GateError,
+                           match="label must be a non-empty filesystem path"):
+            run_gate.validate_docker_mount_path(value, "label")
+
     def test_dual_mount_alias_namespace_is_validated_once(
             self, tmp_path, monkeypatch):
         repo = tmp_path / "repo"
