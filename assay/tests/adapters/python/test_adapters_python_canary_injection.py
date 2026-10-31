@@ -21,10 +21,9 @@ from assay.adapters.python import PythonAdapter
 ADAPTER = PythonAdapter()
 NONCE = "0123456789abcdef0123456789abcdef"
 RECEIPT_STATEMENT = (
-    '_assay_canary_receipt = __import__("os").environ.get("ASSAY_CANARY_RECEIPT")\n'
-    "if _assay_canary_receipt:\n"
-    "    __import__(\"pathlib\").Path(_assay_canary_receipt).write_text("
-    '"0123456789abcdef0123456789abcdef", encoding="ascii")\n'
+    '_assay_canary_receipt = __import__("os").environ.get("ASSAY_CANARY_RECEIPT"); '
+    '_assay_canary_receipt and __import__("pathlib").Path(_assay_canary_receipt)'
+    '.write_text("0123456789abcdef0123456789abcdef", encoding="ascii"); '
     'raise AssertionError("assay-canary-import-break")\n'
 )
 
