@@ -520,6 +520,8 @@ def _read_tail(
 class ProcessTreeProcessRunner:
     """ProcessRunner-compatible command isolation for native R2 calls."""
 
+    is_process_tree_runner = True
+
     def __init__(
         self,
         *,

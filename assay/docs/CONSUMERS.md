@@ -116,12 +116,16 @@ arithmetic is unchanged for the same complete report, and its claim uses the
 R0 command's resource window. R2 keeps per-candidate resource events and its
 pressure-adjusted liveness clock.
 Import-break canaries require the transformed command to exit normally with a
-nonzero status and the expected `COMMAND_FAILED` reason; signal deaths and
-report-derived `COMMAND_FAILED` results with exit status zero are
-`INCONCLUSIVE`. Assay does not inspect output for a separate cause proof.
-Timeouts, execution errors and missing R3 results remain
-`INCONCLUSIVE`. Observer sampling follows the lane's resolved environment, so
-the tester gate's ambient socket cannot change a nested lane's result. The five
+nonzero status, the expected `COMMAND_FAILED` reason, and a matching receipt
+written by the injected statement. Signal deaths, report-derived failures with
+exit status zero, and failures before the statement executes are
+`INCONCLUSIVE`. A lane that lints or type-checks before tests should use
+`uncovered-line` when R1 is declared. Assay does not inspect output for cause
+attribution. Timeouts, execution errors and missing R3 results remain
+`INCONCLUSIVE`. See the
+[receipt rationale](DESIGN-GUIDE.md#r3-import-break-receipt-attribution).
+Observer sampling follows the lane's resolved environment, so the tester
+gate's ambient socket cannot change a nested lane's result. The five
 registered lanes share a Run-Gate lock and a Git-common-directory lock; no
 host-wide quiet window is required. See
 [host load and verdicts](DESIGN-GUIDE.md#host-load-and-verdicts).
@@ -2311,10 +2315,14 @@ point at `lcov.info`).
 
 R3 checks that the lane's command rejects a deliberately transformed target. Use
 `import-break` when the test suite imports the target file; it must make the
-command fail with `COMMAND_FAILED`. Use `uncovered-line` when the lane also
-declares R1 coverage; the appended function body must make R1 fail with
-`UNCOVERED_LINES`. Choose a tracked source file that the lane's tests import;
-do not point the canary at a test file.
+command fail with `COMMAND_FAILED` and execute the injected statement so it can
+write its per-attempt receipt. If a lint or type-check step rejects the
+transformed source before tests import it, the attempt is `INCONCLUSIVE`; use
+`uncovered-line` when the lane also declares R1 coverage. Its appended
+function body must make R1 fail with `UNCOVERED_LINES`. Choose a tracked source
+file that the lane's tests import; do not point the canary at a test file. See
+the
+[receipt rationale](DESIGN-GUIDE.md#r3-import-break-receipt-attribution).
 
 This complete schema-v2 lane uses the existing Vitest installation in the
 clean invoking checkout through `link_paths`. Keep `coverage.clean = false`

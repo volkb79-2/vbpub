@@ -127,6 +127,7 @@ def test_import_break_control_passes_and_the_real_transform_fails_command_failed
     assert result.attempts[0].transformed_outcome is Outcome.FAIL
     assert result.attempts[0].expected_reason_code is ReasonCode.COMMAND_FAILED
     assert result.attempts[0].observed_reason_code is ReasonCode.COMMAND_FAILED
+    assert "receipt matched" in result.attempts[0].description
 
     claim = canary.build_canary_claim(result)
     assert claim.status is Outcome.PASS
@@ -226,21 +227,20 @@ def test_an_r0_only_lane_never_catches_the_uncovered_line_transform_and_survives
     assert claim.reason_code is ReasonCode.CANARY_SURVIVED
 
 
-# --- O1/O3: a transformed run that fails for the WRONG reason survives --------
+# --- O1/O3: a transformed run that fails for the WRONG reason is inconclusive ---
 
 
 class _MislabeledAdapter(PythonAdapter):
     """A deliberately mislabeled adapter: its ``inject_import_break`` does
     not actually break the import at all -- it performs the UNCOVERED-LINE
-    transform instead. Proves :func:`assay.canary.judge_canary` checks the
-    SPECIFIC observed reason against the SPECIFIC expected one, rather than
-    accepting any real FAIL as success (O1's own negative)."""
+    transform instead. The transformed command fails for R1's reason and does
+    not write an import-break receipt, so the producer must not claim a catch."""
 
-    def inject_import_break(self, text: str) -> tuple[str, str]:
+    def inject_import_break(self, text: str, *, nonce: str) -> tuple[str, str]:
         return self.inject_uncovered_line(text)
 
 
-def test_a_mechanism_that_fails_for_the_wrong_reason_survives(git_repo: GitRepo):
+def test_an_import_break_failure_without_its_receipt_is_inconclusive(git_repo: GitRepo):
     base_commit = _materialize_control(git_repo)
     lane = _lane(git_repo.path, ("R0", "R1"))
 
@@ -257,13 +257,13 @@ def test_a_mechanism_that_fails_for_the_wrong_reason_survives(git_repo: GitRepo)
     assert result.attempts[0].control_outcome is Outcome.PASS
     # The mislabeled transform never actually breaks R0 -- it is caught by
     # R1 instead, for a DIFFERENT reason than the mechanism claims.
-    assert result.attempts[0].transformed_outcome is Outcome.FAIL
+    assert result.attempts[0].transformed_outcome is Outcome.INCONCLUSIVE
     assert result.attempts[0].expected_reason_code is ReasonCode.COMMAND_FAILED
-    assert result.attempts[0].observed_reason_code is ReasonCode.UNCOVERED_LINES
+    assert result.attempts[0].observed_reason_code is ReasonCode.CANARY_INCONCLUSIVE
 
     claim = canary.build_canary_claim(result)
-    assert claim.status is Outcome.FAIL
-    assert claim.reason_code is ReasonCode.CANARY_SURVIVED
+    assert claim.status is Outcome.INCONCLUSIVE
+    assert claim.reason_code is ReasonCode.CANARY_INCONCLUSIVE
 
 
 # --- O1's negative: a broken baseline is caught, not silently passed ---------
@@ -294,6 +294,8 @@ def test_a_broken_control_renders_inconclusive_not_a_silent_pass(git_repo: GitRe
         mechanism=canary.MECHANISM_UNCOVERED_LINE,
     )
 
+    # The attempt retains the raw judgeable control result, while the claim
+    # remains inconclusive because its baseline is not known-good.
     assert result.attempts[0].control_outcome is Outcome.FAIL
 
     claim = canary.build_canary_claim(result)

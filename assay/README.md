@@ -479,7 +479,7 @@ on this module" is `mode = "whole_target"` + `require_branch = true` +
 |---|---|---|---|---|---|
 | *(any)* | ✅ language-agnostic | — | — | — | — |
 | **Python** | ✅ | ✅ registered, both scope modes | ✅ **available** — real `coverage.py` branch arcs | ✅ registered, native; Assay owns candidate generation, execution, resumable state, survivor rejudge, one serial tail retry for current-run `crashed`, per-candidate `budget_exceeded` and `hung` results, progress and candidate-local resource-event checks | ✅ registered |
-| **JavaScript/TypeScript** | ✅ | ✅ registered, both scope modes | ✅ **available** — real Istanbul/nyc branch arcs (declare `producer = "istanbul"`; `@vitest/coverage-v8`/`c8` report ranges, not per-arm arcs, and stay `"unavailable"` without it) | ✅ registered, **ingested path only** — an external producer such as Stryker owns candidate execution/retry; Assay scores the completed report, with no Assay candidate-state resume/rejudge or per-candidate resource-event checks | ✅ **registered and locally exercised** — R3 runs import-break and uncovered-line canaries (B087); both dstdns canaries were qualified under Assay 9.0.0/schema v15, with retained verdicts and verifier transcripts for that release |
+| **JavaScript/TypeScript** | ✅ | ✅ registered, both scope modes | ✅ **available** — real Istanbul/nyc branch arcs (declare `producer = "istanbul"`; `@vitest/coverage-v8`/`c8` report ranges, not per-arm arcs, and stay `"unavailable"` without it) | ✅ registered, **ingested path only** — an external producer such as Stryker owns candidate execution/retry; Assay scores the completed report, with no Assay candidate-state resume/rejudge or per-candidate resource-event checks | ✅ **registered and locally exercised** — R3 runs import-break and uncovered-line canaries (B087); import-break requires a matching execution receipt, so lanes that type-check or lint before tests should use uncovered-line; see the [receipt rationale](docs/DESIGN-GUIDE.md#r3-import-break-receipt-attribution). Both dstdns canaries were qualified under Assay 9.0.0/schema v15, with retained verdicts and verifier transcripts for that release |
 | **Go** | ✅ | ✅ registered, both scope modes — needs a real `go` toolchain on the judge (`external_tools = ("go",)`); statement positions are re-derived from source, never trusted from the profile alone (A-217) | ❌ **structurally impossible** — `go-cover`'s own format has no branch concept; no engineering investment inside assay changes this without Go's own coverage instrumentation gaining one | ❌ **not implemented** — `generate_mutation_sites` is unconditionally `UNSUPPORTED`; other Go-ecosystem tools (e.g. `go-mutesting`) prove this is possible in principle, assay just hasn't built it | ❌ not registered |
 | **SQL/DDL** | ✅ | ❌ **not registered** — SQL's only rigor entry is R2 | — (moot) | ✅ registered, native; uses the same Assay candidate state, resume/rejudge, one serial tail retry for current-run `crashed`, per-candidate `budget_exceeded` and `hung` results, progress and resource-event path as Python | ❌ not registered |
 
@@ -777,8 +777,12 @@ Why the oracle is a subprocess rather than a Python rule:
 R1 measures changed-line coverage over `.js`, `.jsx`, `.ts` and `.tsx`; R2
 judges a Stryker report produced by the lane's own command (B046); R3
 checks import-break and uncovered-line canaries (B087). Import-break expects a
-clean `COMMAND_FAILED`; uncovered-line checks R1's `UNCOVERED_LINES`. Assay
-does not generate native JavaScript mutants. One language name covers all four:
+clean `COMMAND_FAILED` plus a matching execution receipt; uncovered-line checks
+R1's `UNCOVERED_LINES`. A lane that type-checks or lints before tests should
+use `uncovered-line` when it declares R1. See the
+[receipt rationale](docs/DESIGN-GUIDE.md#r3-import-break-receipt-attribution).
+Assay does not generate native JavaScript mutants. One language name covers all
+four:
 TypeScript is JavaScript's own superset, JSX/TSX are syntax extensions of the
 two, and every coverage tool in the ecosystem measures them into one
 undifferentiated artifact, so splitting them would force a lane touching one
@@ -1549,12 +1553,13 @@ you're changing assay itself:
   R2 keeps its per-candidate event windows and pressure-adjusted liveness
   clock.
   Import-break canaries require the transformed command to exit normally with
-  a nonzero status and the expected `COMMAND_FAILED` reason; a signal death or
-  report-derived `COMMAND_FAILED` with exit status zero is `INCONCLUSIVE`.
-  Assay does not inspect output for a separate cause proof. Timeouts, execution
-  errors and missing results remain
-  `INCONCLUSIVE`. Observer sampling is
-  lane-scoped: Assay uses the socket only when it appears in the lane's
+  a nonzero status, the expected `COMMAND_FAILED` reason, and a receipt written
+  by the injected statement. A signal death, report-derived failure with exit
+  status zero, or static check that fails before the statement runs is
+  `INCONCLUSIVE`; use `uncovered-line` for lanes that lint or type-check before
+  tests. Assay does not inspect output for cause attribution. Timeouts,
+  execution errors and missing results remain `INCONCLUSIVE`. Observer
+  sampling is lane-scoped: Assay uses the socket only when it appears in the lane's
   resolved environment, so a parent gate's ambient socket cannot change a
   nested lane's verdict. See [host load and verdicts](docs/DESIGN-GUIDE.md#host-load-and-verdicts).
   `ASSAY_GATE_ALLOW_SHARED_HOST=1` is a legacy no-op;
