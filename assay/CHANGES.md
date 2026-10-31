@@ -35,7 +35,6 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   process-tree write bytes, nested CPU and peak RSS values, and the Assay
   judge's resident memory sample. Missing procfs I/O remains unavailable
   telemetry; verdicts and candidate classification are unchanged (AP-6).
-
 - Require a matching execution receipt for an R3 `import-break` result, and
   preserve a clean control `FAIL` in the attempt evidence. Lanes whose lint or
   type-check step rejects transformed source before tests execute should use
