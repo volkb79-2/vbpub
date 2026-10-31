@@ -2178,9 +2178,20 @@ def _terminal_result_matches_bucket(
     ):
         raise ValueError("PASS terminal_result requires a null reason and integer returncode")
     if outcome is Outcome.FAIL and (
-        reason is not ReasonCode.COMMAND_FAILED or type(returncode) is not int
+        reason is not ReasonCode.COMMAND_FAILED
+        or (
+            type(returncode) is not int
+            and not (
+                returncode is None
+                and process_tree_evidence is not None
+                and process_tree_evidence.leader_status == "signaled"
+            )
+        )
     ):
-        raise ValueError("FAIL terminal_result requires COMMAND_FAILED and integer returncode")
+        raise ValueError(
+            "FAIL terminal_result requires COMMAND_FAILED and integer returncode, "
+            "or a signaled process-tree leader with no returncode"
+        )
     if outcome is Outcome.ERROR and returncode is not None:
         raise ValueError("ERROR terminal_result requires a null returncode")
     if outcome is Outcome.BUDGET_EXCEEDED and (
@@ -2302,7 +2313,7 @@ def _terminal_result_matches_bucket(
             return False
     if expected_bucket in {"killed", "survived", "equivalent"} and (
         process_tree_evidence is None
-        or process_tree_evidence.leader_status != "exited"
+        or process_tree_evidence.leader_status not in {"exited", "signaled"}
         or process_tree_evidence.outliving_descendants != 0
     ):
         return False
@@ -2456,6 +2467,12 @@ def _load_validated_state_record(
             f"{payload['outcome_bucket']!r}"
         )
     try:
+        _execution_from_state_record(payload)
+    except (TypeError, ValueError) as exc:
+        raise MutationStateError(
+            f"mutation-state record {identity} has invalid execution provenance: {exc}"
+        ) from exc
+    try:
         terminal_matches_bucket = _terminal_result_matches_bucket(
             payload,
             equivalence_artifact=equivalence_artifact,
@@ -2496,12 +2513,6 @@ def _load_validated_state_record(
             raise MutationStateError(
                 f"mutation-state record {identity} has stale mutated_file_sha256"
             )
-    try:
-        _execution_from_state_record(payload)
-    except (TypeError, ValueError) as exc:
-        raise MutationStateError(
-            f"mutation-state record {identity} has invalid execution provenance: {exc}"
-        ) from exc
     if "evidence" in payload and payload["evidence"] is not None:
         raw_evidence = payload["evidence"]
         if not isinstance(raw_evidence, Mapping):

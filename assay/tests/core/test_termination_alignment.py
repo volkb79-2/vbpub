@@ -53,7 +53,14 @@ def _run(case) -> _MutantRun:
 
 
 def _payload(case, bucket: str) -> dict:
-    witness = _WITNESS if case.inputs["decided_by_report"] else None
+    witness = (
+        _WITNESS
+        if bucket == "killed" and case.inputs["decided_by_report"]
+        else None
+    )
+    execution: dict[str, object] = {"mode": "full"}
+    if witness is not None:
+        execution["witness"] = witness
     return {
         "terminal_result": {
             "outcome": case.inputs["outcome"].value,
@@ -65,11 +72,11 @@ def _payload(case, bucket: str) -> dict:
             "returncode": case.inputs["returncode"],
         },
         "outcome_bucket": bucket,
-        "execution": {"mode": "full", "witness": witness},
+        "execution": execution,
     }
 
 
-def _model_outcome(run: _MutantRun) -> MutantOutcome:
+def _model_outcome(run: _MutantRun, bucket: str | None = None) -> MutantOutcome:
     path = "src/example.py"
     source_sha256 = "a" * 64
     mutated_file_sha256 = "b" * 64
@@ -93,7 +100,11 @@ def _model_outcome(run: _MutantRun) -> MutantOutcome:
         candidate_id=candidate_id,
         source_sha256=source_sha256,
         mutated_file_sha256=mutated_file_sha256,
-        execution=run.execution,
+        execution=(
+            run.execution
+            if bucket in (None, "killed")
+            else MutationExecution(mode=run.execution.mode)
+        ),
         resource_limit_evidence=run.resource_limit_evidence,
         process_tree_evidence=run.process_tree_evidence,
     )
@@ -127,7 +138,7 @@ def test_producer_revalidation_verifier_model_agree(case):
     else:
         assert state_match is True
 
-    model_outcome = _model_outcome(run)
+    model_outcome = _model_outcome(run, bucket)
     Mutation(
         candidate_count=1,
         total=1,

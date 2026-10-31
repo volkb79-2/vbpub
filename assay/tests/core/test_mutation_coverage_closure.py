@@ -585,8 +585,8 @@ _KILL_OK = {"artifact": "k", "present": True}
         (_terminal(kill_signal_evidence=_KILL_OK), {"kill_signal_artifact": "k"}, True),
         (_terminal(kill_signal_evidence=_KILL_OK), {}, False),
         (_terminal(), {"cold_witness": True}, False),
-        (_terminal(execution={"witness": {**_GOOD_WITNESS, "when": "setup"}}), {"cold_witness": True}, False),
-        (_terminal(execution={"witness": _GOOD_WITNESS}), {"cold_witness": True}, True),
+        (_terminal(execution={"mode": "full", "witness": {**_GOOD_WITNESS, "when": "setup"}}), {"cold_witness": True}, False),
+        (_terminal(execution={"mode": "full", "witness": _GOOD_WITNESS}), {"cold_witness": True}, True),
         (_terminal(), {"process_tree_evidence": None}, False),
     ],
 )
@@ -1591,7 +1591,6 @@ def test_witness_prefix_replay_without_a_clean_process_tree_falls_back(
 def test_witness_prefix_replay_limit_event_falls_back_to_full_command(
     tmp_path, monkeypatch, capsys
 ):
-    receipts = _Receipts(monkeypatch)
     zero = _zero_counters()
     after_hit = mutation._dataclass_replace(zero, pids_max=1)
     _counters_sequence(monkeypatch, zero, after_hit, zero, zero)

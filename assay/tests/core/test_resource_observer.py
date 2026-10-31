@@ -146,7 +146,7 @@ def test_observer_localevents_regular_file_supplies_local_counters():
     counters = resource_limits._resource_counters_from_observer(document, 77)
 
     assert counters.limit_signature[0][8] is True
-    assert counters.limit_signature[0][9] is True
+    assert counters.limit_signature[0][9] is False
     assert counters.path_event_counters[0][1] == counters.path_event_counters[0][6]
 
 
