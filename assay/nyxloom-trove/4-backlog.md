@@ -164,6 +164,7 @@ items:
   - {id: B179, title: "Retry unresolved R2 infrastructure candidates serially at sweep end", type: feature, component: mutation, context_estimate: medium}
   - {id: B180, title: "Move remaining host-varying process evidence out of verdict v16", type: feature, component: evidence, context_estimate: medium}
   - {id: B181, title: "whole-target R2 start failures: unsorted R1 targets, coverage banner reported as the first failing test, leaked test children and maxfail in IOBench", type: bugfix, component: execution, context_estimate: medium}
+  - {id: B182, title: "R2 campaigns stop when candidate cgroup resource windows change or the observer disappears", type: bugfix, component: mutation, context_estimate: medium}
 ---
 
 # assay — backlog
@@ -13293,7 +13294,7 @@ contract and follow-on WP1–WP8 backlog entries.
 
 ## B173 — one termination classifier for R0, R1, R2 and R3
 
-**Status: WP1 classifier and WP2 R0/R1 wiring implemented; OPEN for WP3–WP4.** Add
+**Status: WP1–WP3 implemented; AP-4 R0/R1 corrections in progress; OPEN for WP4.** Add
 the pure classifier and shared table from the
 Opus design so producer paths can classify process outcomes from exit, report,
 process-tree and resource-limit evidence. WP1 adds the decision table and
@@ -13302,12 +13303,11 @@ The table includes an explicit non-judgeable `INCONCLUSIVE` termination and a
 self-inflicted-signal-plus-limit row, where `LIMIT_EVENT` wins per §2.
 Self-inflicted means any signal outside `EXTERNAL_SIGNALS`, matching the
 classifier predicate rather than limiting the rule to five common fatal signals.
-The existing R0/R1/R3 callers still use compatibility helpers until their
-classifier integrations land in WP2 and WP3; deleting those helpers in WP1
-alone would leave live callers broken. Preserve independent SQL qualification
-and verifier derivations. Acceptance requires a table row for every precedence
-case and 100% line and branch coverage for the classifier and contention
-sampler. The test-only preflight at `3faa7878` (Run-Gate ID
+WP2 wires R0/R1 and WP3 wires the R3 canary, which classifies both control and
+transform halves through the shared table. Preserve independent
+SQL qualification and verifier derivations. Acceptance requires a table row
+for every precedence case and 100% line and branch coverage for the classifier
+and contention sampler. The test-only preflight at `3faa7878` (Run-Gate ID
 `94b8cf0b64d974e31994c19b9a2169b2`) failed before coverage because the
 classifier had not yet been added. The implementation preflight at
 `aa3adbcf` (Run-Gate ID `c03fd9a1f89010d4e48076cd91bbdaf2`) stopped during
@@ -13347,8 +13347,10 @@ termination result; R1 inherits non-judgeable baseline termination. Resource
 windows are emitted on `command_finished`, and a failed R0 with pressure data
 gets one diagnostic advisory. The progress renderer is kept in `runner.py`:
 WP1's `ContentionObservation` has no `to_progress()` method, despite the
-design's initial call-site wording. WP3 receipt alignment and WP4 mutation
-bucket/state alignment remain separate work.
+design's initial call-site wording. WP3 requires a matching execution receipt
+for `import-break` and classifies both canary halves. AP-4 corrects the R0
+judgeable set for self-signaled failures and adds deterministic R1 inherited
+detail. WP4 mutation bucket/state alignment remains separate work.
 
 ## B174 — wire load-independent termination and progress telemetry through R0/R1
 
@@ -13363,12 +13365,22 @@ full-source preflight. See the [Opus design](reports/ASSAY-DESIGN-OPUS-2026-10-3
 
 ## B175 — use execution receipts to attribute import-break R3 canaries
 
-**Status: OPEN; WP3 follow-up.** Replace the temporary 10.0.0 reason-code
-contract with a per-attempt receipt written by the injected import-break
-statement. Pass only a clean expected failure with the matching receipt;
-classify accepted transforms and unrelated failures using the design's table.
-Do not parse stdout or stderr. Acceptance covers Python subprocess behavior
-and a JavaScript canary in the available gate environment. See the
+**Status: IMPLEMENTED on `assay-wp3-20261030`; registered acceptance pending.**
+Replace the temporary 10.0.0 reason-code contract with a per-attempt receipt
+written by the injected import-break statement. Pass only a clean expected
+failure with the matching receipt; classify accepted transforms and unrelated
+failures using the design's table. Do not parse stdout or stderr. Behavioural
+coverage includes the shared termination table, Python's real subprocess
+pipeline through both the default and process-tree runners, real Node ESM and
+CommonJS import canaries, transform-only environment injection, receipt
+bounds/errors, adapter protocol parity, raw control-failure attribution,
+system-temp placement for the legacy path, and process-tree error forwarding.
+Python injection is one physical line and preserves PEP 263 cookie placement;
+JavaScript/TypeScript uses a one-line IIFE preceded by `// @ts-ignore`. Vitest
+is not installed in the available tester image, so the Node ESM and CommonJS
+subprocess oracles are the acceptance witnesses allowed by WP3. The pre-change
+tester run was red on the receipt contract; record the final preflight/tester
+Run-Gate IDs and source-tree SHA here after they complete. See the
 [Opus design](reports/ASSAY-DESIGN-OPUS-2026-10-30.md), §§3, 6.4 and 7/WP3.
 
 ## B176 — align R2 mutation buckets and resume validation with termination evidence
@@ -13452,3 +13464,47 @@ admission attempt returned host-busy before tests ran (log:
 After the Assay lane passes and this branch is merged, retry each R2 campaign
 from a new worktree based on the integrated `origin/main`; keep the failed
 campaign worktrees untouched.
+
+## B182 — R2 campaigns stop when candidate cgroup resource windows change or the observer disappears
+
+**Status: FIX ROUND 2 IMPLEMENTED in `assay-r2fix-20261030`; final registered
+gate acceptance is part of this change.** The PWMCP log
+`/tmp/run-gate/lanes/r2/47f333762a526841379559a959b0cfbc.log` and IOBench's
+`.assay/progress-r2.jsonl` retained only the generic comparison failure, not
+the before/after signatures, so the exact field in those historical windows
+cannot be recovered. A regression using the real
+`ResourceLimitEvidence.between()` exception text reproduces the configuration
+change `cgroup[0].memory.max: 4096 -> 8192`. The old diagnostic grouped path,
+mount, controller-file, and limit changes together; the candidate executor
+then promoted comparison failure or post-preflight observer loss to
+`ERROR/EXEC_FAILED`, stopping the campaign.
+
+**Contract:** Keep the full pre-candidate cgroup capability probe fail-closed.
+After that probe, a missing sample or identity change is unobserved telemetry
+for that candidate: omit `resource_limit_evidence`, preserve the reason in
+state/progress, print one advisory line, and continue using
+`termination.classify()` without limit-event evidence. Configured
+`pids.max`/`memory.max` value changes leave the window observed, preserve event
+evidence, print one advisory line, and add only the progress key
+`resource_limit_changes`. Event-counter attribution selects cgroups
+independently of limit finiteness. PASS remains survived. Without resource
+evidence, a FAIL is `killed` only when the current run has a pytest failed-call
+witness (session and process status 1) and the process-tree proof shows a clean
+leader exit. A bare nonzero exit, a signal, or a shell-wrapped status such as
+137 has no kill credit and is `crashed`. Any observed positive failure-relevant
+delta makes a non-PASS candidate `crashed`, whether or not the failed-call
+witness is present. State revalidation and `assay verify` apply the same rule.
+A positive event during saved-witness replay discards that optimization and
+falls back to the full command with a fresh resource window. Keep verdict
+schema v16; v17 remains WP8. Operator decision D2 accepts optional
+`resource_limit_evidence` in v16 as the recorded A-477 exception; CHANGES names
+that compatibility fact.
+
+**Acceptance:** Real identity-comparison errors name the changed cgroup field;
+limit-value changes return their old/new values separately. Tests cover
+identity drift, limit-value changes, observer loss, campaign continuation,
+PASS with a positive event, unobserved bare exit-1 and shell-137
+classification, report-backed kill credit, state revalidation, positive replay
+fallback, and verifier rejection of a positive event on a witnessed kill.
+Run the registered
+`self-qualification-preflight` and `tester-unified` gates before push.

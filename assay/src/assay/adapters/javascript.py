@@ -171,6 +171,7 @@ imports ``subprocess``, and does no work a toolchain could be required for.
 
 from __future__ import annotations
 
+import json
 import re
 from ..records import record
 from pathlib import Path
@@ -180,6 +181,7 @@ from ..errors import require_advance
 from ..mutation import MutationSite
 from .base import (
     _IMPORT_BREAK_MARKER,
+    CANARY_RECEIPT_ENV,
     Remaining,
     StatementBlockReport,
     StatementSpan,
@@ -209,10 +211,20 @@ _DECLARATION_SUFFIXES = (".d.ts", ".d.mts", ".d.cts")
 
 #: P09's canary snippets, ported to the JS/TS module top level (A-345 -- see
 #: this module's own docstring for why both are appends and why neither
-#: carries a type annotation).
-_IMPORT_BREAK_SNIPPET = (
-    f'\n\nthrow new Error("{_IMPORT_BREAK_MARKER}")\n'
-)
+#: carries a type annotation). Import-break writes its attempt receipt.
+def _import_break_snippet(nonce: str) -> str:
+    """A top-level failure that first writes its private execution receipt."""
+    quoted_nonce = json.dumps(nonce)
+    return (
+        "\n\n// @ts-ignore\n"
+        ";(() => { const p = globalThis.process; const f = p && p.env && p.env["
+        f"{json.dumps(CANARY_RECEIPT_ENV)}]; const fs = f && (typeof "
+        'p.getBuiltinModule === "function" ? p.getBuiltinModule("node:fs") : '
+        '(typeof require === "function" ? require("node:fs") : null)); '
+        'if (fs) fs.writeFileSync(f, '
+        f"{quoted_nonce}, {{ encoding: \"ascii\" }}); }})()\n"
+        f'throw new Error("{_IMPORT_BREAK_MARKER}")\n'
+    )
 _UNCOVERED_CANARY_SNIPPET = (
     "\n\n;(() => function (value = 0) {\n"
     "  const doubled = value * 2 // assay-canary: executed by no test\n"
@@ -456,11 +468,11 @@ def _append_snippet(text: str, snippet: str) -> str:
     return body + snippet
 
 
-def _inject_import_break(text: str) -> tuple[str, str]:
-    """Append :data:`_IMPORT_BREAK_SNIPPET` -- a top-level ``throw`` -- to
+def _inject_import_break(text: str, *, nonce: str) -> tuple[str, str]:
+    """Append a receipt-writing top-level ``throw`` to
     *text*. Pure: returns the transformed text and a description; never
     touches a filesystem (A-010)."""
-    return _append_snippet(text, _IMPORT_BREAK_SNIPPET), (
+    return _append_snippet(text, _import_break_snippet(nonce)), (
         "appended a module-top-level `throw new Error(...)`; an ES module's "
         "imports are hoisted, so this fires during module evaluation for any "
         "test that imports the file (A-345)"
@@ -557,8 +569,8 @@ class JavaScriptAdapter:
         :attr:`requires_statement_attribution` being ``False``."""
         return None
 
-    def inject_import_break(self, text: str) -> tuple[str, str]:
-        return _inject_import_break(text)
+    def inject_import_break(self, text: str, *, nonce: str) -> tuple[str, str]:
+        return _inject_import_break(text, nonce=nonce)
 
     def inject_uncovered_line(self, text: str) -> tuple[str, str]:
         return _inject_uncovered_line(text)

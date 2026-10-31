@@ -1482,14 +1482,13 @@ def _execute_plan_inner(
             process_tree_evidence=getattr(exc, "process_tree_evidence", None),
         )
     except OSError as exc:
-        if isinstance(process_runner, ProcessTreeProcessRunner):
-            # A process-tree runner wraps the one expected candidate-level
-            # spawn failure in ProcessTreeSpawnError. Any other OSError has
-            # escaped its cleanup/monitoring boundary and is an infrastructure
-            # failure; persisting it as a reusable crashed mutant would hide
-            # an Assay-side fault as a candidate fact.
+        if getattr(process_runner, "is_process_tree_runner", False):
+            # A process-tree runner wraps its expected spawn failure in
+            # ProcessTreeSpawnError. Any other OSError has escaped its
+            # cleanup/monitoring boundary and is an infrastructure failure,
+            # so it must not be persisted as an ordinary command result.
             raise AssayError(
-                f"native R2 process execution infrastructure failed: {exc}",
+                f"process execution infrastructure failed: {exc}",
                 outcome=Outcome.ERROR,
                 reason_code=ReasonCode.EXEC_FAILED,
             ) from exc

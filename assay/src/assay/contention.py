@@ -56,6 +56,17 @@ class ContentionObservation:
             raise ValueError("contention reasons must be non-empty strings")
 
 
+def observation_input(
+    obs: ContentionObservation,
+) -> Literal["clear", "unavailable", "not_requested"]:
+    """Map an observation status to the termination classifier's vocabulary."""
+    return {
+        "unobserved": "not_requested",
+        "clear": "clear",
+        "unavailable": "unavailable",
+    }[obs.status]
+
+
 class ContentionWindow:
     """Capture this process cgroup's counters immediately around one command.
 
@@ -151,7 +162,7 @@ class ContentionWindow:
             reasons.append(counter_error)
         elif self._before_counters is not None and after_counters is not None:
             try:
-                limit_evidence = resource_limits.ResourceLimitEvidence.between(
+                limit_evidence, _ = resource_limits.ResourceLimitEvidence.between(
                     self._before_counters, after_counters
                 )
             except Exception as sample_error:  # noqa: BLE001 -- preserve pressure evidence

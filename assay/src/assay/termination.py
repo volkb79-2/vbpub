@@ -1,4 +1,16 @@
-"""Classify how a measured command ended from its recorded evidence."""
+"""Classify how a measured command ended from its recorded evidence.
+
+``decided_by_report`` and resource-observation inputs are site-specific:
+
+| Site | ``decided_by_report`` means | observation inputs |
+| --- | --- | --- |
+| R0/R1 | B078's command-result summary reports FAIL | not requested; ``observation_required=False`` |
+| R2 | a trusted pytest failed-call witness confirms FAIL | the candidate contention window; required |
+| R3 | no report is consulted | not requested; ``observation_required=False`` |
+
+R0's summary establishes the command outcome; it is not an R2 failed-call
+witness. R3 classifies its canary command result without either report form.
+"""
 
 from __future__ import annotations
 
@@ -18,6 +30,7 @@ class Termination(enum.Enum):
     HUNG = "hung"
     NOT_RUN = "not_run"
     KILLED_EXTERNALLY = "killed_externally"
+    SELF_SIGNALED = "self_signaled"
     LEAKED = "leaked"
     LIMIT_EVENT = "limit_event"
     UNOBSERVED = "unobserved"
@@ -25,6 +38,10 @@ class Termination(enum.Enum):
 
 
 JUDGEABLE = frozenset({Termination.PASSED, Termination.FAILED})
+CREDIT_JUDGEABLE = JUDGEABLE
+BLOCKING_JUDGEABLE = frozenset(
+    {Termination.PASSED, Termination.FAILED, Termination.SELF_SIGNALED}
+)
 EXTERNAL_SIGNALS = frozenset(
     {signal.SIGKILL, signal.SIGTERM, signal.SIGINT, signal.SIGHUP}
 )
@@ -36,6 +53,7 @@ _R2_BUCKETS = {
     Termination.HUNG: "hung",
     Termination.NOT_RUN: "crashed",
     Termination.KILLED_EXTERNALLY: "crashed",
+    Termination.SELF_SIGNALED: "crashed",
     Termination.LEAKED: "crashed",
     Termination.LIMIT_EVENT: "crashed",
     Termination.UNOBSERVED: "crashed",
@@ -66,14 +84,16 @@ def classify(
         return Termination.TIMED_OUT
     if outcome is Outcome.PASS:
         return Termination.PASSED
-    if decided_by_report and outcome is Outcome.FAIL:
-        return Termination.FAILED
     self_inflicted_signal = (
         returncode is not None
         and returncode < 0
         and -returncode not in EXTERNAL_SIGNALS
     )
-    if returncode is not None and returncode < 0 and not self_inflicted_signal:
+    if limits is not None and limits.limit_hit:
+        return Termination.LIMIT_EVENT
+    if decided_by_report and outcome is Outcome.FAIL:
+        return Termination.FAILED
+    if returncode is not None and returncode < 0 and -returncode in EXTERNAL_SIGNALS:
         return Termination.KILLED_EXTERNALLY
     if (
         process_tree is not None
@@ -81,8 +101,8 @@ def classify(
         and not self_inflicted_signal
     ):
         return Termination.KILLED_EXTERNALLY
-    if limits is not None and limits.limit_hit:
-        return Termination.LIMIT_EVENT
+    if self_inflicted_signal:
+        return Termination.SELF_SIGNALED
     if observation_required and observation != "clear":
         return Termination.UNOBSERVED
     if outcome is Outcome.INCONCLUSIVE:
@@ -106,6 +126,8 @@ def detail(
         if returncode is not None and returncode < 0:
             return f"killed-by-signal:{-returncode}"
         return "killed-by-signal:unknown"
+    if termination is Termination.SELF_SIGNALED:
+        return None
     if termination is Termination.LEAKED:
         return "leaked-process-tree"
     if termination is Termination.LIMIT_EVENT:

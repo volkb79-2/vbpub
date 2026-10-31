@@ -266,17 +266,34 @@ assay exists to close that gap mechanically, not by policy:
   memory events at that cgroup and active visible ancestors. It checks the
   selected hierarchy mount ID and each opened control file against
   `/proc/self/mountinfo`, so a parent overmount cannot redirect a sample
-  silently. Samples bracket each started full candidate command. If
+  silently. Samples bracket each started full candidate command when both
+  observations are available and comparable. If
   an early stop prevents a full command from starting, the candidate stays
   `budget_exceeded` and gets a shared zero-duration sample at sweep close;
   replacement materialization or a saved-witness replay may already have run,
-  and that sample does not describe that earlier work. A positive candidate
-  event in either candidate scope records that candidate as `crashed` and
-  makes R2 `ERROR/EXEC_FAILED`. Assay reads each ancestor's `.local` event files: a
-  positive local ancestor delta with no candidate event is ambiguous and
-  withholds mutation outcomes; a hierarchical-only ancestor delta can come
-  from a sibling and does not invalidate the candidate.
-  A positive replay delta stops the lane with payload-free `ERROR/EXEC_FAILED`.
+  and that sample does not describe that earlier work. The shared WP1
+  termination classifier uses observed candidate events alongside the command
+  result: a PASS with an exited leader remains `survived`, while a PASS with a
+  signaled leader is `crashed`; a non-PASS result with a failure-relevant event
+  is `crashed`, even with a failed-call witness. Assay reads each ancestor's
+  `.local` event files: a positive local pids or OOM delta with no candidate
+  event counts conservatively as a limit hit for that candidate, including
+  when its counter for that metric is unavailable throughout the window. A
+  hierarchical-only ancestor delta can come from a sibling and does not count;
+  `memory.events:max` remains telemetry at every level.
+  A post-preflight sample loss or an unstable window omits that candidate's
+  resource evidence, records `resource_observation.status = "unobserved"` with
+  its reason in progress and resume state, prints one advisory line, and lets
+  the campaign continue. An unobserved window gives no kill credit to a bare
+  nonzero exit, including a shell-wrapped signal status such as 137: that
+  candidate is `crashed`. A normal exit 1 with a current-run failed-call
+  witness may be `killed` only when the resource window is unobserved; a PASS
+  with an exited leader remains `survived`. Any observed positive failure
+  event blocks `killed` credit. Only a completed replay with a positive delta
+  falls back to the full command with a new resource window; replay errors
+  propagate. Configured `pids.max` and `memory.max` value changes keep
+  the window observed and appear as `resource_limit_changes` in candidate
+  progress.
   Assay requires
   read-only cgroup mounts and verifies that the candidate cannot write
   `cgroup.procs` on its cgroup or ancestors; incomplete or writable cgroup
@@ -296,8 +313,9 @@ assay exists to close that gap mechanically, not by policy:
   profile: R2 still measures whether tests detect code mutations. Assay checks
   ancestors because their limits can affect a container whose own limits say
   `max`. A positive `memory.events:max` is recorded as telemetry; reclaim can
-  succeed without invalidating the result. `pids.events:max` and OOM-related
-  counters remain infrastructure failures. For
+  succeed without invalidating the result. For a non-clean candidate result,
+  `pids.events:max` and OOM-related counters can classify it as infrastructure-
+  affected; a clean PASS remains final. For
   each active controller, native R2 requires a local event file or a verified
   mount option that makes the regular event file local. Availability is
   capability-based: Assay probes the files and mount options instead of
@@ -330,9 +348,19 @@ assay exists to close that gap mechanically, not by policy:
   report current availability. See the
   [design](docs/DESIGN-GUIDE.md#native-r2-cgroup-observation-b148a-494)
   and [consumer guidance](docs/CONSUMERS.md#native-r2-cgroup-observation-b148a-494).
-  If observation is lost or becomes ambiguous after the pre-candidate check,
-  Assay stops R2 with `ERROR/EXEC_FAILED`; it never records that attempt as a
-  product failure or mutation kill. Run-Gate reports the pre-candidate
+  If a sample is lost or the cgroup identity changes after the pre-candidate
+  check, Assay records that candidate's limits as unobserved and classifies the
+  candidate from its termination. Configured limit-value changes preserve the
+  window and appear in `resource_limit_changes`. PASS with an exited leader
+  remains `survived`; PASS with a signaled leader is `crashed`. An unobserved
+  FAIL needs a current-run failed-call witness, while an observed positive
+  failure event makes a non-PASS candidate
+  `crashed` even with a witness. The v16 verdict omits its optional
+  `resource_limit_evidence` when the window is unobserved; progress and resume
+  state retain the reason. A positive event during a completed witness replay
+  falls back to the full command with a new resource window; replay errors
+  propagate.
+  Run-Gate reports the pre-candidate
   `CGROUP_OBSERVATION_UNAVAILABLE` refusal as infrastructure `ERROR` when all
   other claims and evidence pass; it preserves any independent budget or
   product failure.
@@ -451,7 +479,7 @@ on this module" is `mode = "whole_target"` + `require_branch = true` +
 |---|---|---|---|---|---|
 | *(any)* | ✅ language-agnostic | — | — | — | — |
 | **Python** | ✅ | ✅ registered, both scope modes | ✅ **available** — real `coverage.py` branch arcs | ✅ registered, native; Assay owns candidate generation, execution, resumable state, survivor rejudge, progress and candidate-local resource-event checks | ✅ registered |
-| **JavaScript/TypeScript** | ✅ | ✅ registered, both scope modes | ✅ **available** — real Istanbul/nyc branch arcs (declare `producer = "istanbul"`; `@vitest/coverage-v8`/`c8` report ranges, not per-arm arcs, and stay `"unavailable"` without it) | ✅ registered, **ingested path only** — an external producer such as Stryker owns candidate execution/retry; Assay scores the completed report, with no Assay candidate-state resume/rejudge or per-candidate resource-event checks | ✅ **registered and locally exercised** — R3 runs import-break and uncovered-line canaries (B087); both dstdns canaries were qualified under Assay 9.0.0/schema v15, with retained verdicts and verifier transcripts for that release |
+| **JavaScript/TypeScript** | ✅ | ✅ registered, both scope modes | ✅ **available** — real Istanbul/nyc branch arcs (declare `producer = "istanbul"`; `@vitest/coverage-v8`/`c8` report ranges, not per-arm arcs, and stay `"unavailable"` without it) | ✅ registered, **ingested path only** — an external producer such as Stryker owns candidate execution/retry; Assay scores the completed report, with no Assay candidate-state resume/rejudge or per-candidate resource-event checks | ✅ **registered and locally exercised** — R3 runs import-break and uncovered-line canaries (B087); import-break requires a matching execution receipt, so lanes that type-check or lint before tests should use uncovered-line; see the [receipt rationale](docs/DESIGN-GUIDE.md#r3-import-break-receipt-attribution). Both dstdns canaries were qualified under Assay 9.0.0/schema v15, with retained verdicts and verifier transcripts for that release |
 | **Go** | ✅ | ✅ registered, both scope modes — needs a real `go` toolchain on the judge (`external_tools = ("go",)`); statement positions are re-derived from source, never trusted from the profile alone (A-217) | ❌ **structurally impossible** — `go-cover`'s own format has no branch concept; no engineering investment inside assay changes this without Go's own coverage instrumentation gaining one | ❌ **not implemented** — `generate_mutation_sites` is unconditionally `UNSUPPORTED`; other Go-ecosystem tools (e.g. `go-mutesting`) prove this is possible in principle, assay just hasn't built it | ❌ not registered |
 | **SQL/DDL** | ✅ | ❌ **not registered** — SQL's only rigor entry is R2 | — (moot) | ✅ registered, native; uses the same Assay candidate state, resume/rejudge, progress and resource-event path as Python | ❌ not registered |
 
@@ -459,7 +487,7 @@ on this module" is `mode = "whole_target"` + `require_branch = true` +
 
 | Capability | Current support | Limit |
 |---|---|---|
-| Native R2 resource-event attribution | Assay checks candidate-local counters and relevant enforcing ancestors. When a private cgroup namespace hides ancestors, Run-Gate can opt an ephemeral native R2 lane into cgprofile's read-only observer contract 2. | If required observation is unavailable before candidate execution, R2 is `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE`. A process-limit or OOM event during a candidate is `ERROR/EXEC_FAILED` and never a mutant kill. R0/R1 evidence remains valid. The observer does not expose the daemon control socket. |
+| Native R2 resource-event attribution | Assay checks candidate counters and each visible ancestor's own local counters. A positive ancestor-local pids or OOM event counts conservatively for the candidate when the corresponding candidate counter is zero or unavailable throughout the stable window; `memory.events:max` remains telemetry. When a private cgroup namespace hides ancestors, Run-Gate can opt an ephemeral native R2 lane into cgprofile's read-only observer contract 2. | If required observation is unavailable before candidate execution, R2 is `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE`. After preflight, a lost or identity-changed candidate window is recorded as unobserved telemetry and the campaign continues. Configured limit-value changes preserve the window. Every candidate progress event includes `resource_limit_changes` (empty when unchanged). PASS with an exited leader remains `survived`; a PASS with a signaled leader is `crashed`. An unobserved FAIL needs a current-run failed-call witness to count as `killed`, while any observed positive failure event makes a non-PASS candidate `crashed`, even with a witness. Only a completed witness replay with a positive event falls back to the full command; a replay error propagates. A new Assay build re-executes resumed campaign state because the Assay version is part of the judge identity. Until WP7, recover crashed candidates with `--resume --rejudge crashed`. R0/R1 evidence remains valid. The observer does not expose the daemon control socket. |
 | Per-test liveness and process measurements | Native R2 only, when the declared command activates a supported liveness monitor. Pytest test events and `tests_completed` are command-shape-specific; otherwise candidate progress remains available but those fields can be `null`. | These are execution features, not language-wide guarantees; see the [campaign lifecycle comparison](docs/DESIGN-GUIDE.md#native-and-ingested-r2-campaign-features) and [consumer guidance](docs/CONSUMERS.md#r2-for-javascript-by-ingesting-strykers-report-b046). |
 | Bounded native R2 pilots | B118 provides a plan-bound candidate selector and report checks. | A bounded pilot measures a selected subset; it does not qualify the full lane. |
 | Analysis-package R2 | B131 has a dedicated whole-target lane and bounded pilot path. | The analysis package is not qualified for a full R2 campaign until the full plan is completed and reviewed. |
@@ -749,8 +777,12 @@ Why the oracle is a subprocess rather than a Python rule:
 R1 measures changed-line coverage over `.js`, `.jsx`, `.ts` and `.tsx`; R2
 judges a Stryker report produced by the lane's own command (B046); R3
 checks import-break and uncovered-line canaries (B087). Import-break expects a
-clean `COMMAND_FAILED`; uncovered-line checks R1's `UNCOVERED_LINES`. Assay
-does not generate native JavaScript mutants. One language name covers all four:
+clean `COMMAND_FAILED` plus a matching execution receipt; uncovered-line checks
+R1's `UNCOVERED_LINES`. A lane that type-checks or lints before tests should
+use `uncovered-line` when it declares R1. See the
+[receipt rationale](docs/DESIGN-GUIDE.md#r3-import-break-receipt-attribution).
+Assay does not generate native JavaScript mutants. One language name covers all
+four:
 TypeScript is JavaScript's own superset, JSX/TSX are syntax extensions of the
 two, and every coverage tool in the ecosystem measures them into one
 undifferentiated artifact, so splitting them would force a lane touching one
@@ -1526,12 +1558,13 @@ you're changing assay itself:
   R2 keeps its per-candidate event windows and pressure-adjusted liveness
   clock.
   Import-break canaries require the transformed command to exit normally with
-  a nonzero status and the expected `COMMAND_FAILED` reason; a signal death or
-  report-derived `COMMAND_FAILED` with exit status zero is `INCONCLUSIVE`.
-  Assay does not inspect output for a separate cause proof. Timeouts, execution
-  errors and missing results remain
-  `INCONCLUSIVE`. Observer sampling is
-  lane-scoped: Assay uses the socket only when it appears in the lane's
+  a nonzero status, the expected `COMMAND_FAILED` reason, and a receipt written
+  by the injected statement. A signal death, report-derived failure with exit
+  status zero, or static check that fails before the statement runs is
+  `INCONCLUSIVE`; use `uncovered-line` for lanes that lint or type-check before
+  tests. Assay does not inspect output for cause attribution. Timeouts,
+  execution errors and missing results remain `INCONCLUSIVE`. Observer
+  sampling is lane-scoped: Assay uses the socket only when it appears in the lane's
   resolved environment, so a parent gate's ambient socket cannot change a
   nested lane's verdict. See [host load and verdicts](docs/DESIGN-GUIDE.md#host-load-and-verdicts).
   `ASSAY_GATE_ALLOW_SHARED_HOST=1` is a legacy no-op;

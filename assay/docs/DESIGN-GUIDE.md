@@ -524,7 +524,9 @@ free, rather than costing a second cut of its own.**
   R2 has selected candidates, but the process cannot inspect the full cgroup
   v2 ancestor hierarchy B145 requires. Assay retains completed R0/R1 claims
   and reports only R2 as unavailable; independent R3 can still run. A
-  positive resource-limit event during a candidate remains `ERROR/EXEC_FAILED`.
+  missing or uncomparable candidate-time resource window is optional telemetry
+  after preflight and does not abort the R2 campaign; WP1 classifies the
+  candidate from its termination evidence.
 - **`FAIL`/`RED_FIRST_UNPROVEN`** (F015/M7, A-433 as amended by A-434 under
   DA-R18) — the R4 red-first (`fail-before/pass-after`) claim's judged
   refusal: assay materialised both commits and ran the declared tests on
@@ -709,17 +711,23 @@ than the candidate's own cgroup reports. For example, a leaf with
 In each candidate window, Assay uses the candidate's ordinary event files and
 candidate-local event files, then the ancestors' local event files. A positive
 candidate `pids.events:max`, `memory.events:oom`, `oom_kill`, or
-`oom_group_kill` delta is an infrastructure failure; a `memory.events:max`
-delta remains telemetry because the kernel can satisfy the allocation through
-reclaim. The local sample also covers an increment between sequential reads
-of the regular and local files.
+`oom_group_kill` delta is evidence for the shared termination classifier; a
+clean PASS remains final, while a non-clean test failure with the event becomes
+infrastructure-affected. The observed event takes precedence over a
+report-backed FAIL, even when the current run has a clean failed-call witness.
+A `memory.events:max` delta remains
+telemetry because the kernel can satisfy the allocation through reclaim. The
+local sample also
+covers an increment between sequential reads of the regular and local files.
 A sibling can change a shared ancestor's hierarchical count without changing
-that ancestor's local count, so that
-hierarchical-only change does not invalidate an unaffected candidate. A
-positive local failure-relevant event at a shared ancestor with no candidate
-event remains ambiguous and withholds mutation outcomes. `memory.events:max`
-is telemetry, including at ancestors, so it does not create attribution
-ambiguity by itself. The candidate's ordinary event file
+that ancestor's local count, so that hierarchical-only change does not
+invalidate an unaffected candidate. A positive local failure-relevant event at
+an ancestor with no candidate event counts conservatively as a limit hit for
+that candidate. This may include an event from other work sharing the ancestor,
+but the candidate window overlapped a real limit event, so Assay withholds kill
+credit. `memory.events:max` remains telemetry, including at ancestors, and is
+excluded from this attribution rule.
+The candidate's ordinary event file
 becomes local when `pids_localevents` or `memory_localevents` is enabled. For
 each active controller in that mode, Assay requires the candidate cgroup to
 have no child cgroups, so the local file still covers its execution; an
@@ -748,42 +756,79 @@ a local event file nor its verified localevents option is available, preflight
 withholds only R2 and preserves completed R0/R1 claims.
 The candidate and ancestor-local comparison is the sole event classifier;
 there is no separate gate-wide `memory.events` OOM check around a candidate,
-because that aggregate can include an unrelated sibling's event.
+because that aggregate can include an unrelated sibling's event. A positive
+event in an ancestor's own local counter with no positive candidate delta is
+conservatively counted against the candidate, including when that candidate
+counter is unavailable throughout the stable window. The event may be shared
+with other work, but the command window overlapped a real limit event. The
+exception is `memory.events:max`, which remains telemetry at every level. A
+hierarchical-only ancestor delta still does not count, because it can originate
+in a sibling subtree.
 
-For each started full candidate command, Assay records the selected counters
-immediately before and after it. If the lane stops before a full command starts,
-that candidate remains `budget_exceeded` and shares a zero-duration sample
-taken after already-submitted work finishes. Replacement materialization or a
-saved-witness replay may already have run; the shared sample does not describe
-that earlier work or prove it did not happen. A positive candidate failure-
-event delta records that candidate as `crashed`, making R2 `ERROR/EXEC_FAILED`;
-a `memory.events:max` delta alone stays telemetry. If the candidate counters
-stay unchanged while any visible ancestor's local failure-relevant counter
-increases, Assay cannot attribute that event to the candidate and withholds
-mutation outcomes with the same infrastructure error. `memory.events:max`
-alone remains telemetry and does not block the lane. A positive
-delta during witness-prefix replay likewise stops the lane with payload-free
-`ERROR/EXEC_FAILED` before retry, so the replay
-event cannot be hidden by a later command. A positive delta never certifies a
-kill or survivor. The visible cgroup paths, controller availability, and
-configured limits must match between the bracketing samples. If they change,
-or if a required counter is missing, malformed, or unreadable, native R2 fails
-closed. A cgroup mount rooted below the hierarchy root refuses native R2
-before its candidate sweep; a hidden local ancestor requires the explicit
-observer and is refused when that endpoint is absent or unprovable. B148/A-494
-performs the same local-first/explicit-observer capability check after R0/R1
-and before any candidate starts; when unavailable it preserves the lower
-claims and marks only R2 as unmeasured. Empty or unsupported candidate sets do
-not require observation, and inventory failures remain typed refusals rather
-than empty-set results. Worker
+The cgroup path, mount identity, controller-file presence and localevents mode
+form the window identity. A change to that identity makes the window
+unobserved. Configured `pids.max` and `memory.max` values are compared
+separately: a value change does not invalidate monotonic event counters, so
+the candidate keeps its resource evidence and progress carries one advisory
+line plus the additive `resource_limit_changes` field. Every candidate
+progress event includes this field, as an empty list when no values changed.
+Counter attribution selects active event files independently of whether either
+configured limit is finite.
+
+For each started full candidate command, Assay tries to read the selected
+counters immediately before and after it. If the lane stops before a full
+command starts, that candidate remains `budget_exceeded` and may carry a
+shared zero-duration sample taken after already-submitted work finishes.
+Replacement materialization or a saved-witness replay may already have run;
+the shared sample does not describe that earlier work or prove it did not
+happen.
+
+After the required pre-candidate capability probe succeeds, a missing endpoint
+or an uncomparable window is telemetry with status `unobserved`. Assay records
+the reason in the private mutation state and candidate progress stream, emits
+one advisory line, omits `resource_limit_evidence` from that candidate's v16
+verdict entry, and continues the campaign. An identity change reports the
+specific cgroup index, path or mount, controller file, or observation-mode
+field that changed. A configured limit-value change leaves the window
+observed; progress reports its old and new values in `resource_limit_changes`.
+The candidate is classified with `termination.classify()`: a PASS with an
+exited leader remains `survived`, while a PASS with a signaled leader is
+`crashed`. A bare nonzero exit without resource evidence is `crashed`, because
+the missing window cannot rule out a limit-caused failure. The report exception
+is narrow: only a current-run pytest failed-call witness with session and
+process exit status 1, paired with a clean process-tree leader exit, counts as
+`killed` without resource evidence. This is the complete structured report
+exception for an unobserved window, as §2 specifies; a shell-wrapped signal
+status such as 137 is not such a report. Process, timeout, and other
+infrastructure outcomes keep their classifier buckets. Any positive
+failure-relevant event in the candidate or an ancestor's own local counter
+makes a non-PASS candidate `crashed`, with or without a failed-call report. A
+positive `memory.events:max` delta alone stays telemetry.
+
+A positive event during a completed witness-prefix replay discards the replay
+and falls back to the full command, which receives its own resource window. A
+replay execution error propagates and does not trigger this fallback. The full
+hierarchy preflight remains fail-closed: an
+unavailable local view or explicit observer after R0/R1 preserves those claims
+and marks only R2 as unmeasured before any candidate starts. Empty or
+unsupported candidate sets do not require observation, and inventory failures
+remain typed refusals rather than empty-set results. Worker
 creation failure at the executor boundary yields a payload-free
 `ERROR/EXEC_FAILED`, so a `RuntimeError` such as `can't start new thread`
 cannot escape the verdict path. This contract observes cgroup v2 events; it
 does not detect per-process limits such as `RLIMIT_NPROC` or `RLIMIT_AS`.
 
 `assay verify` independently checks the evidence shape, subtraction, and
-bucket. Resume state with a positive counter delta is rejected for reuse, and
-the B145 worker guard advanced the judge identity to `/7`, B114 cold-witness
+bucket. An omitted candidate resource field is valid after preflight for a
+PASS, and for a `killed` result only when its current-run failed-call witness
+proves the normal test failure. Any positive failure-relevant delta on a
+`killed` entry is rejected even when a witness is present. Resume state carries an explicit unobserved
+marker and reason; a cached bare nonzero FAIL without the witness is rejected
+and rerun as `crashed`. Records with no evidence form or with contradictory
+terminal evidence are also refused for reuse. In particular, an old `crashed`
+record for a PASS under a limit event fails revalidation and the candidate is
+rerun. The
+B145 worker guard advanced the judge identity to `/7`, B114 cold-witness
 identity inputs advanced it to `/8`, the RG-89 observer policy advanced it to
 `/9`, and B155's event-scope attribution advances it to `/10`; older records
 are cold starts. The mutation-state schema number
@@ -805,11 +850,15 @@ caller's explicitly configured observer-only socket. This lets test containers
 retain private cgroup namespaces without turning the full host hierarchy into
 their interface. Assay does not choose a Docker cgroup namespace or add a lane
 override for this fact. This no-measurement result is limited to the pre-
-candidate capability check. Once candidate execution begins, a missing sample,
-changed hierarchy, changed limit, or ambiguous shared-ancestor event is
-`ERROR/EXEC_FAILED`: the attempt has started, but Assay cannot safely attribute
-its resource window. A process-tree cleanup failure keeps precedence over a
-counter-read failure because an unclosed command window leaves cleanup unknown.
+candidate capability check. Once candidate execution begins, a missing sample
+or identity-changed window is unobserved telemetry; configured limit-value
+changes preserve the window. Positive ancestor-local failure events count as
+limit hits for the candidate when its own counter is zero, while
+`memory.events:max` remains telemetry. The campaign continues and classifies
+from the termination result and any observed event. A PASS with a signaled
+leader is `crashed`; a PASS with an exited leader remains `survived`. A
+process-tree cleanup failure keeps precedence over a counter-read failure
+because an unclosed command window leaves cleanup unknown.
 
 The top-level Assay rollup gives `NO_MEASUREMENT` precedence over a budget
 stop or product failure, so an R2 observer refusal can hide an independent R1
@@ -1565,6 +1614,10 @@ deliberately not folded into the candidate digest — a record's filename must
 stay the mutation's identity so one shared `--state-dir` keeps working — and
 both its absence (a pre-B088 record) and a mismatch are cache misses, checked
 *after* every tamper check so a routine test edit cannot mask corruption.
+A new Assay build re-executes resumed campaign state because the Assay version
+is part of the judge identity. Until WP7, recover crashed candidates with
+`assay run <lane> --resume --rejudge crashed`; every candidate progress event
+also carries `resource_limit_changes`, including an empty list when unchanged.
 The decoded JSON root is validated before required fields are read: only an
 object can be a state record. A present `null`, scalar, or array is an
 `ERROR`/`UNREADABLE_ARTIFACT`, preserving a structured refusal instead of
@@ -2731,10 +2784,13 @@ failed R0 claim infrastructure when the gate requires that evidence. PSI and
 CPU-stat sample availability alone never withhold a failure. Timeouts retain
 their existing `BUDGET_EXCEEDED/LANE_TIMEOUT` status.
 
-R1 inherits an infrastructure termination from its R0 baseline as
-`ERROR/EXEC_FAILED`; it does not issue a separate coverage claim from an
-unjudgeable run. When R0 is judgeable, R1 still judges the coverage artifact
-with its existing rules. Resource-window data is progress-only:
+R1 inherits a non-judgeable infrastructure termination from R0 as
+`ERROR/EXEC_FAILED`, with deterministic detail identifying the R0 termination;
+it does not issue a separate coverage claim from that baseline. A `NOT_RUN`
+baseline also yields `ERROR/EXEC_FAILED`, because R1 cannot judge coverage for
+a command that never started. Timeouts and hangs retain their existing
+incomplete semantics. When R0 is judgeable, R1 still judges the coverage
+artifact with its existing rules. Resource-window data is progress-only:
 `command_finished.resources` carries the window duration, observation status,
 PSI deltas, CPU throttling duration, and direct limit-event deltas. A failed
 R0 with pressure measurements prints one advisory line with deltas and their
@@ -2743,11 +2799,12 @@ or adds that tail to `Claim.detail`; the existing first-failing-test summary
 is unchanged. For R3, a direct limit event or unavailable required
 direct-counter observation makes a failed control or transform
 `INCONCLUSIVE`; completed PASSes remain final. An `import-break` catch
-requires the transformed command to exit normally with a nonzero status and
-the expected `COMMAND_FAILED` reason. A signal death or report-derived
-`COMMAND_FAILED` with exit status zero is `INCONCLUSIVE`; Assay does not
-inspect captured output for an additional cause proof. The `uncovered-line`
-mechanism continues to use its R1 coverage comparison.
+requires the transformed command to exit normally with a nonzero status, the
+expected `COMMAND_FAILED` reason, and a matching execution receipt written by
+the injected statement. A signal death, a report-derived `COMMAND_FAILED` with
+exit status zero, or a static check that fails before the statement runs is
+`INCONCLUSIVE`; Assay does not inspect captured output for cause attribution.
+The `uncovered-line` mechanism continues to use its R1 coverage comparison.
 
 R2 retains its candidate-scoped pids/OOM events and its pressure-adjusted
 liveness clock: PSI and CPU throttling pause that clock, while the lane's
@@ -2759,9 +2816,9 @@ event takes precedence over a self-inflicted fatal signal; without a limit
 event, SIGSEGV/SIGABRT/SIGBUS/SIGFPE/SIGILL remain functional failures. An
 already `INCONCLUSIVE` command outcome maps to a non-judgeable termination:
 R0/R1 refuse it as `ERROR/EXEC_FAILED`, R2 places it in `crashed`, and R3
-keeps the attempt `INCONCLUSIVE`. R0/R1 now consume this classification, and
-the two isolated-canary resource-window callers use the same classifier; the
-remaining R3 receipt alignment is a separate follow-up.
+keeps the attempt `INCONCLUSIVE`. R0/R1 and both isolated-canary resource-window
+callers consume this classification. R3 import-break attribution also requires
+the WP3 execution receipt.
 
 The three `withhold_*` compatibility helpers and their type guards are
 deleted. The sampler filters `cgroup_cpu.nr_throttled` from `pressure_us`;
@@ -3184,6 +3241,31 @@ build actually wires it to (§7 — an adapter existing is not a capability):
 | `sql` | R2 only | a stdlib lexer over DDL; no coverage tool exists for it, so no R1, and A-192 forbids R3 without R1 |
 | `javascript` | R1, R2 by ingestion (B046), R3 canary (B087) | `.js`/`.jsx`/`.ts`/`.tsx` under one name (A-340). The lane runs Stryker and Assay judges its report; native `generate_mutation_sites` remains `UNSUPPORTED`. The existing import-break and uncovered-line injectors use the shared isolated R3 runner and have local real-Vitest oracles; import-break expects a clean `COMMAND_FAILED`, while uncovered-line expects `UNCOVERED_LINES`. Both dstdns canaries were qualified under Assay 9.0.0/schema v15, with retained verdicts and verifier transcripts for that release |
 | `go` | R1 only (A-394) | requires the real Go toolchain for source-derived statement positions (A-217); R2 and R3 have no producer path and are not registered |
+
+### R3 import-break receipt attribution
+
+A nonzero exit with `COMMAND_FAILED` alone does not prove that the transformed
+statement ran: a static checker or an unrelated import can fail before the
+target is evaluated. For `import-break`, only the transformed command receives
+`ASSAY_CANARY_RECEIPT`; the injected statement writes its per-attempt nonce
+before raising. Assay reads at most 65 bytes, compares the exact nonce, and
+removes the private receipt directory in `finally`. The isolated runner keeps
+that directory outside the snapshot; the legacy Python entry point uses the
+system temporary directory instead of placing it beside the caller's repo.
+Stdout and stderr are never part of attribution.
+
+The control attempt retains its raw judgeable result: `PASS` or `FAIL`. A clean
+control `FAIL` is still recorded as `FAIL`, while the overall canary attempt is
+`INCONCLUSIVE` because its baseline is not known-good.
+
+The injected statements stay compact for the source formats they enter.
+Python uses one physical line and inserts after a PEP 263 encoding cookie, so a
+cookie on line one or two keeps its recognized position and tracebacks gain one
+line. JavaScript/TypeScript uses a one-line IIFE preceded by `// @ts-ignore`,
+so missing Node ambient types do not make a TypeScript checker reject the
+transform before tests execute. A lane that runs lint or type-check before the
+test process should use `uncovered-line` when R1 is declared; without receipt
+execution, `import-break` is honestly `INCONCLUSIVE`.
 
 **B087 registers both adapter transforms through the shared isolated canary
 runner.** `import-break` appends a top-level throw, which module evaluation

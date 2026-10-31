@@ -1031,7 +1031,7 @@ def _memory(**counters):
     ("bucket", "entry", "message"),
     [
         ("equivalent", {"execution": {"mode": "ledger"}, "resource_limit_evidence": {}}, "ledger execution cannot carry"),
-        ("killed", {}, "requires resource_limit_evidence"),
+        ("killed", {"resource_limit_evidence": "not an object"}, "resource_limit_evidence must be an object"),
         ("killed", {"resource_limit_evidence": {"cgroup_version": 2}}, "invalid resource_limit_evidence fields"),
         ("killed", {"resource_limit_evidence": _resources(cgroup_version=1)}, "requires cgroup v2"),
         ("killed", {"resource_limit_evidence": _resources(pids_events=[])}, "invalid pids_events evidence"),
@@ -1041,7 +1041,6 @@ def _memory(**counters):
         ("killed", {"resource_limit_evidence": _resources(pids_events={"max": _counter(2, 1, 0)})}, "inconsistent pids_events.max counter arithmetic"),
         ("killed", {"resource_limit_evidence": _resources(pids_events={"max": _counter(0, 3, 1)})}, "inconsistent pids_events.max counter arithmetic"),
         ("killed", {"resource_limit_evidence": _resources(pids_events={"max": _counter(0, 1, 1)})}, "positive failed-fork or OOM"),
-        ("survived", {"resource_limit_evidence": _resources(memory_events=_memory(oom_kill=_counter(0, 1, 1)))}, "positive failed-fork or OOM"),
     ],
 )
 def test_b145_refusals(bucket, entry, message):
@@ -1054,6 +1053,8 @@ def test_b145_refusals(bucket, entry, message):
         ("killed", {"resource_limit_evidence": _resources()}),
         ("killed", {"resource_limit_evidence": _resources(memory_events=_memory(max=_counter(0, 4, 4)))}),
         ("crashed", {"resource_limit_evidence": _resources(pids_events={"max": _counter(0, 1, 1)})}),
+        ("survived", {"resource_limit_evidence": _resources(pids_events={"max": _counter(0, 1, 1)})}),
+        ("survived", {}),
         ("equivalent", {"execution": {"mode": "ledger"}}),
     ],
 )

@@ -498,7 +498,9 @@ def test_process_tree_oserror_is_lane_fatal_not_a_candidate_result(
     monkeypatch.setattr(ProcessTreeProcessRunner, "__call__", raise_monitor_error)
     lane = make_lane(argv=("/bin/true",))
 
-    with pytest.raises(AssayError, match="native R2 process execution infrastructure failed"):
+    with pytest.raises(
+        AssayError, match="^process execution infrastructure failed"
+    ):
         runner.execute_command(
             lane,
             cwd=tmp_path,

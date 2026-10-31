@@ -1,9 +1,10 @@
 """The R3 canary (P09, DESIGN-GUIDE §12) checks a known-good control and a
 deliberately transformed version of the same input through the lane's real
-pipeline. The transformed outcome is compared with the mechanism's expected
-reason code. For ``import-break``, a clean ``COMMAND_FAILED`` is expected; it
-does not prove that the injected statement caused the command failure.
-``uncovered-line`` is checked against R1's ``UNCOVERED_LINES`` result.
+pipeline. The transformed outcome is classified from shared termination
+evidence and compared with the mechanism's expected reason code. For
+``import-break``, a clean ``COMMAND_FAILED`` counts as caught only when the
+injected statement wrote its per-attempt receipt; ``uncovered-line`` is
+checked against R1's ``UNCOVERED_LINES`` result.
 
 **The two halves are structurally different, and both are real (A-107).**
 
@@ -76,13 +77,17 @@ runs against comes from *prepared*.
 from __future__ import annotations
 
 import os
+import secrets
+import shutil
+import subprocess
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import Iterable, Mapping, Sequence
 
-from . import contention, git, termination
-from .adapters.base import LanguageAdapter
+from . import contention, git
+from .adapters.base import CANARY_RECEIPT_ENV, LanguageAdapter
 from .config import Lane
 from .coverage_parsers.model import CoverageProfile
 from .diff import AddedLines
@@ -110,6 +115,11 @@ from .verdict import (
     CanaryAttempt,
     CanaryResult,
     Claim,
+)
+from .termination import (
+    CREDIT_JUDGEABLE,
+    Termination,
+    classify as classify_termination,
 )
 
 __all__ = [
@@ -145,26 +155,126 @@ _EXPECTED_REASON_BY_MECHANISM: Mapping[str, ReasonCode] = MappingProxyType(
 )
 
 
-def _require_clean_import_break_exit(
-    mechanism: str,
+def _classify_result(
+    *,
     outcome: Outcome,
     reason_code: ReasonCode | None,
-    returncode: int | None,
-) -> tuple[Outcome, ReasonCode | None]:
-    """Only an ordinary nonzero process exit can certify an import break.
+    result: CommandResult,
+    observation: contention.ContentionObservation | None,
+    observation_required: bool,
+) -> Termination:
+    """Classify one canary half from its outcome and the command evidence."""
+    process_tree = (
+        None
+        if result.process_tree_evidence is None
+        else ProcessTreeEvidence.from_dict(result.process_tree_evidence)
+    )
+    observation_status = (
+        "not_requested"
+        if observation is None
+        else contention.observation_input(observation)
+    )
+    return classify_termination(
+        outcome=outcome,
+        reason_code=reason_code,
+        returncode=result.returncode,
+        decided_by_report=False,
+        process_tree=process_tree,
+        limits=None if observation is None else observation.limits,
+        observation=observation_status,
+        observation_required=observation_required,
+    )
 
-    A negative ``subprocess`` return code means the process was terminated by
-    a signal. A report-derived ``COMMAND_FAILED`` with return code zero also
-    lacks the ordinary nonzero exit that certifies a clean import-break catch.
-    """
-    if (
-        mechanism == MECHANISM_IMPORT_BREAK
-        and outcome is Outcome.FAIL
-        and reason_code is ReasonCode.COMMAND_FAILED
-    ):
-        if returncode is None or returncode <= 0:
-            return Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE
-    return outcome, reason_code
+
+def _attribute_control(termination: Termination) -> Outcome:
+    """Keep a judgeable control failure visible in the attempt evidence."""
+    if termination is Termination.PASSED:
+        return Outcome.PASS
+    if termination in CREDIT_JUDGEABLE:
+        return Outcome.FAIL
+    return Outcome.INCONCLUSIVE
+
+
+def _receipt_runner(process_runner: ProcessRunner, path: Path) -> ProcessRunner:
+    """Add the receipt path to one transform command's resolved environment."""
+
+    def run(
+        argv: Sequence[str],
+        *,
+        env: Mapping[str, str],
+        cwd: Path,
+        timeout: float | None,
+    ) -> subprocess.CompletedProcess[str]:
+        child_env = dict(env)
+        child_env[CANARY_RECEIPT_ENV] = os.fspath(path)
+        return process_runner(argv, env=child_env, cwd=cwd, timeout=timeout)
+
+    if getattr(process_runner, "is_process_tree_runner", False):
+        setattr(run, "is_process_tree_runner", True)
+    return run
+
+
+def _receipt_matches(path: Path, nonce: str) -> bool:
+    """Read no more than 65 bytes while checking the exact nonce receipt."""
+    if not path.is_file():
+        return False
+    try:
+        with path.open("rb") as receipt:
+            return receipt.read(65) == nonce.encode("ascii")
+    except OSError:
+        return False
+
+
+def _attribute_transform(
+    *,
+    mechanism: str,
+    description: str,
+    termination: Termination,
+    observed_reason_code: ReasonCode | None,
+    receipt_path: Path,
+    nonce: str,
+) -> tuple[Outcome, ReasonCode | None, str]:
+    """Encode the classifier and receipt evidence in existing R3 fields."""
+    expected_reason = _EXPECTED_REASON_BY_MECHANISM[mechanism]
+    receipt_matched = (
+        mechanism == MECHANISM_IMPORT_BREAK and _receipt_matches(receipt_path, nonce)
+    )
+    receipt_note = "receipt matched" if receipt_matched else "no receipt"
+
+    if termination is Termination.PASSED:
+        if mechanism == MECHANISM_IMPORT_BREAK:
+            passed_note = (
+                "defect executed, suite passed" if receipt_matched else "no receipt"
+            )
+            return Outcome.PASS, None, f"{description}; {passed_note}"
+        return Outcome.PASS, None, description
+
+    if termination not in CREDIT_JUDGEABLE:
+        final_description = (
+            f"{description}; {receipt_note}"
+            if mechanism == MECHANISM_IMPORT_BREAK
+            else description
+        )
+        return Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE, final_description
+
+    if observed_reason_code is expected_reason:
+        if mechanism != MECHANISM_IMPORT_BREAK:
+            return Outcome.FAIL, expected_reason, description
+        if receipt_matched:
+            return Outcome.FAIL, expected_reason, f"{description}; {receipt_note}"
+
+    final_description = (
+        f"{description}; {receipt_note}"
+        if mechanism == MECHANISM_IMPORT_BREAK
+        else description
+    )
+    return Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE, final_description
+
+
+def _create_receipt(parent: Path | None = None) -> tuple[Path, Path]:
+    """Create a private receipt directory in the requested temp location."""
+    directory = Path(tempfile.mkdtemp(prefix="assay-canary-", dir=parent))
+    return directory, directory / "receipt"
 
 
 def _single_target_result(*, mechanism: str, **attempt: object) -> CanaryResult:
@@ -223,12 +333,14 @@ def _apply_mechanism(
     adapter: LanguageAdapter,
     mechanism: str,
     text: str,
+    *,
+    nonce: str,
 ) -> tuple[str, str] | None:
     """Apply *mechanism* to *text* via *adapter*'s own injector method, or
     ``None`` for an unrecognised mechanism name — O3's "malformed transform"
     case, caught here BEFORE anything is run."""
     if mechanism == MECHANISM_IMPORT_BREAK:
-        return adapter.inject_import_break(text)
+        return adapter.inject_import_break(text, nonce=nonce)
     if mechanism == MECHANISM_UNCOVERED_LINE:
         return adapter.inject_uncovered_line(text)
     return None
@@ -292,6 +404,7 @@ def _run_pipeline(
         # `_execute_snapshot_unit`'s canary callers get the same exclusion for
         # free, by keeping `result_report`'s default there.
         result_report=None,
+        # The legacy canary pipeline is R3 evidence, not an R0 verdict.
         classify_r0_termination=False,
     )
     r0_claim = build_r0_claim(result)
@@ -351,7 +464,7 @@ def run_python_canary(
     :func:`judge_canary`/:func:`build_canary_claim` derive the actual
     verdict from it.
     """
-    control_outcome, _, _ = _run_pipeline(
+    control_outcome, control_reason_code, control_result = _run_pipeline(
         lane,
         repo=repo,
         project_root=project_root,
@@ -362,12 +475,21 @@ def run_python_canary(
         process_runner=process_runner,
         clock=clock,
     )
+    control_termination = _classify_result(
+        outcome=control_outcome,
+        reason_code=control_reason_code,
+        result=control_result,
+        observation=None,
+        observation_required=False,
+    )
+    control_outcome = _attribute_control(control_termination)
     control_commit = git.head_rev(repo)
 
     expected_reason = _EXPECTED_REASON_BY_MECHANISM.get(mechanism)
     target = project_root / target_path
     original_text = target.read_text(encoding="utf-8")
-    applied = _apply_mechanism(adapter, mechanism, original_text)
+    nonce = secrets.token_hex(16)
+    applied = _apply_mechanism(adapter, mechanism, original_text, nonce=nonce)
     if applied is None:
         return _single_target_result(
             mechanism=mechanism,
@@ -393,27 +515,50 @@ def run_python_canary(
             expected_reason_code=expected_reason,
         )
 
-    target.write_text(transformed_text, encoding="utf-8")
-    git.run(repo, "add", "-A")
-    git.run(repo, "commit", "-q", "-m", f"assay canary: {description}")
+    receipt_dir, receipt_path = _create_receipt()
+    try:
+        target.write_text(transformed_text, encoding="utf-8")
+        git.run(repo, "add", "-A")
+        git.run(repo, "commit", "-q", "-m", f"assay canary: {description}")
 
-    transformed_outcome, observed_reason_code, transformed_result = _run_pipeline(
-        lane,
-        repo=repo,
-        project_root=project_root,
-        base_commit=control_commit,
-        adapter=adapter,
-        infrastructure_source=infrastructure_source,
-        infrastructure_environment=infrastructure_environment,
-        process_runner=process_runner,
-        clock=clock,
-    )
-    transformed_outcome, observed_reason_code = _require_clean_import_break_exit(
-        mechanism,
-        transformed_outcome,
-        observed_reason_code,
-        transformed_result.returncode,
-    )
+        transform_process_runner = (
+            _receipt_runner(process_runner, receipt_path)
+            if mechanism == MECHANISM_IMPORT_BREAK
+            else process_runner
+        )
+        transformed_outcome, observed_reason_code, transformed_result = _run_pipeline(
+            lane,
+            repo=repo,
+            project_root=project_root,
+            base_commit=control_commit,
+            adapter=adapter,
+            infrastructure_source=infrastructure_source,
+            infrastructure_environment=infrastructure_environment,
+            process_runner=transform_process_runner,
+            clock=clock,
+        )
+        transform_termination = _classify_result(
+            outcome=transformed_outcome,
+            reason_code=observed_reason_code,
+            result=transformed_result,
+            observation=None,
+            observation_required=False,
+        )
+        (
+            transformed_outcome,
+            observed_reason_code,
+            description,
+        ) = _attribute_transform(
+            mechanism=mechanism,
+            description=description,
+            termination=transform_termination,
+            observed_reason_code=observed_reason_code,
+            receipt_path=receipt_path,
+            nonce=nonce,
+        )
+    finally:
+        shutil.rmtree(receipt_dir)
+
     return _single_target_result(
         mechanism=mechanism,
         target=target_path,
@@ -481,40 +626,6 @@ def _judge_unit(
         sensitive_values=sensitive_values,
     )
     return r1_claim.status, r1_claim.reason_code
-
-
-def _canary_failure_is_incomplete(
-    unit: SnapshotUnitResult,
-    *,
-    outcome: Outcome,
-    reason_code: ReasonCode | None,
-    observation: contention.ContentionObservation,
-    observation_required: bool,
-) -> bool:
-    """Use the shared termination table for a failed canary half."""
-    process_tree = (
-        ProcessTreeEvidence.from_dict(unit.result.process_tree_evidence)
-        if isinstance(unit.result.process_tree_evidence, Mapping)
-        else None
-    )
-    classified = termination.classify(
-        outcome=outcome,
-        reason_code=reason_code,
-        returncode=unit.result.returncode,
-        decided_by_report=(
-            unit.result.decided_by_report
-            and unit.result.outcome is Outcome.FAIL
-        ),
-        process_tree=process_tree,
-        limits=observation.limits,
-        observation=(
-            "not_requested"
-            if observation.status == "unobserved"
-            else observation.status
-        ),
-        observation_required=observation_required,
-    )
-    return outcome is Outcome.FAIL and classified not in termination.JUDGEABLE
 
 
 def run_isolated_canary(
@@ -668,14 +779,14 @@ def run_isolated_canary(
             deadline=deadline,
             sensitive_values=_plan_passthrough_values(plan),
         )
-        if _canary_failure_is_incomplete(
-            control_unit,
+        control_termination = _classify_result(
             outcome=control_outcome,
             reason_code=control_reason_code,
+            result=control_unit.result,
             observation=control_contention.observation,
             observation_required=require_contention_observation,
-        ):
-            control_outcome = Outcome.INCONCLUSIVE
+        )
+        control_outcome = _attribute_control(control_termination)
         original_bytes = prepared.read_regular_file(
             canary_repo_path, timeout=deadline.remaining()
         )
@@ -690,7 +801,8 @@ def run_isolated_canary(
             reason_code=ReasonCode.UNREADABLE_ARTIFACT,
         ) from exc
 
-    applied = _apply_mechanism(adapter, mechanism, original_text)
+    nonce = secrets.token_hex(16)
+    applied = _apply_mechanism(adapter, mechanism, original_text, nonce=nonce)
     if applied is None:
         return _single_target_result(
             mechanism=mechanism,
@@ -723,57 +835,71 @@ def run_isolated_canary(
         replacement=replacement_bytes,
         timeout=deadline.remaining(),
     ) as transform_snapshot:
-        # B006(b): `transform_snapshot` is likewise an ephemeral, assay-owned
-        # checkout -- the other "snapshot-running call site".
-        with contention.ContentionWindow(
-            observer_socket_path=observer_socket_path
-        ) as transform_contention:
-            transform_unit = _execute_snapshot_unit(
-                plan=plan,
-                snapshot=transform_snapshot,
+        receipt_dir, receipt_path = _create_receipt(transform_snapshot.root.parent)
+        try:
+            # B006(b): `transform_snapshot` is an ephemeral, assay-owned
+            # checkout; its receipt directory is a sibling, outside the
+            # Git-visible snapshot tree.
+            transform_process_runner = (
+                _receipt_runner(process_runner, receipt_path)
+                if mechanism == MECHANISM_IMPORT_BREAK
+                else process_runner
+            )
+            with contention.ContentionWindow(
+                observer_socket_path=observer_socket_path
+            ) as transform_contention:
+                transform_unit = _execute_snapshot_unit(
+                    plan=plan,
+                    snapshot=transform_snapshot,
+                    deadline=deadline,
+                    wants_coverage=wants_coverage,
+                    coverage_artifact=coverage_artifact,
+                    coverage_format=coverage_format,
+                    coverage_producer=coverage_producer,
+                    process_runner=transform_process_runner,
+                    clock=clock,
+                    create_missing_parents=True,
+                )
+            if transform_unit.post_reason is not None:
+                raise AssayError(
+                    "the canary transform's own snapshot left Git-visible state "
+                    "behind after the command ran; the result no longer "
+                    "represents its own commit",
+                    outcome=Outcome.NO_MEASUREMENT,
+                    reason_code=transform_unit.post_reason,
+                )
+            transformed_outcome, observed_reason_code = _judge_unit(
+                lane,
+                transform_unit,
+                repo=transform_snapshot.root,
+                project_root=project_root,
+                scratch_project_root=transform_snapshot.project_root,
+                base=prepared.spec.commit,
+                adapter=adapter,
                 deadline=deadline,
-                wants_coverage=wants_coverage,
-                coverage_artifact=coverage_artifact,
-                coverage_format=coverage_format,
-                coverage_producer=coverage_producer,
-                process_runner=process_runner,
-                clock=clock,
-                create_missing_parents=True,
+                sensitive_values=_plan_passthrough_values(plan),
             )
-        if transform_unit.post_reason is not None:
-            raise AssayError(
-                "the canary transform's own snapshot left Git-visible state "
-                "behind after the command ran; the result no longer "
-                "represents its own commit",
-                outcome=Outcome.NO_MEASUREMENT,
-                reason_code=transform_unit.post_reason,
+            transform_termination = _classify_result(
+                outcome=transformed_outcome,
+                reason_code=observed_reason_code,
+                result=transform_unit.result,
+                observation=transform_contention.observation,
+                observation_required=require_contention_observation,
             )
-        transformed_outcome, observed_reason_code = _judge_unit(
-            lane,
-            transform_unit,
-            repo=transform_snapshot.root,
-            project_root=project_root,
-            scratch_project_root=transform_snapshot.project_root,
-            base=prepared.spec.commit,
-            adapter=adapter,
-            deadline=deadline,
-            sensitive_values=_plan_passthrough_values(plan),
-        )
-        transformed_outcome, observed_reason_code = _require_clean_import_break_exit(
-            mechanism,
-            transformed_outcome,
-            observed_reason_code,
-            transform_unit.result.returncode,
-        )
-        if _canary_failure_is_incomplete(
-            transform_unit,
-            outcome=transformed_outcome,
-            reason_code=observed_reason_code,
-            observation=transform_contention.observation,
-            observation_required=require_contention_observation,
-        ):
-            transformed_outcome = Outcome.INCONCLUSIVE
-            observed_reason_code = ReasonCode.CANARY_INCONCLUSIVE
+            (
+                transformed_outcome,
+                observed_reason_code,
+                description,
+            ) = _attribute_transform(
+                mechanism=mechanism,
+                description=description,
+                termination=transform_termination,
+                observed_reason_code=observed_reason_code,
+                receipt_path=receipt_path,
+                nonce=nonce,
+            )
+        finally:
+            shutil.rmtree(receipt_dir)
 
     return _single_target_result(
         mechanism=mechanism,

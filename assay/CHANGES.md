@@ -5,6 +5,27 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 
 ### Fixed
+- Continue native R2 campaigns when a post-preflight candidate resource window
+  is unavailable or unstable. Assay records the reason as unobserved telemetry,
+  keeps the initial cgroup capability probe fail-closed, and gives no kill
+  credit to a bare failed exit when that window is unobserved: only a normal
+  exit 1 with a current-run pytest failed-call witness can remain `killed`.
+  A PASS with an exited leader remains `survived`; a PASS with a signaled
+  leader is `crashed`. Unobserved bare nonzero failures and shell-wrapped
+  signal statuses such as 137 are also `crashed`. Any observed positive pids
+  or OOM-related delta in the candidate's counters or an ancestor's own local
+  counter makes a non-PASS candidate `crashed`, including a report-backed
+  failure. An ancestor-local event still counts when the corresponding
+  candidate counter is unavailable throughout the stable window;
+  `memory.events:max` remains telemetry. Limit-value changes preserve
+  observation and are reported in every candidate progress event as
+  `resource_limit_changes` (an empty list when unchanged); identity changes
+  make the window unobserved. Only a
+  completed witness-prefix replay with a positive event falls back to a full
+  command with a fresh window; replay errors propagate. A new Assay build
+  re-executes resumed campaign state because the Assay version is part of the
+  judge identity. Until WP7, recover crashed candidates with
+  `--resume --rejudge crashed` (B182).
 - Sort declared whole-target paths when building R1 and native/ingested R2
   verdicts; avoid reporting pytest-cov's platform banner as the first failing
   test or treating R0 execution errors as measured test failures (B181).
@@ -20,6 +41,20 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   print one advisory line when a failed R0 ran under measured PSI or CPU
   throttling. Keep host measurements out of verdict fields, claim details
   except for causal infrastructure evidence, and command output tails (B173).
+- Require a matching execution receipt for an R3 `import-break` result, and
+  preserve a clean control `FAIL` in the attempt evidence. Lanes whose lint or
+  type-check step rejects transformed source before tests execute should use
+  `uncovered-line` when R1 is declared; those import-break attempts are now
+  `INCONCLUSIVE` instead of receiving false catch credit.
+- Add the pure termination classifier and separate resource-limit evidence,
+  pressure telemetry, and observation availability in the internal command
+  model. R0/R1/R3 verdict paths keep their 10.0.1 behavior in this WP1 step;
+  classifier wiring follows in WP2–WP4 (B173).
+
+### Compatibility
+- Compatibility: v16 schema relaxation — optional native R2
+  `resource_limit_evidence` is accepted as operator decision D2's recorded
+  exception to A-477. No verdict key or schema version was added.
 
 <!-- cmru: release history -->
 

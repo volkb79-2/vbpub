@@ -849,7 +849,7 @@ def test_replay_requires_a_current_kill_and_falls_back_to_a_full_run(
     assert verify_document(stale_witness.to_dict()) == []
 
 
-def test_resource_limited_witness_replay_stops_before_full_fallback(
+def test_resource_limited_witness_replay_falls_back_to_full_command(
     git_repo: GitRepo, tmp_path: Path, monkeypatch
 ):
     base, first_head = _seed_pytest_mutation(git_repo)
@@ -913,9 +913,9 @@ def test_resource_limited_witness_replay_stops_before_full_fallback(
 
     def resource_limited_replay_runner(argv, *, env, cwd, timeout):
         commands.append(tuple(argv))
-        # Baseline passes. The replay and any erroneous full fallback fail; a
-        # zero-delta fallback would otherwise turn the prior resource hit into
-        # a reported mutation kill.
+        # Baseline passes. The resource-limited replay and the fresh full
+        # command both fail; only the full command's own clear window can earn
+        # the recorded kill.
         return completed_process(
             list(argv), returncode=0 if len(commands) == 1 else 1
         )
@@ -931,9 +931,9 @@ def test_resource_limited_witness_replay_stops_before_full_fallback(
         reuse_from=prior,
     )
 
-    assert replayed.outcome is Outcome.ERROR
-    assert replayed.reason_code is ReasonCode.EXEC_FAILED
-    assert len(commands) == 2  # baseline plus replay; no zero-delta full fallback
+    assert replayed.outcome is Outcome.PASS
+    assert len(commands) == 3  # baseline, resource-limited replay, fresh full run
+    assert len(replayed.claims[1].mutation.killed) == 1
 
 
 def test_witness_capture_works_with_the_existing_liveness_plugin(git_repo: GitRepo):
