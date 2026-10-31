@@ -14,9 +14,10 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   callers.
 - R1 inherits a non-judgeable R0 termination as `ERROR/EXEC_FAILED`, including
   `NOT_RUN`; it cannot use a coverage artifact to mask that infrastructure
-  failure. When R0 is judgeable, R1 applies its usual coverage rules. Declared
-  whole-target paths are sorted in R1 and native/ingested R2 verdicts, and R0
-  execution errors are not reported as measured test failures (B181).
+  failure. A self-signaled R0 failure keeps R1 judged. When R0 is judgeable,
+  R1 applies its usual coverage rules. Declared whole-target paths are sorted
+  in R1 and native/ingested R2 verdicts, and R0 execution errors are not
+  reported as measured test failures (B181).
 
 ### R2
 - A PASS with an exited leader remains `survived` even when a direct limit
@@ -34,9 +35,10 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   command with a fresh window; replay errors still propagate.
 - After the initial sweep, Assay retries once and serially each candidate run
   in the current invocation that ends `crashed`, per-candidate
-  `budget_exceeded`, or `hung`, while the campaign deadline permits. The retry
-  uses the shared classifier and replaces saved candidate state; the deadline
-  mask closes the retry phase (B179).
+  `budget_exceeded`, or `hung`. A deadline mask closes the retry phase. Before
+  each retry, if a per-candidate budget is known, the remaining campaign time
+  must fit that full budget; otherwise Assay keeps the first-run result. The
+  retry uses the shared classifier and replaces saved candidate state (B179).
 
 ### R3
 - An `import-break` catch requires a normal nonzero exit, the expected
@@ -52,8 +54,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   `write_bytes`, nested `cpu_seconds` and `peak_rss_bytes`, and the judge's
   `judge_rss_bytes`; unavailable procfs measurements remain null. Candidate
   progress reports configured limit changes in `resource_limit_changes` (an
-  empty list when unchanged), and each serial retry emits `candidate_retry`
-  with the first and final buckets.
+  empty list when unchanged). Progress retains the top-level `cpu_seconds` and
+  `peak_rss_bytes` keys alongside the nested `resources.*` keys. Each serial
+  retry emits `candidate_retry` with the first and final buckets.
 - `command_finished.resources` carries the window duration, observation
   status, PSI deltas, CPU-throttling duration and direct limit-event deltas.
   R0 emits one advisory line after a failed command with measured PSI or CPU

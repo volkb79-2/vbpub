@@ -5330,7 +5330,12 @@ def _execute_mutation_jobs(
             if first_bucket not in {"crashed", "budget_exceeded", "hung"}:
                 continue
 
-            deadline.remaining()
+            remaining = deadline.remaining()
+            if (
+                budget_per_candidate_seconds is not None
+                and remaining < budget_per_candidate_seconds
+            ):
+                break
             retry_run = _run_one(position)
             final_bucket = bucket_for_run(retry_run)
             results[position] = retry_run

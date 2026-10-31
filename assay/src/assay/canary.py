@@ -231,6 +231,7 @@ def _attribute_transform(
     description: str,
     termination: Termination,
     observed_reason_code: ReasonCode | None,
+    returncode: int | None,
     receipt_path: Path,
     nonce: str,
 ) -> tuple[Outcome, ReasonCode | None, str]:
@@ -260,7 +261,7 @@ def _attribute_transform(
     if observed_reason_code is expected_reason:
         if mechanism != MECHANISM_IMPORT_BREAK:
             return Outcome.FAIL, expected_reason, description
-        if receipt_matched:
+        if receipt_matched and returncode is not None and returncode > 0:
             return Outcome.FAIL, expected_reason, f"{description}; {receipt_note}"
 
     final_description = (
@@ -553,6 +554,7 @@ def run_python_canary(
             description=description,
             termination=transform_termination,
             observed_reason_code=observed_reason_code,
+            returncode=transformed_result.returncode,
             receipt_path=receipt_path,
             nonce=nonce,
         )
@@ -895,6 +897,7 @@ def run_isolated_canary(
                 description=description,
                 termination=transform_termination,
                 observed_reason_code=observed_reason_code,
+                returncode=transform_unit.result.returncode,
                 receipt_path=receipt_path,
                 nonce=nonce,
             )

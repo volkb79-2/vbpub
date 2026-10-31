@@ -298,6 +298,7 @@ def test_nonjudgeable_termination_stays_inconclusive_even_with_a_receipt(
         description="transformed source",
         termination=case.termination,
         observed_reason_code=case.inputs["reason_code"],
+        returncode=case.inputs["returncode"],
         receipt_path=receipt_path,
         nonce=NONCE,
     )
@@ -530,6 +531,7 @@ def test_transform_attribution_table(
         description=description,
         termination=termination,
         observed_reason_code=observed_reason,
+        returncode=(0 if termination is Termination.PASSED else 1),
         receipt_path=receipt_path,
         nonce=NONCE,
     )
@@ -547,6 +549,36 @@ def test_transform_attribution_table(
         ),
         description=final_description,
     ) == (expected_attempt, expected_attempt_reason), name
+
+
+@pytest.mark.parametrize(
+    ("returncode", "expected_transform", "expected_reason"),
+    (
+        (0, Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE),
+        (1, Outcome.FAIL, ReasonCode.COMMAND_FAILED),
+    ),
+    ids=("report-failure-with-zero-exit", "ordinary-nonzero-exit"),
+)
+def test_import_break_failure_requires_a_positive_returncode(
+    tmp_path: Path,
+    returncode: int,
+    expected_transform: Outcome,
+    expected_reason: ReasonCode,
+):
+    receipt_path = tmp_path / "receipt"
+    receipt_path.write_bytes(NONCE.encode("ascii"))
+
+    transformed, observed_reason, _description = canary._attribute_transform(
+        mechanism="import-break",
+        description="inserted import break",
+        termination=Termination.FAILED,
+        observed_reason_code=ReasonCode.COMMAND_FAILED,
+        returncode=returncode,
+        receipt_path=receipt_path,
+        nonce=NONCE,
+    )
+
+    assert (transformed, observed_reason) == (expected_transform, expected_reason)
 
 
 def test_receipt_env_is_transform_only_and_receipt_dir_is_external_and_removed(
