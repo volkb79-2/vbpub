@@ -1162,7 +1162,7 @@ def test_candidate_counter_delta_is_persisted_and_overrides_a_kill(
     assert len(candidate_calls) == 2
     assert result.killed == ()
     assert len(result.crashed) == result.total == 1
-    expected = _evidence(pids=(0, 1)).to_dict()
+    expected = _evidence(pids=(1, 2)).to_dict()
     state_record, = [
         json.loads(path.read_text(encoding="utf-8"))
         for path in state_root.glob("*.json")
@@ -1474,6 +1474,7 @@ def test_candidate_observer_loss_is_recorded_without_aborting_the_campaign(
         (
             before_window,
             before_window,
+            changed_limit,
             changed_limit,
             changed_limit,
             changed_limit,
@@ -2087,7 +2088,7 @@ def test_run_mutation_ancestor_local_pids_event_is_attributed_to_candidate(
     assert other_bucket == ()
     assert bucket[0].resource_limit_evidence is not None
     assert bucket[0].resource_limit_evidence.limit_hit is True
-    assert bucket[0].resource_limit_evidence.memory_events_oom.delta == 1
+    assert bucket[0].resource_limit_evidence.pids_events_max.delta == 1
     progress_records = [
         json.loads(line)
         for line in progress_path.read_text(encoding="utf-8").splitlines()
