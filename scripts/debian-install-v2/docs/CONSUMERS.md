@@ -79,7 +79,8 @@ control root sizing and swap:
 ```json
 {
   "schema_version": 1,
-  "root_resize_policy": "grow-only",
+  "root_resize_policy": "resize",
+  "root_max_size_gb": 40,
   "swap_policy": "on",
   "swap_disk_total_gb": 8,
   "swap_partition_count": 4,
@@ -89,7 +90,12 @@ control root sizing and swap:
 
 Choose one root policy: `resize` (default) uses the largest safe root extent
 after managed swap and can grow or shrink; `grow-only` expands when possible
-but never shrinks; `untouched` forbids root partition changes. Choose one swap
+but never shrinks; `untouched` forbids root partition changes. Optional
+`root_max_size_gb` caps the root partition at that many GiB and leaves disk
+space after root and swap unallocated for a later data partition. It does not
+format or mount the remaining space. The cap must be at least
+`preserve_root_size_gb`; `grow-only` and `untouched` refuse if the current
+root is larger than the cap. Choose one swap
 policy: `on` (default) replaces the guest's configured swap setup with native
 partitions: it disables all active swap, removes configured swapfiles and swap
 logical volumes, and replaces fstab swap entries with the managed partitions.

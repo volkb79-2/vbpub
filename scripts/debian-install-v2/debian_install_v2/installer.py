@@ -318,6 +318,11 @@ class Installer:
             f"swap={_code(str(plan['swap_policy']))}, "
             f"swap total={_code(swap_total)}",
         ]
+        if plan["root_max_size_gb"] is not None:
+            plan_lines.append(
+                f"Root size cap: {_code(str(plan['root_max_size_gb']))} GiB; "
+                "space after root and swap remains unallocated"
+            )
         if plan["swap_policy"] == "on":
             plan_lines.append(
                 f"Swap allocation: {_code(retained_swap)}, {_code(tail_swap)} "
@@ -724,6 +729,7 @@ class Installer:
                 else "not required"
             ),
             "root_resize_policy": self.config.root_resize_policy,
+            "root_max_size_gb": self.config.root_max_size_gb,
             "swap_policy": self.config.swap_policy,
             "swap_total_gb": swap_total,
             "swap_retained_before_root_gb": retained_total_gb,
@@ -2020,13 +2026,37 @@ MaxFileSec=1month
                 "reduce swap_disk_total_gb or increase the disk size"
             )
 
+        root_size_cap = None
+        if self.config.root_max_size_gb is not None:
+            cap_sectors = self.config.root_max_size_gb * GIB // 512
+            cap_root_end = ((root_start + cap_sectors) // alignment) * alignment
+            root_size_cap = cap_root_end - root_start
+            if root_size_cap <= 0:
+                raise InstallerError(
+                    "root_max_size_gb leaves no aligned space for the root partition"
+                )
+
         policy = self.config.root_resize_policy
         if policy == "untouched":
+            if root_size_cap is not None and root_size > root_size_cap:
+                raise InstallerError(
+                    "root_resize_policy=untouched cannot satisfy root_max_size_gb "
+                    f"({self.config.root_max_size_gb} GiB) because the current root is larger"
+                )
             target_root_size = root_size
         elif policy == "grow-only":
+            if root_size_cap is not None and root_size > root_size_cap:
+                raise InstallerError(
+                    "root_resize_policy=grow-only cannot satisfy root_max_size_gb "
+                    f"({self.config.root_max_size_gb} GiB) without shrinking the current root"
+                )
             target_root_size = max(root_size, max_root_size)
+            if root_size_cap is not None:
+                target_root_size = min(target_root_size, root_size_cap)
         else:  # resize
             target_root_size = max_root_size
+            if root_size_cap is not None:
+                target_root_size = min(target_root_size, root_size_cap)
 
         if self.config.swap_policy == "on":
             root_end = root_start + target_root_size

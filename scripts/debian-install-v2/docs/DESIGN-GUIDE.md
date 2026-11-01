@@ -100,6 +100,31 @@ a shrink. `untouched` is the strict no-partition-change choice. The existing
 `preserve_root_size_gb` remains a minimum root-capacity floor; it is not the
 resize target.
 
+`root_max_size_gb` adds an optional upper bound for hosts that need a compact
+system partition and a separate data area. Under `resize`, the planner uses
+the smaller of this cap and the largest safe root extent after swap. A current
+root below the cap can grow to it; a root above it can shrink only after the
+normal usage and ext-filesystem minimum checks pass. The area after root and
+managed swap remains unallocated: the installer does not invent a filesystem,
+partition, or mount point. The cap must be at least
+`preserve_root_size_gb`. `grow-only` and `untouched` refuse when a larger
+current root would have to shrink to satisfy the cap.
+
+For example, this keeps a 40 GiB root and 8 GiB of managed swap while leaving
+the rest of a larger disk available for a manually created data partition:
+
+```json
+{
+  "schema_version": 1,
+  "root_resize_policy": "resize",
+  "root_max_size_gb": 40,
+  "preserve_root_size_gb": 10,
+  "swap_policy": "on",
+  "swap_disk_total_gb": 8,
+  "swap_partition_count": 4
+}
+```
+
 Swap sizing is tied to both machine resources and disk capacity. A pure
 RAM-based rule can consume most of a small VM's disk, while a fixed GiB value
 does not scale across 20–512 GB images. The default is
