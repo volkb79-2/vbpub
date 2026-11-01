@@ -83,6 +83,25 @@ kernel default. This keeps a host-wide monitoring policy out of cgprofile's
 runtime and gives the operator a clear way to preserve `DAMON_STAT` when it is
 needed for other workloads.
 
+## Directory bind-mount identity
+
+A directory bind mount stays attached to the mounted directory object, not to
+a pathname that is looked up again on every access. If the host removes that
+directory and creates another at the same path, an existing mount remains
+attached to the deleted inode; its consumer cannot see files in the replacement
+until the mount is recreated. Host paths bind-mounted by long-lived consumers
+must keep their directory identity: repair ownership or mode in place, and
+replace socket entries inside the directory without unlinking the directory.
+
+MDT keeps its runtime bind directories in place in three ways. The Docker API
+socket unit creates `/run/docker-api` idempotently with `mkdir -p` and corrects
+its owner and mode in place; under that directory, stale-mount cleanup targets
+only `/run/docker-api/docker.sock`. The `/run/cgprofile` directory is ensured by the
+`d` entry in `host-setup/units/mdt-cgprofile.conf:11`, while daemon restarts
+replace socket entries inside it. The BuildKit service sets
+`RuntimeDirectoryPreserve=yes` for `/run/mdt-buildkitd`. `/run` is tmpfs, so
+each host boot starts with fresh runtime directories.
+
 ## Managed BuildKit socket access
 
 The rootless BuildKit process creates its Unix socket with its container
@@ -97,6 +116,10 @@ host group `docker`, mode `0660`. Locking the parent before the privileged
 restores directory mode `01777` for socket creation. This shares the BuildKit
 API only with principals already trusted for Docker access; it does not make
 the socket world-accessible.
+
+The devcontainer bind-mounts this runtime directory; see [directory bind-mount
+identity](#directory-bind-mount-identity) for why its inode must survive service
+restarts.
 
 ## Bootstrap uses the source filesystem type
 

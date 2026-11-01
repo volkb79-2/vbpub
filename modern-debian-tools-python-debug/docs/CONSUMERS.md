@@ -354,6 +354,21 @@ The actual file may contain other JSONC properties. The source path is a host
 path and must already exist; `--mount` is deliberate because a missing source
 must stop container creation rather than become an empty directory.
 
+A running devcontainer created before the host preserved these runtime
+directories can remain mounted to a deleted inode. Check both mount sources
+inside the container:
+
+```bash
+findmnt -T /run/mdt-buildkitd -o SOURCE
+findmnt -T /run/docker-api -o SOURCE
+```
+
+If a source ends in `//deleted`, rebuild that devcontainer once so it mounts the
+current host directory. Keep the directory-level mounts from the MDT template;
+replacing a socket entry inside either directory does not require a rebuild.
+See the [directory bind-mount identity](DESIGN-GUIDE.md#directory-bind-mount-identity)
+design.
+
 After the image is rebuilt, `postCreateCommand` runs
 `finalize_container_environment.py`. It validates/reuses the named remote and
 does not create a per-container or container-driver builder. A partial or

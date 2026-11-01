@@ -612,6 +612,8 @@ and waits for the new socket before verifying/reusing the builder. Existing
 host setup, then rebuild devcontainers so their mandatory socket mount and
 explicit environment are present. A running devcontainer is not required to
 register the builder.
+An existing devcontainer whose mount source shows `//deleted` must be rebuilt
+once to mount the current host directory.
 
 Reboot-survival works in three layers; each exists because the previous one
 cannot express the next:
