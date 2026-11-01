@@ -170,6 +170,7 @@ items:
   - {id: B188, title: "R2 coverage exclusions are keyed by line number rather than stable source identity", type: bugfix, component: mutation, context_estimate: small}
   - {id: B189, title: "Release and qualification sparse clones omitted the sibling cowtree source required by Assay's wheel", type: bugfix, component: distribution, context_estimate: small}
   - {id: B190, title: "CW8 integration left B105 target ordering, workspace record, and cleanup coverage out of sync", type: bugfix, component: gate, context_estimate: small}
+  - {id: B191, title: "SQL witness source bootstrap omitted bundled cowtree and hid assay-run diagnostics", type: bugfix, component: gate, context_estimate: small}
 ---
 
 # assay — backlog
@@ -13595,3 +13596,16 @@ had no CoW leak test, while a runner cleanup test's monkeypatch did not accept
 the new `workspace` keyword. Aligning those contracts restores the registered
 preflight and tester checks. The sparse clone helpers already include
 `libraries/cowtree/` (B189); that was not the cause of this gate run.
+
+## B191 — include bundled cowtree in the SQL witness source bootstrap
+
+**Status: CLOSED by the CW8 round-2 repair (2026-11-01).** The SQL
+qualification witness runs the current checkout's source directly from a
+disposable repository. Its bootstrap added only `assay/src` to `sys.path`,
+while CW8's lazy workspace adapter imports the bundled sibling package when
+the higher-rigor lane prepares its snapshot. The runner therefore exited with
+`ModuleNotFoundError: No module named 'cowtree'` before writing its verdict,
+even though the source is present in the exact checkout. The bootstrap now
+adds `libraries/cowtree/src` from that same checkout. If a later run still
+fails before producing a verdict, the qualification error includes bounded
+stdout and stderr tails from the child Assay invocation.
