@@ -1,4 +1,4 @@
-"""Lazy cowtree adapter for Assay's reflink-only Level A workspace path."""
+"""Lazy cowtree adapter for Assay's copy-on-write snapshot paths."""
 
 from __future__ import annotations
 
@@ -22,6 +22,10 @@ class _CowRunWorkspace:
     def __init__(self, run) -> None:
         self._run = run
 
+    @property
+    def cheap_clone(self) -> bool:
+        return self._run.caps.cheap_clone
+
     def ingest_tree(self, source: Path, name: str) -> Path:
         return Path(self._run.ingest_tree(source, name))
 
@@ -30,6 +34,13 @@ class _CowRunWorkspace:
 
     def clone_file(self, source: Path, destination: Path) -> None:
         self._run.clone_file(source, destination)
+
+    def clone_tree(self, source: Path) -> Path:
+        name = f"assay-clone-{secrets.token_hex(12)}"
+        return Path(self._run.clone_tree(source, name))
+
+    def seal(self, path: Path) -> None:
+        self._run.seal(path)
 
     def delete_tree(self, path: Path) -> None:
         self._run.delete_tree(path)

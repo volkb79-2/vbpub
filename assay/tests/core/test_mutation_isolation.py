@@ -400,19 +400,20 @@ def test_cheap_clone_materialization_preserves_plain_mutation_buckets(
         for name in ("killed", "survived", "crashed", "budget_exceeded")
     )
     assert plain_signature == cow_signature == expected
-    assert len(process_cwds) == 3
+    attempts = 2 if bucket in {"crashed", "budget_exceeded"} else 1
+    assert len(process_cwds) == 1 + 2 * attempts
     assert cow_provider.workspace is not None
     assert cow_provider.workspace.template_path is not None
+    assert len(cow_provider.workspace.cloned_trees) == attempts
     assert cow_provider.workspace.events == [
         ("seal", cow_provider.workspace.template_path, None),
-        (
-            "clone",
-            cow_provider.workspace.template_path,
-            cow_provider.workspace.cloned_trees[0],
-        ),
+        *[
+            ("clone", cow_provider.workspace.template_path, clone)
+            for clone in cow_provider.workspace.cloned_trees
+        ],
     ]
     assert cow_provider.workspace.delete_calls == [
-        cow_provider.workspace.cloned_trees[0],
+        *cow_provider.workspace.cloned_trees,
         cow_provider.workspace.template_path,
     ]
 

@@ -752,15 +752,20 @@ full shape, what the refusal looks like, and the maintenance obligation it creat
 Both values are recorded verbatim in the verdict's `snapshot_policy` object, so a reviewer can
 tell a full-repository verdict from an omission-mode one without re-running anything.
 
-### Optional CoW storage for P22 snapshots (CW8)
+### Optional CoW storage for P22 snapshots (CW8/CW9)
 
 No `assay.toml` setting is needed. A host or lane wrapper may set
 `MDT_COW_ROOT` to an existing canonical directory on a btrfs mount owned by
 the non-root user running Assay. Assay validates that mount and uses cowtree's
-reflink operation for packed Git objects. If the variable is absent, Assay
-uses its existing file-copy path and cowtree emits one INFO line. An invalid
-configured area, insufficient admitted space or a reflink failure refuses the
-lane; Assay does not silently change to a weaker storage path.
+cheap-clone operations when available: it verifies and seals one base tree,
+then creates an independent clone for each execution unit. Replacement files
+are unlinked and rewritten inside that unit, then the clone is verified before
+declared links are planted. The sealed template is never passed to the lane
+command. If cheap tree cloning is unavailable, Assay keeps the packed-object
+reflink path. If the variable is absent, Assay uses its existing file-copy
+path and cowtree emits one INFO line. An invalid configured area, insufficient
+admitted space or a failed required clone refuses the lane; Assay does not
+silently change to a weaker storage path.
 
 For a host that already provides such an area, keep the fact in the wrapper
 environment rather than adding it to lane policy:
@@ -768,12 +773,20 @@ environment rather than adding it to lane policy:
 ```sh
 # Replace this value with the existing user-owned btrfs area on this host.
 export MDT_COW_ROOT=/path/to/your/btrfs-area
-assay run unit --file assay.toml --verdict-json .assay/verdict-unit.json
+
+# Run the same R2 lane and commit with separate resume stores and progress files.
+lane='your-native-r2-lane'  # Replace with a native R2 lane from assay.toml.
+COWTREE_MODE=off assay run "$lane" --file assay.toml --resume \
+  --state-dir .assay/state-copy --progress .assay/progress-copy.jsonl
+COWTREE_MODE=auto MDT_COW_ROOT="$MDT_COW_ROOT" assay run "$lane" \
+  --file assay.toml --resume --state-dir .assay/state-cow \
+  --progress .assay/progress-cow.jsonl
 ```
 
-The run still judges the exact same manifest and produces the same result
-buckets as the copy path. This adapter accelerates packed-object storage only;
-it does not change snapshot selection or history. See the [design rationale](DESIGN-GUIDE.md#the-optional-cow-workspace-affects-storage-not-snapshot-identity).
+The CoW and copy commands judge the same committed manifest and should produce
+the same candidate buckets. Use separate state and progress locations so one
+run cannot reuse another run's pilot records. CoW does not change snapshot
+selection or history. See the [design rationale](DESIGN-GUIDE.md#the-optional-cow-workspace-affects-storage-not-snapshot-identity).
 
 ### Shallow seeds, full-history opt-in, and project limits (B101)
 

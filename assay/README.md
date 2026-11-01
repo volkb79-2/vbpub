@@ -203,13 +203,16 @@ assay exists to close that gap mechanically, not by policy:
   bound the seed and materialized trees. See [§6, snapshot history and seed
   limits](docs/DESIGN-GUIDE.md#snapshot-history-and-seed-limits-b101).
 - **Higher-rigor snapshots can use a CoW workspace automatically.** When
-  `MDT_COW_ROOT` names an existing, caller-owned btrfs area, Assay reflink-clones
-  packed Git object files into each private snapshot. An absent area keeps the
-  existing copy path and emits one INFO line; a configured but invalid area or
-  failed reflink refuses the lane with `ERROR/EXEC_FAILED` and a claim detail.
-  This changes storage only; snapshot bytes and judgment buckets stay the same.
+  `MDT_COW_ROOT` names an existing, caller-owned btrfs area and it supports
+  cheap tree clones, Assay seals one verified base tree and clones it for each
+  execution unit. A changed file is rewritten and verified in that unit's
+  clone before it runs. Without that capability, the existing packed-object
+  reflink path remains; with no area, the existing copy path remains and emits
+  one INFO line. A configured but invalid area or failed clone refuses the
+  lane with `ERROR/EXEC_FAILED` and a claim detail. Storage changes only;
+  snapshot bytes and judgment buckets stay the same.
   See the [CoW workspace design](docs/DESIGN-GUIDE.md#the-optional-cow-workspace-affects-storage-not-snapshot-identity)
-  and [consumer setup](docs/CONSUMERS.md#optional-cow-storage-for-p22-snapshots-cw8).
+  and [consumer setup](docs/CONSUMERS.md#optional-cow-storage-for-p22-snapshots-cw8cw9).
 - **Snapshot dirt is explicit and auditable.** Project-level
   `[isolation].dirty_ignore` may cover known ledger/output paths using the
   same repo-top-relative POSIX glob grammar as `identity_exclude`. Other dirty

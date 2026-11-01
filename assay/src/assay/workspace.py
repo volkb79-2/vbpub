@@ -33,9 +33,12 @@ class WorkspaceEstimate:
 class ActiveWorkspace(Protocol):
     """Run-owned paths and file clones while one workspace lease is open."""
 
+    cheap_clone: bool
     ingest_tree: Callable[[Path, str], Path]
     make_tree: Callable[[], Path]
     clone_file: Callable[[Path, Path], None]
+    clone_tree: Callable[[Path], Path]
+    seal: Callable[[Path], None]
     delete_tree: Callable[[Path], None]
 
 

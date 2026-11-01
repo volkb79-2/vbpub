@@ -587,8 +587,10 @@ class SnapshotRepository:
         self._manifest = manifest
         self._workspace = workspace
         self._lock = threading.Lock()
+        self._template_lock = threading.Lock()
         self._closed = False
         self._live: set[Path] = set()
+        self._template_root: Path | None = None
 
     @property
     def spec(self) -> SnapshotSpec:
@@ -758,16 +760,22 @@ class SnapshotRepository:
         try:
             if replacement is not None:
                 self._check_replacement_site(replacement, deadline)
-            if self._workspace is None:
-                root = Path(
-                    tempfile.mkdtemp(
-                        dir=self._spec.scratch_root, prefix="assay-p22-snap-"
-                    )
-                )
+            if self._workspace is not None and self._workspace.cheap_clone:
+                template = self._ensure_template(deadline)
+                root = self._workspace.clone_tree(template)
+                self._track(root)
+                commit = self._materialize_clone(root, replacement, deadline)
             else:
-                root = self._workspace.make_tree()
-            self._track(root)
-            commit = self._build(root, replacement, deadline)
+                if self._workspace is None:
+                    root = Path(
+                        tempfile.mkdtemp(
+                            dir=self._spec.scratch_root, prefix="assay-p22-snap-"
+                        )
+                    )
+                else:
+                    root = self._workspace.make_tree()
+                self._track(root)
+                commit = self._build(root, replacement, deadline)
             snapshot = Snapshot(
                 root=root,
                 project_root=_join_prefix(root, self._spec.project_prefix),
@@ -789,6 +797,59 @@ class SnapshotRepository:
                 _remove_owned_tree(root)
             else:
                 self._workspace.delete_tree(root)
+
+    def _ensure_template(self, deadline: "_git._P22Deadline") -> Path:
+        """Build one sealed base tree for cheap per-unit workspace clones."""
+        self._check_open()
+        with self._template_lock:
+            self._check_open()
+            if self._template_root is not None:
+                return self._template_root
+            workspace = self._workspace
+            root = workspace.make_tree()
+            try:
+                self._build(root, None, deadline, plant_links=False)
+                workspace.seal(root)
+            except BaseException:
+                self._discard_materialization(root)
+                raise
+            self._template_root = root
+            return root
+
+    def _materialize_clone(
+        self,
+        root: Path,
+        replacement: tuple[PurePosixPath, bytes, bytes] | None,
+        deadline: "_git._P22Deadline",
+    ) -> str:
+        """Apply one unit's private Git and worktree changes to its clone."""
+        executable = self._source.git_executable
+        git_dir = root / ".git"
+
+        def run(*args: str, stdin_bytes: bytes = b"", identity: bool = False) -> bytes:
+            return _git._p22_git(
+                executable,
+                git_dir=git_dir,
+                work_tree=root,
+                args=args,
+                deadline=deadline,
+                cwd=root,
+                stdin_bytes=stdin_bytes,
+                identity=identity,
+            )
+
+        commit, _entries = self._apply_replacement(
+            root=root,
+            git_dir=git_dir,
+            run=run,
+            replacement=replacement,
+            deadline=deadline,
+            rewrite_worktree=True,
+        )
+        (git_dir / "HEAD").write_text(f"{commit}\n", encoding="ascii")
+        self._verify(root, git_dir, commit, run)
+        self._plant_link_paths(root, run)
+        return commit
 
     def _discard_materialization(self, root: Path) -> None:
         """Remove a failed or leaked child without masking its first error."""
@@ -838,6 +899,8 @@ class SnapshotRepository:
         root: Path,
         replacement: tuple[PurePosixPath, bytes, bytes] | None,
         deadline: "_git._P22Deadline",
+        *,
+        plant_links: bool = True,
     ) -> str:
         executable = self._source.git_executable
         spec = self._spec
@@ -889,39 +952,14 @@ class SnapshotRepository:
                     for path in self._manifest.omitted
                 ),
             )
-        commit = spec.commit
-        entries = self._manifest.entries
-        if replacement is not None:
-            path, _expected, new_bytes = replacement
-            entry = self._manifest.by_path()[path]
-            new_oid = _decode(
-                run("hash-object", "-w", "--stdin", stdin_bytes=new_bytes)
-            ).strip()
-            run("update-index", "--cacheinfo", f"{entry.mode},{new_oid},{path!s}")
-            tree = _decode(run("write-tree")).strip()
-            commit = _decode(
-                run(
-                    "commit-tree",
-                    tree,
-                    "-p",
-                    spec.commit,
-                    stdin_bytes=_git._P22_REPLACEMENT_MESSAGE,
-                    identity=True,
-                )
-            ).strip()
-            if _OID_RE.fullmatch(commit) is None:
-                raise _git_failed(f"commit-tree returned {commit!r}, not a full OID")
-            entries = tuple(
-                _Entry(
-                    path=item.path,
-                    mode=item.mode,
-                    oid=new_oid if item.path == path else item.oid,
-                    size=len(new_bytes) if item.path == path else item.size,
-                    target=item.target,
-                )
-                for item in entries
-            )
-            self._enforce_child_closure(git_dir, commit, deadline)
+        commit, entries = self._apply_replacement(
+            root=root,
+            git_dir=git_dir,
+            run=run,
+            replacement=replacement,
+            deadline=deadline,
+            rewrite_worktree=False,
+        )
 
         _write_worktree(
             executable,
@@ -933,8 +971,63 @@ class SnapshotRepository:
         )
         (git_dir / "HEAD").write_text(f"{commit}\n", encoding="ascii")
         self._verify(root, git_dir, commit, run)
-        self._plant_link_paths(root, run)
+        if plant_links:
+            self._plant_link_paths(root, run)
         return commit
+
+    def _apply_replacement(
+        self,
+        *,
+        root: Path,
+        git_dir: Path,
+        run: Callable[..., bytes],
+        replacement: tuple[PurePosixPath, bytes, bytes] | None,
+        deadline: "_git._P22Deadline",
+        rewrite_worktree: bool,
+    ) -> tuple[str, tuple[_Entry, ...]]:
+        """Apply the fixed replacement commit to a base Git index and tree."""
+        spec = self._spec
+        entries = self._manifest.entries
+        if replacement is None:
+            return spec.commit, entries
+
+        path, _expected, new_bytes = replacement
+        entry = self._manifest.by_path()[path]
+        new_oid = _decode(
+            run("hash-object", "-w", "--stdin", stdin_bytes=new_bytes)
+        ).strip()
+        run("update-index", "--cacheinfo", f"{entry.mode},{new_oid},{path!s}")
+        tree = _decode(run("write-tree")).strip()
+        commit = _decode(
+            run(
+                "commit-tree",
+                tree,
+                "-p",
+                spec.commit,
+                stdin_bytes=_git._P22_REPLACEMENT_MESSAGE,
+                identity=True,
+            )
+        ).strip()
+        if _OID_RE.fullmatch(commit) is None:
+            raise _git_failed(f"commit-tree returned {commit!r}, not a full OID")
+        entries = tuple(
+            _Entry(
+                path=item.path,
+                mode=item.mode,
+                oid=new_oid if item.path == path else item.oid,
+                size=len(new_bytes) if item.path == path else item.size,
+                target=item.target,
+            )
+            for item in entries
+        )
+        self._enforce_child_closure(git_dir, commit, deadline)
+        if rewrite_worktree:
+            destination = root.joinpath(*path.parts)
+            destination.unlink()
+            destination.write_bytes(new_bytes)
+            destination.chmod(0o755 if entry.mode == _MODE_EXECUTABLE else 0o644)
+            os.utime(destination, (_FIXED_MTIME, _FIXED_MTIME))
+        return commit, entries
 
     def _plant_link_paths(self, root: Path, run: Callable[..., bytes]) -> None:
         """(B041(b) rules 1-4) Materialise the declared ``link_paths`` as
@@ -1158,13 +1251,18 @@ class SnapshotRepository:
                 f"directory in {commit}"
             )
 
-def _close_repository(repository: "SnapshotRepository") -> set[Path]:
-    """Close *repository* and return the snapshot roots still live at closure."""
-    with repository._lock:
-        live = set(repository._live)
-        repository._live.clear()
-        repository._closed = True
-    return live
+def _close_repository(
+    repository: "SnapshotRepository",
+) -> tuple[set[Path], Path | None]:
+    """Close *repository* and return live children plus its private template."""
+    with repository._template_lock:
+        with repository._lock:
+            live = set(repository._live)
+            repository._live.clear()
+            template = repository._template_root
+            repository._template_root = None
+            repository._closed = True
+    return live, template
 
 
 def _remove_owned_tree(path: Path) -> None:
@@ -2234,20 +2332,30 @@ def prepare_snapshot(
         # failure nor the live-child programmer error may mask the terminal
         # the caller is actually about to see.
         if repository is not None:
-            for leaked in _close_repository(repository):
-                repository._discard_materialization(leaked)
+            leaked, template_root = _close_repository(repository)
+            for root in leaked:
+                repository._discard_materialization(root)
+            if template_root is not None:
+                repository._discard_materialization(template_root)
         shutil.rmtree(child, ignore_errors=True)
         workspace_stack.__exit__(type(exc), exc, exc.__traceback__)
         raise
     else:
-        live = _close_repository(repository)
+        live, template_root = _close_repository(repository)
         # Refusing loudly is right, but a refusal that ABANDONS a snapshot
         # directory inside caller-owned scratch would be the silent state
         # leak the terminal table forbids -- so the misused children are
         # removed first and the programmer error is still raised.
         for leaked in live:
             repository._discard_materialization(leaked)
-        _remove_owned_tree(child)
+        try:
+            if template_root is not None:
+                repository._workspace.delete_tree(template_root)
+            _remove_owned_tree(child)
+        except BaseException as exc:
+            shutil.rmtree(child, ignore_errors=True)
+            workspace_stack.__exit__(type(exc), exc, exc.__traceback__)
+            raise
         if live:
             error = RuntimeError(
                 f"prepare_snapshot's context closed with {len(live)} live "

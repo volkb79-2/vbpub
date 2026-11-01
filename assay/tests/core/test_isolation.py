@@ -337,6 +337,7 @@ class _CopyingWorkspace:
         self.cloned_files: list[tuple[Path, Path]] = []
         self.delete_calls: list[Path] = []
         self.delete_error: Exception | None = None
+        self.delete_error_path: Path | None = None
         self._next_tree = 0
 
     def ingest_tree(self, source: Path, name: str) -> Path:
@@ -358,7 +359,9 @@ class _CopyingWorkspace:
 
     def delete_tree(self, path: Path) -> None:
         self.delete_calls.append(path)
-        if self.delete_error is not None:
+        if self.delete_error is not None and (
+            self.delete_error_path is None or path == self.delete_error_path
+        ):
             raise self.delete_error
         shutil.rmtree(path)
 
@@ -392,11 +395,14 @@ class _CheapCloneWorkspace(_CopyingWorkspace):
         self.template_path: Path | None = None
         self.cloned_trees: list[Path] = []
         self.events: list[tuple[str, Path, Path | None]] = []
+        self.seal_error: Exception | None = None
 
     def seal(self, path: Path) -> None:
         self.template_path = path
         self._set_tree_writable(path, writable=False)
         self.events.append(("seal", path, None))
+        if self.seal_error is not None:
+            raise self.seal_error
 
     def clone_tree(self, source: Path) -> Path:
         assert source == self.template_path
@@ -435,6 +441,23 @@ class _CheapCloneWorkspace(_CopyingWorkspace):
 class _CheapCloneWorkspaceProvider(_CopyingWorkspaceProvider):
     workspace_type = _CheapCloneWorkspace
 
+    def __init__(self, root: Path):
+        super().__init__(root)
+        self.seal_error: Exception | None = None
+        self.delete_error: Exception | None = None
+
+    @contextmanager
+    def open(self, estimate, *, scratch_root):
+        self.estimate = estimate
+        self.root.mkdir()
+        self.workspace = self.workspace_type(self.root)
+        self.workspace.seal_error = self.seal_error
+        self.workspace.delete_error = self.delete_error
+        try:
+            yield self.workspace
+        finally:
+            shutil.rmtree(self.root)
+
 
 def test_workspace_materialization_matches_plain_snapshot_and_clones_pack_files(
     tmp_path: Path,
@@ -470,7 +493,15 @@ def test_workspace_materialization_matches_plain_snapshot_and_clones_pack_files(
 
 
 @pytest.mark.parametrize(
-    "close_path", ["success", "failure", "keyboard_interrupt", "outer_leak"]
+    "close_path",
+    [
+        "success",
+        "failure",
+        "keyboard_interrupt",
+        "outer_leak",
+        "template_failure",
+        "template_delete_failure",
+    ],
 )
 def test_cheap_clone_template_and_unit_are_cleaned_on_every_close_path(
     tmp_path: Path, close_path: str
@@ -479,7 +510,22 @@ def test_cheap_clone_template_and_unit_are_cleaned_on_every_close_path(
     scratch = _scratch(tmp_path)
     provider = _CheapCloneWorkspaceProvider(tmp_path / "cheap-clone-run")
     spec = _spec(repo, scratch, commit)
-    if close_path == "success":
+    if close_path == "template_failure":
+        provider.seal_error = OSError("template seal failed")
+        with pytest.raises(OSError, match="template seal failed"):
+            with prepare_snapshot(spec, timeout=TIMEOUT, workspace=provider) as prepared:
+                with prepared.materialize(timeout=TIMEOUT):
+                    pytest.fail("a failed seal must not yield a candidate")
+    elif close_path == "template_delete_failure":
+        provider.delete_error = OSError("template delete failed")
+        with pytest.raises(OSError, match="template delete failed"):
+            with prepare_snapshot(spec, timeout=TIMEOUT, workspace=provider) as prepared:
+                with prepared.materialize(timeout=TIMEOUT):
+                    assert provider.workspace is not None
+                    provider.workspace.delete_error_path = (
+                        provider.workspace.template_path
+                    )
+    elif close_path == "success":
         with prepare_snapshot(spec, timeout=TIMEOUT, workspace=provider) as prepared:
             with prepared.materialize(timeout=TIMEOUT) as snapshot:
                 assert provider.workspace is not None
@@ -503,15 +549,20 @@ def test_cheap_clone_template_and_unit_are_cleaned_on_every_close_path(
     workspace = provider.workspace
     assert workspace is not None
     assert workspace.template_path is not None
-    assert len(workspace.cloned_trees) == 1
-    assert workspace.delete_calls.count(workspace.template_path) == 1
-    assert workspace.delete_calls.count(workspace.cloned_trees[0]) == 1
-    assert workspace.events[0] == ("seal", workspace.template_path, None)
-    assert workspace.events[1] == (
-        "clone",
-        workspace.template_path,
-        workspace.cloned_trees[0],
-    )
+    if close_path == "template_failure":
+        assert workspace.cloned_trees == []
+        assert workspace.delete_calls == [workspace.template_path]
+        assert workspace.events == [("seal", workspace.template_path, None)]
+    else:
+        assert len(workspace.cloned_trees) == 1
+        assert workspace.delete_calls.count(workspace.template_path) == 1
+        assert workspace.delete_calls.count(workspace.cloned_trees[0]) == 1
+        assert workspace.events[0] == ("seal", workspace.template_path, None)
+        assert workspace.events[1] == (
+            "clone",
+            workspace.template_path,
+            workspace.cloned_trees[0],
+        )
     assert list(scratch.iterdir()) == []
     assert not provider.root.exists()
 
