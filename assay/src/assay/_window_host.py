@@ -495,7 +495,9 @@ def _process_group_members(
         if not entry.name.isdecimal():
             continue
         try:
-            raw = (entry / "stat").read_text(encoding="ascii")
+            raw = (entry / "stat").read_bytes().decode(
+                "utf-8", "backslashreplace"
+            )
         except (FileNotFoundError, ProcessLookupError):
             continue
         except OSError as exc:
@@ -508,21 +510,25 @@ def _process_group_members(
             raise ProcessTreeError(f"malformed process stat for pid {entry.name}")
         try:
             pid = int(entry.name)
-            ppid = int(fields[1])
             process_group = int(fields[2])
         except ValueError as exc:
             raise ProcessTreeError(
                 f"malformed process identity for pid {entry.name}"
             ) from exc
+        try:
+            ppid: int | None = int(fields[1])
+        except ValueError:
+            ppid = None
+        if ppid is not None and ppid < 1:
+            ppid = None
         if process_group == group_id:
             opening = raw.find("(")
             comm = raw[opening + 1 : close] if opening >= 0 else ""
-            try:
-                identity = ProcessTreeDescendant(pid=pid, ppid=ppid, comm=comm)
-            except ValueError as exc:
-                raise ProcessTreeError(
-                    f"invalid process identity for pid {entry.name}: {exc}"
-                ) from exc
+            identity = (
+                ProcessTreeDescendant(pid=pid, ppid=ppid, comm=comm)
+                if ppid is not None and comm
+                else ProcessTreeDescendant(pid=pid, ppid=None, comm=None)
+            )
             members.append((identity, fields[0]))
     return tuple(members)
 
@@ -565,7 +571,7 @@ def _cleanup_crashed_candidate(pid: int | None) -> ProcessTreeEvidence:
             ),
             key=lambda item: item.pid,
         )
-    )
+    ) if group_signalled else ()
     return ProcessTreeEvidence(
         leader_status="signaled" if group_signalled else "exited",
         group_signalled_before_reap=group_signalled,

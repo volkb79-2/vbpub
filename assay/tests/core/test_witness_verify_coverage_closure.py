@@ -1078,6 +1078,8 @@ def _tree(**overrides):
         "clean": True,
     }
     value.update(overrides)
+    if value["leader_status"] == "signaled" and "signal" not in overrides:
+        value["signal"] = 9
     return value
 
 

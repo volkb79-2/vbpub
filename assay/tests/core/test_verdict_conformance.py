@@ -1418,7 +1418,7 @@ def test_v16_verdict_is_refused_with_exactly_one_diagnostic():
 #: A-477: pin the exact current verdict schema bytes. Operator decision D2
 #: freezes the v17 wire contract so producer and verifier cannot drift.
 _VERDICT_SCHEMA_SHA256 = {
-    17: "36e793c62f3a01191a7f26a19e62a232b361678f4faf9a1d0da888301d5d5ba5",
+    17: "aebb04f9a66e981a7d9b2a48a32c2a63d3ddc5ef896c4439608ddab94f4420df",
 }
 
 
@@ -1565,6 +1565,24 @@ def test_verify_rejects_inconsistent_process_tree_signal_counts(
         "more signalled descendants than outliving descendants" in failure
         for failure in failures
     ), failures
+
+
+def test_verify_rejects_a_signaled_process_tree_leader_without_its_signal(
+    validator: Draft202012Validator,
+):
+    document = _load("r2_crashed_descendant_leak.json")
+    claim = next(c for c in document["claims"] if c["rigor"] == "R2")
+    entry = claim["mutation"]["crashed"][0]
+    entry.pop("underlying_outcome")
+    evidence = entry["process_tree_evidence"]
+    evidence["leader_status"] = "signaled"
+    evidence["signal"] = None
+
+    assert why_invalid(validator, document), (
+        "the schema must require a signal for a signaled leader"
+    )
+    failures = verify_document(document)
+    assert any("signaled leader requires a signal" in failure for failure in failures)
 
 
 def _as_ingested_at_floor(document: dict, fail_under: float) -> dict:

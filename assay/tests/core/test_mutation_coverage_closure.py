@@ -496,6 +496,7 @@ def _tree(status="exited", outliving=0):
         group_signalled_before_reap=False,
         outliving_descendants=outliving,
         descendants_signalled=0,
+        signal=9 if status == "signaled" else None,
         descendants=tuple(
             ProcessTreeDescendant(pid=10_000 + index, ppid=1, comm="child")
             for index in range(outliving)
@@ -1483,10 +1484,7 @@ def test_judgeable_pass_with_a_non_signaled_nonterminal_leader_is_crashed(
 def test_judgeable_pass_with_a_signaled_leader_is_crashed(tmp_path, monkeypatch):
     result = mutation._dataclass_replace(
         _result(_ECHO_PLAN, outcome="PASS", returncode=0, reason=None),
-        process_tree_evidence={
-            **process_tree_evidence_dict(),
-            "leader_status": "signaled",
-        },
+        process_tree_evidence=process_tree_evidence_dict(leader_status="signaled"),
     )
     mutation_result, complete = _execute(tmp_path, monkeypatch, [result])
     assert complete
@@ -1878,6 +1876,100 @@ def test_resumed_records_merge_into_a_campaign_that_a_deadline_cut_short(tmp_pat
     assert len(second.survived) == 1  # the resumed record is kept beside the cut-short candidate
     events = [json.loads(line)["event"] for line in progress.read_text().splitlines()]
     assert "resume_merged" in events
+
+
+def test_signaled_leader_leak_stays_crashed_and_its_record_resumes(
+    tmp_path: Path,
+):
+    import signal
+    import sys
+
+    from assay.process_tree import ProcessTreeProcessRunner
+
+    repo = GitRepo(path=tmp_path / "repo")
+    repo.path.mkdir()
+    repo.git("init", "-q", "-b", "main")
+    repo.git("config", "user.email", "assay-tests@example.com")
+    repo.git("config", "user.name", "assay tests")
+    repo.write("pkg/f.py", _TEXT)
+    repo.commit_all("seed")
+    state_root = tmp_path / "state"
+    pid_file = tmp_path / "signaled-child.pid"
+    lane = make_lane(argv=("pytest", "-q"))
+    baseline = execute_command(lane, cwd=repo.path, process_runner=_pass)
+    targets = (
+        MutationTarget(path="pkg/f.py", text=_TEXT, lines=frozenset({2})),
+    )
+
+    child = (
+        "import os,time\n"
+        "os.setsid()\n"
+        f"temporary={str(pid_file) + '.tmp'!r}\n"
+        f"destination={str(pid_file)!r}\n"
+        "with open(temporary,'w') as stream:\n"
+        " stream.write(str(os.getpid()))\n"
+        "os.replace(temporary,destination)\n"
+        "time.sleep(60)\n"
+    )
+    leader = (
+        "import os,signal,subprocess,sys,time\n"
+        f"subprocess.Popen([sys.executable,'-c',{child!r}],stdin=subprocess.DEVNULL,"
+        "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
+        "deadline=time.monotonic()+30\n"
+        f"while not os.path.exists({str(pid_file)!r}) and time.monotonic()<deadline:\n"
+        " time.sleep(0.01)\n"
+        f"if not os.path.isfile({str(pid_file)!r}): raise SystemExit('child did not publish pid')\n"
+        "os.kill(os.getpid(),signal.SIGKILL)\n"
+    )
+    tree_runner = ProcessTreeProcessRunner()
+
+    def leaves_child_then_kills_leader(argv, *, env, cwd, timeout):
+        del argv
+        return tree_runner(
+            [sys.executable, "-c", leader],
+            env=env,
+            cwd=cwd,
+            timeout=timeout,
+        )
+
+    def sweep(process_runner):
+        scratch = tmp_path / f"scratch-{len(list(tmp_path.iterdir()))}"
+        scratch.mkdir()
+        with prepared_snapshot(repo, scratch_root=scratch) as prepared:
+            return mutation.run_mutation(
+                baseline=baseline,
+                prepared=prepared,
+                plan=make_plan(lane),
+                deadline=make_deadline(),
+                targets=targets,
+                adapter=PythonAdapter(),
+                jobs=1,
+                max_mutants=10,
+                operators=_BOOL_OPS,
+                process_runner=process_runner,
+                clock=lambda: datetime.now(timezone.utc),
+                state_root=state_root,
+                resume=True,
+            )
+
+    first = sweep(leaves_child_then_kills_leader)
+    assert first.total == 1
+    assert len(first.crashed) == 1
+    assert first.crashed[0].underlying_outcome is None
+    state_record, = state_root.glob("*.json")
+    record = json.loads(state_record.read_text(encoding="utf-8"))
+    assert record["outcome_bucket"] == "crashed"
+    assert "underlying_outcome" not in record
+    assert record["process_tree_evidence"]["leader_status"] == "signaled"
+    assert record["process_tree_evidence"]["outliving_descendants"] == 1
+
+    def must_resume_without_execution(*_args, **_kwargs):
+        raise AssertionError("the persisted crashed candidate should resume")
+
+    resumed = sweep(must_resume_without_execution)
+    assert resumed.total == 1
+    assert len(resumed.crashed) == 1
+    assert resumed.crashed[0].underlying_outcome is None
 
 
 def test_close_if_open_closes_a_descriptor_and_tolerates_a_failed_open():

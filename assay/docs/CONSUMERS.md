@@ -4303,12 +4303,17 @@ verdicts by schema version; there is no dual-version verifier or in-place
 upgrade. Keep older artifacts as historical evidence or regenerate any that
 must pass the current verifier. Assay 11.0.0 carries this wire contract.
 
-Native R2 verdicts now record the effective `judgment.r2.jobs` count (at least
-1) and `judgment.r2.attribution`: `serial` for one worker and
+Native R2 verdicts record this invocation's effective `judgment.r2.jobs`
+count (at least 1) and `judgment.r2.attribution`: `serial` for one worker and
 `overlap-conservative` for multiple workers. Campaign analysis reads these
-v17 fields and checks the count against the lane's declared `jobs_max`.
-For example, a run that selected four workers records this `judgment.r2`
-fragment:
+v17 fields and checks the count against the lane's declared `jobs_max`. These
+fields describe the invocation that wrote the verdict; resumed candidate
+records do not retain their original worker count, so the fields do not
+summarize a campaign that reused results from earlier invocations. That
+campaign-wide attribution is tracked in
+[B203](../nyxloom-trove/4-backlog.md#b203-verdict-worker-attribution-is-invocation-local-on-resume).
+For example, an invocation that selected four workers records this
+`judgment.r2` fragment:
 
 ```json
 {
@@ -4343,7 +4348,10 @@ regenerate evidence that must pass the current verifier.
 
 This v15-to-v16 migration historically required
 `judge.mutation.jobs = 1`. PR1b added conservative parallel attribution;
-verdict schema v17 records the effective worker count. Follow the current [parallel candidate guide](#native-r2-parallel-candidate-windows-pr1b)
+verdict schema v17 records this invocation's worker count. It does not
+aggregate the counts of reused candidates from earlier invocations; see
+[B203](../nyxloom-trove/4-backlog.md#b203-verdict-worker-attribution-is-invocation-local-on-resume).
+Follow the current [parallel candidate guide](#native-r2-parallel-candidate-windows-pr1b)
 for the v2 lane config and `assay run --jobs` workflow. Ingested R2 does not
 declare Assay's native worker policy.
 
@@ -4412,11 +4420,13 @@ state records and progress events are written by the coordinator in candidate
 index order. Resume identity does not include `jobs`, so the same state can
 resume at another count. The post-sweep WP7 retry remains serial.
 
-The run event reports `jobs` and `attribution` (`serial` or
+The run event reports this invocation's `jobs` and `attribution` (`serial` or
 `overlap-conservative`); each candidate event reports `worker_index`. Verdict
-schema v17 also stores the effective `judgment.r2.jobs` and `attribution`, so
-campaign analysis can use the same selected count as the judge. The one-worker
-default applies when a native lane has no runtime selection.
+schema v17 also stores this invocation's effective `judgment.r2.jobs` and
+`attribution`. A resumed campaign can combine candidate records produced at
+different worker counts, and those judgment fields do not aggregate across
+those records. The one-worker default applies when a native lane has no
+runtime selection.
 
 ## Migration notes (v12 to v13)
 

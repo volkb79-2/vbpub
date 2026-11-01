@@ -702,10 +702,15 @@ state on the coordinator in candidate-index order, and keeps resume identity
 independent of N. WP7's end-of-sweep retry remains serial. Native pilots still
 require `--pilot-jobs 1`; `--jobs` is refused with `--candidates-file`.
 
-Verdict schema v17 records the effective `judgment.r2.jobs` count and the
-matching attribution (`serial` for one worker, `overlap-conservative` for
-multiple workers). Progress retains its run and worker events for resume
-revalidation. See the [v16-to-v17 consumer migration](CONSUMERS.md#migration-notes-v16-to-v17).
+Verdict schema v17 records this invocation's effective `judgment.r2.jobs`
+count and matching attribution (`serial` for one worker,
+`overlap-conservative` for multiple workers). Resume identity deliberately
+does not include the worker count, and state records do not retain it, so a
+verdict that reuses results from earlier invocations does not summarize their
+worker counts. Campaign-wide attribution needs per-record worker counts and a
+derived maximum; it is tracked in [B203](../nyxloom-trove/4-backlog.md#b203-verdict-worker-attribution-is-invocation-local-on-resume).
+Progress retains its run and worker events for resume revalidation. See the
+[v16-to-v17 consumer migration](CONSUMERS.md#migration-notes-v16-to-v17).
 
 WP8 also removes the host-varying `cleanup_seconds` from process-tree evidence,
 records the leader signal and identities of outliving descendants, and carries

@@ -13704,3 +13704,16 @@ worker count in `judgment.r2.jobs` and its policy in `judgment.r2.attribution`.
 The analyzer reads both values and rejects v16 artifacts consistently.
 Campaign reports expose both values. Schema and analyzer tests cover the
 serial/parallel pair and the v16 refusal.
+
+## B203 — verdict worker attribution is invocation-local on resume
+
+**Status: OPEN (filed 2026-11-01).** Native R2 `judgment.r2.jobs` and
+`judgment.r2.attribution` record the current invocation's selection. Resume
+identity intentionally allows a candidate result to be reused at a different
+worker count, while the mutation-state record does not store the count that
+produced it. A verdict can therefore combine results produced under different
+worker counts while showing only the latest invocation's attribution. Store
+the worker count in each state record, derive the campaign maximum across
+resumed and newly executed records, and update the verdict model, schema,
+verifier, analyzer, and consumer/design documentation together. Until then,
+documents and analysis must describe the v17 fields as invocation-local.

@@ -359,8 +359,12 @@ assay exists to close that gap mechanically, not by policy:
   refused with `--candidates-file`. The run progress
   header records `jobs` and `attribution` (`serial` or
   `overlap-conservative`), and each candidate event records `worker_index`.
-  Verdict schema v17 records the effective `judgment.r2.jobs` count and its
-  `serial` or `overlap-conservative` attribution. See the
+  Verdict schema v17 records this invocation's effective
+  `judgment.r2.jobs` count and its `serial` or `overlap-conservative`
+  attribution. A resumed campaign may contain candidates from an earlier
+  worker count; these fields are not a campaign-wide summary. See backlog
+  [B203](nyxloom-trove/4-backlog.md#b203-verdict-worker-attribution-is-invocation-local-on-resume)
+  and the
   [parallel-window rationale](docs/DESIGN-GUIDE.md#native-r2-parallel-candidate-windows)
   and [consumer setup](docs/CONSUMERS.md#native-r2-parallel-candidate-windows-pr1b),
   plus the [v16-to-v17 migration notes](docs/CONSUMERS.md#migration-notes-v16-to-v17).

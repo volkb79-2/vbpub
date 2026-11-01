@@ -66,7 +66,7 @@ def process_tree_evidence_dict(*, leader_status: str = "exited") -> dict[str, ob
         "group_signalled_before_reap": False,
         "outliving_descendants": 0,
         "descendants_signalled": 0,
-        "signal": None,
+        "signal": 9 if leader_status == "signaled" else None,
         "descendants": [],
         "clean": True,
     }

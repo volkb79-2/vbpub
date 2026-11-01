@@ -1524,7 +1524,10 @@ def _execute_plan_inner(
         and process_tree_evidence.get("outliving_descendants", 0) > 0
     ):
         underlying_outcome = None
-        if type(proc.returncode) is int:
+        if (
+            process_tree_evidence.get("leader_status") == "exited"
+            and type(proc.returncode) is int
+        ):
             underlying_status = (
                 Outcome.PASS if summary.failed == 0
                 else Outcome.FAIL

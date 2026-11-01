@@ -19,6 +19,7 @@ def _tree(
         group_signalled_before_reap=False,
         outliving_descendants=outliving_descendants,
         descendants_signalled=outliving_descendants,
+        signal=int(signal.SIGKILL) if leader_status == "signaled" else None,
         descendants=tuple(
             ProcessTreeDescendant(pid=10_000 + index, ppid=1, comm="child")
             for index in range(outliving_descendants)

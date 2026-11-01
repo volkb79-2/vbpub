@@ -2361,6 +2361,10 @@ def _check_b162_process_tree_evidence(
         failures.append(
             f"native mutation.{bucket} entry has invalid process-tree signal"
         )
+    if raw.get("leader_status") == "signaled" and leader_signal is None:
+        failures.append(
+            f"native mutation.{bucket} entry has a signaled leader that requires a signal"
+        )
     if leader_signal is not None and raw.get("leader_status") not in {
         "signaled", "timeout-killed"
     }:

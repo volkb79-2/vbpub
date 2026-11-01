@@ -1311,6 +1311,28 @@ def test_timeout_cleanup_descendants_follow_shared_leak_precedence():
     assert failures == []
 
 
+def test_raw_verifier_requires_signal_for_a_signaled_process_tree_leader():
+    from assay.verify import _check_b162_process_tree_evidence
+
+    evidence = {
+        "protocol": "assay-process-tree/2",
+        "leader_status": "signaled",
+        "group_signalled_before_reap": False,
+        "outliving_descendants": 0,
+        "descendants_signalled": 0,
+        "signal": None,
+        "descendants": [],
+        "clean": True,
+    }
+    failures: list[str] = []
+
+    _check_b162_process_tree_evidence(
+        "crashed", {"process_tree_evidence": evidence}, failures
+    )
+
+    assert any("signaled leader that requires a signal" in failure for failure in failures)
+
+
 def test_normal_exit_with_descendants_cannot_be_a_functional_kill():
     from assay.process_tree import ProcessTreeDescendant, ProcessTreeEvidence
 

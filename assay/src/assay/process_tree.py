@@ -167,6 +167,8 @@ class ProcessTreeEvidence:
             "signaled", "timeout-killed"
         }:
             raise ValueError("process-tree signal requires a signaled leader")
+        if self.leader_status == "signaled" and self.signal is None:
+            raise ValueError("a signaled leader requires a signal")
         if not isinstance(self.descendants, tuple) or any(
             not isinstance(item, ProcessTreeDescendant) for item in self.descendants
         ):
@@ -234,27 +236,24 @@ class ProcessTreeEvidence:
 
 
 def _process_identity(pid: int) -> ProcessTreeDescendant:
-    """Read one descendant identity, retaining an explicit vanished-PID row."""
+    """Read one diagnostic identity without interrupting descendant cleanup."""
     try:
-        raw = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
-    except (FileNotFoundError, ProcessLookupError):
+        raw = Path(f"/proc/{pid}/stat").read_bytes().decode(
+            "utf-8", "backslashreplace"
+        )
+    except OSError:
         return ProcessTreeDescendant(pid=pid, ppid=None, comm=None)
-    except OSError as exc:
-        raise ProcessTreeError(f"cannot inspect procfs process {pid}: {exc}") from exc
     opening = raw.find("(")
     closing = raw.rfind(")")
-    fields = raw[closing + 1 :].split() if opening >= 0 and closing > opening else []
-    if len(fields) < 2:
-        raise ProcessTreeError(f"malformed procfs stat for pid {pid}")
-    comm = raw[opening + 1 : closing]
+    fields = raw[closing + 1 :].split() if 0 <= opening < closing else []
     try:
-        ppid = int(fields[1])
-    except ValueError as exc:
-        raise ProcessTreeError(f"malformed procfs ppid for pid {pid}") from exc
-    try:
-        return ProcessTreeDescendant(pid=pid, ppid=ppid, comm=comm)
-    except ValueError as exc:
-        raise ProcessTreeError(f"invalid procfs identity for pid {pid}: {exc}") from exc
+        return ProcessTreeDescendant(
+            pid=pid,
+            ppid=int(fields[1]),
+            comm=raw[opening + 1 : closing],
+        )
+    except (IndexError, ValueError):
+        return ProcessTreeDescendant(pid=pid, ppid=None, comm=None)
 
 
 def _subreaper_state() -> bool:

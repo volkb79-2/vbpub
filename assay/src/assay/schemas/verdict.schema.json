@@ -1640,7 +1640,7 @@
           "const": true
         },
         "signal": {
-          "description": "The signal that terminated the command leader, or null when it exited normally or was not started.",
+          "description": "The signal that terminated the command leader. Required when leader_status is signaled; null when it exited normally or was not started.",
           "type": [
             "integer",
             "null"
@@ -1723,6 +1723,28 @@
           }
         }
       },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "leader_status": {
+                "const": "signaled"
+              }
+            },
+            "required": [
+              "leader_status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "signal": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
+        }
+      ],
       "additionalProperties": false
     },
     "mutant_outcome": {
