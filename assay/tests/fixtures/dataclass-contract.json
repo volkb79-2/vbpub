@@ -803,6 +803,21 @@
         "weakref_slot": false
       }
     },
+    "assay.process_tree.ProcessTreeDescendant": {
+      "fields": {},
+      "params": {
+        "eq": true,
+        "frozen": true,
+        "init": true,
+        "kw_only": true,
+        "match_args": true,
+        "order": false,
+        "repr": true,
+        "slots": false,
+        "unsafe_hash": false,
+        "weakref_slot": false
+      }
+    },
     "assay.process_tree.ProcessTreeEvidence": {
       "fields": {},
       "params": {
@@ -1449,6 +1464,21 @@
       }
     },
     "assay.verdict.SourcePosition": {
+      "fields": {},
+      "params": {
+        "eq": true,
+        "frozen": true,
+        "init": true,
+        "kw_only": true,
+        "match_args": true,
+        "order": false,
+        "repr": true,
+        "slots": false,
+        "unsafe_hash": false,
+        "weakref_slot": false
+      }
+    },
+    "assay.verdict.UnderlyingOutcome": {
       "fields": {},
       "params": {
         "eq": true,
