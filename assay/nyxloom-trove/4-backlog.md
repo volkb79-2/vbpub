@@ -175,6 +175,12 @@ items:
   - {id: B193, title: "Use a sealed CoW base template and one cheap tree clone per snapshot unit", type: feature, component: isolation, context_estimate: medium}
   - {id: B194, title: "b110_pilot_select refuses size 20 (per-file minimum 59) and cannot select from a small non-scanner plan", type: bugfix, component: tools, context_estimate: small}
   - {id: B195, title: "Full self-qualification baseline ends leaked-process-tree on a bare VM (cause undiagnosed)", type: investigation, component: runner, context_estimate: small}
+  - {id: B196, title: "cowtree is imported for every higher-rigor lane even when MDT_COW_ROOT is unset", type: bugfix, component: workspace, context_estimate: small}
+  - {id: B197, title: "Dead CoW runs are not collected after SIGKILL or a container kill", type: bugfix, component: workspace, context_estimate: small}
+  - {id: B198, title: "The wheel ships a top-level cowtree package", type: bugfix, component: distribution, context_estimate: small}
+  - {id: B199, title: "Cleanup-only failures after a finished measurement are ERROR, not an advisory", type: improvement, component: runner, context_estimate: small}
+  - {id: B200, title: "CoW parity test lacks git status/index and has never run on a real btrfs area in CI", type: improvement, component: tests, context_estimate: small}
+  - {id: B201, title: "Optional packed-object reflink path on XFS", type: improvement, component: workspace, context_estimate: small}
 ---
 
 # assay — backlog
@@ -13665,3 +13671,27 @@ tester-unified, provisional) pass on the same commit in the tester container.
 The CW9 pilot's matched cowtree arms (plain and btrfs) did not show it. Next:
 rerun once with `ps -e --forest` captured at `command_finished` to name the
 survivor, and bisect against the pre-CW8 commit.
+
+## B196 — cowtree is imported for every higher-rigor lane even when MDT_COW_ROOT is unset
+
+**Status: OPEN (filed at 10.2.0).** P2: same failure class as B191 (a missing sibling package turns into an import error before any verdict). Import cowtree lazily only when a CoW area is configured. Source: 10.2.0 pre-release review F1.
+
+## B197 — Dead CoW runs are not collected after SIGKILL or a container kill
+
+**Status: OPEN (filed at 10.2.0).** P2: the run directory stays under MDT_COW_ROOT/runs/ and nothing collects it; run `cowtree gc` for dead runs at the start of the next run. Source: review F2.
+
+## B198 — The wheel ships a top-level cowtree package
+
+**Status: OPEN (filed at 10.2.0).** P3: collides with a separately installed cowtree and prevents building an sdist; vendor it inside assay instead. Source: review F3.
+
+## B199 — Cleanup-only failures after a finished measurement are ERROR, not an advisory
+
+**Status: OPEN (filed at 10.2.0).** P3: a Run.close failure after the verdict inputs are complete (for example files a test wrote next to the snapshot) should be an advisory. Source: review F4.
+
+## B200 — CoW parity test lacks git status/index and has never run on a real btrfs area in CI
+
+**Status: OPEN (filed at 10.2.0).** P3: add git status and the index to the plain-versus-clone parity test and run it once on a real btrfs area (a scratch VM pilot passed on 2026-11-01). Source: review F5.
+
+## B201 — Optional packed-object reflink path on XFS
+
+**Status: OPEN (filed at 10.2.0).** P3: only after a real XFS pilot. Source: review F6.
