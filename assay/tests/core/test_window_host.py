@@ -1084,6 +1084,47 @@ def test_main_rejects_oversized_and_non_object_requests():
     assert response["message"] == "window-host request must be a JSON object"
 
 
+@pytest.mark.parametrize("boundary", ["worker_request", "host_response"])
+def test_json_recursion_error_is_classified_at_each_window_host_boundary(
+    boundary, monkeypatch, tmp_path
+):
+    original_loads = json.loads
+
+    def recurse(*_args, **_kwargs):
+        raise RecursionError("nested JSON exceeded the parser stack")
+
+    monkeypatch.setattr(_window_host.json, "loads", recurse)
+    if boundary == "worker_request":
+        with _window_host.tempfile.TemporaryFile(mode="w+b") as result_file:
+            status = _window_host.main(
+                io.BytesIO(b"{}"), result_fd=result_file.fileno()
+            )
+            result_file.seek(0)
+            response = original_loads(result_file.read())
+
+        assert status == 1
+        assert response["kind"] == "error"
+        assert response["error_type"] == "RecursionError"
+        return
+
+    def return_nested_response(**kwargs):
+        os.write(kwargs["result_fd"], b"{}")
+        return 0, b""
+
+    monkeypatch.setattr(_window_host, "_launch_host_process", return_nested_response)
+    result = _window_host.run_window(
+        _plan((sys.executable, "-c", "pass")),
+        cwd=tmp_path,
+        timeout=5.0,
+        process_runner=ProcessTreeProcessRunner(),
+        clock=runner._utc_now,
+    )
+
+    assert result.outcome is Outcome.ERROR
+    assert result.reason_code is ReasonCode.EXEC_FAILED
+    assert result.stderr_tail == "window host returned malformed JSON"
+
+
 def test_sigterm_handler_requests_worker_unwind():
     with pytest.raises(_window_host._WindowHostCancelled):
         _window_host._handle_sigterm(signal.SIGTERM, None)
