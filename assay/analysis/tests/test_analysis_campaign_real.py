@@ -183,7 +183,7 @@ def _r2_campaign(tmp_path: Path):
         'source_roots = ["src"]\n'
         f'base = "{base}"\n\n'
         "[lanes.package.judge.mutation]\n"
-        "jobs = 1\n"
+        "jobs_max = 1\n"
         "max_mutants = 50\n"
         'operators = ["python:compare-swap"]\n'
     )
