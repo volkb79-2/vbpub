@@ -632,11 +632,19 @@ def _fetch_profile_url(url: str, username: str, password: str) -> str:
         raise BootstrapError(f"profile at {redact_url(url)} is not UTF-8") from None
 
 
+def _ensure_install_dir_importable(install_dir: Path) -> None:
+    """Prefer the freshly fetched installer source for remote bootstrap imports."""
+    install_path = str(install_dir)
+    if install_path in sys.path:
+        sys.path.remove(install_path)
+    sys.path.insert(0, install_path)
+
+
 def _load_profile(install_dir: Path) -> dict:
+    _ensure_install_dir_importable(install_dir)
     kind = os.environ.get("VBPUB_PROFILE_KIND", "")
     if not kind or kind == "none":
         return {}
-    sys.path.insert(0, str(install_dir))
     try:
         from debian_install_v2.profiles import (
             load_builtin_profile,
@@ -823,6 +831,9 @@ def main() -> int:
     if not entrypoint.is_file():
         raise BootstrapError(f"fetch succeeded but {entrypoint} is missing")
 
+    # The fetched package is the source of truth for both profile and config
+    # validation, even when no profile kind was selected.
+    _ensure_install_dir_importable(install_dir)
     config = _load_profile(install_dir)
     config.update(build_config())
     try:
