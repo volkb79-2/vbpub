@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+from queue import Queue
 
 import pytest
 
@@ -252,13 +253,14 @@ def test_limit_boundary_broker_cancel_wakes_waiters_and_closes():
 
 def test_limit_boundary_broker_rejects_malformed_requests():
     broker = LimitBoundaryBroker(LimitLedger(lambda: (_counters(), None)))
-    request = _BoundaryRequest("unknown", None, threading.Event())
+    response = Queue()
+    request = _BoundaryRequest("unknown", None, response)
     broker._requests.put(request)
 
     assert broker.service_pending() == 1
-    assert request.ready.is_set()
-    assert isinstance(request.error, ValueError)
-    assert "malformed" in str(request.error)
+    error = response.get_nowait()
+    assert isinstance(error, ValueError)
+    assert "malformed" in str(error)
 
 
 def test_limit_boundary_broker_rejects_invalid_inputs_and_results(monkeypatch):
@@ -289,7 +291,7 @@ def test_limit_boundary_broker_wakes_a_request_without_a_result():
     while broker._requests.empty():
         time.sleep(0.001)
     request = broker._requests.get_nowait()
-    request.ready.set()
+    request.response.put(None)
     thread.join()
 
     assert len(errors) == 1
@@ -299,13 +301,14 @@ def test_limit_boundary_broker_wakes_a_request_without_a_result():
 def test_limit_boundary_broker_services_a_queued_request_after_close():
     broker = LimitBoundaryBroker(LimitLedger(lambda: (_counters(), None)))
     broker.cancel_pending(RuntimeError("closed"))
-    request = _BoundaryRequest("start", None, threading.Event())
+    response = Queue()
+    request = _BoundaryRequest("start", None, response)
     broker._requests.put(request)
 
     assert broker.service_pending() == 1
-    assert request.ready.is_set()
-    assert isinstance(request.error, RuntimeError)
-    assert "closed" in str(request.error)
+    error = response.get_nowait()
+    assert isinstance(error, RuntimeError)
+    assert "closed" in str(error)
 
 
 @pytest.mark.parametrize(
