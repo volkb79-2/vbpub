@@ -15,10 +15,13 @@ from tnt.menu import MenuItem, walk
 from tnt.profile import Profile
 from tnt.session import open_session
 from tnt.tui.app import KeysHelp, TntApp, VIEWS
+from tnt.tui.hosts import HostRemoveConfirm
 from tnt.tui.workflows import PlanReview
 
 
 SIZES = ((80, 24), (100, 30), (120, 40), (160, 50), (200, 60), (60, 40))
+HOST_REMOVE_TARGET = "qa-archive-host-eu-west-production-2026-cluster"
+LONG_HOST_REMOVE_TARGET = HOST_REMOVE_TARGET + "-abcdefghijklmnop"
 MENU_ITEMS = {item.key: (path, item) for path, item in walk()}
 MAJOR_KEYS = tuple(VIEWS) + ("reboot", "shutdown")
 
@@ -36,6 +39,24 @@ def _screen_text(app) -> str:
     """Read the actual composed terminal cells as text, without writing an image."""
     strips = app.screen._compositor.render_strips()
     return "\n".join(strip.text.rstrip() for strip in strips)
+
+
+def _host_confirmation_content(rendered: str) -> str:
+    """Join the confirmation's wrapped rows without including adjacent screen columns."""
+    prompt = "Type this exact host name to confirm:"
+    lines = rendered.splitlines()
+    prompt_row = next((line for line in lines if prompt in line), None)
+    if prompt_row is None:
+        return ""
+    start = prompt_row.index(prompt)
+    border = prompt_row.find("█", start + len(prompt))
+    end = border if border >= 0 else len(prompt_row)
+    return "".join(
+        character
+        for line in lines
+        for character in line[start:end]
+        if not character.isspace()
+    )
 
 
 async def _wait_for_screen(pilot, app, *, limit: int = 120) -> str:
@@ -304,5 +325,36 @@ def test_long_destructive_confirmation_target_is_visible_at_80_columns(ux_sessio
             await pilot.press("escape")
             await pilot.pause(0.05)
             assert not isinstance(app.screen, ModalScreen)
+
+    asyncio.run(go())
+
+
+@pytest.mark.parametrize("size", ((60, 40), (80, 24)), ids=lambda size: f"{size[0]}x{size[1]}")
+@pytest.mark.parametrize(
+    "host_name",
+    (HOST_REMOVE_TARGET, LONG_HOST_REMOVE_TARGET),
+    ids=("long", "maximum-length"),
+)
+def test_host_remove_confirmation_shows_full_target_at_narrow_sizes(size, host_name, ux_session):
+    async def go():
+        app = TntApp(ux_session)
+        async with app.run_test(size=size) as pilot:
+            app.show_host_picker()
+            await pilot.pause(0.05)
+            app.push_screen(HostRemoveConfirm(host_name))
+            await pilot.pause(0.05)
+
+            rendered = _screen_text(app)
+            compact = _host_confirmation_content(rendered)
+            prompt = "".join("Type this exact host name to confirm:".split())
+            prompt_end = compact.find(prompt)
+            assert prompt_end >= 0, "confirmation prompt is not visible"
+            assert host_name in compact[prompt_end + len(prompt):], "confirmation target is clipped"
+            assert app.screen.query_one("#host-remove-confirm", Input).placeholder == "Type host name exactly"
+
+            await pilot.press("escape")
+            await pilot.pause(0.05)
+            assert app.current == "__hosts__"
+            assert app.query_one("#hosts-table", DataTable)
 
     asyncio.run(go())

@@ -180,6 +180,13 @@ def _host_name_visible_after_prompt(captured: str) -> bool:
     return HOST_NAME in content[prompt_end + len(prompt):]
 
 
+def _host_remove_confirmation_visible(captured: str) -> bool:
+    content = _confirmation_content(captured)
+    return _host_name_visible_after_prompt(captured) and all(
+        marker in content for marker in ("Typehostnameexactly", "Removehost", "Cancel")
+    )
+
+
 def _assert_unicode_screen(captured: str) -> None:
     plain = _plain(captured)
     assert "\ufffd" not in plain
@@ -343,7 +350,7 @@ def test_tui_in_real_tmux_terminal(size, tmp_path):
             executable,
             session,
             status,
-            _host_name_visible_after_prompt,
+            _host_remove_confirmation_visible,
             expected_size=resize_to,
         )
         _assert_no_traceback(confirmation_resized)

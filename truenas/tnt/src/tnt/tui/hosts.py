@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from rich.text import Text
 from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -294,7 +295,11 @@ class HostRemoveConfirm(ModalScreen[None]):
     BINDINGS = [Binding("escape", "cancel", "Cancel", show=False, priority=True)]
     CSS = """
     HostRemoveConfirm { align: center middle; }
-    HostRemoveConfirm > Vertical { width: 70%; height: auto; border: thick $error; background: $surface; padding: 1 2; }
+    HostRemoveConfirm > Vertical {
+        width: 90%; max-width: 72; height: auto; max-height: 90%;
+        border: thick $error; background: $surface; padding: 1 2; overflow-y: auto;
+    }
+    HostRemoveConfirm #host-remove-confirm-target { height: auto; }
     HostRemoveConfirm Input { width: 1fr; }
     """
 
@@ -305,7 +310,8 @@ class HostRemoveConfirm(ModalScreen[None]):
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static(f"Remove this host and delete its stored credential?\n"
-                         f"Type this exact host name to confirm:\n{self.host_name}")
+                         "Type this exact host name to confirm:")
+            yield Static(Text(self.host_name, overflow="fold"), id="host-remove-confirm-target")
             yield Input(placeholder="Type host name exactly", id="host-remove-confirm")
             with Horizontal():
                 yield Button("Remove host", id="host-remove-apply", variant="error")
