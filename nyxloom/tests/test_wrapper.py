@@ -31,6 +31,20 @@ OPERATOR_ROUTE = {"route_id": "fake-cli", "cli": "fake", "model": "fake-model",
                   "trust": "operator"}
 
 
+def _wait_for_child_output(log_file: Path, marker: str = "starting", timeout: float = 120.0) -> None:
+    """Block until the child has written ``marker`` to its log. The marker is
+    printed only after the child is fully set up (and, for the stubborn
+    child, after SIG_IGN is installed), so signalling after this returns is
+    ordering-deterministic instead of a sleep-and-hope window that a slow
+    interpreter start under contention can lose."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if log_file.exists() and marker in log_file.read_text(errors="replace"):
+            return
+        time.sleep(0.05)
+    raise AssertionError(f"child never wrote {marker!r} to {log_file}")
+
+
 def _read_log_records(log_dir: Path) -> list[dict]:
     """P05a: local helper (never added to conftest.py -- see
     tests/test_daemon.py's identical helper) reading back the rendered
@@ -135,6 +149,78 @@ class TestWrapperSpec:
 
 class TestHappyPath:
     """Oracle 2: happy path (in-process)."""
+
+    def test_child_pid_is_published_by_atomic_replace(
+            self, tmp_state, tmp_path, mock_adapters, monkeypatch):
+        """The published child pid is complete before child.pid appears."""
+        project = "demo"
+        task_id = "demo-P01-sample"
+        attempt_id = "att-1"
+        seed(project, task_id, attempt_id)
+
+        attempt_dir = tmp_path / "attempt"
+        attempt_dir.mkdir(parents=True)
+        child_pid_path = attempt_dir / "child.pid"
+        spec = WrapperSpec(
+            project=project,
+            task_id=task_id,
+            attempt_id=attempt_id,
+            argv=[sys.executable, "-c", "import time; time.sleep(60)"],
+            cwd=str(tmp_path),
+            log_path=str(attempt_dir / "attempt.log"),
+            receipt_path=str(attempt_dir / "receipt.json"),
+            attempt_dir=str(attempt_dir),
+            route_def=OPERATOR_ROUTE,
+        )
+        spec_path = attempt_dir / "spec.json"
+        spec_path.write_text(json.dumps(spec.to_dict()), encoding="utf-8")
+
+        replacements = []
+        original_replace = os.replace
+
+        def record_replace(source, destination):
+            source_path = Path(source)
+            destination_path = Path(destination)
+            if destination_path == child_pid_path:
+                replacements.append((
+                    source_path, destination_path,
+                    source_path.read_text(encoding="utf-8"),
+                ))
+            return original_replace(source, destination)
+
+        original_append_and_apply = storage.append_and_apply
+
+        def stop_child_after_started(*args, **kwargs):
+            result = original_append_and_apply(*args, **kwargs)
+            if kwargs.get("type") == EventType.ATTEMPT_STARTED:
+                os.kill(int(child_pid_path.read_text(encoding="utf-8")), signal.SIGTERM)
+            return result
+
+        monkeypatch.setattr(wrapper.os, "replace", record_replace)
+        monkeypatch.setattr(storage, "append_and_apply", stop_child_after_started)
+        mock_adapters.can_capture_session.return_value = False
+
+        wrapper_finished = False
+        try:
+            exit_code = wrapper_main(str(spec_path))
+            wrapper_finished = True
+        finally:
+            if not wrapper_finished and child_pid_path.exists():
+                try:
+                    os.kill(int(child_pid_path.read_text(encoding="utf-8")), signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+        assert exit_code == -1
+
+        assert len(replacements) == 1
+        source_path, destination_path, source_contents = replacements[0]
+        assert destination_path == child_pid_path
+        assert source_path.parent == child_pid_path.parent
+        assert source_path.name == "child.pid.tmp"
+        assert source_contents.isdecimal()
+        assert int(child_pid_path.read_text(encoding="utf-8")) == int(source_contents)
+        assert not (attempt_dir / "child.pid.tmp").exists()
 
     def test_happy_path_in_process(self, tmp_state, tmp_path, fake_cli, mock_adapters):
         """Call wrapper_main directly with script printing 2 lines, exit 0."""
@@ -1366,14 +1452,14 @@ class TestP05aLogging:
         old_sigint = signal.signal(signal.SIGINT, signal.SIG_DFL)
 
         def _signal_self():
-            time.sleep(0.3)
+            _wait_for_child_output(log_path)
             os.kill(os.getpid(), signal.SIGTERM)
 
         try:
             t = threading.Thread(target=_signal_self)
             t.start()
             exit_code = wrapper_main(str(spec_path))
-            t.join(timeout=5)
+            t.join(timeout=130)
         finally:
             signal.signal(signal.SIGTERM, old_sigterm)
             signal.signal(signal.SIGINT, old_sigint)
@@ -1727,14 +1813,14 @@ class TestContainmentGateFailsClosed:
         old_sigint = signal.signal(signal.SIGINT, signal.SIG_DFL)
 
         def _signal_self():
-            time.sleep(0.3)
+            _wait_for_child_output(Path(_spec.log_path))
             os.kill(os.getpid(), signal.SIGTERM)
 
         try:
             t = threading.Thread(target=_signal_self)
             t.start()
             wrapper_main(str(spec_path))
-            t.join(timeout=5)
+            t.join(timeout=130)
         finally:
             signal.signal(signal.SIGTERM, old_sigterm)
             signal.signal(signal.SIGINT, old_sigint)
