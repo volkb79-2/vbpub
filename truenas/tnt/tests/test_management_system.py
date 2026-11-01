@@ -374,8 +374,9 @@ def test_update_cli_ignores_boolean_progress_percentages(config, opener, capsys,
                                              "--confirm", "TrueNAS-27.0.0-RC.2"])
     captured = capsys.readouterr()
     assert code == 0 and "System action completed" in captured.out
-    assert captured.err.count("Update job progress:") == 1
+    assert captured.err.count("Update job progress:") == 2
     assert "Update job progress: 43%" in captured.err
+    assert captured.err.endswith("\rUpdate job progress: 100%\n")
 
 
 def test_config_export_downloads_tar_to_new_private_local_file(config, opener, capsys, tmp_path, server):

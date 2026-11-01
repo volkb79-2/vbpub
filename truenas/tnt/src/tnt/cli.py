@@ -8,6 +8,7 @@ from __future__ import annotations
 import sys
 import json
 import getpass
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -410,12 +411,32 @@ def _system_action(args: Any, runtime: CliRuntime, opener: SessionOpener, action
             raise CliFailure(f"plan was not applied; pass --allow-write to apply it\n{plan.render()}")
         methods = {call.method for call in action.calls}
         applied_uncertainly = False
+        progress_lock = threading.Lock()
+        progress_finished = False
+        progress_started = False
 
         def progress(job: Any) -> None:
+            nonlocal progress_started
             detail = job.get("progress") if isinstance(job, dict) else None
             percent = detail.get("percent") if isinstance(detail, dict) else None
             if isinstance(percent, (int, float)) and not isinstance(percent, bool):
-                print(f"\rUpdate job progress: {percent:.0f}%", file=sys.stderr, end="", flush=True)
+                with progress_lock:
+                    if not progress_finished:
+                        progress_started = True
+                        print(f"\rUpdate job progress: {percent:.0f}%", file=sys.stderr, end="", flush=True)
+
+        def finish_progress(completed: bool) -> None:
+            nonlocal progress_finished
+            with progress_lock:
+                if progress_finished:
+                    return
+                progress_finished = True
+                if completed:
+                    # A terminal job can be observed before its final callback reaches this thread.
+                    # Report completion after apply_plan returns so success always ends at 100%.
+                    print("\rUpdate job progress: 100%", file=sys.stderr, flush=True)
+                elif progress_started:
+                    print(file=sys.stderr, flush=True)
 
         try:
             result = apply_plan(plan, session.rpc, allow_write=True, typed_confirmation=args.confirm,
@@ -426,6 +447,8 @@ def _system_action(args: Any, runtime: CliRuntime, opener: SessionOpener, action
                 applied_uncertainly = True
                 result = partial
             else:
+                if methods & {"update.run", "update.download"}:
+                    finish_progress(completed=False)
                 payload = {"plan": plan.render(), "completed": False, "result": list(partial),
                            "calls": _call_records(partial, session),
                            "error": session.credential.scrub(str(exc)) if session.credential else str(exc)}
@@ -433,7 +456,7 @@ def _system_action(args: Any, runtime: CliRuntime, opener: SessionOpener, action
                                        f"{json.dumps(payload, indent=2, sort_keys=True, default=str)}")
                 return 1
         if methods & {"update.run", "update.download"}:
-            print(file=sys.stderr, flush=True)
+            finish_progress(completed=True)
         payload = {"plan": plan.render(), "result": list(result), "calls": _call_records(result, session),
                    "completed": True}
         text = f"{plan.render()}\nSystem action completed."

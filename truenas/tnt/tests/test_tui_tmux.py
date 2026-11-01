@@ -94,7 +94,11 @@ def _wait_for_screen(
             code = status.read_text(encoding="ascii").strip()
             raise AssertionError(f"tmux TUI exited before the screen appeared (exit {code})")
         time.sleep(POLL_INTERVAL_SECONDS)
-    raise AssertionError(f"timed out waiting for tmux screen; last capture:\n{_plain(last)}")
+    raw_input_rows = [line for line in last.splitlines() if "Type host name exactly" in _plain(line)]
+    raise AssertionError(
+        f"timed out waiting for tmux screen; last capture:\n{_plain(last)}\n"
+        f"raw input row(s) with escape sequences: {raw_input_rows!r}"
+    )
 
 
 def _wait_for_session_exit(executable: str, session: str, *, timeout: float = 30) -> None:
@@ -134,10 +138,18 @@ def _has_styled_line(captured: str, marker: str) -> bool:
 def _has_focused_input(captured: str, marker: str) -> bool:
     for line in captured.splitlines():
         plain_line = _plain(line)
-        left = plain_line.find("█")
-        right = plain_line.rfind("█")
-        if left < 0 or right <= left or marker not in plain_line[left + 1:right]:
+        marker_start = plain_line.find(marker)
+        if marker_start < 0:
             continue
+        # Use the input widget's own frame when present. A narrow modal can
+        # overlap the app's box-drawing prefix column, so the old pair of `█`
+        # sentinels did not necessarily bracket the input row at 60 columns.
+        left = plain_line.rfind("▊", 0, marker_start)
+        right = plain_line.find("▎", marker_start + len(marker))
+        if left < 0:
+            left = marker_start - 1
+        if right < 0:
+            right = marker_start + len(marker)
         inverse = False
         column = 0
         for token in re.finditer(r"\x1b\[([0-9:;]*)m|.", line):
@@ -145,7 +157,9 @@ def _has_focused_input(captured: str, marker: str) -> bool:
             if parameters is None:
                 # tmux-256color renders Textual's focused cursor as reverse
                 # video on its current cell, which may be an ordinary space.
-                if inverse and left < column < right:
+                # Textual may apply reverse video to the input's leading
+                # cursor cell, which is the left frame glyph at narrow sizes.
+                if inverse and left <= column < right:
                     return True
                 column += 1
                 continue
