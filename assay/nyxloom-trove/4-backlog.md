@@ -173,6 +173,8 @@ items:
   - {id: B191, title: "SQL witness source bootstrap omitted bundled cowtree and hid assay-run diagnostics", type: bugfix, component: gate, context_estimate: small}
   - {id: B192, title: "SIGTERM launcher cancellation test timed out once under gate contention", type: bugfix, component: gate, context_estimate: small}
   - {id: B193, title: "Use a sealed CoW base template and one cheap tree clone per snapshot unit", type: feature, component: isolation, context_estimate: medium}
+  - {id: B194, title: "b110_pilot_select refuses size 20 (per-file minimum 59) and cannot select from a small non-scanner plan", type: bugfix, component: tools, context_estimate: small}
+  - {id: B195, title: "Full self-qualification baseline ends leaked-process-tree on a bare VM (cause undiagnosed)", type: investigation, component: runner, context_estimate: small}
 ---
 
 # assay — backlog
@@ -13146,10 +13148,10 @@ R2 pass is claimed. The CHANGES release notes say so.
 The provisional-release exception is bounded by the first dated release
 heading after `Unreleased`, which must match CMRU's protected transaction
 version, not only by tags that exist before the gate: B169 is valid for release
-versions `>=10.0.0,<10.2.0`; the operator extended the original waiver on
-2026-10-31. The gate also requires at least one listable stable
-`assay-vX.Y.Z` tag and refuses if the latest visible tag is 10.2.0 or newer.
-Thus a prepared 10.2.0 release is refused before its tag is created, and
+versions `>=10.0.0,<10.3.0`; the operator extended the original waiver on
+2026-10-31 (10.2.0 extension: CW8/CW9/IO2 ship under it). The gate also requires at least one listable stable
+`assay-vX.Y.Z` tag and refuses if the latest visible tag is 10.3.0 or newer.
+Thus a prepared 10.3.0 release is refused before its tag is created, and
 missing or unreadable tag state cannot authorize the waiver.
 
 **Close when:** one full `self-qualification` run and one `analysis-r2` run are
@@ -13176,8 +13178,8 @@ qualification rigor runs. `self-qualification-provisional` (`assay.toml`,
 R0, R1 (whole-target 100% line and branch over `src/assay`) and the R3 canary.
 After the lane is verified it records `.assay/mutation-postponed-assay.json`
 (`result: provisional`, tracking id B169, valid only for a prepared release
-version `>= 10.0.0` and `< 10.2.0`; extended by operator on 2026-10-31; a
-newer `assay-v10.2.0` or later tag also refuses it). The full lane is unchanged
+version `>= 10.0.0` and `< 10.3.0`; extended by operator on 2026-10-31; a
+newer `assay-v10.3.0` or later tag also refuses it). The full lane is unchanged
 and deletes the marker; the marker
 cannot satisfy an R2 request.
 
@@ -13640,3 +13642,26 @@ materialization cleanup. No CoW area retains the existing materialization
 path and verdict buckets. Focused fake-workspace tests cover all four native
 mutation buckets, template seal order, and cleanup; the controller runs the
 20-candidate comparison recorded in `reports/CW9-CONTINUATION.md`.
+
+## B194 — pilot selector minimum size blocks small pilots
+
+**Status: OPEN (found by the CW9 btrfs pilot, 2026-11-01).**
+`tools/b110_pilot_select.py --size 20` is refused because its minimum is the
+per-file coverage (59 for assay's own plan) plus missing-operator coverage, and
+it cannot select from a plan without scanner candidates (a small project's
+throwaway lane). The pilot instructions in `reports/CW9-CONTINUATION.md` use
+`--size 20`. The 20-candidate parity pilot used a fallback selector with the
+same BLAKE2b ordering. Next: let `--size` below the minimum fall back to a
+seeded fill that still covers every operator, or document the minimum.
+
+## B195 — leaked-process-tree on a bare VM, undiagnosed
+
+**Status: OPEN, not reproduced inside the registered gates.**
+Running assay's full `self-qualification` lane natively on a scratch VM
+(Debian, Python 3.13, non-login user, no container) ended its 377 s baseline
+pytest with R0 `ERROR/EXEC_FAILED`, detail `leaked-process-tree`, and no
+surviving PID or traceback captured. The registered gates (preflight,
+tester-unified, provisional) pass on the same commit in the tester container.
+The CW9 pilot's matched cowtree arms (plain and btrfs) did not show it. Next:
+rerun once with `ps -e --forest` captured at `command_finished` to name the
+survivor, and bisect against the pre-CW8 commit.
