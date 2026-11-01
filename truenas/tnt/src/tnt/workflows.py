@@ -22,6 +22,8 @@ _USER_BASIC_UPDATE_FIELDS = frozenset({"full_name", "shell", "home"})
 _USER_ACCESS_UPDATE_FIELDS = frozenset({"group", "groups", "password_disabled", "locked", "ssh_password_enabled"})
 _USER_ACCESS_BOOL_FIELDS = frozenset({"password_disabled", "locked", "ssh_password_enabled"})
 _API_KEY_SAFE_FIELDS = ("id", "name", "username", "created_at", "expires_at", "local", "revoked", "revoked_reason")
+_SCRUB_TASK_FIELDS = frozenset({"pool", "threshold", "description", "schedule", "enabled"})
+_SCRUB_CRON_FIELDS = frozenset({"minute", "hour", "dom", "month", "dow"})
 
 
 class Workflows:
@@ -358,6 +360,122 @@ class Workflows:
                       (RpcCall("sharing.nfs.query", ([["path", "=", path]], {})),), path)
 
     # -- scheduled protection tasks --------------------------------------------------------------------
+    def scrub_tasks(self) -> list[dict[str, Any]]:
+        rows = _rows(self.rpc.call("pool.scrub.query", [], {"limit": 10000, "offset": 0, "order_by": ["id"]}),
+                     "pool.scrub.query")
+        for row in rows:
+            if (not isinstance(row.get("id"), int) or isinstance(row.get("id"), bool) or row["id"] < 1
+                    or not isinstance(row.get("pool"), int) or isinstance(row.get("pool"), bool) or row["pool"] < 1
+                    or not isinstance(row.get("pool_name"), str) or not row["pool_name"]
+                    or not isinstance(row.get("threshold"), int) or isinstance(row.get("threshold"), bool)
+                    or row["threshold"] < 0 or not isinstance(row.get("description"), str)
+                    or not isinstance(row.get("schedule"), Mapping) or not isinstance(row.get("enabled"), bool)):
+                raise Refused("scrub-task-shape", "pool.scrub.query returned a malformed v27 scrub schedule")
+        return rows
+
+    def scrub_task(self, task_id: int) -> dict[str, Any]:
+        row, _pool = self._scrub_task_context(task_id)
+        return row
+
+    def scrub_task_create_action(self, data: Mapping[str, Any]) -> Action:
+        payload = self._scrub_task_payload(data, create=True)
+        pool = self._scrub_pool_by_id(payload["pool"])
+        return Action("TNT-53", Kind.MUTATE, f"Create scrub schedule for pool {pool['name']}",
+                      (RpcCall("pool.scrub.create", (payload,)),),
+                      (RpcCall("pool.query", ([['id', '=', payload['pool']]], {"select": ["id", "name"]})),))
+
+    def scrub_task_update_action(self, task_id: int, data: Mapping[str, Any]) -> Action:
+        payload = self._scrub_task_payload(data, create=False)
+        row, old_pool = self._scrub_task_context(task_id)
+        new_pool_id = payload.get("pool", row["pool"])
+        new_pool = self._scrub_pool_by_id(new_pool_id)
+        probes = [RpcCall("pool.scrub.get_instance", (task_id,)),
+                  RpcCall("pool.query", ([['id', '=', row['pool']]], {"select": ["id", "name"]}))]
+        if new_pool_id != row["pool"]:
+            probes.append(RpcCall("pool.query", ([['id', '=', new_pool_id]], {"select": ["id", "name"]})))
+        target = f"{old_pool['name']} scrub schedule [{task_id}]"
+        if new_pool_id != row["pool"]:
+            target += f" moved to {new_pool['name']}"
+        return Action("TNT-53", Kind.MUTATE, f"Update scrub schedule {task_id} on {old_pool['name']}",
+                      (RpcCall("pool.scrub.update", (task_id, payload)),), tuple(probes), target)
+
+    def scrub_task_delete_action(self, task_id: int) -> Action:
+        row, pool = self._scrub_task_context(task_id)
+        target = f"{pool['name']} scrub schedule [{task_id}]"
+        return Action("TNT-53", Kind.DESTRUCTIVE, f"Delete scrub schedule {task_id} for pool {pool['name']}",
+                      (RpcCall("pool.scrub.delete", (task_id,)),
+                       ),
+                      (RpcCall("pool.scrub.get_instance", (task_id,)),
+                       RpcCall("pool.query", ([['id', '=', row['pool']]], {"select": ["id", "name"]}))), target)
+
+    def scrub_task_run_action(self, task_id: int) -> Action:
+        row, _pool = self._scrub_task_context(task_id)
+        pool = self._scrub_pool_by_id(row["pool"], fields=("id", "name", "status", "scan"))
+        if pool.get("status") not in {"ONLINE", "DEGRADED"}:
+            raise Refused("scrub-pool-state", f"pool {pool['name']} is not ONLINE or DEGRADED; scrub was not planned")
+        scan = pool.get("scan")
+        if scan is not None:
+            if (not isinstance(scan, Mapping) or scan.get("function") not in {"SCRUB", "RESILVER"}
+                    or scan.get("state") not in {"SCANNING", "FINISHED", "CANCELED"}):
+                raise Refused("scrub-pool-state", f"pool {pool['name']} scan state is unknown; scrub was not planned")
+            if scan.get("state") == "SCANNING":
+                raise Refused("scrub-active", f"pool {pool['name']} already has an active scrub or resilver")
+        if row.get("pool_name") != pool["name"]:
+            raise Refused("scrub-pool-state", "the scrub schedule pool name does not match the current pool record")
+        data = {"pool_name": pool["name"], "scan_type": "SCRUB", "action": "START", "threshold": 0}
+        probes = (RpcCall("pool.scrub.get_instance", (task_id,)),
+                  RpcCall("pool.query", ([['id', '=', row['pool']]],
+                                          {"select": ["id", "name", "status", "scan"]})))
+        return Action("TNT-53", Kind.MUTATE, f"Start scrub now for pool {pool['name']} (schedule {task_id})",
+                      (RpcCall("zpool.scrub.run", (data,), job=True),), probes)
+
+    def _scrub_task_payload(self, data: Mapping[str, Any], *, create: bool) -> dict[str, Any]:
+        if not isinstance(data, Mapping) or (not data and not create):
+            raise Refused("scrub-task-fields", "provide at least one scrub schedule field to update")
+        payload = dict(data)
+        unknown = set(payload) - _SCRUB_TASK_FIELDS
+        if unknown:
+            raise Refused("scrub-task-fields", f"unsupported v27 scrub schedule fields: {sorted(unknown)}")
+        if create and "pool" not in payload:
+            raise Refused("scrub-task-pool", "pool must be a positive pool ID")
+        if "pool" in payload and (not isinstance(payload["pool"], int) or isinstance(payload["pool"], bool)
+                                  or payload["pool"] < 1):
+            raise Refused("scrub-task-pool", "pool must be a positive pool ID")
+        if "threshold" in payload and (not isinstance(payload["threshold"], int)
+                                       or isinstance(payload["threshold"], bool) or payload["threshold"] < 0):
+            raise Refused("scrub-task-threshold", "threshold must be a non-negative integer")
+        if "description" in payload and not isinstance(payload["description"], str):
+            raise Refused("scrub-task-description", "description must be a string")
+        if "enabled" in payload and not isinstance(payload["enabled"], bool):
+            raise Refused("scrub-task-enabled", "enabled must be true or false")
+        if "schedule" in payload:
+            schedule = payload["schedule"]
+            if (not isinstance(schedule, Mapping) or set(schedule) - _SCRUB_CRON_FIELDS
+                    or any(not isinstance(value, str) or not value.strip() for value in schedule.values())):
+                raise Refused("scrub-task-schedule", "schedule must contain only v27 cron fields with string values")
+            payload["schedule"] = dict(schedule)
+        return payload
+
+    def _scrub_pool_by_id(self, pool_id: int, *, fields: tuple[str, ...] = ("id", "name")) -> dict[str, Any]:
+        if not isinstance(pool_id, int) or isinstance(pool_id, bool) or pool_id < 1:
+            raise Refused("scrub-task-pool", "scrub schedule pool ID must be a positive integer")
+        rows = _rows(self.rpc.call("pool.query", [["id", "=", pool_id]], {"select": list(fields), "limit": 2}),
+                     "pool.query")
+        matches = [row for row in rows if row.get("id") == pool_id]
+        if len(matches) != 1 or not isinstance(matches[0].get("name"), str) or not matches[0]["name"]:
+            raise Refused("scrub-task-pool", f"pool ID {pool_id} did not resolve to exactly one current pool")
+        pool = dict(matches[0])
+        if _names_boot_pool(pool["name"]):
+            raise Refused("refusal-list", "boot-pool scrub schedules and runs are not offered")
+        return pool
+
+    def _scrub_task_context(self, task_id: int) -> tuple[dict[str, Any], dict[str, Any]]:
+        row = self._task_by_id("pool.scrub.get_instance", task_id, "pool scrub schedule")
+        pool = self._scrub_pool_by_id(row.get("pool"))
+        if row.get("pool_name") != pool["name"]:
+            raise Refused("scrub-task-pool", "the scrub schedule pool name does not match its current pool ID")
+        return row, pool
+
     def snapshot_tasks(self) -> list[dict[str, Any]]:
         return _rows(self.rpc.call("pool.snapshottask.query", [], {}), "pool.snapshottask.query")
 

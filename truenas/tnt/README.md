@@ -1,10 +1,11 @@
 # tnt (truenas-tui)
 
 `tnt` is a keyboard driven TUI and scriptable CLI for the vanilla TrueNAS v27 JSON-RPC API. Workflows cover Datasets
-and Snapshots, SMB/NFS Shares, snapshot/replication/cloud-sync tasks, Network status, Apps, Containers, Virtual
-Machines, local Users, Audit, API Keys, guarded System actions, and the read-only Dashboard, Alerts, Jobs, Services,
-and Storage health views. Containers and Virtual Machines are separate top-level menu entries. Pool creation and
-boot-pool changes remain outside scope.
+and Snapshots, SMB/NFS Shares, snapshot/replication/cloud-sync/pool-scrub tasks, Network status, Apps, Containers,
+Virtual Machines, local Users, Audit, API Keys, guarded System actions, and read-only Dashboard, Alerts, Jobs, Services,
+Storage health, and pool inventory views. Conditional Apps, Containers, Virtual Machines, KMIP, and Enclosure menu
+entries are probed per host generation. Containers and Virtual Machines are separate top-level menu entries. Pool
+creation, partitioning, and boot-pool changes remain outside scope.
 
 The CLI and TUI share one query and action layer. Every write is planned first, displays the exact API calls, and is
 applied through the default deny guard. Destructive actions require typing the target name. See the
@@ -14,11 +15,14 @@ for the verified method signatures. The original storage action matrix remains a
 Scope and safety choices are explained in the [design guide](docs/DESIGN.md#1-goals-and-non-goals); copyable setup and
 workflow examples are in the [consumer guide](docs/CONSUMERS.md#configure-multiple-hosts).
 
-M1 core workflows, M2 management workflows, It1 multi-host configuration and session control, It2 job tracking and
-read-only core views, and It3 hardened interactive SSH hand-off are implemented. It4 vanilla-v27 acceptance is recorded
+M1 core workflows, M2 management workflows, M3 remaining v27 scrub and pool views, It1 multi-host configuration and
+session control, It2 job tracking and read-only core views, and It3 hardened interactive SSH hand-off are implemented.
+It4 vanilla-v27 acceptance is recorded
 in the [live acceptance record](docs/LIVE-TESTING.md#live-acceptance-run-2026-10-29). CMRU release registration is in
-place; the first release, version 0.1.0, has not been published. See the [milestone plan](docs/DESIGN.md#10-milestones)
+place; version 0.1.0 has been published. See the [milestone plan](docs/DESIGN.md#10-milestones)
 and [release design](docs/DESIGN.md#12-decisions-open-questions-and-estate-registration).
+Use [pool scrub schedules and inventory](docs/CONSUMERS.md#storage-pools-and-scrub-schedules) from the consumer guide;
+the design guide explains the [API and safety choices](docs/DESIGN.md#data-protection-tasks).
 
 At connection time tnt checks the v27 WebSocket method list. Methods missing from a host are reported by
 `doctor --online` and refused if a workflow needs them; a method-name match does not grant an RBAC role. See the
@@ -27,10 +31,9 @@ At connection time tnt checks the v27 WebSocket method list. Methods missing fro
 
 ## Install
 
-The first release has not been published yet. It is registered as version `0.1.0`, with the wheel and its SHA256
-planned as assets of GitHub Release `tnt-v0.1.0`; CMRU also maintains the moving `tnt-latest` release. After it is
-published, download that wheel and a
-`cli-extended>=0.4.0` wheel from their GitHub Releases into one directory, then install:
+Version `0.1.0` is published with a wheel and SHA256 asset in GitHub Release `tnt-v0.1.0`; CMRU also maintains the
+moving `tnt-latest` release. Download that wheel and a `cli-extended>=0.4.0` wheel from their GitHub Releases into one
+directory, then install:
 
 ```bash
 python -m pip install --no-index --find-links . 'cli-extended>=0.4.0'
@@ -157,7 +160,7 @@ host-wide only when `auth.me` confirms `FULL_ADMIN`; other sessions see only job
 TUI refreshes these screens in the background, keeps the last successful sample after a failed refresh, and provides
 search, copy, help, and a sanitized error panel. Service lifecycle writes are not available from Services. See the
 [job/view design](docs/DESIGN.md#non-blocking-jobs-and-core-read-views) and
-[verified v27 contracts](docs/API-METHODS-V27.md#iteration-2-read-view-contract-implemented-against-the-verified-v27-reference).
+[verified v27 contracts](docs/API-METHODS-V27.md#read-view-contracts-implemented-against-the-verified-v27-reference).
 
 ```sh
 tnt dashboard --host lab --json

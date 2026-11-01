@@ -635,6 +635,32 @@ def _task_protocol_cli(ident: CliIdentity, opener: SessionOpener, kind: str) -> 
         child.register(VerbSpec("delete", None, "Delete a periodic snapshot task.", group=VerbGroup.MODIFICATION.value,
                                 arguments=(id_arg,), options=write_options, handler=lambda a, r: _workflow_action(a, r, opener,
                                     lambda s: s.workflows.snapshot_task_delete_action(a.task_id))))
+    elif kind == "scrub":
+        id_arg = ArgumentSpec("task_id", "Pool scrub schedule ID.", metavar="ID", parser_kwargs={"type": int})
+        child.register(VerbSpec("list", None, "List pool scrub schedules.", group=VerbGroup.EXPLORATION.value,
+                                options=read_options, handler=lambda a, r: _workflow_read(a, r, opener,
+                                    lambda s: s.workflows.scrub_tasks())))
+        child.register(VerbSpec("show", None, "Show one pool scrub schedule.", group=VerbGroup.EXPLORATION.value,
+                                arguments=(id_arg,), options=read_options, handler=lambda a, r: _workflow_read(a, r, opener,
+                                    lambda s: s.workflows.scrub_task(a.task_id))))
+        child.register(VerbSpec("create", None, "Create a pool scrub schedule from a v27 JSON payload.",
+                                group=VerbGroup.MODIFICATION.value,
+                                options=write_options + (_value(("--file",), "JSON schedule payload.", "FILE", "WORKFLOW"),),
+                                handler=lambda a, r: _workflow_action(a, r, opener,
+                                    lambda s: s.workflows.scrub_task_create_action(_read_json_object(a.file)))))
+        child.register(VerbSpec("update", None, "Update a pool scrub schedule from a v27 JSON payload.",
+                                group=VerbGroup.MODIFICATION.value, arguments=(id_arg,),
+                                options=write_options + (_value(("--file",), "JSON fields to update.", "FILE", "WORKFLOW"),),
+                                handler=lambda a, r: _workflow_action(a, r, opener,
+                                    lambda s: s.workflows.scrub_task_update_action(a.task_id, _read_json_object(a.file)))))
+        child.register(VerbSpec("run", None, "Start a full pool scrub now as a tracked v27 job.",
+                                group=VerbGroup.MODIFICATION.value, arguments=(id_arg,), options=write_options,
+                                handler=lambda a, r: _workflow_action(a, r, opener,
+                                    lambda s: s.workflows.scrub_task_run_action(a.task_id))))
+        child.register(VerbSpec("delete", None, "Delete a pool scrub schedule (typed confirmation required).",
+                                group=VerbGroup.MODIFICATION.value, arguments=(id_arg,), options=write_options,
+                                handler=lambda a, r: _workflow_action(a, r, opener,
+                                    lambda s: s.workflows.scrub_task_delete_action(a.task_id))))
     elif kind == "replication":
         name_arg = ArgumentSpec("name", "Replication task name.", metavar="NAME")
         child.register(VerbSpec("list", None, "List replication tasks.", group=VerbGroup.EXPLORATION.value,
@@ -676,6 +702,7 @@ def _task_verbs(ident: CliIdentity, opener: SessionOpener) -> list[VerbSpec]:
     return [VerbSpec(name, None, description, group=VerbGroup.EXPLORATION.value,
                      delegate=_task_protocol_cli(ident, opener, name))
             for name, description in (("snapshot", "Manage periodic snapshot tasks."),
+                                      ("scrub", "Manage pool scrub schedules."),
                                       ("replication", "Inspect and run replication tasks."),
                                       ("cloudsync", "Inspect and run cloud-sync tasks."))]
 
@@ -1374,6 +1401,10 @@ def build_cli(cli_identity: CliIdentity | None = None, opener: SessionOpener = o
                                options=HOST_OPTIONS,
                                handler=lambda args, runtime: _core_view_read(args, runtime, opener, "services")))
     _workflow_group(registry, ident, "storage", "Read pool and disk health.", [
+        VerbSpec("pools", None, "Show read-only inventory and scan state for storage pools.",
+                 group=VerbGroup.EXPLORATION.value, examples=("tnt storage pools --host lab --json",),
+                 options=HOST_OPTIONS,
+                 handler=lambda args, runtime: _core_view_read(args, runtime, opener, "pools")),
         VerbSpec("health", None, "Show pool health and disk inventory without write actions.",
                  group=VerbGroup.EXPLORATION.value, examples=("tnt storage health --host lab --json",),
                  options=HOST_OPTIONS,

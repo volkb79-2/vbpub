@@ -319,5 +319,27 @@ class StorageHealthView(CoreReadView):
         return rows
 
 
+class PoolsView(CoreReadView):
+    VIEW_KEY = "pools"
+    INTERVAL_SECONDS = 60
+    COLUMNS = ("Name", "State", "Healthy", "Warning", "Allocated / Size", "Free", "Scan / vdevs")
+
+    def _rows(self, payload: dict[str, Any]) -> list[tuple[str, ...]]:
+        rows = []
+        for pool in payload["rows"]:
+            space = f"{self._cell(pool['allocated'])} / {self._cell(pool['size'])}"
+            scan = pool.get("scan")
+            if isinstance(scan, dict):
+                scan = {key: scan.get(key) for key in ("function", "state", "percentage", "total_secs_left")}
+            details = {"scan": scan, "topology": pool.get("topology")}
+            rows.append((self._cell(pool["name"]), self._cell(pool.get("status_code") or pool["status"]),
+                         self._cell(pool["healthy"]), self._cell(pool["warning"]), space,
+                         self._cell(pool["free"]), self._cell(details)))
+        if payload["possibly_more"]:
+            rows.append(("Result limit reached", "Unknown", "Unknown", "Unknown", "Unknown", "Unknown",
+                         "Query reached the v27 row limit of 10000."))
+        return rows
+
+
 VIEWS = {"dashboard": DashboardView, "alerts": AlertsView, "jobs": JobsView,
-         "services": ServicesView, "storage/health": StorageHealthView}
+         "services": ServicesView, "storage/health": StorageHealthView, "storage/pools": PoolsView}

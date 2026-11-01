@@ -24,15 +24,15 @@ of focused work. `[DONE M1]`, `[DONE M2]`, and `[DONE It4]` mark implemented or 
 | id | screen | milestone | size |
 |---|---|---|---|
 | TNT-10 | [DONE It2] Dashboard (`system.info`, CPU/memory history, alerts, pool and disk health) | It2 | M |
-| TNT-11 | Storage > Pools (`pool.query`, vdev tree, scrub status; scrub as the first MUTATE action) | Later | M |
+| TNT-11 | [DONE M3] Storage > Pools read-only inventory (`pool.query`, vdev topology, health, space, and scan state); pool changes remain deferred | M3 | M |
 | TNT-12 | [DONE M1] Datasets (`pool.dataset.query`, tree, usage; create/update/delete behind gates; matrix A-01..A-03) | M1 | L |
 | TNT-13 | System > Boot (`boot.get_state`, `boot.environment.*`; clone/activate/keep) | Later | M |
 | TNT-14 | [DONE M2] System > General configuration export, Network, Update, reboot, and shutdown | M2 | L |
 | TNT-15 | [DONE M2] Shares: SMB, NFS, remote-path guard, ACL read, typed configuration deletion | M2 | M |
 | TNT-16 | [DONE M1] Containers and Virtual Machines (matrix A-04..A-06, B-04; v27 `container.*` and `vm.*`). Current image, CPU-count and configured memory-limit fields are unavailable in the verified container schema; see TNT-36/37. | M1 | L |
 | TNT-17 | [DONE M2] Apps: installed app state, upgrade-available flag, start/stop/restart, destructive uninstall with opt-in volume deletion | M2 | M |
-| TNT-18 | [DONE M2] Data Protection periodic snapshot, replication, and cloud-sync tasks (scrub/SMART tasks deferred) | M2 | L |
-| TNT-19 | Remaining Credentials and Enclosure; Reporting beyond It2's CPU/memory read history | Later | L |
+| TNT-18 | [DONE M3] Data Protection snapshot, replication, cloud-sync, and pool scrub schedules with job-backed run-now; SMART task APIs are absent from vanilla v27 | M3 | L |
+| TNT-19 | Remaining Credentials and full Enclosure views; Reporting beyond It2's CPU/memory history. Conditional-menu detection alone does not implement those workflows | Later | L |
 | TNT-38 | [DONE M1] Snapshots: list/create/clone/hold/release/rollback/delete through CLI and TUI, with drift probes and typed destructive confirmation | M1 | M |
 | TNT-39 | [DONE M1] Containers: list/show/create/update/start/stop/restart/delete through CLI and TUI, including explicit one-shot CPU/memory usage status from `container.metrics`; v27 omits image identity, CPU count, configured memory limit | M1 | L |
 | TNT-40 | [DONE M1] Virtual machines: list/show/create/update/lifecycle/device/console workflows through CLI and TUI; create and device plans are staged because v27 excludes devices from `vm.create` | M1 | L |
@@ -61,12 +61,12 @@ of focused work. `[DONE M1]`, `[DONE M2]`, and `[DONE It4]` mark implemented or 
 | TNT-31 | Re-pin `truenas_api_client` from the TS-27.0.0-RC.1 sha to the TS-27.0.0 GA tag once it is 14 days old | S | GA+14d |
 | TNT-32 | [DONE It4] Register `tnt` in `cmru.orchestration.toml` with the `r0-r1` and `ux-focused` release gates; `live-v27` remains opt-in and `live-inspect` belongs to separate estate gate tooling | S | It4 |
 | TNT-33 | [DONE It4] Gate lanes install the editable `tnt` project from its tracked `VERSION` file before cli-extended's installed-version lookup | S | It4 |
-| TNT-35 | Detect per host which conditional menu entries (Apps, Containers, Virtual Machines, KMIP, Enclosure) the web UI would show, and hide unsupported entries | S | Later |
-| TNT-36 | Revisit container memory controls if a future v27 schema exposes a supported memory resource field; current `ContainerCreate`/`ContainerUpdate` schema exposes `cpuset` but no memory limit (deferred by verified v27 schema) | S | Later |
-| TNT-37 | Expose a current container image identity if a future v27 API supplies it; `ContainerEntry` has no image field and create consumes image metadata without retaining it in the returned record (deferred by the verified schema; see `docs/API-METHODS-V27.md`) | S | Later |
+| TNT-35 | [DONE M3] Detect Apps, Containers, Virtual Machines, KMIP, and Enclosure per host generation; hide unsupported entries and retain unavailable probes without actions | M3 | S |
+| TNT-36 | Revisit container memory controls only if a later API schema adds a memory resource field; v27 `ContainerCreate`/`ContainerUpdate` expose `cpuset` but no memory limit. The pinned client is transport-only; verified against its pinned v27 middleware schema | S | Later |
+| TNT-37 | Expose container image identity only if a later API schema adds it; v27 `ContainerEntry` has no image field and create does not retain image metadata. The pinned client is transport-only; see `docs/API-METHODS-V27.md` | S | Later |
 | TNT-49 | [DONE It2] Read-only core views: Dashboard, Alerts, Jobs, Services, Storage health, exact v27 contracts, and unavailable-state behavior | L | It2 |
 | TNT-50 | [DONE It3] Hardened interactive SSH hand-off with pinned host-key sources, suspend/restore, and no arbitrary remote command mode | M | It3 |
-| TNT-51 | [IN PROGRESS It4] Vanilla-v27 acceptance, review hardening, project docs/CLI consistency, estate registration, and release readiness; live acceptance recorded 2026-10-29. The current `r0-r1` run passed 943 tests and reported 98.30% coverage. CMRU registration is complete; the first 0.1.0 release has not been published | L | It4 |
+| TNT-51 | [IN PROGRESS It4] Vanilla-v27 acceptance, review hardening, project docs/CLI consistency, estate registration, and release readiness; live acceptance recorded 2026-10-29. M3 focused tests passed 383 tests at 74.37% package coverage (100% of M3-added executable lines); the full 97% tester-unified gate and M3 read-only v1001 probe remain unverified because this task prohibited run-gate/Docker and the local live profile is unavailable. The recorded `r0-r1` run passed 943 tests at 98.30%; CMRU registration is complete and 0.1.0 is published | L | It4 |
 | TNT-52 | [DONE It4] Close milestone-review findings: worker-bound lookups/preflight, endpoint-bound credentials, bounded transition drain, load-bearing boot-pool assertion, lockout-shaped confirmations, and whitespace cleanup | M | It4 |
 | TNT-53 | [FIXED FOR TNT; GENERAL TOOL FINDING RG-122] Prevent pytest-cov's rounded `--cov-fail-under` comparison from accepting branch coverage below 97%. TNT sets `[tool.coverage.report] precision = 2` in `pyproject.toml`, aligning pytest-cov's exit comparison with its two-digit report. The general pytest-cov/Run-Gate command-lane false green remains tracked as RG-122 in `run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md`. | M | It4 |
 | TNT-54 | tmux real-terminal UX checks | Add Debian trixie package `tmux` to the `tester-unified` image's apt package installation in `tester-unified/Dockerfile`, rebuild the image, and let `tests/test_tui_tmux.py` exercise the TUI in its real tmux pseudo-terminal. Until then those cases skip with the missing-image-capability reason. Keep tmux out of the minimal `tester-base`. | S | Later |
