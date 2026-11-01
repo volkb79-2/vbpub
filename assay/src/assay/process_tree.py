@@ -167,8 +167,6 @@ class ProcessTreeEvidence:
             "signaled", "timeout-killed"
         }:
             raise ValueError("process-tree signal requires a signaled leader")
-        if self.leader_status in {"exited", "not-started"} and self.signal is not None:
-            raise ValueError("an exited or unstarted leader cannot carry a signal")
         if not isinstance(self.descendants, tuple) or any(
             not isinstance(item, ProcessTreeDescendant) for item in self.descendants
         ):

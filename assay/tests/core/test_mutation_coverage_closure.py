@@ -800,6 +800,70 @@ def test_load_record_without_process_tree_evidence_is_a_rejected_cache_miss(tmp_
     assert _load(tmp_path) == mutation._RECORD_REJECTED
 
 
+def _completed_leak_record(**overrides):
+    tree = process_tree_evidence_dict()
+    tree.update(
+        outliving_descendants=1,
+        descendants_signalled=1,
+        descendants=[{"pid": 10_001, "ppid": 1, "comm": "child"}],
+    )
+    values = {
+        "outcome_bucket": "crashed",
+        "terminal_result": {
+            "outcome": "ERROR",
+            "reason_code": "EXEC_FAILED",
+            "returncode": None,
+        },
+        "process_tree_evidence": tree,
+        "underlying_outcome": {"outcome": "PASS", "returncode": 0},
+    }
+    values.update(overrides)
+    if values.get("underlying_outcome", object()) is None:
+        values.pop("underlying_outcome")
+    return _record(**values)
+
+
+def test_load_record_retains_completed_suite_outcome_under_cleanup_crash(tmp_path):
+    _put(tmp_path, _completed_leak_record())
+
+    restored = _load(tmp_path)
+
+    assert isinstance(restored, dict)
+    assert restored["outcome_bucket"] == "crashed"
+    assert restored["underlying_outcome"] == {"outcome": "PASS", "returncode": 0}
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"underlying_outcome": "PASS"}, "underlying_outcome must be an object"),
+        (
+            {"underlying_outcome": {"outcome": "INVALID", "returncode": 0}},
+            "has invalid underlying_outcome",
+        ),
+        ({"underlying_outcome": None}, "inconsistent underlying_outcome"),
+        (
+            {
+                "process_tree_evidence": process_tree_evidence_dict(),
+                "underlying_outcome": {"outcome": "PASS", "returncode": 0},
+            },
+            "inconsistent underlying_outcome",
+        ),
+        (
+            {"outcome_bucket": "killed"},
+            "underlying_outcome outside crashed",
+        ),
+    ],
+)
+def test_load_record_refuses_invalid_retained_underlying_outcomes(
+    tmp_path, changes, message
+):
+    _put(tmp_path, _completed_leak_record(**changes))
+
+    with pytest.raises(mutation.MutationStateError, match=message):
+        _load(tmp_path)
+
+
 def test_load_record_accepts_well_formed_mutant_evidence(tmp_path):
     evidence = {
         "command": "r2",

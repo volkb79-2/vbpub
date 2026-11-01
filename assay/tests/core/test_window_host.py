@@ -329,6 +329,8 @@ def test_abrupt_window_host_exit_becomes_crashed_with_exec_failed_cause(
     evidence = ProcessTreeEvidence.from_dict(result.process_tree_evidence)
     assert evidence.leader_status == "signaled"
     assert evidence.clean
+    assert type(evidence.signal) is int
+    assert evidence.signal == signal.SIGKILL
     run = mutation._MutantRun(
         result=result,
         equivalence_bytes=None,
@@ -1275,6 +1277,22 @@ def test_process_group_inspector_skips_disappearing_entries_and_reports_io_error
 
     monkeypatch.setattr(Path, "iterdir", lambda _path: (BadIdentityEntry(),))
     with pytest.raises(Exception, match="malformed process identity"):
+        _window_host._process_group_members(123)
+
+
+def test_process_group_inspector_refuses_an_invalid_matching_process_identity(monkeypatch):
+    class InvalidIdentityEntry:
+        name = "123"
+
+        def __truediv__(self, _child):
+            return self
+
+        def read_text(self, **_kwargs):
+            return "(candidate) S 0 123"
+
+    monkeypatch.setattr(Path, "iterdir", lambda _path: (InvalidIdentityEntry(),))
+
+    with pytest.raises(Exception, match="invalid process identity"):
         _window_host._process_group_members(123)
 
 

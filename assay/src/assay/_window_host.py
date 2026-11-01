@@ -571,7 +571,7 @@ def _cleanup_crashed_candidate(pid: int | None) -> ProcessTreeEvidence:
         group_signalled_before_reap=group_signalled,
         outliving_descendants=len(descendants),
         descendants_signalled=len(descendants) if group_signalled else 0,
-        signal=signal.SIGKILL if group_signalled else None,
+        signal=int(signal.SIGKILL) if group_signalled else None,
         descendants=descendants,
         clean=True,
     )

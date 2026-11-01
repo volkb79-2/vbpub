@@ -66,10 +66,16 @@ BASE_R1_POLICY = dict(
     allow_excluded=False,
 )
 
+#: (B202/schema v17) native `jobs` and effective `attribution` are required;
+#: the one-worker fixture uses `serial`.
 #: (P33/V5-4) `kill_attribution` is REQUIRED on every `JudgmentR2`, and it is
 #: derived from `kill_signal_artifact`'s presence -- which P33 refuses at
 #: config load, so `unattributed` is what every lane in this build renders.
-BASE_R2_POLICY = dict(kill_attribution="unattributed", cold_witness_kills=False)
+BASE_R2_POLICY = dict(
+    attribution="serial",
+    kill_attribution="unattributed",
+    cold_witness_kills=False,
+)
 
 BASE_VERDICT = {
     "lane": "package",
@@ -460,6 +466,7 @@ def test_judgment_r2_untouched_form_builds():
     )
     assert r2.to_dict() == {
         "jobs": 1,
+        "attribution": "serial",
         "max_mutants": 50,
         "operators": ["python:compare-swap", "python:boolop-swap"],
         "kill_attribution": "unattributed",
@@ -641,7 +648,7 @@ def test_judgment_r2_kill_attribution_and_its_artifact_cannot_disagree():
     the same reason A-036 derives `argv_modified` from `argv_appended`."""
     with pytest.raises(ValueError, match="only\n?.*consistent value here is 'declared'"):
         JudgmentR2(
-            jobs=1,
+            jobs=1, attribution="serial",
             max_mutants=50,
             operators=("python:compare-swap",),
             kill_attribution="unattributed",
@@ -650,7 +657,7 @@ def test_judgment_r2_kill_attribution_and_its_artifact_cannot_disagree():
         )
     with pytest.raises(ValueError, match="no kill_signal_artifact"):
         JudgmentR2(
-            jobs=1,
+            jobs=1, attribution="serial",
             max_mutants=50,
             operators=("python:compare-swap",),
             kill_attribution="declared",
@@ -661,7 +668,7 @@ def test_judgment_r2_kill_attribution_and_its_artifact_cannot_disagree():
 def test_judgment_r2_refuses_an_unknown_kill_attribution():
     with pytest.raises(ValueError, match="kill_attribution must be one of"):
         JudgmentR2(
-            jobs=1,
+            jobs=1, attribution="serial",
             max_mutants=50,
             operators=("python:compare-swap",),
             kill_attribution="probably",
@@ -675,7 +682,15 @@ def test_judgment_r2_refuses_an_unknown_kill_attribution():
         ({"jobs": "4", "max_mutants": 50, "operators": ("python:compare-swap",)}, "must be an integer"),
         ({"jobs": True, "max_mutants": 50, "operators": ("python:compare-swap",)}, "must be an integer"),
         ({"jobs": 0, "max_mutants": 50, "operators": ("python:compare-swap",)}, ">= 1"),
-        ({"jobs": 2, "max_mutants": 50, "operators": ("python:compare-swap",)}, "must be 1"),
+        (
+            {
+                "jobs": 2,
+                "attribution": "serial",
+                "max_mutants": 50,
+                "operators": ("python:compare-swap",),
+            },
+            "must be 'overlap-conservative'",
+        ),
         ({"jobs": 1, "max_mutants": 50, "operators": []}, "non-empty tuple"),
         ({"jobs": 1, "max_mutants": 50, "operators": ()}, "non-empty tuple"),
         # P21 work item 2: the vocabulary is CLOSED in the model now, so an
@@ -1255,7 +1270,7 @@ def _cold_full_kill_policy_and_outcome():
         r2_baseline=r2_baseline,
     )
     policy = JudgmentR2(
-        jobs=1,
+        jobs=1, attribution="serial",
         max_mutants=50,
         operators=("python:compare-swap",),
         kill_attribution="unattributed",
@@ -1409,7 +1424,7 @@ def test_verdict_refuses_a_declared_attribution_leaving_a_kill_unexplained():
     """Invariant 4's other clause: attribution that covers only some kills is
     not attribution."""
     policy = JudgmentR2(
-        jobs=1,
+        jobs=1, attribution="serial",
         max_mutants=50,
         operators=("sql:drop-check",),
         kill_attribution="declared",

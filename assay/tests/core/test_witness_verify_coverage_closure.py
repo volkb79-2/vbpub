@@ -1126,6 +1126,82 @@ def test_b162_accepts_clean_or_classified_trees(bucket, entry):
     assert _tree_failures(bucket, entry) == []
 
 
+@pytest.mark.parametrize(
+    ("raw", "message"),
+    [
+        (_tree(descendants="not-a-list"), "invalid process-tree descendants"),
+        (_tree(descendants=[{"pid": 1, "ppid": 1}]), "malformed descendant identity"),
+        (_tree(descendants=[{"pid": True, "ppid": 1, "comm": "child"}]), "invalid descendant pid"),
+        (_tree(descendants=[{"pid": 1, "ppid": None, "comm": "child"}]), "incomplete descendant identity"),
+        (_tree(descendants=[{"pid": 1, "ppid": 0, "comm": "child"}]), "invalid descendant ppid"),
+        (_tree(descendants=[{"pid": 1, "ppid": 1, "comm": ""}]), "invalid descendant comm"),
+        (
+            _tree(
+                outliving_descendants=2,
+                descendants=[
+                    {"pid": 2, "ppid": 1, "comm": "child"},
+                    {"pid": 2, "ppid": 1, "comm": "child"},
+                ],
+            ),
+            "descendant pids must be unique and sorted",
+        ),
+    ],
+)
+def test_b162_raw_descendant_validator_refuses_bad_identity_shapes(raw, message):
+    assert any(
+        message in failure
+        for failure in _tree_failures("crashed", {"process_tree_evidence": raw})
+    )
+
+
+@pytest.mark.parametrize(
+    ("underlying", "message"),
+    [
+        ([], "malformed underlying_outcome"),
+        (
+            {
+                "outcome": "PASS",
+                "returncode": 0,
+                "report_summary": {
+                    "format": "",
+                    "total": 1,
+                    "failed": 0,
+                    "finished": True,
+                },
+            },
+            "invalid underlying report_summary",
+        ),
+        ({"outcome": "FAIL", "returncode": 0}, "inconsistent underlying_outcome"),
+    ],
+)
+def test_b162_raw_underlying_outcome_is_checked_against_the_leak_and_summary(
+    underlying, message
+):
+    raw = _tree(outliving_descendants=1)
+    failures = _tree_failures(
+        "crashed",
+        {"process_tree_evidence": raw, "underlying_outcome": underlying},
+    )
+    assert any(message in failure for failure in failures)
+
+
+def test_v17_verifier_rederives_import_break_cause_before_awarding_canary_pass():
+    attempt = v.CanaryAttempt(
+        target="src/mod.py",
+        description="break an import",
+        control_outcome=v.Outcome.PASS,
+        transformed_outcome=v.Outcome.FAIL,
+        expected_reason_code=v.ReasonCode.COMMAND_FAILED,
+        observed_reason_code=v.ReasonCode.COMMAND_FAILED,
+        cause="absent",
+    )
+
+    assert v._judge_one_attempt(attempt) == (
+        v.Outcome.INCONCLUSIVE,
+        v.ReasonCode.CANARY_INCONCLUSIVE,
+    )
+
+
 def test_fixture_bases_are_not_mutated_by_parametrization():
     # Guards the shared module-level parametrize objects against in-place edits.
     assert deepcopy(_r2_document()) == _r2_document()

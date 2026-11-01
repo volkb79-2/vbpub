@@ -15,6 +15,7 @@ import pytest
 
 from assay import process_tree
 from assay.process_tree import (
+    ProcessTreeDescendant,
     ProcessTreeError,
     ProcessTreeEvidence,
     ProcessTreeProcessRunner,
@@ -392,6 +393,91 @@ def test_process_tree_evidence_requires_the_exact_serialized_field_set():
     with pytest.raises(ValueError, match="invalid field set"):
         ProcessTreeEvidence.from_dict({})
     assert ProcessTreeEvidence.not_started().leader_status == "not-started"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [None, True, "1", pytest.param(10**10000, id="integer-overflow")],
+)
+def test_process_tree_cleanup_bound_rejects_nonfinite_or_non_numeric_values(value):
+    with pytest.raises(ValueError, match="cleanup_seconds must be positive"):
+        ProcessTreeWindow(cleanup_seconds=value)
+
+
+@pytest.mark.parametrize(
+    ("values", "message"),
+    [
+        ({"pid": True, "ppid": 1, "comm": "child"}, "pid must be a positive integer"),
+        ({"pid": 1, "ppid": 1, "comm": None}, "identity must be complete or omitted"),
+        ({"pid": 1, "ppid": True, "comm": "child"}, "ppid must be a positive integer"),
+        ({"pid": 1, "ppid": 0, "comm": "child"}, "ppid must be a positive integer"),
+        ({"pid": 1, "ppid": 1, "comm": ""}, "comm must be a non-empty string"),
+        ({"pid": 1, "ppid": 1, "comm": 7}, "comm must be a non-empty string"),
+    ],
+)
+def test_process_tree_descendant_refuses_incomplete_or_invalid_identity(values, message):
+    with pytest.raises(ValueError, match=message):
+        ProcessTreeDescendant(**values)
+
+
+def test_process_tree_descendant_wire_shape_is_exact_and_round_trips():
+    with pytest.raises(ValueError, match="invalid field set"):
+        ProcessTreeDescendant.from_dict({"pid": 7, "ppid": 1, "comm": "child", "extra": 1})
+    identity = ProcessTreeDescendant.from_dict({"pid": 7, "ppid": 1, "comm": "child"})
+    assert identity.to_dict() == {"pid": 7, "ppid": 1, "comm": "child"}
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"leader_status": "exited", "signal": 9}, "signal requires a signaled leader"),
+        ({"leader_status": "signaled", "descendants": []}, "descendants must be a tuple"),
+        ({"descendants": (ProcessTreeDescendant(pid=1, ppid=1, comm="child"),) * 10_001,
+          "outliving_descendants": 10_001}, "exceed 10000"),
+        ({"descendants": (ProcessTreeDescendant(pid=1, ppid=1, comm="child"),) * 2,
+          "outliving_descendants": 2}, "duplicate pid"),
+        ({"descendants": (ProcessTreeDescendant(pid=2, ppid=1, comm="child"),
+                           ProcessTreeDescendant(pid=1, ppid=1, comm="child")),
+          "outliving_descendants": 2}, "sorted by pid"),
+        ({"descendants": (ProcessTreeDescendant(pid=1, ppid=1, comm="child"),)},
+         "must match outliving_descendants"),
+    ],
+)
+def test_process_tree_evidence_rejects_untrustworthy_descendant_rows(changes, message):
+    values = {
+        "leader_status": "exited",
+        "group_signalled_before_reap": False,
+        "outliving_descendants": 0,
+        "descendants_signalled": 0,
+        "signal": None,
+        "descendants": (),
+        "clean": True,
+    }
+    values.update(changes)
+    with pytest.raises(ValueError, match=message):
+        ProcessTreeEvidence(**values)
+
+
+@pytest.mark.parametrize(
+    ("raw", "error", "message"),
+    [
+        (None, PermissionError("hidden"), "cannot inspect procfs process"),
+        ("malformed", None, "malformed procfs stat"),
+        ("(child) S", None, "malformed procfs stat"),
+        ("(child) S nope 0", None, "malformed procfs ppid"),
+        ("(child) S 0 0", None, "invalid procfs identity"),
+    ],
+)
+def test_process_identity_refuses_unavailable_or_malformed_procfs(
+    monkeypatch: pytest.MonkeyPatch, raw, error, message
+):
+    monkeypatch.setattr(
+        Path,
+        "read_text",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(error) if error else raw,
+    )
+    with pytest.raises(ProcessTreeError, match=message):
+        process_tree._process_identity(42)
 
 
 @pytest.mark.parametrize("seconds", [0, -1, float("nan"), float("inf")])

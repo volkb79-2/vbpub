@@ -778,3 +778,30 @@ def test_cold_witness_on_a_non_r2_lane_is_refused(git_repo: GitRepo, tmp_path):
     claim = json.loads(verdict.read_text(encoding="utf-8"))["claims"][0]
     assert claim["reason_code"] == "BAD_LANE_CONFIG"
     assert "--cold-witness requires a native Python R2 lane" in claim["detail"]
+
+
+def test_cleanup_leak_with_non_integer_returncode_has_no_underlying_terminal(
+    tmp_path: Path,
+):
+    from conftest import completed_process, make_lane, process_tree_evidence_dict
+
+    lane = make_lane()
+
+    def leaves_descendant(argv, *, env, cwd, timeout):
+        result = completed_process(argv, returncode=True, stdout="done", stderr="")
+        evidence = process_tree_evidence_dict()
+        evidence.update(
+            outliving_descendants=1,
+            descendants_signalled=1,
+            descendants=[{"pid": 1234, "ppid": 1, "comm": "child"}],
+        )
+        result.process_tree_evidence = evidence
+        return result
+
+    result = runner_module.execute_command(
+        lane, cwd=tmp_path, process_runner=leaves_descendant
+    )
+
+    assert result.outcome.value == "ERROR"
+    assert result.underlying_outcome is None
+    assert result.process_tree_evidence["outliving_descendants"] == 1

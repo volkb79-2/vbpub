@@ -8,6 +8,9 @@ import pytest
 
 import assay.verdict as models
 from assay.errors import Outcome, ReasonCode
+from assay.mutation import candidate_id_from_fields
+from assay.process_tree import ProcessTreeDescendant, ProcessTreeEvidence
+from assay.result_reports import ReportSummary
 from assay.verdict import (
     CanaryAttempt,
     CanaryResult,
@@ -25,6 +28,7 @@ from assay.verdict import (
     MutationProducerTool,
     MutationWitnessReceipt,
     MutantOutcome,
+    UnderlyingOutcome,
     RedFirstResult,
     RefusalDetail,
     SnapshotPolicy,
@@ -372,6 +376,7 @@ def test_r1_policy_records_a_declared_coverage_producer():
 def _native_r2(**overrides):
     values = {
         "jobs": 1,
+        "attribution": "serial",
         "max_mutants": 10,
         "operators": ("python:compare-swap",),
         "kill_attribution": "unattributed",
@@ -421,6 +426,104 @@ def test_native_r2_shard_pair_is_optional_but_closed_when_present():
         _native_r2(shard_index=0, shard_count=models.MAX_SHARD_COUNT + 1)
     with pytest.raises(ValueError, match="shard_index .* outside"):
         _native_r2(shard_index=1, shard_count=1)
+
+
+def test_native_r2_attribution_is_a_closed_v17_policy_value():
+    with pytest.raises(ValueError, match="judgment.r2.attribution must be one of"):
+        _native_r2(attribution="parallel")
+
+
+def _native_mutant(**overrides):
+    identity = {
+        "path": "src/a.py",
+        "source_sha256": "d" * 64,
+        "start_byte": 0,
+        "end_byte": 1,
+        "mutated_file_sha256": "e" * 64,
+        "operator": "python:compare-swap",
+    }
+    values = {
+        **identity,
+        "candidate_id": candidate_id_from_fields(**identity),
+        "lineno": 1,
+        "replacement_sha256": "a" * 64,
+        "description": "replace one comparison",
+        "execution": MutationExecution(mode="full"),
+        "process_tree_evidence": ProcessTreeEvidence.not_started(),
+    }
+    values.update(overrides)
+    return MutantOutcome(**values)
+
+
+def test_underlying_outcome_validates_returncode_and_report_consistency():
+    with pytest.raises(ValueError, match="outcome must be PASS, FAIL or null"):
+        UnderlyingOutcome(outcome=Outcome.ERROR, returncode=2)
+    with pytest.raises(ValueError, match="returncode must be an integer"):
+        UnderlyingOutcome(outcome=Outcome.PASS, returncode=True)
+    with pytest.raises(ValueError, match="report_summary has the wrong type"):
+        UnderlyingOutcome(outcome=Outcome.PASS, returncode=0, report_summary=object())
+    with pytest.raises(ValueError, match="incomplete or invalid"):
+        UnderlyingOutcome(
+            outcome=Outcome.PASS,
+            returncode=0,
+            report_summary=ReportSummary(format="", total=1, failed=0, finished=True),
+        )
+    valid = ReportSummary(format="pytest-json-report", total=2, failed=1, finished=True)
+    with pytest.raises(ValueError, match="disagrees with its complete report summary"):
+        UnderlyingOutcome(outcome=Outcome.PASS, returncode=1, report_summary=valid)
+    with pytest.raises(ValueError, match="disagrees with its returncode"):
+        UnderlyingOutcome(outcome=Outcome.PASS, returncode=1)
+
+
+def test_underlying_outcome_wire_form_is_validated_and_round_trips():
+    value = UnderlyingOutcome.from_dict({"outcome": "PASS", "returncode": 0})
+    assert value.to_dict() == {"outcome": "PASS", "returncode": 0}
+    summary = ReportSummary(format="pytest-json-report", total=2, failed=1, finished=True)
+    failed = UnderlyingOutcome(
+        outcome=Outcome.FAIL, returncode=1, report_summary=summary
+    )
+    assert UnderlyingOutcome.from_dict(failed.to_dict()) == failed
+    with pytest.raises(ValueError, match="unknown fields"):
+        UnderlyingOutcome.from_dict({"outcome": "PASS", "returncode": 0, "extra": 1})
+    with pytest.raises(ValueError, match="invalid field set"):
+        UnderlyingOutcome.from_dict(
+            {
+                "outcome": "PASS",
+                "returncode": 0,
+                "report_summary": {"format": "pytest-json-report"},
+            }
+        )
+
+
+def test_mutant_outcome_accepts_underlying_result_only_for_a_completed_leak():
+    with pytest.raises(ValueError, match="underlying_outcome has the wrong type"):
+        _discarded_outcome(underlying_outcome=object())
+
+    underlying = UnderlyingOutcome(outcome=Outcome.PASS, returncode=0)
+    with pytest.raises(ValueError, match="ledger execution cannot carry underlying_outcome"):
+        _native_mutant(
+            execution=MutationExecution(mode="ledger", anchor="ledger"),
+            process_tree_evidence=None,
+            underlying_outcome=underlying,
+        )
+    with pytest.raises(ValueError, match="required exactly for a completed process-tree leak"):
+        _native_mutant(underlying_outcome=underlying)
+
+    leak = ProcessTreeEvidence(
+        leader_status="exited",
+        group_signalled_before_reap=False,
+        outliving_descendants=1,
+        descendants_signalled=1,
+        descendants=(ProcessTreeDescendant(pid=9, ppid=1, comm="child"),),
+        clean=True,
+    )
+    completed = _native_mutant(
+        process_tree_evidence=leak,
+        underlying_outcome=underlying,
+    )
+    assert completed.underlying_outcome is underlying
+    with pytest.raises(ValueError, match="ingested MutantOutcome cannot carry underlying_outcome"):
+        _discarded_outcome(underlying_outcome=underlying)
 
 
 def test_r2_target_policy_and_optional_mutant_provenance_serialize_when_present():

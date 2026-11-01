@@ -233,6 +233,7 @@ def test_mutation_derived_budget_lets_an_int_beyond_float_range_overflow():
 def _native_r2(**overrides) -> JudgmentR2:
     values = {
         "jobs": 1,
+        "attribution": "serial",
         "max_mutants": 10,
         "operators": ("python:compare-swap",),
         "kill_attribution": "unattributed",

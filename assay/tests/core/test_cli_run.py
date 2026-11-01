@@ -547,6 +547,7 @@ operators = ["python:compare-swap"]
         # max_mutants/operators policy that only a native run has.
         "producer": "native",
         "jobs": 1,
+        "attribution": "serial",
         "max_mutants": 50,
         "operators": ["python:compare-swap"],
         # P33/V5-4: DERIVED from `kill_signal_artifact`'s absence (A-223b),

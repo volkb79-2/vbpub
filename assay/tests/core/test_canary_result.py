@@ -83,6 +83,42 @@ def test_the_honest_form_builds():
     assert attempt.disposition == "attempted"
 
 
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"cause": "invented"}, "cause must be 'receipt', 'absent' or null"),
+        (
+            {"cause": "receipt", "transformed_outcome": None, "observed_reason_code": None},
+            "canary cause requires a transformed attempt",
+        ),
+        (
+            {"expected_reason_code": ReasonCode.COMMAND_FAILED, "cause": None},
+            "cause must be present exactly when",
+        ),
+        (
+            {"cause": "absent"},
+            "cause is only valid for import-break attempts",
+        ),
+    ],
+)
+def test_v17_canary_cause_is_closed_to_import_break_attempt_evidence(changes, message):
+    with pytest.raises(ValueError, match=message):
+        make(**changes)
+
+
+def test_import_break_without_a_receipt_does_not_prove_the_expected_failure():
+    attempt = make(
+        expected_reason_code=ReasonCode.COMMAND_FAILED,
+        observed_reason_code=ReasonCode.COMMAND_FAILED,
+        cause="absent",
+    )
+
+    assert judge_attempt(attempt) == (
+        Outcome.INCONCLUSIVE,
+        ReasonCode.CANARY_INCONCLUSIVE,
+    )
+
+
 def test_an_empty_mechanism_is_refused():
     with pytest.raises(ValueError, match="mechanism must be a non-empty string"):
         CanaryResult(mechanism="", attempts=(make(),))

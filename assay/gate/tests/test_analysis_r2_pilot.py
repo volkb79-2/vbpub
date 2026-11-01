@@ -541,7 +541,13 @@ def test_analysis_pilot_checker_requires_consistent_process_tree_evidence(
     elif damage == "invalid":
         state_record["process_tree_evidence"]["protocol"] = "unsupported"
     else:
-        state_record["process_tree_evidence"]["outliving_descendants"] = 1
+        process_tree = state_record["process_tree_evidence"]
+        process_tree.update(
+            group_signalled_before_reap=True,
+            outliving_descendants=1,
+            descendants_signalled=1,
+            descendants=[{"pid": 1234, "ppid": 1, "comm": "sleep"}],
+        )
     state_path.write_text(json.dumps(state_record), encoding="utf-8")
 
     with pytest.raises(ValueError, match=message):

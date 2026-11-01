@@ -48,8 +48,68 @@
   `git diff --check` passed.
 
 No Run-Gate lane or Docker command was run; those container gates are assigned
-to the controller. The full unfiltered analysis result and live R2 behavior
-therefore remain unverified in this cockpit.
+to the controller. The full unfiltered analysis result and tester-container
+live R2 probes therefore remain unverified in this cockpit.
+
+## Gate fix round 1 — 2026-11-01
+
+The reported collection blocker in
+`tests/core/test_w10_characterization_verdict_policy_presence.py` was fixed by
+adding the required native v17 attribution to its `JudgmentR2` record. The
+full runs then found a second stale producer expectation in
+`tests/core/test_cli_run.py::test_run_evaluates_a_real_r2_pass_end_to_end`:
+the emitted policy now includes `attribution: "serial"`. That expectation was
+updated and the live CLI probe passed. The installed-wheel gate fixture now
+derives serial versus overlap-conservative attribution from its configured
+`jobs` value.
+
+Other full-run failures and their fixes in this WP8 round:
+
+- Updated native `JudgmentR2` builders, dynamic constructor fields and raw v17
+  verifier documents to include attribution; refreshed the B105 exclusion
+  line inventory, the reviewed dataclass contract fixture, and the v16 refusal
+  expectation.
+- Added the v17 `canary_attempt.cause` to standalone and pilot fixtures so
+  import-break receipt, absent-receipt and pre-transform shapes are represented
+  honestly.
+- Added `UnderlyingOutcome` to the verifier import-boundary baseline and kept
+  `ReportSummary` imported through its public package surface.
+- Converted `signal.SIGKILL` to a plain `int` at the process-tree evidence
+  boundary, which requires exact integer wire values. Updated outliving-child
+  gate fixtures with descendant identities and consistent signal counts.
+- Added direct tests for malformed process-tree identities, retained
+  underlying outcomes, canary cause derivation, and the corresponding raw
+  verifier checks. Removed a redundant signal-state guard whose states were
+  already rejected by the preceding guard.
+- The B105 checker subprocess initially picked up the older estate-installed
+  Assay wheel. Reinstalled the worktree-built wheel in the estate venv; the
+  checker then evaluated the current v17 config.
+
+The final full local runs used serial `nice -n19 ionice -c3` execution:
+
+- `tests` with `--cov=src/assay --cov-branch`: **9,699 passed, 2 skipped,
+  4 deselected, 1 warning** in 585.93s. Coverage was **100% lines** across
+  21,709 statements and **100% branches** across 10,062 branches. The
+  real-signal campaign termination module was ignored; the four deselected
+  tests are the pinned Hypothesis hook probes.
+- `gate/tests`, excluding `test_self_hosting.py` and the cgroup observer probe,
+  and deselecting the five real R2 probes: **964 passed, 20 skipped,
+  5 deselected** in 575.13s.
+- `analysis/tests`, deselecting its two live R2 probes and with both `src` and
+  `analysis/src` on `PYTHONPATH`: **573 passed, 2 deselected** in 26.00s.
+  Coverage was **100% lines** across 2,226 statements and **100% branches**
+  across 1,078 branches. The deselected probes are
+  `test_o15_a_real_rejudge_run_is_counted_once_and_records_its_resumed_event`
+  and `test_op5_a_real_plan_and_a_real_run_progress_project_through_the_judge_entry_point`.
+  The first analysis invocation omitted `analysis/src`
+  and collected no package coverage; this rerun corrected the import path.
+- The touched process-tree, mutation-state, canary, runner, verdict and
+  verifier modules passed together: **699 passed**. The live CLI R2 policy
+  expectation passed separately: **1 passed**.
+- Pyflakes and `git diff --check` passed.
+
+No new product finding required a B203+ backlog item. No Run-Gate lane or
+Docker command was run; tester-unified acceptance remains with the controller.
 
 ## Reference availability
 

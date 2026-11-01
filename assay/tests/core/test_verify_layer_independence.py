@@ -170,6 +170,7 @@ def _r2_document(*, bucket: str, operator: str) -> dict:
                 "r2_command": None,
                 "equivalence_ledger": None,
                 "jobs": 1,
+                "attribution": "serial",
                 "max_mutants": 50,
                 "operators": ["python:compare-swap"],
                 "kill_attribution": "unattributed",
@@ -698,6 +699,7 @@ def _sql_r2_document(*, language: str = "sql", **overrides) -> dict:
                 "r2_command": None,
                 "equivalence_ledger": None,
                 "jobs": 1,
+                "attribution": "serial",
                 "max_mutants": 50,
                 "operators": ["sql:drop-check"],
                 "kill_attribution": "unattributed",
@@ -926,6 +928,7 @@ def test_raw_layer_clause_base_is_forbidden_when_r1_judges_whole_targets():
             # B046/schema v9: required; native is this policy's own meaning.
             "producer": "native",
             "jobs": 1,
+            "attribution": "serial",
             "max_mutants": 50,
             "operators": ["python:compare-swap"],
             "kill_attribution": "unattributed",
@@ -992,6 +995,7 @@ def test_raw_layer_clause_refuses_two_tiers_that_disagree_about_the_mode():
             # B046/schema v9: required; native is this policy's own meaning.
             "producer": "native",
             "jobs": 1,
+            "attribution": "serial",
             "max_mutants": 50,
             "operators": ["python:compare-swap"],
             "kill_attribution": "unattributed",
@@ -1119,7 +1123,8 @@ def test_raw_layer_clause_declared_attribution_requires_every_kill_explained():
     check = verify._check_kill_attribution
     declared_policy = {
         "producer": "native",
-        "jobs": 1, "max_mutants": 50, "operators": ["sql:drop-check"],
+        "jobs": 1, "attribution": "serial",
+        "max_mutants": 50, "operators": ["sql:drop-check"],
         "kill_attribution": "declared",
         "kill_signal_artifact": ".assay/kill-signal.txt",
     }

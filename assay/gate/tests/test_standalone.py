@@ -812,6 +812,9 @@ def _expected_r2_artifact(
                 # few places that pins the producer against a REAL run rather
                 # than a hand-built model object.
                 "producer": "native",
+                "attribution": (
+                    "serial" if jobs == 1 else "overlap-conservative"
+                ),
                 # (B091/RW-36) present unconditionally -- "a reader sees
                 # what ran" even on the lanes this module runs, none of
                 # which invoke pytest.
@@ -1479,6 +1482,7 @@ def test_a_real_r3_lane_proves_the_canary_and_passes_through_the_wheel(
                             "target": "pkg/mod.py",
                             "description": _IMPORT_BREAK_DESCRIPTION,
                             "disposition": "attempted",
+                            "cause": "receipt",
                             "control_outcome": "PASS",
                             "transformed_outcome": "FAIL",
                             "expected_reason_code": "COMMAND_FAILED",
@@ -1575,6 +1579,7 @@ def test_a_real_r3_lane_with_a_broken_control_is_inconclusive_through_the_wheel(
                                 "of a failing lane"
                             ),
                             "disposition": "attempted",
+                            "cause": None,
                             "control_outcome": "FAIL",
                         }
                     ],
@@ -1640,6 +1645,7 @@ def test_a_real_r3_lane_whose_bad_case_unexpectedly_passes_survives_through_the_
                             "target": "pkg/mod.py",
                             "description": _IMPORT_BREAK_NO_RECEIPT_DESCRIPTION,
                             "disposition": "attempted",
+                            "cause": "absent",
                             "control_outcome": "PASS",
                             "transformed_outcome": "PASS",
                             "expected_reason_code": "COMMAND_FAILED",
@@ -1907,6 +1913,7 @@ def test_a_real_r3_lane_proves_the_uncovered_line_canary_through_the_wheel(
                             "target": "pkg/mod.py",
                             "description": _UNCOVERED_LINE_DESCRIPTION,
                             "disposition": "attempted",
+                            "cause": None,
                             "control_outcome": "PASS",
                             "transformed_outcome": "FAIL",
                             "expected_reason_code": "UNCOVERED_LINES",
@@ -2015,6 +2022,7 @@ def test_a_real_r3_lane_whose_target_is_never_imported_is_inconclusive(
                             "target": "pkg/lonely.py",
                             "description": _IMPORT_BREAK_NO_RECEIPT_DESCRIPTION,
                             "disposition": "attempted",
+                            "cause": "absent",
                             "control_outcome": "PASS",
                             "transformed_outcome": "INCONCLUSIVE",
                             "expected_reason_code": "COMMAND_FAILED",
