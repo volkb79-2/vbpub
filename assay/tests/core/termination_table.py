@@ -6,7 +6,7 @@ import signal
 from dataclasses import dataclass
 
 from assay.errors import Outcome, ReasonCode
-from assay.process_tree import ProcessTreeEvidence
+from assay.process_tree import ProcessTreeDescendant, ProcessTreeEvidence
 from assay.resource_limits import CounterDelta, ResourceLimitEvidence
 from assay.termination import BLOCKING_JUDGEABLE, Termination
 
@@ -19,7 +19,10 @@ def _tree(
         group_signalled_before_reap=False,
         outliving_descendants=outliving_descendants,
         descendants_signalled=outliving_descendants,
-        cleanup_seconds=0.0,
+        descendants=tuple(
+            ProcessTreeDescendant(pid=10_000 + index, ppid=1, comm="child")
+            for index in range(outliving_descendants)
+        ),
         clean=True,
     )
 

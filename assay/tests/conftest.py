@@ -61,12 +61,13 @@ TESTS_ROOT = PROJECT_ROOT / "tests"
 def process_tree_evidence_dict(*, leader_status: str = "exited") -> dict[str, object]:
     """Return a synthetic clean process-tree proof for injected runner tests."""
     return {
-        "protocol": "assay-process-tree/1",
+        "protocol": "assay-process-tree/2",
         "leader_status": leader_status,
         "group_signalled_before_reap": False,
         "outliving_descendants": 0,
         "descendants_signalled": 0,
-        "cleanup_seconds": 0.001,
+        "signal": None,
+        "descendants": [],
         "clean": True,
     }
 
@@ -365,7 +366,6 @@ def native_outcome(**fields):
             group_signalled_before_reap=False,
             outliving_descendants=0,
             descendants_signalled=0,
-            cleanup_seconds=0.001,
             clean=True,
         ),
     )

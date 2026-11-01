@@ -179,6 +179,7 @@ from .verdict import (
     R2Command,
     RefusalDetail,
     SnapshotPolicy,
+    UnderlyingOutcome,
     Verdict,
     WorktreeIntegrity,
     claim_carries,
@@ -909,6 +910,8 @@ class CommandResult:
     #: Native R2 process-tree cleanup proof. A command that leaves adopted
     #: descendants is recorded as crashed even when its leader returned 0/1.
     process_tree_evidence: Mapping[str, Any] | None = None
+    #: B171: the completed command result beneath a process cleanup failure.
+    underlying_outcome: UnderlyingOutcome | None = None
     #: Private gate-time observation around the command. It is not serialized
     #: into the verdict; progress telemetry and termination classification
     #: consume it while the command result is in memory.
@@ -1515,10 +1518,26 @@ def _execute_plan_inner(
     process_tree_evidence = getattr(proc, "process_tree_evidence", None)
     stdout_extra_dropped = int(getattr(proc, "assay_stdout_dropped_bytes", 0))
     stderr_extra_dropped = int(getattr(proc, "assay_stderr_dropped_bytes", 0))
+    summary = _consume_result_report(reservation, result_report)
     if (
         isinstance(process_tree_evidence, Mapping)
         and process_tree_evidence.get("outliving_descendants", 0) > 0
     ):
+        underlying_outcome = None
+        if type(proc.returncode) is int:
+            underlying_status = (
+                Outcome.PASS if summary.failed == 0
+                else Outcome.FAIL
+            ) if summary is not None else (
+                Outcome.PASS if proc.returncode == 0
+                else Outcome.FAIL if proc.returncode > 0
+                else None
+            )
+            underlying_outcome = UnderlyingOutcome(
+                outcome=underlying_status,
+                returncode=proc.returncode,
+                report_summary=summary,
+            )
         sensitive_values = _plan_passthrough_values(plan)
         stdout_tail, stdout_dropped_bytes = _bounded_tail(
             proc.stdout, sensitive_values=sensitive_values
@@ -1538,6 +1557,7 @@ def _execute_plan_inner(
             started=iso_utc(started_at),
             ended=ended,
             process_tree_evidence=process_tree_evidence,
+            underlying_outcome=underlying_outcome,
         )
     # (B078/SR-2) The three-way branch, and the whole point of the design.
     #
@@ -1551,7 +1571,6 @@ def _execute_plan_inner(
     # test green), and one or more reported failures is a FAIL whatever the
     # process exited with. Reading the report at all means reading it as the
     # ground truth, not as a one-directional escape hatch.
-    summary = _consume_result_report(reservation, result_report)
     passed = proc.returncode == 0 if summary is None else summary.failed == 0
     if passed and proc.returncode == 0:
         # The unchanged happy path -- identical field-for-field to what this
@@ -6060,9 +6079,14 @@ def _build_judgment_r2(
         # to learn which side of the fork it is on, and a future ingested
         # builder is then a sibling function that says the other word.
         producer="native",
-        # Verdict schema v16 fixes this field at 1. Actual runtime concurrency
-        # is an additive progress-stream fact until the separate v17 package.
-        jobs=1,
+        # run_lane normalizes the one-worker default before reaching this
+        # builder; otherwise this is the effective runtime selection.
+        jobs=(mutation_config.jobs if mutation_config.jobs is not None else 1),
+        attribution=(
+            "serial"
+            if mutation_config.jobs is None or mutation_config.jobs == 1
+            else "overlap-conservative"
+        ),
         max_mutants=mutation_config.max_mutants,
         operators=mutation_config.operators,
         kill_attribution=(

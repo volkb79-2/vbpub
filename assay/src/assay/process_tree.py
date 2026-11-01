@@ -28,6 +28,7 @@ from typing import Mapping, Sequence
 from .records import record
 
 __all__ = [
+    "ProcessTreeDescendant",
     "ProcessTreeError",
     "ProcessTreeEvidence",
     "ProcessTreeProcessRunner",
@@ -40,6 +41,7 @@ _PR_SET_CHILD_SUBREAPER = 36
 _PR_GET_CHILD_SUBREAPER = 37
 _CLEANUP_SECONDS = 10.0
 _OUTPUT_TAIL_BYTES = 64 * 1024
+_MAX_RECORDED_DESCENDANTS = 10_000
 _WINDOW_LOCK = threading.RLock()
 _UNPROVEN_CLEANUP = False
 _WINDOW_HOST_CANDIDATE_FD = "ASSAY_WINDOW_HOST_CANDIDATE_FD"
@@ -96,6 +98,38 @@ class ProcessTreeSpawnError(OSError):
 
 
 @record
+class ProcessTreeDescendant:
+    """Identity observed for one process that outlived its command leader.
+
+    A procfs race keeps the PID that was observed in the child list and marks
+    the unavailable identity explicitly with null ``ppid`` and ``comm``.
+    """
+
+    pid: int
+    ppid: int | None
+    comm: str | None
+
+    def __post_init__(self) -> None:
+        if type(self.pid) is not int or self.pid < 1:
+            raise ValueError("process-tree descendant pid must be a positive integer")
+        if (self.ppid is None) != (self.comm is None):
+            raise ValueError("process-tree descendant identity must be complete or omitted")
+        if self.ppid is not None and (type(self.ppid) is not int or self.ppid < 1):
+            raise ValueError("process-tree descendant ppid must be a positive integer")
+        if self.comm is not None and (not isinstance(self.comm, str) or not self.comm):
+            raise ValueError("process-tree descendant comm must be a non-empty string")
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> "ProcessTreeDescendant":
+        if set(value) != {"pid", "ppid", "comm"}:
+            raise ValueError("process-tree descendant has an invalid field set")
+        return cls(pid=value["pid"], ppid=value["ppid"], comm=value["comm"])  # type: ignore[arg-type]
+
+    def to_dict(self) -> dict[str, object]:
+        return {"pid": self.pid, "ppid": self.ppid, "comm": self.comm}
+
+
+@record
 class ProcessTreeEvidence:
     """Wire evidence for one process window."""
 
@@ -103,9 +137,10 @@ class ProcessTreeEvidence:
     group_signalled_before_reap: bool
     outliving_descendants: int
     descendants_signalled: int
-    cleanup_seconds: float
     clean: bool
-    protocol: str = "assay-process-tree/1"
+    signal: int | None = None
+    descendants: tuple[ProcessTreeDescendant, ...] = ()
+    protocol: str = "assay-process-tree/2"
 
     def __post_init__(self) -> None:
         if not isinstance(self.leader_status, str) or self.leader_status not in {
@@ -122,15 +157,35 @@ class ProcessTreeEvidence:
             raise ValueError(
                 "descendants_signalled cannot exceed outliving_descendants"
             )
-        if (
-            not _finite_number(self.cleanup_seconds)
-            or self.cleanup_seconds < 0
-        ):
-            raise ValueError("cleanup_seconds must be non-negative")
         if type(self.clean) is not bool:
             raise ValueError("clean must be a boolean")
-        if self.protocol != "assay-process-tree/1":
+        if self.protocol != "assay-process-tree/2":
             raise ValueError("unsupported process-tree evidence protocol")
+        if self.signal is not None and (type(self.signal) is not int or self.signal < 1):
+            raise ValueError("process-tree signal must be a positive integer or null")
+        if self.signal is not None and self.leader_status not in {
+            "signaled", "timeout-killed"
+        }:
+            raise ValueError("process-tree signal requires a signaled leader")
+        if self.leader_status in {"exited", "not-started"} and self.signal is not None:
+            raise ValueError("an exited or unstarted leader cannot carry a signal")
+        if not isinstance(self.descendants, tuple) or any(
+            not isinstance(item, ProcessTreeDescendant) for item in self.descendants
+        ):
+            raise ValueError("process-tree descendants must be a tuple of identities")
+        if len(self.descendants) > _MAX_RECORDED_DESCENDANTS:
+            raise ValueError(
+                f"process-tree descendants exceed {_MAX_RECORDED_DESCENDANTS}"
+            )
+        descendant_pids = [item.pid for item in self.descendants]
+        if len(set(descendant_pids)) != len(descendant_pids):
+            raise ValueError("process-tree descendants contain a duplicate pid")
+        if descendant_pids != sorted(descendant_pids):
+            raise ValueError("process-tree descendants must be sorted by pid")
+        if len(self.descendants) != self.outliving_descendants:
+            raise ValueError(
+                "process-tree descendant identities must match outliving_descendants"
+            )
         if self.clean is False:
             raise ValueError("a recorded process-tree result must prove a clean window")
 
@@ -141,7 +196,6 @@ class ProcessTreeEvidence:
             group_signalled_before_reap=False,
             outliving_descendants=0,
             descendants_signalled=0,
-            cleanup_seconds=0.0,
             clean=True,
         )
 
@@ -149,8 +203,8 @@ class ProcessTreeEvidence:
     def from_dict(cls, value: Mapping[str, object]) -> "ProcessTreeEvidence":
         expected = {
             "protocol", "leader_status", "group_signalled_before_reap",
-            "outliving_descendants", "descendants_signalled", "cleanup_seconds",
-            "clean",
+            "outliving_descendants", "descendants_signalled", "signal",
+            "descendants", "clean",
         }
         if set(value) != expected:
             raise ValueError("process-tree evidence has an invalid field set")
@@ -160,7 +214,11 @@ class ProcessTreeEvidence:
             group_signalled_before_reap=value["group_signalled_before_reap"],
             outliving_descendants=value["outliving_descendants"],
             descendants_signalled=value["descendants_signalled"],
-            cleanup_seconds=value["cleanup_seconds"],
+            signal=value["signal"],
+            descendants=tuple(
+                ProcessTreeDescendant.from_dict(item)
+                for item in value["descendants"]  # type: ignore[union-attr]
+            ),
             clean=value["clean"],
         )  # type: ignore[arg-type]
 
@@ -171,9 +229,34 @@ class ProcessTreeEvidence:
             "group_signalled_before_reap": self.group_signalled_before_reap,
             "outliving_descendants": self.outliving_descendants,
             "descendants_signalled": self.descendants_signalled,
-            "cleanup_seconds": round(self.cleanup_seconds, 6),
+            "signal": self.signal,
+            "descendants": [item.to_dict() for item in self.descendants],
             "clean": self.clean,
         }
+
+
+def _process_identity(pid: int) -> ProcessTreeDescendant:
+    """Read one descendant identity, retaining an explicit vanished-PID row."""
+    try:
+        raw = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
+    except (FileNotFoundError, ProcessLookupError):
+        return ProcessTreeDescendant(pid=pid, ppid=None, comm=None)
+    except OSError as exc:
+        raise ProcessTreeError(f"cannot inspect procfs process {pid}: {exc}") from exc
+    opening = raw.find("(")
+    closing = raw.rfind(")")
+    fields = raw[closing + 1 :].split() if opening >= 0 and closing > opening else []
+    if len(fields) < 2:
+        raise ProcessTreeError(f"malformed procfs stat for pid {pid}")
+    comm = raw[opening + 1 : closing]
+    try:
+        ppid = int(fields[1])
+    except ValueError as exc:
+        raise ProcessTreeError(f"malformed procfs ppid for pid {pid}") from exc
+    try:
+        return ProcessTreeDescendant(pid=pid, ppid=ppid, comm=comm)
+    except ValueError as exc:
+        raise ProcessTreeError(f"invalid procfs identity for pid {pid}: {exc}") from exc
 
 
 def _subreaper_state() -> bool:
@@ -391,6 +474,7 @@ class ProcessTreeWindow:
         group_signalled = False
         outliving: set[int] = set()
         signalled: set[int] = set()
+        descendant_identities: dict[int, ProcessTreeDescendant] = {}
         proc = self._proc
         if proc is not None and proc.returncode is None:
             if not force:
@@ -414,6 +498,7 @@ class ProcessTreeWindow:
             child_pids = _direct_child_pids()
             for pid in child_pids:
                 outliving.add(pid)
+                descendant_identities.setdefault(pid, _process_identity(pid))
                 try:
                     os.kill(pid, signal.SIGKILL)
                 except ProcessLookupError:
@@ -444,8 +529,8 @@ class ProcessTreeWindow:
                 )
             time.sleep(0.01)
 
-        cleanup_elapsed = max(0.0, time.monotonic() - started)
         leader_status = "not-started"
+        leader_signal = None
         if proc is not None:
             if timed_out:
                 leader_status = "timeout-killed"
@@ -453,12 +538,15 @@ class ProcessTreeWindow:
                 leader_status = "signaled"
             else:
                 leader_status = "exited"
+            if proc.returncode is not None and proc.returncode < 0:
+                leader_signal = -proc.returncode
         self.evidence = ProcessTreeEvidence(
             leader_status=leader_status,
             group_signalled_before_reap=group_signalled,
             outliving_descendants=len(outliving),
             descendants_signalled=len(signalled),
-            cleanup_seconds=cleanup_elapsed,
+            signal=leader_signal,
+            descendants=tuple(descendant_identities[pid] for pid in sorted(outliving)),
             clean=True,
         )
         self._finished = True

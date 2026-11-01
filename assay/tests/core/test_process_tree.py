@@ -27,17 +27,15 @@ def _pid_is_gone(pid: int) -> bool:
     return not Path(f"/proc/{pid}").exists()
 
 
-@pytest.mark.parametrize(
-    "value", [True, float("nan"), float("inf"), -1.0, 10**1000]
-)
-def test_process_tree_evidence_rejects_invalid_cleanup_duration(value) -> None:
-    with pytest.raises(ValueError, match="cleanup_seconds"):
+@pytest.mark.parametrize("value", [True, 0, -1])
+def test_process_tree_evidence_rejects_invalid_signal(value) -> None:
+    with pytest.raises(ValueError, match="signal must be a positive integer"):
         ProcessTreeEvidence(
-            leader_status="exited",
+            leader_status="signaled",
             group_signalled_before_reap=False,
             outliving_descendants=0,
             descendants_signalled=0,
-            cleanup_seconds=value,
+            signal=value,
             clean=True,
         )
 
@@ -49,7 +47,6 @@ def test_process_tree_evidence_rejects_a_non_string_leader_status() -> None:
             group_signalled_before_reap=False,
             outliving_descendants=0,
             descendants_signalled=0,
-            cleanup_seconds=0.0,
             clean=True,
         )
 
@@ -61,7 +58,6 @@ def test_process_tree_evidence_rejects_more_signalled_than_outliving_descendants
             group_signalled_before_reap=False,
             outliving_descendants=1,
             descendants_signalled=2,
-            cleanup_seconds=0.0,
             clean=True,
         )
 
@@ -109,7 +105,25 @@ def test_normal_leader_exit_kills_and_reaps_detached_descendant(
     assert evidence.descendants_signalled >= 1
     assert waited_pids
     pid = int(pid_file.read_text())
+    descendant = next(item for item in evidence.descendants if item.pid == pid)
+    assert descendant.ppid is not None and descendant.ppid > 0
+    assert descendant.comm
     assert _pid_is_gone(pid)
+
+
+def test_vanished_descendant_keeps_pid_and_explicitly_omits_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pid = 87654321
+
+    def vanished(self, *, encoding=None, errors=None):
+        assert str(self) == f"/proc/{pid}/stat"
+        raise FileNotFoundError(str(self))
+
+    monkeypatch.setattr(Path, "read_text", vanished)
+    identity = process_tree._process_identity(pid)
+
+    assert identity.to_dict() == {"pid": pid, "ppid": None, "comm": None}
 
 
 def test_timeout_kills_detached_descendant_and_keeps_timeout_status(
@@ -365,7 +379,8 @@ def test_process_tree_evidence_rejects_invalid_fields(field, value, message):
         "group_signalled_before_reap": False,
         "outliving_descendants": 0,
         "descendants_signalled": 0,
-        "cleanup_seconds": 0.0,
+        "signal": None,
+        "descendants": (),
         "clean": True,
     }
     values[field] = value

@@ -1130,7 +1130,6 @@ def test_candidate_counter_delta_is_persisted_and_overrides_a_kill(
             group_signalled_before_reap=False,
             outliving_descendants=0,
             descendants_signalled=0,
-            cleanup_seconds=0.001,
             clean=True,
         ).to_dict()
         return result
@@ -1504,7 +1503,6 @@ def test_candidate_observer_loss_is_recorded_without_aborting_the_campaign(
             group_signalled_before_reap=False,
             outliving_descendants=0,
             descendants_signalled=0,
-            cleanup_seconds=0.001,
             clean=True,
         ).to_dict()
         return result
@@ -1846,7 +1844,6 @@ def _clean_candidate_runner(calls: list[tuple[str, ...]]):
             group_signalled_before_reap=False,
             outliving_descendants=0,
             descendants_signalled=0,
-            cleanup_seconds=0.001,
             clean=True,
         ).to_dict()
         return result
@@ -1910,7 +1907,6 @@ def _clean_failure_runner(calls: list[tuple[str, ...]]):
             group_signalled_before_reap=False,
             outliving_descendants=0,
             descendants_signalled=0,
-            cleanup_seconds=0.001,
             clean=True,
         ).to_dict()
         return result

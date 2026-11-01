@@ -64,7 +64,6 @@ def _run(result: CommandResult) -> _MutantRun:
             group_signalled_before_reap=False,
             outliving_descendants=0,
             descendants_signalled=0,
-            cleanup_seconds=0.0,
             clean=True,
         ),
     )

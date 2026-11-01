@@ -338,7 +338,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "for snapshot lanes only, admit unignored dirty paths and record "
-            "them in the v16 verdict; project isolation.dirty_ignore paths "
+            "them in the v17 verdict; project isolation.dirty_ignore paths "
             "are recorded separately. R0 lanes remain strict. This flag is "
             "independent of run-gate's own --allow-dirty policy."
         ),
@@ -352,7 +352,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="VERDICT",
         help=(
             "reuse only current pytest kill witnesses from a verified complete "
-            "native v16 verdict; v12-v15 start cold, and every uncertain candidate "
+            "native v17 verdict; v12-v16 start cold, and every uncertain candidate "
             "runs fully. Cannot be combined with --shard."
         ),
     )

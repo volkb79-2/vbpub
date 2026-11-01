@@ -714,7 +714,7 @@ def _expected_r2_artifact(
                 for item in mutation.get(bucket_name, []):
                     item["resource_limit_evidence"] = zero_resource_limit_evidence
                     item["process_tree_evidence"] = {
-                        "protocol": "assay-process-tree/1",
+                        "protocol": "assay-process-tree/2",
                         "leader_status": (
                             "timeout-killed"
                             if bucket_name in {"budget_exceeded", "hung"}
@@ -723,7 +723,8 @@ def _expected_r2_artifact(
                         "group_signalled_before_reap": False,
                         "outliving_descendants": 0,
                         "descendants_signalled": 0,
-                        "cleanup_seconds": 0.0,
+                        "signal": None,
+                        "descendants": [],
                         "clean": True,
                     }
             mutation["candidate_ids"] = [
@@ -923,10 +924,11 @@ def _assert_complete(real: dict, expected: dict) -> None:
                     "group_signalled_before_reap",
                     "outliving_descendants",
                     "descendants_signalled",
-                    "cleanup_seconds",
+                    "signal",
+                    "descendants",
                     "clean",
                 }
-                assert evidence["protocol"] == "assay-process-tree/1"
+                assert evidence["protocol"] == "assay-process-tree/2"
                 assert evidence["clean"] is True
                 assert evidence["outliving_descendants"] == 0
                 assert evidence["descendants_signalled"] == 0
@@ -945,9 +947,6 @@ def _assert_complete(real: dict, expected: dict) -> None:
                 if bucket == "budget_exceeded":
                     OBSERVED_BUDGET_LEADER_STATUSES.append(evidence["leader_status"])
                     evidence["leader_status"] = "timeout-killed"
-                assert isinstance(evidence["cleanup_seconds"], (int, float))
-                assert evidence["cleanup_seconds"] >= 0
-                evidence["cleanup_seconds"] = 0.0
 
     # R2 outcome data is duplicated in the top-level claims and in the
     # judgment summary. Validate and normalize both copies before comparing

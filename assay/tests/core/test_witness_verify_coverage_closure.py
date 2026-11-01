@@ -1063,13 +1063,18 @@ def test_b145_accepts_consistent_counters(bucket, entry):
 
 
 def _tree(**overrides):
+    count = overrides.get("outliving_descendants", 0)
     value = {
-        "protocol": "assay-process-tree/1",
+        "protocol": "assay-process-tree/2",
         "leader_status": "exited",
         "group_signalled_before_reap": False,
         "outliving_descendants": 0,
         "descendants_signalled": 0,
-        "cleanup_seconds": 0.1,
+        "signal": None,
+        "descendants": [
+            {"pid": 10000 + index, "ppid": 1, "comm": "child"}
+            for index in range(count)
+        ],
         "clean": True,
     }
     value.update(overrides)
@@ -1093,8 +1098,8 @@ def _tree_failures(bucket, entry):
         ("killed", {"process_tree_evidence": _tree(group_signalled_before_reap=1)}, "invalid process-tree group-signal evidence"),
         ("killed", {"process_tree_evidence": _tree(outliving_descendants=-1)}, "invalid process-tree outliving_descendants"),
         ("killed", {"process_tree_evidence": _tree(descendants_signalled=1)}, "more signalled descendants than outliving"),
-        ("killed", {"process_tree_evidence": _tree(cleanup_seconds=True)}, "invalid process-tree cleanup_seconds"),
-        ("killed", {"process_tree_evidence": _tree(cleanup_seconds=float("nan"))}, "invalid process-tree cleanup_seconds"),
+        ("killed", {"process_tree_evidence": _tree(signal=True, leader_status="signaled")}, "invalid process-tree signal"),
+        ("killed", {"process_tree_evidence": _tree(signal=15)}, "signal for a non-signaled leader"),
         ("killed", {"process_tree_evidence": _tree(clean=False)}, "does not prove a clean process tree"),
         ("killed", {"process_tree_evidence": _tree(leader_status="signaled")}, "functional outcome without a clean leader exit"),
         ("killed", {"process_tree_evidence": _tree(outliving_descendants=1, descendants_signalled=1)}, "functional outcome without a clean leader exit"),

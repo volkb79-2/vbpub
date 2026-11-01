@@ -62,12 +62,13 @@
             "path": "db/schema/01-schema.sql",
             "process_tree_evidence": {
               "clean": true,
-              "cleanup_seconds": 0.0,
               "descendants_signalled": 0,
               "group_signalled_before_reap": false,
               "leader_status": "exited",
               "outliving_descendants": 0,
-              "protocol": "assay-process-tree/1"
+              "protocol": "assay-process-tree/2",
+              "signal": null,
+              "descendants": []
             },
             "replacement_sha256": "88f4f641e9e55a25119d85706dc6c52dc57617b7fcea0849d0605144410134b2",
             "resource_limit_evidence": {
@@ -122,12 +123,13 @@
             "path": "db/schema/01-schema.sql",
             "process_tree_evidence": {
               "clean": true,
-              "cleanup_seconds": 0.0,
               "descendants_signalled": 0,
               "group_signalled_before_reap": false,
               "leader_status": "exited",
               "outliving_descendants": 0,
-              "protocol": "assay-process-tree/1"
+              "protocol": "assay-process-tree/2",
+              "signal": null,
+              "descendants": []
             },
             "replacement_sha256": "fb329000228cc5a24c264c57139de8bf854fc86fc18bf1c04ab61a2b5cb4b921",
             "resource_limit_evidence": {
@@ -179,12 +181,13 @@
             "path": "db/schema/01-schema.sql",
             "process_tree_evidence": {
               "clean": true,
-              "cleanup_seconds": 0.0,
               "descendants_signalled": 0,
               "group_signalled_before_reap": false,
               "leader_status": "exited",
               "outliving_descendants": 0,
-              "protocol": "assay-process-tree/1"
+              "protocol": "assay-process-tree/2",
+              "signal": null,
+              "descendants": []
             },
             "replacement_sha256": "88f4f641e9e55a25119d85706dc6c52dc57617b7fcea0849d0605144410134b2",
             "resource_limit_evidence": {
@@ -236,12 +239,13 @@
             "path": "db/schema/01-schema.sql",
             "process_tree_evidence": {
               "clean": true,
-              "cleanup_seconds": 0.0,
               "descendants_signalled": 0,
               "group_signalled_before_reap": false,
               "leader_status": "exited",
               "outliving_descendants": 0,
-              "protocol": "assay-process-tree/1"
+              "protocol": "assay-process-tree/2",
+              "signal": null,
+              "descendants": []
             },
             "replacement_sha256": "fb329000228cc5a24c264c57139de8bf854fc86fc18bf1c04ab61a2b5cb4b921",
             "resource_limit_evidence": {
@@ -293,12 +297,13 @@
             "path": "db/schema/01-schema.sql",
             "process_tree_evidence": {
               "clean": true,
-              "cleanup_seconds": 0.0,
               "descendants_signalled": 0,
               "group_signalled_before_reap": false,
               "leader_status": "exited",
               "outliving_descendants": 0,
-              "protocol": "assay-process-tree/1"
+              "protocol": "assay-process-tree/2",
+              "signal": null,
+              "descendants": []
             },
             "replacement_sha256": "88f4f641e9e55a25119d85706dc6c52dc57617b7fcea0849d0605144410134b2",
             "resource_limit_evidence": {
@@ -350,12 +355,13 @@
             "path": "db/schema/01-schema.sql",
             "process_tree_evidence": {
               "clean": true,
-              "cleanup_seconds": 0.0,
               "descendants_signalled": 0,
               "group_signalled_before_reap": false,
               "leader_status": "exited",
               "outliving_descendants": 0,
-              "protocol": "assay-process-tree/1"
+              "protocol": "assay-process-tree/2",
+              "signal": null,
+              "descendants": []
             },
             "replacement_sha256": "88f4f641e9e55a25119d85706dc6c52dc57617b7fcea0849d0605144410134b2",
             "resource_limit_evidence": {
@@ -407,12 +413,13 @@
             "path": "db/schema/01-schema.sql",
             "process_tree_evidence": {
               "clean": true,
-              "cleanup_seconds": 0.0,
               "descendants_signalled": 0,
               "group_signalled_before_reap": false,
               "leader_status": "exited",
               "outliving_descendants": 0,
-              "protocol": "assay-process-tree/1"
+              "protocol": "assay-process-tree/2",
+              "signal": null,
+              "descendants": []
             },
             "replacement_sha256": "a90e5f2d959b0d1202dbc2277b970fbd43cffbbbf01c476d2ef925af2bb5cd30",
             "resource_limit_evidence": {
@@ -464,12 +471,13 @@
             "path": "db/schema/01-schema.sql",
             "process_tree_evidence": {
               "clean": true,
-              "cleanup_seconds": 0.0,
               "descendants_signalled": 0,
               "group_signalled_before_reap": false,
               "leader_status": "exited",
               "outliving_descendants": 0,
-              "protocol": "assay-process-tree/1"
+              "protocol": "assay-process-tree/2",
+              "signal": null,
+              "descendants": []
             },
             "replacement_sha256": "88f4f641e9e55a25119d85706dc6c52dc57617b7fcea0849d0605144410134b2",
             "resource_limit_evidence": {
@@ -521,12 +529,13 @@
             "path": "db/schema/01-schema.sql",
             "process_tree_evidence": {
               "clean": true,
-              "cleanup_seconds": 0.0,
               "descendants_signalled": 0,
               "group_signalled_before_reap": false,
               "leader_status": "exited",
               "outliving_descendants": 0,
-              "protocol": "assay-process-tree/1"
+              "protocol": "assay-process-tree/2",
+              "signal": null,
+              "descendants": []
             },
             "replacement_sha256": "88f4f641e9e55a25119d85706dc6c52dc57617b7fcea0849d0605144410134b2",
             "resource_limit_evidence": {
@@ -578,12 +587,13 @@
             "path": "db/schema/01-schema.sql",
             "process_tree_evidence": {
               "clean": true,
-              "cleanup_seconds": 0.0,
               "descendants_signalled": 0,
               "group_signalled_before_reap": false,
               "leader_status": "exited",
               "outliving_descendants": 0,
-              "protocol": "assay-process-tree/1"
+              "protocol": "assay-process-tree/2",
+              "signal": null,
+              "descendants": []
             },
             "replacement_sha256": "86844e57581da987ba9d3344a79c61edc611f445f38bfa8d640262d7df841a13",
             "resource_limit_evidence": {
@@ -635,12 +645,13 @@
             "path": "db/schema/01-schema.sql",
             "process_tree_evidence": {
               "clean": true,
-              "cleanup_seconds": 0.0,
               "descendants_signalled": 0,
               "group_signalled_before_reap": false,
               "leader_status": "exited",
               "outliving_descendants": 0,
-              "protocol": "assay-process-tree/1"
+              "protocol": "assay-process-tree/2",
+              "signal": null,
+              "descendants": []
             },
             "replacement_sha256": "88f4f641e9e55a25119d85706dc6c52dc57617b7fcea0849d0605144410134b2",
             "resource_limit_evidence": {
@@ -692,12 +703,13 @@
             "path": "db/schema/01-schema.sql",
             "process_tree_evidence": {
               "clean": true,
-              "cleanup_seconds": 0.0,
               "descendants_signalled": 0,
               "group_signalled_before_reap": false,
               "leader_status": "exited",
               "outliving_descendants": 0,
-              "protocol": "assay-process-tree/1"
+              "protocol": "assay-process-tree/2",
+              "signal": null,
+              "descendants": []
             },
             "replacement_sha256": "88f4f641e9e55a25119d85706dc6c52dc57617b7fcea0849d0605144410134b2",
             "resource_limit_evidence": {
@@ -749,12 +761,13 @@
             "path": "db/schema/01-schema.sql",
             "process_tree_evidence": {
               "clean": true,
-              "cleanup_seconds": 0.0,
               "descendants_signalled": 0,
               "group_signalled_before_reap": false,
               "leader_status": "exited",
               "outliving_descendants": 0,
-              "protocol": "assay-process-tree/1"
+              "protocol": "assay-process-tree/2",
+              "signal": null,
+              "descendants": []
             },
             "replacement_sha256": "86844e57581da987ba9d3344a79c61edc611f445f38bfa8d640262d7df841a13",
             "resource_limit_evidence": {
@@ -806,12 +819,13 @@
             "path": "db/schema/01-schema.sql",
             "process_tree_evidence": {
               "clean": true,
-              "cleanup_seconds": 0.0,
               "descendants_signalled": 0,
               "group_signalled_before_reap": false,
               "leader_status": "exited",
               "outliving_descendants": 0,
-              "protocol": "assay-process-tree/1"
+              "protocol": "assay-process-tree/2",
+              "signal": null,
+              "descendants": []
             },
             "replacement_sha256": "c0bfc598cb20360c87dbb3bbf888cfd41d6eca2d2c1003e06871bc328ad71b14",
             "resource_limit_evidence": {
@@ -863,12 +877,13 @@
             "path": "db/schema/01-schema.sql",
             "process_tree_evidence": {
               "clean": true,
-              "cleanup_seconds": 0.0,
               "descendants_signalled": 0,
               "group_signalled_before_reap": false,
               "leader_status": "exited",
               "outliving_descendants": 0,
-              "protocol": "assay-process-tree/1"
+              "protocol": "assay-process-tree/2",
+              "signal": null,
+              "descendants": []
             },
             "replacement_sha256": "88f4f641e9e55a25119d85706dc6c52dc57617b7fcea0849d0605144410134b2",
             "resource_limit_evidence": {
@@ -920,12 +935,13 @@
             "path": "db/schema/01-schema.sql",
             "process_tree_evidence": {
               "clean": true,
-              "cleanup_seconds": 0.0,
               "descendants_signalled": 0,
               "group_signalled_before_reap": false,
               "leader_status": "exited",
               "outliving_descendants": 0,
-              "protocol": "assay-process-tree/1"
+              "protocol": "assay-process-tree/2",
+              "signal": null,
+              "descendants": []
             },
             "replacement_sha256": "f72c69d56240d662918da2a012e6420655b21fccd4e21ab7931ddc0d4bbe5376",
             "resource_limit_evidence": {
@@ -977,12 +993,13 @@
             "path": "db/schema/01-schema.sql",
             "process_tree_evidence": {
               "clean": true,
-              "cleanup_seconds": 0.0,
               "descendants_signalled": 0,
               "group_signalled_before_reap": false,
               "leader_status": "exited",
               "outliving_descendants": 0,
-              "protocol": "assay-process-tree/1"
+              "protocol": "assay-process-tree/2",
+              "signal": null,
+              "descendants": []
             },
             "replacement_sha256": "f72c69d56240d662918da2a012e6420655b21fccd4e21ab7931ddc0d4bbe5376",
             "resource_limit_evidence": {
@@ -1034,12 +1051,13 @@
             "path": "db/schema/01-schema.sql",
             "process_tree_evidence": {
               "clean": true,
-              "cleanup_seconds": 0.0,
               "descendants_signalled": 0,
               "group_signalled_before_reap": false,
               "leader_status": "exited",
               "outliving_descendants": 0,
-              "protocol": "assay-process-tree/1"
+              "protocol": "assay-process-tree/2",
+              "signal": null,
+              "descendants": []
             },
             "replacement_sha256": "88f4f641e9e55a25119d85706dc6c52dc57617b7fcea0849d0605144410134b2",
             "resource_limit_evidence": {
@@ -1091,12 +1109,13 @@
             "path": "db/schema/01-schema.sql",
             "process_tree_evidence": {
               "clean": true,
-              "cleanup_seconds": 0.0,
               "descendants_signalled": 0,
               "group_signalled_before_reap": false,
               "leader_status": "exited",
               "outliving_descendants": 0,
-              "protocol": "assay-process-tree/1"
+              "protocol": "assay-process-tree/2",
+              "signal": null,
+              "descendants": []
             },
             "replacement_sha256": "86844e57581da987ba9d3344a79c61edc611f445f38bfa8d640262d7df841a13",
             "resource_limit_evidence": {
@@ -1148,12 +1167,13 @@
             "path": "db/schema/01-schema.sql",
             "process_tree_evidence": {
               "clean": true,
-              "cleanup_seconds": 0.0,
               "descendants_signalled": 0,
               "group_signalled_before_reap": false,
               "leader_status": "exited",
               "outliving_descendants": 0,
-              "protocol": "assay-process-tree/1"
+              "protocol": "assay-process-tree/2",
+              "signal": null,
+              "descendants": []
             },
             "replacement_sha256": "17db4fd369edb9244b9f91d9aeed145c3d04ad8ba6e95d06247f07a63527d11a",
             "resource_limit_evidence": {
@@ -1205,12 +1225,13 @@
             "path": "db/schema/01-schema.sql",
             "process_tree_evidence": {
               "clean": true,
-              "cleanup_seconds": 0.0,
               "descendants_signalled": 0,
               "group_signalled_before_reap": false,
               "leader_status": "exited",
               "outliving_descendants": 0,
-              "protocol": "assay-process-tree/1"
+              "protocol": "assay-process-tree/2",
+              "signal": null,
+              "descendants": []
             },
             "replacement_sha256": "17db4fd369edb9244b9f91d9aeed145c3d04ad8ba6e95d06247f07a63527d11a",
             "resource_limit_evidence": {
@@ -1262,12 +1283,13 @@
             "path": "db/schema/01-schema.sql",
             "process_tree_evidence": {
               "clean": true,
-              "cleanup_seconds": 0.0,
               "descendants_signalled": 0,
               "group_signalled_before_reap": false,
               "leader_status": "exited",
               "outliving_descendants": 0,
-              "protocol": "assay-process-tree/1"
+              "protocol": "assay-process-tree/2",
+              "signal": null,
+              "descendants": []
             },
             "replacement_sha256": "17db4fd369edb9244b9f91d9aeed145c3d04ad8ba6e95d06247f07a63527d11a",
             "resource_limit_evidence": {
@@ -1320,12 +1342,13 @@
             "path": "db/schema/01-schema.sql",
             "process_tree_evidence": {
               "clean": true,
-              "cleanup_seconds": 0.0,
               "descendants_signalled": 0,
               "group_signalled_before_reap": false,
               "leader_status": "exited",
               "outliving_descendants": 0,
-              "protocol": "assay-process-tree/1"
+              "protocol": "assay-process-tree/2",
+              "signal": null,
+              "descendants": []
             },
             "replacement_sha256": "fb329000228cc5a24c264c57139de8bf854fc86fc18bf1c04ab61a2b5cb4b921",
             "resource_limit_evidence": {
@@ -1376,12 +1399,13 @@
             "path": "db/schema/01-schema.sql",
             "process_tree_evidence": {
               "clean": true,
-              "cleanup_seconds": 0.0,
               "descendants_signalled": 0,
               "group_signalled_before_reap": false,
               "leader_status": "exited",
               "outliving_descendants": 0,
-              "protocol": "assay-process-tree/1"
+              "protocol": "assay-process-tree/2",
+              "signal": null,
+              "descendants": []
             },
             "replacement_sha256": "80e15b3d3b954f7f0fec09f006b5e69aa0a2954b7bbdeaac1a818f4a05df9912",
             "resource_limit_evidence": {
@@ -1474,7 +1498,8 @@
         "sql:widen-check-in"
       ],
       "producer": "native",
-      "r2_command": null
+      "r2_command": null,
+      "attribution": "serial"
     },
     "resolved": {
       "base": "@BASE_OID@",
@@ -1488,7 +1513,7 @@
   "lane": "sql_qualification",
   "outcome": "FAIL",
   "reason_code": "MUTANTS_SURVIVED",
-  "schema_version": 16,
+  "schema_version": 17,
   "scope": "S1",
   "snapshot_policy": {
     "selection": "repository"

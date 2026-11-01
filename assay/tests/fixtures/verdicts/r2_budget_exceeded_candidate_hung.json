@@ -1,5 +1,5 @@
 {
-  "schema_version": 16,
+  "schema_version": 17,
   "assay_version": "0.1.0",
   "lane": "package",
   "commit": "555555555555555555555555555555555555555e",
@@ -58,7 +58,8 @@
         "plugin": "/tmp/.assay/liveness/assay_liveness_plugin.py",
         "cpu_window_s": 30.0,
         "idle_floor_s": 15.0
-      }
+      },
+      "attribution": "serial"
     }
   },
   "snapshot_policy": {
@@ -128,13 +129,14 @@
               }
             },
             "process_tree_evidence": {
-              "protocol": "assay-process-tree/1",
+              "protocol": "assay-process-tree/2",
               "leader_status": "exited",
               "group_signalled_before_reap": false,
               "outliving_descendants": 0,
               "descendants_signalled": 0,
-              "cleanup_seconds": 0.001,
-              "clean": true
+              "clean": true,
+              "signal": null,
+              "descendants": []
             }
           }
         ],
@@ -190,13 +192,14 @@
               }
             },
             "process_tree_evidence": {
-              "protocol": "assay-process-tree/1",
+              "protocol": "assay-process-tree/2",
               "leader_status": "timeout-killed",
               "group_signalled_before_reap": false,
               "outliving_descendants": 0,
               "descendants_signalled": 0,
-              "cleanup_seconds": 0.001,
-              "clean": true
+              "clean": true,
+              "signal": null,
+              "descendants": []
             }
           }
         ],

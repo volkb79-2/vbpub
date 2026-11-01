@@ -1062,6 +1062,71 @@ def test_native_r2_verdict_jobs_cannot_exceed_the_declared_ceiling(
         )
 
 
+def test_native_r2_verdict_attribution_must_match_effective_workers(tmp_path):
+    document = _fixture_document("r2_pass")
+    document["judgment"]["r2"]["attribution"] = "overlap-conservative"
+    root, _head, _verdict = _repository(tmp_path, document)
+    lane = load_lane_file(root / "assay.toml").lane("package")
+
+    with pytest.raises(
+        ValueError,
+        match="R2 verdict policy attribution differs from the selected worker count",
+    ):
+        campaign_api._check_verdict_against_lane(
+            document,
+            lane_name="package",
+            lane=lane,
+        )
+
+
+def test_native_r2_campaign_uses_v17_effective_jobs_and_attribution(
+    tmp_path, monkeypatch
+):
+    document = _fixture_document("r2_pass")
+    document["judgment"]["r2"].update(
+        jobs=4, attribution="overlap-conservative"
+    )
+    root, head, verdict = _repository(
+        tmp_path, document, lane_jobs_key="jobs_max", lane_jobs_value=4
+    )
+    rows = _plan_rows(document)
+    _install_plan(monkeypatch, document, rows)
+    progress = tmp_path / "progress.jsonl"
+    _write_progress(progress, head=head, document=document, plan_rows=rows)
+
+    code, output, error = _invoke(
+        root, head, verdict, progress, command_exit=0
+    )
+    result = json.loads(output)
+    _validate(result)
+    assert (code, error) == (0, "")
+    assert result["campaign"]["jobs"] == 4
+    assert result["campaign"]["attribution"] == "overlap-conservative"
+
+
+def test_analysis_refuses_a_v16_verdict_with_exactly_one_diagnostic(
+    tmp_path, monkeypatch
+):
+    document = _fixture_document("r2_pass")
+    document["schema_version"] = 16
+    root, head, verdict = _repository(tmp_path, document)
+    rows = _plan_rows(document)
+    _install_plan(monkeypatch, document, rows)
+    progress = tmp_path / "progress.jsonl"
+    _write_progress(progress, head=head, document=document, plan_rows=rows)
+
+    code, output, error = _invoke(
+        root, head, verdict, progress, command_exit=0
+    )
+    result = json.loads(output)
+    _validate(result)
+    assert code == 2
+    assert result["status"] == "evidence_error"
+    assert len(result["errors"]) == 1
+    assert "schema_version 16" in result["errors"][0]["message"]
+    assert "schema_version 16 is not this verifier's version 17" in error
+
+
 def test_native_r2_campaign_projection_rejects_a_parallel_worker_assumption(
         tmp_path, monkeypatch):
     root, head, _verdict, progress = _complete_fixture(

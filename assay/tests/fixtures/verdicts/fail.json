@@ -1,5 +1,5 @@
 {
-  "schema_version": 16,
+  "schema_version": 17,
   "assay_version": "0.1.0",
   "lane": "package",
   "commit": "2222222222222222222222222222222222222222",
@@ -42,8 +42,12 @@
     "TZ": "UTC",
     "PATH": "<passthrough>"
   },
-  "env_passthrough": ["PATH"],
-  "env_effective_passthrough_sha256": {"PATH":"33629c0e654360bfd8ab5089302a26e27dce5044d624b22f51fcbc66f1e0d19c"},
+  "env_passthrough": [
+    "PATH"
+  ],
+  "env_effective_passthrough_sha256": {
+    "PATH": "33629c0e654360bfd8ab5089302a26e27dce5044d624b22f51fcbc66f1e0d19c"
+  },
   "scope": "S1",
   "enforcement": "gate",
   "judgment": {

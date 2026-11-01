@@ -22,7 +22,7 @@ from typing import Any, BinaryIO, Mapping, Sequence
 
 from . import runner as _runner
 from .errors import AssayError, Outcome, ReasonCode
-from .process_tree import ProcessTreeError, ProcessTreeEvidence
+from .process_tree import ProcessTreeDescendant, ProcessTreeError, ProcessTreeEvidence
 
 __all__ = ["can_host", "run_window"]
 
@@ -483,7 +483,9 @@ def _candidate_pid(status_file: BinaryIO) -> int | None:
     return pid
 
 
-def _process_group_members(group_id: int) -> tuple[tuple[int, str], ...]:
+def _process_group_members(
+    group_id: int,
+) -> tuple[tuple[ProcessTreeDescendant, str], ...]:
     members = []
     try:
         entries = tuple(Path("/proc").iterdir())
@@ -506,13 +508,22 @@ def _process_group_members(group_id: int) -> tuple[tuple[int, str], ...]:
             raise ProcessTreeError(f"malformed process stat for pid {entry.name}")
         try:
             pid = int(entry.name)
+            ppid = int(fields[1])
             process_group = int(fields[2])
         except ValueError as exc:
             raise ProcessTreeError(
                 f"malformed process identity for pid {entry.name}"
             ) from exc
         if process_group == group_id:
-            members.append((pid, fields[0]))
+            opening = raw.find("(")
+            comm = raw[opening + 1 : close] if opening >= 0 else ""
+            try:
+                identity = ProcessTreeDescendant(pid=pid, ppid=ppid, comm=comm)
+            except ValueError as exc:
+                raise ProcessTreeError(
+                    f"invalid process identity for pid {entry.name}: {exc}"
+                ) from exc
+            members.append((identity, fields[0]))
     return tuple(members)
 
 
@@ -545,13 +556,23 @@ def _cleanup_crashed_candidate(pid: int | None) -> ProcessTreeEvidence:
                 f"candidate process group {pid} remained live after window-host failure"
             )
         time.sleep(0.01)
-    descendants = tuple(member for member in before if member[0] != pid and member[1] not in {"Z", "X"})
+    descendants = tuple(
+        sorted(
+            (
+                identity
+                for identity, state in before
+                if identity.pid != pid and state not in {"Z", "X"}
+            ),
+            key=lambda item: item.pid,
+        )
+    )
     return ProcessTreeEvidence(
         leader_status="signaled" if group_signalled else "exited",
         group_signalled_before_reap=group_signalled,
         outliving_descendants=len(descendants),
         descendants_signalled=len(descendants) if group_signalled else 0,
-        cleanup_seconds=max(0.0, time.monotonic() - started),
+        signal=signal.SIGKILL if group_signalled else None,
+        descendants=descendants,
         clean=True,
     )
 

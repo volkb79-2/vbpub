@@ -491,7 +491,7 @@ preflight. After it succeeds, a later observer loss or unstable before/after
 window is candidate telemetry: Assay emits one advisory line, records
 `resource_observation.status = "unobserved"` and the reason in progress and
 resume state, omits that candidate's optional `resource_limit_evidence` from
-the v16 verdict, and continues the campaign. A PASS with an exited leader
+  the v17 verdict, and continues the campaign. A PASS with an exited leader
 remains `survived`; a PASS with a signaled leader is `crashed`. A FAIL
 without resource evidence counts as `killed` only when a current-run pytest
 failed-call witness records a normal exit status of 1 and process-tree evidence
@@ -1334,7 +1334,7 @@ transformed R2 command, configuration digest, and coverage/R2 baselines. The
 gate retains `.assay/r2-manifest-b110-pilot.txt` with the summary. The checker
 recomputes its ordered collection digest, requires candidate collection facts
 to match the appropriate baseline, and requires every kill witness to name a
-collected test. It also validates each v16 `process_tree_evidence` object from
+  collected test. It also validates each v17 `process_tree_evidence` object from
 resumable state before accepting the terminal outcome: killed, survived and
 equivalent require a normally exited leader and no outliving descendants;
 timeout and hung records must prove the corresponding timeout-killed leader.
@@ -4049,12 +4049,12 @@ assay run <lane> --resume --rejudge-outcome hung,budget_exceeded
 - **The ids `--rejudge` takes are `candidate_id` digests, not
   `MutantOutcome.identity`.** Since verdict schema v13, every native outcome
   carries its digest and `mutation.candidate_ids` lists the complete submitted
-  scope. To rejudge the survivors in a v16 verdict, select the `candidate_id`
+  scope. To rejudge the survivors in a v17 verdict, select the `candidate_id`
   values from its `survived` array. The older tuple-shaped
   `MutantOutcome.identity` (path, span, replacement hash, operator) remains a
   separate identity and cannot be passed as an ID. A v12 verdict has no
   candidate inventory; v12 and v13 verdicts both start cold for `--reuse-from`
-  under the v16 verifier.
+  under the v17 verifier.
 - **`resume`'s own progress event gains `rejudged_total`** (above): the count
   of records dropped by either selection on this run, `0` when neither flag
   is given.
@@ -4064,7 +4064,7 @@ assay run <lane> --resume --rejudge-outcome hung,budget_exceeded
 `--reuse-from` is for a new source or test tree when ordinary `--resume` would
 correctly reject the old judge identity. A first full, native R2 run over a
 direct sequential pytest command records the first call-phase failing node for
-each killed candidate. Keep that v16 verdict. On a later commit, Assay always
+each killed candidate. Keep that v17 verdict. On a later commit, Assay always
 runs the current R0 baseline and rediscovers the current candidates before it
 uses the prior verdict. A prior kill only chooses a point to test: the current
 suite is collected in full and must fail at that same node with pytest and the
@@ -4095,7 +4095,7 @@ assay run worker_lane \
 This option does not carry forward an old outcome. New candidates and prior
 survivors, crashes, hangs, timeouts, equivalents, or kills without a usable
 witness run the full current suite. `--rejudge <id>` also forces a full run for
-that candidate. A v12, v13, v14, or v15 verdict is a cold start under v16:
+that candidate. A v12 through v16 verdict is a cold start under v17:
 `assay plan` marks its evidence unproven and `assay run` runs every candidate
 fully after the baseline; `assay verify` refuses all four versions. Wrapped commands, xdist,
 nonempty `PYTEST_ADDOPTS`, custom test loops, or uncertain pytest hooks also use
@@ -4188,8 +4188,8 @@ that looks like a real finding.
 
 ## Adopting a v2-capable release
 
-The current verdict schema is v16, a hard cut from v15, carried by Assay
-10.0.0. Lane schema v2 was a
+The current verdict schema is v17, a hard cut from v16, carried by Assay
+11.0.0. Lane schema v2 was a
 hard cut from v1 and remains current (no dual-version verifier, no compatibility
 shim, no upgrade-in-place — see
 [the design guide](DESIGN-GUIDE.md#snapshot-selection-an-affirmative-materialisation-boundary-not-a-sandbox-b006a)
@@ -4197,9 +4197,10 @@ for why interpreting an old lane file as if it declared the new grammar would be
 shadowing default this project forbids elsewhere). That cuts both directions at once: a v2-capable
 assay refuses a v1 lane file's now-required `[isolation]` table with
 `BAD_LANE_CONFIG`, and a v1-pinned assay cannot parse a v2 file's `[isolation]`
-table at all — it is simply an unknown key. `assay verify` rejects v15 and
-earlier verdicts on the schema version alone; see the [v15-to-v16 migration
-notes](#migration-notes-v15-to-v16) and the earlier [v14-to-v15 migration
+table at all — it is simply an unknown key. `assay verify` rejects v16 and
+earlier verdicts on the schema version alone; see the [v16-to-v17 migration
+notes](#migration-notes-v16-to-v17), the [v15-to-v16 migration
+notes](#migration-notes-v15-to-v16), and the earlier [v14-to-v15 migration
 notes](#migration-notes-v14-to-v15).
 
 So the two moves are **one atomic, consumer-owned commit, never two**:
@@ -4295,6 +4296,44 @@ mode is opt-in through `assay run --cold-witness` for its supported native
 Python pytest command shape. See [Cold-witness R2 (B114)](#cold-witness-r2-b114)
 for the command and its limits.
 
+## Migration notes (v16 to v17)
+
+Verdict schema v17 is a **hard cut**. `assay verify` rejects v16 and older
+verdicts by schema version; there is no dual-version verifier or in-place
+upgrade. Keep older artifacts as historical evidence or regenerate any that
+must pass the current verifier. Assay 11.0.0 carries this wire contract.
+
+Native R2 verdicts now record the effective `judgment.r2.jobs` count (at least
+1) and `judgment.r2.attribution`: `serial` for one worker and
+`overlap-conservative` for multiple workers. Campaign analysis reads these
+v17 fields and checks the count against the lane's declared `jobs_max`.
+For example, a run that selected four workers records this `judgment.r2`
+fragment:
+
+```json
+{
+  "jobs": 4,
+  "attribution": "overlap-conservative"
+}
+```
+
+Process-tree evidence uses `assay-process-tree/2`. It removes the host-varying
+`cleanup_seconds`, records a nullable leader `signal`, and records each
+outliving descendant's `pid`, `ppid`, and `comm`. If procfs no longer has a
+descendant, both `ppid` and `comm` are null while the observed pid remains.
+`canary_attempt.cause` is `receipt`, `absent`, or null; the verifier uses it to
+re-derive the R3 attempt. When cleanup finds descendants after the suite exits,
+`underlying_outcome` retains the suite return code and any complete result-report
+summary, while the candidate remains `crashed` and earns no mutation credit.
+
+State records carrying v16-era judge identities are re-executed on v17 because
+the judge digest changes with the schema contract. Resume continues the
+campaign, but those old candidate results are not reused.
+
+No lane configuration change is required. Run-Gate reads only top-level
+verdict fields, and CMRU consumes Assay exit codes, so their integration
+contracts do not change. dstdns remains pinned to schema v15 and is unaffected.
+
 ## Migration notes (v15 to v16)
 
 Verdict schema v16 is a **hard cut**. `assay verify` rejects v15 and older
@@ -4303,8 +4342,8 @@ upgrade. Keep an old release available to verify historical v15 artifacts, or
 regenerate evidence that must pass the current verifier.
 
 This v15-to-v16 migration historically required
-`judge.mutation.jobs = 1`. PR1b adds conservative parallel attribution without
-changing verdict schema v16; follow the current [parallel candidate guide](#native-r2-parallel-candidate-windows-pr1b)
+`judge.mutation.jobs = 1`. PR1b added conservative parallel attribution;
+verdict schema v17 records the effective worker count. Follow the current [parallel candidate guide](#native-r2-parallel-candidate-windows-pr1b)
 for the v2 lane config and `assay run --jobs` workflow. Ingested R2 does not
 declare Assay's native worker policy.
 
@@ -4375,9 +4414,9 @@ resume at another count. The post-sweep WP7 retry remains serial.
 
 The run event reports `jobs` and `attribution` (`serial` or
 `overlap-conservative`); each candidate event reports `worker_index`. Verdict
-schema v16 remains unchanged and its `judgment.r2.jobs` field stays fixed at
-1. Treat the progress fields as the source for the actual worker count until
-the separate verdict-schema package changes that contract.
+schema v17 also stores the effective `judgment.r2.jobs` and `attribution`, so
+campaign analysis can use the same selected count as the judge. The one-worker
+default applies when a native lane has no runtime selection.
 
 ## Migration notes (v12 to v13)
 
@@ -5815,7 +5854,7 @@ The checker verifies that each candidate's collection evidence matches its
 baseline and each kill witness names a collected test. Read
 `.assay/progress-analysis-r2-pilot.jsonl` plus
 `.assay/analysis-r2-pilot-state-<commit12>/` for resumable execution evidence.
-Each state record must include valid v16 process-tree evidence; the checker
+Each state record must include valid v17 process-tree evidence; the checker
 uses it when reconciling the terminal result with the reported bucket.
 The commit-bound directory keeps a new source revision's selection separate
 from older pilot state while preserving those earlier records. A successful

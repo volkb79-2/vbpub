@@ -145,7 +145,7 @@ remains FAIL or ERROR. Receipts do not decide ACCEPT or REJECT. See the
 Machine consumers can validate manifests and receipts against the packaged
 `schemas/analysis-archive.schema.json`, `schemas/analysis-receipt.schema.json`,
 and `schemas/analysis-report.schema.json`.
-Receipt verdicts are checked against the current v16 verdict schema; a receipt
+Receipt verdicts are checked against the current v17 verdict schema; a receipt
 with an `--allow-dirty` override is refused by default.
 
 ## Why use it
@@ -252,11 +252,12 @@ assay exists to close that gap mechanically, not by policy:
   `assay run --reuse-from` always re-runs R0 first, then replays eligible prior
   kill witnesses against the current sequential pytest suite. Any uncertainty
   runs the candidate's full suite; a nonempty `PYTEST_ADDOPTS` disables witness
-  replay because it can override configured addopts. A v12, v13, v14, or v15
-  verdict is a cold start under v16, and `assay verify` rejects all four. Assay
-  10.0.0 is the release carrying this v16 hard cut. See the
+  replay because it can override configured addopts. A v12 through v16 verdict
+  is a cold start under v17, and `assay verify` rejects all five. Assay 11.0.0
+  carries this v17 hard cut. See the
   [B106 design](docs/DESIGN-GUIDE.md#selective-reuse-replays-a-current-failure-witness-b106)
-  and [worked consumer example](docs/CONSUMERS.md#reusing-killed-native-mutants-after-the-baseline-b106).
+  and [worked consumer example](docs/CONSUMERS.md#reusing-killed-native-mutants-after-the-baseline-b106),
+  plus the [v16-to-v17 migration notes](docs/CONSUMERS.md#migration-notes-v16-to-v17).
 - **Refusals name the usable cause and keep unrelated failures distinct.** A
   Git dubious-ownership refusal explains why `safe.directory` cannot be set in
   assay's replacement environment and points to the ownership fix. Unknown or
@@ -358,9 +359,11 @@ assay exists to close that gap mechanically, not by policy:
   refused with `--candidates-file`. The run progress
   header records `jobs` and `attribution` (`serial` or
   `overlap-conservative`), and each candidate event records `worker_index`.
-  Verdict schema v16 remains unchanged. See the
+  Verdict schema v17 records the effective `judgment.r2.jobs` count and its
+  `serial` or `overlap-conservative` attribution. See the
   [parallel-window rationale](docs/DESIGN-GUIDE.md#native-r2-parallel-candidate-windows)
-  and [consumer setup](docs/CONSUMERS.md#native-r2-parallel-candidate-windows-pr1b).
+  and [consumer setup](docs/CONSUMERS.md#native-r2-parallel-candidate-windows-pr1b),
+  plus the [v16-to-v17 migration notes](docs/CONSUMERS.md#migration-notes-v16-to-v17).
   After R0/R1, Assay checks the complete hierarchy before any native R2
   candidate starts. If its private cgroup view hides ancestors, it may use
   the explicitly configured observer-only socket; without a usable local view
@@ -377,7 +380,7 @@ assay exists to close that gap mechanically, not by policy:
   remains `survived`; PASS with a signaled leader is `crashed`. An unobserved
   FAIL needs a current-run failed-call witness, while an observed positive
   failure event makes a non-PASS candidate
-  `crashed` even with a witness. The v16 verdict omits its optional
+  `crashed` even with a witness. The v17 verdict omits its optional
   `resource_limit_evidence` when the window is unobserved; progress and resume
   state retain the reason. A positive event during a completed witness replay
   falls back to the full command with a new resource window; replay errors
@@ -404,8 +407,8 @@ assay exists to close that gap mechanically, not by policy:
   for the receipts.
 
 **Compatibility, read before upgrading.** The verdict artifact is schema
-`VERDICT_SCHEMA_VERSION = 16` and the lane file is `LANE_SCHEMA_VERSION = 2`.
-The verdict is a hard cut: `assay verify` refuses v15 and earlier verdicts
+`VERDICT_SCHEMA_VERSION = 17` and the lane file is `LANE_SCHEMA_VERSION = 2`.
+The verdict is a hard cut: `assay verify` refuses every other verdict schema
 (no dual-version verifier, no upgrade-in-place). Lane schema stays at v2;
 the 8.0.0 release extended it with the explicit project-level
 `[defaults].env_passthrough` option. Current v2 semantic constraints still
@@ -420,7 +423,8 @@ assay cannot parse a v2 file's `[isolation]` table at all. Repin the release
 and bump `schema_version` **in the same commit** — see
 [the consumer guide's ordered adoption step](docs/CONSUMERS.md#adopting-a-v2-capable-release)
 for why the order matters and what breaks if you split it across two commits.
-For the verdict-field addition and the effect on old verdicts and reuse, see
+For the v17 verdict fields and the effect on old verdicts and resume, see
+the [v16-to-v17 migration notes](docs/CONSUMERS.md#migration-notes-v16-to-v17),
 the [v15-to-v16 migration notes](docs/CONSUMERS.md#migration-notes-v15-to-v16)
 and the earlier [v14-to-v15 migration notes](docs/CONSUMERS.md#migration-notes-v14-to-v15).
 The previous cut has its own [v12-to-v13 migration notes](docs/CONSUMERS.md#migration-notes-v12-to-v13).
@@ -634,9 +638,15 @@ is cleaned up even when its leader exits first, and Linux child-subreaper
 cleanup catches descendants that call `setsid()` or double-fork. A candidate
 that otherwise completes with leftover descendants is recorded as `crashed`
 after Assay cleans and reaps them; it cannot count as killed or survived, and
-the campaign can continue. Timeout and `hung` classifications remain intact
-when cleanup succeeds. A baseline leak or any cleanup failure refuses the
-lane. Native R2 verdicts retain process-tree evidence for each attempt.
+the campaign can continue. The v17 process-tree evidence records the leader's
+signal and each outliving descendant's pid, ppid, and comm (or explicitly
+omits the latter pair when procfs no longer has that pid). If the suite finished
+before cleanup found the leak, `underlying_outcome` retains its return code and
+any complete result-report summary while the candidate stays `crashed`.
+Timeout and `hung` classifications remain intact when cleanup succeeds. A
+baseline leak or any cleanup failure refuses the lane. The host-varying cleanup
+duration is not verdict evidence. Native R2 verdicts retain process-tree
+evidence for each attempt.
 The independent B110 and B131 pilot checkers validate that evidence in every
 candidate state record before accepting a completed disposition.
 `assay verify` also rejects impossible evidence where more descendants were
@@ -922,7 +932,8 @@ The two adapter transforms are judged by the existing isolated canary runner;
   were qualified under Assay 9.0.0/schema v15; their retained verdicts and
   verifier transcripts document that release. Those canaries are distinct from
   the integrated Assay release gate. B087 did not add verdict fields; the
-  current verdict schema is v16, with the migration described below.
+  current verdict schema is v17, with the migration described in the
+  [v16-to-v17 consumer notes](docs/CONSUMERS.md#migration-notes-v16-to-v17).
 
 **Branch coverage depends on the declared producer.** istanbul's `branchMap`
 means different things under different producers (real per-arm arcs under the

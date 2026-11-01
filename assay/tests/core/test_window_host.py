@@ -454,7 +454,6 @@ def test_liveness_cancellation_forces_candidate_process_group_cleanup(
                 group_signalled_before_reap=True,
                 outliving_descendants=0,
                 descendants_signalled=0,
-                cleanup_seconds=0.0,
                 clean=True,
             )
             return self.evidence
@@ -529,7 +528,6 @@ def test_process_tree_runner_cancellation_forces_candidate_process_group_cleanup
                 group_signalled_before_reap=True,
                 outliving_descendants=0,
                 descendants_signalled=0,
-                cleanup_seconds=0.0,
                 clean=True,
             )
 

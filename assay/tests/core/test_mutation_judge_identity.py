@@ -547,12 +547,13 @@ def _record(job, *, judge: str, **overrides) -> dict:
         "outcome_bucket": "survived",
         "resource_limit_evidence": zero_resource_limit_evidence_dict(),
         "process_tree_evidence": {
-            "protocol": "assay-process-tree/1",
+            "protocol": "assay-process-tree/2",
             "leader_status": default_process_tree_leader,
             "group_signalled_before_reap": False,
             "outliving_descendants": 0,
             "descendants_signalled": 0,
-            "cleanup_seconds": 0.001,
+            "signal": None,
+            "descendants": [],
             "clean": True,
         },
     }
@@ -1273,7 +1274,7 @@ def test_forced_crash_cannot_be_relabelled_as_killed(tmp_path: Path):
 
 
 def test_timeout_cleanup_descendants_follow_shared_leak_precedence():
-    from assay.process_tree import ProcessTreeEvidence
+    from assay.process_tree import ProcessTreeDescendant, ProcessTreeEvidence
     from assay.verify import _check_b162_process_tree_evidence
 
     job = _job()
@@ -1282,7 +1283,10 @@ def test_timeout_cleanup_descendants_follow_shared_leak_precedence():
         group_signalled_before_reap=True,
         outliving_descendants=2,
         descendants_signalled=2,
-        cleanup_seconds=0.01,
+        descendants=(
+            ProcessTreeDescendant(pid=10001, ppid=1, comm="child"),
+            ProcessTreeDescendant(pid=10002, ppid=1, comm="child"),
+        ),
         clean=True,
     )
     payload = _record(
@@ -1308,7 +1312,7 @@ def test_timeout_cleanup_descendants_follow_shared_leak_precedence():
 
 
 def test_normal_exit_with_descendants_cannot_be_a_functional_kill():
-    from assay.process_tree import ProcessTreeEvidence
+    from assay.process_tree import ProcessTreeDescendant, ProcessTreeEvidence
 
     job = _job()
     evidence = ProcessTreeEvidence(
@@ -1316,7 +1320,7 @@ def test_normal_exit_with_descendants_cannot_be_a_functional_kill():
         group_signalled_before_reap=False,
         outliving_descendants=1,
         descendants_signalled=1,
-        cleanup_seconds=0.01,
+        descendants=(ProcessTreeDescendant(pid=10001, ppid=1, comm="child"),),
         clean=True,
     )
     payload = _record(
@@ -1555,7 +1559,7 @@ def test_corrupt_pre_current_b145_state_shape_is_still_an_error(tmp_path: Path):
 
 
 def test_b155_advances_judge_identity_for_event_scope_attribution():
-    assert mutation._JUDGE_DIGEST_LABEL == "assay-judge-identity/12"
+    assert mutation._JUDGE_DIGEST_LABEL == "assay-judge-identity/13"
 
 
 def test_a_different_judge_is_rejected_not_treated_as_tampering(tmp_path: Path):

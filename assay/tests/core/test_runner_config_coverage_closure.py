@@ -318,12 +318,17 @@ def test_process_tree_spawn_error_is_a_candidate_level_exec_failure(tmp_path: Pa
 
 
 def test_outliving_descendants_turn_a_zero_exit_into_exec_failed(tmp_path: Path) -> None:
+    from assay.process_tree import ProcessTreeDescendant
+
     evidence = ProcessTreeEvidence(
         leader_status="exited",
         group_signalled_before_reap=False,
         outliving_descendants=2,
         descendants_signalled=2,
-        cleanup_seconds=0.0,
+        descendants=(
+            ProcessTreeDescendant(pid=10001, ppid=1, comm="child"),
+            ProcessTreeDescendant(pid=10002, ppid=1, comm="child"),
+        ),
         clean=True,
     ).to_dict()
 

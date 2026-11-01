@@ -43,6 +43,8 @@ from assay.mutation import (
     R2ManifestWriteError,
     collect_mutation_sites,
 )
+from assay.process_tree import ProcessTreeDescendant
+from assay.verdict import UnderlyingOutcome
 
 OPERATORS = ("python:compare-swap",)
 
@@ -494,7 +496,10 @@ def _tree(status="exited", outliving=0):
         group_signalled_before_reap=False,
         outliving_descendants=outliving,
         descendants_signalled=0,
-        cleanup_seconds=0.0,
+        descendants=tuple(
+            ProcessTreeDescendant(pid=10_000 + index, ppid=1, comm="child")
+            for index in range(outliving)
+        ),
         clean=True,
     )
 
@@ -1182,7 +1187,11 @@ class _FakePrepared:
 def _result(plan, outcome="FAIL", returncode=1, reason="COMMAND_FAILED", tree="clean"):
     evidence = process_tree_evidence_dict()
     if tree == "outliving":
-        evidence.update(outliving_descendants=1, descendants_signalled=1)
+        evidence.update(
+            outliving_descendants=1,
+            descendants_signalled=1,
+            descendants=[{"pid": 10_001, "ppid": 1, "comm": "child"}],
+        )
     elif tree != "clean":
         evidence = tree
     return CommandResult(
@@ -1190,6 +1199,17 @@ def _result(plan, outcome="FAIL", returncode=1, reason="COMMAND_FAILED", tree="c
         outcome=Outcome(outcome),
         reason_code=None if reason is None else ReasonCode(reason),
         returncode=returncode,
+        underlying_outcome=(
+            UnderlyingOutcome(
+                outcome=(
+                    Outcome.PASS if returncode == 0
+                    else Outcome.FAIL if type(returncode) is int and returncode > 0
+                    else None
+                ),
+                returncode=returncode,
+            )
+            if tree == "outliving" else None
+        ),
         started="2026-10-28T00:00:00+00:00",
         ended="2026-10-28T00:00:01+00:00",
         process_tree_evidence=evidence,
@@ -1369,6 +1389,15 @@ def test_surviving_descendants_make_a_completed_candidate_crashed(tmp_path, monk
     result, complete = _execute(tmp_path, monkeypatch, [_result(_ECHO_PLAN, tree="outliving")])
     assert [o.path for o in result.crashed] == ["src/mod.py"]
     assert result.killed == ()
+    candidate = result.crashed[0]
+    assert candidate.underlying_outcome is not None
+    assert candidate.underlying_outcome.outcome is Outcome.FAIL
+    assert candidate.underlying_outcome.returncode == 1
+    assert candidate.process_tree_evidence is not None
+    assert candidate.process_tree_evidence.outliving_descendants == 1
+    assert [descendant.to_dict() for descendant in candidate.process_tree_evidence.descendants] == [
+        {"pid": 10_001, "ppid": 1, "comm": "child"}
+    ]
 
 
 def test_judgeable_pass_with_a_non_signaled_nonterminal_leader_is_crashed(

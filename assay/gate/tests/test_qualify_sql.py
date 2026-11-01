@@ -805,26 +805,12 @@ def test_normalize_verdict_refuses_invalid_resource_counter_deltas(before: int, 
         q.normalize_verdict(actual, assay_version="9.9.9", head_oid="1" * 40, base_oid="2" * 40)
 
 
-def test_normalize_verdict_zeroes_a_valid_cleanup_time_but_keeps_other_tree_facts() -> None:
+def test_cleanup_duration_is_not_part_of_sql_witness_evidence() -> None:
     actual = _witness_as_actual()
     tree = actual["claims"][1]["mutation"]["killed"][0]["process_tree_evidence"]
     tree["cleanup_seconds"] = 0.123
-    q.compare_with_witness(actual, _WITNESS_PATH, assay_version="9.9.9", head_oid="1" * 40, base_oid="2" * 40)
-    tree["outliving_descendants"] = 1
     with pytest.raises(q.QualificationError, match="differs from the frozen witness"):
         q.compare_with_witness(actual, _WITNESS_PATH, assay_version="9.9.9", head_oid="1" * 40, base_oid="2" * 40)
-
-
-@pytest.mark.parametrize("bad", [None, "fast", -1.0, True, "missing"])
-def test_normalize_verdict_refuses_a_missing_or_invalid_cleanup_time(bad) -> None:
-    actual = _witness_as_actual()
-    tree = actual["claims"][1]["mutation"]["killed"][0]["process_tree_evidence"]
-    if bad == "missing":
-        del tree["cleanup_seconds"]
-    else:
-        tree["cleanup_seconds"] = bad
-    with pytest.raises(q.QualificationError, match="cleanup_seconds"):
-        q.normalize_verdict(actual, assay_version="9.9.9", head_oid="1" * 40, base_oid="2" * 40)
 
 
 def test_normalize_verdict_refuses_a_candidate_without_process_tree_evidence() -> None:

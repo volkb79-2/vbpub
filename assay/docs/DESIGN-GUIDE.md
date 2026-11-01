@@ -702,12 +702,17 @@ state on the coordinator in candidate-index order, and keeps resume identity
 independent of N. WP7's end-of-sweep retry remains serial. Native pilots still
 require `--pilot-jobs 1`; `--jobs` is refused with `--candidates-file`.
 
-Verdict schema v16 remains unchanged and still requires
-`judgment.r2.jobs = 1`; the actual worker count and attribution are progress
-stream facts (`jobs`, `attribution` on the run event, and `worker_index` on
-candidate events). A later, separate schema package owns any verdict-field
-change. The old v15-to-v16 migration describes that historical cut in the
-[consumer migration notes](CONSUMERS.md#migration-notes-v15-to-v16).
+Verdict schema v17 records the effective `judgment.r2.jobs` count and the
+matching attribution (`serial` for one worker, `overlap-conservative` for
+multiple workers). Progress retains its run and worker events for resume
+revalidation. See the [v16-to-v17 consumer migration](CONSUMERS.md#migration-notes-v16-to-v17).
+
+WP8 also removes the host-varying `cleanup_seconds` from process-tree evidence,
+records the leader signal and identities of outliving descendants, and carries
+the completed suite's underlying outcome when cleanup discovers a leak. The
+candidate remains `crashed`: retaining the diagnostic outcome must not turn an
+unclean process tree into mutation credit. `canary_attempt.cause` records
+`receipt`, `absent`, or null, so verification can re-derive the R3 attempt.
 
 Assay samples `pids.events` and `memory.events` at the candidate cgroup, and
 samples `pids.events.local` and `memory.events.local` at every visible active
@@ -805,7 +810,7 @@ happen.
 After the required pre-candidate capability probe succeeds, a missing endpoint
 or an uncomparable window is telemetry with status `unobserved`. Assay records
 the reason in the private mutation state and candidate progress stream, emits
-one advisory line, omits `resource_limit_evidence` from that candidate's v16
+one advisory line, omits `resource_limit_evidence` from that candidate's v17
 verdict entry, and continues the campaign. An identity change reports the
 specific cgroup index, path or mount, controller file, or observation-mode
 field that changed. A configured limit-value change leaves the window
@@ -1019,7 +1024,7 @@ that root hook. It must preserve pytest's session exit status; if it changes
 the status, Assay refuses to use the receipt to prove a kill or survivor.
 Every other unreviewed hook keeps the proof unavailable.
 
-These proofs were introduced in v15 and remain in the current v16 verdict,
+These proofs were introduced in v15 and remain in the current v17 verdict,
 where they are checked independently by `assay verify`. B105 adds a separate
 source-bound check: it reads the lane
 argv and pytest configuration from the judged Git commit, independently
@@ -1748,7 +1753,7 @@ costly case where source and tests changed: it uses a prior result only to
 choose a test node worth replaying, never to carry an old kill into the new
 verdict.
 
-The prior artifact must be a current-verifier-accepted v16, complete,
+The prior artifact must be a current-verifier-accepted v17, complete,
 unsharded native campaign. Each candidate ID commits to the canonical path,
 operator, source-file digest, byte span, and full mutated-file digest. On the
 new run Assay passes the current R0 baseline first, rediscovers the complete
@@ -5081,7 +5086,7 @@ fingerprints are retained in the output. Supplying either file without the
 other, combining a selection with a verdict, or projecting a native pilot with
 a worker count above the lane's declared `mutation.jobs_max` (or the
 one-worker default when omitted) is refused.
-The B110 and B131 report checkers independently validate the v16
+The B110 and B131 report checkers independently validate the v17
 `process_tree_evidence` object from every native candidate state record and
 pass it into the terminal-result classifier. A killed, survived or equivalent
 result requires an exited leader and zero outliving descendants; timeout and
@@ -5132,7 +5137,7 @@ This second boundary catches replacement or mutation after the inner checker
 runs. The campaign deadline name includes the source commit; the
 registered host runner prints its resolved path in the lane output because
 declaring the containing `.assay` directory does not disclose a child file.
-Each native state record's v16 process-tree evidence is validated and supplied
+Each native state record's v17 process-tree evidence is validated and supplied
 to terminal-result classification; a pilot cannot count a kill or survivor
 from a bucket label whose process window is absent or inconsistent.
 No verdict is written: a completed sample

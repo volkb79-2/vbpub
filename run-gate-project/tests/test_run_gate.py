@@ -1523,14 +1523,14 @@ class TestRG78ClosedExitTable:
             "ephemeral"
 
     def test_observer_refusal_follows_assay_a494_r2_only_shape(self):
-        """RG-104 is superseded by Assay A-494/A-496 (verdict v16, Assay >=
-        10.0.0): a missing cgroup hierarchy invalidates ONLY native R2. The
+        """RG-104 is superseded by Assay A-494/A-496 (verdict v17, Assay >=
+        11.0.0): a missing cgroup hierarchy invalidates ONLY native R2. The
         artifact keeps completed R0/R1 claims and the independent R3 claim and
         stamps `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE` on R2 alone,
         which is the one shape Run-Gate accepts as an environment refusal.
         The earlier whole-lane shape (every requested rigor stamped, before R0)
         is no longer produced and is refused as a malformed claim set."""
-        provenance = {"name": "assay", "version": "10.0.0", "artifact": "wheel",
+        provenance = {"name": "assay", "version": "11.0.0", "artifact": "wheel",
                       "digest_algorithm": "sha256", "digest": "a" * 64}
 
         def claims(**statuses):

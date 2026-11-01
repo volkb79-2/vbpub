@@ -37,7 +37,6 @@ _CLEAN_PROCESS_TREE_EVIDENCE = ProcessTreeEvidence(
     group_signalled_before_reap=False,
     outliving_descendants=0,
     descendants_signalled=0,
-    cleanup_seconds=0.001,
     clean=True,
 ).to_dict()
 
