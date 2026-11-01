@@ -1027,6 +1027,11 @@ class SnapshotRepository:
             destination.write_bytes(new_bytes)
             destination.chmod(0o755 if entry.mode == _MODE_EXECUTABLE else 0o644)
             os.utime(destination, (_FIXED_MTIME, _FIXED_MTIME))
+            # The unlink/write above touched the containing directory.
+            # `_write_worktree` fixes every non-root directory, so restore the
+            # same mtime here; the root is left unfixed on both paths.
+            if destination.parent != root:
+                os.utime(destination.parent, (_FIXED_MTIME, _FIXED_MTIME))
         return commit, entries
 
     def _plant_link_paths(self, root: Path, run: Callable[..., bytes]) -> None:
