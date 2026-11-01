@@ -1125,6 +1125,48 @@ def test_json_recursion_error_is_classified_at_each_window_host_boundary(
     assert result.stderr_tail == "window host returned malformed JSON"
 
 
+@pytest.mark.parametrize("worker_result", ["crashed", "completed"])
+def test_lane_termination_overrides_each_window_host_result_path(
+    worker_result, monkeypatch, tmp_path
+):
+    plan = _plan((sys.executable, "-c", "pass"))
+    if worker_result == "crashed":
+        response_bytes = b"not json"
+    else:
+        result = _command_result(
+            plan,
+            outcome=Outcome.PASS,
+            reason_code=None,
+            returncode=0,
+        )
+        response_bytes = json.dumps(
+            {
+                "protocol": _window_host._PROTOCOL,
+                "kind": "result",
+                "result": _window_host._command_result_to_payload(result),
+            }
+        ).encode("utf-8")
+
+    def return_worker_result(**kwargs):
+        os.write(kwargs["result_fd"], response_bytes)
+        return 0, b""
+
+    monkeypatch.setattr(_window_host, "_launch_host_process", return_worker_result)
+    monkeypatch.setattr(_window_host._runner, "termination_requested", lambda: True)
+
+    with pytest.raises(AssayError) as failure:
+        _window_host.run_window(
+            plan,
+            cwd=tmp_path,
+            timeout=5.0,
+            process_runner=ProcessTreeProcessRunner(),
+            clock=runner._utc_now,
+        )
+
+    assert failure.value.outcome is Outcome.BUDGET_EXCEEDED
+    assert failure.value.reason_code is ReasonCode.LANE_TIMEOUT
+
+
 def test_sigterm_handler_requests_worker_unwind():
     with pytest.raises(_window_host._WindowHostCancelled):
         _window_host._handle_sigterm(signal.SIGTERM, None)

@@ -383,6 +383,10 @@ def main(stdin: BinaryIO | None = None, *, result_fd: int = _RESULT_FD) -> int:
                 if not isinstance(decoded, Mapping):
                     raise ValueError("window-host request must be a JSON object")
                 payload = _execute_request(decoded)
+            except RecursionError as exc:
+                # The request crossed a process boundary, so even Assay's own
+                # pipe payload must not be allowed to escape the worker.
+                payload = _error_payload(exc)
             except BaseException as exc:
                 payload = _error_payload(exc)
         _write_response(result_fd, payload)
@@ -661,7 +665,7 @@ def run_window(
             return crashed(detail)
         try:
             response = json.loads(response_bytes)
-        except (UnicodeDecodeError, json.JSONDecodeError):
+        except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
             return crashed("window host returned malformed JSON")
         if not isinstance(response, Mapping) or response.get("protocol") != _PROTOCOL:
             return crashed("window host returned an invalid protocol record")
