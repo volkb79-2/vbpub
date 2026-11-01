@@ -141,7 +141,8 @@ class Session:
         self.rpc.close()
 
     def banner(self) -> str:
-        mode = "read-only" if self.rpc.read_only else "WRITE ENABLED"
+        mode = ("read-only verification surface" if getattr(self.backend, "read_only", False)
+                else "read-only" if self.rpc.read_only else "WRITE ENABLED")
         tls = "  TLS VERIFICATION OFF" if self.insecure_tls else ""
         gaps = ""
         if self.missing_methods:
@@ -167,6 +168,10 @@ def open_session(profile: Profile, *, insecure_ack: bool = False, allow_write: b
     rpc = transport.GuardedRpc(client, read_only=not allow_write, secret=credential)
     try:
         backend = adapters.detect(rpc)
+        if getattr(backend, "read_only", False):
+            # v28 is deliberately verification-only until a complete adapter is measured.
+            rpc.read_only = True
+            rpc._set_restricted_read_methods(backend.supported_methods())
         available = rpc.call("core.get_methods", None, "WS")
         if not isinstance(available, Mapping) or any(not isinstance(method, str) for method in available):
             raise transport.TransportError("capability", "core.get_methods returned an invalid v27 WebSocket method list")

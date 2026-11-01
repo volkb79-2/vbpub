@@ -122,3 +122,59 @@ window and set `TNT_LIVE_ALLOW_SYSTEM=1` in that shell; this variable gates the 
 CLI option. Check job, VM, container, and SMB-session preconditions, then verify the relevant action and reconnect.
 Never bypass host-key checking or add keys automatically. Generic middleware/syslog tailing and arbitrary remote SSH
 command mode remain unsupported by the v27 contract.
+
+## Update survival acceptance
+
+`run-gate live-update` is the operator-run acceptance lane for the system-update path. It executes in
+`tester-unified`; do not run its pytest command from the cockpit. Each run is one phase against a disposable host and
+uses tnt's paired host loader, credential handling, guarded WebSocket client, plan/apply path, job tracker, and reboot
+verification. It requires `FULL_ADMIN`, a non-boot data pool, an approved maintenance window, and an explicit
+`TNT_LIVE_ALLOW_SYSTEM=1` acknowledgement. Serialize every session to v1001, including the companion patch CLI
+steps, with `flock /home/vscode/vbpub-release-program-20261027/v1001.lock`.
+
+The phase values form a fixed sequence:
+
+| `TNT_LIVE_UPDATE_PHASE` | Required host before this phase | Lane behavior |
+|---|---|---|
+| `vanilla-v27` | Vanilla v27 | Verifies that the requested update profile is available and selects it through a typed tnt plan if needed; verifies that the update check offers the exact requested v27 nightly train/version before creating a fixture; checks the boot-pool refusal; downloads and applies the exact update through tnt; requests reboot through tnt; verifies READY, expected version, a new boot ID, a changed boot environment, and unchanged canonical dataset/snapshot records. |
+| `patched-v27` | Patched v27 | Repeats the same profile preflight, optional selection, user-data, and tnt update flow for the selected v28 version. Apply the v27 patch through `scripts/truenas/boot-pool-patch` before this phase; do not implement the patch in tnt. |
+| `patched-v28` | Patched v28 | Opens tnt's restricted read-only v28 verifier and compares the recorded dataset/snapshot canonical digest and exact version. Apply the v28 patch through the companion patch CLI before this phase. |
+
+The tnt fixture is the uniquely named dataset identity record plus its snapshot record, selected through
+`pool.dataset.query` and `pool.snapshot.query`. tnt serializes their identity fields canonically and prints their
+SHA-256. This lane proves those API-visible identity records survive; it does not claim to hash optional ZFS
+properties or file contents. The v27 acceptance host returned a null `comments` property after dataset creation, so
+the fixture does not rely on that optional property. It never mutates
+`boot-pool/user-data`: the ordinary boot-pool guard remains active, and the test explicitly verifies that a dataset
+create plan targeting `boot-pool` is refused. The companion update-survival acceptance owns the separate boot-pool
+user-data proof.
+
+Set `TNT_CONFIG` and `TNT_SECRETS` to private mode-0600 files outside the worktree. Mount their host directory into the
+tester with `RUN_GATE_EXTRA_MOUNTS`, mapping the physical host path to a tester path that matches those variables.
+Set `TNT_LIVE_PROFILE` to the configured host alias and `TNT_LIVE_POOL` to a visible non-boot pool. The complete
+copyable sequence and patch hand-off are in [the consumer guide](CONSUMERS.md#live-update-survival-acceptance). For
+each of the first two phases, set source version from `system verify`, target profile ID from `system update profiles`,
+and exact train/version from `system update versions`. `profiles` returns profile IDs separately from trains; the lane
+selects the requested available profile through tnt and refuses before fixture creation if the exact target pair is
+unavailable. Update API versions may omit the `TrueNAS-` prefix returned by `system.version`; the lane accepts either
+form and verifies the resulting system version. The first phase target must be v27; the second phase target must be v28.
+
+The first two lane reports print `dataset`, `snapshot`, the canonical JSON dump, and `canonical_sha256`. Preserve the
+patched-v27 values, then pass them as `TNT_LIVE_UPDATE_DATASET`, `TNT_LIVE_UPDATE_SNAPSHOT`, and
+`TNT_LIVE_UPDATE_CANONICAL_SHA256` for `patched-v28`. Namespaced test records remain for inspection; restore the
+approved pristine snapshot when the acceptance is complete.
+
+### Live update run: 2026-10-30
+
+The registered `live-update` lane passed its `vanilla-v27` phase (`1 passed` in 254.28 seconds) against a disposable
+TrueNAS 27.0.0-RC.1 restored from the approved provider snapshot. tnt selected profile `DEVELOPER`, downloaded and
+applied `27.0.0-MASTER+20261027-173422` from `TrueNAS-27-Nightlies`, then verified READY, a new boot ID, a changed boot
+environment, and the same dataset/snapshot identity records. The canonical identity SHA-256 was
+`3705d06e4a9b2c073bc228a91b384f804b07f7740a4cae837bc2f5109c0c48d3`. This is metadata identity evidence; it does not
+hash file contents.
+
+The optional patched-v27-to-v28 phase was not run. The companion v27 fresh-install lane requires a fresh target with
+no `boot-disk-data` pool, Path A user-data root, patch marker, container, or VM. The v1001 target has a
+`boot-disk-data` pool, so it does not meet that precondition. The patch attempt returned failure; a subsequent
+read-only `live-inspect` passed. It confirmed the host remained on the v27 nightly, `/usr` was read-only, and no v27
+patch marker was present. No tnt update to v28 was submitted.

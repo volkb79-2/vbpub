@@ -46,7 +46,7 @@ CMRU_WHEEL_BUILD_BODY = (
 # packages are added only when the base lacks them (the MDT base ships Docker's
 # own, which they would clash with). It runs before any wheel input is copied.
 TESTER_HOST_TOOLS_RUN = (
-    'set -eu && packages="ca-certificates curl git jq libeatmydata1 openssh-client util-linux" '
+    'set -eu && packages="ca-certificates curl git jq libeatmydata1 openssh-client tmux util-linux" '
     '&& if ! command -v docker >/dev/null 2>&1; then packages="$packages docker-cli"; fi '
     "&& apt-get update && apt-get install -y --no-install-recommends $packages "
     "&& rm -rf /var/lib/apt/lists/* && docker --version "

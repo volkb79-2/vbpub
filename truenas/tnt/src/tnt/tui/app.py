@@ -173,11 +173,13 @@ class TntApp(App):
                  secret_entries: dict[str, SecretEntry] | None = None, host_paths: ConfigPaths | None = None,
                  session_opener: SessionOpener = open_session, insecure_ack: bool = False,
                  initial_write: bool = False, reconnect_delays: tuple[int, ...] = (2, 4, 8, 16, 32),
+                 update_reconnect_delays: tuple[int, ...] = (2, 4, 8, 16, 32, 60, 120, 240, 300, 300),
                  worker_drain_timeout: float = 5.0):
         super().__init__()
         self.session_opener = session_opener
         self.insecure_ack = insecure_ack
         self.reconnect_delays = reconnect_delays
+        self.update_reconnect_delays = update_reconnect_delays
         self.worker_drain_timeout = worker_drain_timeout
         self.host_paths = host_paths or prof.resolve_paths()
         if session_controller is not None:
@@ -192,6 +194,7 @@ class TntApp(App):
                 initial_hosts, default_host, secret_entries or {}, session_opener,
                 insecure_ack=insecure_ack, initial_session=session, initial_write=initial_write)
         self.current: str | None = None
+        self.pending_update_verification: dict[str, object] | None = None
         self._restore_key: str | None = None
         self._quitting = False
         self._banner_message: str | None = None
@@ -267,7 +270,8 @@ class TntApp(App):
                 status = self.session_controller.last_status.get(active, "not connected")
                 return f"{active}  {status}  generation {self.session_controller.generation}"
             return f"No host selected  generation {self.session_controller.generation}"
-        write_mode = "WRITE ENABLED" if not session.rpc.read_only else "read-only"
+        write_mode = ("read-only verification" if getattr(session.backend, "read_only", False)
+                      else "WRITE ENABLED" if not session.rpc.read_only else "read-only")
         tls = "  TLS VERIFICATION OFF" if session.insecure_tls else ""
         result = (f"{session.profile.name}  {write_mode}  {session.backend.generation} ({session.backend.version})  "
                   f"generation {self.session_controller.generation}{tls}")

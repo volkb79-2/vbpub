@@ -100,6 +100,10 @@ class Action:
     force_with_jobs: bool = False
     system_preflight: tuple[Any, ...] = ()
     confirm_self: bool = False  # explicit confirmation when an account action can change the current login
+    # System version, boot ID, and active boot-environment ID captured by a
+    # system/update plan. This binds later reboot verification to the same host
+    # boot that the operator reviewed.
+    system_baseline: tuple[str, str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -131,6 +135,9 @@ class Plan:
             lines.append(f"  {sessions} active SMB sessions")
             if self.action.force_with_jobs:
                 lines.append("  Force with running jobs: requested; typed confirmation is still required.")
+        if self.action.system_baseline is not None:
+            version, boot_id, boot_environment = self.action.system_baseline
+            lines.append(f"System baseline: version {version}; boot ID {boot_id}; active boot environment {boot_environment}")
         lines.append(f"State fingerprint: {self.fingerprint[:12]}")
         return "\n".join(lines)
 
@@ -177,6 +184,10 @@ def validate_action(action: Action) -> None:
     if (not isinstance(action.force_with_jobs, bool) or not isinstance(action.system_preflight, tuple)
             or not isinstance(action.confirm_self, bool)):
         raise Refused("action-policy", "action safety metadata is malformed")
+    if (action.system_baseline is not None
+            and (not isinstance(action.system_baseline, tuple) or len(action.system_baseline) != 3
+                 or any(not isinstance(value, str) or not value.strip() for value in action.system_baseline))):
+        raise Refused("action-policy", "system baseline must contain version, boot ID, and active boot environment")
     if action.force_with_jobs and not action.system_preflight:
         raise Refused("action-policy", "force_with_jobs is available only for a preflighted system action")
     if action.kind is not Kind.DESTRUCTIVE:
@@ -240,7 +251,7 @@ def fingerprint_of(rpc: GuardedRpc, action: Action, nonce: str,
     material = {
         "id": action.id, "kind": str(action.kind), "title": action.title, "confirm": action.confirm_target,
         "force_with_jobs": action.force_with_jobs, "system_preflight": action.system_preflight,
-        "confirm_self": action.confirm_self,
+        "confirm_self": action.confirm_self, "system_baseline": action.system_baseline,
         "session": rpc.session_id, "nonce": nonce,
         "calls": [[c.method, _fingerprint_value(c.params, nonce), c.job] for c in action.calls],
         "probe": [[c.method, _fingerprint_value(c.params, nonce), _fingerprint_probe_result(c, result, nonce)]
