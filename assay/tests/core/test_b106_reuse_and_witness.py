@@ -128,7 +128,7 @@ def test_v12_through_v14_are_bounded_cold_starts_without_candidate_inspection(
     ("content", "detail"),
     [
         ('{"schema_version":14,"schema_version":14}', "duplicate object key"),
-        ('{"schema_version":16}', "current v17 verifier rejected"),
+        ('{"schema_version":16}', "schema_version 16 is unsupported"),
         ('{"schema_version":true}', "must be an integer"),
         ('{"schema_version":NaN}', "invalid JSON"),
     ],
