@@ -298,6 +298,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="pilot-only worker override (must be 1 for native R2); requires --candidates-file",
     )
     run.add_argument(
+        "--jobs",
+        type=int,
+        default=None,
+        metavar="N",
+        help="native R2 worker count; defaults to 1 and may not exceed judge.mutation.jobs_max",
+    )
+    run.add_argument(
         "--file",
         type=Path,
         default=None,
@@ -2050,7 +2057,39 @@ def _cmd_run(
     lane_file = _resolve_lane_file(args.file)
     lane: Lane = lane_file.lane(args.lane)
     _emit_lane_validation_warnings(lane_file, lane, err)
+    jobs_override = getattr(args, "jobs", None)
+    native_r2 = (
+        "R2" in lane.rigor
+        and lane.judge is not None
+        and lane.judge.mutation is not None
+        and not lane.judge.mutation.is_ingested
+    )
+    if jobs_override is not None:
+        if not native_r2:
+            raise LaneConfigError("--jobs requires a native R2 mutation lane")
+        if jobs_override < 1:
+            raise LaneConfigError(f"--jobs must be a positive integer, got {jobs_override}")
+        assert lane.judge is not None and lane.judge.mutation is not None
+        jobs_max = lane.judge.mutation.jobs_max
+        assert jobs_max is not None
+        if jobs_override > jobs_max:
+            raise LaneConfigError(
+                f"--jobs {jobs_override} exceeds lane {lane.name!r}'s "
+                f"judge.mutation.jobs_max ({jobs_max})"
+            )
+        lane = replace(
+            lane,
+            judge=replace(
+                lane.judge,
+                mutation=replace(lane.judge.mutation, jobs=jobs_override),
+            ),
+        )
     candidates_path = getattr(args, "candidates_file", None)
+    if jobs_override is not None and candidates_path is not None:
+        raise LaneConfigError(
+            "--jobs cannot be combined with --candidates-file; use "
+            "--pilot-jobs for a bounded candidate pilot"
+        )
     pilot_selection: frozenset[str] | None = None
     candidates_file_sha256: str | None = None
     pilot_jobs_override = _parse_pilot_jobs(
@@ -2092,6 +2131,12 @@ def _cmd_run(
             if pilot_jobs_override is None
             else pilot_jobs_override
         )
+        assert lane.judge.mutation.jobs_max is not None
+        if effective_jobs > lane.judge.mutation.jobs_max:
+            raise LaneConfigError(
+                f"pilot worker count {effective_jobs} exceeds lane {lane.name!r}'s "
+                f"judge.mutation.jobs_max ({lane.judge.mutation.jobs_max})"
+            )
         pilot_mutation = replace(lane.judge.mutation, jobs=effective_jobs)
         pilot_judge = replace(lane.judge, mutation=pilot_mutation)
         lane = replace(
@@ -2951,6 +2996,25 @@ def _run_reserved(
                 budget_s=lane.budget_seconds,
                 budget_per_candidate_s=runner._declared_budget_per_candidate_seconds(
                     lane
+                ),
+                jobs=(
+                    lane.judge.mutation.jobs
+                    if lane.judge is not None and lane.judge.mutation is not None
+                    and not lane.judge.mutation.is_ingested
+                    else None
+                ),
+                attribution=(
+                    "overlap-conservative"
+                    if lane.judge is not None
+                    and lane.judge.mutation is not None
+                    and not lane.judge.mutation.is_ingested
+                    and lane.judge.mutation.jobs is not None
+                    and lane.judge.mutation.jobs > 1
+                    else "serial"
+                    if lane.judge is not None
+                    and lane.judge.mutation is not None
+                    and not lane.judge.mutation.is_ingested
+                    else None
                 ),
             )
 

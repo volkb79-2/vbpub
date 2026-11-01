@@ -325,10 +325,14 @@ def test_full_ladder_lane_round_trips_its_mutation_and_canary_tables(
         ["R0", "R1", "R2", "R3"], JUDGE_TABLE, MUTATION_TABLE, CANARY_TABLE
     )
     declared = load_lane_file(project.write(text)).lane("package").as_declared()
+    expected = tomllib.loads(text)["lanes"]["package"]
+    expected["judge"]["mutation"]["jobs_max"] = expected["judge"]["mutation"].pop(
+        "jobs"
+    )
 
-    assert declared == tomllib.loads(text)["lanes"]["package"]
+    assert declared == expected
     assert declared["judge"]["mutation"] == {
-        "jobs": 1,
+        "jobs_max": 1,
         "max_mutants": 50,
         "operators": ["python:compare-swap", "python:boolop-swap"],
     }
@@ -361,7 +365,7 @@ def test_a_judge_table_may_declare_only_what_it_needs(project: Project):
         "language": "python",
         "source_roots": ["src"],
         "mutation": {
-            "jobs": 1,
+            "jobs_max": 1,
             "max_mutants": 50,
             "operators": ["python:compare-swap", "python:boolop-swap"],
         },

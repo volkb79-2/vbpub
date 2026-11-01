@@ -6060,7 +6060,9 @@ def _build_judgment_r2(
         # to learn which side of the fork it is on, and a future ingested
         # builder is then a sibling function that says the other word.
         producer="native",
-        jobs=mutation_config.jobs,
+        # Verdict schema v16 fixes this field at 1. Actual runtime concurrency
+        # is an additive progress-stream fact until the separate v17 package.
+        jobs=1,
         max_mutants=mutation_config.max_mutants,
         operators=mutation_config.operators,
         kill_attribution=(
@@ -6420,6 +6422,23 @@ def _run_higher_rigor_lane(
                 timeout=deadline.remaining(),
                 workspace=workspace_factory,
             ) as prepared:
+                mutation_config = (
+                    lane.judge.mutation
+                    if lane.judge is not None
+                    else None
+                )
+                if (
+                    "R2" in lane.rigor
+                    and mutation_config is not None
+                    and not mutation_config.is_ingested
+                    and mutation_config.jobs > 1
+                    and not prepared.cheap_clone
+                ):
+                    raise LaneConfigError(
+                        f"lane {lane.name!r}: native R2 --jobs greater than 1 "
+                        "requires a cheap_clone snapshot workspace; configure "
+                        "the supported btrfs CoW workspace or pass --jobs 1"
+                    )
                 # (B006a/A-269 WI-3, §3.4) After `prepare_snapshot` has
                 # already commit-validated `snapshot_policy`'s declared
                 # omissions, but strictly BEFORE the first
@@ -6764,6 +6783,26 @@ def run_lane(
                 rigor=lane.rigor,
                 budget_s=lane.budget_seconds,
                 budget_per_candidate_s=_declared_budget_per_candidate_seconds(lane),
+                jobs=(
+                    lane.judge.mutation.jobs
+                    if lane.judge is not None
+                    and lane.judge.mutation is not None
+                    and not lane.judge.mutation.is_ingested
+                    else None
+                ),
+                attribution=(
+                    "overlap-conservative"
+                    if lane.judge is not None
+                    and lane.judge.mutation is not None
+                    and not lane.judge.mutation.is_ingested
+                    and lane.judge.mutation.jobs is not None
+                    and lane.judge.mutation.jobs > 1
+                    else "serial"
+                    if lane.judge is not None
+                    and lane.judge.mutation is not None
+                    and not lane.judge.mutation.is_ingested
+                    else None
+                ),
             )
             return run_lane(
                 lane,

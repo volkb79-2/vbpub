@@ -34,7 +34,8 @@ from conftest import GitRepo, make_deadline, make_lane, make_plan, prepared_snap
 from assay.adapters.python import PythonAdapter
 from assay import isolation as isolation_module, liveness
 from assay import mutation as mutation_module, runner as runner_module
-from assay.errors import AssayError, Outcome, ReasonCode
+from assay import _window_host
+from assay.errors import AssayError, LaneConfigError, Outcome, ReasonCode
 from assay.process_tree import ProcessTreeError
 from assay.mutation import MutationTarget, candidate_id, collect_mutation_sites, run_mutation
 from assay.resource_limits import ResourceLimitCounters
@@ -85,6 +86,31 @@ def _resource_counters_are_faked_for_executor_unit_tests(monkeypatch):
     )
     monkeypatch.setattr(
         mutation_module, "_read_candidate_resource_counters", lambda: counters
+    )
+    monkeypatch.setattr(
+        mutation_module,
+        "_read_candidate_resource_counters_during_campaign",
+        lambda: (counters, None),
+    )
+    # These scheduler tests model the PR1a host seam with a parent-side fake.
+    # The suite's real host-process contract has separate subprocess tests;
+    # no monkeypatch crosses that process boundary here.
+    monkeypatch.setattr(
+        isolation_module.SnapshotRepository,
+        "cheap_clone",
+        property(lambda _prepared: True),
+    )
+    monkeypatch.setattr(_window_host, "can_host", lambda *_args: True)
+    monkeypatch.setattr(
+        _window_host,
+        "run_window",
+        lambda plan, *, cwd, timeout, process_runner, clock: runner_module.execute_plan(
+            plan,
+            cwd=cwd,
+            timeout=timeout,
+            process_runner=process_runner,
+            clock=clock,
+        ),
     )
 
 
@@ -263,10 +289,10 @@ def test_jobs_1_and_jobs_3_produce_identical_ordered_records(tmp_path: Path):
     assert serial.to_dict() == parallel.to_dict()
 
 
-def test_public_run_mutation_refuses_parallel_candidate_event_windows():
+def test_public_run_mutation_refuses_parallel_without_cheap_clone():
     factory_calls = []
 
-    with pytest.raises(ValueError, match="jobs must be 1 for native R2"):
+    with pytest.raises(LaneConfigError, match="cheap_clone"):
         run_mutation(
             baseline=None,
             prepared=None,
@@ -460,6 +486,19 @@ def _run_queue_case(
             else resource_counter_reader
         ),
     )
+    def read_during_campaign():
+        if resource_counter_reader is None:
+            return counters, None
+        try:
+            return resource_counter_reader(), None
+        except AssayError as exc:
+            return None, str(exc)
+
+    monkeypatch.setattr(
+        mutation_module,
+        "_read_candidate_resource_counters_during_campaign",
+        read_during_campaign,
+    )
     repo = _seed_repo(tmp_path, name, text) if repo is None else repo
     scratch_root = tmp_path / f"{name}-scratch"
     scratch_root.mkdir()
@@ -503,6 +542,97 @@ def _run_queue_case(
     assert baseline.outcome is Outcome.PASS
     assert result is not None
     return (result, repo) if return_repo else result
+
+
+@pytest.mark.parametrize(
+    ("terminal_kind", "expected_bucket"),
+    [
+        pytest.param("fail", "killed", id="killed"),
+        pytest.param("pass", "survived", id="survived"),
+        pytest.param("signal", "crashed", id="crashed"),
+        pytest.param("budget", "budget_exceeded", id="budget-exceeded"),
+        pytest.param("hung", "hung", id="hung"),
+    ],
+)
+def test_parallel_window_scheduler_matches_serial_bucket_and_identity(
+    tmp_path, monkeypatch, terminal_kind, expected_bucket
+):
+    def action(argv, _cwd):
+        if terminal_kind == "fail":
+            return completed_process(list(argv), 1, "", "")
+        if terminal_kind == "pass":
+            return completed_process(list(argv), 0, "", "")
+        if terminal_kind == "signal":
+            return _signaled_process(argv, signal.SIGKILL)
+        if terminal_kind == "budget":
+            raise timeout_expired(list(argv), timeout=1.0, output=b"")
+        _raise_candidate_hung(argv, timeout=1.0)
+
+    def run(jobs: int):
+        events: list[dict] = []
+        result = _run_queue_case(
+            tmp_path,
+            monkeypatch,
+            name=f"window-{terminal_kind}-{jobs}",
+            targets=_TARGET_A,
+            text=_TEXT3,
+            jobs=jobs,
+            process_runner=_decide5(tmp_path, {"a": action}),
+            progress_events=events,
+        )
+        candidate_events = [event for event in events if event.get("event") == "candidate"]
+        expected_event_indices = [] if expected_bucket == "budget_exceeded" else [0]
+        assert [event["candidate_index"] for event in candidate_events] == expected_event_indices
+        assert all(0 <= event["worker_index"] < jobs for event in candidate_events)
+        assert len(getattr(result, expected_bucket)) == 1
+        return result
+
+    serial = run(1)
+    parallel = run(3)
+
+    assert serial.to_dict() == parallel.to_dict()
+
+
+def test_resume_reuses_state_across_different_jobs_values(tmp_path, monkeypatch):
+    state_root = tmp_path / "jobs-resume-state"
+    repo = _seed_repo(tmp_path, "jobs-resume-repo", _TEXT3)
+    first, _repo = _run_queue_case(
+        tmp_path,
+        monkeypatch,
+        name="jobs-resume-first",
+        targets=_TARGETS3,
+        text=_TEXT3,
+        jobs=1,
+        process_runner=_decide5(tmp_path, {}),
+        repo=repo,
+        state_root=state_root,
+        resume=True,
+        return_repo=True,
+    )
+
+    def must_reuse(argv, cwd):
+        raise AssertionError("resume should reuse matching candidate state")
+
+    events: list[dict] = []
+    resumed = _run_queue_case(
+        tmp_path,
+        monkeypatch,
+        name="jobs-resume-second",
+        targets=_TARGETS3,
+        text=_TEXT3,
+        jobs=3,
+        process_runner=_decide5(tmp_path, dict.fromkeys("abc", must_reuse)),
+        repo=repo,
+        state_root=state_root,
+        resume=True,
+        progress_events=events,
+    )
+
+    assert resumed.to_dict() == first.to_dict()
+    resume = [event for event in events if event.get("event") == "resume"]
+    assert len(resume) == 1
+    assert resume[0]["resumed_total"] == 3
+    assert not any(event.get("event") == "candidate" for event in events)
 
 
 def test_after_counter_failure_does_not_hide_process_tree_cleanup_failure(
@@ -1393,15 +1523,19 @@ def test_candidate_event_buffer_orders_events_and_flushes_after_gaps():
     assert abnormal.drain_all_ascending() == [event_one, event_three]
 
 
-def test_candidate_progress_stays_ordered_when_state_writes_complete_out_of_order(
+def test_candidate_state_and_progress_wait_for_the_index_ordered_commit_boundary(
     tmp_path, monkeypatch
 ):
     names = _candidate_names(_TARGETS3)
     name_at = dict(enumerate(names))
     release_zero = threading.Event()
+    zero_started = threading.Event()
+    one_completed = threading.Event()
     progress_events: list[dict] = []
     state_root = tmp_path / "queue-state"
     real_write = mutation_module._write_mutation_state_record
+    writes: list[tuple[int, int]] = []
+    candidate_threads: set[int] = set()
     jobs = collect_mutation_sites(
         _TARGETS3,
         adapter=PythonAdapter(),
@@ -1409,41 +1543,53 @@ def test_candidate_progress_stays_ordered_when_state_writes_complete_out_of_orde
         limit=50,
     )
     assert jobs != "UNSUPPORTED"
-    position_one_id = candidate_id(jobs[1])
 
     def hold_zero(argv, cwd):
+        candidate_threads.add(threading.get_ident())
+        zero_started.set()
         if not release_zero.wait(10):
             raise AssertionError("position 0 was never released")
         return completed_process(list(argv), 0, "", "")
 
     def complete_one(argv, cwd):
+        candidate_threads.add(threading.get_ident())
+        one_completed.set()
         return completed_process(list(argv), 1, "", "")
 
-    def release_zero_after_one_is_recorded(root, payload, **kwargs):
+    def record_writer_thread(root, payload, **kwargs):
+        writes.append((threading.get_ident(), payload["candidate_index"]))
         real_write(root, payload, **kwargs)
-        if payload["candidate_id"] == position_one_id:
-            release_zero.set()
 
     monkeypatch.setattr(
         mutation_module,
         "_write_mutation_state_record",
-        release_zero_after_one_is_recorded,
+        record_writer_thread,
     )
-    result = _run_queue_case(
-        tmp_path,
-        monkeypatch,
-        name="queue-progress-order",
-        targets=_TARGETS3,
-        text=_TEXT3,
-        jobs=3,
-        process_runner=_decide5(
+    with ThreadPoolExecutor(max_workers=1) as driver:
+        task = driver.submit(
+            _run_queue_case,
             tmp_path,
-            {name_at[0]: hold_zero, name_at[1]: complete_one},
-        ),
-        state_root=state_root,
-        resume=True,
-        progress_events=progress_events,
-    )
+            monkeypatch,
+            name="queue-progress-order",
+            targets=_TARGETS3,
+            text=_TEXT3,
+            jobs=3,
+            process_runner=_decide5(
+                tmp_path,
+                {name_at[0]: hold_zero, name_at[1]: complete_one},
+            ),
+            state_root=state_root,
+            resume=True,
+            progress_events=progress_events,
+        )
+        assert zero_started.wait(5)
+        assert one_completed.wait(5)
+        assert writes == []
+        assert not any(event.get("event") == "candidate" for event in progress_events)
+        assert list(state_root.glob("*.json")) == []
+        release_zero.set()
+        result = task.result(timeout=10)
+
     assert result.total == 3
     candidate_indices = [
         event["candidate_index"]
@@ -1452,6 +1598,71 @@ def test_candidate_progress_stays_ordered_when_state_writes_complete_out_of_orde
     ]
     assert candidate_indices == [0, 1, 2]
     assert len(list(state_root.glob("*.json"))) == 3
+    assert [index for _thread, index in writes] == [0, 1, 2]
+    assert len({thread for thread, _index in writes}) == 1
+    assert not ({thread for thread, _index in writes} & candidate_threads)
+
+
+def test_keyboard_interrupt_terminates_every_live_window_and_leaves_them_unclassified(
+    tmp_path, monkeypatch
+):
+    host_started = threading.Event()
+    release_hosts = threading.Event()
+    host_threads: set[int] = set()
+    host_lock = threading.Lock()
+    termination_calls = []
+    progress_events: list[dict] = []
+    state_root = tmp_path / "interrupt-state"
+
+    def fake_window(plan, *, cwd, timeout, process_runner, clock):
+        with host_lock:
+            host_threads.add(threading.get_ident())
+            if len(host_threads) == 2:
+                host_started.set()
+        if not release_hosts.wait(5):
+            raise AssertionError("termination did not release an in-flight host")
+        return runner_module.execute_plan(
+            plan,
+            cwd=cwd,
+            timeout=timeout,
+            process_runner=process_runner,
+            clock=clock,
+        )
+
+    def terminate_hosts():
+        termination_calls.append(len(host_threads))
+        release_hosts.set()
+        return len(host_threads)
+
+    real_wait = mutation_module.wait
+
+    def interrupt_after_host_start(futures, *, timeout, return_when):
+        if host_started.is_set():
+            raise KeyboardInterrupt
+        return real_wait(futures, timeout=timeout, return_when=return_when)
+
+    monkeypatch.setattr(_window_host, "run_window", fake_window)
+    monkeypatch.setattr(liveness, "terminate_live_window_hosts", terminate_hosts)
+    monkeypatch.setattr(mutation_module, "wait", interrupt_after_host_start)
+
+    with pytest.raises(KeyboardInterrupt):
+        _run_queue_case(
+            tmp_path,
+            monkeypatch,
+            name="interrupt-two-hosts",
+            targets=_TARGETS3,
+            text=_TEXT3,
+            jobs=2,
+            process_runner=_decide5(tmp_path, {}),
+            state_root=state_root,
+            resume=True,
+            progress_events=progress_events,
+        )
+
+    assert termination_calls == [2]
+    assert len(host_threads) == 2
+    assert list(state_root.glob("*.json")) == []
+    assert not any(event.get("event") == "candidate" for event in progress_events)
 
 
 def test_queue_drains_all_futures_and_raises_lowest_position_fatal(
@@ -1493,8 +1704,10 @@ def test_queue_drains_all_futures_and_raises_lowest_position_fatal(
 
     real_wait = mutation_module.wait
 
-    def observe_first_fatal(waiting, *, return_when):
-        done, pending = real_wait(waiting, return_when=return_when)
+    def observe_first_fatal(waiting, *, return_when, timeout=None):
+        done, pending = real_wait(
+            waiting, timeout=timeout, return_when=return_when
+        )
         if futures.get(1) in done:
             position_one_observed.set()
         return done, pending

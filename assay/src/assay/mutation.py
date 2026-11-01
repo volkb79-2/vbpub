@@ -137,12 +137,13 @@ from typing import (
 )
 
 from . import _durable
+from . import _limit_ledger
 from . import contention as _contention
 from . import git, liveness, safeio
 from . import termination as _termination
 from .candidate_identity import candidate_id_from_fields
 from .diff import AddedLines
-from .errors import AssayError, Outcome, ReasonCode
+from .errors import AssayError, LaneConfigError, Outcome, ReasonCode
 from .guards import is_finite_positive, is_int_at_least, is_nonempty_str, is_strict_int
 from .isolation import SnapshotRepository, netstring
 from .mutation_parsers.model import IngestedMutationReport
@@ -1331,6 +1332,8 @@ class ProgressStream:
         budget_s: float | None = None,
         budget_per_candidate_s: float | None = None,
         candidate_total: int | None = None,
+        jobs: int | None = None,
+        attribution: Literal["serial", "overlap-conservative"] | None = None,
     ) -> None:
         """Emit the stream's ``run`` header, at most once.
 
@@ -1354,6 +1357,23 @@ class ProgressStream:
         """
         if self._header_emitted:
             return
+        if jobs is not None and (type(jobs) is not int or jobs < 1):
+            raise ValueError("progress run header jobs must be a positive integer")
+        if attribution is not None and attribution not in {
+            "serial",
+            "overlap-conservative",
+        }:
+            raise ValueError("progress run header attribution is invalid")
+        if (jobs is None) != (attribution is None):
+            raise ValueError(
+                "progress run header jobs and attribution must be supplied together"
+            )
+        if jobs is not None and attribution != (
+            "serial" if jobs == 1 else "overlap-conservative"
+        ):
+            raise ValueError(
+                "progress run header attribution must match the worker count"
+            )
         self._header_emitted = True
         self.emit(
             {
@@ -1364,6 +1384,7 @@ class ProgressStream:
                 "budget_s": budget_s,
                 "budget_per_candidate_s": budget_per_candidate_s,
                 "candidate_total": candidate_total,
+                **({"jobs": jobs, "attribution": attribution} if jobs is not None else {}),
                 "started": iso_utc(self._clock()),
             }
         )
@@ -3444,29 +3465,26 @@ def auto_budget_per_candidate_seconds(baseline_wall: float) -> float:
     return max(3.0 * baseline_wall, baseline_wall + 60.0)
 
 
-def _native_r2_serial_only(function):
-    """Keep the supported native-R2 entry point serial for event attribution.
-
-    The implementation retains its bounded queue mechanics for isolated
-    executor tests and possible future per-candidate cgroup evidence. Product
-    callers must go through :func:`run_mutation`, which refuses overlapping
-    candidate event windows.
-    """
+def _native_r2_parallel_checked(function):
+    """Require copy-on-write snapshots before enabling parallel candidates."""
 
     @wraps(function)
     def checked(*args, **kwargs):
         jobs = kwargs.get("jobs")
-        if is_strict_int(jobs) and jobs > 1:
-            raise ValueError(
-                "run_mutation jobs must be 1 for native R2 because candidate "
-                "cgroup event windows must not overlap"
+        prepared = kwargs.get("prepared")
+        if is_strict_int(jobs) and jobs > 1 and not getattr(
+            prepared, "cheap_clone", False
+        ):
+            raise LaneConfigError(
+                "native R2 --jobs greater than 1 requires a cheap_clone "
+                "snapshot workspace; run with --jobs 1 or configure btrfs CoW"
             )
         return function(*args, **kwargs)
 
     return checked
 
 
-@_native_r2_serial_only
+@_native_r2_parallel_checked
 def run_mutation(
     *,
     baseline: CommandResult,
@@ -3864,6 +3882,10 @@ def run_mutation(
                 commit=prepared.spec.commit,
                 lane=None,
                 budget_per_candidate_s=budget_per_candidate_seconds,
+                jobs=jobs,
+                attribution=(
+                    "overlap-conservative" if jobs > 1 else "serial"
+                ),
             )
         if write_progress is not None:
             # (B091/D-23) The sweep's own first record: what the baseline
@@ -4351,7 +4373,7 @@ def run_mutation(
 
 
 # The private implementation remains available to executor-focused unit tests;
-# runtime and consumer code must use the serial-checked public entry point.
+# runtime and consumer code must use the validated public entry point.
 _run_mutation_impl = run_mutation.__wrapped__
 
 
@@ -4461,16 +4483,61 @@ def _execute_mutation_jobs(
         )
     candidate_reuse = dict(reuse_witnesses or {}) if witness_capture_active else {}
     attempt_receipts: dict[tuple[int, str], Mapping[str, Any] | None] = {}
-    window_host_run: Callable[..., CommandResult] | None = None
-    if jobs == 1:
-        from . import _window_host
-        from . import runner as runner_module
+    worker_index_lock = threading.Lock()
+    worker_indices: dict[int, int] = {}
+    candidate_workers: dict[int, int] = {}
 
-        if (
-            execute_plan is runner_module.execute_plan
-            and _window_host.can_host(process_runner, clock)
-        ):
-            window_host_run = _window_host.run_window
+    def _worker_index_for_current_thread() -> int:
+        identity = threading.get_ident()
+        with worker_index_lock:
+            index = worker_indices.get(identity)
+            if index is None:
+                index = len(worker_indices)
+                worker_indices[identity] = index
+            return index
+
+    window_host_run: Callable[..., CommandResult] | None = None
+    from . import _window_host
+    from . import runner as runner_module
+    coordinator_thread_id = threading.get_ident()
+
+    if (
+        execute_plan is runner_module.execute_plan
+        and _window_host.can_host(process_runner, clock)
+    ):
+        window_host_run = _window_host.run_window
+    limit_broker: _limit_ledger.LimitBoundaryBroker | None = None
+    limit_ledger: _limit_ledger.LimitLedger | None = None
+    if jobs > 1:
+        if not prepared.cheap_clone:
+            raise LaneConfigError(
+                "native R2 --jobs greater than 1 requires a cheap_clone "
+                "snapshot workspace; set up the supported btrfs CoW workspace "
+                "or run with --jobs 1"
+            )
+        if window_host_run is None:
+            raise LaneConfigError(
+                "native R2 --jobs greater than 1 requires the isolated PR1a "
+                "window host; the configured runner or clock cannot be hosted"
+            )
+        limit_ledger = _limit_ledger.LimitLedger(
+            _read_candidate_resource_counters_during_campaign
+        )
+        limit_broker = _limit_ledger.LimitBoundaryBroker(limit_ledger)
+
+    def _start_limit_window() -> int | None:
+        if limit_ledger is None or limit_broker is None:
+            return None
+        if threading.get_ident() == coordinator_thread_id:
+            return limit_ledger.snapshot()
+        return limit_broker.start_window()
+
+    def _end_limit_window(start_sequence: int) -> _limit_ledger.LimitWindow:
+        assert limit_ledger is not None and limit_broker is not None
+        if threading.get_ident() == coordinator_thread_id:
+            end_sequence = limit_ledger.snapshot()
+            return limit_ledger.limits_for(start_sequence, end_sequence)
+        return limit_broker.end_window(start_sequence)
     bucket_for_run = partial(
         _bucket_for_run,
         equivalence_artifact=equivalence_artifact,
@@ -4548,13 +4615,21 @@ def _execute_mutation_jobs(
                 ):
                     command_deadline = budget_per_candidate_seconds
                 command_started_monotonic = time.monotonic()
-                resource_limits_before, resource_limits_before_error = (
-                    _read_candidate_resource_counters_during_campaign()
-                )
+                resource_limits_before: ResourceLimitCounters | None = None
+                resource_limits_before_error: str | None = None
+                window_start_sequence = _start_limit_window()
+                if limit_broker is None:
+                    (
+                        resource_limits_before,
+                        resource_limits_before_error,
+                    ) = _read_candidate_resource_counters_during_campaign()
                 execution_error: BaseException | None = None
                 result: CommandResult | None = None
                 resource_limits_after: ResourceLimitCounters | None = None
                 resource_limits_after_error: str | None = None
+                resource_limit_evidence: ResourceLimitEvidence | None = None
+                resource_observation_reason: str | None = None
+                resource_limit_changes: tuple[str, ...] = ()
                 receipt_capture = None
                 try:
                     if witness_capture_active and active_injection is not None:
@@ -4584,10 +4659,17 @@ def _execute_mutation_jobs(
                 except BaseException as exc:
                     execution_error = exc
                 finally:
-                    (
-                        resource_limits_after,
-                        resource_limits_after_error,
-                    ) = _read_candidate_resource_counters_during_campaign()
+                    if limit_broker is None:
+                        (
+                            resource_limits_after,
+                            resource_limits_after_error,
+                        ) = _read_candidate_resource_counters_during_campaign()
+                    else:
+                        assert window_start_sequence is not None
+                        limit_window = _end_limit_window(window_start_sequence)
+                        resource_limit_evidence = limit_window.evidence
+                        resource_observation_reason = limit_window.reason
+                        resource_limit_changes = limit_window.changes
                     if receipt_capture is not None:
                         receipt = receipt_capture.finish()
                 # A process-tree proof failure means this attempt's cleanup
@@ -4612,24 +4694,22 @@ def _execute_mutation_jobs(
                 # Once a candidate starts, however, resource windows are
                 # telemetry: either missing endpoint or an uncomparable pair
                 # records an unobserved window and leaves termination to WP1.
-                resource_limit_evidence: ResourceLimitEvidence | None = None
-                resource_observation_reason: str | None = None
-                resource_limit_changes: tuple[str, ...] = ()
-                if resource_limits_before is None or resource_limits_after is None:
-                    reasons = []
-                    if resource_limits_before_error is not None:
-                        reasons.append(f"before: {resource_limits_before_error}")
-                    if resource_limits_after_error is not None:
-                        reasons.append(f"after: {resource_limits_after_error}")
-                    resource_observation_reason = "; ".join(reasons)
-                else:
-                    (
-                        resource_limit_evidence,
-                        resource_observation_reason,
-                        resource_limit_changes,
-                    ) = _candidate_resource_limit_evidence(
-                        resource_limits_before, resource_limits_after
-                    )
+                if limit_broker is None:
+                    if resource_limits_before is None or resource_limits_after is None:
+                        reasons = []
+                        if resource_limits_before_error is not None:
+                            reasons.append(f"before: {resource_limits_before_error}")
+                        if resource_limits_after_error is not None:
+                            reasons.append(f"after: {resource_limits_after_error}")
+                        resource_observation_reason = "; ".join(reasons)
+                    else:
+                        (
+                            resource_limit_evidence,
+                            resource_observation_reason,
+                            resource_limit_changes,
+                        ) = _candidate_resource_limit_evidence(
+                            resource_limits_before, resource_limits_after
+                        )
                 if execution_error is not None:
                     if (
                         resource_limit_evidence is not None
@@ -4844,7 +4924,14 @@ def _execute_mutation_jobs(
             execution = MutationExecution(mode="full", witness=full_witness)
         return _dataclass_replace(run, execution=execution)
 
-    def _run_one(index: int) -> _MutantRun:
+    def _run_one(index: int, *, worker_index: int | None = None) -> _MutantRun:
+        selected_worker_index = (
+            _worker_index_for_current_thread()
+            if worker_index is None
+            else worker_index
+        )
+        with worker_index_lock:
+            candidate_workers[index] = selected_worker_index
         job = job_list[index]
         started_total = time.monotonic()
         prior = candidate_reuse.get(candidate_id(job))
@@ -5212,8 +5299,8 @@ def _execute_mutation_jobs(
                 state_root_fd=state_root_fd,
                 commit_guard=deadline.remaining,
             )
-        # State is committed as soon as the future completes. Candidate
-        # progress is staged and emitted in order by the caller below.
+        # Candidate state is staged only by the coordinator after the worker
+        # result reaches its index-ordered commit boundary.
         return {
             # (B064) This explicit event name replaced the old unnamed record.
             "event": "candidate",
@@ -5222,6 +5309,7 @@ def _execute_mutation_jobs(
                 candidate_total=total,
                 job=job_list[position],
             ),
+            "worker_index": candidate_workers[position],
             "outcome_bucket": outcome_bucket,
             "execution_mode": run.execution.mode,
             "elapsed_seconds": round(run.elapsed_seconds, 3),
@@ -5271,65 +5359,105 @@ def _execute_mutation_jobs(
     next_to_submit = 0
     event_buffer = _CandidateEventBuffer(total)
     in_flight: dict[Future, int] = {}
+    completed_runs: dict[int, _MutantRun] = {}
+    resolved_without_event: set[int] = set()
+    record_cursor = 0
+
+    def _record_ready_in_order() -> None:
+        nonlocal record_cursor
+        while record_cursor < total:
+            run = completed_runs.pop(record_cursor, None)
+            if run is not None:
+                event_buffer.stage(
+                    record_cursor,
+                    _record_candidate(record_cursor, run),
+                )
+            elif record_cursor in resolved_without_event:
+                event_buffer.resolve_without_event(record_cursor)
+            else:
+                break
+            record_cursor += 1
+        _emit_ready(event_buffer.drain_contiguous())
 
     try:
         with executor_factory(jobs) as pool:
-            while True:
-                while (
-                    not stop_submitting
-                    and next_to_submit < total
-                    and len(in_flight) < jobs
-                ):
-                    position = next_to_submit
-                    try:
-                        future = pool.submit(_run_one, position)
-                    except RuntimeError as exc:
-                        fatals[position] = AssayError(
-                            "could not start a native R2 candidate worker; the "
-                            "candidate sweep stopped before all mutants were run "
-                            f"({exc})",
-                            outcome=Outcome.ERROR,
-                            reason_code=ReasonCode.EXEC_FAILED,
-                        )
-                        stop_submitting = True
-                        break
-                    in_flight[future] = position
-                    next_to_submit += 1
+            try:
+                while True:
+                    while (
+                        not stop_submitting
+                        and next_to_submit < total
+                        and len(in_flight) < jobs
+                    ):
+                        position = next_to_submit
+                        try:
+                            future = pool.submit(_run_one, position)
+                        except RuntimeError as exc:
+                            fatals[position] = AssayError(
+                                "could not start a native R2 candidate worker; the "
+                                "candidate sweep stopped before all mutants were run "
+                                f"({exc})",
+                                outcome=Outcome.ERROR,
+                                reason_code=ReasonCode.EXEC_FAILED,
+                            )
+                            resolved_without_event.add(position)
+                            stop_submitting = True
+                            break
+                        in_flight[future] = position
+                        next_to_submit += 1
 
-                if not in_flight:
-                    break
-                done, _ = wait(tuple(in_flight), return_when=FIRST_COMPLETED)
-                for future in sorted(done, key=in_flight.__getitem__):
-                    position = in_flight.pop(future)
-                    try:
-                        results[position] = future.result()
-                    except AssayError as exc:
-                        if (
-                            exc.outcome is Outcome.BUDGET_EXCEEDED
-                            and exc.reason_code is ReasonCode.LANE_TIMEOUT
-                        ):
-                            budget_exceeded_mask[position] = True
-                        else:
-                            fatals[position] = exc
-                        stop_submitting = True
-                    run = results[position]
-                    if run is None:
-                        event_buffer.resolve_without_event(position)
+                    if not in_flight:
+                        break
+                    if limit_broker is not None:
+                        if runner_module.termination_requested():
+                            deadline.remaining()
+                        limit_broker.service_pending()
+                    if limit_broker is None:
+                        done, _ = wait(
+                            tuple(in_flight), return_when=FIRST_COMPLETED
+                        )
                     else:
-                        executed_runs[position] = run
-                        event_buffer.stage(position, _record_candidate(position, run))
-                _emit_ready(event_buffer.drain_contiguous())
+                        done, _ = wait(
+                            tuple(in_flight),
+                            timeout=0.05,
+                            return_when=FIRST_COMPLETED,
+                        )
+                    if not done:
+                        continue
+                    for future in sorted(done, key=in_flight.__getitem__):
+                        position = in_flight.pop(future)
+                        try:
+                            results[position] = future.result()
+                        except AssayError as exc:
+                            if (
+                                exc.outcome is Outcome.BUDGET_EXCEEDED
+                                and exc.reason_code is ReasonCode.LANE_TIMEOUT
+                            ):
+                                budget_exceeded_mask[position] = True
+                            else:
+                                fatals[position] = exc
+                            stop_submitting = True
+                        run = results[position]
+                        if run is None:
+                            resolved_without_event.add(position)
+                        else:
+                            executed_runs[position] = run
+                            completed_runs[position] = run
+                    _record_ready_in_order()
+            except BaseException as exc:
+                if limit_broker is not None:
+                    limit_broker.cancel_pending(exc)
+                    liveness.terminate_live_window_hosts()
+                raise
 
         if stop_submitting:
             for leftover in range(next_to_submit, total):
                 budget_exceeded_mask[leftover] = True
-                event_buffer.resolve_without_event(leftover)
-        _emit_ready(event_buffer.drain_contiguous())
+                resolved_without_event.add(leftover)
+        _record_ready_in_order()
     finally:
-        # A non-AssayError exit still leaves each already-written state record
-        # with its candidate event. Skipping unresolved gaps is allowed only
-        # on this abnormal path; remaining events are emitted in index order.
-        _emit_ready(event_buffer.drain_all_ascending())
+        # An interruption may leave a hole. Only the completed index prefix is
+        # publishable; skipping a hole would reorder candidate progress/state.
+        _emit_ready(event_buffer.drain_contiguous())
 
     # A-195: a mutant that left Git-visible dirt/HEAD drift is never folded
     # into `crashed`. After all submitted workers drain, choose the fatal at
@@ -5356,7 +5484,7 @@ def _execute_mutation_jobs(
                 and remaining < budget_per_candidate_seconds
             ):
                 break
-            retry_run = _run_one(position)
+            retry_run = _run_one(position, worker_index=0)
             final_bucket = bucket_for_run(retry_run)
             results[position] = retry_run
             # Persist the retry through the same schema and boundary as the
@@ -5370,6 +5498,7 @@ def _execute_mutation_jobs(
                         "candidate_id": candidate_id(job_list[position]),
                         "first_bucket": first_bucket,
                         "final_bucket": final_bucket,
+                        "worker_index": candidate_workers[position],
                     },
                 )
             )

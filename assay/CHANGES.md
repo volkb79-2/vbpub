@@ -6,6 +6,13 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+### Added
+- Run native R2 candidate windows concurrently with `assay run --jobs N` up to the lane's `judge.mutation.jobs_max`, using coordinator-ordered progress/state and conservative overlapping limit-event attribution.
+- Add `jobs` and `attribution` to the progress run event and `worker_index` to candidate events; resume identity stays independent of worker count, and the WP7 retry tail remains serial.
+
+### Changed
+- Require a cheap-clone workspace for native R2 runs with more than one worker; keep verdict schema v16 unchanged.
+
 ## [10.2.0] - 2026-11-01
 <!-- cmru: generated -->
 <!-- cmru: source-end=2266ee8c2f1da5b359e320e255e1d29c1dd2f2f6 -->

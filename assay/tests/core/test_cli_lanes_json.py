@@ -274,7 +274,7 @@ def test_a_sql_r2_lane(project: Project):
             # SQL has no R1, so no coverage table exists to declare.
             "coverage": None,
             "mutation": {
-                "jobs": 1,
+                "jobs_max": 1,
                 "max_mutants": 200,
                 "operators": ["sql:drop-check", "sql:weaken-delete-action"],
                 "kill_signal_artifact": ".assay/kill-signal.txt",

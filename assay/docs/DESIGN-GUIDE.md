@@ -677,27 +677,35 @@ runner. Native R2's cgroup `pids.events` and `memory.events` checks instead
 protect the mutation result from limit interference. Neither mechanism is a
 substitute for cgprofile's separate lane resource profile.
 
-#### Native R2 candidate event windows are serial
+#### Native R2 parallel candidate windows
 
-All native R2 candidate runs share the lane's cgroup and its event counters. If
-two candidates execute concurrently, an increment during both before/after
-windows cannot identify which candidate caused it. Assay therefore requires
-`judge.mutation.jobs = 1` for native R2 and `--pilot-jobs 1` for native pilots.
-The config loader, CLI, and public `run_mutation` entry point refuse larger
-values before execution. This limits candidate throughput until each candidate
-can have independently attributable cgroup evidence; it does not limit the worker count used by the read-only
-`assay analyze plan-estimate` projection. Ancestor `.local` counters still
-distinguish sibling-only hierarchical changes from events local to a shared
-enforcing ancestor.
+Native candidates share the lane cgroup and event counters, so a counter
+increment inside overlapping candidate windows cannot be attributed to one
+candidate alone. PR1b keeps that uncertainty conservative: the coordinator's
+`LimitLedger` snapshots counters at each window boundary, and every window
+whose sequence range overlaps an event receives that event, including events
+reported only by a visible ancestor. AP-1 precedence keeps PASS as
+`survived`; a failing candidate with an overlapping positive limit event is
+`crashed`. A window with no overlapping event follows the existing
+termination classification. Thus parallel work may conservatively reduce
+mutation credit, but cannot turn an observed resource-limit failure into a
+`killed` result.
 
-This serial rule is part of the wire contract as well as the executor: verdict
-schema v16 requires `judgment.r2.jobs = 1` in the Python model and packaged
-schema, and `assay verify` rejects a native verdict that claims more workers.
-The v15 schema accepted larger values, so v16 is a hard cut, carried by Assay
-10.0.0. `--reuse-from`
-recognizes a v15 artifact only as a cold start; its candidate results cannot be
-reused under the serial attribution rule. Consumer changes are described in
-the [v15-to-v16 migration notes](CONSUMERS.md#migration-notes-v15-to-v16).
+The lane declares `judge.mutation.jobs_max` (with `jobs` as a config alias),
+and `assay run --jobs N` selects `1 <= N <= jobs_max`; Assay never derives N
+from the host. It defaults to 1. Values above 1 require a prepared workspace
+that advertises `cheap_clone` and the PR1a isolated command-window host. The
+bounded scheduler submits at most N windows, writes candidate progress and
+state on the coordinator in candidate-index order, and keeps resume identity
+independent of N. WP7's end-of-sweep retry remains serial. Native pilots still
+require `--pilot-jobs 1`; `--jobs` is refused with `--candidates-file`.
+
+Verdict schema v16 remains unchanged and still requires
+`judgment.r2.jobs = 1`; the actual worker count and attribution are progress
+stream facts (`jobs`, `attribution` on the run event, and `worker_index` on
+candidate events). A later, separate schema package owns any verdict-field
+change. The old v15-to-v16 migration describes that historical cut in the
+[consumer migration notes](CONSUMERS.md#migration-notes-v15-to-v16).
 
 Assay samples `pids.events` and `memory.events` at the candidate cgroup, and
 samples `pids.events.local` and `memory.events.local` at every visible active
@@ -1289,8 +1297,8 @@ and `_run_prepared_lane`'s baseline unit (every lane declaring R1, R2 or R3 —
 its `CommandResult` is what `build_r0_claim` turns into the R0 claim). Every
 other execution of the lane's argv keeps `execute_plan`'s `result_report=None`
 default: a mutation candidate, whose whole signal is whether one full
-declared-order suite run fails (native R2 admits one candidate at a time under
-B157); R3's canary halves, whose
+declared-order suite run fails (native R2 can run bounded concurrent windows
+with conservative event attribution under B157); R3's canary halves, whose
 control/transform outcome answers "did injecting this defect change the
 judgement" rather than "did the wrapped suite pass"; and the
 `environment_command` probe, which is not the lane command at all.
@@ -5033,15 +5041,14 @@ name (CD18), judges nothing, and every estimate it prints is diagnostic.
   `0/1` campaign can qualify just like an unsharded campaign. A shard from a
   multi-shard fan-out remains non-qualifying until the complete campaign is
   assembled; its selected slice is not the whole plan.
-- **Projection contract.** For a native R2 lane, `--project-jobs` must equal
-  the lane's declared `mutation.jobs`; a different worker count describes an
-  execution model the lane cannot run and is refused in ordinary campaign
-  analysis as well as pilot analysis. Fixed overhead's `other` component is
-  measured up to the first candidate's completion, less that candidate's own
-  `elapsed_seconds`, so its runtime is counted once in the candidate-cost
-  projection instead of again as fixed cost. The public consumer example and
-  the registered B110/B131 plans use one worker because shared cgroup event
-  counters cannot attribute overlapping candidate windows.
+- **Projection contract.** `--project-jobs` is an explicit read-only runtime
+  projection and does not select the worker count for `assay run`. Fixed
+  overhead's `other` component is measured up to the first candidate's
+  completion, less that candidate's own `elapsed_seconds`, so its runtime is
+  counted once in the candidate-cost projection instead of again as fixed
+  cost. For actual execution, set `judge.mutation.jobs_max` and choose
+  `--jobs N`; the candidate-window rationale explains how shared cgroup
+  counters are attributed.
 
 #### Continuing a truncated list
 

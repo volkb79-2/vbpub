@@ -365,14 +365,14 @@ Native R2 requires visible cgroup v2 event counters and limit configuration
 through the hierarchy. These checks are separate from the mutation score:
 R2 measures whether tests detect changed code, while B145 guards against
 mistaking a resource-limited test failure for a kill. B145 is not a CPU or
-memory usage profile. It samples these counters at the candidate and visible
-active ancestors immediately before and after each started full candidate
-command. Native candidates run serially: set `judge.mutation.jobs = 1`, and
-use `--pilot-jobs 1` for a bounded native pilot. The config loader, CLI, and
-public `run_mutation` entry point refuse larger values because simultaneous
-candidates share the sampled counters and a delta could not be attributed to
-one candidate. `assay analyze plan-estimate --workers N` only projects
-runtime; it does not run candidates and may use a larger worker count:
+memory usage profile. Serial runs sample these counters at the candidate and
+visible active ancestors around each started full candidate command. Parallel
+runs use a coordinator-owned ledger of every candidate-window boundary, and
+include each positive delta in every window that overlaps it. The [parallel
+candidate guide](#native-r2-parallel-candidate-windows-pr1b) shows how to
+enable that mode. Bounded native pilots continue to require `--pilot-jobs 1`.
+`assay analyze plan-estimate --workers N` only projects runtime; it does not
+run candidates and may use a larger worker count:
 
 | Counter | What it detects |
 |---|---|
@@ -4117,9 +4117,10 @@ counts its bytes, tracks activity, or knows which tool is running. A
 per-language live-test-progress adapter is a separate, larger item (B073) and
 is deliberately not part of this. The tick is armed only around the lane's own
 command, never around each mutant; candidate progress is already recorded per
-attempt, and native R2 currently runs one candidate at a time (B157). A
-heartbeat write failure stops the heartbeat and nothing else; a diagnostic
-tick must never be able to kill a measured lane.
+attempt, and native R2 may run bounded concurrent windows with coordinator-
+ordered candidate records (B157). A heartbeat write failure stops the
+heartbeat and nothing else; a diagnostic tick must never be able to kill a
+measured lane.
 
 When a command fails or times out, read the optional top-level
 `result_stdout_tail` / `result_stderr_tail` fields for the final error output.
@@ -4301,19 +4302,79 @@ verdicts by schema version; there is no dual-version verifier or in-place
 upgrade. Keep an old release available to verify historical v15 artifacts, or
 regenerate evidence that must pass the current verifier.
 
-Native R2 now requires `judge.mutation.jobs = 1`. Candidate runs share the
-lane's cgroup event counters, so overlapping candidates cannot be assigned a
-resource-limit event reliably. Update native R2 lane configs in the same
-consumer commit that repins Assay; read-only `assay analyze plan-estimate`
-still accepts larger worker counts because it runs no candidates. Ingested R2
-does not declare Assay's native worker policy.
+This v15-to-v16 migration historically required
+`judge.mutation.jobs = 1`. PR1b adds conservative parallel attribution without
+changing verdict schema v16; follow the current [parallel candidate guide](#native-r2-parallel-candidate-windows-pr1b)
+for the v2 lane config and `assay run --jobs` workflow. Ingested R2 does not
+declare Assay's native worker policy.
 
 Under `--reuse-from`, a v15 artifact is recognized only as a cold start; no
 candidate outcomes or witnesses are read from it. Mutation state from the
 previous judge identity also starts cold. Lane schema remains v2, and this
 release adds no lane schema version. Run R0 and R2 again to produce evidence
-under v16 and the serial execution contract. See the
-[serial event-window rationale](DESIGN-GUIDE.md#native-r2-candidate-event-windows-are-serial).
+under v16 and the v16 judgment contract. See the
+[parallel event-window rationale](DESIGN-GUIDE.md#native-r2-parallel-candidate-windows).
+
+### Native R2 parallel candidate windows (PR1b)
+
+Declare a concurrency ceiling in the native mutation table. The old `jobs`
+config key remains an alias for `jobs_max`; new lane files should use the
+canonical name. Assay defaults to one worker and never chooses a larger count
+from host capacity. Values above one require a prepared workspace that
+advertises `cheap_clone`; otherwise the run refuses with `BAD_LANE_CONFIG`.
+Candidate-file pilots use `--pilot-jobs 1`; `--jobs` is refused with
+`--candidates-file`.
+
+This complete v2 lane example can be adapted to a Python R2 project:
+
+```toml
+schema_version = 2
+
+[lanes.package]
+scope = "S1"
+rigor = ["R0", "R2"]
+enforcement = "gate"
+argv = ["python", "-m", "pytest", "-q"]
+env = {}
+env_passthrough = ["PATH"]
+budget = "30m"
+allow_argv_append = false
+
+[lanes.package.isolation]
+snapshot_selection = "repository"
+
+[lanes.package.judge]
+language = "python"
+source_roots = ["src"]
+base = "main"
+
+[lanes.package.judge.mutation]
+jobs_max = 4
+max_mutants = 500
+operators = ["python:compare-swap"]
+```
+
+Choose the worker count explicitly and keep resume state and progress under
+the repository's ignored `.assay/` directory:
+
+```bash
+assay run package --jobs 4 --resume --progress .assay/progress-package.jsonl
+```
+
+The coordinator records every start and end boundary. A positive event is
+attributed to all candidate windows whose boundary sequence ranges overlap;
+ancestor-local events follow the same rule. AP-1 precedence leaves PASS as
+`survived`, while an overlapping event makes a failing candidate `crashed`.
+No overlap leaves the existing termination classification unchanged. Candidate
+state records and progress events are written by the coordinator in candidate
+index order. Resume identity does not include `jobs`, so the same state can
+resume at another count. The post-sweep WP7 retry remains serial.
+
+The run event reports `jobs` and `attribution` (`serial` or
+`overlap-conservative`); each candidate event reports `worker_index`. Verdict
+schema v16 remains unchanged and its `judgment.r2.jobs` field stays fixed at
+1. Treat the progress fields as the source for the actual worker count until
+the separate verdict-schema package changes that contract.
 
 ## Migration notes (v12 to v13)
 
@@ -5099,16 +5160,15 @@ day you were not planning a migration.
 
 ### Efficiency
 
-R2 cost is roughly *mutants × (snapshot + full command run)*. Native R2 runs
-one candidate at a time: `judge.mutation.jobs` must be `1`, because overlapping
-candidates would share cgroup event counters and make limit-event attribution
-ambiguous. The loader, public execution API, verdict schema, and verifier
-reject native verdicts that claim multiple workers. Narrow `source_roots` to
-the code you intend to judge and choose `max_mutants` for the runtime you can
-afford. Read-only `assay analyze plan-estimate --workers N` can estimate a
-parallel plan, but it does not run candidates. After the bounded B105 pilot,
-remeasure any old parallel throughput estimate before using it to schedule a
-campaign; see [native R2 and cgroup events](DESIGN-GUIDE.md#native-r2-cgroup-resource-limit-events-b145).
+R2 cost is roughly *mutants × (snapshot + full command run)*. Set
+`judge.mutation.jobs_max` for the concurrency ceiling and pass an explicit
+`--jobs N` when choosing parallel execution. Parallel candidates share cgroup
+event counters, so overlapping positive events conservatively crash every
+overlapping failing candidate; the cheap-clone workspace and bounded queue
+control the execution cost. Narrow `source_roots` to the code you intend to
+judge and choose `max_mutants` for the runtime you can afford. Read-only
+`assay analyze plan-estimate --workers N` projects runtime without running
+candidates. See [native R2 parallel windows](DESIGN-GUIDE.md#native-r2-parallel-candidate-windows).
 
 ## What is not shipped
 

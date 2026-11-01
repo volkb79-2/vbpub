@@ -139,6 +139,26 @@ def test_native_whole_target_judgment_sorts_nested_target_paths(tmp_path):
     assert judgment.targets == tuple(sorted(targets))
 
 
+def test_v16_judgment_keeps_legacy_jobs_value_for_parallel_execution(tmp_path):
+    mutation = MutationConfig(
+        jobs=4,
+        jobs_max=4,
+        max_mutants=50,
+        operators=("python:compare-swap",),
+    )
+    judge = make_r2_judge(
+        source_root_paths=(tmp_path,),
+        mutation=mutation,
+    )
+    lane = make_lane(rigor=("R0", "R2"), judge=judge, argv=("true",))
+
+    judgment = runner._build_judgment_r2(
+        lane, liveness_reason="argv-does-not-invoke-pytest"
+    )
+
+    assert judgment.jobs == 1
+
+
 def test_r2_without_r1_diffs_the_carried_base_in_a_history_cut_snapshot(
     git_repo: GitRepo, monkeypatch: pytest.MonkeyPatch
 ):

@@ -39,7 +39,7 @@ from assay import attestation, cli as cli_module
 from assay import git, provenance, verdict as verdict_module
 from assay.cli import _built_in_registry, main
 from assay.config import RIGOR_LEVELS
-from assay.errors import AssayError, Outcome, ReasonCode
+from assay.errors import AssayError, LaneConfigError, Outcome, ReasonCode
 from assay.mutation import select_mutation_shard
 from assay.output import reserve_verdict_output
 from assay.verify import verify_document
@@ -53,6 +53,95 @@ from assay.vocabulary import WITHDRAWN_MUTATION_OPERATORS
 #: all vs. metadata with no PEP 610 wheel record), so it is not pinned here;
 #: the bracketing wording IS pinned, because it is what an operator reads.
 JUDGE_PROVENANCE_ABSENT_PREFIX = "assay: no judge_provenance recorded -- "
+
+
+def test_run_parser_accepts_jobs_override():
+    args = cli_module.build_parser().parse_args(["run", "package", "--jobs", "3"])
+
+    assert args.jobs == 3
+
+
+def test_run_rejects_jobs_above_the_declared_cap_before_lane_execution(tmp_path):
+    (tmp_path / "src").mkdir()
+    lane_file = tmp_path / "assay.toml"
+    lane_file.write_text(
+        '''\
+schema_version = 2
+
+[lanes.package]
+scope = "S1"
+rigor = ["R0", "R2"]
+enforcement = "gate"
+argv = ["/bin/true"]
+env = {}
+env_passthrough = ["PATH"]
+budget = "1m"
+allow_argv_append = false
+
+[lanes.package.isolation]
+snapshot_selection = "repository"
+
+[lanes.package.judge]
+language = "python"
+source_roots = ["src"]
+base = "main"
+
+[lanes.package.judge.mutation]
+jobs_max = 2
+max_mutants = 10
+operators = ["python:bool-const-flip"]
+''',
+        encoding="utf-8",
+    )
+    args = SimpleNamespace(file=lane_file, lane="package", jobs=3)
+
+    with pytest.raises(LaneConfigError, match=r"judge.mutation.jobs_max \(2\)"):
+        cli_module._cmd_run(args, [], io.StringIO(), io.StringIO())
+
+
+def test_run_rejects_jobs_override_for_candidate_pilot(tmp_path):
+    (tmp_path / "src").mkdir()
+    lane_file = tmp_path / "assay.toml"
+    lane_file.write_text(
+        '''\
+schema_version = 2
+
+[lanes.package]
+scope = "S1"
+rigor = ["R0", "R2"]
+enforcement = "gate"
+argv = ["/bin/true"]
+env = {}
+env_passthrough = ["PATH"]
+budget = "1m"
+allow_argv_append = false
+
+[lanes.package.isolation]
+snapshot_selection = "repository"
+
+[lanes.package.judge]
+language = "python"
+source_roots = ["src"]
+base = "main"
+
+[lanes.package.judge.mutation]
+jobs_max = 2
+max_mutants = 10
+operators = ["python:bool-const-flip"]
+''',
+        encoding="utf-8",
+    )
+    args = SimpleNamespace(
+        file=lane_file,
+        lane="package",
+        jobs=2,
+        candidates_file=tmp_path / "missing-candidates.json",
+        state_dir=tmp_path / "state",
+        pilot_jobs=None,
+    )
+
+    with pytest.raises(LaneConfigError, match="--jobs cannot be combined with --candidates-file"):
+        cli_module._cmd_run(args, [], io.StringIO(), io.StringIO())
 JUDGE_PROVENANCE_ABSENT_SUFFIX = (
     "; pass --require-judge-provenance to refuse instead of proceeding\n"
 )

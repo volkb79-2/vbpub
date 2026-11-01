@@ -38,7 +38,7 @@ def test_config_value_projections_cover_declared_and_omitted_fields():
         shard_count=1,
     )
     assert native.as_declared() == {
-        "jobs": 1,
+        "jobs_max": 1,
         "max_mutants": 2,
         "operators": ["python:compare-swap"],
         "budget_per_candidate": "2m",
