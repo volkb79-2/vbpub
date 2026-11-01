@@ -61,7 +61,7 @@ import math
 import re
 from .records import record
 from .process_tree import ProcessTreeEvidence
-from .result_reports.model import ReportSummary
+from .result_reports import ReportSummary
 from datetime import datetime, timezone
 from importlib.resources import files
 from types import MappingProxyType
