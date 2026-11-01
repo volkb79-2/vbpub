@@ -7,8 +7,9 @@ from typing import Any, Mapping
 from ..errors import UnsupportedVersion
 from .base import Backend
 from .v27 import V27
+from .v28_verification import V28Verification
 
-GENERATIONS: dict[int, type[Backend]] = {27: V27}
+GENERATIONS: dict[int, type[Backend]] = {27: V27, 28: V28Verification}
 _MAJOR = re.compile(r"(?<![0-9])(\d{2})\.(\d{1,2})(?![0-9])")
 
 

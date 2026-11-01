@@ -77,9 +77,10 @@ contracts differ.
 
 ### 2.3 Version adapters and the method manifest
 
-The adapter boundary remains extensible, but this release ships only v27. `adapters.select(version)` parses the major
-from `system.version` and selects `V27`; every other major raises `UnsupportedVersion` (fail closed). The supported
-entries in the adapter manifest are the exact callable allow-list: an unlisted method is not a read or write just
+The v27 adapter is the only general management adapter. `adapters.select(version)` parses the major from
+`system.version` and selects `V27` for v27. A v28 host selects `V28Verification`, a read-only adapter limited to the
+system and dataset/snapshot reads needed for post-update verification. Every other major raises `UnsupportedVersion`
+(fail closed). The supported entries in each adapter manifest are the exact callable allow-list: an unlisted method is not a read or write just
 because its name ends in `.query`, `.details`, or a familiar verb. Every entry has an explicit read/write/destructive
 classification; `supported = false` entries retain guard classifications for known unsafe or nonexistent names
 without admitting them to plans.
@@ -348,23 +349,48 @@ it can be reached from the left navigation tree; this is a documented navigation
 
 ### System actions
 
-`system.reboot`, `system.shutdown`, and `update.run` are always destructive actions. Before creating a plan, tnt reads
-`system.info`, `auth.me`, `core.get_jobs`, `vm.query`, `container.query`, and `smb.status`. It requires `FULL_ADMIN`
-because v27 filters `core.get_jobs` to the caller's own jobs for less privileged sessions. The plan prints the host
-name, every active job ID/method, running VM and container names, and the active SMB-session count. Any active job
-blocks planning unless `--force-with-jobs` is explicit; the exact host name or target update version must still be
-typed. The same reads are fingerprinted and checked again at apply time.
+`system.reboot`, `system.shutdown`, update profile selection, update download, and `update.run` are destructive,
+single-use plans. Before planning, tnt reads `system.info`, `auth.me`, `core.get_jobs`, `vm.query`, `container.query`,
+and `smb.status`. It requires `FULL_ADMIN` because v27 filters `core.get_jobs` to the caller's own jobs for less
+privileged sessions. The plan prints the host name, active job IDs/methods, running VM and container names, and active
+SMB-session count. Any active job blocks planning unless `--force-with-jobs` is explicit. The same probes are
+fingerprinted and checked again immediately before apply; the host, selected profile ID, or exact target version must
+be typed for destructive confirmation.
 
-Update check reads `system.version` and `update.status`; because the latter's `new_version` has no train field, tnt
-matches its version, manifest, release notes, and release-notes URL to exactly one `update.available_versions` row.
-Ambiguous or incomplete records refuse the operation. Update apply binds that exact version and train into
-`update.run`, sets `reboot=false`, and follows the returned job's progress. Reboot and shutdown accept a 0–86400 second
-delay. After reboot, the TUI waits between fresh login attempts, checks `system.state`, and stops after five bounded
-attempts; authentication errors stop retries immediately to respect the middleware login cooldown. If the reboot RPC
-loses its connection before returning, tnt treats submission as uncertain and checks the host without resending the
-power action. It reports success only after observing a boot-state transition; an immediate READY response remains
-uncertain and requires the operator to inspect host state before retrying. A lost shutdown response is reported as
-uncertain and is never resubmitted.
+Update check reads `system.version` and `update.status`; because `new_version` has no train field, tnt matches its
+version, manifest, release notes, and release-notes URL to exactly one `update.available_versions` row. Ambiguous or
+incomplete records refuse the operation. `update.config` supplies the selected profile ID, while
+`update.profile_choices` maps profile IDs to display names, descriptions, footnotes, and availability. Profile IDs are
+not update trains: profile selection plans `update.update({profile: ID})`; a fresh update check reports its nominated
+train/version, while `system update versions` exposes the exact train/version pairs available across all trains.
+Download and apply bind one exact version and train into `update.download` and `update.run`; apply sets
+`reboot=false` and follows job progress. `update.run` can download an uncached update itself, but the separate
+download action makes a deliberate staged workflow possible. The live acceptance lane therefore takes an explicit
+target profile ID and train/version pair, validates the exact target before creating its data fixture, and never
+derives a profile ID from a train name.
+
+The live fixture hashes only dataset and snapshot identity fields. The v27 acceptance host returned `null` for the
+optional dataset `comments` property after creation, so the lane does not rely on that field or claim it persisted.
+This gives the survival check a stable API-visible identity contract without implying file-content coverage.
+The patched-v27 leg also respects the companion patcher's fresh-target gate: a present Path B pool, Path A user-data
+root, patch marker, container, or VM is a refusal condition. The tnt update workflow does not remove or bypass those
+preconditions; the patched-v27-to-v28 leg is conditional on the selected disposable target satisfying them.
+
+Reboot remains separate because an update job completing does not prove that the new system booted. A reboot plan
+binds a READY version, `system.boot_id`, and the unique active `boot.environment.query` ID. The CLI `--wait` path and
+TUI reconnect use fresh authentication and generation-bound sessions, never replay `system.reboot`, and report
+success only after `system.state` is READY, the boot ID changed, and the expected version is present. Update reboot
+verification also requires a changed active boot environment. Reconnect retries are bounded; transport-connect
+failures may retry, while authentication or schema failures stop. An uncertain submission that returns to READY on
+the original boot is not certified as a completed reboot. Shutdown has no reconnect action and an uncertain reply is
+never resubmitted.
+
+The v27 adapter remains the only writable system-update adapter. A v28 host selects a deliberately restricted
+read-only verifier exposing `system.version`, `system.state`, `system.boot_id`, `boot.environment.query`,
+`pool.dataset.query`, and `pool.snapshot.query`. This is enough to prove a completed update and read back acceptance
+records without treating the still-preview v28 API as generally supported. See the [method evidence](API-METHODS-V27.md#system-actions),
+[copyable commands and live update lane](CONSUMERS.md#system-actions), and
+[live acceptance report](LIVE-TESTING.md#update-survival-acceptance).
 
 General Settings offers configuration export through `core.download("config.save", [{secretseed: true, ...}],
 filename, false)`. The one-time download URL is not displayed. tnt requires a READY host, validates that the URL is
@@ -612,18 +638,20 @@ additional arguments after `HOST` is not supported.
 | It1 | Paired multi-host configuration/secrets and the session controller: host generation, plan invalidation, worker draining, stale-callback rejection, connection testing, and per-host write mode | implemented |
 | It2 | Non-blocking job engine and read-only core views: Dashboard, Alerts, Jobs, Services, Storage health, and global view UX | implemented |
 | It3 | Hardened interactive SSH hand-off with pinned host-key sources and no arbitrary remote command mode | implemented |
-| It4 | Vanilla-v27 live acceptance, remaining hardening and consistency review, estate registration, and release readiness | live acceptance and CMRU registration recorded 2026-10-29; first 0.1.0 release not published |
+| It4 | Vanilla-v27 live acceptance, remaining hardening and consistency review, estate registration, and release readiness | live acceptance and CMRU registration recorded 2026-10-29; tnt 0.1.0 published; update-survival lane added |
 | Later | Storage partitioning, pool creation, boot-pool management, and other TrueNAS screens not assigned above | deferred |
 
 ## 11. Supported host
 
-tnt accepts only a host whose reported API generation is v27. The adapter package stays extensible for a future
-generation, but no other generation is accepted or represented in the shipped manifest.
+tnt supports writable management workflows on hosts whose API generation is v27. A v28 host is accepted only by the
+restricted read-only `V28Verification` surface described in [system actions](DESIGN.md#system-actions); it does not
+expose general v28 methods or writes. All other reported API generations are refused.
 
 ## 12. Decisions, open questions and estate registration
 
 Decided by the controller on 2026-10-28: the pinned git-sha dependency on `truenas_api_client` is accepted for now
-(documented in `pyproject.toml`); no relaxation patches; no other API generation; no Shell menu entry.
+(documented in `pyproject.toml`); no patch installation in tnt; v27 is the only general management API generation;
+no Shell menu entry. The v28 post-update surface is read-only and limited to the measured verification calls.
 
 Still open: Q7 how conditional menu entries (Apps, Containers, Virtual Machines, KMIP, Enclosure; flagged
 `conditional` in `menu.py`) are detected per host (TNT-35). Live-lane profile selection and required variables are documented in
@@ -637,5 +665,5 @@ first-party `cli-extended` dependency, and publishes a wheel plus SHA256 under t
 The `VERSION` file is the version source used by both setuptools and CMRU. CMRU's release gate runs the registered
 `r0-r1` and `ux-focused` Run-Gate lanes. The `ux-focused` lane includes real tmux terminal checks, but those cases
 skip while `tester-unified` lacks tmux; TNT-54 tracks that image capability. No tester image was changed for this
-registration. The `live-v27` lane remains opt-in and is not a release gate; the separately reported `live-inspect`
-lane belongs to estate gate tooling elsewhere. The first tnt release remains unpublished.
+registration. The `live-v27` and `live-update` lanes remain operator-run and are not release gates; the separately
+reported `live-inspect` lane belongs to estate gate tooling elsewhere. CMRU published tnt 0.1.0 as `tnt-v0.1.0`.

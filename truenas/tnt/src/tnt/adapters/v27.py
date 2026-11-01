@@ -113,6 +113,8 @@ class V27(Backend):
             "system.state": MethodSpec("read"), "system.boot_id": MethodSpec("read"),
             "system.reboot": MethodSpec("destructive"), "system.shutdown": MethodSpec("destructive"),
             "update.status": MethodSpec("read"), "update.available_versions": MethodSpec("read"),
+            "update.config": MethodSpec("read"), "update.profile_choices": MethodSpec("read"),
+            "update.update": MethodSpec("destructive"), "update.download": MethodSpec("destructive"),
             "update.run": MethodSpec("destructive"),
             "core.get_methods": MethodSpec("read"),
             "core.download": MethodSpec("write"),
