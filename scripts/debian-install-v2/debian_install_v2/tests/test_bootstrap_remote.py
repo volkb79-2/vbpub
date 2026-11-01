@@ -347,6 +347,61 @@ def test_remote_invocation_dispatches_install_verb_with_explicit_acceptance(
     assert not (install_dir / "remote-install-config.json").exists()
 
 
+def test_remote_invocation_imports_config_validator_from_fetched_source(
+    mod, monkeypatch, tmp_path
+):
+    """The bootstrap runs outside the fetched checkout, so it must add that tree to sys.path."""
+    import builtins
+    import sys
+
+    install_dir = tmp_path / "install"
+    monkeypatch.setenv("INSTALL_DIR", str(install_dir))
+    monkeypatch.setenv("VBPUB_PROFILE_KIND", "none")
+    monkeypatch.setattr(mod.os, "geteuid", lambda: 0)
+
+    def fake_fetch(repo_url, branch, target, *, debug, git_path):
+        package = target / "debian_install_v2"
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text("", encoding="utf-8")
+        (package / "config.py").write_text(
+            "def load_config(*, raw_json):\n    return raw_json\n",
+            encoding="utf-8",
+        )
+        (target / "debian-install-v2.py").write_text("# entrypoint\n", encoding="utf-8")
+
+    monkeypatch.setattr(mod, "preflight_git", lambda repo_url, branch, *, debug: "/usr/bin/git")
+    monkeypatch.setattr(mod, "resolve_wheel", lambda *, debug: ("https://example.test/cli_extended-9.9.9-py3-none-any.whl", "0" * 64))
+    monkeypatch.setattr(
+        mod,
+        "download_wheel",
+        lambda url, sha256, *, debug: ("cli_extended-9.9.9-py3-none-any.whl", b"data"),
+    )
+    monkeypatch.setattr(mod, "fetch_subtree", fake_fetch)
+    monkeypatch.setattr(mod, "write_wheel", lambda name, data, target, *, debug: None)
+
+    real_import = builtins.__import__
+
+    def require_fetched_source(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "debian_install_v2.config" and str(install_dir) not in sys.path:
+            raise ModuleNotFoundError("No module named 'debian_install_v2'")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", require_fetched_source)
+    for name in ("debian_install_v2", "debian_install_v2.config"):
+        monkeypatch.delitem(sys.modules, name, raising=False)
+
+    captured = {}
+
+    def fake_run(argv, *, check):
+        captured["validator"] = Path(sys.modules["debian_install_v2.config"].__file__).resolve()
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+
+    assert mod.main() == 0
+    assert captured["validator"].is_relative_to(install_dir.resolve())
+
+
 # --- released cli-extended wheel (CX-D3) ----------------------------------
 
 import hashlib
