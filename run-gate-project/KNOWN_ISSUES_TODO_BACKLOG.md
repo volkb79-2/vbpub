@@ -6941,3 +6941,21 @@ bind, while retaining lexical validation without statting a namespace-
 translated host path. `TestCowtreeAndIoSyncResources::
 test_cow_refuses_bad_root_value` now includes both `//` and `//..`; the
 oracle was run red before the guard change.
+
+## RG-139 — R2 campaign closeout never passes the coverage artifact to the analyzer
+
+The automatic closeout that follows an `r2` lane invokes `assay analyze
+campaign` with the lane file, progress, state directory, verdict and observed
+exit code, but without `--coverage`. The analyzer then reports
+`coverage.artifact_status=not_supplied` with the blockers
+`coverage_not_reverified` and `lane_timeout_or_unstarted`, so a campaign whose
+candidates are all judged can never close out as `status=complete`.
+
+**Expected.** Retain the lane's `coverage.json` as run evidence and forward it
+to the closeout via `--coverage`; if no artifact exists, say so explicitly in
+the closeout text instead of leaving the blocker unexplained. A test should
+assert the argv built for the closeout includes `--coverage` when the artifact
+is present.
+
+**Pointers.** `run_gate.py` closeout argv construction near lines 11508-11549;
+analyzer contract in `assay/analysis/src/assay_analysis/campaign.py`.
