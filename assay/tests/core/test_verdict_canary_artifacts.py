@@ -172,6 +172,7 @@ def test_canary_survived_via_wrong_reason_matches_the_hand_written_fixture(
                 transformed_outcome=Outcome.FAIL,
                 expected_reason_code=ReasonCode.COMMAND_FAILED,
                 observed_reason_code=ReasonCode.UNCOVERED_LINES,  # wrong cause
+                cause="absent",
             ),
         ),
     )

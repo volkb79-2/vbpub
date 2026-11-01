@@ -43,6 +43,7 @@ def make(
     transformed_outcome: Outcome | None = Outcome.FAIL,
     expected_reason_code: ReasonCode | None = ReasonCode.UNCOVERED_LINES,
     observed_reason_code: ReasonCode | None = ReasonCode.UNCOVERED_LINES,
+    cause: str | None = None,
 ) -> CanaryAttempt:
     return CanaryAttempt(
         target=target,
@@ -51,6 +52,7 @@ def make(
         transformed_outcome=transformed_outcome,
         expected_reason_code=expected_reason_code,
         observed_reason_code=observed_reason_code,
+        cause=cause,
     )
 
 
@@ -178,6 +180,7 @@ def test_to_dict_omits_absent_fields_never_nulls_them():
 
     assert "transformed_outcome" not in payload
     assert "observed_reason_code" not in payload
+    assert payload["cause"] is None
     assert payload["expected_reason_code"] == "UNCOVERED_LINES"
 
 
@@ -196,6 +199,7 @@ def test_to_dict_carries_every_present_field():
                 # B007/A-432: required on every attempt, and the discriminator
                 # every other rule forks on.
                 "disposition": "attempted",
+                "cause": None,
                 "control_outcome": "PASS",
                 "transformed_outcome": "FAIL",
                 "expected_reason_code": "UNCOVERED_LINES",
@@ -348,6 +352,7 @@ def test_a_failure_for_the_wrong_cause_survives():
     attempt = make(
         expected_reason_code=ReasonCode.COMMAND_FAILED,
         observed_reason_code=ReasonCode.UNCOVERED_LINES,
+        cause="absent",
     )
 
     assert judge_attempt(attempt) == (Outcome.FAIL, ReasonCode.CANARY_SURVIVED)
@@ -361,6 +366,7 @@ def test_an_unrelated_execution_error_is_inconclusive_not_a_canary_survival():
         transformed_outcome=Outcome.ERROR,
         expected_reason_code=ReasonCode.COMMAND_FAILED,
         observed_reason_code=ReasonCode.EXEC_FAILED,
+        cause="absent",
     )
 
     assert judge_attempt(attempt) == (Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE)
