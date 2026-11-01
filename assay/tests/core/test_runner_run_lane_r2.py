@@ -93,8 +93,12 @@ def _kill_on_mutation():
 
 def test_r2_without_r1_kills_the_one_generated_mutant(git_repo: GitRepo):
     base_rev, head_rev = _seed_compare_swap_site(git_repo)
+    mutation = MutationConfig(
+        max_mutants=50,
+        operators=("python:compare-swap",),
+    )
     judge = make_r2_judge(
-        source_root_paths=(git_repo.path / "src",), base=base_rev, mutation=_MUTATION
+        source_root_paths=(git_repo.path / "src",), base=base_rev, mutation=mutation
     )
     lane = make_lane(rigor=("R0", "R2"), judge=judge, argv=("check",))
 
