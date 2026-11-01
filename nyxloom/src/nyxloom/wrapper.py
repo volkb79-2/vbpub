@@ -521,10 +521,14 @@ def wrapper_main(spec_path: str) -> int:
                 log.debug("spawn", project=spec.project, task=spec.task_id,
                           attempt=spec.attempt_id, pid=child.pid, cwd=spec.cwd)
 
-                # Write child.pid
-                Path(spec.attempt_dir, "child.pid").write_text(
-                    str(child.pid), encoding="utf-8"
-                )
+                # Write child.pid atomically (temp file + rename): readers
+                # (the daemon, effects_lifecycle, tests) poll for the file's
+                # EXISTENCE and then parse it, so a plain write_text could be
+                # observed empty between create and write.
+                child_pid_path = Path(spec.attempt_dir, "child.pid")
+                child_pid_tmp = child_pid_path.with_name("child.pid.tmp")
+                child_pid_tmp.write_text(str(child.pid), encoding="utf-8")
+                os.replace(child_pid_tmp, child_pid_path)
 
                 # Update attempt with pid/pgid and log_path
                 attempt.pid = child.pid
