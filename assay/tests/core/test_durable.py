@@ -53,6 +53,32 @@ def test_fsync_syscall_numbers_match_supported_architectures(machine, number):
     assert _durable._fsync_syscall_number(machine) == number
 
 
+@pytest.mark.parametrize("pointer_bytes", [4])
+def test_a_32_bit_userland_never_uses_the_64_bit_syscall_table(pointer_bytes):
+    # i386 syscall 74 is sethostname and Darwin's is mprotect: a kernel-wide
+    # machine name alone must not select the x86_64 number.
+    with pytest.raises(OSError, match="32-bit userland"):
+        _durable._fsync_syscall_number("x86_64", pointer_bytes=pointer_bytes)
+
+
+def test_non_linux_platforms_use_os_fsync_without_proc_or_raw_syscall(monkeypatch):
+    calls = []
+    monkeypatch.setattr(_durable, "_is_linux", lambda: False)
+    monkeypatch.setattr(
+        _durable, "_syscall", lambda *_args: pytest.fail("no Linux syscall off Linux")
+    )
+    monkeypatch.setattr(
+        _durable,
+        "_preload_shim_mapped",
+        lambda: pytest.fail("no /proc mapping check off Linux"),
+    )
+    monkeypatch.setattr(os, "fsync", calls.append)
+
+    _durable.fsync(19)
+
+    assert calls == [19]
+
+
 def test_unknown_architecture_without_interposer_uses_os_fsync(monkeypatch):
     calls = []
     monkeypatch.setattr(_durable.platform, "machine", lambda: "unknown-test-architecture")

@@ -208,7 +208,8 @@ assay exists to close that gap mechanically, not by policy:
   execution unit. A changed file is rewritten and verified in that unit's
   clone before it runs. Without that capability, the existing packed-object
   reflink path remains; with no area, the existing copy path remains and emits
-  one INFO line. A configured but invalid area or failed clone refuses the
+  one INFO line. A valid area with a non-btrfs backend keeps the copy path and
+  prints one advisory line. A configured but invalid area or failed clone refuses the
   lane with `ERROR/EXEC_FAILED` and a claim detail. Storage changes only;
   snapshot bytes and judgment buckets stay the same.
   See the [CoW workspace design](docs/DESIGN-GUIDE.md#the-optional-cow-workspace-affects-storage-not-snapshot-identity)

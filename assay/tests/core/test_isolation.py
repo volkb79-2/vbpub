@@ -492,6 +492,51 @@ def test_workspace_materialization_matches_plain_snapshot_and_clones_pack_files(
     assert list(cow_scratch.iterdir()) == []
 
 
+def _snapshot_time_signature(root: Path) -> tuple[tuple[str, int], ...]:
+    """File and non-root directory mtimes, which plain snapshots fix."""
+    return tuple(
+        (path.relative_to(root).as_posix(), path.lstat().st_mtime_ns)
+        for path in sorted(root.rglob("*"))
+        if path.relative_to(root).parts[0] != ".git"
+    )
+
+
+@pytest.mark.parametrize("target", ["lib/data.bin", "empty.txt"])
+def test_cheap_clone_replacement_matches_plain_contents_modes_and_mtimes(
+    tmp_path: Path, target: str
+) -> None:
+    """A Level B clone rewrites only the replaced file, so the directory that
+    holds it must be re-fixed like `_write_worktree` fixes every directory.
+    The project root is never fixed on either path."""
+    repo, commit = _root_repo(tmp_path)
+    path = PurePosixPath(target)
+    signatures = []
+    for name, provider in (
+        ("plain", None),
+        ("cheap", _CheapCloneWorkspaceProvider(tmp_path / "cheap-run")),
+    ):
+        scratch = tmp_path / f"{name}-scratch"
+        scratch.mkdir()
+        with prepare_snapshot(
+            _spec(repo, scratch, commit), timeout=TIMEOUT, workspace=provider
+        ) as prepared:
+            with prepared.materialize_replacement(
+                path=path,
+                expected=LITERALS[target],
+                replacement=b"replaced\n",
+                timeout=TIMEOUT,
+            ) as changed:
+                signatures.append(
+                    (
+                        changed.commit,
+                        _snapshot_file_signature(changed.root),
+                        _snapshot_time_signature(changed.root),
+                    )
+                )
+
+    assert signatures[0] == signatures[1]
+
+
 @pytest.mark.parametrize(
     "close_path",
     [
