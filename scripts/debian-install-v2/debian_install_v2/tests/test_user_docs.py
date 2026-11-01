@@ -48,6 +48,14 @@ def test_all_documented_config_examples_use_the_current_loader_and_schema():
     assert count >= 2
 
 
+def test_root_size_cap_is_adoptable_from_each_user_document():
+    for path in DOCS:
+        text = path.read_text(encoding="utf-8")
+        examples = list(_markdown_config_examples(path))
+        assert "`root_max_size_gb`" in text
+        assert any(example.get("root_max_size_gb") == 40 for example in examples), path
+
+
 def test_every_cloud_init_cleanup_mode_is_named_in_user_docs():
     text = "\n".join(path.read_text(encoding="utf-8") for path in DOCS)
     for mode in CLOUD_INIT_CLEANUP_MODES:
