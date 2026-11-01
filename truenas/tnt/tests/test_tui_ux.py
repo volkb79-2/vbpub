@@ -329,6 +329,14 @@ def test_long_destructive_confirmation_target_is_visible_at_80_columns(ux_sessio
     asyncio.run(go())
 
 
+async def _poll_until(pilot, predicate, limit=120) -> bool:
+    for _ in range(limit):
+        await pilot.pause(0.025)
+        if predicate():
+            return True
+    return False
+
+
 @pytest.mark.parametrize("size", ((60, 40), (80, 24)), ids=lambda size: f"{size[0]}x{size[1]}")
 @pytest.mark.parametrize(
     "host_name",
@@ -342,19 +350,21 @@ def test_host_remove_confirmation_shows_full_target_at_narrow_sizes(size, host_n
             app.show_host_picker()
             await pilot.pause(0.05)
             app.push_screen(HostRemoveConfirm(host_name))
-            await pilot.pause(0.05)
-
-            rendered = _screen_text(app)
-            compact = _host_confirmation_content(rendered)
             prompt = "".join("Type this exact host name to confirm:".split())
-            prompt_end = compact.find(prompt)
-            assert prompt_end >= 0, "confirmation prompt is not visible"
-            assert host_name in compact[prompt_end + len(prompt):], "confirmation target is clipped"
+
+            def target_visible() -> bool:
+                compact = _host_confirmation_content(_screen_text(app))
+                prompt_end = compact.find(prompt)
+                return prompt_end >= 0 and host_name in compact[prompt_end + len(prompt):]
+
+            assert await _poll_until(pilot, target_visible), "confirmation target is clipped"
             assert app.screen.query_one("#host-remove-confirm", Input).placeholder == "Type host name exactly"
 
             await pilot.press("escape")
-            await pilot.pause(0.05)
-            assert app.current == "__hosts__"
+            assert await _poll_until(
+                pilot,
+                lambda: not isinstance(app.screen, HostRemoveConfirm) and app.current == "__hosts__",
+            )
             assert app.query_one("#hosts-table", DataTable)
 
     asyncio.run(go())
