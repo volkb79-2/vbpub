@@ -12552,32 +12552,21 @@ these event counters in R2 mutation classification.
 
 ## B157 — native R2 candidate event windows overlap when `jobs > 1`
 
-**Status: IN PROGRESS in the contract-2 release candidate (2026-10-12); exact-tip gates pending.**
+**Status: CLOSED by PR1b (2026-11-01).**
 
-Native R2 candidates execute in the same lane cgroup and sample the same
-`pids.events` and `memory.events` counters. With more than one worker, an event
-inside overlapping before/after windows can be charged to an unaffected
-candidate, changing a valid mutation outcome into an infrastructure failure.
-The candidate cgroup has no per-worker identity that could resolve the overlap.
+The shared cgroup counters still cannot name a single candidate as the source
+of an increment inside overlapping windows. PR1b replaces the serial-only
+restriction with coordinator-owned boundary samples: a positive event is
+included in every overlapping window, including visible ancestor-local
+events. AP-1 keeps PASS as survived and attributes an overlapping event on a
+failing candidate as crashed. `jobs_max` (alias `jobs`) and `assay run --jobs N`
+bound the worker count; values above one require a cheap-clone workspace. The
+bounded queue writes state and progress in candidate-index order, while WP7
+retries remain serial. Native pilot overrides remain at one. The precise
+consumer workflow and rationale are in README, DESIGN-GUIDE, and CONSUMERS.
 
-**Chosen behavior:** native R2 requires `judge.mutation.jobs = 1`, and native
-bounded pilots require `--pilot-jobs 1`. The loader and CLI refuse larger
-values before execution. Read-only `assay analyze plan-estimate --workers N`
-remains independent because it does not execute candidates. Revisit parallel
-native execution only with independently attributable per-candidate cgroups
-or equivalent evidence. The active in-repo native-R2 lane configurations and
-the CIU v8 demo config are migrated to `jobs = 1` with this release candidate;
-the custom remote-mutation audit configs keep their separate worker policy.
-
-**Oracles:** native lane files with `jobs > 1` refuse at load; jobs 1 remains a
-valid declared config and serial real-lane test; native pilot override 2
-refuses before execution; the pilot gate invokes with 1; a direct public
-`run_mutation(..., jobs=2)` call refuses before executor construction; native
-R2 verdict construction, the packaged schema, and `assay verify` all reject a
-judgment claiming `jobs > 1`; planning projection still accepts a worker count
-greater than 1. README, DESIGN-GUIDE, and CONSUMERS explain the restriction and
-its effect on throughput. The large cli-extended campaign records that its old
-parallel throughput estimate must be remeasured before it is used for planning.
+The legacy v16 verdict field remains fixed at one and does not report the
+runtime worker count. That follow-up is tracked separately as B202.
 
 ## B158 — cold-witness refusal omits the untrusted pytest hook
 
@@ -13704,3 +13693,24 @@ survivor, and bisect against the pre-CW8 commit.
 ## B201 — Optional packed-object reflink path on XFS
 
 **Status: OPEN (filed at 10.2.0).** P3: only after a real XFS pilot. Source: review F6.
+
+## B202 — Verdict v16 does not retain the effective native R2 worker count
+
+**Status: OPEN (filed by PR1b, 2026-11-01).**
+
+PR1b keeps verdict schema v16 unchanged as required. Its `judgment.r2.jobs`
+field therefore remains the v16 value `1`, while the additive progress run
+event reports the effective worker count and attribution policy. A saved v16
+verdict alone cannot reconstruct whether the campaign used serial or parallel
+execution.
+
+**Chosen follow-up:** WP8 owns a separately reviewed verdict-schema package
+that records actual `jobs` and the attribution mode. Do not edit v16 or reuse
+the progress keys as an implicit verdict field. Until that package lands,
+consumer audit of actual worker count requires the progress stream.
+
+**Oracles:** a future schema emits the actual runtime worker count and
+attribution in the native R2 judgment; `assay verify` validates the pair and
+rejects inconsistent combinations; reuse and migration rules distinguish the
+new schema from v16; README, DESIGN-GUIDE, and CONSUMERS explain where the
+runtime fact is recorded.

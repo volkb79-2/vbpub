@@ -34,6 +34,7 @@ class ActiveWorkspace(Protocol):
     """Run-owned paths and file clones while one workspace lease is open."""
 
     cheap_clone: bool
+    reserve: Callable[..., None]
     ingest_tree: Callable[[Path, str], Path]
     make_tree: Callable[[], Path]
     clone_file: Callable[[Path, Path], None]
@@ -80,12 +81,13 @@ def _cow_workspace_opener():
 def factory_for_lane(lane: object) -> WorkspaceFactory:
     """Derive the prepared workspace clone bound from the declared lane.
 
-    CW12 spares are not enabled in this release. The `+ 1` is the additional
-    prepared/baseline workspace in the adopted `jobs + spares + 1` formula.
+    CW12 spares are not enabled in this release. The prepared/baseline clone
+    is the final `+ 1` in the adopted `jobs + spares + 1` formula.
     """
     judge = getattr(lane, "judge", None)
     mutation = getattr(judge, "mutation", None) if judge is not None else None
     jobs = getattr(mutation, "jobs", None) if mutation is not None else None
     if jobs is None:
         jobs = 1
-    return WorkspaceFactory(max_live_clones=jobs + 1)
+    spares = 0
+    return WorkspaceFactory(max_live_clones=jobs + spares + 1)

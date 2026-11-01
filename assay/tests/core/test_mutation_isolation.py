@@ -291,7 +291,7 @@ def test_each_jobs_own_result_attaches_to_that_same_job_not_to_its_position(
 
 
 def test_jobs_1_and_jobs_3_render_identical_records_under_the_real_executor(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch,
 ):
     """The real ``ThreadPoolExecutor`` this time (the default factory),
     proving the SAME per-mutant-content-keyed decision produces the
@@ -299,6 +299,35 @@ def test_jobs_1_and_jobs_3_render_identical_records_under_the_real_executor(
     complementary to O2's own test of this, exercised here against a
     result set that spans all four buckets rather than a single one."""
     lane = make_lane(argv=("pytest", "-q"))
+    from assay import _window_host, runner as runner_module
+    from assay.resource_limits import ResourceLimitCounters
+
+    counters = ResourceLimitCounters(
+        pids_max=0,
+        memory_oom=0,
+        memory_max=0,
+        memory_oom_kill=0,
+        memory_oom_group_kill=0,
+    )
+    monkeypatch.setattr(
+        mutation_module, "_read_candidate_resource_counters", lambda: counters
+    )
+    monkeypatch.setattr(
+        mutation_module,
+        "_read_candidate_resource_counters_during_campaign",
+        lambda: (counters, None),
+    )
+    monkeypatch.setattr(
+        _window_host,
+        "run_window",
+        lambda plan, *, cwd, timeout, process_runner, clock: runner_module.execute_plan(
+            plan,
+            cwd=cwd,
+            timeout=timeout,
+            process_runner=process_runner,
+            clock=clock,
+        ),
+    )
 
     def run(jobs: int):
         repo = _seed_repo(tmp_path, f"repo-{jobs}")
@@ -308,7 +337,17 @@ def test_jobs_1_and_jobs_3_render_identical_records_under_the_real_executor(
         baseline = execute_command(lane, cwd=repo.path, process_runner=decide)
         plan = make_plan(lane)
         deadline = make_deadline()
-        with prepared_snapshot(repo, scratch_root=scratch_root) as prepared:
+        if jobs == 1:
+            snapshot_context = prepared_snapshot(repo, scratch_root=scratch_root)
+        else:
+            monkeypatch.setattr(_window_host, "can_host", lambda *_args: True)
+            workspace = _CheapCloneWorkspaceProvider(
+                tmp_path / f"cheap-clone-{jobs}"
+            )
+            snapshot_context = _prepared_snapshot_with_workspace(
+                repo, scratch_root, workspace=workspace
+            )
+        with snapshot_context as prepared:
             mutation = mutation_module._run_mutation_impl(
                 baseline=baseline,
                 prepared=prepared,

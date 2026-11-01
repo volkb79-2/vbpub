@@ -174,11 +174,13 @@ def test_consumers_covers_the_latest_two_verdict_schema_cuts():
     )
 
 
-def test_readme_documents_current_native_r2_serial_constraint():
+def test_readme_documents_current_native_r2_parallel_worker_contract():
     text = re.sub(r"\s+", " ", README.read_text(encoding="utf-8"))
 
-    assert "native R2 lanes must declare `judge.mutation.jobs = 1`" in text
-    assert "a higher value refuses during load" in text
+    assert "judge.mutation.jobs_max" in text
+    assert "assay run --jobs N" in text
+    assert "overlap-conservative" in text
+    assert "each candidate event records `worker_index`" in text
     assert "Existing v2 lane files still load" not in text
 
 

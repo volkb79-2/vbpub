@@ -20,8 +20,10 @@ def _load_cowtree():
 
 
 class _CowRunWorkspace:
-    def __init__(self, run) -> None:
+    def __init__(self, run, *, per_clone_bytes: int, cowtree) -> None:
         self._run = run
+        self._per_clone_bytes = per_clone_bytes
+        self._cowtree = cowtree
 
     @property
     def cheap_clone(self) -> bool:
@@ -45,6 +47,16 @@ class _CowRunWorkspace:
 
     def delete_tree(self, path: Path) -> None:
         self._run.delete_tree(path)
+
+    def reserve(self, *, max_live_clones: int) -> None:
+        """Reserve the consumer's full concurrent clone bound before use."""
+        self._run.reserve(
+            self._cowtree.SpaceEstimate(
+                ingest_bytes=0,
+                per_clone_bytes=self._per_clone_bytes,
+                max_live_clones=max_live_clones,
+            )
+        )
 
 
 def _is_btrfs(caps) -> bool:
@@ -100,7 +112,7 @@ def open_workspace(
         cow_estimate = cowtree.SpaceEstimate(
             ingest_bytes=estimate.ingest_bytes,
             per_clone_bytes=estimate.per_clone_bytes,
-            max_live_clones=estimate.max_live_clones,
+            max_live_clones=0,
         )
         run = cowtree.open_run(
             "assay",
@@ -110,6 +122,12 @@ def open_workspace(
         )
         with run:
             _require_btrfs(cowtree, run.caps)
-            yield _CowRunWorkspace(run)
+            workspace = _CowRunWorkspace(
+                run,
+                per_clone_bytes=estimate.per_clone_bytes,
+                cowtree=cowtree,
+            )
+            workspace.reserve(max_live_clones=estimate.max_live_clones)
+            yield workspace
     except cowtree.CowError as exc:
         raise _as_assay_error(exc) from exc

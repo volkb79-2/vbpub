@@ -597,6 +597,11 @@ class SnapshotRepository:
         return self._spec
 
     @property
+    def cheap_clone(self) -> bool:
+        """Whether this prepared repository uses the admitted CoW backend."""
+        return bool(self._workspace is not None and self._workspace.cheap_clone)
+
+    @property
     def tree_sha256(self) -> str:
         """(B088) The content digest of the tree every materialization writes.
 

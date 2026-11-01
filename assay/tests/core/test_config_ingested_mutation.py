@@ -95,6 +95,7 @@ def test_an_ingested_lane_loads(app_project: Project):
 def test_assays_own_policy_fields_stay_none_never_defaulted(app_project: Project):
     config = _load(app_project, INGESTED_LANE).lane("ui_mutation").judge.mutation
     assert config.jobs is None
+    assert config.jobs_max is None
     assert config.max_mutants is None
     assert config.operators is None
     assert config.equivalence_artifact is None

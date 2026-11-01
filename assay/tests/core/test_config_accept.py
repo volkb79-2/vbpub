@@ -359,7 +359,6 @@ source_roots = ["src"]
 base = "origin/main"
 
 [lanes.package.judge.mutation]
-jobs = 1
 max_mutants = 200
 operators = ["sql:drop-check", "sql:weaken-delete-action"]
 equivalence_artifact = ".assay/schema-dump.sql"
@@ -373,6 +372,8 @@ kill_signal_artifact = ".assay/kill-signal.txt"
     assert judge is not None
     assert judge.language == "sql"
     assert judge.mutation is not None
+    assert judge.mutation.jobs is None
+    assert judge.mutation.jobs_max is None
     assert judge.mutation.operators == ("sql:drop-check", "sql:weaken-delete-action")
     assert judge.mutation.equivalence_artifact == ".assay/schema-dump.sql"
     assert judge.mutation.kill_signal_artifact == ".assay/kill-signal.txt"

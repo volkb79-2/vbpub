@@ -440,8 +440,10 @@ class CoverageConfig:
 #: The fields a NATIVE R2 lane must declare -- assay's own execution policy.
 #: Required on a native lane and REFUSED on an ingested one (B046/A-360):
 #: assay chose none of them for a run it did not orchestrate.
-_MUTATION_FIELDS: tuple[str, ...] = ("jobs", "max_mutants", "operators")
+_MUTATION_FIELDS: tuple[str, ...] = ("max_mutants", "operators")
 _MUTATION_OPTIONAL_FIELDS: tuple[str, ...] = (
+    "jobs_max",
+    "jobs",
     "budget_per_candidate",
     "shard_index",
     "shard_count",
@@ -503,11 +505,10 @@ MAX_SHARD_COUNT = 10_000
 @positional_record
 class MutationConfig:
     """``[lanes.X.judge.mutation]`` (P18) -- the closed R2 execution policy:
-    a required native-R2 ``jobs = 1`` worker count (A-082/A-122: never
-    derived from the running machine, so this loader is the one place a value
-    for it can come from at all). Candidate cgroup-event windows cannot
-    overlap without losing per-candidate attribution. Ingested reports take
-    their separate early-return path. The policy also requires a non-empty,
+    a declared ``jobs_max`` concurrency ceiling (alias ``jobs``). The
+    effective worker count defaults to one and is selected only by the CLI;
+    it is never derived from the host. Ingested reports take their separate
+    early-return path. The policy also requires a non-empty,
     duplicate-free, ORDER-
     preserving ``operators`` list, cross-checked at LOAD time against
     :data:`assay.mutation.MUTATION_OPERATORS` -- the same "vocabulary
@@ -518,14 +519,18 @@ class MutationConfig:
     loader is the first reader of its actual shape.
     """
 
-    #: **Required on a NATIVE lane, `None` on an ingested one** (B046). The
-    #: three fields below are assay's own execution policy; an ingested lane
+    #: Runtime worker count, selected by the run path. `None` means no runtime
+    #: count has been selected yet.
+    jobs: int | None = None
+    #: Native lane's declared concurrency ceiling, or `None` when omitted.
+    jobs_max: int | None = None
+    #: **Required on a NATIVE lane, `None` on an ingested one** (B046). These
+    #: fields are assay's own execution policy; an ingested lane
     #: declared none of it, because Stryker's own configuration chose the
-    #: mutators, the concurrency and the ceiling. They are refused at LOAD
+    #: mutators, concurrency, and ceiling. They are refused at LOAD
     #: with their own message, and independently forbidden on the WIRE by
     #: `JudgmentR2` -- two layers, two diagnostics, because a verdict-layer
     #: refusal is not a thing a consumer editing `assay.toml` ever sees.
-    jobs: int | None = None
     #: (P21/A-163) the declared candidate ceiling, in ``1..10_000``.
     #: ``jobs`` bounds CONCURRENCY; this bounds total work and memory, which
     #: concurrency never did (A-160's own "jobs bounds workers, not total
@@ -656,10 +661,12 @@ class MutationConfig:
                 payload["kill_signal_artifact"] = self.kill_signal_artifact
             return payload
         payload: dict[str, Any] = {
-            "jobs": self.jobs,
+            "jobs_max": self.jobs_max,
             "max_mutants": self.max_mutants,
             "operators": list(self.operators or ()),
         }
+        if self.jobs_max is None:
+            del payload["jobs_max"]
         # (P34/W4) Declared value or omitted, never null (A-051) -- present
         # only for the SQL lane that actually named it.
         if self.kill_signal_artifact is not None:
@@ -3110,21 +3117,24 @@ def _load_mutation(
             raise LaneConfigError(
                 f"{where}: missing required field 'judge.mutation.{field}'"
             )
-    jobs = value["jobs"]
-    if not is_strict_int(jobs):
+    if "jobs" in value and "jobs_max" in value:
         raise LaneConfigError(
-            f"{where}: 'judge.mutation.jobs' must be an integer, got "
-            f"{_type_name(jobs)}"
+            f"{where}: declare only one of 'judge.mutation.jobs_max' and its "
+            "alias 'judge.mutation.jobs'"
         )
-    if jobs < 1:
-        raise LaneConfigError(
-            f"{where}: 'judge.mutation.jobs' must be a positive integer, got {jobs}"
-        )
-    if jobs != 1:
-        raise LaneConfigError(
-            f"{where}: 'judge.mutation.jobs' must be 1 for native R2 because "
-            "candidate cgroup event windows must not overlap"
-        )
+    jobs_key = "jobs_max" if "jobs_max" in value else "jobs"
+    jobs_max = value[jobs_key] if jobs_key in value else None
+    if jobs_key in value:
+        if not is_strict_int(jobs_max):
+            raise LaneConfigError(
+                f"{where}: 'judge.mutation.{jobs_key}' must be an integer, got "
+                f"{_type_name(jobs_max)}"
+            )
+        if jobs_max < 1:
+            raise LaneConfigError(
+                f"{where}: 'judge.mutation.{jobs_key}' must be a positive integer, "
+                f"got {jobs_max}"
+            )
     max_mutants = value["max_mutants"]
     if not is_strict_int(max_mutants):
         raise LaneConfigError(
@@ -3398,7 +3408,8 @@ def _load_mutation(
                 f"0..{shard_count - 1}"
             )
     return MutationConfig(
-        jobs=jobs,
+        jobs=None,
+        jobs_max=jobs_max,
         max_mutants=max_mutants,
         operators=tuple(operators),
         kill_signal_artifact=kill_signal_artifact,
@@ -3441,7 +3452,10 @@ def _load_ingested_mutation(
 
     native_only = sorted(
         set(value)
-        & (set(_MUTATION_FIELDS) | {"equivalence_artifact", "identity_exclude"})
+        & (
+            set(_MUTATION_FIELDS)
+            | {"jobs", "jobs_max", "equivalence_artifact", "identity_exclude"}
+        )
     )
     if native_only:
         raise LaneConfigError(

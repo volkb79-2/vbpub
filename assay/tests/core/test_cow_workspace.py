@@ -44,6 +44,7 @@ class FakeRun:
         self.seal_calls = []
         self.closed = False
         self._number = 0
+        self.reservations = []
 
     def __enter__(self):
         return self
@@ -79,6 +80,9 @@ class FakeRun:
 
     def delete_tree(self, path):
         shutil.rmtree(path)
+
+    def reserve(self, estimate):
+        self.reservations.append(estimate)
 
 
 class FakeCowtree:
@@ -193,8 +197,9 @@ def test_active_workspace_forwards_estimate_and_run_operations(tmp_path, monkeyp
         selected.delete_tree(snapshot)
 
     assert cowtree.open_calls == [
-        ("assay", FakeSpaceEstimate(101, 202, 3), cowtree.detect_calls[0], str(tmp_path))
+        ("assay", FakeSpaceEstimate(101, 202, 0), cowtree.detect_calls[0], str(tmp_path))
     ]
+    assert run.reservations == [FakeSpaceEstimate(0, 202, 3)]
     assert Path(ingested) == run.trees / "seed"
     assert run.clones == [(clone_source, clone_destination)]
     assert selected.cheap_clone is True

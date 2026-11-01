@@ -720,6 +720,42 @@ def test_the_run_header_is_emitted_at_most_once():
     assert len(recorder.events) == 1
 
 
+def test_run_header_adds_parallel_jobs_and_attribution():
+    recorder = _Recorder()
+    stream = _stream(recorder)
+
+    stream.emit_run_header(
+        commit="a" * 40,
+        lane="package",
+        jobs=4,
+        attribution="overlap-conservative",
+    )
+
+    assert recorder.events[0]["jobs"] == 4
+    assert recorder.events[0]["attribution"] == "overlap-conservative"
+
+
+@pytest.mark.parametrize(
+    ("jobs", "attribution"),
+    [
+        (0, "serial"),
+        (1, "overlap-conservative"),
+        (2, "unknown"),
+        (None, "serial"),
+        (1, None),
+    ],
+)
+def test_run_header_rejects_invalid_parallel_metadata(jobs, attribution):
+    stream = _stream(_Recorder())
+
+    with pytest.raises(ValueError, match="progress run header"):
+        stream.emit_run_header(
+            commit=None,
+            jobs=jobs,
+            attribution=attribution,
+        )
+
+
 # --- B065: what a reader can compute from the file ALONE ------------------
 
 

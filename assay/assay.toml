@@ -118,6 +118,7 @@ targets = [
   "src/assay/__init__.py",
   "src/assay/_cow_workspace.py",
   "src/assay/_durable.py",
+  "src/assay/_limit_ledger.py",
   "src/assay/_mutation_inventory.py",
   "src/assay/_window_host.py",
   "src/assay/adapters/__init__.py",
@@ -189,7 +190,7 @@ format = "coverage-py-json"
 artifact = ".assay/coverage-self-qualification.json"
 
 [lanes.self-qualification.judge.mutation]
-jobs = 1
+jobs_max = 1
 max_mutants = 10000
 operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-flip", "python:falsy-swap"]
 budget_per_candidate = "auto"
@@ -239,6 +240,7 @@ targets = [
   "src/assay/__init__.py",
   "src/assay/_cow_workspace.py",
   "src/assay/_durable.py",
+  "src/assay/_limit_ledger.py",
   "src/assay/_mutation_inventory.py",
   "src/assay/_window_host.py",
   "src/assay/adapters/__init__.py",
@@ -345,6 +347,7 @@ targets = [
   "src/assay/__init__.py",
   "src/assay/_cow_workspace.py",
   "src/assay/_durable.py",
+  "src/assay/_limit_ledger.py",
   "src/assay/_mutation_inventory.py",
   "src/assay/_window_host.py",
   "src/assay/adapters/__init__.py",
@@ -518,7 +521,7 @@ format = "coverage-py-json"
 artifact = ".assay/coverage-analysis-r2.json"
 
 [lanes.analysis-r2.judge.mutation]
-jobs = 1
+jobs_max = 1
 max_mutants = 10000
 operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-flip", "python:falsy-swap"]
 budget_per_candidate = "auto"

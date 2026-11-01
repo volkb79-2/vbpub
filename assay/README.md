@@ -92,9 +92,10 @@ an installed wheel or zipapp needs nothing extra:
   adverse candidates by id, path and operator, names why a campaign is not
   complete, and exits 0 (complete PASS), 1 (complete, not PASS), 2 (evidence
   error) or 3 (incomplete). Timing, ETA and `--project` estimates are
-  diagnostic: they never change the status or the exit code. Native R2
-  projections use the lane's declared worker count and separate the first
-  candidate's runtime from fixed overhead. See the
+  diagnostic: they never change the status or the exit code. A native R2
+  projection accepts an explicit worker count up to `jobs_max` (one when the
+  ceiling is omitted) and separates the first candidate's runtime from fixed
+  overhead. See the
   [workflow](docs/CONSUMERS.md#close-out-a-mutation-campaign-with-assay-analyze-campaign-b108)
   and [design](docs/DESIGN-GUIDE.md#mutation-campaign-closeout-b108-phase-1).
   A `0/1` shard covers the full inventory and can qualify; one shard of a
@@ -343,14 +344,23 @@ assay exists to close that gap mechanically, not by policy:
   [Assay backlog](nyxloom-trove/4-backlog.md), the
   [design rationale](docs/DESIGN-GUIDE.md#native-r2-cgroup-resource-limit-events-b145),
   and [consumer setup](docs/CONSUMERS.md#native-r2-resource-limit-observation-b145).
-  Native R2 executes one candidate at a time (`judge.mutation.jobs = 1`) so
-  each cgroup-event window has one owner. Bounded native pilots also require
-  `--pilot-jobs 1`; the config loader, CLI, and public `run_mutation` entry
-  point refuse larger values because overlapping windows cannot attribute
-  shared counter changes. This execution-validity rule is separate from
-  runtime profiling.
-  See the [serial-window rationale](docs/DESIGN-GUIDE.md#native-r2-candidate-event-windows-are-serial)
-  and [consumer setup](docs/CONSUMERS.md#native-r2-resource-limit-observation-b145).
+  Native R2 can execute up to the declared `judge.mutation.jobs_max` in
+  parallel; `assay run --jobs N` selects a count from 1 through that cap, and
+  the default is 1. If `jobs_max` is omitted, it stays absent in the loaded
+  declaration and the run remains limited to one worker. Parallel execution
+  requires a prepared workspace with `cheap_clone`. The coordinator samples
+  every candidate window boundary and
+  assigns a limit event to every overlapping window, so a failing candidate
+  whose window overlaps a positive event is `crashed`; PASS remains
+  `survived`. The bounded queue keeps candidate state and progress in index
+  order, resume is independent of the selected worker count, and the WP7 retry
+  tail remains serial. Candidate-file pilots use `--pilot-jobs 1`; `--jobs` is
+  refused with `--candidates-file`. The run progress
+  header records `jobs` and `attribution` (`serial` or
+  `overlap-conservative`), and each candidate event records `worker_index`.
+  Verdict schema v16 remains unchanged. See the
+  [parallel-window rationale](docs/DESIGN-GUIDE.md#native-r2-parallel-candidate-windows)
+  and [consumer setup](docs/CONSUMERS.md#native-r2-parallel-candidate-windows-pr1b).
   After R0/R1, Assay checks the complete hierarchy before any native R2
   candidate starts. If its private cgroup view hides ancestors, it may use
   the explicitly configured observer-only socket; without a usable local view
@@ -399,9 +409,12 @@ The verdict is a hard cut: `assay verify` refuses v15 and earlier verdicts
 (no dual-version verifier, no upgrade-in-place). Lane schema stays at v2;
 the 8.0.0 release extended it with the explicit project-level
 `[defaults].env_passthrough` option. Current v2 semantic constraints still
-apply: native R2 lanes must declare `judge.mutation.jobs = 1`; a higher value
-refuses during load. A lane may omit its own `env_passthrough` only when that
-project table is present. A v2 assay
+apply: native R2 lanes may declare `judge.mutation.jobs_max` (or its `jobs`
+alias) as a positive ceiling. Omission stays absent in loaded and dumped
+configuration and leaves the effective ceiling at the one-worker default.
+`assay run --jobs N` defaults to 1 and cannot exceed the declared ceiling. A
+lane may omit its own `env_passthrough` only when that project table is
+present. A v2 assay
 refuses a v1 `assay.toml`'s `[isolation]`-less R1+ lane while a v1-pinned
 assay cannot parse a v2 file's `[isolation]` table at all. Repin the release
 and bump `schema_version` **in the same commit** — see
