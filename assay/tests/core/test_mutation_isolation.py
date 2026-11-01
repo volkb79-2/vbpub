@@ -35,15 +35,31 @@ from __future__ import annotations
 from conftest import completed_process, file_not_found, timeout_expired
 
 from concurrent.futures import Future
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import os
 from pathlib import Path
+import shutil
+import stat
+from pathlib import PurePosixPath
 
-from conftest import GitRepo, make_deadline, make_lane, make_plan, prepared_snapshot
+import pytest
+
+from conftest import (
+    GitRepo,
+    REPOSITORY_SNAPSHOT_POLICY,
+    make_deadline,
+    make_lane,
+    make_plan,
+    prepared_snapshot,
+)
 
 from assay.adapters.python import PythonAdapter
 from assay import mutation as mutation_module
+from assay import isolation
 from assay.errors import Outcome
+from assay.isolation import DEFAULT_SNAPSHOT_LIMITS, SnapshotSpec
 from assay.mutation import MutationSite, MutationTarget, run_mutation
 from assay.runner import execute_command
 
@@ -107,6 +123,108 @@ class _SynchronousExecutor:
         future: Future = Future()
         future.set_result(fn(*args))
         return future
+
+
+class _CheapCloneWorkspace:
+    def __init__(self, root: Path):
+        self.root = root
+        self.trees = root / "trees"
+        self.trees.mkdir(parents=True)
+        self.cheap_clone = True
+        self.template_path: Path | None = None
+        self.cloned_trees: list[Path] = []
+        self.events: list[tuple[str, Path, Path | None]] = []
+        self.delete_calls: list[Path] = []
+        self._next_tree = 0
+
+    def ingest_tree(self, source: Path, name: str) -> Path:
+        destination = self.trees / name
+        shutil.copytree(source, destination)
+        return destination
+
+    def make_tree(self) -> Path:
+        self._next_tree += 1
+        destination = self.trees / f"tree-{self._next_tree}"
+        destination.mkdir()
+        return destination
+
+    def clone_file(self, source: Path, destination: Path) -> None:
+        shutil.copyfile(source, destination)
+
+    def seal(self, path: Path) -> None:
+        self.template_path = path
+        self._set_tree_writable(path, writable=False)
+        self.events.append(("seal", path, None))
+
+    def clone_tree(self, source: Path) -> Path:
+        assert source == self.template_path
+        assert self._is_read_only(source), "the template must be sealed before cloning"
+        self._next_tree += 1
+        destination = self.trees / f"clone-{self._next_tree}"
+        shutil.copytree(source, destination, symlinks=True, copy_function=shutil.copy2)
+        self._set_tree_writable(destination, writable=True)
+        self.cloned_trees.append(destination)
+        self.events.append(("clone", source, destination))
+        return destination
+
+    def delete_tree(self, path: Path) -> None:
+        self.delete_calls.append(path)
+        self._set_tree_writable(path, writable=True)
+        shutil.rmtree(path)
+
+    @staticmethod
+    def _set_tree_writable(path: Path, *, writable: bool) -> None:
+        for current, directories, files in os.walk(path, topdown=True, followlinks=False):
+            for member in [Path(current), *(Path(current) / name for name in directories + files)]:
+                if member.is_symlink():
+                    continue
+                mode = stat.S_IMODE(member.stat().st_mode)
+                member.chmod(mode | stat.S_IWUSR if writable else mode & ~0o222)
+
+    @staticmethod
+    def _is_read_only(path: Path) -> bool:
+        for current, directories, files in os.walk(path, topdown=True, followlinks=False):
+            for member in [Path(current), *(Path(current) / name for name in directories + files)]:
+                if not member.is_symlink() and member.stat().st_mode & 0o222:
+                    return False
+        return True
+
+
+class _CheapCloneWorkspaceProvider:
+    max_live_clones = 2
+
+    def __init__(self, root: Path):
+        self.root = root
+        self.workspace: _CheapCloneWorkspace | None = None
+
+    @contextmanager
+    def open(self, estimate, *, scratch_root):
+        self.root.mkdir()
+        self.workspace = _CheapCloneWorkspace(self.root)
+        try:
+            yield self.workspace
+        finally:
+            shutil.rmtree(self.root)
+
+
+def _prepared_snapshot_with_workspace(repo: GitRepo, scratch_root: Path, workspace=None):
+    spec = SnapshotSpec(
+        repo_top=repo.path.resolve(),
+        commit=repo.head(),
+        project_prefix=PurePosixPath("."),
+        scratch_root=scratch_root.resolve(),
+        snapshot_policy=REPOSITORY_SNAPSHOT_POLICY,
+        resolved_base=None,
+        limits=DEFAULT_SNAPSHOT_LIMITS,
+    )
+    return isolation.prepare_snapshot(spec, timeout=60.0, workspace=workspace)
+
+
+def _bucket_signature(mutation):
+    return tuple(
+        tuple(item.lineno for item in getattr(mutation, bucket))
+        for bucket in ("killed", "survived", "crashed", "budget_exceeded")
+    )
 
 
 def _make_decide_by_mutated_content(repo_path: Path):
@@ -208,6 +326,96 @@ def test_jobs_1_and_jobs_3_render_identical_records_under_the_real_executor(
         return mutation
 
     assert run(1).to_dict() == run(3).to_dict()
+
+
+@pytest.mark.parametrize(
+    ("bucket", "lineno"),
+    [("killed", 2), ("survived", 3), ("crashed", 4), ("budget_exceeded", 5)],
+)
+def test_cheap_clone_materialization_preserves_plain_mutation_buckets(
+    tmp_path: Path, bucket: str, lineno: int
+):
+    lane = make_lane(argv=("pytest", "-q"))
+    repo = _seed_repo(tmp_path, "repo")
+    name_by_line = {2: "a", 3: "b", 4: "c", 5: "d"}
+    candidate_name = name_by_line[lineno]
+    process_cwds: list[Path] = []
+    cow_provider = _CheapCloneWorkspaceProvider(tmp_path / "cheap-clone-run")
+
+    def decide(argv, *, env, cwd, timeout):
+        root = Path(cwd)
+        process_cwds.append(root)
+        if root == repo.path:
+            return completed_process(list(argv), returncode=0, stdout="", stderr="")
+        if cow_provider.workspace is not None:
+            assert root != cow_provider.workspace.template_path, "sealed template was executed"
+            assert root in cow_provider.workspace.cloned_trees
+        source = (root / "pkg" / "flags.py").read_text(encoding="utf-8")
+        assert f"    {candidate_name} = False" in source
+        if bucket == "crashed":
+            raise file_not_found(2, "No such file or directory", argv[0])
+        if bucket == "budget_exceeded":
+            raise timeout_expired(cmd=list(argv), timeout=timeout)
+        return completed_process(
+            list(argv),
+            returncode=1 if bucket == "killed" else 0,
+            stdout="",
+            stderr="",
+        )
+
+    baseline = execute_command(lane, cwd=repo.path, process_runner=decide)
+    plan = make_plan(lane)
+    target = MutationTarget(
+        path="pkg/flags.py", text=_TEXT, lines=frozenset({lineno})
+    )
+
+    def run_once(scratch: Path, workspace=None):
+        scratch.mkdir()
+        with _prepared_snapshot_with_workspace(repo, scratch, workspace) as prepared:
+            result = run_mutation(
+                baseline=baseline,
+                prepared=prepared,
+                plan=plan,
+                deadline=make_deadline(),
+                targets=(target,),
+                adapter=PythonAdapter(),
+                jobs=1,
+                max_mutants=1,
+                operators=("python:bool-const-flip",),
+                process_runner=decide,
+                clock=_clock,
+                executor_factory=lambda jobs: _SynchronousExecutor(),
+                budget_per_candidate_seconds=0.05,
+            )
+        assert list(scratch.iterdir()) == []
+        return _bucket_signature(result)
+
+    plain_signature = run_once(tmp_path / "plain-scratch")
+    cow_signature = run_once(
+        tmp_path / "cow-scratch", workspace=cow_provider
+    )
+
+    expected = tuple(
+        (lineno,) if name == bucket else ()
+        for name in ("killed", "survived", "crashed", "budget_exceeded")
+    )
+    assert plain_signature == cow_signature == expected
+    attempts = 2 if bucket in {"crashed", "budget_exceeded"} else 1
+    assert len(process_cwds) == 1 + 2 * attempts
+    assert cow_provider.workspace is not None
+    assert cow_provider.workspace.template_path is not None
+    assert len(cow_provider.workspace.cloned_trees) == attempts
+    assert cow_provider.workspace.events == [
+        ("seal", cow_provider.workspace.template_path, None),
+        *[
+            ("clone", cow_provider.workspace.template_path, clone)
+            for clone in cow_provider.workspace.cloned_trees
+        ],
+    ]
+    assert cow_provider.workspace.delete_calls == [
+        *cow_provider.workspace.cloned_trees,
+        cow_provider.workspace.template_path,
+    ]
 
 
 # --- the shared source tree is provably unchanged ---------------------------

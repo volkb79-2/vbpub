@@ -6,6 +6,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ### Added
 - Auto-detect a user-owned btrfs workspace for higher-rigor snapshots and reflink packed Git objects through cowtree, with the existing copy path retained when no CoW area is configured.
+- For cheap-clone workspaces, seal one verified base snapshot and clone it per execution unit, applying replacements inside each clone while preserving the existing no-CoW path and verdict buckets.
 
 ### Fixed
 - Use the Linux fsync syscall directly for mutation state, pilot state, and verdict writes, so replacing `os.fsync` cannot bypass durability.

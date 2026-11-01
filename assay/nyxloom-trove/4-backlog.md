@@ -172,6 +172,7 @@ items:
   - {id: B190, title: "CW8 integration left B105 target ordering, workspace record, and cleanup coverage out of sync", type: bugfix, component: gate, context_estimate: small}
   - {id: B191, title: "SQL witness source bootstrap omitted bundled cowtree and hid assay-run diagnostics", type: bugfix, component: gate, context_estimate: small}
   - {id: B192, title: "SIGTERM launcher cancellation test timed out once under gate contention", type: bugfix, component: gate, context_estimate: small}
+  - {id: B193, title: "Use a sealed CoW base template and one cheap tree clone per snapshot unit", type: feature, component: isolation, context_estimate: medium}
 ---
 
 # assay — backlog
@@ -13623,3 +13624,19 @@ Hypothesis: the 60 s bound is wall-clock under host contention, or the launcher
 trap races the fifo reader. Next step: make the wait deadline-driven from the
 test's own progress marker rather than a fixed 60 s, and capture the launcher
 stderr on timeout.
+
+## B193 — use a sealed CoW base template and one cheap tree clone per snapshot unit
+
+**Status: IMPLEMENTED by CW9; controller-owned 20-candidate bucket-parity
+pilot remains pending.** CW8's Level A path reflinked packed Git objects but
+still rebuilt the complete worktree for each R2 candidate. When the active
+workspace advertises `cheap_clone`, Assay now builds and verifies one inert
+base template, seals it, then makes a private `clone_tree` for every
+materialized unit. The shared `_apply_replacement` step updates the cloned Git
+index and child commit; it unlinks and rewrites the changed file, verifies the
+clone, and plants declared links only after verification. Templates and clones
+are removed on normal close, candidate failure, interruption, and leaked
+materialization cleanup. No CoW area retains the existing materialization
+path and verdict buckets. Focused fake-workspace tests cover all four native
+mutation buckets, template seal order, and cleanup; the controller runs the
+20-candidate comparison recorded in `reports/CW9-CONTINUATION.md`.

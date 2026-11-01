@@ -35,9 +35,13 @@ class FakeRun:
         self.path.mkdir()
         self.trees = self.path / "trees"
         self.trees.mkdir()
-        self.caps = caps or SimpleNamespace(backend="btrfs", fs_type="btrfs")
+        self.caps = caps or SimpleNamespace(
+            backend="btrfs", fs_type="btrfs", cheap_clone=True
+        )
         self.clone_error = clone_error
         self.clones = []
+        self.tree_clones = []
+        self.seal_calls = []
         self.closed = False
         self._number = 0
 
@@ -57,6 +61,15 @@ class FakeRun:
         destination = self.trees / name
         destination.mkdir()
         return destination
+
+    def clone_tree(self, source, name):
+        destination = self.trees / name
+        shutil.copytree(source, destination)
+        self.tree_clones.append((Path(source), destination))
+        return destination
+
+    def seal(self, path):
+        self.seal_calls.append(Path(path))
 
     def clone_file(self, source, destination):
         if self.clone_error is not None:
@@ -168,6 +181,8 @@ def test_active_workspace_forwards_estimate_and_run_operations(tmp_path, monkeyp
         clone_destination = snapshot / "pack"
         selected.clone_file(clone_source, clone_destination)
         cloned_bytes = clone_destination.read_bytes()
+        cloned_tree = selected.clone_tree(ingested)
+        selected.seal(cloned_tree)
         selected.delete_tree(snapshot)
 
     assert cowtree.open_calls == [
@@ -175,6 +190,9 @@ def test_active_workspace_forwards_estimate_and_run_operations(tmp_path, monkeyp
     ]
     assert Path(ingested) == run.trees / "seed"
     assert run.clones == [(clone_source, clone_destination)]
+    assert selected.cheap_clone is True
+    assert run.tree_clones == [(ingested, cloned_tree)]
+    assert run.seal_calls == [cloned_tree]
     assert cloned_bytes == b"seed pack"
     assert run.closed
 
