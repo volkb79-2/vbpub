@@ -36,6 +36,10 @@ SOURCE_ROOT = PROJECT_ROOT / "src" / "assay"
 #: passing the argument, or that disappears, breaks this test — which is the
 #: point.
 EXCLUDED_SITES: dict[tuple[str, str], str] = {
+    ("_window_host.py", "_execute_request"): (
+        "runs a mutated R2 candidate command in the isolated worker; candidate "
+        "classification uses the mutation outcome, not the lane's R0 report"
+    ),
     ("runner.py", "run_lane"): (
         "the `environment_command` probe (B010): it probes the INVOKING "
         "environment, is not the lane command, and has no report of its own"

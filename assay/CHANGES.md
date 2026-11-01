@@ -45,6 +45,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ### Changed
 - The R2 postponement for self-qualification (B169) is valid for release versions `>=10.0.0,<10.3.0`.
+- Run each serial native R2 command window in a dedicated Assay process while retaining the existing candidate buckets, resource evidence, resume records, and v16 verdict shape.
 
 ### Fixed
 - Use the Linux fsync syscall directly for mutation state, pilot state, and verdict writes, so replacing `os.fsync` cannot bypass durability. Only a 64-bit Linux interpreter uses the raw syscall; other platforms use `os.fsync`.

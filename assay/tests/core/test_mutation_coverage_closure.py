@@ -721,6 +721,54 @@ def test_load_record_refuses_structural_corruption(tmp_path, payload, message):
         _load(tmp_path)
 
 
+def _valid_budget_timeout_record():
+    job = _job()
+    return _record(
+        job,
+        outcome_bucket="budget_exceeded",
+        terminal_result={
+            "outcome": "BUDGET_EXCEEDED",
+            "reason_code": "LANE_TIMEOUT",
+            "returncode": None,
+        },
+        evidence={
+            "command": "r2",
+            "collection_count": 1,
+            "collection_sha256": "c" * 64,
+            "hook_fingerprint_sha256": "d" * 64,
+            "started_count": None,
+            "failed_call_index": None,
+        },
+        process_tree_evidence=process_tree_evidence_dict(
+            leader_status="timeout-killed"
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "missing_field", ["execution", "evidence", "mutated_file_sha256"]
+)
+def test_budget_timeout_record_missing_a_required_field_is_rejected(
+    tmp_path, missing_field
+):
+    payload = _valid_budget_timeout_record()
+    del payload[missing_field]
+    _put(tmp_path, payload)
+
+    assert _load(tmp_path) is mutation._RECORD_REJECTED
+
+
+def test_budget_timeout_record_with_a_stale_mutated_file_digest_is_corruption(
+    tmp_path,
+):
+    payload = _valid_budget_timeout_record()
+    payload["mutated_file_sha256"] = "f" * 64
+    _put(tmp_path, payload)
+
+    with pytest.raises(mutation.MutationStateError, match="stale mutated_file_sha256"):
+        _load(tmp_path)
+
+
 @pytest.mark.parametrize(
     "resource_observation",
     [

@@ -93,13 +93,19 @@ from .errors import AssayError, Outcome, ReasonCode
 from .guards import is_int_at_least, is_real
 from .liveness_resources import compare_resource_snapshots, read_liveness_resources
 from .mutation_witness import WITNESS_FD_ENV
-from .process_tree import ProcessTreeError, ProcessTreeSpawnError, ProcessTreeWindow
+from .process_tree import (
+    ProcessTreeError,
+    ProcessTreeSpawnError,
+    ProcessTreeWindow,
+    _report_window_host_candidate_pid,
+)
 
 # B117/P6: termination is process-wide for one Assay invocation. Keep the
 # event here so the process-group registry can honor it without importing
 # runner.py (runner already imports this module).
 _TERMINATION = threading.Event()
 _LIVE_GROUPS: set[int] = set()
+_LIVE_WINDOW_HOST_GROUPS: set[int] = set()
 _LIVE_GROUPS_LOCK = threading.RLock()
 _DEFERRED_TERMINATION_SWEEP = False
 _CANDIDATE_TREE_CLEANUP_SECONDS = 10.0
@@ -131,6 +137,35 @@ def unregister_live_group(pgid: int) -> None:
             if _TERMINATION.is_set():
                 for live_pgid in tuple(_LIVE_GROUPS):
                     _killpg_group(live_pgid, signal.SIGKILL)
+
+
+def register_live_window_host_group(pgid: int) -> None:
+    """Register a host session that must unwind its command tree on SIGTERM."""
+    with _LIVE_GROUPS_LOCK:
+        _LIVE_WINDOW_HOST_GROUPS.add(pgid)
+        if _TERMINATION.is_set():
+            _killpg_group(pgid, signal.SIGTERM)
+
+
+def unregister_live_window_host_group(pgid: int) -> None:
+    """Forget a window host after it has returned or been reaped."""
+    with _LIVE_GROUPS_LOCK:
+        _LIVE_WINDOW_HOST_GROUPS.discard(pgid)
+
+
+def terminate_live_window_hosts() -> int:
+    """Ask every isolated command host to clean up and stop gracefully."""
+    acquired = _LIVE_GROUPS_LOCK.acquire(blocking=False)
+    if acquired:
+        try:
+            groups = tuple(_LIVE_WINDOW_HOST_GROUPS)
+        finally:
+            _LIVE_GROUPS_LOCK.release()
+    else:
+        groups = tuple(_LIVE_WINDOW_HOST_GROUPS.copy())
+    for pgid in groups:
+        _killpg_group(pgid, signal.SIGTERM)
+    return len(groups)
 
 
 def terminate_live_process_groups(sig: int = signal.SIGKILL) -> int:
@@ -165,6 +200,7 @@ def _reset_live_groups_for_tests() -> None:
     global _DEFERRED_TERMINATION_SWEEP
     with _LIVE_GROUPS_LOCK:
         _LIVE_GROUPS.clear()
+        _LIVE_WINDOW_HOST_GROUPS.clear()
         _DEFERRED_TERMINATION_SWEEP = False
         _TERMINATION.clear()
 
@@ -1716,6 +1752,31 @@ class LivenessRunner:
         # existing syscall-level tests can still monkeypatch os.killpg.
         self._process_group_killer = process_group_killer
 
+    def assay_window_host_spec(self) -> Mapping[str, object] | None:
+        """Describe a production-configured runner for an isolated host.
+
+        Injected clock, process, sampler, or signal seams cannot be serialized
+        faithfully. Such runners stay on the in-process path unless they
+        provide their own explicit host protocol.
+        """
+        if (
+            self._monotonic is not time.monotonic
+            or self._sleep is not time.sleep
+            or self._popen is not subprocess.Popen
+            or self._cpu_reader is not tree_cpu_seconds
+            or self._resource_reader is not read_liveness_resources
+            or self._sampler not in (None, tree_sample)
+            or self._process_group_killer is not None
+        ):
+            return None
+        return {
+            "kind": "liveness",
+            "events_dir": str(self._events_dir),
+            "expect_next_event_within_s": self._expect_next_event_within_s,
+            "pre_first_event_within_s": self._pre_first_event_within_s,
+            "cpu_window_s": self.cpu_window_s,
+        }
+
     def _events_path_for_cwd(self, cwd: Path) -> Path:
         return candidate_events_path(self._events_dir, cwd)
 
@@ -1779,6 +1840,7 @@ class LivenessRunner:
                             raise spawn_error from exc
                         process_tree.attach(proc)
                         register_live_group(proc.pid)
+                        _report_window_host_candidate_pid(proc.pid)
                     try:
                         result = self._monitor(
                             proc,

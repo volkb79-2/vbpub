@@ -6,7 +6,7 @@
       "reason": "TYPE_CHECKING imports SnapshotLimits only for annotations; importing isolation here would create a runtime cycle."
     },
     "src/assay/liveness.py": {
-      "lines": [187, 188],
+      "lines": [223, 224],
       "reason": "TYPE_CHECKING imports CommandPlan only for annotations; importing runner here would create a runtime cycle."
     },
     "src/assay/mutation.py": {
