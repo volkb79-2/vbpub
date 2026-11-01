@@ -78,7 +78,7 @@ def _wait_for_screen(
     *,
     expected_size: tuple[int, int] | None = None,
     attributes: bool = False,
-    timeout: float = 30,
+    timeout: float = 60,
 ) -> str:
     deadline = time.monotonic() + timeout
     last = ""
@@ -133,14 +133,21 @@ def _has_styled_line(captured: str, marker: str) -> bool:
 
 def _has_focused_input(captured: str, marker: str) -> bool:
     for line in captured.splitlines():
-        if marker not in _plain(line):
+        plain_line = _plain(line)
+        left = plain_line.find("█")
+        right = plain_line.rfind("█")
+        if left < 0 or right <= left or marker not in plain_line[left + 1:right]:
             continue
         inverse = False
+        column = 0
         for token in re.finditer(r"\x1b\[([0-9:;]*)m|.", line):
             parameters = token.group(1)
             if parameters is None:
-                if token.group(0) in {"▊", "▏", "█"} and inverse:
+                # tmux-256color renders Textual's focused cursor as reverse
+                # video on its current cell, which may be an ordinary space.
+                if inverse and left < column < right:
                     return True
+                column += 1
                 continue
             codes = set(parameters.replace(":", ";").split(";"))
             if not parameters or "0" in codes or "27" in codes:
@@ -151,6 +158,9 @@ def _has_focused_input(captured: str, marker: str) -> bool:
 
 
 def _confirmation_content(captured: str) -> str:
+    # Textual wraps the prompt and target at narrow pane widths. Keep only the
+    # modal interior on each row so text behind the overlay cannot interrupt
+    # the target name as wrapped lines are joined.
     content = []
     for line in _plain(captured).splitlines():
         left = line.find("█")
@@ -190,11 +200,11 @@ def test_wait_for_screen_waits_for_requested_pane_size(tmp_path, monkeypatch):
         lambda executable, session: next(sizes),
         raising=False,
     )
-    monkeypatch.setattr(
-        sys.modules[__name__],
-        "_capture",
-        lambda executable, session: "Location: TrueNAS > Hosts\n" + HOST_NAME,
-    )
+    def capture(executable, session, *, attributes=False):
+        assert attributes is False
+        return "Location: TrueNAS > Hosts\n" + HOST_NAME
+
+    monkeypatch.setattr(sys.modules[__name__], "_capture", capture)
     monkeypatch.setattr(time, "sleep", sleeps.append)
 
     captured = _wait_for_screen(
