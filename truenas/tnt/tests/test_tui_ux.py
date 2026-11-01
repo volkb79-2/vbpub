@@ -235,7 +235,12 @@ def test_empty_error_and_job_progress_states_are_textual(server, tmp_path):
             app = TntApp(session)
             async with app.run_test(size=(100, 30)) as pilot:
                 app.show(MENU_ITEMS["alerts"][1])
-                empty_text = await _wait_for_screen(pilot, app)
+                empty_text = ""
+                for _ in range(120):
+                    await pilot.pause(0.025)
+                    empty_text = _screen_text(app)
+                    if "No rows are available." in empty_text:
+                        break
                 assert "No rows are available." in empty_text
                 assert "0 visible row(s)" in app.query_one("#core-status", Static).render().plain
 

@@ -117,12 +117,35 @@ def _assert_complete_legend(captured: str, columns: int) -> None:
         assert "R Refresh" in plain
 
 
+def _complete_legend_visible(screen: str, columns: int) -> bool:
+    keys = ["Ctrl+N Menu", "Ctrl+P Jump", "H Host", "? Help", "Q Quit"]
+    if columns >= 72:
+        keys.append("R Refresh")
+    return all(key in screen for key in keys)
+
+
 def _has_styled_line(captured: str, marker: str) -> bool:
     return any(marker in _plain(line) and SGR_RE.search(line) for line in captured.splitlines())
 
 
-def _compact(captured: str) -> str:
-    return "".join(character for character in _plain(captured) if not character.isspace())
+def _confirmation_content(captured: str) -> str:
+    content = []
+    for line in _plain(captured).splitlines():
+        left = line.find("█")
+        right = line.rfind("█")
+        if left >= 0 and right > left:
+            line = line[left + 1:right]
+        content.extend(character for character in line if not character.isspace())
+    return "".join(content)
+
+
+def _host_name_visible_after_prompt(captured: str) -> bool:
+    content = _confirmation_content(captured)
+    prompt = "Typethisexacthostnametoconfirm:"
+    prompt_end = content.find(prompt)
+    if prompt_end < 0:
+        return False
+    return HOST_NAME in content[prompt_end + len(prompt):]
 
 
 def _assert_unicode_screen(captured: str) -> None:
@@ -209,6 +232,8 @@ def test_tui_in_real_tmux_terminal(size, tmp_path):
             "-y",
             str(rows),
             "-e",
+            "TERM=tmux-256color",
+            "-e",
             "LANG=C.UTF-8",
             "-e",
             "LC_ALL=C.UTF-8",
@@ -219,7 +244,7 @@ def test_tui_in_real_tmux_terminal(size, tmp_path):
             executable,
             session,
             status,
-            lambda screen: "Location: TrueNAS" in screen and "Ctrl+N Menu" in screen,
+            lambda screen: "Location: TrueNAS" in screen and _complete_legend_visible(screen, columns),
         )
         _assert_no_traceback(initial)
         _assert_complete_legend(initial, columns)
@@ -267,11 +292,11 @@ def test_tui_in_real_tmux_terminal(size, tmp_path):
             executable,
             session,
             status,
-            lambda screen: "".join("Type this exact host name to confirm".split()) in _compact(screen),
+            _host_name_visible_after_prompt,
         )
         _assert_no_traceback(confirmation)
         _assert_unicode_screen(confirmation)
-        assert HOST_NAME in _compact(confirmation), "destructive confirmation target is clipped"
+        assert _host_name_visible_after_prompt(confirmation), "destructive confirmation target is clipped"
 
         confirmation_attributes = _capture(executable, session, attributes=True)
         assert confirmation_attributes is not None
@@ -283,8 +308,7 @@ def test_tui_in_real_tmux_terminal(size, tmp_path):
             executable,
             session,
             status,
-            lambda screen: "".join("Type this exact host name to confirm".split()) in _compact(screen)
-            and HOST_NAME in _compact(screen),
+            _host_name_visible_after_prompt,
             expected_size=resize_to,
         )
         _assert_no_traceback(confirmation_resized)

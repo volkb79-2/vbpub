@@ -311,6 +311,9 @@ class HostRemoveConfirm(ModalScreen[None]):
                 yield Button("Remove host", id="host-remove-apply", variant="error")
                 yield Button("Cancel", id="host-remove-cancel")
 
+    def on_mount(self) -> None:
+        self.query_one("#host-remove-confirm", Input).focus()
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "host-remove-cancel":
             self.action_cancel()
