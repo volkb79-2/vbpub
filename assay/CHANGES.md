@@ -4,6 +4,41 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [10.2.0] - 2026-11-01
+<!-- cmru: generated -->
+<!-- cmru: source-end=2266ee8c2f1da5b359e320e255e1d29c1dd2f2f6 -->
+
+### Added
+- feat(assay): add sealed CoW snapshot templates (89a7a9fb7)
+- feat(assay): add CoW workspaces and raw fsync (ed0872495)
+
+### Fixed
+- fix(assay): fall back to plain snapshots for a non-btrfs CoW area (ec5374fec)
+- fix(assay): use the raw fsync syscall only on 64-bit Linux (897c144f1)
+- fix(assay): re-fix the replaced file's directory mtime in Level B clones (f78e3c065)
+- fix(assay): include cowtree in SQL witness bootstrap (f6f72ef99)
+- fix(assay): drop unreachable None guard in _close_repository (00a2fcda2)
+- fix(assay): repair CW8 preflight and tester gates (1defadb9c)
+- fix(assay): include cowtree in sparse clones (11b0b3c1e)
+
+### Changed
+- chore(assay): prepare 10.2.0 inputs (B169 window <10.3.0, B194/B195, CHANGES) (391456ce0)
+
+### Documentation
+- docs(assay): record the 10.2.0 review fixes (16f3ddca0)
+- docs(assay): file B192 launcher cancellation test flake (9170dc585)
+
+### Testing
+- test(assay): specify CW9 sealed template clones (b20bc6b5d)
+- test(assay): cover SQL witness bootstrap and diagnostics (0bbc07e55)
+- test(assay): pin CW8 gate regressions (165c15784)
+- test(assay): specify CoW workspace seam (ec2f8a6e6)
+- test(assay): specify preload-safe fsync fallback (0b889d661)
+- test(assay): specify raw fsync durability seam (51a125f3a)
+
+<!-- cmru: pending release notes begin -->
 ### Added
 - Auto-detect a user-owned btrfs workspace for higher-rigor snapshots and reflink packed Git objects through cowtree, with the existing copy path retained when no CoW area is configured.
 - For cheap-clone workspaces, seal one verified base snapshot and clone it per execution unit, applying replacements inside each clone while preserving the existing no-CoW path and verdict buckets.
@@ -18,8 +53,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - Keep B105 target inventories sorted, classify the new workspace estimate through the shared record contract, and exercise CoW cleanup failures without replacing the original refusal.
 - Refresh the B105 exclusion line map after the CW8 source import shifted its reviewed `TYPE_CHECKING` block.
 - Include stdout and stderr tails when SQL qualification's assay run fails before writing its verdict artifact.
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [10.1.0] - 2026-10-31
 <!-- cmru: generated -->
