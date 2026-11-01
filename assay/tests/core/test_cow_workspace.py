@@ -145,22 +145,29 @@ def test_no_detected_area_yields_plain_behavior_without_opening_run(tmp_path, mo
     ("backend", "fs_type"),
     [("reflink", "xfs"), ("reflink", "btrfs"), ("btrfs", "xfs")],
 )
-def test_detected_area_requires_btrfs_ficlone_backend(
-    tmp_path, monkeypatch, backend, fs_type
+def test_a_non_btrfs_area_falls_back_to_plain_with_one_advisory(
+    tmp_path, monkeypatch, capsys, backend, fs_type
 ):
+    # An auto-detected optimization that does not apply must not turn every
+    # snapshot lane into ERROR; the plain path is the 10.1.0 behaviour.
     cowtree = FakeCowtree(area=_area(backend=backend, fs_type=fs_type))
     _install(monkeypatch, cowtree)
 
-    with pytest.raises(AssayError) as caught:
-        with _cow_workspace.open_workspace(
-            WorkspaceEstimate(10, 20, 2), scratch_root=tmp_path
-        ):
-            pytest.fail("an unsupported CoW area must be refused")
+    with _cow_workspace.open_workspace(
+        WorkspaceEstimate(10, 20, 2), scratch_root=tmp_path
+    ) as selected:
+        assert selected is None
 
-    assert caught.value.outcome is Outcome.ERROR
-    assert caught.value.reason_code is ReasonCode.EXEC_FAILED
-    assert "btrfs filesystem with the btrfs backend" in str(caught.value)
     assert cowtree.open_calls == []
+    advisories = [
+        line
+        for line in capsys.readouterr().err.splitlines()
+        if line.startswith("Assay advisory: copy-on-write area")
+    ]
+    assert advisories == [
+        f"Assay advisory: copy-on-write area uses the {backend} backend on "
+        f"{fs_type}; Assay snapshot clones need btrfs, using plain snapshots"
+    ]
 
 
 def test_active_workspace_forwards_estimate_and_run_operations(tmp_path, monkeypatch):

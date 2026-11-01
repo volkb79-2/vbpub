@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import os
 import secrets
+import sys
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
@@ -46,8 +47,12 @@ class _CowRunWorkspace:
         self._run.delete_tree(path)
 
 
+def _is_btrfs(caps) -> bool:
+    return caps.fs_type == "btrfs" and caps.backend == "btrfs"
+
+
 def _require_btrfs(cowtree, caps) -> None:
-    if caps.fs_type != "btrfs" or caps.backend != "btrfs":
+    if not _is_btrfs(caps):
         raise cowtree.RootInvalid(
             "Assay CoW workspaces require a btrfs filesystem with the btrfs backend"
         )
@@ -71,6 +76,11 @@ def open_workspace(
 
     cowtree owns root validation, including the non-root owner check and the
     mount-table proof. Its absence log is emitted once by `detect()`.
+
+    A valid area whose detected backend is not btrfs (an XFS reflink area, or
+    btrfs without unprivileged subvolume deletion) is an optimization that
+    does not apply here, not a lane failure: Assay uses the plain path and
+    says so once. A run whose backend changes after detection still refuses.
     """
     cowtree = _load_cowtree()
     environment = dict(os.environ)
@@ -79,7 +89,14 @@ def open_workspace(
         if area is None:
             yield None
             return
-        _require_btrfs(cowtree, area.caps)
+        if not _is_btrfs(area.caps):
+            sys.stderr.write(
+                "Assay advisory: copy-on-write area uses the "
+                f"{area.caps.backend} backend on {area.caps.fs_type}; "
+                "Assay snapshot clones need btrfs, using plain snapshots\n"
+            )
+            yield None
+            return
         cow_estimate = cowtree.SpaceEstimate(
             ingest_bytes=estimate.ingest_bytes,
             per_clone_bytes=estimate.per_clone_bytes,
