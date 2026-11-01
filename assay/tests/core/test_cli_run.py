@@ -99,6 +99,47 @@ operators = ["python:bool-const-flip"]
         cli_module._cmd_run(args, [], io.StringIO(), io.StringIO())
 
 
+def test_run_rejects_jobs_override_for_a_non_native_r2_lane(tmp_path):
+    lane_file = tmp_path / "assay.toml"
+    lane_file.write_text(R0_LANE, encoding="utf-8")
+    args = SimpleNamespace(file=lane_file, lane="package", jobs=1)
+
+    with pytest.raises(LaneConfigError, match="--jobs requires a native R2 mutation lane"):
+        cli_module._cmd_run(args, [], io.StringIO(), io.StringIO())
+
+
+def test_run_rejects_a_nonpositive_jobs_override_before_lane_execution(tmp_path):
+    (tmp_path / "src").mkdir()
+    lane_file = tmp_path / "assay.toml"
+    lane_file.write_text(
+        "schema_version = 2\n\n"
+        "[lanes.package]\n"
+        'scope = "S1"\n'
+        'rigor = ["R0", "R2"]\n'
+        'enforcement = "gate"\n'
+        'argv = ["/bin/true"]\n'
+        "env = {}\n"
+        'env_passthrough = ["PATH"]\n'
+        'budget = "1m"\n'
+        "allow_argv_append = false\n\n"
+        "[lanes.package.isolation]\n"
+        'snapshot_selection = "repository"\n\n'
+        "[lanes.package.judge]\n"
+        'language = "python"\n'
+        'source_roots = ["src"]\n'
+        'base = "main"\n\n'
+        "[lanes.package.judge.mutation]\n"
+        "jobs_max = 2\n"
+        "max_mutants = 10\n"
+        'operators = ["python:bool-const-flip"]\n',
+        encoding="utf-8",
+    )
+    args = SimpleNamespace(file=lane_file, lane="package", jobs=0)
+
+    with pytest.raises(LaneConfigError, match="--jobs must be a positive integer"):
+        cli_module._cmd_run(args, [], io.StringIO(), io.StringIO())
+
+
 def test_run_rejects_jobs_override_for_candidate_pilot(tmp_path):
     (tmp_path / "src").mkdir()
     lane_file = tmp_path / "assay.toml"

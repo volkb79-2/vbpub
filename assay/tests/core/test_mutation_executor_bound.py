@@ -311,6 +311,38 @@ def test_public_run_mutation_refuses_parallel_without_cheap_clone():
     assert factory_calls == []
 
 
+def test_parallel_run_mutation_refuses_when_the_window_host_is_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(_window_host, "can_host", lambda *_args: False)
+    repo = _seed_repo(tmp_path, "parallel-host-unavailable")
+    lane = make_lane(argv=("pytest", "-q"))
+    baseline = execute_command(lane, cwd=repo.path, process_runner=_always_pass)
+    scratch_root = tmp_path / "parallel-host-unavailable-scratch"
+    scratch_root.mkdir()
+    plan = make_plan(lane)
+    factory_calls = []
+
+    with prepared_snapshot(repo, scratch_root=scratch_root) as prepared:
+        with pytest.raises(LaneConfigError, match="isolated PR1a window host"):
+            run_mutation(
+                baseline=baseline,
+                prepared=prepared,
+                plan=plan,
+                deadline=make_deadline(),
+                targets=_TARGETS,
+                adapter=PythonAdapter(),
+                jobs=2,
+                max_mutants=50,
+                operators=("python:bool-const-flip",),
+                process_runner=_always_pass,
+                clock=lambda: datetime.now(timezone.utc),
+                executor_factory=lambda jobs: factory_calls.append(jobs),
+            )
+
+    assert factory_calls == []
+
+
 # --- jobs is validated BEFORE the executor boundary (P18 work item 5) ------
 
 

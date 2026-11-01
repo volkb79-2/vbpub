@@ -199,7 +199,7 @@ def test_r2_additionally_requires_mutation(project: Project):
     judge = load_lane_file(with_it).lane("package").judge
     assert judge is not None
     assert judge.mutation is not None
-    assert judge.mutation.jobs == 1
+    assert judge.mutation.jobs is None
     assert judge.mutation.operators == ("python:compare-swap", "python:boolop-swap")
     assert judge.canary is None
 

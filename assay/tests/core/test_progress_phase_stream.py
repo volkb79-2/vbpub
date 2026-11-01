@@ -737,7 +737,13 @@ def test_run_header_adds_parallel_jobs_and_attribution():
 
 @pytest.mark.parametrize(
     ("jobs", "attribution"),
-    [(0, "serial"), (1, "overlap-conservative"), (2, "unknown")],
+    [
+        (0, "serial"),
+        (1, "overlap-conservative"),
+        (2, "unknown"),
+        (None, "serial"),
+        (1, None),
+    ],
 )
 def test_run_header_rejects_invalid_parallel_metadata(jobs, attribution):
     stream = _stream(_Recorder())

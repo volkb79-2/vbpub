@@ -14,6 +14,7 @@ language for real, minimal Python source).
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -29,7 +30,7 @@ from conftest import (
 )
 
 from assay import git as git_module
-from assay import runner
+from assay import runner, workspace as workspace_module
 from assay.adapters.python import PythonAdapter
 from assay.config import MutationConfig
 from assay.errors import Outcome, ReasonCode
@@ -116,6 +117,45 @@ def test_r2_without_r1_kills_the_one_generated_mutant(git_repo: GitRepo):
     assert verdict.judgment.r2.jobs == 1
     assert verdict.judgment.r2.operators == ("python:compare-swap",)
     assert verdict.judgment.r1 is None
+
+
+def test_parallel_r2_refuses_a_plain_snapshot_workspace(
+    git_repo: GitRepo, monkeypatch: pytest.MonkeyPatch
+):
+    base_rev, head_rev = _seed_compare_swap_site(git_repo)
+    mutation = MutationConfig(
+        jobs=2,
+        jobs_max=2,
+        max_mutants=50,
+        operators=("python:compare-swap",),
+    )
+    judge = make_r2_judge(
+        source_root_paths=(git_repo.path / "src",),
+        base=base_rev,
+        mutation=mutation,
+    )
+    lane = make_lane(rigor=("R0", "R2"), judge=judge, argv=("check",))
+
+    @contextmanager
+    def plain_workspace(_estimate, *, scratch_root):
+        yield None
+
+    monkeypatch.setattr(
+        workspace_module, "_cow_workspace_opener", lambda: plain_workspace
+    )
+
+    verdict = runner.run_lane(
+        lane,
+        commit=head_rev,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=PythonAdapter(),
+        assay_version="0.1.0",
+        process_runner=_kill_on_mutation(),
+    )
+
+    assert verdict.outcome is Outcome.ERROR
+    assert verdict.reason_code is ReasonCode.BAD_LANE_CONFIG
 
 
 def test_native_whole_target_judgment_sorts_nested_target_paths(tmp_path):

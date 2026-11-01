@@ -56,7 +56,7 @@ def test_a_minimal_valid_mutation_table_loads(project: Project):
 
     assert judge is not None
     assert judge.mutation is not None
-    assert judge.mutation.jobs == 1
+    assert judge.mutation.jobs is None
     assert judge.mutation.jobs_max == 1
     assert judge.mutation.operators == ("python:compare-swap",)
 
@@ -193,14 +193,24 @@ def test_jobs_max_must_be_a_positive_integer(bad_jobs: str, project: Project):
         load_lane_file(project.write(lane))
 
 
-def test_jobs_max_defaults_to_one_and_jobs_is_an_alias(project: Project):
+def test_jobs_and_jobs_max_alias_cannot_be_declared_together(project: Project):
+    lane = _lane_with_mutation(
+        '\n[lanes.package.judge.mutation]\njobs = 2\njobs_max = 3\n'
+        'max_mutants = 50\noperators = ["python:compare-swap"]\n'
+    )
+    with pytest.raises(LaneConfigError, match="declare only one of"):
+        load_lane_file(project.write(lane))
+
+
+def test_jobs_policy_stays_unset_by_default_and_jobs_is_an_alias(project: Project):
     lane = _lane_with_mutation(
         '\n[lanes.package.judge.mutation]\nmax_mutants = 50\noperators = ["python:compare-swap"]\n'
     )
     loaded = load_lane_file(project.write(lane)).lane("package").judge
     assert loaded is not None and loaded.mutation is not None
-    assert loaded.mutation.jobs == 1
-    assert loaded.mutation.jobs_max == 1
+    assert loaded.mutation.jobs is None
+    assert loaded.mutation.jobs_max is None
+    assert "jobs_max" not in loaded.mutation.as_declared()
 
     aliased = _lane_with_mutation(
         '\n[lanes.package.judge.mutation]\njobs = 3\nmax_mutants = 50\n'
@@ -210,7 +220,7 @@ def test_jobs_max_defaults_to_one_and_jobs_is_an_alias(project: Project):
         project.write(aliased, name="jobs-alias.toml")
     ).lane("package").judge
     assert loaded_alias is not None and loaded_alias.mutation is not None
-    assert loaded_alias.mutation.jobs == 1
+    assert loaded_alias.mutation.jobs is None
     assert loaded_alias.mutation.jobs_max == 3
 
 
