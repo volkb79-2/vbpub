@@ -192,7 +192,8 @@ def test_analysis_r2_is_a_bounded_separate_whole_target_lane():
     )
     assert not set(judge.targets) & {target for target in lane_file.lane(QUALIFICATION_ID).judge.targets}
     assert judge.mutation is not None
-    assert judge.mutation.jobs == 1
+    assert judge.mutation.jobs_max == 1
+    assert judge.mutation.jobs is None
     assert judge.mutation.max_mutants == 10000
     assert judge.mutation.operators == (
         "python:compare-swap",
@@ -378,7 +379,8 @@ def test_self_qualification_is_full_source_r0_through_r3():
     assert lane.judge.require_branch is True
     assert lane.judge.fail_under == 100.0
     assert lane.judge.mutation is not None
-    assert lane.judge.mutation.jobs == 1
+    assert lane.judge.mutation.jobs_max == 1
+    assert lane.judge.mutation.jobs is None
     assert lane.judge.mutation.max_mutants == 10000
     assert lane.judge.mutation.shard_index is None
     assert lane.judge.mutation.shard_count is None
