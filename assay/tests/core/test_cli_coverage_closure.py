@@ -160,6 +160,27 @@ def test_signal_handler_treats_a_failing_request_as_first_and_swallows_errors(mo
     assert [call[0] for call in calls] == ["request", "terminate", "write"]
 
 
+def test_signal_handler_swallows_window_cleanup_error_and_still_announces(monkeypatch):
+    calls = _handler_stubs(monkeypatch)
+
+    def fail_window_cleanup():
+        calls.append(("window",))
+        raise RuntimeError("cleanup failed")
+
+    monkeypatch.setattr(
+        cli.liveness, "terminate_live_window_hosts", fail_window_cleanup
+    )
+    cli._termination_signal_handler(signal.SIGTERM, None)
+    assert [call[0] for call in calls] == [
+        "request",
+        "terminate",
+        "window",
+        "write",
+    ]
+    assert calls[-1][:2] == ("write", 2)
+    assert b"termination requested (signal 15)" in calls[-1][2]
+
+
 # ------------------------------------------- signal installation and main() guards
 
 
