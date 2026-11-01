@@ -31,7 +31,8 @@ OPERATOR_ROUTE = {"route_id": "fake-cli", "cli": "fake", "model": "fake-model",
                   "trust": "operator"}
 
 
-def _wait_for_child_output(log_file: Path, marker: str = "starting", timeout: float = 120.0) -> None:
+def _wait_for_child_output(log_file: Path, marker: str = "starting", timeout: float = 120.0,
+                           stop=None) -> bool:
     """Block until the child has written ``marker`` to its log. The marker is
     printed only after the child is fully set up (and, for the stubborn
     child, after SIG_IGN is installed), so signalling after this returns is
@@ -39,8 +40,10 @@ def _wait_for_child_output(log_file: Path, marker: str = "starting", timeout: fl
     interpreter start under contention can lose."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
+        if stop is not None and stop.is_set():
+            return False
         if log_file.exists() and marker in log_file.read_text(errors="replace"):
-            return
+            return True
         time.sleep(0.05)
     raise AssertionError(f"child never wrote {marker!r} to {log_file}")
 
@@ -1429,7 +1432,7 @@ class TestP05aLogging:
         attempt_id = "att-1"
         seed(project, task_id, attempt_id)
 
-        script = fake_cli(["starting"], exit_code=0, sleep_time="2")
+        script = fake_cli(["starting"], exit_code=0, sleep_time="30")
         attempt_dir = tmp_path / "attempt"
         attempt_dir.mkdir(parents=True)
         log_path = attempt_dir / "attempt.log"
@@ -1448,19 +1451,21 @@ class TestP05aLogging:
         log_dir = tmp_path / "logs"
         log.configure(level=log.INFO, log_dir=log_dir, console=False)
 
-        old_sigterm = signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        old_sigterm = signal.signal(signal.SIGTERM, lambda *_: None)  # a late SIGTERM is harmless
         old_sigint = signal.signal(signal.SIGINT, signal.SIG_DFL)
+        done = threading.Event()
 
         def _signal_self():
-            _wait_for_child_output(log_path)
-            os.kill(os.getpid(), signal.SIGTERM)
+            if _wait_for_child_output(log_path, stop=done):
+                os.kill(os.getpid(), signal.SIGTERM)
 
         try:
             t = threading.Thread(target=_signal_self)
             t.start()
             exit_code = wrapper_main(str(spec_path))
-            t.join(timeout=130)
         finally:
+            done.set()
+            t.join(timeout=130)
             signal.signal(signal.SIGTERM, old_sigterm)
             signal.signal(signal.SIGINT, old_sigint)
 
@@ -1809,19 +1814,21 @@ class TestContainmentGateFailsClosed:
         spec_dict["term_grace_seconds"] = 0
         spec_path.write_text(json.dumps(spec_dict), encoding="utf-8")
 
-        old_sigterm = signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        old_sigterm = signal.signal(signal.SIGTERM, lambda *_: None)  # a late SIGTERM is harmless
         old_sigint = signal.signal(signal.SIGINT, signal.SIG_DFL)
+        done = threading.Event()
 
         def _signal_self():
-            _wait_for_child_output(Path(_spec.log_path))
-            os.kill(os.getpid(), signal.SIGTERM)
+            if _wait_for_child_output(Path(_spec.log_path), stop=done):
+                os.kill(os.getpid(), signal.SIGTERM)
 
         try:
             t = threading.Thread(target=_signal_self)
             t.start()
             wrapper_main(str(spec_path))
-            t.join(timeout=130)
         finally:
+            done.set()
+            t.join(timeout=130)
             signal.signal(signal.SIGTERM, old_sigterm)
             signal.signal(signal.SIGINT, old_sigint)
 
