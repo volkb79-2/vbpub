@@ -81,6 +81,7 @@ WIZARD_SECTIONS = (
         "Root, swap, and memory policy",
         (
             WizardField("root_resize_policy", "Root partition policy", "choice", ("resize", "untouched", "grow-only")),
+            WizardField("root_max_size_gb", "Maximum root partition size in GiB (blank for no cap)", "optional-integer"),
             WizardField("swap_policy", "Swap policy", "choice", ("on", "off", "untouched")),
             WizardField("swap_disk_total_gb", "Total swap capacity in GiB (blank or auto derives from disk and RAM)", "optional-integer"),
             WizardField("swap_partition_count", "Number of swap partitions", "integer"),

@@ -1958,6 +1958,27 @@ MaxFileSec=1month
         if self.config.swap_policy == "on":
             boundary = (boundary // alignment) * alignment
 
+        policy = self.config.root_resize_policy
+        root_size_cap = None
+        if self.config.root_max_size_gb is not None:
+            cap_sectors = self.config.root_max_size_gb * GIB // 512
+            cap_root_end = ((root_start + cap_sectors) // alignment) * alignment
+            root_size_cap = cap_root_end - root_start
+            if root_size_cap <= 0:
+                raise InstallerError(
+                    "root_max_size_gb leaves no aligned space for the root partition"
+                )
+            if policy == "untouched" and root_size > root_size_cap:
+                raise InstallerError(
+                    "root_resize_policy=untouched cannot satisfy root_max_size_gb "
+                    f"({self.config.root_max_size_gb} GiB) because the current root is larger"
+                )
+            if policy == "grow-only" and root_size > root_size_cap:
+                raise InstallerError(
+                    "root_resize_policy=grow-only cannot satisfy root_max_size_gb "
+                    f"({self.config.root_max_size_gb} GiB) without shrinking the current root"
+                )
+
         partitions: list[tuple[int, int]] = []
         actual_swap_sectors = 0
         tail_partition_count = 0
@@ -2026,30 +2047,9 @@ MaxFileSec=1month
                 "reduce swap_disk_total_gb or increase the disk size"
             )
 
-        root_size_cap = None
-        if self.config.root_max_size_gb is not None:
-            cap_sectors = self.config.root_max_size_gb * GIB // 512
-            cap_root_end = ((root_start + cap_sectors) // alignment) * alignment
-            root_size_cap = cap_root_end - root_start
-            if root_size_cap <= 0:
-                raise InstallerError(
-                    "root_max_size_gb leaves no aligned space for the root partition"
-                )
-
-        policy = self.config.root_resize_policy
         if policy == "untouched":
-            if root_size_cap is not None and root_size > root_size_cap:
-                raise InstallerError(
-                    "root_resize_policy=untouched cannot satisfy root_max_size_gb "
-                    f"({self.config.root_max_size_gb} GiB) because the current root is larger"
-                )
             target_root_size = root_size
         elif policy == "grow-only":
-            if root_size_cap is not None and root_size > root_size_cap:
-                raise InstallerError(
-                    "root_resize_policy=grow-only cannot satisfy root_max_size_gb "
-                    f"({self.config.root_max_size_gb} GiB) without shrinking the current root"
-                )
             target_root_size = max(root_size, max_root_size)
             if root_size_cap is not None:
                 target_root_size = min(target_root_size, root_size_cap)
