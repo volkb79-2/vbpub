@@ -37,8 +37,11 @@ class SystemPowerView(Vertical):
         self.operation = operation
 
     def compose(self) -> ComposeResult:
-        yield Static(f"System {self.operation}: every action is destructive and requires typing the host name.",
-                     id="system-power-note")
+        read_only = getattr(self.session.backend, "read_only", False)
+        intro = ("This session is restricted to post-update verification; power actions are unavailable."
+                 if read_only else
+                 f"System {self.operation}: every action is destructive and requires typing the host name.")
+        yield Static(intro, id="system-power-note")
         yield Static("", id="system-power-job")
         with Vertical(id="system-power-form"):
             yield Input(placeholder="Delay in seconds (blank for immediate)", id="system-power-delay")
@@ -46,8 +49,17 @@ class SystemPowerView(Vertical):
                            id="system-power-force")
             yield Button(f"Plan {self.operation}", id="system-power-plan", variant="error")
 
+    def on_mount(self) -> None:
+        if getattr(self.session.backend, "read_only", False):
+            for widget_id in ("system-power-delay", "system-power-force", "system-power-plan"):
+                self.query_one(f"#{widget_id}").disabled = True
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id != "system-power-plan":
+            return
+        if getattr(self.session.backend, "read_only", False):
+            self.query_one("#system-power-note", Static).update(
+                "This session is restricted to post-update verification; power actions are unavailable.")
             return
         raw_delay = self.query_one("#system-power-delay", Input).value.strip()
         try:
@@ -87,7 +99,9 @@ class SystemPowerView(Vertical):
             self.query_one("#system-power-note", Static).update("Host shutting down. The session will end.")
             return
         self.query_one("#system-power-note", Static).update("Host rebooting. Waiting before reconnecting…")
-        self._reconnect_after_reboot()
+        expected = self._pending_update_target()
+        self._reconnect_after_reboot(baseline=getattr(plan.action, "system_baseline", None),
+                                     expected_version=expected)
 
     def _plan_apply_uncertain(self, plan: Plan, calls: list[dict[str, Any]]) -> None:
         if calls:
@@ -99,13 +113,25 @@ class SystemPowerView(Vertical):
             return
         self.query_one("#system-power-note", Static).update(
             "Reboot request outcome is uncertain; checking the host without resubmitting the action…")
-        self._reconnect_after_reboot(uncertain=True)
+        expected = self._pending_update_target()
+        self._reconnect_after_reboot(uncertain=True, baseline=getattr(plan.action, "system_baseline", None),
+                                     expected_version=expected)
+
+    def _pending_update_target(self) -> str | None:
+        pending = getattr(self.app, "pending_update_verification", None)
+        controller = self.app.session_controller
+        if (not isinstance(pending, dict) or pending.get("host") != self.session.profile.name
+                or pending.get("generation") != controller.generation):
+            return None
+        return pending.get("expected_version") if isinstance(pending.get("expected_version"), str) else None
 
     def _plan_cancelled(self, plan: Plan) -> None:
         self.query_one("#system-power-note", Static).update("System action cancelled.")
 
     @work(thread=True, exclusive=True)
-    def _reconnect_after_reboot(self, *, uncertain: bool = False) -> None:
+    def _reconnect_after_reboot(self, *, uncertain: bool = False,
+                                baseline: tuple[str, str, str] | None = None,
+                                expected_version: str | None = None) -> None:
         app = self.app
         lease = begin_session_work(self)
         if lease is None or lease.session is None:
@@ -114,9 +140,9 @@ class SystemPowerView(Vertical):
                 "Could not check whether the reboot finished because the active host session changed. "
                 "Verify host state before retrying.")
             return
-        delays = app.reconnect_delays
+        delays = app.update_reconnect_delays if expected_version is not None else app.reconnect_delays
+        self._reconnect_attempts = len(delays)
         last_error = "the host did not return to READY"
-        saw_power_transition = False
         try:
             for attempt, delay in enumerate(delays, 1):
                 if lease.cancelled.is_set():
@@ -149,12 +175,23 @@ class SystemPowerView(Vertical):
                     last_error = error_message(lease.session, exc)
                     break
                 if state == "READY":
-                    post_session_callback(self, lease, "_reconnected", uncertain and not saw_power_transition)
+                    if baseline is None:
+                        last_error = "the reboot plan did not retain its version, boot ID, and active boot environment"
+                        break
+                    try:
+                        report = lease.session.workflows.verify_system_reboot(
+                            baseline, expected_version=expected_version)
+                    except TntError as exc:
+                        if getattr(exc, "rule", None) == "system-reboot-not-observed":
+                            last_error = str(exc)
+                            continue
+                        last_error = error_message(lease.session, exc)
+                        break
+                    post_session_callback(self, lease, "_reconnected", report, False)
                     return
                 if state not in {"BOOTING", "SHUTTING_DOWN"}:
                     last_error = f"system.state returned unexpected state {state!r}"
                     break
-                saw_power_transition = True
                 last_error = f"host is still {state.lower()}"
             post_session_callback(self, lease, "_reconnect_failed", last_error, uncertain)
         finally:
@@ -167,19 +204,27 @@ class SystemPowerView(Vertical):
         self.query_one("#system-power-note", Static).update(
             f"Host rebooting. Reconnect attempt {attempt}/{total} after {delay} seconds; login retries are bounded.")
 
-    def _reconnected(self, uncertain: bool = False) -> None:
+    def _reconnected(self, report: dict[str, Any] | None = None, uncertain: bool = False) -> None:
         self.app.query_one("#banner", Static).update(self.session.banner())
-        message = ("Host is reachable and READY. The reboot request outcome remains uncertain; inspect host state "
-                   "before retrying." if uncertain else "Host rebooted and returned to READY.")
+        if report is None:
+            message = ("Host is reachable and READY. The reboot request outcome remains uncertain; inspect host state "
+                       "before retrying." if uncertain else "Host rebooted and returned to READY.")
+        else:
+            message = (f"Host rebooted and returned to READY on version {report['version']} and boot environment "
+                       f"{report['boot_environment']} (new boot ID {report['boot_id']}).")
+            pending = getattr(self.app, "pending_update_verification", None)
+            if isinstance(pending, dict) and pending.get("host") == self.session.profile.name:
+                self.app.pending_update_verification = None
         self.query_one("#system-power-note", Static).update(message)
 
     def _reconnect_failed(self, reason: str, uncertain: bool = False) -> None:
+        attempts = getattr(self, "_reconnect_attempts", len(self.app.reconnect_delays))
         if uncertain:
             message = (f"Reboot request outcome is uncertain; automatic reconnect stopped after "
-                       f"{len(self.app.reconnect_delays)} bounded attempts: {reason}. "
+                       f"{attempts} bounded attempts: {reason}. "
                        "Verify host state before retrying the power action.")
         else:
-            message = (f"Host rebooting; automatic reconnect stopped after {len(self.app.reconnect_delays)} bounded "
+            message = (f"Host rebooting; automatic reconnect stopped after {attempts} bounded "
                        f"attempts: {reason}. Exit tnt and reconnect later.")
         self.query_one("#system-power-note", Static).update(message)
 
@@ -199,17 +244,33 @@ class SystemUpdateView(Vertical):
         self.status: dict[str, Any] | None = None
 
     def compose(self) -> ComposeResult:
-        yield Static("Update status has not been checked.", id="system-update-note")
+        read_only = getattr(self.session.backend, "read_only", False)
+        intro = ("This v28 session is restricted to post-update verification. Update and power actions are unavailable."
+                 if read_only else "Update status has not been checked.")
+        yield Static(intro, id="system-update-note")
         yield Static("", id="system-update-details", markup=False)
         with Vertical(id="system-update-form"):
+            yield Input(placeholder="Exact available profile ID", id="system-update-profile")
             yield Input(placeholder="Exact target version to apply", id="system-update-target")
             yield Checkbox("Force only when running jobs are listed", id="system-update-force")
             with Horizontal():
                 yield Button("Check for updates", id="system-update-check")
+                yield Button("Plan profile selection", id="system-update-select")
+                yield Button("Plan download", id="system-update-download")
                 yield Button("Plan update", id="system-update-plan", variant="error")
 
     def on_mount(self) -> None:
-        self.action_refresh()
+        if getattr(self.session.backend, "read_only", False):
+            for widget_id in ("system-update-profile", "system-update-target", "system-update-force",
+                              "system-update-check", "system-update-select", "system-update-download", "system-update-plan"):
+                self.query_one(f"#{widget_id}").disabled = True
+            self._verify()
+        else:
+            self.action_refresh()
+
+    @work(thread=True, exclusive=True)
+    def _verify(self) -> None:
+        run_session_work(self, lambda session: session.workflows.system_status(), "_verified", "_check_failed")
 
     def action_refresh(self) -> None:
         self.query_one("#system-update-note", Static).update("Checking update status…")
@@ -217,20 +278,30 @@ class SystemUpdateView(Vertical):
 
     @work(thread=True, exclusive=True)
     def _check(self) -> None:
-        run_session_work(self, lambda session: session.workflows.update_check(), "_checked", "_check_failed")
+        run_session_work(self, lambda session: {
+            "status": session.workflows.update_check(),
+            "profiles": session.workflows.update_profiles(),
+        }, "_checked", "_check_failed")
 
     def _check_failed(self, message: str) -> None:
         self.status = None
         self.query_one("#system-update-note", Static).update(f"Update check failed: {message}")
         self.query_one("#system-update-details", Static).update("")
 
-    def _checked(self, status: dict[str, Any]) -> None:
+    def _verified(self, status: dict[str, str]) -> None:
+        self.query_one("#system-update-note", Static).update("Post-update verification surface connected; no writes are enabled.")
+        self.query_one("#system-update-details", Static).update(json.dumps(status, indent=2, sort_keys=True))
+
+    def _checked(self, result: dict[str, Any]) -> None:
+        status = result["status"]
+        profiles = result["profiles"]
         self.status = status
         self.query_one("#system-update-note", Static).update(
             "Update available." if status.get("new_version") else "No update is currently available.")
         details = {
             "current_train": status.get("train"), "target_train": status.get("target_train"),
-            "profile": status.get("profile"),
+            "current_profile": profiles["current_profile"],
+            "profiles": profiles["profiles"],
             "current_version": status.get("current_version"), "new_version": status.get("new_version"),
             "changelog_summary": status.get("changelog_summary"),
             "release_notes_url": status.get("release_notes_url"),
@@ -243,39 +314,69 @@ class SystemUpdateView(Vertical):
         if event.button.id == "system-update-check":
             self.action_refresh()
             return
-        if event.button.id != "system-update-plan":
+        if event.button.id not in {"system-update-select", "system-update-download", "system-update-plan"}:
             return
         target = self.query_one("#system-update-target", Input).value.strip()
+        profile = self.query_one("#system-update-profile", Input).value.strip()
         force = self.query_one("#system-update-force", Checkbox).value
         self.query_one("#system-update-note", Static).update("Checking current host state and preparing the plan…")
-        self.query_one("#system-update-plan", Button).disabled = True
-        self._make_plan(target, force)
+        for widget_id in ("system-update-select", "system-update-download", "system-update-plan"):
+            self.query_one(f"#{widget_id}", Button).disabled = True
+        self._make_plan(event.button.id, target, profile, force)
 
     @work(thread=True, exclusive=True)
-    def _make_plan(self, target: str, force: bool) -> None:
+    def _make_plan(self, operation: str, target: str, profile: str, force: bool) -> None:
         def build_and_plan(session, lease):
-            action = session.workflows.update_apply_action(target, force_with_jobs=force)
+            if operation == "system-update-select":
+                action = session.workflows.update_select_profile_action(profile, force_with_jobs=force)
+            elif operation == "system-update-download":
+                action = session.workflows.update_download_action(target, force_with_jobs=force)
+            else:
+                action = session.workflows.update_apply_action(target, force_with_jobs=force)
             return make_plan(action, session.rpc, cancelled=lease.cancelled.is_set)
 
         run_cancellable_session_work(
             self, build_and_plan, "_plan_ready", "_plan_failed")
 
     def _plan_ready(self, plan: Plan) -> None:
-        self.query_one("#system-update-plan", Button).disabled = False
+        self._set_plan_buttons(False)
         self.app.push_screen(PlanReview(plan, self.session, parent_view=self))
 
     def _plan_failed(self, message: str) -> None:
-        self.query_one("#system-update-plan", Button).disabled = False
+        self._set_plan_buttons(False)
         self.query_one("#system-update-note", Static).update(f"Plan refused: {message}")
+
+    def _set_plan_buttons(self, disabled: bool) -> None:
+        if getattr(self.session.backend, "read_only", False):
+            return
+        for widget_id in ("system-update-select", "system-update-download", "system-update-plan"):
+            self.query_one(f"#{widget_id}", Button).disabled = disabled
 
     def _plan_applied(self, plan: Plan, result: Any) -> None:
         outcomes = _call_outcomes(result)
+        method = plan.action.calls[0].method
+        if method == "update.run":
+            attrs = plan.action.calls[0].params[0]
+            self.app.pending_update_verification = {
+                "host": self.session.profile.name,
+                "generation": self.app.session_controller.generation,
+                "expected_version": attrs["version"],
+            }
+            note = (f"Update job completed for {attrs['version']}. Reboot separately under System > Reboot; "
+                    "the same host session will verify the version, new boot ID, and changed active boot environment.")
+        elif method == "update.download":
+            note = f"Update {plan.action.confirm_target} downloaded. Review and apply it when ready."
+        else:
+            note = f"Update profile {plan.action.confirm_target} selected. Check for the resulting update candidate."
+        self._set_plan_buttons(False)
         self.query_one("#system-update-note", Static).update(
-            f"Update job completed for {plan.action.confirm_target}. Reboot is separate; check for updates again after installation.\n"
-            f"Applied call outcomes:\n{json.dumps(outcomes, indent=2, sort_keys=True)}")
+            f"{note}\nApplied call outcomes:\n{json.dumps(outcomes, indent=2, sort_keys=True)}")
+        if method == "update.update":
+            self.action_refresh()
 
     def _plan_cancelled(self, plan: Plan) -> None:
-        self.query_one("#system-update-note", Static).update("Update apply cancelled.")
+        self._set_plan_buttons(False)
+        self.query_one("#system-update-note", Static).update("Update action cancelled.")
 
 
 class SystemGeneralView(Vertical):

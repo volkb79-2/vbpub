@@ -1,6 +1,7 @@
 # tnt (truenas-tui)
 
-`tnt` is a keyboard driven TUI and scriptable CLI for the vanilla TrueNAS v27 JSON-RPC API. Workflows cover Datasets
+`tnt` is a keyboard driven TUI and scriptable CLI for the TrueNAS v27 JSON-RPC API, with a restricted v28 read-only
+post-update verifier. Writable management workflows cover v27 Datasets
 and Snapshots, SMB/NFS Shares, snapshot/replication/cloud-sync tasks, Network status, Apps, Containers, Virtual
 Machines, local Users, Audit, API Keys, guarded System actions, and the read-only Dashboard, Alerts, Jobs, Services,
 and Storage health views. Containers and Virtual Machines are separate top-level menu entries. Pool creation and
@@ -15,10 +16,11 @@ Scope and safety choices are explained in the [design guide](docs/DESIGN.md#1-go
 workflow examples are in the [consumer guide](docs/CONSUMERS.md#configure-multiple-hosts).
 
 M1 core workflows, M2 management workflows, It1 multi-host configuration and session control, It2 job tracking and
-read-only core views, and It3 hardened interactive SSH hand-off are implemented. It4 vanilla-v27 acceptance is recorded
-in the [live acceptance record](docs/LIVE-TESTING.md#live-acceptance-run-2026-10-29). CMRU release registration is in
-place; the first release, version 0.1.0, has not been published. See the [milestone plan](docs/DESIGN.md#10-milestones)
-and [release design](docs/DESIGN.md#12-decisions-open-questions-and-estate-registration).
+read-only core views, and It3 hardened interactive SSH hand-off are implemented. The guarded update flow and the
+registered operator-run `live-update` lane are implemented; live results are recorded in
+[the update acceptance report](docs/LIVE-TESTING.md#update-survival-acceptance). CMRU published tnt 0.1.0 as
+`tnt-v0.1.0`; see the [milestone plan](docs/DESIGN.md#10-milestones) and
+[release design](docs/DESIGN.md#12-decisions-open-questions-and-estate-registration).
 
 At connection time tnt checks the v27 WebSocket method list. Methods missing from a host are reported by
 `doctor --online` and refused if a workflow needs them; a method-name match does not grant an RBAC role. See the
@@ -27,10 +29,8 @@ At connection time tnt checks the v27 WebSocket method list. Methods missing fro
 
 ## Install
 
-The first release has not been published yet. It is registered as version `0.1.0`, with the wheel and its SHA256
-planned as assets of GitHub Release `tnt-v0.1.0`; CMRU also maintains the moving `tnt-latest` release. After it is
-published, download that wheel and a
-`cli-extended>=0.4.0` wheel from their GitHub Releases into one directory, then install:
+Download the tnt `0.1.0` wheel from GitHub Release `tnt-v0.1.0` and a `cli-extended>=0.4.0` wheel from that project's
+GitHub Releases into one directory. CMRU also maintains the moving `tnt-latest` release. Install:
 
 ```bash
 python -m pip install --no-index --find-links . 'cli-extended>=0.4.0'
@@ -267,24 +267,40 @@ creation checks the path on the TrueNAS host and refuses missing paths and boot-
 only its share configuration, never the data. SMB output includes the share ACL. See the [share adoption examples](docs/CONSUMERS.md#shares).
 
 System actions are under `System > Update`, `Reboot`, `Shutdown`, and `General Settings` (configuration export).
-Update check shows the current train/version, the exact available target train/version, and a changelog summary. Apply
-uses the shown version as typed confirmation and leaves reboot separate. Reboot and shutdown show active jobs, running
-VMs and containers, and the active SMB-session count; any running job blocks apply unless `--force-with-jobs` is
-explicit. Every power/update action still requires typing the host name or target version shown in its plan.
-If the connection drops after reboot or shutdown submission, the TUI treats the result as uncertain, never resubmits the
-power action, and asks you to verify host state before retrying.
+Update check shows the current candidate train/version; `system update versions` lists exact version pairs across
+trains. The profile view shows the current profile ID and choices' separate display names and availability. Profile
+selection, download, and apply each use single-use typed-confirmation plans; download and apply show job progress.
+Pass `--train` with a version from `versions` to select an exact update outside the current check candidate. Apply keeps
+reboot separate. The CLI can reconnect after reboot and verify READY state, the new boot ID, expected version, and
+changed active boot environment. The TUI does the same after an update followed by System > Reboot. A lost reboot
+reply is never resubmitted. v28 is available only through a restricted read-only post-update verification surface.
+Reboot, shutdown, profile selection, download, and apply show active jobs, running VMs and containers, and active SMB
+sessions; any running job blocks the plan unless `--force-with-jobs` is explicit. Every destructive plan requires the
+exact host name, profile ID, or version shown in the plan. See the
+[system-action design](docs/DESIGN.md#system-actions) for why profile IDs and update trains are handled separately,
+and the [copyable commands](docs/CONSUMERS.md#system-actions). The live update lane takes explicit
+`TNT_LIVE_UPDATE_TARGET_PROFILE`, `TNT_LIVE_UPDATE_TARGET_TRAIN`, and `TNT_LIVE_UPDATE_TARGET_VERSION` values and
+validates the exact pair before creating its test dataset, then checks dataset and snapshot identity records across
+the reboot. The optional patched-v27-to-v28 leg follows the companion patcher's fresh-target guards; see
+[the design rationale](docs/DESIGN.md#system-actions) and
+[live acceptance steps](docs/CONSUMERS.md#live-update-survival-acceptance).
 
 ```sh
 tnt system update check --host lab --json
+tnt system update profiles --host lab --json
+tnt system update select AVAILABLE_PROFILE_FROM_PROFILES --host lab --allow-write --confirm AVAILABLE_PROFILE_FROM_PROFILES
+tnt system update download TrueNAS-27.0.0-RC.2 --host lab --allow-write --confirm TrueNAS-27.0.0-RC.2
 tnt system update apply TrueNAS-27.0.0-RC.2 --host lab --allow-write --confirm TrueNAS-27.0.0-RC.2
-tnt system reboot --host lab --delay 60 --allow-write --confirm HOST_NAME_FROM_PLAN
+tnt system reboot --host lab --allow-write --confirm HOST_NAME_FROM_PLAN --wait --expect-version TrueNAS-27.0.0-RC.2
+tnt system verify --host lab --json
 tnt system shutdown --host lab --allow-write --confirm HOST_NAME_FROM_PLAN
 tnt system config-export /home/me/truenas-config.tar --host lab --allow-write
 ```
 
 Configuration export writes a new mode-0600 tar file, includes the TrueNAS secret seed, and refuses overwrite. Store
 the file as a credential. See the [system action decisions](docs/DESIGN.md#system-actions),
-[copyable system commands](docs/CONSUMERS.md#system-actions), and [verified v27 methods](docs/API-METHODS-V27.md#system-actions).
+[copyable system commands and live update lane](docs/CONSUMERS.md#system-actions), and
+[verified v27 methods](docs/API-METHODS-V27.md#system-actions).
 
 Data Protection includes periodic snapshot task create/list/show/run/enable/disable/delete, plus replication and
 cloud-sync task list/show/run/enable/disable. Run plans show replication source and target and require the typed task

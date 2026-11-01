@@ -45,6 +45,7 @@ DESTRUCTIVE_METHODS = frozenset({"disk.wipe", "pool.export", "pool.delete", "poo
                                  "replication.run", "cloudsync.sync",
                                  "app.delete", "app.uninstall", "api_key.delete", "pool.dataset.destroy_snapshots", "filesystem.rmdir", "filesystem.unlink",
                                  "system.reboot", "system.shutdown", "update.run",
+                                 "update.download", "update.update",
                                  "filesystem.remove", "container.restart", "zfs.pool.delete", "zfs.resource.destroy",
                                  "zfs.resource.snapshot.destroy"})
 DESTRUCTIVE_SUFFIXES = (".delete", ".destroy", ".wipe", ".rollback", ".replace", ".attach", ".offline", ".promote",
