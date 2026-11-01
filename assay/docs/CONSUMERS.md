@@ -762,7 +762,8 @@ then creates an independent clone for each execution unit. Replacement files
 are unlinked and rewritten inside that unit, then the clone is verified before
 declared links are planted. The sealed template is never passed to the lane
 command. If cheap tree cloning is unavailable, Assay keeps the packed-object
-reflink path. If the variable is absent, Assay uses its existing file-copy
+reflink path. A valid area whose backend is not btrfs keeps the existing
+file-copy path with one advisory line. If the variable is absent, Assay uses its existing file-copy
 path and cowtree emits one INFO line. An invalid configured area, insufficient
 admitted space or a failed required clone refuses the lane; Assay does not
 silently change to a weaker storage path.

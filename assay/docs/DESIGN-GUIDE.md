@@ -1958,7 +1958,10 @@ consumer-controlled Git state.*
 Higher-rigor lanes may use the same-repository `cowtree` library when
 `MDT_COW_ROOT` is present. `cowtree.detect()` validates the existing root,
 caller ownership and mount table; Assay activates it only for a btrfs area
-with the btrfs backend. The initial seed is ingested into the leased run.
+with the btrfs backend. A valid area with another backend (XFS reflink, or
+btrfs without unprivileged subvolume deletion) keeps the plain copy path and
+prints one advisory line: the optimization does not apply, which is not a
+lane failure. The initial seed is ingested into the leased run.
 Assay never hardlinks Git objects or shares an alternate. When the run advertises
 `cheap_clone`, `_ensure_template` builds and verifies one exact base worktree,
 then seals it. The template is never handed to a lane command: fixed mtimes
