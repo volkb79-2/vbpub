@@ -171,6 +171,7 @@ items:
   - {id: B189, title: "Release and qualification sparse clones omitted the sibling cowtree source required by Assay's wheel", type: bugfix, component: distribution, context_estimate: small}
   - {id: B190, title: "CW8 integration left B105 target ordering, workspace record, and cleanup coverage out of sync", type: bugfix, component: gate, context_estimate: small}
   - {id: B191, title: "SQL witness source bootstrap omitted bundled cowtree and hid assay-run diagnostics", type: bugfix, component: gate, context_estimate: small}
+  - {id: B192, title: "SIGTERM launcher cancellation test timed out once under gate contention", type: bugfix, component: gate, context_estimate: small}
 ---
 
 # assay — backlog
@@ -13609,3 +13610,16 @@ even though the source is present in the exact checkout. The bootstrap now
 adds `libraries/cowtree/src` from that same checkout. If a later run still
 fails before producing a verdict, the qualification error includes bounded
 stdout and stderr tails from the child Assay invocation.
+
+## B192 — SIGTERM launcher cancellation test timed out once under gate contention
+
+**Status: OPEN (observed once, 2026-11-01).**
+`gate/tests/test_self_qualification_container.py::test_runner_cancellation_stops_and_removes_its_owned_container`
+sends SIGTERM to the container launcher and waits 60 s for it to exit. It timed
+out once inside a `tester-unified` run (the launcher process was reaped with
+-9) while other gates and two mutation campaigns shared the host, then passed
+on a rerun of the identical commit and twice standalone in about 2 s each.
+Hypothesis: the 60 s bound is wall-clock under host contention, or the launcher
+trap races the fifo reader. Next step: make the wait deadline-driven from the
+test's own progress marker rather than a fixed 60 s, and capture the launcher
+stderr on timeout.
