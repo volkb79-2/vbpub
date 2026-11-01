@@ -345,8 +345,10 @@ assay exists to close that gap mechanically, not by policy:
   and [consumer setup](docs/CONSUMERS.md#native-r2-resource-limit-observation-b145).
   Native R2 can execute up to the declared `judge.mutation.jobs_max` in
   parallel; `assay run --jobs N` selects a count from 1 through that cap, and
-  the default is 1. Parallel execution requires a prepared workspace with
-  `cheap_clone`. The coordinator samples every candidate window boundary and
+  the default is 1. If `jobs_max` is omitted, it stays absent in the loaded
+  declaration and the run remains limited to one worker. Parallel execution
+  requires a prepared workspace with `cheap_clone`. The coordinator samples
+  every candidate window boundary and
   assigns a limit event to every overlapping window, so a failing candidate
   whose window overlaps a positive event is `crashed`; PASS remains
   `survived`. The bounded queue keeps candidate state and progress in index
@@ -406,10 +408,12 @@ The verdict is a hard cut: `assay verify` refuses v15 and earlier verdicts
 (no dual-version verifier, no upgrade-in-place). Lane schema stays at v2;
 the 8.0.0 release extended it with the explicit project-level
 `[defaults].env_passthrough` option. Current v2 semantic constraints still
-apply: native R2 lanes declare `judge.mutation.jobs_max` (or its `jobs`
-alias) as a positive ceiling; `assay run --jobs N` defaults to 1 and cannot
-exceed it. A lane may omit its own `env_passthrough` only when that project
-table is present. A v2 assay
+apply: native R2 lanes may declare `judge.mutation.jobs_max` (or its `jobs`
+alias) as a positive ceiling. Omission stays absent in loaded and dumped
+configuration and leaves the effective ceiling at the one-worker default.
+`assay run --jobs N` defaults to 1 and cannot exceed the declared ceiling. A
+lane may omit its own `env_passthrough` only when that project table is
+present. A v2 assay
 refuses a v1 `assay.toml`'s `[isolation]`-less R1+ lane while a v1-pinned
 assay cannot parse a v2 file's `[isolation]` table at all. Repin the release
 and bump `schema_version` **in the same commit** — see

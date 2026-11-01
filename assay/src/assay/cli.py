@@ -2064,6 +2064,20 @@ def _cmd_run(
         and lane.judge.mutation is not None
         and not lane.judge.mutation.is_ingested
     )
+    if native_r2:
+        assert lane.judge is not None and lane.judge.mutation is not None
+        effective_jobs = (
+            lane.judge.mutation.jobs
+            if lane.judge.mutation.jobs is not None
+            else 1
+        )
+        lane = replace(
+            lane,
+            judge=replace(
+                lane.judge,
+                mutation=replace(lane.judge.mutation, jobs=effective_jobs),
+            ),
+        )
     if jobs_override is not None:
         if not native_r2:
             raise LaneConfigError("--jobs requires a native R2 mutation lane")
@@ -2131,12 +2145,6 @@ def _cmd_run(
             if pilot_jobs_override is None
             else pilot_jobs_override
         )
-        assert lane.judge.mutation.jobs_max is not None
-        if effective_jobs > lane.judge.mutation.jobs_max:
-            raise LaneConfigError(
-                f"pilot worker count {effective_jobs} exceeds lane {lane.name!r}'s "
-                f"judge.mutation.jobs_max ({lane.judge.mutation.jobs_max})"
-            )
         pilot_mutation = replace(lane.judge.mutation, jobs=effective_jobs)
         pilot_judge = replace(lane.judge, mutation=pilot_mutation)
         lane = replace(
@@ -4165,7 +4173,12 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO, err: TextIO | None = None) 
         else:
             per_candidate_seconds = parse_duration(per_candidate)
         serial_estimate = len(jobs) * per_candidate_seconds
-        wall_estimate = serial_estimate / max(1, lane.judge.mutation.jobs)
+        effective_jobs = (
+            lane.judge.mutation.jobs
+            if lane.judge.mutation.jobs is not None
+            else 1
+        )
+        wall_estimate = serial_estimate / effective_jobs
         candidate_rows = _plan_rows_from_jobs(
             jobs, deadline_check=deadline_check
         )
@@ -4203,7 +4216,7 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO, err: TextIO | None = None) 
             "tree": tree,
             "candidate_count": len(jobs),
             "max_mutants": lane.judge.mutation.max_mutants,
-            "jobs": lane.judge.mutation.jobs,
+            "jobs": effective_jobs,
             "shard": None if shard_index is None else f"{shard_index}/{shard_count}",
             "budget_per_candidate": per_candidate,
             "estimated_serial_seconds": round(serial_estimate, 3),

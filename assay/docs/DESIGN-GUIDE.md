@@ -691,9 +691,11 @@ termination classification. Thus parallel work may conservatively reduce
 mutation credit, but cannot turn an observed resource-limit failure into a
 `killed` result.
 
-The lane declares `judge.mutation.jobs_max` (with `jobs` as a config alias),
-and `assay run --jobs N` selects `1 <= N <= jobs_max`; Assay never derives N
-from the host. It defaults to 1. Values above 1 require a prepared workspace
+The native lane may declare `judge.mutation.jobs_max` (with `jobs` as a config
+alias). When declared, it caps `assay run --jobs N`; Assay never derives N
+from the host. An omitted ceiling remains absent from the loaded lane and its
+declaration round-trip; execution still defaults to one worker, so values
+above one require an explicit ceiling. Values above 1 require a prepared workspace
 that advertises `cheap_clone` and the PR1a isolated command-window host. The
 bounded scheduler submits at most N windows, writes candidate progress and
 state on the coordinator in candidate-index order, and keeps resume identity

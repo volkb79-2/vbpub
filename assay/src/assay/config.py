@@ -519,11 +519,11 @@ class MutationConfig:
     loader is the first reader of its actual shape.
     """
 
-    #: Runtime worker count. The loader leaves this at one; `assay run --jobs`
-    #: replaces it after validating against `jobs_max`.
-    jobs: int | None = 1
-    #: Native lane's declared concurrency ceiling; `None` on ingested lanes.
-    jobs_max: int | None = 1
+    #: Runtime worker count, selected by the run path. `None` means no runtime
+    #: count has been selected yet.
+    jobs: int | None = None
+    #: Native lane's declared concurrency ceiling, or `None` when omitted.
+    jobs_max: int | None = None
     #: **Required on a NATIVE lane, `None` on an ingested one** (B046). These
     #: fields are assay's own execution policy; an ingested lane
     #: declared none of it, because Stryker's own configuration chose the
@@ -665,6 +665,8 @@ class MutationConfig:
             "max_mutants": self.max_mutants,
             "operators": list(self.operators or ()),
         }
+        if self.jobs_max is None:
+            del payload["jobs_max"]
         # (P34/W4) Declared value or omitted, never null (A-051) -- present
         # only for the SQL lane that actually named it.
         if self.kill_signal_artifact is not None:
@@ -3121,17 +3123,18 @@ def _load_mutation(
             "alias 'judge.mutation.jobs'"
         )
     jobs_key = "jobs_max" if "jobs_max" in value else "jobs"
-    jobs_max = value.get(jobs_key, 1)
-    if not is_strict_int(jobs_max):
-        raise LaneConfigError(
-            f"{where}: 'judge.mutation.{jobs_key}' must be an integer, got "
-            f"{_type_name(jobs_max)}"
-        )
-    if jobs_max < 1:
-        raise LaneConfigError(
-            f"{where}: 'judge.mutation.{jobs_key}' must be a positive integer, "
-            f"got {jobs_max}"
-        )
+    jobs_max = value[jobs_key] if jobs_key in value else None
+    if jobs_key in value:
+        if not is_strict_int(jobs_max):
+            raise LaneConfigError(
+                f"{where}: 'judge.mutation.{jobs_key}' must be an integer, got "
+                f"{_type_name(jobs_max)}"
+            )
+        if jobs_max < 1:
+            raise LaneConfigError(
+                f"{where}: 'judge.mutation.{jobs_key}' must be a positive integer, "
+                f"got {jobs_max}"
+            )
     max_mutants = value["max_mutants"]
     if not is_strict_int(max_mutants):
         raise LaneConfigError(
@@ -3405,7 +3408,7 @@ def _load_mutation(
                 f"0..{shard_count - 1}"
             )
     return MutationConfig(
-        jobs=1,
+        jobs=None,
         jobs_max=jobs_max,
         max_mutants=max_mutants,
         operators=tuple(operators),

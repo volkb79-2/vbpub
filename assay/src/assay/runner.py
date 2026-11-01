@@ -6763,6 +6763,19 @@ def run_lane(
     committed and left unrelated dirt has the stronger, unusable tree. Assay
     never cleans the consumer's tree to make a claim true.
     """
+    if (
+        lane.judge is not None
+        and lane.judge.mutation is not None
+        and not lane.judge.mutation.is_ingested
+        and lane.judge.mutation.jobs is None
+    ):
+        lane = replace(
+            lane,
+            judge=replace(
+                lane.judge,
+                mutation=replace(lane.judge.mutation, jobs=1),
+            ),
+        )
     if progress_stream is None and progress_artifact is not None:
         # (B064) The library-caller path: nobody upstream owns the stream, so
         # open it here for the WHOLE lane and re-enter with it. Before this

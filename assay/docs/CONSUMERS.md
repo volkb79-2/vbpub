@@ -4317,10 +4317,13 @@ under v16 and the v16 judgment contract. See the
 
 ### Native R2 parallel candidate windows (PR1b)
 
-Declare a concurrency ceiling in the native mutation table. The old `jobs`
-config key remains an alias for `jobs_max`; new lane files should use the
-canonical name. Assay defaults to one worker and never chooses a larger count
-from host capacity. Values above one require a prepared workspace that
+For parallel execution, declare a concurrency ceiling in the native mutation
+table. The old `jobs` config key remains an alias for `jobs_max`; new lane
+files should use the canonical name. The ceiling may be omitted; it stays
+absent in the loaded and round-tripped lane, while execution defaults to one
+worker. To run above one,
+declare the ceiling and pass `--jobs`. Assay never chooses a larger count from
+host capacity. Values above one require a prepared workspace that
 advertises `cheap_clone`; otherwise the run refuses with `BAD_LANE_CONFIG`.
 Candidate-file pilots use `--pilot-jobs 1`; `--jobs` is refused with
 `--candidates-file`.

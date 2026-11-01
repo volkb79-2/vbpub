@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from queue import Empty, Queue
 import threading
 from typing import Callable
@@ -12,6 +11,7 @@ from .resource_limits import (
     ResourceLimitEvidence,
     ResourceLimitObservationError,
 )
+from .records import positional_record, record
 
 
 CounterReader = Callable[
@@ -19,7 +19,7 @@ CounterReader = Callable[
 ]
 
 
-@dataclass(frozen=True)
+@record
 class LimitWindow:
     """Evidence and diagnostics derived for one start/end sequence range."""
 
@@ -28,19 +28,17 @@ class LimitWindow:
     changes: tuple[str, ...] = ()
 
 
-@dataclass(frozen=True)
+@positional_record
 class _Snapshot:
     counters: ResourceLimitCounters | None
     reason: str | None
 
 
-@dataclass
+@positional_record
 class _BoundaryRequest:
     kind: str
     start_sequence: int | None
-    ready: threading.Event
-    result: int | LimitWindow | None = None
-    error: BaseException | None = None
+    response: Queue[int | LimitWindow | BaseException | None]
 
 
 class LimitLedger:
@@ -152,17 +150,18 @@ class LimitBoundaryBroker:
         return result
 
     def _request(self, kind: str, start_sequence: int | None) -> int | LimitWindow:
-        request = _BoundaryRequest(kind, start_sequence, threading.Event())
+        response: Queue[int | LimitWindow | BaseException | None] = Queue(maxsize=1)
+        request = _BoundaryRequest(kind, start_sequence, response)
         with self._lock:
             if self._closed:
                 raise RuntimeError("LimitLedger boundary broker is closed")
             self._requests.put(request)
-        request.ready.wait()
-        if request.error is not None:
-            raise request.error
-        if request.result is None:
+        result = response.get()
+        if isinstance(result, BaseException):
+            raise result
+        if result is None:
             raise RuntimeError("LimitLedger boundary request completed without a result")
-        return request.result
+        return result
 
     def service_pending(self) -> int:
         """Serve queued requests on the coordinator and return their count."""
@@ -178,19 +177,19 @@ class LimitBoundaryBroker:
                 if closed:
                     raise RuntimeError("LimitLedger boundary broker is closed")
                 if request.kind == "start" and request.start_sequence is None:
-                    request.result = self._ledger.snapshot()
+                    result: int | LimitWindow = self._ledger.snapshot()
                 elif request.kind == "end" and request.start_sequence is not None:
                     end_sequence = self._ledger.snapshot()
-                    request.result = self._ledger.limits_for(
+                    result = self._ledger.limits_for(
                         request.start_sequence, end_sequence
                     )
                 else:
                     raise ValueError("LimitLedger boundary request is malformed")
             except Exception as exc:
-                request.error = exc
-            finally:
-                request.ready.set()
-                served += 1
+                request.response.put(exc)
+            else:
+                request.response.put(result)
+            served += 1
 
     def cancel_pending(self, error: BaseException) -> None:
         """Wake queued callers and refuse any later boundary requests."""
@@ -201,5 +200,4 @@ class LimitBoundaryBroker:
                     request = self._requests.get_nowait()
                 except Empty:
                     break
-                request.error = error
-                request.ready.set()
+                request.response.put(error)

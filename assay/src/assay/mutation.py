@@ -4509,7 +4509,7 @@ def _execute_mutation_jobs(
     limit_broker: _limit_ledger.LimitBoundaryBroker | None = None
     limit_ledger: _limit_ledger.LimitLedger | None = None
     if jobs > 1:
-        if not prepared.cheap_clone:
+        if prepared is None or not prepared.cheap_clone:
             raise LaneConfigError(
                 "native R2 --jobs greater than 1 requires a cheap_clone "
                 "snapshot workspace; set up the supported btrfs CoW workspace "
