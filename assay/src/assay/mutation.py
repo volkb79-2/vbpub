@@ -4461,6 +4461,16 @@ def _execute_mutation_jobs(
         )
     candidate_reuse = dict(reuse_witnesses or {}) if witness_capture_active else {}
     attempt_receipts: dict[tuple[int, str], Mapping[str, Any] | None] = {}
+    window_host_run: Callable[..., CommandResult] | None = None
+    if jobs == 1:
+        from . import _window_host
+        from . import runner as runner_module
+
+        if (
+            execute_plan is runner_module.execute_plan
+            and _window_host.can_host(process_runner, clock)
+        ):
+            window_host_run = _window_host.run_window
     bucket_for_run = partial(
         _bucket_for_run,
         equivalence_artifact=equivalence_artifact,
@@ -4555,13 +4565,22 @@ def _execute_mutation_jobs(
                             target_node_id=target_node_id,
                             cold=cold,
                         )
-                    result = execute_plan(
-                        attempt_plan,
-                        cwd=snapshot.project_root,
-                        timeout=command_deadline,
-                        process_runner=process_runner,
-                        clock=clock,
-                    )
+                    if window_host_run is None:
+                        result = execute_plan(
+                            attempt_plan,
+                            cwd=snapshot.project_root,
+                            timeout=command_deadline,
+                            process_runner=process_runner,
+                            clock=clock,
+                        )
+                    else:
+                        result = window_host_run(
+                            attempt_plan,
+                            cwd=snapshot.project_root,
+                            timeout=command_deadline,
+                            process_runner=process_runner,
+                            clock=clock,
+                        )
                 except BaseException as exc:
                     execution_error = exc
                 finally:

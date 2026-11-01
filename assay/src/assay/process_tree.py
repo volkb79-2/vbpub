@@ -42,6 +42,7 @@ _CLEANUP_SECONDS = 10.0
 _OUTPUT_TAIL_BYTES = 64 * 1024
 _WINDOW_LOCK = threading.RLock()
 _UNPROVEN_CLEANUP = False
+_WINDOW_HOST_CANDIDATE_FD = "ASSAY_WINDOW_HOST_CANDIDATE_FD"
 
 
 def _finite_number(value: object) -> bool:
@@ -55,6 +56,25 @@ def _finite_number(value: object) -> bool:
 
 class ProcessTreeError(RuntimeError):
     """The command tree could not be proved empty within the cleanup bound."""
+
+
+def _report_window_host_candidate_pid(pid: int) -> None:
+    """Tell the outer window host which process group to clean after a crash."""
+    raw_fd = os.environ.get(_WINDOW_HOST_CANDIDATE_FD)
+    if raw_fd is None:
+        return
+    try:
+        fd = int(raw_fd)
+    except ValueError as exc:
+        raise ProcessTreeError("window-host candidate descriptor is invalid") from exc
+    if fd < 3 or type(pid) is not int or pid < 1:
+        raise ProcessTreeError("window-host candidate descriptor or pid is invalid")
+    try:
+        os.write(fd, f"{pid}\n".encode("ascii"))
+    except OSError as exc:
+        raise ProcessTreeError(
+            f"cannot report candidate process {pid} to the window host: {exc}"
+        ) from exc
 
 
 class ProcessTreeSpawnError(OSError):
@@ -531,6 +551,10 @@ class ProcessTreeProcessRunner:
         self.cleanup_seconds = cleanup_seconds
         self.sensitive_values = tuple(value for value in sensitive_values if value)
 
+    def assay_window_host_spec(self) -> Mapping[str, object]:
+        """Return the JSON-safe configuration needed to rebuild this runner."""
+        return {"kind": "process_tree", "cleanup_seconds": self.cleanup_seconds}
+
     def __call__(
         self,
         argv: Sequence[str],
@@ -570,6 +594,7 @@ class ProcessTreeProcessRunner:
                         raise wrapped from exc
                     liveness.register_live_group(proc.pid)
                     registered_group = proc.pid
+                    _report_window_host_candidate_pid(proc.pid)
                     try:
                         returncode = proc.wait(timeout=timeout)
                     except subprocess.TimeoutExpired as exc:

@@ -12779,8 +12779,17 @@ integration oracle.
 
 ## B165 — embedding-safe and parallel native R2 process isolation
 
-**Status: OPEN, design coordination with cgprofile CP-23 required; not a
-release blocker for the standalone CLI contract.**
+**Status: IMPLEMENTED by PR1a (serial command windows).** Each measured
+native R2 command now runs in a dedicated Assay worker, keeping the
+process-wide subreaper and SIGCHLD state out of embedding callers. The worker
+returns the existing command and process-tree evidence; the coordinator keeps
+resource-counter sampling, classification, state, and progress. Budget
+termination and KeyboardInterrupt unwind the worker's cleanup, and an abrupt
+worker exit lets the coordinator kill and verify the reported candidate
+process group. Injected `process_runner` implementations can opt in through
+the JSON-safe `assay_window_host_spec()` factory protocol. PR1b still owns
+scheduling multiple candidate windows within one campaign; this item does not
+enable `jobs > 1`.
 
 Assay's current native R2 cleanup uses process-wide child-subreaper state and
 therefore requires one isolated CLI process, one active command window, and
