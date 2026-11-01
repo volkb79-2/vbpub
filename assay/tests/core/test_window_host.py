@@ -25,9 +25,9 @@ from conftest import (
     process_tree_evidence_dict,
 )
 
-from assay import _window_host, liveness, mutation, runner
+from assay import _window_host, cli, liveness, mutation, runner
 from assay.adapters.python import PythonAdapter
-from assay.errors import Outcome, ReasonCode
+from assay.errors import AssayError, Outcome, ReasonCode
 from assay.mutation import MutationExecution, MutationTarget, MutationWitnessReceipt
 from assay import process_tree as process_tree_module
 from assay.process_tree import ProcessTreeEvidence, ProcessTreeProcessRunner
@@ -379,6 +379,178 @@ def test_keyboard_interrupt_terminates_and_waits_for_the_window_host(
     assert child.waited
 
 
+def test_coordinator_sigterm_is_forwarded_to_the_window_host_group(
+    monkeypatch, capfd
+):
+    runner._reset_termination_for_tests()
+    forwarded: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        liveness, "_killpg_group", lambda pgid, sig: forwarded.append((pgid, sig))
+    )
+
+    class SignaledHost:
+        pid = 987653
+        returncode = 0
+
+        def communicate(self, **_kwargs):
+            cli._termination_signal_handler(signal.SIGTERM, None)
+            return b"", b""
+
+    host = SignaledHost()
+    monkeypatch.setattr(_window_host.subprocess, "Popen", lambda *_a, **_kw: host)
+    try:
+        code, stderr = _window_host._launch_host_process(
+            command=(sys.executable, "-I", "-c", "pass"),
+            request=b"{}",
+            result_fd=3,
+            pass_fds=(),
+            timeout=5.0,
+        )
+        assert (host.pid, signal.SIGTERM) in forwarded
+        assert host.pid not in liveness._LIVE_WINDOW_HOST_GROUPS
+        assert code == 0
+        assert stderr == b""
+        capfd.readouterr()
+    finally:
+        runner._reset_termination_for_tests()
+
+
+def test_liveness_cancellation_forces_candidate_process_group_cleanup(
+    monkeypatch, tmp_path
+):
+    killed: list[tuple[int, int]] = []
+    registered: list[int] = []
+    unregistered: list[int] = []
+
+    class FakeCandidate:
+        pid = 987652
+        returncode = None
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+    candidate = FakeCandidate()
+
+    class FakeWindow:
+        def __init__(self, *, cleanup_seconds):
+            self.cleanup_seconds = cleanup_seconds
+            self.evidence = None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def attach(self, process):
+            assert process is candidate
+
+        def finish(self, *, timed_out=False, force=False):
+            assert force
+            killed.append((candidate.pid, signal.SIGKILL))
+            candidate.returncode = -signal.SIGKILL
+            self.evidence = ProcessTreeEvidence(
+                leader_status="signaled",
+                group_signalled_before_reap=True,
+                outliving_descendants=0,
+                descendants_signalled=0,
+                cleanup_seconds=0.0,
+                clean=True,
+            )
+            return self.evidence
+
+    monkeypatch.setattr(liveness, "ProcessTreeWindow", FakeWindow)
+    monkeypatch.setattr(liveness, "register_live_group", registered.append)
+    monkeypatch.setattr(liveness, "unregister_live_group", unregistered.append)
+    live_runner = liveness.LivenessRunner(
+        events_dir=tmp_path / "events",
+        expect_next_event_within_s=1.0,
+        popen=lambda *_args, **_kwargs: candidate,
+    )
+
+    def interrupt_candidate(*_args, **_kwargs):
+        _window_host._handle_sigterm(signal.SIGTERM, None)
+
+    monkeypatch.setattr(live_runner, "_monitor", interrupt_candidate)
+    with pytest.raises(_window_host._WindowHostCancelled):
+        live_runner(
+            (sys.executable, "-c", "pass"),
+            env={},
+            cwd=tmp_path,
+            timeout=5.0,
+        )
+
+    assert registered == [candidate.pid]
+    assert unregistered == [candidate.pid]
+    assert killed == [(candidate.pid, signal.SIGKILL)]
+    assert candidate.returncode == -signal.SIGKILL
+
+
+def test_process_tree_runner_cancellation_forces_candidate_process_group_cleanup(
+    monkeypatch, tmp_path
+):
+    killed: list[tuple[int, int]] = []
+    registered: list[int] = []
+    unregistered: list[int] = []
+
+    class FakeCandidate:
+        pid = 987651
+        returncode = None
+
+        def wait(self, timeout=None):
+            _window_host._handle_sigterm(signal.SIGTERM, None)
+
+    candidate = FakeCandidate()
+
+    class FakeWindow:
+        def __init__(self, *, cleanup_seconds):
+            self.cleanup_seconds = cleanup_seconds
+            self.finished = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, _exc, _traceback):
+            if not self.finished:
+                self.finish(force=exc_type is not None)
+            return False
+
+        def spawn(self, _argv, **kwargs):
+            assert kwargs["start_new_session"] is True
+            return candidate
+
+        def finish(self, *, timed_out=False, force=False):
+            assert force
+            killed.append((candidate.pid, signal.SIGKILL))
+            candidate.returncode = -signal.SIGKILL
+            self.finished = True
+            return ProcessTreeEvidence(
+                leader_status="signaled",
+                group_signalled_before_reap=True,
+                outliving_descendants=0,
+                descendants_signalled=0,
+                cleanup_seconds=0.0,
+                clean=True,
+            )
+
+    monkeypatch.setattr(process_tree_module, "ProcessTreeWindow", FakeWindow)
+    monkeypatch.setattr(liveness, "register_live_group", registered.append)
+    monkeypatch.setattr(liveness, "unregister_live_group", unregistered.append)
+
+    with pytest.raises(_window_host._WindowHostCancelled):
+        ProcessTreeProcessRunner()(
+            (sys.executable, "-c", "pass"),
+            env={},
+            cwd=tmp_path,
+            timeout=5.0,
+        )
+
+    assert registered == [candidate.pid]
+    assert unregistered == [candidate.pid]
+    assert killed == [(candidate.pid, signal.SIGKILL)]
+    assert candidate.returncode == -signal.SIGKILL
+
+
 class _ImmediateExecutor:
     def __init__(self, _jobs: int) -> None:
         pass
@@ -421,6 +593,7 @@ def _run_with_scripted_host(
     state_root: Path,
     resume: bool,
     host_results: list[CommandResult],
+    host_callback=None,
     repo: GitRepo | None = None,
 ):
     counters = mutation.ResourceLimitCounters(
@@ -435,6 +608,8 @@ def _run_with_scripted_host(
 
     def scripted_host(plan, **_kwargs):
         calls.append(plan)
+        if host_callback is not None:
+            host_callback()
         return host_results.pop(0)
 
     monkeypatch.setattr(_window_host, "run_window", scripted_host)
@@ -541,6 +716,36 @@ def test_resume_reuses_host_path_candidate_without_launching_another_host(
     )
     assert len(second.survived) == 1
     assert second_calls == []
+
+
+def test_coordinator_termination_keeps_hosted_candidate_unclassified(
+    monkeypatch, tmp_path
+):
+    runner._reset_termination_for_tests()
+    state_root = tmp_path / "state"
+    plan = make_plan(make_lane(argv=(sys.executable, "-c", "pass")))
+    try:
+        result, calls, _repo = _run_with_scripted_host(
+            tmp_path,
+            monkeypatch,
+            state_root=state_root,
+            resume=False,
+            host_results=[
+                _mutation_result(
+                    plan,
+                    outcome=Outcome.PASS,
+                    reason_code=None,
+                    returncode=0,
+                )
+            ],
+            host_callback=runner.request_termination,
+        )
+        assert len(calls) == 1
+        assert len(result.budget_exceeded) == 1
+        assert result.killed == result.survived == result.crashed == result.hung == ()
+        assert list(state_root.glob("*.json")) == []
+    finally:
+        runner._reset_termination_for_tests()
 
 
 @pytest.mark.parametrize(
@@ -886,6 +1091,7 @@ def test_sigterm_handler_requests_worker_unwind():
 
 def test_host_process_timeout_and_stop_escalation(monkeypatch):
     class TimedOutHost:
+        pid = 987650
         returncode = None
 
         def communicate(self, **_kwargs):
@@ -1110,6 +1316,38 @@ def test_run_window_receipt_fd_and_worker_failure_records(monkeypatch, tmp_path)
         clock=runner._utc_now,
     )
     assert result.reason_code is ReasonCode.EXEC_FAILED
+
+
+def test_cancelled_worker_after_coordinator_sigterm_is_lane_timeout(
+    monkeypatch, tmp_path
+):
+    response = {
+        "protocol": _window_host._PROTOCOL,
+        "kind": "error",
+        "error_type": "_WindowHostCancelled",
+        "message": "window host was asked to stop",
+        "outcome": None,
+        "reason_code": None,
+    }
+
+    def write_cancelled_response(*, result_fd, **_kwargs):
+        os.write(result_fd, json.dumps(response).encode())
+        return 1, b""
+
+    monkeypatch.setattr(_window_host, "_launch_host_process", write_cancelled_response)
+    monkeypatch.setattr(_window_host._runner, "termination_requested", lambda: True)
+
+    with pytest.raises(AssayError) as caught:
+        _window_host.run_window(
+            _plan((sys.executable, "-c", "pass")),
+            cwd=tmp_path,
+            timeout=1.0,
+            process_runner=ProcessTreeProcessRunner(),
+            clock=runner._utc_now,
+        )
+
+    assert caught.value.outcome is Outcome.BUDGET_EXCEEDED
+    assert caught.value.reason_code is ReasonCode.LANE_TIMEOUT
 
 
 def test_host_module_script_entrypoint_runs_main(monkeypatch):

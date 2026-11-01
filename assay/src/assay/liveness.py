@@ -105,6 +105,7 @@ from .process_tree import (
 # runner.py (runner already imports this module).
 _TERMINATION = threading.Event()
 _LIVE_GROUPS: set[int] = set()
+_LIVE_WINDOW_HOST_GROUPS: set[int] = set()
 _LIVE_GROUPS_LOCK = threading.RLock()
 _DEFERRED_TERMINATION_SWEEP = False
 _CANDIDATE_TREE_CLEANUP_SECONDS = 10.0
@@ -136,6 +137,35 @@ def unregister_live_group(pgid: int) -> None:
             if _TERMINATION.is_set():
                 for live_pgid in tuple(_LIVE_GROUPS):
                     _killpg_group(live_pgid, signal.SIGKILL)
+
+
+def register_live_window_host_group(pgid: int) -> None:
+    """Register a host session that must unwind its command tree on SIGTERM."""
+    with _LIVE_GROUPS_LOCK:
+        _LIVE_WINDOW_HOST_GROUPS.add(pgid)
+        if _TERMINATION.is_set():
+            _killpg_group(pgid, signal.SIGTERM)
+
+
+def unregister_live_window_host_group(pgid: int) -> None:
+    """Forget a window host after it has returned or been reaped."""
+    with _LIVE_GROUPS_LOCK:
+        _LIVE_WINDOW_HOST_GROUPS.discard(pgid)
+
+
+def terminate_live_window_hosts() -> int:
+    """Ask every isolated command host to clean up and stop gracefully."""
+    acquired = _LIVE_GROUPS_LOCK.acquire(blocking=False)
+    if acquired:
+        try:
+            groups = tuple(_LIVE_WINDOW_HOST_GROUPS)
+        finally:
+            _LIVE_GROUPS_LOCK.release()
+    else:
+        groups = tuple(_LIVE_WINDOW_HOST_GROUPS.copy())
+    for pgid in groups:
+        _killpg_group(pgid, signal.SIGTERM)
+    return len(groups)
 
 
 def terminate_live_process_groups(sig: int = signal.SIGKILL) -> int:
@@ -170,6 +200,7 @@ def _reset_live_groups_for_tests() -> None:
     global _DEFERRED_TERMINATION_SWEEP
     with _LIVE_GROUPS_LOCK:
         _LIVE_GROUPS.clear()
+        _LIVE_WINDOW_HOST_GROUPS.clear()
         _DEFERRED_TERMINATION_SWEEP = False
         _TERMINATION.clear()
 

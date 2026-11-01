@@ -570,6 +570,10 @@ def _termination_signal_handler(signum: int, frame: object) -> None:
     except BaseException:
         pass
     try:
+        liveness.terminate_live_window_hosts()
+    except BaseException:
+        pass
+    try:
         os.write(
             2,
             (

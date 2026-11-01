@@ -12,6 +12,7 @@ import os
 import signal
 import stat
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from conftest import R0_LANE, make_lane, native_outcome
@@ -596,6 +597,39 @@ def test_budget_record_lookup_without_a_valid_judge_digest_is_false(tmp_path):
     assert cli._pilot_has_budget_record(
         tmp_path, object(), judge_sha256="nothex", campaign_deadline_sha256=None, cold_witness=False
     ) is False
+
+
+def test_budget_record_lookup_preserves_terminal_evidence_corruption(
+    tmp_path, monkeypatch
+):
+    corruption = cli.mutation.MutationTerminalEvidenceError("invalid terminal proof")
+
+    def load_corrupt_record(*_args, **_kwargs):
+        raise corruption
+
+    monkeypatch.setattr(cli.mutation, "_load_validated_state_record", load_corrupt_record)
+    with pytest.raises(cli.mutation.MutationTerminalEvidenceError) as caught:
+        cli._pilot_has_budget_record(
+            tmp_path,
+            object(),
+            judge_sha256="a" * 64,
+            campaign_deadline_sha256=None,
+            cold_witness=False,
+        )
+    assert caught.value is corruption
+
+
+def test_pilot_timeout_claim_is_not_complete():
+    timeout_claim = SimpleNamespace(
+        rigor="R2",
+        mutation=object(),
+        reason_code=ReasonCode.LANE_TIMEOUT,
+    )
+    verdict = SimpleNamespace(claims=(timeout_claim,))
+
+    assert not cli._pilot_completed(
+        verdict, frozenset(), unresolved=[]
+    )
 
 
 def test_capture_pilot_judge_identity_tracks_agreement_and_conflict():

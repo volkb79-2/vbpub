@@ -426,6 +426,8 @@ def _launch_host_process(
     timeout: float | None,
 ) -> tuple[int, bytes]:
     """Start and reap one worker, unwinding it on cancellation."""
+    from . import liveness
+
     worker_env = {"PATH": os.environ.get("PATH", os.defpath)}
     process = subprocess.Popen(
         list(command),
@@ -436,14 +438,18 @@ def _launch_host_process(
         pass_fds=tuple(pass_fds),
         env=worker_env,
     )
+    liveness.register_live_window_host_group(process.pid)
     try:
-        _stdout, stderr = process.communicate(input=request, timeout=timeout)
-    except KeyboardInterrupt:
-        _stop_host_process(process)
-        raise
-    except subprocess.TimeoutExpired:
-        _stop_host_process(process)
-        stderr = b""
+        try:
+            _stdout, stderr = process.communicate(input=request, timeout=timeout)
+        except KeyboardInterrupt:
+            _stop_host_process(process)
+            raise
+        except subprocess.TimeoutExpired:
+            _stop_host_process(process)
+            stderr = b""
+    finally:
+        liveness.unregister_live_window_host_group(process.pid)
     return process.returncode, stderr or b""
 
 
@@ -635,32 +641,53 @@ def run_window(
             pass_fds=tuple(dict.fromkeys(descriptors)),
             timeout=_outer_timeout(timeout, spec),
         )
+
+        def crashed(detail: str) -> Any:
+            result = _host_crash_result(plan, status_file, detail)
+            if _runner.termination_requested():
+                raise _runner._lane_timeout(
+                    "Assay termination interrupted the native R2 command window"
+                )
+            return result
+
         result_file.seek(0)
         response_bytes = result_file.read(_RESPONSE_LIMIT_BYTES + 1)
         if len(response_bytes) > _RESPONSE_LIMIT_BYTES:
-            return _host_crash_result(plan, status_file, "window-host response exceeded its size limit")
+            return crashed("window-host response exceeded its size limit")
         if not response_bytes:
             detail = stderr.decode("utf-8", "replace") or (
                 f"window host exited without a result (status {returncode})"
             )
-            return _host_crash_result(plan, status_file, detail)
+            return crashed(detail)
         try:
             response = json.loads(response_bytes)
         except (UnicodeDecodeError, json.JSONDecodeError):
-            return _host_crash_result(plan, status_file, "window host returned malformed JSON")
+            return crashed("window host returned malformed JSON")
         if not isinstance(response, Mapping) or response.get("protocol") != _PROTOCOL:
-            return _host_crash_result(plan, status_file, "window host returned an invalid protocol record")
+            return crashed("window host returned an invalid protocol record")
         if response.get("kind") == "error":
+            if (
+                response.get("error_type") == "_WindowHostCancelled"
+                and _runner.termination_requested()
+            ):
+                raise _runner._lane_timeout(
+                    "Assay termination interrupted the native R2 command window"
+                )
             _raise_for_worker_error(response)
         if response.get("kind") != "result" or returncode != 0:
-            return _host_crash_result(plan, status_file, "window host failed before returning a command result")
+            return crashed("window host failed before returning a command result")
         raw_result = response.get("result")
         if not isinstance(raw_result, Mapping):
-            return _host_crash_result(plan, status_file, "window host result must be an object")
+            return crashed("window host result must be an object")
         try:
-            return _command_result_from_payload(plan, raw_result)
+            result = _command_result_from_payload(plan, raw_result)
         except (KeyError, TypeError, ValueError):
-            return _host_crash_result(plan, status_file, "window host returned an invalid command result")
+            return crashed("window host returned an invalid command result")
+        if _runner.termination_requested():
+            raise _runner._lane_timeout(
+                "Assay termination interrupted the native R2 command window"
+            )
+        return result
 
 
 if __name__ == "__main__":
