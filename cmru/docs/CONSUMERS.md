@@ -850,9 +850,10 @@ local CMRU release tag at HEAD and selects the highest-version published tag
 from its full ancestry, matching the
 pinned R1 baseline. The next release candidate advances its R1 pin to the
 newly tagged release. The just-tagged commit retains its preceding pin, so
-rerunning its gate uses the same baseline. The serial R2 campaign caps each
-candidate at 120 seconds and stops after its first failed test (`--maxfail=1`). Its mutation
-outcomes are in `.assay/mutation-cmru.json`; the append-only
+rerunning its gate uses the same baseline. The known-good full-suite control
+and each serial R2 candidate are capped at 600 seconds; a failed candidate
+stops after its first failing test (`--maxfail=1`). Mutation outcomes are in
+`.assay/mutation-cmru.json`; the append-only
 `.assay/progress-mutation-cmru.jsonl` stream reports progress. Resume reuses killed outcomes only
 when the tests, copied fixture closure, and timeout exactly match the recorded run. Changing
 the timeout requires a new campaign because it changes whether a candidate could have completed.
