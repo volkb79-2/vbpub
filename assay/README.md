@@ -92,9 +92,10 @@ an installed wheel or zipapp needs nothing extra:
   adverse candidates by id, path and operator, names why a campaign is not
   complete, and exits 0 (complete PASS), 1 (complete, not PASS), 2 (evidence
   error) or 3 (incomplete). Timing, ETA and `--project` estimates are
-  diagnostic: they never change the status or the exit code. Native R2
-  projections use the lane's declared worker count and separate the first
-  candidate's runtime from fixed overhead. See the
+  diagnostic: they never change the status or the exit code. A native R2
+  projection accepts an explicit worker count up to `jobs_max` (one when the
+  ceiling is omitted) and separates the first candidate's runtime from fixed
+  overhead. See the
   [workflow](docs/CONSUMERS.md#close-out-a-mutation-campaign-with-assay-analyze-campaign-b108)
   and [design](docs/DESIGN-GUIDE.md#mutation-campaign-closeout-b108-phase-1).
   A `0/1` shard covers the full inventory and can qualify; one shard of a

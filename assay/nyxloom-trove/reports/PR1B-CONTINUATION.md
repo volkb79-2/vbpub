@@ -132,3 +132,39 @@ task. The nine deselected environment-bound tests remain unverified here; their
 tester image's process/cgroup setup and pinned Hypothesis version are outside
 this cockpit. All other `tests/` cases and the requested whole-target coverage
 completed green.
+
+## PR1b analysis gate fix round 2 — 2026-11-01
+
+### Root cause and fix
+
+`assay_analysis.campaign` compared the v16 verdict's `judgment.r2.jobs` with
+`MutationConfig.jobs`, which is the runtime selection and is `None` on a newly
+loaded lane. The lane declaration is `jobs_max`; config loading also
+normalizes the legacy `jobs` alias to that field. This made valid serial v16
+verdicts fail the lane check and caused follow-on analysis output to omit
+campaign fields. The analyzer now checks recorded jobs against the declared
+ceiling, with the one-worker default when the ceiling is omitted. Projection
+jobs use the same ceiling; the v16 verdict remains serial, and its exact
+`max_mutants`, operator, and mode comparisons remain intact. README,
+DESIGN-GUIDE, and CONSUMERS now describe the projection bound.
+
+### Verification
+
+- Red-first test commit: `12f721e66`.
+- Focused new selection: **9 passed**.
+- Full unfiltered analysis suite with `PYTHONPATH=../libraries/cowtree/src`:
+  **1 failed, 258 passed** before `-x` stopped at
+  `test_o15_a_real_rejudge_run_is_counted_once_and_records_its_resumed_event`.
+  The native R2 run refused with
+  `CGROUP_OBSERVATION_UNAVAILABLE` because this cockpit's cgroup namespace
+  hides the required parent counters. A second live R2 integration test,
+  `test_op5_a_real_plan_and_a_real_run_progress_project_through_the_judge_entry_point`,
+  has the same boundary.
+- Full remaining analysis suite, excluding only those two live R2 tests:
+  **570 passed, 2 deselected**. All four `assay_analysis` modules measured
+  **100% line and branch coverage** (2,222 statements, 1,076 branches; zero
+  missing lines or partial branches).
+- `/home/vscode/.venv/bin/python -m pyflakes analysis/src/assay_analysis analysis/tests`:
+  clean. `git diff --check`: clean.
+- No registered gate or Docker command was run. Those two cgroup-bound live
+  R2 acceptance cases remain unverified in this cockpit.

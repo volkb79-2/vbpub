@@ -5044,7 +5044,9 @@ name (CD18), judges nothing, and every estimate it prints is diagnostic.
   multi-shard fan-out remains non-qualifying until the complete campaign is
   assembled; its selected slice is not the whole plan.
 - **Projection contract.** `--project-jobs` is an explicit read-only runtime
-  projection and does not select the worker count for `assay run`. Fixed
+  projection and does not select the worker count for `assay run`. For native
+  R2 it may be any count from 1 through the lane's `jobs_max`; an omitted
+  ceiling permits only the one-worker default. Fixed
   overhead's `other` component is measured up to the first candidate's
   completion, less that candidate's own `elapsed_seconds`, so its runtime is
   counted once in the candidate-cost projection instead of again as fixed
@@ -5077,7 +5079,8 @@ and the `candidates` progress event's `selection_sha256` must match the report.
 Both files are read through Assay's bounded no-follow reader and their
 fingerprints are retained in the output. Supplying either file without the
 other, combining a selection with a verdict, or projecting a native pilot with
-a worker count different from the lane's declared `mutation.jobs` is refused.
+a worker count above the lane's declared `mutation.jobs_max` (or the
+one-worker default when omitted) is refused.
 The B110 and B131 report checkers independently validate the v16
 `process_tree_evidence` object from every native candidate state record and
 pass it into the terminal-result classifier. A killed, survived or equivalent

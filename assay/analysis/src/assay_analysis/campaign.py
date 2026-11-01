@@ -1570,6 +1570,15 @@ def _native_r2(lane, r2_policy: dict | None) -> bool:
     return bool(r2_policy) and r2_policy.get("producer", "native") == "native"
 
 
+def _declared_native_jobs_max(mutation_policy) -> int:
+    """The declared native ceiling; omission leaves Assay's one-worker default."""
+    return (
+        1
+        if mutation_policy.jobs_max is None
+        else mutation_policy.jobs_max
+    )
+
+
 def _check_verdict_against_lane(verdict: dict, *, lane_name: str, lane) -> dict:
     """The verified verdict must be for this lane and declared policy; returns its R2 policy.
 
@@ -1592,7 +1601,6 @@ def _check_verdict_against_lane(verdict: dict, *, lane_name: str, lane) -> dict:
     if _native_r2(lane, r2_policy):
         mutation_policy = lane.judge.mutation
         expected_policy = {
-            "jobs": mutation_policy.jobs,
             "max_mutants": mutation_policy.max_mutants,
             "operators": list(mutation_policy.operators),
             "mode": lane.judge.mode if lane.judge.mode is not None else "changed_lines",
@@ -1602,6 +1610,14 @@ def _check_verdict_against_lane(verdict: dict, *, lane_name: str, lane) -> dict:
                 raise ValueError(
                     f"R2 verdict policy {key} differs from the named lane declaration"
                 )
+        # The lane's ``jobs_max`` is a ceiling, while v16's verdict ``jobs``
+        # is the selected runtime count (and v16 itself currently requires 1).
+        # The verified verdict reader has already enforced the v16 wire rule;
+        # bind the recorded count to the lane's normalized ceiling here.
+        if r2_policy["jobs"] > _declared_native_jobs_max(mutation_policy):
+            raise ValueError(
+                "R2 verdict policy jobs differs from the named lane declaration"
+            )
     return r2_policy
 
 
@@ -1771,9 +1787,9 @@ def campaign(
         lane, r2_policy if verdict is not None else None
     )
     if project_jobs is not None and native_r2 \
-            and project_jobs != lane.judge.mutation.jobs:
+            and project_jobs > _declared_native_jobs_max(lane.judge.mutation):
         raise ValueError(
-            "native R2 projection jobs must equal the lane's declared mutation jobs"
+            "native R2 projection jobs exceed the lane's declared mutation jobs_max"
         )
     stage.name = "plan"
     plan = _reconstruct_plan(
@@ -1932,7 +1948,10 @@ def campaign(
     selected_total = None if plan_total is None else len(selection)
     completed_total = len(items) - len(never_started) if have_outcomes else None
     pending_total = None if selected_total is None else max(0, selected_total - completed_total)
-    jobs = lane.judge.mutation.jobs if native_r2 else None
+    # A newly loaded lane has no runtime ``jobs`` selection yet. The v16
+    # native policy and the run default are serial; explicit projection jobs
+    # are handled separately below.
+    jobs = 1 if native_r2 else None
     timing = _timing(latest, pending=pending_total, jobs=jobs)
     projection = None
     if project_jobs is not None:

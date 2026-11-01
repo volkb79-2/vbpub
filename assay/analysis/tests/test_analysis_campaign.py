@@ -17,6 +17,7 @@ from jsonschema import Draft202012Validator
 from analysis.tests.analysis_support import JUDGE_VERDICT_FIXTURES
 from assay.candidate_identity import candidate_id_from_fields
 from assay.cli import main
+from assay.config import load_lane_file
 from assay.verdict import MUTATION_BUCKETS
 from assay_analysis import campaign as campaign_api
 from tests.core.test_b110_pilot_select import _valid_fixture as _valid_selector_fixture
@@ -1030,6 +1031,34 @@ def test_native_r2_projection_jobs_follow_the_declared_ceiling(
         )
         assert error.endswith(
             "native R2 projection jobs exceed the lane's declared mutation jobs_max\n"
+        )
+
+
+@pytest.mark.parametrize(
+    ("lane_jobs_key", "lane_jobs_value"),
+    [("jobs_max", 1), ("jobs", 1), (None, None)],
+)
+def test_native_r2_verdict_jobs_cannot_exceed_the_declared_ceiling(
+    tmp_path, lane_jobs_key, lane_jobs_value
+):
+    document = _fixture_document("r2_pass")
+    document["judgment"]["r2"]["jobs"] = 2
+    root, _head, _verdict = _repository(
+        tmp_path,
+        document,
+        lane_jobs_key=lane_jobs_key,
+        lane_jobs_value=lane_jobs_value,
+    )
+    lane = load_lane_file(root / "assay.toml").lane("package")
+
+    with pytest.raises(
+        ValueError,
+        match="R2 verdict policy jobs differs from the named lane declaration",
+    ):
+        campaign_api._check_verdict_against_lane(
+            document,
+            lane_name="package",
+            lane=lane,
         )
 
 

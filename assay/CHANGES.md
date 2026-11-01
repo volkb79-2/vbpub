@@ -13,6 +13,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ### Changed
 - Require a cheap-clone workspace for native R2 runs with more than one worker; keep verdict schema v16 unchanged.
 
+### Fixed
+- Make campaign analysis interpret `jobs_max` (including the legacy `jobs` alias) as the native worker ceiling while retaining v16's serial verdict policy and one-worker default.
+
 ## [10.2.0] - 2026-11-01
 <!-- cmru: generated -->
 <!-- cmru: source-end=2266ee8c2f1da5b359e320e255e1d29c1dd2f2f6 -->

@@ -5676,9 +5676,10 @@ path and operator, at most `--limit` per page with `matching_total` and
 `next_offset`; take the next page with `--offset`. `--project` adds a
 stratified wall-clock projection from measured per-candidate seconds; it needs
 at least 20 samples per basis and says why it has none. `--project-jobs` accepts
-1 to 64 for other plans. For a native R2 lane it must match the lane's declared
-`mutation.jobs`; this Assay configuration runs native R2 serially, so the
-example uses 1. The fixed-overhead estimate subtracts the first candidate's
+1 to 64 for other plans. For a native R2 lane it may be any count up to the
+declared `mutation.jobs_max`; an omitted ceiling permits only the one-worker
+default. This Assay configuration runs native R2 serially, so the example uses
+1. The fixed-overhead estimate subtracts the first candidate's
 measured runtime before adding candidate costs to the projection. Exit codes:
 0 complete PASS, 1 complete and not PASS, 2 evidence error, 3 incomplete.
 `complete_blockers` names why a campaign is incomplete, including
