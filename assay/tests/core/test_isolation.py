@@ -330,6 +330,7 @@ class _CopyingWorkspace:
     """A controlled stand-in for Run that records Level A file clones."""
 
     def __init__(self, root: Path):
+        self.cheap_clone = False
         self.root = root
         self.trees = root / "trees"
         self.trees.mkdir(parents=True)
@@ -363,6 +364,8 @@ class _CopyingWorkspace:
 
 
 class _CopyingWorkspaceProvider:
+    workspace_type = _CopyingWorkspace
+
     def __init__(self, root: Path):
         self.root = root
         self.max_live_clones = 2
@@ -373,11 +376,64 @@ class _CopyingWorkspaceProvider:
     def open(self, estimate, *, scratch_root):
         self.estimate = estimate
         self.root.mkdir()
-        self.workspace = _CopyingWorkspace(self.root)
+        self.workspace = self.workspace_type(self.root)
         try:
             yield self.workspace
         finally:
             shutil.rmtree(self.root)
+
+
+class _CheapCloneWorkspace(_CopyingWorkspace):
+    """A copy-backed fake that enforces cowtree's sealed-clone contract."""
+
+    def __init__(self, root: Path):
+        super().__init__(root)
+        self.cheap_clone = True
+        self.template_path: Path | None = None
+        self.cloned_trees: list[Path] = []
+        self.events: list[tuple[str, Path, Path | None]] = []
+
+    def seal(self, path: Path) -> None:
+        self.template_path = path
+        self._set_tree_writable(path, writable=False)
+        self.events.append(("seal", path, None))
+
+    def clone_tree(self, source: Path) -> Path:
+        assert source == self.template_path
+        assert self._is_read_only(source), "the template must be sealed before cloning"
+        self._next_tree += 1
+        destination = self.trees / f"clone-{self._next_tree}"
+        shutil.copytree(source, destination, symlinks=True, copy_function=shutil.copy2)
+        self._set_tree_writable(destination, writable=True)
+        self.cloned_trees.append(destination)
+        self.events.append(("clone", source, destination))
+        return destination
+
+    def delete_tree(self, path: Path) -> None:
+        self._set_tree_writable(path, writable=True)
+        super().delete_tree(path)
+
+    @staticmethod
+    def _set_tree_writable(path: Path, *, writable: bool) -> None:
+        for current, directories, files in os.walk(path, topdown=True, followlinks=False):
+            members = [Path(current), *(Path(current) / name for name in directories + files)]
+            for member in members:
+                if member.is_symlink():
+                    continue
+                mode = stat.S_IMODE(member.stat().st_mode)
+                member.chmod(mode | stat.S_IWUSR if writable else mode & ~0o222)
+
+    @staticmethod
+    def _is_read_only(path: Path) -> bool:
+        for current, directories, files in os.walk(path, topdown=True, followlinks=False):
+            for member in [Path(current), *(Path(current) / name for name in directories + files)]:
+                if not member.is_symlink() and member.stat().st_mode & 0o222:
+                    return False
+        return True
+
+
+class _CheapCloneWorkspaceProvider(_CopyingWorkspaceProvider):
+    workspace_type = _CheapCloneWorkspace
 
 
 def test_workspace_materialization_matches_plain_snapshot_and_clones_pack_files(
@@ -411,6 +467,53 @@ def test_workspace_materialization_matches_plain_snapshot_and_clones_pack_files(
     assert provider.workspace.cloned_files
     assert list(plain_scratch.iterdir()) == []
     assert list(cow_scratch.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "close_path", ["success", "failure", "keyboard_interrupt", "outer_leak"]
+)
+def test_cheap_clone_template_and_unit_are_cleaned_on_every_close_path(
+    tmp_path: Path, close_path: str
+) -> None:
+    repo, commit = _root_repo(tmp_path)
+    scratch = _scratch(tmp_path)
+    provider = _CheapCloneWorkspaceProvider(tmp_path / "cheap-clone-run")
+    spec = _spec(repo, scratch, commit)
+    if close_path == "success":
+        with prepare_snapshot(spec, timeout=TIMEOUT, workspace=provider) as prepared:
+            with prepared.materialize(timeout=TIMEOUT) as snapshot:
+                assert provider.workspace is not None
+                assert snapshot.root != provider.workspace.template_path
+    elif close_path == "failure":
+        with pytest.raises(ValueError, match="candidate failed"):
+            with prepare_snapshot(spec, timeout=TIMEOUT, workspace=provider) as prepared:
+                with prepared.materialize(timeout=TIMEOUT):
+                    raise ValueError("candidate failed")
+    elif close_path == "keyboard_interrupt":
+        with pytest.raises(KeyboardInterrupt):
+            with prepare_snapshot(spec, timeout=TIMEOUT, workspace=provider) as prepared:
+                with prepared.materialize(timeout=TIMEOUT):
+                    raise KeyboardInterrupt
+    else:
+        with pytest.raises(RuntimeError, match="close every materialization"):
+            with prepare_snapshot(spec, timeout=TIMEOUT, workspace=provider) as prepared:
+                leaked = prepared.materialize(timeout=TIMEOUT)
+                snapshot = leaked.__enter__()
+
+    workspace = provider.workspace
+    assert workspace is not None
+    assert workspace.template_path is not None
+    assert len(workspace.cloned_trees) == 1
+    assert workspace.delete_calls.count(workspace.template_path) == 1
+    assert workspace.delete_calls.count(workspace.cloned_trees[0]) == 1
+    assert workspace.events[0] == ("seal", workspace.template_path, None)
+    assert workspace.events[1] == (
+        "clone",
+        workspace.template_path,
+        workspace.cloned_trees[0],
+    )
+    assert list(scratch.iterdir()) == []
+    assert not provider.root.exists()
 
 
 def test_sibling_pycache_directories_do_not_omit_committed_sources(

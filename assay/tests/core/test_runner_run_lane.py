@@ -139,6 +139,7 @@ def test_run_lane_full_pass_builds_judgment_and_covers_ended_after_r1(
 
 class _RunnerCopyingWorkspace:
     def __init__(self, root: Path):
+        self.cheap_clone = False
         self.trees = root / "trees"
         self.trees.mkdir(parents=True)
         self._next_tree = 0
