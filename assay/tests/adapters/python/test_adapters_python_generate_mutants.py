@@ -34,7 +34,7 @@ from assay.mutation import MutationDiscoveryError
 
 FIXTURE_DIR = PROJECT_ROOT / "tests" / "fixtures" / "mutation" / "python"
 SAMPLE_TEXT = (FIXTURE_DIR / "sample.py").read_text(encoding="utf-8")
-BROKEN_TEXT = (FIXTURE_DIR / "broken.py").read_text(encoding="utf-8")
+BROKEN_TEXT = (FIXTURE_DIR / "broken.py.txt").read_text(encoding="utf-8")
 ALL_LINES = set(range(1, len(SAMPLE_TEXT.splitlines()) + 1))
 
 ADAPTER = PythonAdapter()

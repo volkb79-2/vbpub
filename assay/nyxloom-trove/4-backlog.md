@@ -168,6 +168,9 @@ items:
   - {id: B186, title: "Malformed diagnostic resources in R2 state abort resume instead of causing candidate re-execution", type: bugfix, component: mutation, context_estimate: small}
   - {id: B187, title: "R0 result classification maps observation status by hand instead of using contention.observation_input", type: refactor, component: execution, context_estimate: small}
   - {id: B188, title: "R2 coverage exclusions are keyed by line number rather than stable source identity", type: bugfix, component: mutation, context_estimate: small}
+  - {id: B189, title: "Release and qualification sparse clones omitted the sibling cowtree source required by Assay's wheel", type: bugfix, component: distribution, context_estimate: small}
+  - {id: B190, title: "CW8 integration left B105 target ordering, workspace record, and cleanup coverage out of sync", type: bugfix, component: gate, context_estimate: small}
+  - {id: B191, title: "SQL witness source bootstrap omitted bundled cowtree and hid assay-run diagnostics", type: bugfix, component: gate, context_estimate: small}
 ---
 
 # assay — backlog
@@ -13571,3 +13574,38 @@ using `contention.observation_input`; route it through the shared mapping.
 **Status: OPEN.** Coverage exclusions are keyed by line number, so a source
 edit can silently move an exclusion to a different site. Key exclusions by
 stable source identity.
+
+## B189 — include the same-repository cowtree source in sparse build clones
+
+**Status: CLOSED by CW8.** Assay's wheel maps `cowtree` to the sibling
+`libraries/cowtree/src` tree, but the release, tester-unified and
+self-qualification builders checked out only `assay/`. Their clean sparse
+clones therefore omitted a declared package and silently produced artifacts
+without `cowtree`. All three clone paths now include `libraries/cowtree/`;
+focused clone and real wheel/zipapp acceptance tests prove the package is
+present, while unrelated projects remain excluded.
+
+## B190 — keep CW8 workspace contracts in the B105 gate
+
+**Status: CLOSED by the CW8 gate repair (2026-10-31).** The new workspace
+estimate was declared with raw `dataclasses.dataclass` instead of Assay's
+`positional_record`; `assay.toml` placed `workspace.py` before `verify.py` and
+`vocabulary.py` in all three whole-source inventories; and the coverage
+exclusion map still named the pre-CW8 lines. The workspace cleanup branch also
+had no CoW leak test, while a runner cleanup test's monkeypatch did not accept
+the new `workspace` keyword. Aligning those contracts restores the registered
+preflight and tester checks. The sparse clone helpers already include
+`libraries/cowtree/` (B189); that was not the cause of this gate run.
+
+## B191 — include bundled cowtree in the SQL witness source bootstrap
+
+**Status: CLOSED by the CW8 round-2 repair (2026-11-01).** The SQL
+qualification witness runs the current checkout's source directly from a
+disposable repository. Its bootstrap added only `assay/src` to `sys.path`,
+while CW8's lazy workspace adapter imports the bundled sibling package when
+the higher-rigor lane prepares its snapshot. The runner therefore exited with
+`ModuleNotFoundError: No module named 'cowtree'` before writing its verdict,
+even though the source is present in the exact checkout. The bootstrap now
+adds `libraries/cowtree/src` from that same checkout. If a later run still
+fails before producing a verdict, the qualification error includes bounded
+stdout and stderr tails from the child Assay invocation.

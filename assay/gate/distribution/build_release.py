@@ -184,7 +184,9 @@ def make_exact_oid_clone(repo: Path, scratch: Path) -> str:
     clone = scratch / "clone"
     _run(_git_argv("clone", "--no-local", "--no-checkout", "--quiet", str(repo), str(clone)))
     _run(_git_argv("-C", str(clone), "sparse-checkout", "init", "--cone"))
-    _run(_git_argv("-C", str(clone), "sparse-checkout", "set", "assay"))
+    _run(_git_argv(
+        "-C", str(clone), "sparse-checkout", "set", "assay", "libraries/cowtree"
+    ))
     _run(_git_argv("-C", str(clone), "checkout", "--quiet", "--detach", oid))
     clone_head = _run(_git_argv("-C", str(clone), "rev-parse", "HEAD")).strip()
     if clone_head != oid:

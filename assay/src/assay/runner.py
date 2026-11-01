@@ -112,6 +112,7 @@ from . import (
     result_reports,
     safeio,
     termination,
+    workspace as workspace_api,
 )
 from .adapters.base import HelperInvocation, LanguageAdapter
 from .config import (
@@ -6413,7 +6414,12 @@ def _run_higher_rigor_lane(
                 resolved_base=resolved_base,
                 limits=snapshot_limits,
             )
-            with isolation.prepare_snapshot(spec, timeout=deadline.remaining()) as prepared:
+            workspace_factory = workspace_api.factory_for_lane(lane)
+            with isolation.prepare_snapshot(
+                spec,
+                timeout=deadline.remaining(),
+                workspace=workspace_factory,
+            ) as prepared:
                 # (B006a/A-269 WI-3, §3.4) After `prepare_snapshot` has
                 # already commit-validated `snapshot_policy`'s declared
                 # omissions, but strictly BEFORE the first

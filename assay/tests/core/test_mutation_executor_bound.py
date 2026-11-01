@@ -990,7 +990,7 @@ def test_directory_sync_failure_rolls_back_new_candidate_record(
         if descriptor_relative
         else None
     )
-    real_fsync = mutation_module.os.fsync
+    real_fsync = mutation_module._durable.fsync
     failed = False
 
     def fail_first_directory_sync(fd):
@@ -1000,7 +1000,7 @@ def test_directory_sync_failure_rolls_back_new_candidate_record(
             raise OSError("injected directory sync failure")
         return real_fsync(fd)
 
-    monkeypatch.setattr(mutation_module.os, "fsync", fail_first_directory_sync)
+    monkeypatch.setattr(mutation_module._durable, "fsync", fail_first_directory_sync)
     try:
         with pytest.raises(OSError, match="injected directory sync failure"):
             _run_queue_case(

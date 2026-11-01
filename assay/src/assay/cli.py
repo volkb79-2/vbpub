@@ -73,6 +73,7 @@ from typing import Any, Callable, Literal, Mapping, Sequence, TextIO, TypedDict
 
 from . import __version__
 from . import (
+    _durable,
     adjudication,
     attestation,
     diff,
@@ -1175,7 +1176,7 @@ def _ensure_pilot_state(
         with os.fdopen(temporary_fd, "wb") as stream:
             stream.write(document_bytes)
             stream.flush()
-            os.fsync(stream.fileno())
+            _durable.fsync(stream.fileno())
         try:
             os.stat("PILOT-STATE", dir_fd=root_fd, follow_symlinks=False)
         except FileNotFoundError:
@@ -1191,7 +1192,7 @@ def _ensure_pilot_state(
             dst_dir_fd=root_fd,
         )
         temporary_name = None
-        os.fsync(root_fd)
+        _durable.fsync(root_fd)
     except PilotStateError:
         raise
     except OSError as exc:

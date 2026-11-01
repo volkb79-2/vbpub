@@ -4,6 +4,15 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Added
+- Auto-detect a user-owned btrfs workspace for higher-rigor snapshots and reflink packed Git objects through cowtree, with the existing copy path retained when no CoW area is configured.
+
+### Fixed
+- Use the Linux fsync syscall directly for mutation state, pilot state, and verdict writes, so replacing `os.fsync` cannot bypass durability.
+- Keep B105 target inventories sorted, classify the new workspace estimate through the shared record contract, and exercise CoW cleanup failures without replacing the original refusal.
+- Refresh the B105 exclusion line map after the CW8 source import shifted its reviewed `TYPE_CHECKING` block.
+- Include stdout and stderr tails when SQL qualification's assay run fails before writing its verdict artifact.
+
 <!-- cmru: release history -->
 
 ## [10.1.0] - 2026-10-31

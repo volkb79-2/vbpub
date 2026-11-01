@@ -1806,7 +1806,7 @@ def test_a_clone_with_no_analysis_tree_refuses_rather_than_linting_nothing(
 def test_the_fixtures_tree_is_pruned_and_an_unparseable_fixture_stays_green(
     tmp_path: Path, gate_functions: Path, lint_venv: Path
 ) -> None:
-    """(B062) `tests/fixtures/mutation/python/broken.py` is DELIBERATELY
+    """(B062) `tests/fixtures/mutation/python/broken.py.txt` is DELIBERATELY
     unparseable -- the mutation suite needs it to prove how assay reports a
     source file it cannot parse -- so pyflakes can never pass over it. The
     prune is what makes widening the scope possible at all; without it the

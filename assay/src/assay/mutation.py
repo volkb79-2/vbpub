@@ -136,6 +136,7 @@ from typing import (
     Sequence,
 )
 
+from . import _durable
 from . import contention as _contention
 from . import git, liveness, safeio
 from . import termination as _termination
@@ -1709,11 +1710,11 @@ def _write_mutation_state_record(
 
     def sync_state_directory() -> None:
         if state_root_fd is not None:
-            os.fsync(state_root_fd)
+            _durable.fsync(state_root_fd)
             return
         directory_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
         try:
-            os.fsync(directory_fd)
+            _durable.fsync(directory_fd)
         finally:
             os.close(directory_fd)
 
@@ -1755,7 +1756,7 @@ def _write_mutation_state_record(
             json.dump(dict(payload), stream, sort_keys=True, separators=(",", ":"))
             stream.write("\n")
             stream.flush()
-            os.fsync(stream.fileno())
+            _durable.fsync(stream.fileno())
         # The record becomes reusable at the atomic replacement below. Check
         # after serialization and fsync so a deadline or termination during
         # the write cannot commit a candidate outcome.

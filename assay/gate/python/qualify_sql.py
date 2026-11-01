@@ -50,10 +50,10 @@ PostgreSQL fixture use their own cgroup limits and bounded operations; the
 legacy ``--allow-shared-host`` option is accepted as a no-op. The witness lane
 strips ``DOCKER_HOST`` (its
 ``env`` is ``PATH`` only) and uses ``/var/run/docker.sock`` to reach the same
-daemon as the harness. It imports :mod:`assay` from the exact-OID clone's
-``src/``: it qualifies THIS tree's adapter, so there is no separate wheel
-boundary. Requires Python >= 3.11 (the tester image interpreter, run with
-``-I``).
+daemon as the harness. It imports :mod:`assay` and the bundled :mod:`cowtree`
+from the exact-OID clone's source trees: it qualifies THIS tree's adapter, so
+there is no separate wheel boundary. Requires Python >= 3.11 (the tester image
+interpreter, run with ``-I``).
 """
 
 from __future__ import annotations
@@ -75,6 +75,7 @@ from typing import Any, Mapping, Sequence
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _SRC_ROOT = _PROJECT_ROOT / "src"
+_COWTREE_SRC_ROOT = _PROJECT_ROOT.parent / "libraries" / "cowtree" / "src"
 # Unconditional: a duplicate sys.path entry is harmless, and a guard here
 # would be an import-order-dependent branch this module's own test suite
 # cannot exercise both sides of (conftest.py already puts src/ on sys.path
@@ -85,7 +86,6 @@ sys.path.insert(0, str(_SRC_ROOT))
 from assay.adapters.sql import SqlAdapter  # noqa: E402
 from assay.config import LANE_SCHEMA_VERSION  # noqa: E402
 from assay.mutation import MutationSite  # noqa: E402
-from assay.verdict import VERDICT_SCHEMA_VERSION  # noqa: E402,F401  (pinned by the witness-schema test)
 
 #: The locally present PostgreSQL 18.6 image, by digest. Never pulled (A-480).
 IMAGE = "postgres:18-alpine@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2"
@@ -792,8 +792,11 @@ kill_signal_artifact = ".assay/kill-signal.txt"
 
 
 def _assay_argv(python: str, *args: str) -> list[str]:
-    bootstrap = "import sys; sys.path.insert(0, sys.argv[1]); from assay.cli import main; sys.exit(main(sys.argv[2:]))"
-    return [python, "-c", bootstrap, str(_SRC_ROOT), *args]
+    bootstrap = (
+        "import sys; sys.path[:0] = sys.argv[1:3]; "
+        "from assay.cli import main; sys.exit(main(sys.argv[3:]))"
+    )
+    return [python, "-c", bootstrap, str(_SRC_ROOT), str(_COWTREE_SRC_ROOT), *args]
 
 
 def _witness_wrapper_script(*, container_name: str, dbname: str, restrict_key: str) -> str:
@@ -879,7 +882,7 @@ def capture_witness(
 
     artifact_path = scratch / "verdict.json"
     progress_path = repo / ".assay" / f"progress-{_WITNESS_LANE}.jsonl"
-    _run(
+    proc = _run(
         _assay_argv(
             python,
             "run",
@@ -897,7 +900,11 @@ def capture_witness(
         timeout=_WITNESS_TIMEOUT_S,
     )
     if not artifact_path.is_file():
-        raise QualificationError("assay run wrote no verdict artifact")
+        raise QualificationError(
+            f"assay run wrote no verdict artifact (exit {proc.returncode})\n"
+            f"stdout tail:\n{proc.stdout[-4000:]}\n"
+            f"stderr tail:\n{proc.stderr[-4000:]}"
+        )
     verdict = json.loads(artifact_path.read_text(encoding="utf-8"))
     _require_witness_commit_matches(verdict, head_oid)
     return {"verdict": verdict, "base_oid": base_oid, "head_oid": head_oid}

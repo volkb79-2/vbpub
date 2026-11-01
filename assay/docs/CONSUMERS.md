@@ -752,6 +752,29 @@ full shape, what the refusal looks like, and the maintenance obligation it creat
 Both values are recorded verbatim in the verdict's `snapshot_policy` object, so a reviewer can
 tell a full-repository verdict from an omission-mode one without re-running anything.
 
+### Optional CoW storage for P22 snapshots (CW8)
+
+No `assay.toml` setting is needed. A host or lane wrapper may set
+`MDT_COW_ROOT` to an existing canonical directory on a btrfs mount owned by
+the non-root user running Assay. Assay validates that mount and uses cowtree's
+reflink operation for packed Git objects. If the variable is absent, Assay
+uses its existing file-copy path and cowtree emits one INFO line. An invalid
+configured area, insufficient admitted space or a reflink failure refuses the
+lane; Assay does not silently change to a weaker storage path.
+
+For a host that already provides such an area, keep the fact in the wrapper
+environment rather than adding it to lane policy:
+
+```sh
+# Replace this value with the existing user-owned btrfs area on this host.
+export MDT_COW_ROOT=/path/to/your/btrfs-area
+assay run unit --file assay.toml --verdict-json .assay/verdict-unit.json
+```
+
+The run still judges the exact same manifest and produces the same result
+buckets as the copy path. This adapter accelerates packed-object storage only;
+it does not change snapshot selection or history. See the [design rationale](DESIGN-GUIDE.md#the-optional-cow-workspace-affects-storage-not-snapshot-identity).
+
 ### Shallow seeds, full-history opt-in, and project limits (B101)
 
 The private seed is **shallow by default**: it contains the judged commit and,

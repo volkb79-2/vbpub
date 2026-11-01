@@ -41,7 +41,7 @@ import shutil
 import stat
 import tempfile
 import threading
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from .records import record
 from pathlib import Path, PurePosixPath
 from typing import Callable, ContextManager, Iterable, Iterator, Mapping, Sequence
@@ -50,6 +50,7 @@ from . import git as _git
 from .config import IsolationConfig
 from .errors import AssayError, LaneConfigError, Outcome, ReasonCode, require_advance
 from .guards import is_int_at_least, is_positive_or_inf
+from .workspace import ActiveWorkspace, WorkspaceEstimate, WorkspaceFactory
 
 __all__ = [
     "DEFAULT_SNAPSHOT_LIMITS",
@@ -577,12 +578,14 @@ class SnapshotRepository:
         seed_git_dir: Path,
         template: Path,
         manifest: _Manifest,
+        workspace: ActiveWorkspace | None = None,
     ) -> None:
         self._spec = spec
         self._source = source
         self._seed_git_dir = seed_git_dir
         self._template = template
         self._manifest = manifest
+        self._workspace = workspace
         self._lock = threading.Lock()
         self._closed = False
         self._live: set[Path] = set()
@@ -755,9 +758,14 @@ class SnapshotRepository:
         try:
             if replacement is not None:
                 self._check_replacement_site(replacement, deadline)
-            root = Path(
-                tempfile.mkdtemp(dir=self._spec.scratch_root, prefix="assay-p22-snap-")
-            )
+            if self._workspace is None:
+                root = Path(
+                    tempfile.mkdtemp(
+                        dir=self._spec.scratch_root, prefix="assay-p22-snap-"
+                    )
+                )
+            else:
+                root = self._workspace.make_tree()
             self._track(root)
             commit = self._build(root, replacement, deadline)
             snapshot = Snapshot(
@@ -773,11 +781,24 @@ class SnapshotRepository:
             # informative one.
             if root is not None:
                 self._untrack(root)
-                shutil.rmtree(root, ignore_errors=True)
+                self._discard_materialization(root)
             raise
         else:
             self._untrack(root)
-            _remove_owned_tree(root)
+            if self._workspace is None:
+                _remove_owned_tree(root)
+            else:
+                self._workspace.delete_tree(root)
+
+    def _discard_materialization(self, root: Path) -> None:
+        """Remove a failed or leaked child without masking its first error."""
+        if self._workspace is None:
+            shutil.rmtree(root, ignore_errors=True)
+            return
+        try:
+            self._workspace.delete_tree(root)
+        except Exception:
+            pass
 
     def _check_replacement_site(
         self,
@@ -828,7 +849,7 @@ class SnapshotRepository:
             deadline=deadline,
         )
         git_dir = root / ".git"
-        _copy_objects(self._seed_git_dir, git_dir)
+        _copy_objects(self._seed_git_dir, git_dir, workspace=self._workspace)
         # ``_copy_objects`` deliberately copies only packed objects.  The
         # shallow boundary is repository metadata and must be recreated in
         # every materialization before read-tree, commit-tree, or any closure
@@ -1137,10 +1158,8 @@ class SnapshotRepository:
                 f"directory in {commit}"
             )
 
-def _close_repository(repository: "SnapshotRepository | None") -> set[Path]:
+def _close_repository(repository: "SnapshotRepository") -> set[Path]:
     """Close *repository* and return the snapshot roots still live at closure."""
-    if repository is None:
-        return set()
     with repository._lock:
         live = set(repository._live)
         repository._live.clear()
@@ -1199,19 +1218,54 @@ def _join_prefix(root: Path, prefix: PurePosixPath) -> Path:
     return root.joinpath(*prefix.parts)
 
 
-def _copy_objects(seed_git_dir: Path, destination_git_dir: Path) -> None:
-    """Copy the seed's packed objects into a fresh independent store.
+def _copy_objects(
+    seed_git_dir: Path,
+    destination_git_dir: Path,
+    *,
+    workspace: ActiveWorkspace | None = None,
+) -> None:
+    """Copy or reflink the seed's packed objects into an independent store.
 
-    :func:`shutil.copyfile` is deliberate: a hardlink or a shared alternate
-    would make two snapshots one object store, which is exactly the
-    isolation failure O2's disjoint-inode assertion is written to catch.
+    The plain path uses :func:`shutil.copyfile`; an active CoW workspace uses
+    its strict file-clone operation. Neither path hardlinks objects or shares
+    an alternate, which is the isolation failure O2's disjoint-inode
+    assertion is written to catch.
     """
     source_pack = seed_git_dir / "objects" / "pack"
     destination_pack = destination_git_dir / "objects" / "pack"
     destination_pack.mkdir(parents=True, exist_ok=True)
     for item in sorted(source_pack.iterdir()):
         if item.is_file() and not item.is_symlink():
-            shutil.copyfile(item, destination_pack / item.name)
+            destination = destination_pack / item.name
+            if workspace is None:
+                shutil.copyfile(item, destination)
+            else:
+                workspace.clone_file(item, destination)
+
+
+def _workspace_estimate(
+    manifest: _Manifest,
+    seed_git_dir: Path,
+    *,
+    max_live_clones: int,
+) -> WorkspaceEstimate:
+    """Derive admission bytes from the validated tree and packed seed."""
+    tree_bytes = sum(
+        entry.size
+        for entry in manifest.entries
+        if entry.mode in (_MODE_REGULAR, _MODE_EXECUTABLE)
+    )
+    pack_dir = seed_git_dir / "objects" / "pack"
+    pack_bytes = sum(
+        item.stat().st_size
+        for item in pack_dir.iterdir()
+        if item.is_file() and not item.is_symlink()
+    )
+    return WorkspaceEstimate(
+        ingest_bytes=tree_bytes + pack_bytes,
+        per_clone_bytes=tree_bytes,
+        max_live_clones=max_live_clones,
+    )
 
 
 def _shallow_boundaries(spec: SnapshotSpec) -> frozenset[str]:
@@ -2007,7 +2061,10 @@ def _write_worktree(
 
 @contextmanager
 def prepare_snapshot(
-    spec: SnapshotSpec, *, timeout: float
+    spec: SnapshotSpec,
+    *,
+    timeout: float,
+    workspace: WorkspaceFactory | None = None,
 ) -> Iterator[SnapshotRepository]:
     """Transfer and validate *spec.commit* once, then yield its private seed."""
     _check_timeout(timeout)
@@ -2061,6 +2118,8 @@ def prepare_snapshot(
 
     child = Path(tempfile.mkdtemp(dir=spec.scratch_root, prefix="assay-p22-seed-"))
     repository: SnapshotRepository | None = None
+    workspace_stack = ExitStack()
+    active_workspace: ActiveWorkspace | None = None
     try:
         seed_git_dir = child / "seed.git"
         template = child / "template"
@@ -2148,21 +2207,37 @@ def prepare_snapshot(
             judged_tree_oids,
             spec.limits,
         )
+        if workspace is not None:
+            estimate = _workspace_estimate(
+                manifest,
+                seed_git_dir,
+                max_live_clones=workspace.max_live_clones,
+            )
+            active_workspace = workspace_stack.enter_context(
+                workspace.open(estimate, scratch_root=spec.scratch_root)
+            )
+            if active_workspace is not None:
+                seed_root = active_workspace.ingest_tree(child, "seed")
+                seed_git_dir = seed_root / "seed.git"
+                template = seed_root / "template"
         repository = SnapshotRepository(
             spec=spec,
             source=source,
             seed_git_dir=seed_git_dir,
             template=template,
             manifest=manifest,
+            workspace=active_workspace,
         )
         yield repository
-    except BaseException:
+    except BaseException as exc:
         # Already failing: close and discard best-effort. Neither a cleanup
         # failure nor the live-child programmer error may mask the terminal
         # the caller is actually about to see.
-        for leaked in _close_repository(repository):
-            shutil.rmtree(leaked, ignore_errors=True)
+        if repository is not None:
+            for leaked in _close_repository(repository):
+                repository._discard_materialization(leaked)
         shutil.rmtree(child, ignore_errors=True)
+        workspace_stack.__exit__(type(exc), exc, exc.__traceback__)
         raise
     else:
         live = _close_repository(repository)
@@ -2171,10 +2246,13 @@ def prepare_snapshot(
         # leak the terminal table forbids -- so the misused children are
         # removed first and the programmer error is still raised.
         for leaked in live:
-            shutil.rmtree(leaked, ignore_errors=True)
+            repository._discard_materialization(leaked)
         _remove_owned_tree(child)
         if live:
-            raise RuntimeError(
+            error = RuntimeError(
                 f"prepare_snapshot's context closed with {len(live)} live "
                 f"snapshot context(s); close every materialization first"
             )
+            workspace_stack.__exit__(type(error), error, error.__traceback__)
+            raise error
+        workspace_stack.close()

@@ -1451,6 +1451,21 @@
         "unsafe_hash": false,
         "weakref_slot": false
       }
+    },
+    "assay.workspace.WorkspaceEstimate": {
+      "fields": {},
+      "params": {
+        "eq": true,
+        "frozen": true,
+        "init": true,
+        "kw_only": false,
+        "match_args": true,
+        "order": false,
+        "repr": true,
+        "slots": false,
+        "unsafe_hash": false,
+        "weakref_slot": false
+      }
     }
   },
   "format": 1
