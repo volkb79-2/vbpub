@@ -422,7 +422,7 @@ def test_menu_mirrors_the_webui_labels():
     keys = [i.key for _, i in walk()]
     assert len(keys) == len(set(keys))
     assert [i.key for _, i in walk() if i.status == "implemented"] == [
-        "dashboard", "storage", "storage/health", "storage/disks", "datasets", "sharing", "data-protection", "snapshot-tasks", "snapshots",
+        "dashboard", "storage", "storage/health", "storage/pools", "storage/disks", "datasets", "sharing", "data-protection", "snapshot-tasks", "scrub-tasks", "snapshots",
         "replication", "cloud-sync", "credentials", "users", "api-keys", "containers", "vm", "apps", "system",
         "update", "reboot", "shutdown", "general", "network", "jobs", "alerts", "services", "audit",
     ]
@@ -431,14 +431,15 @@ def test_menu_mirrors_the_webui_labels():
     ]
 
 
-def test_menu_milestones_match_the_post_m2_plan():
+def test_menu_milestones_match_the_post_m3_plan():
     milestones = {item.key: item.milestone for _, item in walk()}
     assert milestones["dashboard"] == "It2"
     assert milestones["reportsdashboard/cpu"] == "Later"
     assert milestones["services"] == "It2"
-    assert milestones["storage/pools"] == "Later"
+    assert milestones["storage/pools"] == "M3"
+    assert milestones["scrub-tasks"] == "M3"
     assert milestones["groups"] == "Later"
-    assert "M3" not in milestones.values()
+    assert "M3" in milestones.values()
 
 
 def test_menu_matrix_ids_exist_in_the_snapshot():

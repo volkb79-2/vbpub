@@ -1,6 +1,6 @@
 # tnt design
 
-Status: M1, M2, It1, It2, and It3 are implemented. Vanilla-v27 live acceptance is recorded for 2026-10-29; remaining It4 work is listed in section 10.
+Status: M1, M2, M3, It1, It2, and It3 are implemented. Vanilla-v27 live acceptance is recorded for 2026-10-29; remaining It4 work is listed in section 10.
 Container image identity, configured CPU count and memory limits
 are unavailable in the verified v27 container record; VM creation uses separately reviewed device plans because v27
 does not accept devices in `vm.create`. Inputs: the prior-art research (`truenas-tui-research.md`, release-program brief),
@@ -205,7 +205,7 @@ current-session-only. Services has no lifecycle writes. Jobs pages in 200-row TU
 single-flight: Dashboard every 30 seconds, Jobs every 5 seconds, and Alerts, Services, and Storage every 60 seconds.
 Each view also offers status, search, refresh, help, copy, last-success retention, and a credential-scrubbed error
 panel. See the exact method, schema, role, paging and unavailable-state contract in
-[`docs/API-METHODS-V27.md`](API-METHODS-V27.md#iteration-2-read-view-contract-implemented-against-the-verified-v27-reference).
+[`docs/API-METHODS-V27.md`](API-METHODS-V27.md#read-view-contracts-implemented-against-the-verified-v27-reference).
 
 ### User account updates
 
@@ -257,10 +257,12 @@ Import Pool, pool management) are reached from the Storage page, not from the me
 `tnt/menu.py` holds the tree. TrueNAS places “My API Keys” in the top-right account menu; tnt nests it under Credentials
 as a `tnt_only` tree leaf because the TUI has no account menu. Datasets, Shares, Data Protection tasks and Snapshots,
 Credentials > Local Users/API Keys, Containers, Virtual Machines, Apps, Network, Audit, Update, Reboot, Shutdown, and
-General Settings have workflow views. It2 adds Dashboard, Alerts, Jobs, Services, and Storage > Health. Reporting
-beyond the Dashboard's bounded CPU/memory history and other unassigned entries remain Later placeholders. Multi-host/
-session controls are It1; interactive SSH hand-off is It3. Containers and Virtual Machines are separate top-level
-entries and are always shown. The TUI omits Shell because it is already a terminal.
+General Settings have workflow views. It2 adds Dashboard, Alerts, Jobs, Services, and Storage > Health. M3 adds the
+read-only Storage > Pools view and pool scrub schedules. Reporting beyond the Dashboard's bounded CPU/memory history
+and other unassigned entries remain Later placeholders. Multi-host/session controls are It1; interactive SSH hand-off
+is It3. Containers and Virtual Machines are separate top-level entries. Conditional entries are determined per host
+from v27 read probes; unsupported entries are hidden and failed probes stay visible without actions. The TUI omits
+Shell because it is already a terminal.
 
 ### TUI navigation and small terminals
 
@@ -302,6 +304,30 @@ encryption fields are masked before they reach CLI or TUI presentation. Although
 `pool.snapshottask.run` as a job, the pinned client on vanilla 27.0.0-RC.1 returned `null` from tnt's ordinary call and
 the generated snapshot appeared. The workflow therefore checks the snapshot list instead of requiring a job handle;
 see the [live acceptance record](LIVE-TESTING.md#live-acceptance-run-2026-10-29).
+
+Pool scrub schedules use `pool.scrub.query/get_instance/create/update/delete`. Create and update accept only the v27
+`pool`, `threshold`, `description`, `schedule`, and `enabled` fields; both the selected schedule and its pool ID are
+fresh probes, and boot-pool schedules are refused. Deletion is destructive and confirms pool name plus schedule ID.
+Run-now uses the v27 `zpool.scrub.run` job with `START`, full `SCRUB`, and threshold zero. Before planning it verifies
+the exact pool is not boot-pool, is `ONLINE` or `DEGRADED`, and has no active scrub/resilver. Middleware documents that
+START can still return silently without starting when a validation fact changes after preflight; the recorded job
+outcome therefore does not claim scan activity was observed. `pool.scrub.run` and `pool.scrub.scrub` are deprecated
+and are not used by this workflow. Vanilla v27 exposes no SMART test-task method, so SMART task management is absent.
+The API signatures and no-op conditions are linked in
+[v27 method evidence](API-METHODS-V27.md#pool-scrub-tasks-and-conditional-menu-probes).
+
+The Storage > Pools page uses only bounded `pool.query` reads for status, health, available/allocated bytes, scan state,
+and vdev topology. It has no write controls. Partitioning, pool creation/import, and boot-pool actions remain outside
+this page.
+
+### Conditional menu entries
+
+Apps and Containers require a successful, well-shaped `app.query` or `container.query`; an empty list is still a valid
+available surface. Virtual Machines use `vm.supports_virtualization()`. KMIP uses a well-shaped `kmip.config()` reply,
+and Enclosure requires a non-empty `enclosure2.query()` list. A missing method, a false virtualization result, or no
+enclosure is unsupported and hidden. RPC, RBAC, or shape errors are unavailable, remain visible, and open an
+explanation without actions. Results are cached on the session by host generation and reset after reconnect or a
+generation change. This distinction preserves permission failures as unknown rather than claiming a feature is absent.
 
 ### Network status
 
@@ -634,11 +660,12 @@ additional arguments after `HOST` is not supported.
 |---|---|---|
 | M0 | Historical scaffold: transport, profile, v27 adapter, plan/apply model, `doctor`/`profile`/`disks`/`tui`, Storage > Disks, fake server | complete |
 | M1 | Core workflows: configuration and credentials, v27 default-deny manifest, datasets, snapshots, users, containers, and VMs in CLI/TUI | implemented; container metadata is limited to v27 fields and VM creation is staged |
-| M2 | Management workflows: SMB/NFS shares, data protection tasks, Network, Apps, Audit, API Keys, and guarded System actions | implemented; generic middleware/syslog tail and scrub/SMART task management are absent from v27 or deferred |
+| M2 | Management workflows: SMB/NFS shares, data protection tasks, Network, Apps, Audit, API Keys, and guarded System actions | implemented; generic middleware/syslog tail and SMART task management are absent from v27 |
+| M3 | Remaining v27 API work: scrub schedule CRUD and job-backed run-now, read-only pool inventory, and per-host conditional menu detection | implemented; scrub run may be a middleware no-op when post-preflight validation changes |
 | It1 | Paired multi-host configuration/secrets and the session controller: host generation, plan invalidation, worker draining, stale-callback rejection, connection testing, and per-host write mode | implemented |
 | It2 | Non-blocking job engine and read-only core views: Dashboard, Alerts, Jobs, Services, Storage health, and global view UX | implemented |
 | It3 | Hardened interactive SSH hand-off with pinned host-key sources and no arbitrary remote command mode | implemented |
-| It4 | Vanilla-v27 live acceptance, remaining hardening and consistency review, estate registration, and release readiness | live acceptance and CMRU registration recorded 2026-10-29; tnt 0.1.0 published; update-survival lane added |
+| It4 | Vanilla-v27 live acceptance, remaining hardening and consistency review, estate registration, and release readiness | live acceptance and CMRU registration recorded 2026-10-29; update-survival lane added |
 | Later | Storage partitioning, pool creation, boot-pool management, and other TrueNAS screens not assigned above | deferred |
 
 ## 11. Supported host
@@ -653,8 +680,21 @@ Decided by the controller on 2026-10-28: the pinned git-sha dependency on `truen
 (documented in `pyproject.toml`); no patch installation in tnt; v27 is the only general management API generation;
 no Shell menu entry. The v28 post-update surface is read-only and limited to the measured verification calls.
 
-Still open: Q7 how conditional menu entries (Apps, Containers, Virtual Machines, KMIP, Enclosure; flagged
-`conditional` in `menu.py`) are detected per host (TNT-35). Live-lane profile selection and required variables are documented in
+M3 resolved TNT-35 with per-host read probes for Apps, Containers, Virtual Machines, KMIP, and Enclosure. Unsupported
+results hide their entries; unavailable results remain visible without actions. The probes are cached by session
+generation, and the exact methods and unknown-state behavior are recorded in
+[API method evidence](API-METHODS-V27.md#pool-scrub-tasks-and-conditional-menu-probes).
+
+M3 reviewed the remaining Later screens and selected only the read-only Storage > Pools inventory. Storage free-space
+and partitioning have no complete vanilla v27 API and would need separate host-side geometry work; pool creation and
+boot-pool management remain explicitly deferred; pool import is a storage-changing operation. Boot environments touch
+the excluded boot-pool lifecycle. Groups, privileges, and directory services can alter access or cause lockout;
+certificates, backup credentials, S3 keys, and KMIP need separate secret-handling and rotation workflows. A full
+Enclosure screen requires more hardware-specific interpretation than the read-only presence probe. Reporting beyond
+the existing bounded CPU/memory history needs broader graph and time-range controls. Advanced Settings and Alert
+Settings are system-wide writes. These did not meet M3's low-risk scope.
+
+Live-lane profile selection and required variables are documented in
 [`docs/CONSUMERS.md`](CONSUMERS.md#explicit-live-lane); the operator supplies the test host and its disposable pool.
 
 `tnt.testing` ships inside the wheel but imports `websockets` at module level; `websockets` is a test-extra dependency
@@ -666,4 +706,4 @@ The `VERSION` file is the version source used by both setuptools and CMRU. CMRU'
 `r0-r1` and `ux-focused` Run-Gate lanes. The `ux-focused` lane includes real tmux terminal checks, but those cases
 skip while `tester-unified` lacks tmux; TNT-54 tracks that image capability. No tester image was changed for this
 registration. The `live-v27` and `live-update` lanes remain operator-run and are not release gates; the separately
-reported `live-inspect` lane belongs to estate gate tooling elsewhere. CMRU published tnt 0.1.0 as `tnt-v0.1.0`.
+reported `live-inspect` lane belongs to estate gate tooling elsewhere.

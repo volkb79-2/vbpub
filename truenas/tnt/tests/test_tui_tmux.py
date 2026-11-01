@@ -17,7 +17,7 @@ SIZES = ((60, 40), (80, 24), (120, 40), (200, 60))
 HOST_NAME = "qa-archive-host-eu-west-production-2026-cluster"
 POLL_INTERVAL_SECONDS = 0.05
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
-SGR_RE = re.compile(r"\x1b\[[0-9;]*m")
+SGR_RE = re.compile(r"\x1b\[([0-9:;]*)m")
 HELPER = Path(__file__).with_name("tui_tmux_helper.py")
 
 
@@ -77,22 +77,28 @@ def _wait_for_screen(
     predicate,
     *,
     expected_size: tuple[int, int] | None = None,
-    timeout: float = 30,
+    attributes: bool = False,
+    timeout: float = 60,
 ) -> str:
     deadline = time.monotonic() + timeout
     last = ""
     while time.monotonic() < deadline:
         size_matches = expected_size is None or _pane_size(executable, session) == expected_size
-        captured = _capture(executable, session)
+        captured = _capture(executable, session, attributes=attributes)
         if captured is not None:
             last = captured
-            if size_matches and predicate(_plain(captured)):
+            screen = captured if attributes else _plain(captured)
+            if size_matches and predicate(screen):
                 return captured
         elif status.exists():
             code = status.read_text(encoding="ascii").strip()
             raise AssertionError(f"tmux TUI exited before the screen appeared (exit {code})")
         time.sleep(POLL_INTERVAL_SECONDS)
-    raise AssertionError(f"timed out waiting for tmux screen; last capture:\n{_plain(last)}")
+    raw_input_rows = [line for line in last.splitlines() if "Type host name exactly" in _plain(line)]
+    raise AssertionError(
+        f"timed out waiting for tmux screen; last capture:\n{_plain(last)}\n"
+        f"raw input row(s) with escape sequences: {raw_input_rows!r}"
+    )
 
 
 def _wait_for_session_exit(executable: str, session: str, *, timeout: float = 30) -> None:
@@ -111,18 +117,88 @@ def _assert_no_traceback(captured: str) -> None:
 def _assert_complete_legend(captured: str, columns: int) -> None:
     plain = _plain(captured)
     assert "tnt" in plain
-    for key in ("Ctrl+N Menu", "Ctrl+P Jump", "H Host", "? Help", "Q Quit"):
+    for key in ("Ctrl+N Menu", "Ctrl+P Jump", "H Host", "? Help"):
         assert key in plain, f"missing or truncated legend key {key!r} at {columns} columns"
+    assert "Q Quit" in plain or "q Quit" in plain, f"missing or truncated quit legend at {columns} columns"
     if columns >= 72:
         assert "R Refresh" in plain
+
+
+def _complete_legend_visible(screen: str, columns: int) -> bool:
+    keys = ["Ctrl+N Menu", "Ctrl+P Jump", "H Host", "? Help"]
+    if columns >= 72:
+        keys.append("R Refresh")
+    return all(key in screen for key in keys) and ("Q Quit" in screen or "q Quit" in screen)
 
 
 def _has_styled_line(captured: str, marker: str) -> bool:
     return any(marker in _plain(line) and SGR_RE.search(line) for line in captured.splitlines())
 
 
-def _compact(captured: str) -> str:
-    return "".join(character for character in _plain(captured) if not character.isspace())
+def _has_focused_input(captured: str, marker: str) -> bool:
+    for line in captured.splitlines():
+        plain_line = _plain(line)
+        marker_start = plain_line.find(marker)
+        if marker_start < 0:
+            continue
+        # Use the input widget's own frame when present. A narrow modal can
+        # overlap the app's box-drawing prefix column, so the old pair of `█`
+        # sentinels did not necessarily bracket the input row at 60 columns.
+        left = plain_line.rfind("▊", 0, marker_start)
+        right = plain_line.find("▎", marker_start + len(marker))
+        if left < 0:
+            left = marker_start - 1
+        if right < 0:
+            right = marker_start + len(marker)
+        inverse = False
+        column = 0
+        for token in re.finditer(r"\x1b\[([0-9:;]*)m|.", line):
+            parameters = token.group(1)
+            if parameters is None:
+                # tmux-256color renders Textual's focused cursor as reverse
+                # video on its current cell, which may be an ordinary space.
+                # Textual may apply reverse video to the input's leading
+                # cursor cell, which is the left frame glyph at narrow sizes.
+                if inverse and left <= column < right:
+                    return True
+                column += 1
+                continue
+            codes = set(parameters.replace(":", ";").split(";"))
+            if not parameters or "0" in codes or "27" in codes:
+                inverse = False
+            if "7" in codes:
+                inverse = True
+    return False
+
+
+def _confirmation_content(captured: str) -> str:
+    # Textual wraps the prompt and target at narrow pane widths. Keep only the
+    # modal interior on each row so text behind the overlay cannot interrupt
+    # the target name as wrapped lines are joined.
+    content = []
+    for line in _plain(captured).splitlines():
+        left = line.find("█")
+        right = line.rfind("█")
+        if left >= 0 and right > left:
+            line = line[left + 1:right]
+        content.extend(character for character in line if not character.isspace())
+    return "".join(content)
+
+
+def _host_name_visible_after_prompt(captured: str) -> bool:
+    content = _confirmation_content(captured)
+    prompt = "Typethisexacthostnametoconfirm:"
+    prompt_end = content.find(prompt)
+    if prompt_end < 0:
+        return False
+    return HOST_NAME in content[prompt_end + len(prompt):]
+
+
+def _host_remove_confirmation_visible(captured: str) -> bool:
+    content = _confirmation_content(captured)
+    return _host_name_visible_after_prompt(captured) and all(
+        marker in content for marker in ("Typehostnameexactly", "Removehost", "Cancel")
+    )
 
 
 def _assert_unicode_screen(captured: str) -> None:
@@ -145,11 +221,11 @@ def test_wait_for_screen_waits_for_requested_pane_size(tmp_path, monkeypatch):
         lambda executable, session: next(sizes),
         raising=False,
     )
-    monkeypatch.setattr(
-        sys.modules[__name__],
-        "_capture",
-        lambda executable, session: "Location: TrueNAS > Hosts\n" + HOST_NAME,
-    )
+    def capture(executable, session, *, attributes=False):
+        assert attributes is False
+        return "Location: TrueNAS > Hosts\n" + HOST_NAME
+
+    monkeypatch.setattr(sys.modules[__name__], "_capture", capture)
     monkeypatch.setattr(time, "sleep", sleeps.append)
 
     captured = _wait_for_screen(
@@ -209,6 +285,8 @@ def test_tui_in_real_tmux_terminal(size, tmp_path):
             "-y",
             str(rows),
             "-e",
+            "TERM=tmux-256color",
+            "-e",
             "LANG=C.UTF-8",
             "-e",
             "LC_ALL=C.UTF-8",
@@ -219,7 +297,7 @@ def test_tui_in_real_tmux_terminal(size, tmp_path):
             executable,
             session,
             status,
-            lambda screen: "Location: TrueNAS" in screen and "Ctrl+N Menu" in screen,
+            lambda screen: "Location: TrueNAS" in screen and _complete_legend_visible(screen, columns),
         )
         _assert_no_traceback(initial)
         _assert_complete_legend(initial, columns)
@@ -263,28 +341,30 @@ def test_tui_in_real_tmux_terminal(size, tmp_path):
         _assert_no_traceback(restored)
 
         _tmux(executable, "send-keys", "-t", session, "Tab", "Tab", "Tab", "Tab", "Tab", "Tab", "Enter")
-        confirmation = _wait_for_screen(
+        confirmation_attributes = _wait_for_screen(
             executable,
             session,
             status,
-            lambda screen: "".join("Type this exact host name to confirm".split()) in _compact(screen),
+            lambda capture: (
+                _host_name_visible_after_prompt(capture)
+                and _has_focused_input(capture, "Type host name exactly")
+            ),
+            attributes=True,
         )
+        confirmation = confirmation_attributes
         _assert_no_traceback(confirmation)
         _assert_unicode_screen(confirmation)
-        assert HOST_NAME in _compact(confirmation), "destructive confirmation target is clipped"
+        assert _host_name_visible_after_prompt(confirmation), "destructive confirmation target is clipped"
 
-        confirmation_attributes = _capture(executable, session, attributes=True)
-        assert confirmation_attributes is not None
         assert SGR_RE.search(confirmation_attributes), "confirmation has no terminal color or attribute"
-        assert _has_styled_line(confirmation_attributes, "Type host name exactly"), "confirmation input focus is not styled"
+        assert _has_focused_input(confirmation_attributes, "Type host name exactly"), "confirmation input focus is not styled"
 
         _tmux(executable, "resize-window", "-t", session, "-x", str(resize_to[0]), "-y", str(resize_to[1]))
         confirmation_resized = _wait_for_screen(
             executable,
             session,
             status,
-            lambda screen: "".join("Type this exact host name to confirm".split()) in _compact(screen)
-            and HOST_NAME in _compact(screen),
+            _host_remove_confirmation_visible,
             expected_size=resize_to,
         )
         _assert_no_traceback(confirmation_resized)

@@ -8,6 +8,7 @@ from __future__ import annotations
 import sys
 import json
 import getpass
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -410,12 +411,32 @@ def _system_action(args: Any, runtime: CliRuntime, opener: SessionOpener, action
             raise CliFailure(f"plan was not applied; pass --allow-write to apply it\n{plan.render()}")
         methods = {call.method for call in action.calls}
         applied_uncertainly = False
+        progress_lock = threading.Lock()
+        progress_finished = False
+        progress_started = False
 
         def progress(job: Any) -> None:
+            nonlocal progress_started
             detail = job.get("progress") if isinstance(job, dict) else None
             percent = detail.get("percent") if isinstance(detail, dict) else None
             if isinstance(percent, (int, float)) and not isinstance(percent, bool):
-                print(f"\rUpdate job progress: {percent:.0f}%", file=sys.stderr, end="", flush=True)
+                with progress_lock:
+                    if not progress_finished:
+                        progress_started = True
+                        print(f"\rUpdate job progress: {percent:.0f}%", file=sys.stderr, end="", flush=True)
+
+        def finish_progress(completed: bool) -> None:
+            nonlocal progress_finished
+            with progress_lock:
+                if progress_finished:
+                    return
+                progress_finished = True
+                if completed:
+                    # A terminal job can be observed before its final callback reaches this thread.
+                    # Report completion after apply_plan returns so success always ends at 100%.
+                    print("\rUpdate job progress: 100%", file=sys.stderr, flush=True)
+                elif progress_started:
+                    print(file=sys.stderr, flush=True)
 
         try:
             result = apply_plan(plan, session.rpc, allow_write=True, typed_confirmation=args.confirm,
@@ -426,6 +447,8 @@ def _system_action(args: Any, runtime: CliRuntime, opener: SessionOpener, action
                 applied_uncertainly = True
                 result = partial
             else:
+                if methods & {"update.run", "update.download"}:
+                    finish_progress(completed=False)
                 payload = {"plan": plan.render(), "completed": False, "result": list(partial),
                            "calls": _call_records(partial, session),
                            "error": session.credential.scrub(str(exc)) if session.credential else str(exc)}
@@ -433,7 +456,7 @@ def _system_action(args: Any, runtime: CliRuntime, opener: SessionOpener, action
                                        f"{json.dumps(payload, indent=2, sort_keys=True, default=str)}")
                 return 1
         if methods & {"update.run", "update.download"}:
-            print(file=sys.stderr, flush=True)
+            finish_progress(completed=True)
         payload = {"plan": plan.render(), "result": list(result), "calls": _call_records(result, session),
                    "completed": True}
         text = f"{plan.render()}\nSystem action completed."
@@ -696,6 +719,32 @@ def _task_protocol_cli(ident: CliIdentity, opener: SessionOpener, kind: str) -> 
         child.register(VerbSpec("delete", None, "Delete a periodic snapshot task.", group=VerbGroup.MODIFICATION.value,
                                 arguments=(id_arg,), options=write_options, handler=lambda a, r: _workflow_action(a, r, opener,
                                     lambda s: s.workflows.snapshot_task_delete_action(a.task_id))))
+    elif kind == "scrub":
+        id_arg = ArgumentSpec("task_id", "Pool scrub schedule ID.", metavar="ID", parser_kwargs={"type": int})
+        child.register(VerbSpec("list", None, "List pool scrub schedules.", group=VerbGroup.EXPLORATION.value,
+                                options=read_options, handler=lambda a, r: _workflow_read(a, r, opener,
+                                    lambda s: s.workflows.scrub_tasks())))
+        child.register(VerbSpec("show", None, "Show one pool scrub schedule.", group=VerbGroup.EXPLORATION.value,
+                                arguments=(id_arg,), options=read_options, handler=lambda a, r: _workflow_read(a, r, opener,
+                                    lambda s: s.workflows.scrub_task(a.task_id))))
+        child.register(VerbSpec("create", None, "Create a pool scrub schedule from a v27 JSON payload.",
+                                group=VerbGroup.MODIFICATION.value,
+                                options=write_options + (_value(("--file",), "JSON schedule payload.", "FILE", "WORKFLOW"),),
+                                handler=lambda a, r: _workflow_action(a, r, opener,
+                                    lambda s: s.workflows.scrub_task_create_action(_read_json_object(a.file)))))
+        child.register(VerbSpec("update", None, "Update a pool scrub schedule from a v27 JSON payload.",
+                                group=VerbGroup.MODIFICATION.value, arguments=(id_arg,),
+                                options=write_options + (_value(("--file",), "JSON fields to update.", "FILE", "WORKFLOW"),),
+                                handler=lambda a, r: _workflow_action(a, r, opener,
+                                    lambda s: s.workflows.scrub_task_update_action(a.task_id, _read_json_object(a.file)))))
+        child.register(VerbSpec("run", None, "Start a full pool scrub now as a tracked v27 job.",
+                                group=VerbGroup.MODIFICATION.value, arguments=(id_arg,), options=write_options,
+                                handler=lambda a, r: _workflow_action(a, r, opener,
+                                    lambda s: s.workflows.scrub_task_run_action(a.task_id))))
+        child.register(VerbSpec("delete", None, "Delete a pool scrub schedule (typed confirmation required).",
+                                group=VerbGroup.MODIFICATION.value, arguments=(id_arg,), options=write_options,
+                                handler=lambda a, r: _workflow_action(a, r, opener,
+                                    lambda s: s.workflows.scrub_task_delete_action(a.task_id))))
     elif kind == "replication":
         name_arg = ArgumentSpec("name", "Replication task name.", metavar="NAME")
         child.register(VerbSpec("list", None, "List replication tasks.", group=VerbGroup.EXPLORATION.value,
@@ -737,6 +786,7 @@ def _task_verbs(ident: CliIdentity, opener: SessionOpener) -> list[VerbSpec]:
     return [VerbSpec(name, None, description, group=VerbGroup.EXPLORATION.value,
                      delegate=_task_protocol_cli(ident, opener, name))
             for name, description in (("snapshot", "Manage periodic snapshot tasks."),
+                                      ("scrub", "Manage pool scrub schedules."),
                                       ("replication", "Inspect and run replication tasks."),
                                       ("cloudsync", "Inspect and run cloud-sync tasks."))]
 
@@ -1477,6 +1527,10 @@ def build_cli(cli_identity: CliIdentity | None = None, opener: SessionOpener = o
                                options=HOST_OPTIONS,
                                handler=lambda args, runtime: _core_view_read(args, runtime, opener, "services")))
     _workflow_group(registry, ident, "storage", "Read pool and disk health.", [
+        VerbSpec("pools", None, "Show read-only inventory and scan state for storage pools.",
+                 group=VerbGroup.EXPLORATION.value, examples=("tnt storage pools --host lab --json",),
+                 options=HOST_OPTIONS,
+                 handler=lambda args, runtime: _core_view_read(args, runtime, opener, "pools")),
         VerbSpec("health", None, "Show pool health and disk inventory without write actions.",
                  group=VerbGroup.EXPLORATION.value, examples=("tnt storage health --host lab --json",),
                  options=HOST_OPTIONS,

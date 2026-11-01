@@ -31,6 +31,7 @@ SCREEN_TITLES = {
     "users": "Local Users",
     "sharing": "Shares",
     "snapshot-tasks": "Periodic Snapshot Tasks",
+    "scrub-tasks": "Pool Scrub Schedules",
     "replication": "Replication Tasks",
     "cloud-sync": "Cloud Sync Tasks",
     "apps": "Apps",
@@ -54,6 +55,8 @@ OPERATIONS = {
                 ("Delete selected SMB share", "delete-smb"), ("Delete selected NFS share", "delete-nfs")),
     "snapshot-tasks": (("Create task", "create"), ("Run selected now", "run"),
                         ("Enable selected", "enable"), ("Disable selected", "disable"), ("Delete selected", "delete")),
+    "scrub-tasks": (("Create schedule", "create"), ("Update selected", "update"),
+                    ("Run selected now", "run"), ("Delete selected", "delete")),
     "replication": (("Run selected now", "run"), ("Enable selected", "enable"), ("Disable selected", "disable")),
     "cloud-sync": (("Run selected now", "run"), ("Enable selected", "enable"), ("Disable selected", "disable")),
     "apps": (("Start selected", "start"), ("Stop selected", "stop"), ("Restart selected", "restart"),
@@ -70,6 +73,7 @@ _READERS = {
     "sharing": lambda w: ([{"protocol": "SMB", **row} for row in w.shares_smb()] +
                            [{"protocol": "NFS", **row} for row in w.shares_nfs()]),
     "snapshot-tasks": lambda w: w.snapshot_tasks(),
+    "scrub-tasks": lambda w: w.scrub_tasks(),
     "replication": lambda w: w.replication_tasks(),
     "cloud-sync": lambda w: w.cloudsync_tasks(),
     "apps": lambda w: w.apps(),
@@ -191,7 +195,8 @@ class WorkflowView(Vertical):
                                                        "cpuset", "autostart", "builtin", "enabled", "source_datasets",
                                                        "target_dataset", "direction", "transfer_mode", "schedule",
                                                        "lifetime_value", "lifetime_unit", "upgrade_available",
-                                                       "latest_version", "latest_app_version", "version") if key in row}
+                                                       "latest_version", "latest_app_version", "version", "pool",
+                                                       "pool_name", "threshold", "description") if key in row}
             if self.key == "containers":
                 summary["image"] = "not exposed by v27"
                 summary["CPU count"] = "not exposed by v27"
@@ -392,6 +397,19 @@ class WorkflowView(Vertical):
                 return workflows.snapshot_task_enable_action(task_id, operation == "enable")
             if operation == "delete":
                 return workflows.snapshot_task_delete_action(task_id)
+        if self.key == "scrub-tasks":
+            if operation == "create":
+                return workflows.scrub_task_create_action(data)
+            try:
+                task_id = int(name)
+            except (TypeError, ValueError):
+                raise ValueError("select a pool scrub schedule ID") from None
+            if operation == "update":
+                return workflows.scrub_task_update_action(task_id, data)
+            if operation == "run":
+                return workflows.scrub_task_run_action(task_id)
+            if operation == "delete":
+                return workflows.scrub_task_delete_action(task_id)
         if self.key == "replication":
             target = name_input or selected.get("name")
             if operation == "run":

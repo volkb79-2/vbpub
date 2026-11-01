@@ -80,6 +80,12 @@ class FakeServer:
         self.active_smb_sessions = 0
         self.system_roles = ["FULL_ADMIN"]
         self.virtualization_supported = True
+        self.enclosures: list[dict[str, Any]] = [{"id": "enclosure0", "name": "Synthetic Enclosure"}]
+        self.kmip_config: dict[str, Any] = {
+            "id": 1, "enabled": False, "manage_sed_disks": False, "manage_zfs_keys": False,
+            "certificate": None, "certificate_authority": None, "port": 5696, "server": None,
+            "ssl_version": "PROTOCOL_TLSv1_2",
+        }
         self.update_train = "TrueNAS-SCALE-27-STABLE"
         self.update_target_train = self.update_train
         self.update_profile = "DEVELOPER"
@@ -110,6 +116,8 @@ class FakeServer:
         self.datasets: dict[str, dict[str, Any]] = {"tank": self._make_dataset("tank", type_="FILESYSTEM")}
         self.snapshots: dict[str, dict[str, Any]] = {}
         self.snapshot_tasks: dict[int, dict[str, Any]] = {}
+        self.scrub_tasks: dict[int, dict[str, Any]] = {}
+        self.scrubs_started: list[str] = []
         self.replication_tasks: dict[int, dict[str, Any]] = {
             10: {"id": 10, "name": "offsite", "enabled": True, "source_datasets": ["tank/home"],
                  "target_dataset": "archive/home", "direction": "PUSH", "transport": "SSH",
@@ -181,6 +189,7 @@ class FakeServer:
         self.user_passwords: dict[str, str] = {username: password}
         self.groups: dict[int, dict[str, Any]] = {1: {"id": 1, "gid": 1, "name": "wheel", "builtin": True}}
         self._next_container_id = 1
+        self._next_scrub_task_id = 1
         self._next_vm_id = 1
         self._next_device_id = 1
         self._next_user_id = 1001
@@ -251,7 +260,7 @@ class FakeServer:
                 else:
                     result = self._dispatch(method, params)
                     if method in {"container.create", "container.stop", "container.delete", "vm.stop", "vm.restart",
-                                  "replication.run", "cloudsync.sync",
+                                  "replication.run", "cloudsync.sync", "zpool.scrub.run",
                                   "app.start", "app.stop", "app.delete", "system.reboot", "system.shutdown",
                                   "update.run", "update.download"}:
                         self._send_job(ws, msg["id"], result)
@@ -422,7 +431,7 @@ class FakeServer:
                                    "privilege": {"roles": list(self.system_roles)}},
             "disk.query": lambda p: self.disks,
             "disk.details": self._details,
-            "pool.query": lambda p: self.pools,
+            "pool.query": self._pool_query,
             "boot.get_state": lambda p: self.boot_state,
             "pool.dataset.query": self._dataset_query,
             "pool.dataset.details": lambda p: self._dataset_tree(),
@@ -444,6 +453,12 @@ class FakeServer:
             "pool.snapshottask.update": self._snapshot_task_update,
             "pool.snapshottask.delete": self._snapshot_task_delete,
             "pool.snapshottask.run": self._snapshot_task_run,
+            "pool.scrub.query": lambda p: self._query(self.scrub_tasks, p),
+            "pool.scrub.get_instance": lambda p: self._get(self.scrub_tasks, p[0], "pool scrub schedule"),
+            "pool.scrub.create": self._scrub_task_create,
+            "pool.scrub.update": self._scrub_task_update,
+            "pool.scrub.delete": self._scrub_task_delete,
+            "zpool.scrub.run": self._zpool_scrub_run,
             "replication.query": lambda p: self._query(self.replication_tasks, p),
             "replication.get_instance": lambda p: self._get(self.replication_tasks, p[0], "replication task"),
             "replication.update": self._replication_update,
@@ -463,6 +478,8 @@ class FakeServer:
             "vm.get_instance": lambda p: self._get(self.vms, p[0], "VM"),
             "vm.status": lambda p: self._get(self.vms, p[0], "VM").get("status"),
             "vm.supports_virtualization": lambda p: self.virtualization_supported,
+            "kmip.config": lambda p: dict(self.kmip_config),
+            "enclosure2.query": lambda p: list(self.enclosures),
             "vm.create": self._vm_create,
             "vm.update": self._vm_update,
             "vm.start": lambda p: self._vm_state(p, "RUNNING"),
@@ -572,6 +589,11 @@ class FakeServer:
                 projected.append(output)
             return projected
         return result
+
+    def _pool_query(self, params: list[Any]) -> list[dict[str, Any]]:
+        rows = {row["id"]: row for row in self.pools
+                if isinstance(row, dict) and isinstance(row.get("id"), int)}
+        return self._query(rows, params)
 
     def _system_state(self, params: list[Any]) -> str:
         if self.system_state == "BOOTING":
@@ -854,6 +876,39 @@ class FakeServer:
     def _snapshot_task_run(self, params: list[Any]) -> None:
         row = self._get(self.snapshot_tasks, params[0], "periodic snapshot task")
         row["last_run"] = "2026-10-28T00:00:00Z"
+        return None
+
+    def _scrub_task_create(self, params: list[Any]) -> dict[str, Any]:
+        payload = dict(params[0])
+        pool = next((row for row in self.pools if row.get("id") == payload.get("pool")), None)
+        if pool is None:
+            raise _RpcError(CALL_ERROR, f"pool {payload.get('pool')!r} not found")
+        ident = self._next_scrub_task_id
+        self._next_scrub_task_id += 1
+        row = {"id": ident, "pool_name": pool["name"], "threshold": 35, "description": "",
+               "schedule": {"minute": "00", "hour": "00", "dom": "*", "month": "*", "dow": "7"},
+               "enabled": True, **payload}
+        self.scrub_tasks[ident] = row
+        return dict(row)
+
+    def _scrub_task_update(self, params: list[Any]) -> dict[str, Any]:
+        row = self._get(self.scrub_tasks, params[0], "pool scrub schedule")
+        payload = dict(params[1])
+        row.update(payload)
+        if "pool" in payload:
+            pool = next((item for item in self.pools if item.get("id") == payload["pool"]), None)
+            if pool is None:
+                raise _RpcError(CALL_ERROR, f"pool {payload['pool']!r} not found")
+            row["pool_name"] = pool["name"]
+        return dict(row)
+
+    def _scrub_task_delete(self, params: list[Any]) -> bool:
+        self._get(self.scrub_tasks, params[0], "pool scrub schedule")
+        del self.scrub_tasks[int(params[0])]
+        return True
+
+    def _zpool_scrub_run(self, params: list[Any]) -> None:
+        self.scrubs_started.append(params[0]["pool_name"])
         return None
 
     def _replication_update(self, params: list[Any]) -> dict[str, Any]:

@@ -4,8 +4,40 @@
 
 <!-- cmru: release history -->
 
+## [0.2.0] - 2026-11-01
+<!-- cmru: generated -->
+<!-- cmru: source-end=e03ef432d7c008e2f33f898d65137123c7758cf4 -->
+
+### Fixed
+- fix(tnt): stabilize update progress and tmux focus checks (90b6ca567)
+- fix(tnt): show full host removal confirmation targets (1ad7492f4)
+- fix(tnt): stabilize M3 gate failures (6f68e60ac)
+- fix(tnt): bind updates to profile and exact train (08b7d6776)
+
+### Changed
+- Fix tmux confirmation assertions at narrow widths (6ea572ee9)
+- Fix tmux TUI gate assertions (44fca9041)
+- Merge main into tnt M3 (update workflow, tmux image) (8309d0ac0)
+- M3: complete remaining v27 API functionality (e1f9fc7dc)
+- tnt: complete guarded TrueNAS system update workflow (1f3ce63de)
+
+### Documentation
+- docs(tnt): review fixes for M3 (drop session handoff, current backlog state, polled UX test, follow-ups TNT-55..58) (c6ada4a0b)
+
 ### Fixed
 - Treat `update.profile_choices` keys as profile IDs and their `name` fields as display labels; accept API-client role sets and bind update downloads/applies to an exact available train/version pair. Preflight live updates before creating fixtures.
+
+<!-- cmru: pending release notes begin -->
+### Added
+- Add reviewed pool scrub schedule create/update/delete and tracked run-now through the v27 `zpool.scrub.run` job.
+- Add read-only Storage > Pools inventory with pool health, space, scan state, and vdev topology.
+- Detect conditional Apps, Containers, Virtual Machines, KMIP, and Enclosure entries per host generation, keeping failed probes visible without actions.
+
+### Changed
+- Record that vanilla v27 has no SMART test-task or generic middleware/syslog tail method; keep those views absent.
+- Recheck TNT-36/37 against the transport-only pinned client and immutable v27 container schema; image identity and configured memory remain unavailable.
+- Document the M3 candidate review and update the published 0.1.0 install and consumer guidance.
+<!-- cmru: pending release notes end -->
 
 ## [0.1.0] - 2026-10-29
 <!-- cmru: generated -->
