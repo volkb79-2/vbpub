@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Added
+- Add reviewed pool scrub schedule create/update/delete and tracked run-now through the v27 `zpool.scrub.run` job.
+- Add read-only Storage > Pools inventory with pool health, space, scan state, and vdev topology.
+- Detect conditional Apps, Containers, Virtual Machines, KMIP, and Enclosure entries per host generation, keeping failed probes visible without actions.
+
+### Changed
+- Record that vanilla v27 has no SMART test-task or generic middleware/syslog tail method; keep those views absent.
+- Recheck TNT-36/37 against the transport-only pinned client and immutable v27 container schema; image identity and configured memory remain unavailable.
+- Document the M3 candidate review and update the published 0.1.0 install and consumer guidance.
+
 <!-- cmru: release history -->
 
 ### Fixed

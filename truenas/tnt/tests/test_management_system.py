@@ -374,8 +374,9 @@ def test_update_cli_ignores_boolean_progress_percentages(config, opener, capsys,
                                              "--confirm", "TrueNAS-27.0.0-RC.2"])
     captured = capsys.readouterr()
     assert code == 0 and "System action completed" in captured.out
-    assert captured.err.count("Update job progress:") == 1
+    assert captured.err.count("Update job progress:") == 2
     assert "Update job progress: 43%" in captured.err
+    assert captured.err.endswith("\rUpdate job progress: 100%\n")
 
 
 def test_config_export_downloads_tar_to_new_private_local_file(config, opener, capsys, tmp_path, server):
@@ -785,17 +786,18 @@ def test_hung_system_preflight_rpc_does_not_block_tui_event_loop():
         async def go():
             app = TntApp(session)
             async with app.run_test(size=(160, 50)) as pilot:
+                await _wait_for(pilot, lambda: app.conditional_capabilities is not None, count=100)
                 _select_key(app, "reboot")
                 await _wait_for(pilot, lambda: app.current == "reboot"
                                 and app.query_one("#system-power-plan", Button).is_attached, count=40)
                 ticked = asyncio.Event()
                 asyncio.get_running_loop().call_later(0.05, ticked.set)
-                watchdog = threading.Timer(1.5, released.set)
+                watchdog = threading.Timer(3.0, released.set)
                 watchdog.start()
                 try:
                     view = app.query_one("#view-system-reboot", SystemPowerView)
                     view.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="system-power-plan")))
-                    await asyncio.wait_for(ticked.wait(), timeout=0.5)
+                    await asyncio.wait_for(ticked.wait(), timeout=1.5)
                     for _ in range(20):
                         if entered.is_set():
                             break

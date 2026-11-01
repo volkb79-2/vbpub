@@ -304,3 +304,29 @@ class ReadViews:
                 "pool_limit": _MAX_ROWS, "disk_limit": _MAX_ROWS,
                 "pools_possibly_more": len(pool_rows) == _MAX_ROWS,
                 "disks_possibly_more": len(disks) == _MAX_ROWS}
+
+    def pools(self) -> dict[str, Any]:
+        method = "pool.query"
+        options = {"limit": _MAX_ROWS, "offset": 0, "order_by": ["name"],
+                   "select": ["id", "name", "status", "status_code", "healthy", "warning",
+                              "size", "allocated", "free", "scan", "topology"]}
+        rows = _rows(self.rpc.call(method, [], options), method)
+        result = []
+        for row in rows:
+            ident = _required(row, method, "id", _is_integer)
+            name = _required(row, method, "name", _is_text)
+            status = _required(row, method, "status", _is_text)
+            status_code = _required(row, method, "status_code", _is_nullable_text)
+            healthy = _required(row, method, "healthy", lambda value: isinstance(value, bool))
+            warning = _required(row, method, "warning", lambda value: isinstance(value, bool))
+            scan = _required(row, method, "scan", _valid_pool_scan)
+            topology = _required(row, method, "topology", lambda value: value is None or isinstance(value, Mapping))
+            space: dict[str, int | None] = {}
+            for field in ("size", "allocated", "free"):
+                value = row.get(field)
+                if value is not None and (not _is_integer(value) or value < 0):
+                    raise Refused("schema", f"{method} returned an invalid {field!r} field")
+                space[field] = value
+            result.append({"id": ident, "name": name, "status": status, "status_code": status_code,
+                           "healthy": healthy, "warning": warning, **space, "scan": scan, "topology": topology})
+        return {"rows": result, "limit": _MAX_ROWS, "possibly_more": len(rows) == _MAX_ROWS}

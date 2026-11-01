@@ -6,7 +6,7 @@ The v27 request shapes and the source revision they were checked against are in 
 
 ## Install from GitHub release assets
 
-Download the released `0.1.0` wheel from the versioned GitHub Release `tnt-v0.1.0`, along with a
+Download the wheel from a versioned GitHub Release `tnt-vX.Y.Z` (or the moving `tnt-latest`), along with a
 `cli-extended>=0.4.0` wheel from that project's GitHub Releases. CMRU also maintains a moving `tnt-latest` release.
 Keep both wheels in one directory. The pinned
 `truenas_api_client` dependency is fetched from Git when pip installs tnt.
@@ -130,8 +130,10 @@ keyboard and mouse guide, `h` for the host picker, `r` to refresh, `s` for the c
 and `q` to quit after host work drains. `Escape` returns focus to the menu or cancels the open dialog. In tables,
 Up/Down select rows and Left/Right or Home/End inspect columns; Tab and Shift+Tab move between form fields and buttons.
 
-Planned, conditional, and tnt-only menu entries are marked in text. Destructive plan dialogs show the full target above
-the confirmation input; type it exactly as displayed. Below 48 columns or 12 rows, resize the terminal to continue.
+Planned, conditional, and tnt-only menu entries are marked in text. Apps, Containers, Virtual Machines, KMIP, and
+Enclosure are checked with read-only v27 probes for the selected host generation. Unsupported entries are hidden;
+permission or response failures remain visible as unavailable and open without actions. Destructive plan dialogs show
+the full target above the confirmation input; type it exactly as displayed. Below 48 columns or 12 rows, resize the terminal to continue.
 When no host is configured, the picker focuses Add and disables actions that need a selected host; choose Quit to exit tnt.
 See the [navigation and small-terminal design](DESIGN.md#tui-navigation-and-small-terminals).
 
@@ -207,6 +209,7 @@ tnt jobs list --host lab --limit 200 --offset 0 --json
 tnt jobs list --host lab --limit 200 --offset 200 --json
 tnt services --host lab --json
 tnt storage health --host lab --json
+tnt storage pools --host lab --json
 tnt tui --host lab
 ```
 
@@ -219,7 +222,7 @@ session. The TUI Jobs screen has Previous/Next page controls. Use `/` to focus s
 visible rows, `?` for the key guide, or its Help button for view controls. Dashboard polls every 30 seconds, Jobs every 5 seconds, and Alerts, Services, and
 Storage every 60 seconds. Refreshes do not overlap; on failure the TUI retains the last successful sample and shows a
 credential-scrubbed error. Services has no start/stop controls. The full v27 methods, role requirements, schemas, and
-unknown states are in [API method evidence](API-METHODS-V27.md#iteration-2-read-view-contract-implemented-against-the-verified-v27-reference);
+unknown states are in [API method evidence](API-METHODS-V27.md#read-view-contracts-implemented-against-the-verified-v27-reference);
 Dashboard JSON preserves v27 `system.info.uptime_seconds` as a finite, non-negative number; fractional seconds are
 valid. The job and view design is in [DESIGN.md](DESIGN.md#non-blocking-jobs-and-core-read-views).
 
@@ -341,6 +344,36 @@ run-now is typed-confirmed because a configured `allow_from_scratch` task may re
 `transfer_mode` accepts `SYNC`, `COPY`, or `MOVE`; `MOVE` removes the local source after transfer and is called out in
 the confirmation plan. Replication `direction` is `PUSH` or `PULL`, and `transport` is `SSH`, `SSH+NETCAT`, or `LOCAL`.
 See the [task safety decisions](DESIGN.md#data-protection-tasks) and [v27 API schemas](API-METHODS-V27.md#workflows).
+
+### Storage Pools and scrub schedules
+
+`tnt storage pools` and Storage > Pools in the TUI are read-only. The bounded pool query shows pool health, space,
+scan state, and vdev topology. Use the ID reported there in scrub schedule JSON. Scrub schedule create and update use
+v27 fields only; delete requires typing the exact pool name and schedule ID. Run-now submits a tracked full-scrub job.
+The middleware can still return successfully without starting when a pool-state validation changes after preflight, so
+the displayed job result is not proof that a scan was observed.
+
+```sh
+tnt storage pools --host lab --json
+tnt task scrub list --host lab --json
+cat > scrub-schedule.json <<'JSON'
+{"pool":1,"threshold":35,"description":"Regular integrity scan",
+ "schedule":{"minute":"00","hour":"03","dom":"*","month":"*","dow":"7"},"enabled":true}
+JSON
+tnt task scrub create --host lab --file scrub-schedule.json --allow-write
+cat > scrub-update.json <<'JSON'
+{"threshold":14,"enabled":true}
+JSON
+tnt task scrub update 1 --host lab --file scrub-update.json --allow-write
+tnt task scrub run 1 --host lab --allow-write
+tnt task scrub delete 1 --host lab --allow-write --confirm 'tank scrub schedule [1]'
+```
+
+Replace the example pool and schedule IDs with the values returned by the read commands. The schedule pool ID must
+resolve to a data pool; boot-pool schedules are refused. Vanilla v27 has no SMART test-task method, so there is no
+SMART task command or screen. The signatures and validation behavior are in
+[API method evidence](API-METHODS-V27.md#pool-scrub-tasks-and-conditional-menu-probes); the design choices are in
+[DESIGN.md](DESIGN.md#data-protection-tasks).
 
 ### Network status
 

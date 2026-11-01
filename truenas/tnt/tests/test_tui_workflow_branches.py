@@ -25,6 +25,15 @@ from tnt.tui.workflows import PlanReview, WorkflowView, _contains_sensitive_fiel
 class Host:
     def __init__(self, results=None):
         self.results = dict(results or {})
+        self.results.setdefault("app.query", [])
+        self.results.setdefault("container.query", [])
+        self.results.setdefault("vm.supports_virtualization", True)
+        self.results.setdefault("kmip.config", {
+            "id": 1, "enabled": False, "manage_sed_disks": False, "manage_zfs_keys": False,
+            "certificate": None, "certificate_authority": None, "port": 5696, "server": None,
+            "ssl_version": "PROTOCOL_TLSv1_2",
+        })
+        self.results.setdefault("enclosure2.query", [{"id": "test-enclosure"}])
         self.calls = []
         self.writes = []
 
@@ -631,12 +640,17 @@ def test_plan_review_displays_partial_apply_outcomes_before_recovery(config, mon
 
 
 def test_workflow_load_failure_and_unhandled_button_are_reported(config):
-    host = Host({"container.query": RuntimeError("metrics query failed")})
+    host = Host()
     session = make_session(config, host)
 
     async def go():
         app = TntApp(session)
         async with app.run_test(size=(160, 50)) as pilot:
+            for _ in range(100):
+                await pilot.pause(0.05)
+                if app.conditional_capabilities is not None:
+                    break
+            host.results["container.query"] = RuntimeError("metrics query failed")
             choose(app, "Containers")
             for _ in range(100):
                 await pilot.pause(0.05)
