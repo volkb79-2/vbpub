@@ -421,8 +421,13 @@ identities captured from the logical checkout, then refuses any mount below
 `/t`. Its bind uses `bind-recursive=disabled`; Docker CLI and Engine 25.0.0
 or newer are required, and an unknown or older version refuses before the
 helper starts. For a deferred retry, CIU walks the whole leftover checkout
-with a 100,000-entry limit and refuses new `.assay` or `vol-*` components,
-entries newer than the saved checkpoint, unreadable paths, or a capped walk.
+with a 100,000-entry limit and refuses new `.assay` or `vol-*` components
+unless they are nested below an ignored parent checkpointed as
+`class: protected` with `protected_reason: descendant`. This reason means the
+inventory found protected content below a Git-collapsed ignored parent. A
+name-only, size-capped, unreadable, or non-protected entry does not authorize
+additional nested protected names. CIU still refuses entries newer than the
+saved checkpoint, unreadable paths, or a capped walk.
 After helper work, it repeats the bounded comparison immediately before the
 local recursive deletion. A helper failure reports remaining paths; the JSON
 keeps the full list and the diagnostic shows at most 20 paths plus the total.

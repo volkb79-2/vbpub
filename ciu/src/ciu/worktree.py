@@ -7045,15 +7045,23 @@ def _permission_retry_tree_snapshot(
             raise WorktreeError("permission checkpoint has an unsafe retry target")
         blocker_paths.add(relative.as_posix())
     protected_components: set[str] = set()
+    protected_descendant_roots: set[tuple[str, ...]] = set()
     for item in ignored_state:
         if not isinstance(item, dict) or not isinstance(item.get("path"), str):
             raise WorktreeError("permission checkpoint has a malformed ignored-state inventory")
         relative = PurePosixPath(item["path"])
         if relative.is_absolute() or ".." in relative.parts or not relative.parts:
             raise WorktreeError("permission checkpoint has an unsafe ignored-state path")
-        for index, part in enumerate(relative.parts):
-            if part == ".assay" or part.startswith("vol-"):
-                protected_components.add("/".join(relative.parts[: index + 1]))
+        if item.get("class") == "protected":
+            if item.get("protected_reason") == "descendant":
+                # Only this reason proves that CIU saw a protected name below
+                # a Git-collapsed ignored parent at checkpoint time. Size caps,
+                # unreadable entries and name-only protection do not prove
+                # that an additional nested protected name was present.
+                protected_descendant_roots.add(relative.parts)
+            for index, part in enumerate(relative.parts):
+                if part == ".assay" or part.startswith("vol-"):
+                    protected_components.add("/".join(relative.parts[: index + 1]))
 
     snapshot: dict[str, tuple[int, int, int, int, int, int, bool]] = {}
     pending: list[tuple[Path, str]] = [(checkout, ".")]
@@ -7076,8 +7084,15 @@ def _permission_retry_tree_snapshot(
         parts = () if relative_path == "." else relative.parts
         for index, part in enumerate(parts):
             if part == ".assay" or part.startswith("vol-"):
-                component = "/".join(parts[: index + 1])
-                if component not in protected_components:
+                component_parts = parts[: index + 1]
+                component = "/".join(component_parts)
+                checkpointed = component in protected_components
+                if not checkpointed:
+                    checkpointed = any(
+                        component_parts[:parent_length] in protected_descendant_roots
+                        for parent_length in range(1, len(component_parts))
+                    )
+                if not checkpointed:
                     raise WorktreeError(
                         f"leftover checkout contains new protected-state component: "
                         f"{component}"

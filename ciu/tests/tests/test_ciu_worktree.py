@@ -4550,10 +4550,14 @@ class TestPermissionRemovalRetry:
         tmp_repo, fake_generate_env, monkeypatch, *, consent=False,
         privileged_rmtree=None, inventory=None, fail_retry_checkpoint=False,
         residual_guard_path=None, deny_blocker_scandir=False,
+        checkpointed_ignored_parent=False,
     ):
         ignore = tmp_repo / ".gitignore"
         ignore.write_text(
-            ignore.read_text(encoding="utf-8") + "locked/\n", encoding="utf-8"
+            ignore.read_text(encoding="utf-8")
+            + "locked/\n"
+            + ("cache/\n" if checkpointed_ignored_parent else ""),
+            encoding="utf-8",
         )
         assert _git(["add", ".gitignore"], tmp_repo).returncode == 0
         assert _git(["commit", "-m", "ignore permission fixture"], tmp_repo).returncode == 0
@@ -4562,6 +4566,13 @@ class TestPermissionRemovalRetry:
         (checkout / "unmerged-work.txt").write_text("keep this branch\n", encoding="utf-8")
         assert _git(["add", "unmerged-work.txt"], checkout).returncode == 0
         assert _git(["commit", "-m", "keep unmerged work"], checkout).returncode == 0
+        if checkpointed_ignored_parent:
+            checkpointed_state = (
+                checkout / "cache" / "vol-postgres-data" / ".assay"
+                / "prior-run" / "state.json"
+            )
+            checkpointed_state.parent.mkdir(parents=True)
+            checkpointed_state.write_text("checkpointed", encoding="utf-8")
         blocked = checkout / "locked"
         blocked.mkdir()
         (blocked / "payload").write_text("state", encoding="utf-8")
@@ -4649,6 +4660,9 @@ class TestPermissionRemovalRetry:
             outcome = worktree.remove_document(
                 tmp_repo, record.logical_name,
                 root_escalation=record.branch if consent else None,
+                discard_protected_state=(
+                    record.branch if checkpointed_ignored_parent else None
+                ),
                 json_output=True,
             )
         except worktree.WorktreeRemovalError as exc:
@@ -5675,6 +5689,54 @@ class TestPermissionRemovalRetry:
 
         assert helper_calls == []
         assert payload.read_text(encoding="utf-8") == "keep this new state"
+
+    def test_resume_accepts_checkpointed_protected_state_inside_ignored_parent(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        from ciu import engine
+
+        record, checkout, blocked, _shared, durable, _admin, _outcome = (
+            self._permission_failed_checkout(
+                tmp_repo, fake_generate_env, monkeypatch,
+                checkpointed_ignored_parent=True,
+            )
+        )
+        checkpoint = durable.metadata[worktree._CIU_WORKTREE_REMOVAL_METADATA]
+        assert {
+            "path": "cache",
+            "class": "protected",
+            "file_count": 1,
+            "bytes": len("checkpointed"),
+            "capped": False,
+            "protected_reason": "descendant",
+        } in checkpoint["ignored_state"]
+
+        helper_targets = []
+
+        def remove_blocker(target, _checkout, local_blocked, **_identities):
+            helper_targets.append(target)
+            local_blocked.chmod(0o700)
+            shutil.rmtree(local_blocked)
+
+        monkeypatch.setattr(
+            engine, "privileged_rmtree",
+            lambda target, **identities: remove_blocker(
+                target, checkout, blocked, **identities
+            ),
+        )
+
+        document = worktree.remove_document(
+            tmp_repo, record.logical_name,
+            root_escalation=record.branch,
+            discard_protected_state=record.branch,
+            json_output=True,
+        )
+
+        assert document["status"] == "removed"
+        assert document["resumed"] is True
+        assert len(helper_targets) == 1
+        assert Path(helper_targets[0]) == Path(durable.physical_worktree_path) / "locked"
+        assert not checkout.exists()
 
     def test_resume_refuses_a_file_modified_after_checkpoint_before_helper(
         self, tmp_repo, fake_generate_env, monkeypatch
@@ -8694,13 +8756,113 @@ def test_permission_retry_snapshot_accepts_checkpointed_protected_components(tmp
     (protected / "state.json").write_text("checkpointed", encoding="utf-8")
     checkpoint = {
         "checkpoint_time_ns": 2**63 - 1,
-        "ignored_state": [{"path": ".assay/prior-run/state.json"}],
+        "ignored_state": [{
+            "path": ".assay/prior-run/state.json",
+            "class": "protected",
+            "protected_reason": "name",
+        }],
     }
 
     snapshot = worktree._permission_retry_tree_snapshot(checkout, checkpoint, [])
 
     assert ".assay" in snapshot
     assert ".assay/prior-run/state.json" in snapshot
+
+
+def test_permission_retry_snapshot_accepts_protected_components_below_checkpointed_ignored_parent(
+    tmp_path,
+):
+    checkout = tmp_path / "checkout"
+    cache = checkout / "cache"
+    volume = cache / "vol-postgres-data"
+    assay = volume / ".assay" / "prior-run"
+    assay.mkdir(parents=True)
+    (assay / "state.json").write_text("checkpointed", encoding="utf-8")
+    checkpoint = {
+        "checkpoint_time_ns": 2**63 - 1,
+        "ignored_state": [{
+            "path": "cache",
+            "class": "protected",
+            "protected_reason": "descendant",
+        }],
+    }
+
+    snapshot = worktree._permission_retry_tree_snapshot(checkout, checkpoint, [])
+
+    assert "cache/vol-postgres-data" in snapshot
+    assert "cache/vol-postgres-data/.assay" in snapshot
+    assert "cache/vol-postgres-data/.assay/prior-run/state.json" in snapshot
+
+
+@pytest.mark.parametrize(
+    ("entry_class", "protected_reason"),
+    [
+        ("unclassified", "descendant"),
+        ("protected", "name"),
+        ("protected", "walk-capped"),
+        ("protected", "unreadable"),
+    ],
+)
+def test_permission_retry_snapshot_refuses_nested_protected_component_without_descendant_evidence(
+    tmp_path, entry_class, protected_reason,
+):
+    checkout = tmp_path / "checkout"
+    state = checkout / "cache" / "vol-postgres-data" / ".assay" / "state.json"
+    state.parent.mkdir(parents=True)
+    state.write_text("must remain", encoding="utf-8")
+    checkpoint = {
+        "checkpoint_time_ns": 2**63 - 1,
+        "ignored_state": [{
+            "path": "cache",
+            "class": entry_class,
+            "protected_reason": protected_reason,
+        }],
+    }
+
+    with pytest.raises(
+        worktree.WorktreeError,
+        match="new protected-state component: cache/vol-postgres-data",
+    ):
+        worktree._permission_retry_tree_snapshot(checkout, checkpoint, [])
+
+
+def test_permission_retry_snapshot_refuses_protected_component_outside_ignored_state(
+    tmp_path,
+):
+    checkout = tmp_path / "checkout"
+    state = checkout / "outside" / "vol-new-data" / "state.json"
+    state.parent.mkdir(parents=True)
+    state.write_text("must remain", encoding="utf-8")
+    checkpoint = {"checkpoint_time_ns": 2**63 - 1, "ignored_state": []}
+
+    with pytest.raises(
+        worktree.WorktreeError,
+        match="new protected-state component: outside/vol-new-data",
+    ):
+        worktree._permission_retry_tree_snapshot(checkout, checkpoint, [])
+
+
+def test_permission_retry_snapshot_still_refuses_newer_nested_protected_state(
+    tmp_path,
+):
+    checkout = tmp_path / "checkout"
+    state = checkout / "cache" / "vol-postgres-data" / ".assay" / "state.json"
+    state.parent.mkdir(parents=True)
+    state.write_text("changed after checkpoint", encoding="utf-8")
+    checkpoint = {
+        "checkpoint_time_ns": 1,
+        "ignored_state": [{
+            "path": "cache",
+            "class": "protected",
+            "protected_reason": "descendant",
+        }],
+    }
+
+    with pytest.raises(
+        worktree.WorktreeError,
+        match="changed after the permission checkpoint",
+    ):
+        worktree._permission_retry_tree_snapshot(checkout, checkpoint, [])
 
 
 def test_permission_retry_snapshot_records_but_does_not_descend_into_blocker(

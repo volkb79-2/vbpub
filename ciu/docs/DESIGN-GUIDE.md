@@ -1158,8 +1158,13 @@ configured cgroup slice must still be verified loaded.
 A later invocation can be separated from the checkpoint by an arbitrary
 amount of time. Before any further privileged or local removal, CIU performs a
 bounded, no-follow walk of the leftover checkout. It refuses new `.assay` or
-`vol-*` components, entries whose modification time is newer than the
-checkpoint, unreadable paths, and a walk that reaches its 100,000-entry cap.
+`vol-*` components except below an ignored parent recorded as
+`class: protected` with `protected_reason: descendant`; that reason proves the
+checkpoint scan found protected content inside the Git-collapsed parent.
+Name-only, size-capped (`walk-capped`), unreadable, and non-protected entries
+do not authorize additional nested protected names. The walk still refuses
+entries whose modification time is newer than the checkpoint, unreadable
+paths, and a walk that reaches its 100,000-entry cap.
 After the helper removes only checkpointed blockers, CIU compares the tree
 again and runs the same check immediately before local recursive deletion.
 This allows the consented target to disappear while preserving any other new
