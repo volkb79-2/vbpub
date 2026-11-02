@@ -377,20 +377,29 @@ ciu worktree rm pkg-under-test -y --discard-changes pkg-under-test
 
 CIU rechecks these paths after cleanup and refuses if a new tracked or
 non-ignored untracked path appeared. Paths removed by cleanup do not block the
-retry. Failure JSON keeps the full current set in `uncommitted_changes`; the
-diagnostic shows at most 20 paths and the total count.
+retry. If cleanup removed the original paths but a later removal phase failed,
+repeat the same command with the same exact branch name; CIU accepts the flag
+as no-op consent when that branch is now clean. A wrong branch name and a
+detached checkout still refuse. Failure JSON keeps the full current set in
+`uncommitted_changes`; the diagnostic shows at most 20 paths and the total
+count.
 
 The survey includes ignored entries. Protected `.assay/` resumable state and
 any `vol-*` path component, including below nested CIU roots, block removal
 unless the exact branch is named with `--discard-protected-state BRANCH`;
 exactly one branch is accepted and `all` is refused. `-y` alone never
-authorizes that loss. Logs, artifacts, evidence and other ignored paths are
-unclassified: CIU lists them in the discard report and removes them. Before
-cleaning and immediately before deletion, CIU inventories ignored state and
-reports the latest list. When cleanup clears the lease, CIU verifies its own
-record contents and allows only that record's expected byte-count change. If a protected directory cannot be sized,
-it stays in the inventory with `capped: true` and a
-`size_error`; its exact discard flag is still required. The permission-specific
+authorizes that loss. Git may list only the parent of a wholly ignored
+directory, so CIU scans below that parent for `.assay` and `vol-*` names. A
+found descendant makes the displayed parent group protected; if the bounded
+scan caps or errors before it can rule out protected content, CIU treats that
+group as protected too. This also blocks `branches -y`. Logs, artifacts,
+evidence and other fully inspected ignored paths remain unclassified: CIU
+lists them in the discard report and removes them. Before cleaning and
+immediately before deletion, CIU inventories ignored state and reports the
+latest list. When cleanup clears the lease, CIU verifies its own record
+contents and allows only that record's expected byte-count change. A group
+that cannot be sized stays in the inventory with `capped: true` and a
+`size_error`; its exact discard flag is required. The permission-specific
 privileged removal retry remains deferred to CIU-134 stage 2, so restore read
 access before retrying an unreadable checkout.
 
@@ -400,10 +409,11 @@ grouped entries present before cleanup and absent after `ciu clean`. The second
 inventory refuses only if an entry appeared, changed class, gained a new
 `size_error`, or grew in file count or bytes (including becoming newly capped).
 Disappearing entries and entries that shrink are allowed because `ciu clean`
-removes ignored files by design. A retry may repeat the exact
-`--discard-protected-state BRANCH` after a partial failure; if cleanup already
-removed that protected state, the matching branch name is accepted as a no-op.
-A different branch name still refuses.
+removes ignored files by design. After a partial failure, retry with the same
+exact `--discard-protected-state BRANCH` or `--discard-changes BRANCH` used on
+the first attempt. If cleanup already removed the protected state or changed
+paths, the matching branch name is accepted as no-op consent. A different
+branch name still refuses.
 
 The JSON report lists discarded ignored entries and their measured file count
 and byte size, plus the exact uncommitted paths authorized with

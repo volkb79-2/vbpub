@@ -1077,8 +1077,13 @@ separate inventory because some paths are regenerable, `.assay/` holds
 resumable progress, and `vol-*` directories hold CIU stack data. Any `vol-*`
 path component is protected, including below a nested CIU root. Logs,
 artifacts, evidence and other ignored paths remain unclassified and are
-disclosed before deletion. Protected ignored state requires its own exact
-branch disposition.
+disclosed before deletion. Git can collapse a wholly ignored directory to its
+parent in the listing, so the bounded size walk also looks for protected names
+below that parent. If it finds one, or if the walk caps or errors before
+proving none is present, the displayed group is protected. This keeps partial
+evidence from making `rm` or `branches -y` treat the group as ordinary
+disposable cache. Protected ignored state requires its own exact branch
+disposition.
 
 The inventory is read once before cleanup and once again just before checkout
 deletion. Cleanup may take minutes, so CIU refuses if a path appears, changes
@@ -1088,19 +1093,20 @@ cleaning ignored worktree artifacts is expected. The second inventory becomes
 `discarded_state`, while grouped entries present initially and gone after clean
 are reported separately in `removed_by_clean`. When successful cleanup clears
 the worktree lease, CIU keeps its existing exception for that record's byte
-count while still checking class and file-count growth. A permission error
-while sizing an ignored directory keeps its class in the inventory with a
-capped, unsized marker and the error reason. Stage 1 does not add privileged
-removal; that permission-specific retry remains in CIU-134 stage 2.
+count while still checking class and file-count growth. A size error leaves an
+unsized entry with `capped: true`, the error reason, and the protected class.
+Stage 1 does not add privileged removal; that permission-specific retry
+remains in CIU-134 stage 2.
 
-Protected-state consent is tied to the exact checkout branch and is idempotent
-across retries. If clean removed the protected state before a later phase
-failed, repeating `--discard-protected-state BRANCH` with that same exact branch
-allows removal to resume; no state is discarded by the second cleanup. A
-different branch name still refuses. Dirty-path rechecks use the same
-monotonic rule: new paths refuse, paths that cleanup removed do not. Refusal
-messages cap dirty paths at 20 and give the total; the failure JSON retains the
-full `uncommitted_changes` list for inspection.
+Both discard consents are tied to the exact checkout branch and are idempotent
+across retries. If clean removed protected state or uncommitted paths before a
+later phase failed, repeating the same `--discard-protected-state BRANCH` or
+`--discard-changes BRANCH` allows removal to resume; the second cleanup has no
+such state or paths left to discard. A different branch name still refuses,
+and `--discard-changes` still requires an attached local branch. Dirty-path
+rechecks use the same monotonic rule: new paths refuse, paths that cleanup
+removed do not. Refusal messages cap dirty paths at 20 and give the total; the
+failure JSON retains the full `uncommitted_changes` list for inspection.
 
 The `rm --json` phase report records resolution, resource cleanup, lease
 release, lifecycle preflight, checkout deletion, registration verification,

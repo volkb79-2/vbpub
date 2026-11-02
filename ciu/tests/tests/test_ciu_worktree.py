@@ -3908,6 +3908,55 @@ class TestStructuredControlDocuments:
         assert record.git_worktree_path.is_dir()
         assert data.read_bytes() == b"db"
 
+    @pytest.mark.parametrize(
+        ("relative", "contents"),
+        [
+            ("nested/.assay/progress.jsonl", b"progress\n"),
+            ("nested/vol-postgres/base/backup.bin", b"stack data\n"),
+        ],
+    )
+    def test_rm_requires_consent_for_protected_state_hidden_by_ignored_parent(
+        self, tmp_repo, fake_generate_env, monkeypatch, relative, contents
+    ):
+        ignore = tmp_repo / ".gitignore"
+        ignore.write_text(
+            ignore.read_text(encoding="utf-8") + "cache/\n",
+            encoding="utf-8",
+        )
+        _git(["add", ".gitignore"], tmp_repo)
+        _git(["commit", "-m", "ignore scratch caches"], tmp_repo)
+        record = worktree.create(tmp_repo, "protected-cache-child", base="main")
+        state = record.git_worktree_path / "cache" / relative
+        state.parent.mkdir(parents=True)
+        state.write_bytes(contents)
+        monkeypatch.setattr(
+            worktree, "_clean_in",
+            lambda *_args, **_kwargs: pytest.fail("must require consent before clean"),
+        )
+
+        with pytest.raises(
+            worktree.WorktreeRemovalError, match="--discard-protected-state"
+        ) as exc:
+            worktree.remove_document(
+                tmp_repo, record.logical_name, yes=True
+            )
+
+        expected_cache_state = {
+            "path": "cache", "class": "protected", "file_count": 1,
+            "bytes": len(contents), "capped": False,
+        }
+        assert expected_cache_state in exc.value.document["ignored_state"]
+        assert state.read_bytes() == contents
+        assert record.git_worktree_path.is_dir()
+
+        monkeypatch.setattr(worktree, "_clean_in", lambda *_args, **_kwargs: 0)
+        document = worktree.remove_document(
+            tmp_repo, record.logical_name, yes=True,
+            discard_protected_state=record.branch,
+        )
+        assert expected_cache_state in document["discarded_state"]
+        assert not record.git_worktree_path.exists()
+
     def test_rm_requires_exact_consent_for_tracked_and_untracked_changes(
         self, tmp_repo, fake_generate_env, monkeypatch
     ):
@@ -3957,18 +4006,21 @@ class TestStructuredControlDocuments:
                 tmp_repo, record.logical_name, discard_changes=disposition
             )
 
-    def test_rm_rejects_change_disposition_when_checkout_is_clean(
-        self, tmp_repo, fake_generate_env
+    def test_rm_accepts_exact_change_disposition_when_checkout_is_clean(
+        self, tmp_repo, fake_generate_env, monkeypatch
     ):
         record = worktree.create(tmp_repo, "clean-change-disposition")
-        with pytest.raises(worktree.WorktreeRemovalError, match="no uncommitted changes"):
-            worktree.remove_document(
-                tmp_repo, record.logical_name, discard_changes=record.branch
-            )
+        monkeypatch.setattr(worktree, "_clean_in", lambda *_args, **_kwargs: 0)
         with pytest.raises(worktree.WorktreeRemovalError, match="exact checkout branch"):
             worktree.remove_document(
                 tmp_repo, record.logical_name, discard_changes="wrong-branch"
             )
+        document = worktree.remove_document(
+            tmp_repo, record.logical_name, yes=True,
+            discard_changes=record.branch,
+        )
+        assert document["discarded_changes"] == []
+        assert document["status"] == "removed"
 
     def test_worktree_change_paths_reports_renames_and_skips_only_its_record(
         self, tmp_repo, fake_generate_env, monkeypatch
@@ -4303,6 +4355,52 @@ class TestStructuredControlDocuments:
         )
 
         assert document["discarded_changes"] == ["operator-note.txt"]
+        assert not record.git_worktree_path.exists()
+
+    def test_rm_retry_reuses_exact_dirty_change_disposition_after_clean(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        record = worktree.create(tmp_repo, "retry-cleaned-change", base="main")
+        note = record.git_worktree_path / "operator-note.txt"
+        note.write_text("temporary work\n", encoding="utf-8")
+        shared = worktree._shared_worktree()
+        remove_workspace = shared.remove_workspace
+        attempts = 0
+
+        def fail_first_remove(*args, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError("simulated interruption after clean")
+            return remove_workspace(*args, **kwargs)
+
+        monkeypatch.setattr(worktree, "_shared_worktree", lambda: shared)
+        monkeypatch.setattr(shared, "remove_workspace", fail_first_remove)
+
+        def clean_once(_checkout, *, yes):
+            if note.exists():
+                note.unlink()
+            return 0
+
+        monkeypatch.setattr(worktree, "_clean_in", clean_once)
+
+        with pytest.raises(
+            worktree.WorktreeRemovalError, match="simulated interruption after clean"
+        ) as first:
+            worktree.remove_document(
+                tmp_repo, record.logical_name, yes=True, keep_branch=True,
+                discard_changes=record.branch,
+            )
+
+        assert not note.exists()
+        assert record.git_worktree_path.is_dir()
+
+        second = worktree.remove_document(
+            tmp_repo, record.logical_name, yes=True, keep_branch=True,
+            discard_changes=record.branch,
+        )
+        assert second["discarded_changes"] == []
+        assert second["status"] == "removed"
         assert not record.git_worktree_path.exists()
 
     def test_rm_bounds_dirty_path_message_but_keeps_full_json_list(

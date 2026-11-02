@@ -2750,16 +2750,21 @@ def _ignored_state_group(relative: str) -> tuple[str, str]:
 
 def _measure_ignored_entry(
     checkout: Path, relative: str,
-) -> tuple[int, int, bool, str | None]:
+) -> tuple[int, int, bool, str | None, bool]:
     """Measure ignored content without following symlinks and with hard caps."""
     root = checkout / Path(*PurePosixPath(relative).parts)
     pending = [root]
     file_count = 0
     byte_count = 0
     capped = False
+    protected_descendant = False
     try:
         while pending:
             path = pending.pop()
+            if path != root and (
+                path.name == ".assay" or path.name.startswith("vol-")
+            ):
+                protected_descendant = True
             mode = path.lstat().st_mode
             if stat.S_ISDIR(mode):
                 with os.scandir(path) as children:
@@ -2780,8 +2785,8 @@ def _measure_ignored_entry(
                 capped = capped or bool(pending)
                 break
     except OSError as exc:
-        return 0, 0, True, f"{type(exc).__name__}: {exc}"
-    return file_count, byte_count, capped, None
+        return 0, 0, True, f"{type(exc).__name__}: {exc}", protected_descendant
+    return file_count, byte_count, capped, None, protected_descendant
 
 
 def _ignored_state_summary(checkout: Path) -> list[dict[str, Any]]:
@@ -2814,20 +2819,28 @@ def _ignored_state_summary(checkout: Path) -> list[dict[str, Any]]:
     grouped: dict[str, dict[str, Any]] = {}
     for relative in roots:
         display_path, entry_class = _ignored_state_group(relative)
-        current = grouped.setdefault(display_path, {
-            "path": display_path,
-            "class": entry_class,
-            "file_count": 0,
-            "bytes": 0,
-            "capped": False,
-        })
-        if current["class"] != entry_class:
-            raise WorktreeError(
-                f"[S16.8] ignored entry {display_path!r} has conflicting classes"
-            )
-        file_count, byte_count, capped, size_error = _measure_ignored_entry(
-            checkout, relative
+        file_count, byte_count, capped, size_error, protected_descendant = (
+            _measure_ignored_entry(checkout, relative)
         )
+        if protected_descendant or capped or size_error is not None:
+            entry_class = "protected"
+        current = grouped.get(display_path)
+        if current is None:
+            current = {
+                "path": display_path,
+                "class": entry_class,
+                "file_count": 0,
+                "bytes": 0,
+                "capped": False,
+            }
+            grouped[display_path] = current
+        elif current["class"] != entry_class:
+            if current["class"] == "protected" or entry_class == "protected":
+                current["class"] = "protected"
+            else:
+                raise WorktreeError(
+                    f"[S16.8] ignored entry {display_path!r} has conflicting classes"
+                )
         if size_error is not None:
             current["file_count"] = 0
             current["bytes"] = 0
@@ -6922,8 +6935,6 @@ def remove(
                 f"--discard-changes must name the exact checkout branch "
                 f"{branch_name!r}, got {exact_change_disposition!r}"
             )
-        if not dirty_paths:
-            raise fail(f"branch {branch_name!r} has no uncommitted changes to discard")
 
     try:
         branch = _branch_removal_plan(

@@ -27,12 +27,14 @@ the technical detail below it.
 - `ciu worktree rm` now treats disappeared or smaller ignored entries as data removed by `ciu clean`; newly appearing, reclassified, newly unsized, or growing entries still stop removal. The JSON report separates remaining `discarded_state` from grouped `removed_by_clean` entries.
 - Retrying `rm` with the same exact `--discard-protected-state BRANCH` succeeds when an earlier cleanup already removed the protected state. Markerless identity cleanup compares Docker owner labels against the target's resolved physical root, cross-checked with generated facts.
 - `rm` refuses only newly appearing uncommitted paths on its second status check. Refusal messages show at most 20 paths and the total; failure JSON retains the complete `uncommitted_changes` list.
+- Ignored-state inventory now finds `.assay` and `vol-*` descendants inside Git-collapsed ignored directories. A capped or unreadable walk is treated as protected, so `rm` needs exact-branch consent and `branches -y` will not prune it.
+- `--discard-changes BRANCH` is idempotent for the exact attached branch: a retry may reuse the flag after `ciu clean` removed the dirty paths before a later removal phase failed. Wrong-branch and detached-checkout refusals remain.
 
 ### Changed
 - `rm --json` success documents add `removed_by_clean`; failure documents include the full `uncommitted_changes` list when status was readable.
 
 ### Adoption / Migration Notes
-- The protected-state option remains exact-branch consent. It can be repeated after a partial cleanup as a no-op if `ciu clean` already removed the data. Consumers of removal JSON should read `removed_by_clean` and `uncommitted_changes` when present.
+- Both discard options remain exact-branch consent. They can be repeated after a partial cleanup as no-op consent if `ciu clean` already removed the protected state or changed paths. Consumers of removal JSON should read `removed_by_clean` and `uncommitted_changes` when present.
 - CIU-151 remains OPEN until markerless cleanup's physical-path behavior is verified live on a stack; current coverage uses simulated Docker owner labels.
 
 ## [7.18.0] - 2026-10-28
