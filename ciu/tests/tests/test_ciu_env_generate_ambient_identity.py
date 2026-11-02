@@ -122,6 +122,9 @@ def test_generate_ciu_env_writes_derived_network_under_contaminated_shell(
     monkeypatch.delenv("PUBLIC_FQDN", raising=False)
     monkeypatch.delenv("PUBLIC_TLS_CRT", raising=False)
     monkeypatch.delenv("PUBLIC_TLS_KEY", raising=False)
+    # ... and no host Docker group facts: a tester container has neither a
+    # docker group nor a socket.
+    monkeypatch.setenv("DOCKER_GID", "999")
 
     env_path = workspace_env.generate_ciu_env(tmp_path)
 
