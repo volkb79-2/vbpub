@@ -2112,6 +2112,11 @@ def _worktree(rest: list[str]) -> int:
                 print(f"kept branch: {branch['name']} at {branch['tip']} (--keep-branch)")
             else:
                 print("branch removal: skipped-detached")
+            for item in document["removed_by_clean"]:
+                print(
+                    "removed ignored state during clean: "
+                    f"{wt_mod._format_ignored_state_item(item)}"
+                )
             for item in document["discarded_state"]:
                 print(
                     f"discarded ignored state: {item['path']} [{item['class']}] "

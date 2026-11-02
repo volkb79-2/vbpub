@@ -4699,25 +4699,39 @@ the pre-cleanup tip.
 Stage 2 of CIU-134 may add a permission-retry phase without changing the
 existing keys or report version.
 
+Successful removal documents include `ignored_state`, `discarded_state`,
+`removed_by_clean`, and `discarded_changes`. `discarded_state` is the second
+ignored-state inventory that remains for Git checkout deletion;
+`removed_by_clean` lists grouped entries that were in the first inventory and
+are absent from the second. A failure document includes the latest
+`uncommitted_changes` list when Git status was readable. Human-readable refusal
+messages show at most the first 20 paths and their total count; JSON retains
+the full list.
+
 Before cleanup, `rm` reads Git status for tracked and non-ignored untracked
 paths. Any such changes require `--discard-changes BRANCH`, where `BRANCH` is
 the exact attached branch name; one name is accepted and `all` is not. `-y`
 does not authorize this loss. The JSON result and human output list the paths
 discarded after checkout deletion succeeds. CIU rechecks this status before
-deletion and refuses if it changed.
+deletion and refuses if a new changed path appeared; paths removed during
+cleanup do not block the retry. The full status list on refusal is in
+`uncommitted_changes`.
 
 If a managed checkout's local CIU root marker is absent, `rm` resolves the
 durable instance identity and recorded root offset from the exact shared
 workspace record, then verifies the same committed root in the primary
-checkout and runs identity-scoped `ciu clean` there with that worktree CIU root
-as `--expected-checkout`. The clean action compares each resource's
-`ciu.repo-root` label with the supplied root and refuses when the identity is
-the primary root's current generated identity. It refuses when the record,
-offset, primary identity, or ownership label cannot be verified. `--force`
-after an identity-clean refusal can strand resources. A rootless managed CIU
-record with no runtime identity skips cleanup. The target checkout and shared
-ledger remain available until resource cleanup succeeds, unless the explicit
-`--force` behavior is used for a nonzero clean result.
+checkout and runs identity-scoped `ciu clean` there with the target's physical
+CIU root as `--expected-checkout`. If the old checkout's generated facts carry
+a physical root, CIU uses it only after cross-checking the logical root,
+instance ID, and physical-root resolver. The clean action compares each
+resource's `ciu.repo-root` label with that physical path and refuses when the
+identity is the primary root's current generated identity. It refuses when
+the record, offset, primary identity, or ownership label cannot be verified.
+`--force` after an identity-clean refusal can strand resources. A rootless
+managed CIU record with no runtime identity skips cleanup. The target checkout
+and shared ledger remain available until resource cleanup succeeds, unless the
+explicit `--force` behavior is used for a nonzero clean result. CIU-151 remains
+open until the physical-path behavior is verified live on a stack.
 
 Branch removal uses the selected record's schema-6 `base_branch_ref`, or the
 known default mainline when that field is unavailable. A branch is deleted by
@@ -4739,20 +4753,21 @@ below nested CIU roots), `regenerable`
 `unclassified` (all other ignored entries). Only protected entries block.
 Logs, artifacts and evidence directories are unclassified; they are listed and
 deleted unless another rule protects them. Ignored state is inventoried before
-cleanup and again immediately before checkout deletion. If the second
-inventory differs, `rm` refuses and reports that second inventory. The one
-expected exception is the worktree record's byte count when successful cleanup
-clears its lease: CIU verifies the record matches that exact lease-only update
-before treating the size change as internal. An entry
-that cannot be sized remains listed with its class, `capped: true`, and a
-`size_error` reason. Protected unreadable entries still require the exact
-disposition flag. The permission-specific privileged retry remains deferred
-to CIU-134 stage 2; restore read access before retrying removal.
+cleanup and again immediately before checkout deletion. `rm` refuses if a path
+appeared, its class changed, a new `size_error` appeared, or its file count or
+byte count grew; paths that disappear or shrink during `ciu clean` are allowed.
+The lease-record byte-count exception remains when cleanup clears its lease;
+class and file-count growth still refuse. An entry that cannot be sized remains
+listed with its class, `capped: true`, and a `size_error` reason. Protected
+unreadable entries still require the exact disposition flag. The
+permission-specific privileged retry remains deferred to CIU-134 stage 2;
+restore read access before retrying removal.
 `--discard-protected-state BRANCH` names the exact current branch whose
 protected state may be lost; exactly one branch is accepted, `all` is refused,
-and `-y` does not authorize it. Unclassified entries are reported in the
-discard list too. The removal report lists all ignored entries and lists them
-as discarded after checkout deletion is confirmed. Enumeration failure is a
+and `-y` does not authorize it. If an earlier attempt's `ciu clean` already
+removed that state, repeating the same exact branch option is accepted as a
+no-op so removal can be retried; a different name still refuses. Unclassified
+entries are reported in the discard list too. Enumeration failure is a
 refusal, never an empty list. If Git fails while deleting the checkout, the
 error says the checkout may be partially removed.
 

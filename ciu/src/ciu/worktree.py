@@ -2542,7 +2542,8 @@ def remove_document(
         if record is not None:
             exc.document["instance"] = record.to_dict()
         for key in (
-            "branch", "ignored_state", "discarded_state", "discarded_changes",
+            "branch", "ignored_state", "discarded_state", "removed_by_clean",
+            "discarded_changes", "uncommitted_changes",
         ):
             if key in details:
                 exc.document[key] = details[key]
@@ -2567,6 +2568,7 @@ def remove_document(
         "branch": details["branch"],
         "ignored_state": details["ignored_state"],
         "discarded_state": details["discarded_state"],
+        "removed_by_clean": details["removed_by_clean"],
         "discarded_changes": details["discarded_changes"],
     }
     record = details.get("record")
@@ -2859,29 +2861,89 @@ def _ignored_state_changed(
     checkout: Path,
     record: WorktreeInstanceRecord | None,
 ) -> bool:
-    """Compare inventories, allowing CIU's successful lease rewrite of its record."""
-    if record is None or record.lease is None:
-        return initial != latest
-    # `_worktree_change_paths` has already established that this record belongs
-    # to the checkout; a violated invariant must fail closed at this boundary.
-    record_path = record.record_path.relative_to(checkout).as_posix()
+    """Refuse new or growing ignored state, allowing cleanup to remove data."""
+    initial_by_path = {item["path"]: item for item in initial}
+    lease_record_path = None
+    if record is not None and record.lease is not None:
+        # `_worktree_change_paths` has already established that this record
+        # belongs to the checkout; a violated invariant must fail closed here.
+        lease_record_path = record.record_path.relative_to(checkout).as_posix()
 
-    def normalized(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        result = []
-        for item in items:
-            current = dict(item)
-            if (
-                current["path"] == record_path
-                and current["class"] == "regenerable"
-            ):
-                # Successful cleanup clears the lease and rewrites this
-                # regenerable metadata file. Its presence/class remain part of
-                # the inventory; only its expected byte-size change is ignored.
-                current.pop("bytes", None)
-            result.append(current)
-        return result
+    for item in latest:
+        previous = initial_by_path.get(item["path"])
+        if previous is None or previous["class"] != item["class"]:
+            return True
+        if item.get("size_error") and not previous.get("size_error"):
+            return True
+        if item["file_count"] > previous["file_count"]:
+            return True
+        is_lease_record = (
+            item["path"] == lease_record_path and item["class"] == "regenerable"
+        )
+        if not is_lease_record and item["bytes"] > previous["bytes"]:
+            return True
+        if item["capped"] and not previous["capped"]:
+            return True
+    return False
 
-    return normalized(initial) != normalized(latest)
+
+def _ignored_state_removed_by_clean(
+    initial: list[dict[str, Any]], latest: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return complete ignored entries present before clean and absent after."""
+    latest_paths = {item["path"] for item in latest}
+    return [dict(item) for item in initial if item["path"] not in latest_paths]
+
+
+def _format_changed_paths(paths: list[str]) -> str:
+    """Keep refusal diagnostics readable while preserving full JSON evidence."""
+    if len(paths) <= 20:
+        return ", ".join(paths)
+    return (
+        f"{', '.join(paths[:20])} (showing first 20 of {len(paths)} total paths)"
+    )
+
+
+def _physical_checkout_for_identity_clean(
+    ciu_root: Path, instance_id: str,
+) -> Path:
+    """Resolve the same physical owner path used to stamp Docker labels."""
+    from .workspace_env import (
+        WorkspaceEnvError,
+        _detect_physical_repo_root,
+        read_generated_facts,
+    )
+
+    try:
+        detected = _detect_physical_repo_root(ciu_root)
+        facts = read_generated_facts(ciu_root, allow_repair=False)
+    except (OSError, WorkspaceEnvError) as exc:
+        raise WorktreeError(
+            f"[CIU-151] could not resolve the physical owner path for {ciu_root}: {exc}"
+        ) from exc
+
+    recorded_physical = facts.get("physical_repo_root")
+    if not recorded_physical:
+        return detected
+    recorded_logical = facts.get("repo_root")
+    if (
+        not recorded_logical
+        or os.path.normpath(recorded_logical) != os.path.normpath(str(ciu_root.resolve()))
+        or facts.get("instance_id") != instance_id
+    ):
+        raise WorktreeError(
+            f"[CIU-151] generated facts in {ciu_root} do not match the recorded "
+            "checkout root and instance identity"
+        )
+    if (
+        not os.path.isabs(recorded_physical)
+        or os.path.normpath(recorded_physical) != os.path.normpath(str(detected))
+    ):
+        raise WorktreeError(
+            f"[CIU-151] generated physical root {recorded_physical!r} in {ciu_root} "
+            f"does not match the resolved physical root {detected}"
+        )
+    return Path(recorded_physical)
 
 
 def _worktree_change_paths(
@@ -6772,7 +6834,9 @@ def remove(
     protected_state = [item for item in ignored_state if item["class"] == "protected"]
     details["ignored_state"] = ignored_state
     details["discarded_state"] = []
+    details["removed_by_clean"] = []
     details["discarded_changes"] = []
+    details["uncommitted_changes"] = []
     exact_disposition = discard_names[0] if discard_names else None
     exact_change_disposition = (
         discard_change_names[0] if discard_change_names else None
@@ -6790,6 +6854,7 @@ def remove(
     except WorktreeError as exc:
         mark("resource_cleanup", "failed-status-inspection")
         raise fail(str(exc)) from exc
+    details["uncommitted_changes"] = dirty_paths
     if protected_state and branch_name is None:
         mark("resource_cleanup", "skipped-protected-state")
         raise fail(
@@ -6826,29 +6891,28 @@ def remove(
                 f"--discard-protected-state must name the exact checkout branch "
                 f"{branch_name!r}, got {exact_disposition!r}"
             )
-        if not protected_state:
-            raise fail(
-                f"branch {wt.branch!r} has no protected ignored state to discard"
-            )
+        # This exact branch flag is an idempotent authorization. `ciu clean`
+        # may have removed the protected state during an earlier attempt.
 
     if dirty_paths and branch_name is None:
         mark("resource_cleanup", "skipped-dirty-changes")
         raise fail(
             f"uncommitted changes remain in detached checkout {path}: "
-            f"{', '.join(dirty_paths)}; attach it to a local branch before removal"
+            f"{_format_changed_paths(dirty_paths)}; attach it to a local branch before removal"
         )
     if dirty_paths and exact_change_disposition != branch_name:
         mark("resource_cleanup", "skipped-dirty-changes")
         if exact_change_disposition is None:
             raise fail(
-                f"uncommitted changes remain in {path}: {', '.join(dirty_paths)}; "
+                f"uncommitted changes remain in {path}: "
+                f"{_format_changed_paths(dirty_paths)}; "
                 f"to discard this branch's changes explicitly, pass "
                 f"--discard-changes {branch_name}"
             )
         raise fail(
             f"--discard-changes must name the exact checkout branch "
             f"{branch_name!r}, got {exact_change_disposition!r}; changed paths: "
-            f"{', '.join(dirty_paths)}"
+            f"{_format_changed_paths(dirty_paths)}"
         )
     if exact_change_disposition is not None:
         if branch_name is None:
@@ -6884,10 +6948,13 @@ def remove(
             )
         try:
             primary_ciu_root = _primary_ciu_root_for_record(repo_root, managed)
+            physical_checkout = _physical_checkout_for_identity_clean(
+                managed.ciu_root, managed.instance_id
+            )
             rc = _clean_with_primary_identity(
                 primary_ciu_root,
                 managed.instance_id,
-                expected_checkout=managed.ciu_root,
+                expected_checkout=physical_checkout,
                 yes=yes,
             )
         except WorktreeError as exc:
@@ -6967,6 +7034,9 @@ def remove(
                 f"could not recheck ignored state before checkout removal: {exc}"
             ) from exc
         details["ignored_state"] = latest_ignored_state
+        details["removed_by_clean"] = _ignored_state_removed_by_clean(
+            ignored_state, latest_ignored_state
+        )
         if _ignored_state_changed(
             ignored_state, latest_ignored_state, checkout=wt.path, record=managed
         ):
@@ -6980,10 +7050,13 @@ def remove(
             raise fail(
                 f"could not recheck uncommitted changes before checkout removal: {exc}"
             ) from exc
-        if latest_dirty_paths != dirty_paths:
+        new_dirty_paths = sorted(set(latest_dirty_paths) - set(dirty_paths))
+        details["uncommitted_changes"] = latest_dirty_paths
+        if new_dirty_paths:
             raise fail(
                 "uncommitted changes changed since the initial inventory; review "
-                f"the current paths ({', '.join(latest_dirty_paths) or 'none'}) "
+                "the newly changed paths "
+                f"({_format_changed_paths(new_dirty_paths)}) "
                 "and retry"
             )
         if shared_record is not None:

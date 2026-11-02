@@ -3686,6 +3686,7 @@ class TestStructuredControlDocuments:
         self,
         tmp_repo,
         fake_generate_env,
+        write_instance_facts,
         monkeypatch,
         label_owner,
         forge_primary_identity,
@@ -3701,8 +3702,38 @@ class TestStructuredControlDocuments:
         primary_id = workspace_env.read_generated_facts(
             tmp_repo, allow_repair=False
         )["instance_id"]
+        physical_roots = {
+            tmp_repo.resolve(): Path("/physical-host/vbpub"),
+            record.ciu_root.resolve(): Path("/physical-host/vbpub/.worktrees/old-root"),
+        }
+        primary_facts = workspace_env.read_generated_facts(tmp_repo, allow_repair=False)
+        target_facts = workspace_env.read_generated_facts(
+            record.ciu_root, allow_repair=False
+        )
+        write_instance_facts(
+            tmp_repo,
+            **{
+                **primary_facts,
+                "physical_repo_root": str(physical_roots[tmp_repo.resolve()]),
+            },
+        )
+        write_instance_facts(
+            record.ciu_root,
+            **{
+                **target_facts,
+                "physical_repo_root": str(physical_roots[record.ciu_root.resolve()]),
+            },
+        )
+        monkeypatch.setattr(
+            workspace_env,
+            "_detect_physical_repo_root",
+            lambda root: physical_roots[Path(root).resolve()],
+        )
         cleanup_calls = []
-        owner = str(record.ciu_root if label_owner == "target" else tmp_repo)
+        owner = str(
+            physical_roots[record.ciu_root.resolve()]
+            if label_owner == "target" else physical_roots[tmp_repo.resolve()]
+        )
 
         def docker(args, **kwargs):
             cleanup_calls.append(list(args))
@@ -3995,7 +4026,7 @@ class TestStructuredControlDocuments:
             "class": "regenerable", "file_count": 1, "bytes": 980,
             "capped": False,
         }]
-        latest = [{**initial[0], "bytes": 740}]
+        latest = [{**initial[0], "bytes": 1080}]
 
         assert worktree._ignored_state_changed(
             initial, latest, checkout=record.git_worktree_path, record=leased
@@ -4004,6 +4035,102 @@ class TestStructuredControlDocuments:
             initial, latest, checkout=record.git_worktree_path,
             record=worktree.release_lease(leased),
         ) is True
+
+    @pytest.mark.parametrize(
+        ("initial", "latest", "changed"),
+        [
+            ([{"path": "old", "class": "unclassified", "file_count": 2,
+               "bytes": 8, "capped": False}], [], False),
+            ([{"path": "smaller", "class": "protected", "file_count": 3,
+               "bytes": 30, "capped": False}],
+             [{"path": "smaller", "class": "protected", "file_count": 2,
+               "bytes": 20, "capped": False}], False),
+            ([{"path": "same", "class": "unclassified", "file_count": 1,
+               "bytes": 8, "capped": False}],
+             [{"path": "same", "class": "protected", "file_count": 1,
+               "bytes": 8, "capped": False}], True),
+            ([{"path": "same", "class": "protected", "file_count": 1,
+               "bytes": 8, "capped": False}],
+             [{"path": "same", "class": "protected", "file_count": 2,
+               "bytes": 8, "capped": False}], True),
+            ([{"path": "same", "class": "protected", "file_count": 1,
+               "bytes": 8, "capped": False}],
+             [{"path": "same", "class": "protected", "file_count": 1,
+               "bytes": 9, "capped": False}], True),
+            ([{"path": "same", "class": "protected", "file_count": 0,
+               "bytes": 0, "capped": True}],
+             [{"path": "same", "class": "protected", "file_count": 0,
+               "bytes": 0, "capped": True,
+               "size_error": "PermissionError: denied"}], True),
+            ([{"path": "same", "class": "protected", "file_count": 1,
+               "bytes": 8, "capped": False}],
+             [{"path": "same", "class": "protected", "file_count": 1,
+               "bytes": 8, "capped": True}], True),
+            ([], [{"path": "new", "class": "unclassified", "file_count": 0,
+                  "bytes": 0, "capped": False}], True),
+        ],
+    )
+    def test_ignored_inventory_refuses_only_appearance_growth_or_class_change(
+        self, tmp_repo, initial, latest, changed
+    ):
+        assert worktree._ignored_state_changed(
+            initial, latest, checkout=tmp_repo, record=None
+        ) is changed
+
+    def test_physical_cleanup_owner_uses_resolver_when_facts_are_absent(
+        self, tmp_repo, monkeypatch
+    ):
+        physical = Path("/physical-host/old-worktree")
+        monkeypatch.setattr(
+            workspace_env, "_detect_physical_repo_root", lambda _root: physical
+        )
+        monkeypatch.setattr(workspace_env, "read_generated_facts", lambda *_a, **_kw: {})
+
+        assert worktree._physical_checkout_for_identity_clean(
+            tmp_repo, "old123"
+        ) == physical
+
+    def test_physical_cleanup_owner_refuses_unverified_generated_facts(
+        self, tmp_repo, monkeypatch
+    ):
+        detected = Path("/new/physical")
+        facts = {
+            "repo_root": str(tmp_repo.resolve()),
+            "physical_repo_root": "/old/physical",
+            "instance_id": "old123",
+        }
+        monkeypatch.setattr(
+            workspace_env, "_detect_physical_repo_root", lambda _root: detected
+        )
+        monkeypatch.setattr(
+            workspace_env, "read_generated_facts", lambda *_a, **_kw: facts
+        )
+
+        with pytest.raises(
+            worktree.WorktreeError, match="does not match the resolved physical root"
+        ):
+            worktree._physical_checkout_for_identity_clean(tmp_repo, "old123")
+
+        facts["repo_root"] = "/other/logical"
+        facts["physical_repo_root"] = str(detected)
+        with pytest.raises(
+            worktree.WorktreeError, match="do not match the recorded checkout root"
+        ):
+            worktree._physical_checkout_for_identity_clean(tmp_repo, "old123")
+
+    def test_physical_cleanup_owner_reports_resolver_failure(self, tmp_repo, monkeypatch):
+        monkeypatch.setattr(
+            workspace_env,
+            "_detect_physical_repo_root",
+            lambda *_a: (_ for _ in ()).throw(
+                workspace_env.WorkspaceEnvError("mount mapping unavailable")
+            ),
+        )
+
+        with pytest.raises(
+            worktree.WorktreeError, match="could not resolve the physical owner path"
+        ):
+            worktree._physical_checkout_for_identity_clean(tmp_repo, "old123")
 
     def test_rm_refuses_unexpected_worktree_record_changes_during_cleanup(
         self, tmp_repo, fake_generate_env, monkeypatch
@@ -4059,6 +4186,142 @@ class TestStructuredControlDocuments:
             "bytes": len("new progress\n"), "capped": False,
         }
         assert exc.value.document["discarded_state"] == []
+        assert record.git_worktree_path.is_dir()
+
+    def test_rm_reports_ignored_state_removed_by_clean_and_discards_the_rest(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        ignore = tmp_repo / ".gitignore"
+        ignore.write_text(
+            ignore.read_text(encoding="utf-8") + "ciu.compose.yml\nvol-*/\n",
+            encoding="utf-8",
+        )
+        stack_source = tmp_repo / "services" / "db"
+        stack_source.mkdir(parents=True)
+        (stack_source / "README.md").write_text("stack\n", encoding="utf-8")
+        _git(["add", ".gitignore", "services/db/README.md"], tmp_repo)
+        _git(["commit", "-m", "ignore rendered and volume state"], tmp_repo)
+        record = worktree.create(tmp_repo, "clean-removes-ignored", base="main")
+        stack = record.git_worktree_path / "services" / "db"
+        stack.mkdir(parents=True, exist_ok=True)
+        rendered = stack / "ciu.compose.yml"
+        rendered.write_text("generated\n", encoding="utf-8")
+        volume = stack / "vol-data"
+        volume.mkdir()
+        data = volume / "data.bin"
+        data.write_bytes(b"state")
+
+        def clean_and_remove_ignored(_checkout, *, yes):
+            rendered.unlink()
+            data.unlink()
+            volume.rmdir()
+            return 0
+
+        monkeypatch.setattr(worktree, "_clean_in", clean_and_remove_ignored)
+
+        document = worktree.remove_document(
+            tmp_repo, record.logical_name, yes=True,
+            discard_protected_state=record.branch,
+        )
+
+        assert document["discarded_state"] == document["ignored_state"]
+        assert not any(
+            item["path"].startswith("services/db/")
+            for item in document["discarded_state"]
+        )
+        assert [item["path"] for item in document["removed_by_clean"]] == [
+            "services", "services/db/vol-data",
+        ]
+        assert not record.git_worktree_path.exists()
+
+    def test_rm_retries_after_clean_removed_consented_state(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        ignore = tmp_repo / ".gitignore"
+        ignore.write_text(
+            ignore.read_text(encoding="utf-8") + ".assay/\n", encoding="utf-8"
+        )
+        _git(["add", ".gitignore"], tmp_repo)
+        _git(["commit", "-m", "ignore assay progress"], tmp_repo)
+        record = worktree.create(tmp_repo, "retry-cleaned-state", base="main")
+        state = record.git_worktree_path / ".assay" / "progress.jsonl"
+        state.parent.mkdir()
+        state.write_text("progress\n", encoding="utf-8")
+        shared = worktree._shared_worktree()
+        remove_workspace = shared.remove_workspace
+        attempts = 0
+
+        def fail_first_remove(*args, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError("simulated interruption after clean")
+            return remove_workspace(*args, **kwargs)
+
+        monkeypatch.setattr(worktree, "_shared_worktree", lambda: shared)
+        monkeypatch.setattr(shared, "remove_workspace", fail_first_remove)
+
+        def clean_once(_checkout, *, yes):
+            if state.exists():
+                state.unlink()
+                state.parent.rmdir()
+            return 0
+
+        monkeypatch.setattr(worktree, "_clean_in", clean_once)
+
+        with pytest.raises(
+            worktree.WorktreeRemovalError, match="simulated interruption after clean"
+        ) as first:
+            worktree.remove_document(
+                tmp_repo, record.logical_name, yes=True,
+                discard_protected_state=record.branch,
+            )
+
+        assert first.value.document["removed_by_clean"][0]["path"] == ".assay"
+        assert record.git_worktree_path.is_dir()
+        second = worktree.remove_document(
+            tmp_repo, record.logical_name, yes=True,
+            discard_protected_state=record.branch,
+        )
+        assert second["removed_by_clean"] == []
+        assert not record.git_worktree_path.exists()
+
+    def test_rm_allows_clean_to_remove_an_authorized_dirty_path(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        record = worktree.create(tmp_repo, "clean-removes-dirty", base="main")
+        note = record.git_worktree_path / "operator-note.txt"
+        note.write_text("temporary work\n", encoding="utf-8")
+        monkeypatch.setattr(
+            worktree, "_clean_in",
+            lambda *_args, **_kwargs: (note.unlink() is None) and 0,
+        )
+
+        document = worktree.remove_document(
+            tmp_repo, record.logical_name, yes=True, keep_branch=True,
+            discard_changes=record.branch,
+        )
+
+        assert document["discarded_changes"] == ["operator-note.txt"]
+        assert not record.git_worktree_path.exists()
+
+    def test_rm_bounds_dirty_path_message_but_keeps_full_json_list(
+        self, tmp_repo, fake_generate_env
+    ):
+        record = worktree.create(tmp_repo, "many-dirty-paths", base="main")
+        paths = [f"operator-{index:02}.txt" for index in range(25)]
+        for path in paths:
+            (record.git_worktree_path / path).write_text("work\n", encoding="utf-8")
+
+        with pytest.raises(worktree.WorktreeRemovalError) as exc:
+            worktree.remove_document(tmp_repo, record.logical_name)
+
+        error = exc.value.document["error"]
+        assert "operator-00.txt" in error and "operator-19.txt" in error
+        assert "operator-20.txt" not in error
+        assert "25 total" in error
+        assert exc.value.document["uncommitted_changes"] == paths
+        assert exc.value.document["discarded_changes"] == []
         assert record.git_worktree_path.is_dir()
 
     def test_unreadable_protected_ignored_entry_is_retained_as_unsized(
@@ -4788,7 +5051,6 @@ class TestRemovalRefusals:
         ("disposition", "match"),
         [
             ("wrong-branch", "exact checkout branch"),
-            ("physical-branch", "no protected ignored state"),
             ("all", "not 'all'"),
         ],
     )
@@ -4854,6 +5116,11 @@ class TestRemovalRefusals:
             )
             message = "primary CIU root missing"
         else:
+            monkeypatch.setattr(
+                workspace_env,
+                "_detect_physical_repo_root",
+                lambda _root: record.ciu_root,
+            )
             monkeypatch.setattr(
                 worktree, "_clean_with_primary_identity",
                 lambda *_args, **_kwargs: 1,

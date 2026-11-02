@@ -297,6 +297,7 @@ class TestWorktreeRmDispatch:
                     "outcome": "kept-by-option", "reason": "--keep-branch was supplied",
                 },
                 "discarded_state": [],
+                "removed_by_clean": [],
                 "discarded_changes": [],
                 "phase_report": {"phases": {"resource_cleanup": "complete"}},
             }
@@ -326,6 +327,7 @@ class TestWorktreeRmDispatch:
                     "outcome": "deleted", "reason": "merged",
                 },
                 "discarded_state": [],
+                "removed_by_clean": [],
                 "discarded_changes": [],
                 "phase_report": {"phases": {}},
             }
@@ -364,6 +366,10 @@ class TestWorktreeRmDispatch:
             "discarded_state": [
                 {"path": ".assay", "class": "protected", "file_count": 2, "bytes": 17}
             ],
+            "removed_by_clean": [
+                {"path": "services/db/vol-data", "class": "protected",
+                 "file_count": 3, "bytes": 32}
+            ],
             "discarded_changes": ["tracked.txt", "untracked.txt"],
             "phase_report": {"phases": {"resource_cleanup": "complete"}},
         }
@@ -371,6 +377,7 @@ class TestWorktreeRmDispatch:
         assert cli._worktree(["rm", "feature"]) == 0
         output = capsys.readouterr().out
         assert message in output
+        assert "removed ignored state during clean: services/db/vol-data (protected, 3 file(s), 32 bytes)" in output
         assert "discarded ignored state: .assay [protected] 2 file(s), 17 bytes" in output
         assert "discarded uncommitted change: tracked.txt" in output
         assert "discarded uncommitted change: untracked.txt" in output

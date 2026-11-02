@@ -4850,8 +4850,8 @@ def action_clean_identity(
             )
             return 1
         primary_id = current.get("instance_id")
-        primary_checkout = current.get("physical_repo_root")
-        if not primary_id or not primary_checkout:
+        primary_checkout_physical = current.get("physical_repo_root")
+        if not primary_id or not primary_checkout_physical:
             error(
                 f"cannot verify the primary CIU identity in {repo_root}; "
                 "refusing expected-checkout cleanup"
@@ -4860,10 +4860,10 @@ def action_clean_identity(
         if instance_id == primary_id:
             error(
                 f"refusing to clean identity {instance_id}: it is the primary "
-                f"checkout's current identity at {primary_checkout}"
+                f"checkout's current identity at {primary_checkout_physical}"
             )
             return 1
-        if requested_checkout == os.path.normpath(primary_checkout):
+        if requested_checkout == os.path.normpath(primary_checkout_physical):
             error(
                 f"refusing to clean identity {instance_id}: expected checkout "
                 "is the primary CIU root"

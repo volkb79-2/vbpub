@@ -332,7 +332,7 @@ $ ciu worktree rm pkg-under-test --json
 {"schema_version": 1, "operation": "remove", "status": "removed",
  "removed_path": "...", "branch": {"name": "...", "tip": "...",
  "outcome": "kept-unmerged", "reason": "..."},
- "discarded_state": [], "discarded_changes": [],
+ "discarded_state": [], "removed_by_clean": [], "discarded_changes": [],
  "phase_report": {"schema_version": 1,
  "phases": {"target_resolution": "complete", "resource_cleanup": "complete",
  "lease_release": "complete", "lifecycle_preflight": "complete",
@@ -345,12 +345,16 @@ $ ciu worktree rm pkg-under-test --json
 [SPEC §S16](SPEC.md#s16--worktree-instances-ciu-worktree)). If the target's CIU
 root marker is missing, CIU reads the exact shared workspace record and uses
 its recorded root offset and identity to run `clean` from the primary checkout.
-It passes the target CIU root as `--expected-checkout`; the identity-clean path
-requires every matching resource's `ciu.repo-root` label to match that path and
-refuses if the ID is the primary root's current identity. It refuses if the
-record, committed root, primary identity, or resource owner label cannot be
-verified. `--force` can proceed after a failed identity clean and strand
-resources.
+It resolves the target's physical CIU root and passes that as
+`--expected-checkout`; when the old checkout's generated facts contain a
+physical root, CIU cross-checks the logical root, instance ID, and detected
+physical path before using it. The identity-clean path requires every matching
+resource's `ciu.repo-root` label to match that physical path and refuses if the
+ID is the primary root's current identity. It refuses if the record, committed
+root, primary identity, or resource owner label cannot be verified. CIU-151
+remains open until this physical-path behavior is verified live on a stack;
+the stubbed owner-label test is not live evidence. `--force` can proceed after
+a failed identity clean and strand resources.
 A markerless managed CIU record with no runtime identity is record-only and
 skips `clean`.
 
@@ -371,24 +375,42 @@ consent. For example:
 ciu worktree rm pkg-under-test -y --discard-changes pkg-under-test
 ```
 
+CIU rechecks these paths after cleanup and refuses if a new tracked or
+non-ignored untracked path appeared. Paths removed by cleanup do not block the
+retry. Failure JSON keeps the full current set in `uncommitted_changes`; the
+diagnostic shows at most 20 paths and the total count.
+
 The survey includes ignored entries. Protected `.assay/` resumable state and
 any `vol-*` path component, including below nested CIU roots, block removal
 unless the exact branch is named with `--discard-protected-state BRANCH`;
 exactly one branch is accepted and `all` is refused. `-y` alone never
 authorizes that loss. Logs, artifacts, evidence and other ignored paths are
 unclassified: CIU lists them in the discard report and removes them. Before
-cleaning and immediately before deletion, CIU inventories ignored state; a
-changed inventory makes it refuse and report the latest list. When cleanup
-clears the lease, CIU verifies its own record contents and allows only that
-record's expected byte-count change. If a protected directory cannot be sized,
+cleaning and immediately before deletion, CIU inventories ignored state and
+reports the latest list. When cleanup clears the lease, CIU verifies its own
+record contents and allows only that record's expected byte-count change. If a protected directory cannot be sized,
 it stays in the inventory with `capped: true` and a
 `size_error`; its exact discard flag is still required. The permission-specific
 privileged removal retry remains deferred to CIU-134 stage 2, so restore read
 access before retrying an unreadable checkout.
 
+On success, `discarded_state` is the second ignored-state inventory: entries
+still present when the Git checkout is deleted. `removed_by_clean` lists
+grouped entries present before cleanup and absent after `ciu clean`. The second
+inventory refuses only if an entry appeared, changed class, gained a new
+`size_error`, or grew in file count or bytes (including becoming newly capped).
+Disappearing entries and entries that shrink are allowed because `ciu clean`
+removes ignored files by design. A retry may repeat the exact
+`--discard-protected-state BRANCH` after a partial failure; if cleanup already
+removed that protected state, the matching branch name is accepted as a no-op.
+A different branch name still refuses.
+
 The JSON report lists discarded ignored entries and their measured file count
 and byte size, plus the exact uncommitted paths authorized with
-`--discard-changes`. Its `phase_report` has `schema_version: 1` and a fixed `phases`
+`--discard-changes`. On a refusal, the complete current path list is in
+`uncommitted_changes`; the diagnostic includes at most the first 20 paths and
+the total count. `discarded_changes` is populated only after checkout deletion
+succeeds. Its `phase_report` has `schema_version: 1` and a fixed `phases`
 map for target resolution, resource cleanup, lease release, lifecycle
 preflight, checkout deletion, Git registration verification, branch removal,
 CIU record removal, and shared record removal. Successful phase values state

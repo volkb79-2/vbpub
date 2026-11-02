@@ -82,7 +82,7 @@ failure · `2` config/validation error · `3` environment/bootstrap error (S10.3
 | `ciu check` | Validate the whole config pipeline in memory (no deploy) | `--profile NAME`, `--live` (also probe live state), `--json` (versioned per-stage report), `--phases N,M` |
 | `ciu graph` | Render the dependency graph to STDOUT (no deploy) | `--format mermaid\|dot\|json`, `--profile NAME`, `--phases N,M` |
 | `ciu ssh <host>` | Interactive shell or one-shot command on a remote host | `--admin` (use admin key), `-- <cmd...>` (one-shot command) |
-| `ciu worktree` | Create, adopt, ensure, remove, inspect, list, start, or exec managed CIU instances; survey and prune local branches | `create LOGICAL --prefix P --feature F`; `adopt LOGICAL PATH`; `ensure LOGICAL`; `rm LOGICAL [-y] [--keep-branch] [--delete-branch] [--discard-protected-state BRANCH] [--json]`; `list [--json]`; `inspect LOGICAL [--json]`; `branches [--base REF] [-y] [--discard-protected-state BRANCH] [--json]` (S16.8); `up LOGICAL`; `exec LOGICAL [--target ALIAS] -- ARGV...` (S16, S16.6, S16.7) |
+| `ciu worktree` | Create, adopt, ensure, remove, inspect, list, start, or exec managed CIU instances; survey and prune local branches | `create LOGICAL --prefix P --feature F`; `adopt LOGICAL PATH`; `ensure LOGICAL`; `rm LOGICAL [-y] [--keep-branch] [--delete-branch] [--discard-protected-state BRANCH] [--discard-changes BRANCH] [--json]`; `list [--json]`; `inspect LOGICAL [--json]`; `branches [--base REF] [-y] [--discard-protected-state BRANCH] [--json]` (S16.8); `up LOGICAL`; `exec LOGICAL [--target ALIAS] -- ARGV...` (S16, S16.6, S16.7) |
 | `ciu capabilities` | Versioned, closed machine-contract allowlist (D-009) | `--json` (S16.5) |
 | `ciu host-secrets <host>` | Host-scoped local secrets (S14.3a): materialize/list/resolve path for pre-Vault bootstrap credentials | `--materialize`, `--list`, `--path NAME`, `-y` |
 | `ciu provenance` | Verify running images against the commit under test and the declared vendor baseline | `--ignore-mismatch` (`--force`), `--no-preflight`, `--json`, `--root-folder PATH`; `--no-preflight` and `--json` are incompatible |
@@ -162,8 +162,13 @@ Use `--keep-branch` to retain a merged branch or `--delete-branch` to delete
 an unmerged ref explicitly. To delete a checkout containing ignored Assay
 progress or a `vol-*` data directory, name its exact branch with
 `--discard-protected-state BRANCH`; `-y` alone never discards that state. The
-branch survey exposes ignored entries and classifies them as protected,
-regenerable, or unclassified. See the [removal rationale](DESIGN-GUIDE.md#why-worktree-removal-preserves-refs-and-reports-ignored-state-ciu-151153154)
+same exact flag is safe to repeat after an interrupted removal if `ciu clean`
+already removed the protected data. The branch survey exposes ignored entries
+and classifies them as protected, regenerable, or unclassified. A second `rm`
+inventory becomes `discarded_state`; entries removed during `ciu clean` are
+listed separately in `removed_by_clean`. Failed removal JSON keeps the full
+current path list in `uncommitted_changes`, while diagnostics show at most 20
+paths and the total count. See the [removal rationale](DESIGN-GUIDE.md#why-worktree-removal-preserves-refs-and-reports-ignored-state-ciu-151153154)
 and [operator examples](CONSUMERS.md#5-remove-and-read-the-removal-document).
 
 For a diverging application tier that shares already-running identity, secret,

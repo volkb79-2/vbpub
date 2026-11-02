@@ -1051,12 +1051,17 @@ owned HTTP/OpenAPI contract.
 `rm` establishes who owns a markerless old checkout before cleaning it. The
 exact shared workspace record supplies its identity and root offset; the
 primary checkout supplies the committed CIU root at that offset. Identity
-cleanup receives the target's CIU root as `--expected-checkout`, so Docker
-labels must prove that exact owner. CIU also rejects an identity matching the
-primary root's current generated identity. An edited or stale record therefore
-cannot redirect cleanup at the primary stack, and a label mismatch leaves the
-checkout in place. `--force` can still proceed after a failed clean, so the
-error says resources may be stranded.
+cleanup receives the target's physical CIU root as `--expected-checkout`, so
+Docker labels must prove that exact owner even when the container and host use
+different path prefixes. A physical path recorded in the old checkout's
+generated facts is accepted only after it agrees with the logical root,
+instance ID, and physical-root resolver that stamps those labels. CIU also
+rejects an identity matching the primary root's current generated identity.
+An edited or stale record therefore cannot redirect cleanup at the primary
+stack, and a label mismatch leaves the checkout in place. CIU-151 remains open
+until this path behavior is verified live on a stack; current regression
+coverage uses physical-prefix Docker-label stubs. `--force` can still proceed
+after a failed clean, so the error says resources may be stranded.
 
 The branch policy belongs in CIU because mergedness depends on its recorded
 base branch. A tip contained in that branch is deleted with an expected-tip
@@ -1076,14 +1081,26 @@ disclosed before deletion. Protected ignored state requires its own exact
 branch disposition.
 
 The inventory is read once before cleanup and once again just before checkout
-deletion. Cleanup may take minutes, so CIU refuses if ignored state changed
-during that interval and reports the second inventory. When successful cleanup
-clears the worktree lease, CIU checks the resulting record against the exact
-expected lease-only update and allows its byte count to change; other record
-changes still refuse. A permission error while sizing an ignored directory
-keeps its class in the inventory with a capped, unsized marker and the error
-reason. Stage 1 does not add privileged removal; that permission-specific
-retry remains in CIU-134 stage 2.
+deletion. Cleanup may take minutes, so CIU refuses if a path appears, changes
+class, gains a new sizing error, or grows in file count or bytes; it reports the
+second inventory. Paths removed or shrunk by `ciu clean` are allowed because
+cleaning ignored worktree artifacts is expected. The second inventory becomes
+`discarded_state`, while grouped entries present initially and gone after clean
+are reported separately in `removed_by_clean`. When successful cleanup clears
+the worktree lease, CIU keeps its existing exception for that record's byte
+count while still checking class and file-count growth. A permission error
+while sizing an ignored directory keeps its class in the inventory with a
+capped, unsized marker and the error reason. Stage 1 does not add privileged
+removal; that permission-specific retry remains in CIU-134 stage 2.
+
+Protected-state consent is tied to the exact checkout branch and is idempotent
+across retries. If clean removed the protected state before a later phase
+failed, repeating `--discard-protected-state BRANCH` with that same exact branch
+allows removal to resume; no state is discarded by the second cleanup. A
+different branch name still refuses. Dirty-path rechecks use the same
+monotonic rule: new paths refuse, paths that cleanup removed do not. Refusal
+messages cap dirty paths at 20 and give the total; the failure JSON retains the
+full `uncommitted_changes` list for inspection.
 
 The `rm --json` phase report records resolution, resource cleanup, lease
 release, lifecycle preflight, checkout deletion, registration verification,
