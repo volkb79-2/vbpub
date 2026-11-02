@@ -77,13 +77,18 @@ Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
     worktree adopt LOGICAL PATH [--profile P1,P2]
          [--adopt-existing-network] [--json]
                                 adopt an existing unmanaged linked checkout
-    worktree rm LOGICAL [-y] [--json]   clean, THEN remove the checkout
+    worktree rm LOGICAL [-y] [--keep-branch | --delete-branch]
+                             [--discard-protected-state BRANCH]
+                             [--discard-changes BRANCH] [--json]
+                                clean, THEN remove; keeps unmerged branch tips by default
+                                and requires exact branch consent for changes or
+                                protected ignored state
     worktree list [--json]      list linked checkouts
     worktree inspect LOGICAL [--json]   exact record + freshly read Git facts
     worktree lease LOGICAL (--extend D | --perpetual | --release) [--json]
-    worktree branches [--base REF] [-y] [--json]
-                                survey local branches; -y prunes exactly the
-                                fully-merged, clean, UNMANAGED ones (S16.8)
+    worktree branches [--base REF] [-y] [--discard-protected-state BRANCH]
+         [--json]                survey branches and ignored state; -y keeps
+                                protected resumable state unless named
     worktree reap [-y] [--category C1,C2] [--dry-run] [--json]
                                 survey Docker resource groups; -y DESTROYS
                                 exactly the record/lease/label-provable ones
@@ -205,11 +210,13 @@ ciu worktree ensure LOGICAL [--base REF] [--profile P1,P2]
                              [--name DISPLAY | --prefix P --feature F]
                              [--branch BRANCH] [--path PATH]
                              [--worktree-dir DIR] [--adopt-existing-network] [--json]
-ciu worktree rm LOGICAL [-y] [--force] [--json]
+ciu worktree rm LOGICAL [-y] [--force] [--keep-branch | --delete-branch]
+                             [--discard-protected-state BRANCH]
+                             [--discard-changes BRANCH] [--json]
 ciu worktree list [--json]
 ciu worktree inspect LOGICAL [--json]
 ciu worktree lease LOGICAL (--extend DURATION | --perpetual | --release) [--json]
-ciu worktree branches [--base REF] [-y] [--json]
+ciu worktree branches [--base REF] [-y] [--discard-protected-state BRANCH] [--json]
 ciu worktree reap [-y] [--category C1,C2] [--dry-run] [--json]
 ciu worktree up LOGICAL [--all]
 ciu worktree exec LOGICAL [--target ALIAS] -- ARGV...
@@ -243,7 +250,12 @@ ciu worktree exec LOGICAL [--target ALIAS] -- ARGV...
   otherwise a declared `[ciu.worktree].up` profile list is started together.
   `exec` runs exact argv (no shell) in the
   selected root or its declared container target and never starts anything
-  implicitly. `rm` runs `ciu clean` and then removes the checkout.
+  implicitly. `rm` cleans before removal, refuses tracked or non-ignored
+  untracked changes without `--discard-changes BRANCH`, and keeps unmerged
+  branch tips by default. It refuses protected `.assay/` or any `vol-*` path
+  component without `--discard-protected-state BRANCH`; other ignored paths
+  are disclosed and deleted. Use `--keep-branch` to preserve a merged ref or
+  `--delete-branch` to explicitly delete an unmerged one.
 
   Examples (all commands are pasteable):
     ciu worktree create pkg-under-test --base "$(git rev-parse HEAD)" --json
@@ -256,8 +268,9 @@ ciu worktree exec LOGICAL [--target ALIAS] -- ARGV...
 
   `inspect` reports the persisted record plus freshly read Git facts; `list
   --json`/`inspect --json`/`rm --json` emit one versioned JSON document on
-  stdout (S16.4). `branches` surveys local branches against a base and `-y`
-  prunes exactly the fully-merged, clean ones — never age-based, never the
+  stdout (S16.4). `rm --json` includes a phase report and branch/state outcome.
+  `branches` surveys local branches against a base and `-y`
+  prunes exactly the fully-merged, clean ones with no protected ignored state — never age-based, never the
   mainline, the primary or invoking checkout's branch, and never a checkout
   carrying a CIU-managed instance (use `worktree rm`, which cleans first);
   mergedness is always judged from the PRIMARY worktree (S16.8). `lease` sets
@@ -412,6 +425,7 @@ ciu down --host NAME [--profile NAME]
     "clean": """\
 ciu clean [--profile NAME] [--phases N,M] [-y] [--ignore-errors]
 ciu clean --identity OLD_ID [-y] [--root-folder PATH]
+  [--expected-checkout PATH]
   Tear down completely: remove ALL project containers (running AND exited, incl.
   init/sidecars), `docker compose down -v --remove-orphans`, remove project
   volumes and `vol-*` hostdirs, and remove rendered artifacts. The post-clean
@@ -431,6 +445,9 @@ ciu clean --identity OLD_ID [-y] [--root-folder PATH]
                      succeeded; a failed clean keeps them for the retry.
   --identity OLD_ID  remove resources carrying a retired instance id by
                      exact Compose labels, without loading the old config.
+  --expected-checkout PATH
+                     require the resource owner label to match this absolute
+                     CIU root; refuses the selected root's current identity.
 """,
     "health": """\
 ciu health [--profile NAME] [--phases N,M] [--root-folder PATH]
@@ -1904,6 +1921,23 @@ def _worktree(rest: list[str]) -> int:
     p_rm.add_argument("name")
     p_rm.add_argument("-y", "--yes", action="store_true", default=False)
     p_rm.add_argument("--force", action="store_true", default=False)
+    rm_branch_mode = p_rm.add_mutually_exclusive_group()
+    rm_branch_mode.add_argument(
+        "--keep-branch", action="store_true", default=False,
+        help="keep the branch even when it is merged",
+    )
+    rm_branch_mode.add_argument(
+        "--delete-branch", action="store_true", default=False,
+        help="explicitly delete the branch, including an unmerged branch",
+    )
+    p_rm.add_argument(
+        "--discard-protected-state", action="append", default=[], metavar="BRANCH",
+        help="explicitly discard protected ignored state for this exact branch",
+    )
+    p_rm.add_argument(
+        "--discard-changes", action="append", default=[], metavar="BRANCH",
+        help="explicitly discard tracked or untracked changes for this exact branch",
+    )
     p_rm.add_argument("--json", action="store_true", default=False)
 
     p_list = sub.add_parser("list", add_help=False)
@@ -1929,7 +1963,11 @@ def _worktree(rest: list[str]) -> int:
     p_branches.add_argument("--base", default="main", metavar="REF")
     p_branches.add_argument(
         "-y", "--yes", action="store_true", default=False,
-        help="remove the fully merged, clean branches (default: survey only)",
+        help="remove merged, clean branches without protected ignored state (default: survey only)",
+    )
+    p_branches.add_argument(
+        "--discard-protected-state", action="append", default=[], metavar="BRANCH",
+        help="with -y, discard ignored resumable state for this exact branch",
     )
     p_branches.add_argument("--json", action="store_true", default=False)
 
@@ -2052,18 +2090,42 @@ def _worktree(rest: list[str]) -> int:
             return 0
 
         if opts.action == "rm":
+            document = wt_mod.remove_document(
+                lifecycle_root, opts.name, yes=opts.yes, force=opts.force,
+                keep_branch=opts.keep_branch, delete_branch=opts.delete_branch,
+                discard_protected_state=opts.discard_protected_state,
+                discard_changes=opts.discard_changes,
+            )
             if getattr(opts, "json", False):
-                print(json.dumps(
-                    wt_mod.remove_document(
-                        lifecycle_root, opts.name, yes=opts.yes, force=opts.force
-                    ),
-                    sort_keys=True,
-                ))
-            else:
-                path = wt_mod.remove(
-                    lifecycle_root, opts.name, yes=opts.yes, force=opts.force
+                print(json.dumps(document, sort_keys=True))
+                return 0
+            print(f"removed: {document['removed_path']}")
+            branch = document["branch"]
+            if branch["outcome"] == "deleted":
+                print(f"deleted branch: {branch['name']} (tip {branch['tip']})")
+            elif branch["outcome"] == "kept-unmerged":
+                print(
+                    f"kept branch: {branch['name']} at {branch['tip']} "
+                    f"({branch['reason']})"
                 )
-                print(f"removed: {path}")
+            elif branch["outcome"] == "kept-by-option":
+                print(f"kept branch: {branch['name']} at {branch['tip']} (--keep-branch)")
+            else:
+                print("branch removal: skipped-detached")
+            for item in document["removed_by_clean"]:
+                print(
+                    "removed ignored state during clean: "
+                    f"{wt_mod._format_ignored_state_item(item)}"
+                )
+            for item in document["discarded_state"]:
+                print(
+                    f"discarded ignored state: {item['path']} [{item['class']}] "
+                    f"{item['file_count']} file(s), {item['bytes']} bytes"
+                )
+            for path in document["discarded_changes"]:
+                print(f"discarded uncommitted change: {path}")
+            for phase, status in document["phase_report"]["phases"].items():
+                print(f"phase {phase}: {status}")
             return 0
 
         if opts.action == "inspect":
@@ -2111,7 +2173,8 @@ def _worktree(rest: list[str]) -> int:
 
         if opts.action == "branches":
             doc = wt_mod.prune_branches(
-                lifecycle_root, base=opts.base, yes=opts.yes
+                lifecycle_root, base=opts.base, yes=opts.yes,
+                discard_protected_state=opts.discard_protected_state,
             ) if opts.yes else wt_mod.branch_hygiene(lifecycle_root, base=opts.base)
             # ONE exit-code decision, decided ABOVE the output-format branch so
             # every mode shares it: a partial prune is never a silent success.
@@ -2128,6 +2191,8 @@ def _worktree(rest: list[str]) -> int:
                     f"branch hygiene vs '{doc['base']}' — "
                     f"{counts['prunable']} prunable, "
                     f"{counts['merged-dirty']} merged-dirty, "
+                    f"{counts['merged-protected']} merged-protected, "
+                    f"{counts['merged-ignored-unknown']} merged-ignored-unknown, "
                     f"{counts['unmerged']} unmerged, "
                     f"{counts['managed-instance']} managed-instance, "
                     f"{counts['current']} current, {counts['base']} base"
@@ -2151,6 +2216,14 @@ def _worktree(rest: list[str]) -> int:
                             f"{b['changed_files']} file(s)  last "
                             f"{b['last_commit_at'][:10]}{dirt}{ciu}"
                         )
+                        for ignored in b.get("ignored_state") or []:
+                            suffix = " (capped)" if ignored["capped"] else ""
+                            print(
+                                f"      ignored {ignored['path']} [{ignored['class']}] "
+                                f"{ignored['file_count']} file(s), {ignored['bytes']} bytes{suffix}"
+                            )
+                        if b.get("ignored_state_error"):
+                            print(f"      ignored state unavailable: {b['ignored_state_error']}")
                 # survey/prune documents always carry the hint
                 print(f"\n{doc['hint']}")
                 if doc["operation"] == "branches-prune":
@@ -2161,6 +2234,14 @@ def _worktree(rest: list[str]) -> int:
                         print(f"removed: {name}")
                     for f in doc.get("failed", []):
                         print(f"FAILED: {f['branch']} — {f['reason']}")
+                    for item in doc.get("skipped", []):
+                        print(f"skipped: {item['branch']} — {item['reason']}")
+                    for item in doc.get("discarded", []):
+                        print(
+                            f"discarded: {item['branch']} {item['path']} "
+                            f"[{item['class']}] {item['file_count']} file(s), "
+                            f"{item['bytes']} bytes"
+                        )
             return code
 
         if opts.action == "reap":
@@ -2220,6 +2301,15 @@ def _worktree(rest: list[str]) -> int:
                 print(f"{info.head}  {info.branch:<40} {info.path}{tag}")
         return 0
     except wt_mod.WorktreeError as exc:
+        if (
+            "opts" in locals()
+            and getattr(opts, "action", None) == "rm"
+            and getattr(opts, "json", False)
+            and getattr(exc, "document", None) is not None
+        ):
+            print(json.dumps(exc.document, sort_keys=True))
+            print(str(exc), file=sys.stderr)
+            return 2
         print(str(exc), file=sys.stderr)
         return 2
 
@@ -2584,6 +2674,7 @@ def main() -> None:
             parser = CiuArgumentParser(prog="ciu clean --identity")
             parser.add_argument("--identity", metavar="OLD_ID")
             parser.add_argument("-y", "--yes", action="store_true")
+            parser.add_argument("--expected-checkout", metavar="PATH")
             opts, remaining = parser.parse_known_args(rest)
             if remaining:
                 print(
@@ -2595,7 +2686,12 @@ def main() -> None:
             repo_root = _resolve_repo_root_deploy(define_root)
             from .deploy import action_clean_identity
             raise SystemExit(
-                action_clean_identity(repo_root, opts.identity, yes=opts.yes)
+                action_clean_identity(
+                    repo_root,
+                    opts.identity,
+                    yes=opts.yes,
+                    expected_checkout=opts.expected_checkout,
+                )
             )
         from .deploy import main as deploy_main
         raise SystemExit(deploy_main(["--clean"] + rest))

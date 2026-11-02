@@ -38,6 +38,26 @@ def _git(path: Path, *args: str, check: bool = True) -> str:
     return result.stdout.strip()
 
 
+def _branch_exists(repository: Path, branch: str) -> bool:
+    result = subprocess.run(
+        ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
+        cwd=repository,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode not in (0, 1):
+        raise AssertionError(result.stderr)
+    return result.returncode == 0
+
+
+def _add_merged_linked_checkout(repository: Path, target: Path, branch: str) -> None:
+    _git(repository, "worktree", "add", "-q", "-b", branch, str(target), "HEAD")
+    (target / "README").write_text(f"{branch}\n", encoding="utf-8")
+    _git(target, "commit", "-q", "-am", f"commit {branch}")
+    _git(repository, "merge", "-q", "--ff-only", branch)
+
+
 @pytest.fixture
 def repository(tmp_path: Path) -> Path:
     repo = tmp_path / "repo"
@@ -471,9 +491,9 @@ def test_adopt_workspace_rejects_the_primary_checkout(repository):
         adopt_workspace(repository, repository)
 
 
-def test_remove_unrecorded_workspace_uses_the_shared_lifecycle(repository, tmp_path):
+def test_remove_unrecorded_workspace_deletes_merged_branch_by_default(repository, tmp_path):
     target = tmp_path / "legacy"
-    _git(repository, "worktree", "add", "-q", "-b", "legacy", str(target), "HEAD")
+    _add_merged_linked_checkout(repository, target, "legacy")
     with pytest.raises(WorkspaceError, match="branch changed"):
         remove_unrecorded_workspace(repository, target, expected_branch="wrong")
     assert target.is_dir()
@@ -482,7 +502,17 @@ def test_remove_unrecorded_workspace_uses_the_shared_lifecycle(repository, tmp_p
         repository, target, expected_branch="legacy", purpose="legacy-cleanup"
     )
     assert not target.exists()
-    assert _git(repository, "show-ref", "--verify", "--quiet", "refs/heads/legacy", check=False) == ""
+    assert not _branch_exists(repository, "legacy")
+
+
+def test_remove_unrecorded_workspace_can_keep_merged_branch(repository, tmp_path):
+    target = tmp_path / "legacy-kept"
+    _add_merged_linked_checkout(repository, target, "legacy-kept")
+
+    remove_unrecorded_workspace(repository, target, delete_branch=False)
+
+    assert not target.exists()
+    assert _branch_exists(repository, "legacy-kept")
 
 
 def test_adopt_workspace_rejects_wrong_top_and_family(monkeypatch, repository, tmp_path):
@@ -640,6 +670,188 @@ def test_lease_expiry_cleanup_and_release_failures(repository, tmp_path, monkeyp
     assert inspect.signature(remove_unrecorded_workspace).parameters["force"].default is False
 
 
+def test_remove_workspace_reports_phases_and_preserves_branch_when_requested(
+    repository, tmp_path
+):
+    context = create_workspace(
+        repository, tmp_path / "checkout", branch="test/phase-report", purpose="test"
+    )
+    phases = []
+
+    remove_workspace(
+        context,
+        delete_branch=False,
+        on_phase=lambda phase, status: phases.append((phase, status)),
+    )
+
+    assert phases == [
+        ("checkout_deletion", "running"),
+        ("checkout_deletion", "complete"),
+        ("git_registration", "running"),
+        ("git_registration", "complete"),
+        ("shared_record_removal", "running"),
+        ("shared_record_removal", "complete"),
+        ("branch_removal", "kept"),
+    ]
+    assert _git(repository, "show-ref", "--verify", "refs/heads/test/phase-report")
+
+
+def test_remove_workspace_reports_record_removal_before_branch_deletion(
+    repository, tmp_path
+):
+    context = create_workspace(
+        repository, tmp_path / "checkout", branch="test/phase-delete", purpose="test"
+    )
+    tip = _git(repository, "rev-parse", "refs/heads/test/phase-delete")
+    phases = []
+
+    remove_workspace(
+        context,
+        expected_branch_tip=tip,
+        on_phase=lambda phase, status: phases.append((phase, status)),
+    )
+
+    assert phases[-4:] == [
+        ("shared_record_removal", "running"),
+        ("shared_record_removal", "complete"),
+        ("branch_removal", "running"),
+        ("branch_removal", "deleted"),
+    ]
+    assert not context.record_path.exists()
+    assert not _branch_exists(repository, "test/phase-delete")
+
+
+def test_remove_workspace_uses_expected_tip_as_atomic_branch_delete_guard(
+    repository, tmp_path, monkeypatch
+):
+    context = create_workspace(
+        repository, tmp_path / "checkout", branch="test/moving-tip", purpose="test"
+    )
+    expected_tip = _git(repository, "rev-parse", "refs/heads/test/moving-tip")
+    tree = _git(repository, "rev-parse", "refs/heads/main^{tree}")
+    advanced_tip = _git(
+        repository, "commit-tree", tree, "-p", expected_tip, "-m", "advanced tip"
+    )
+    real_run = core.subprocess.run
+    phases = []
+
+    def move_tip_before_compare(argv, *args, **kwargs):
+        if argv[:3] == ["git", "update-ref", "-d"]:
+            _git(repository, "update-ref", "refs/heads/test/moving-tip", advanced_tip)
+        return real_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(core.subprocess, "run", move_tip_before_compare)
+    with pytest.raises(core.WorkspaceError, match="branch removal.*failed"):
+        remove_workspace(
+            context,
+            expected_branch_tip=expected_tip,
+            on_phase=lambda phase, status: phases.append((phase, status)),
+        )
+
+    assert _git(repository, "rev-parse", "refs/heads/test/moving-tip") == advanced_tip
+    assert not context.worktree_path.exists()
+    assert not context.record_path.exists()
+    assert phases[-2:] == [
+        ("branch_removal", "running"),
+        ("branch_removal", "failed"),
+    ]
+
+
+def test_remove_workspace_reports_checkout_deletion_failure(repository, tmp_path, monkeypatch):
+    context = create_workspace(
+        repository, tmp_path / "checkout", branch="test/delete-failure", purpose="test"
+    )
+    original = core.subprocess.run
+    phases = []
+
+    def failed_remove(argv, **kwargs):
+        if argv[1:3] == ["worktree", "remove"]:
+            return subprocess.CompletedProcess(argv, 1, stdout="", stderr="locked")
+        return original(argv, **kwargs)
+
+    monkeypatch.setattr(core.subprocess, "run", failed_remove)
+    with pytest.raises(WorkspaceError, match="partially removed.*locked"):
+        remove_workspace(
+            context, on_phase=lambda phase, status: phases.append((phase, status))
+        )
+    assert phases == [
+        ("checkout_deletion", "running"),
+        ("checkout_deletion", "failed"),
+    ]
+    assert context.worktree_path.is_dir()
+    assert context.record_path.is_file()
+
+
+@pytest.mark.parametrize("registration_result", ["error", "still-present"])
+@pytest.mark.parametrize("observe_phases", [True, False])
+def test_remove_workspace_reports_git_registration_verification_failures(
+    repository, tmp_path, monkeypatch, registration_result, observe_phases
+):
+    context = create_workspace(
+        repository, tmp_path / "checkout", branch=f"test/registration-{registration_result}",
+        purpose="test",
+    )
+    phases = []
+    if registration_result == "error":
+        monkeypatch.setattr(
+            core, "list_git_worktrees",
+            lambda *_args: (_ for _ in ()).throw(WorkspaceError("list unavailable")),
+        )
+        expected = "list unavailable"
+    else:
+        monkeypatch.setattr(
+            core, "list_git_worktrees",
+            lambda *_args: [SimpleNamespace(path=context.worktree_path)],
+        )
+        expected = "still registers removed checkout"
+
+    with pytest.raises(WorkspaceError, match=expected):
+        remove_workspace(
+            context,
+            on_phase=(lambda phase, status: phases.append((phase, status)))
+            if observe_phases else None,
+        )
+    if observe_phases:
+        assert phases[-2:] == [
+            ("git_registration", "running"),
+            ("git_registration", "failed"),
+        ]
+    else:
+        assert phases == []
+    assert context.record_path.is_file()
+
+
+@pytest.mark.parametrize("observe_phases", [True, False])
+def test_remove_workspace_reports_record_unlink_failure(
+    repository, tmp_path, monkeypatch, observe_phases
+):
+    context = create_workspace(
+        repository, tmp_path / "checkout", branch="test/record-unlink-failure", purpose="test"
+    )
+    phases = []
+    original_unlink = Path.unlink
+
+    def fail_record_unlink(path, *args, **kwargs):
+        if path == context.record_path:
+            raise PermissionError("record locked")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_record_unlink)
+    with pytest.raises(PermissionError, match="record locked"):
+        remove_workspace(
+            context,
+            on_phase=(lambda phase, status: phases.append((phase, status)))
+            if observe_phases else None,
+        )
+    if observe_phases:
+        assert phases[-2:] == [
+            ("shared_record_removal", "running"),
+            ("shared_record_removal", "failed"),
+        ]
+    else:
+        assert phases == []
+
+
 def test_remove_preflights_git_identity_before_adapter_cleanup(repository, tmp_path, monkeypatch):
     context = create_workspace(
         repository, tmp_path / "checkout", branch="test/remove-check", purpose="test"
@@ -702,11 +914,15 @@ def test_cleanup_git_and_branch_failures_leave_state(repository, tmp_path, monke
     monkeypatch.undo()
 
     def branch_failure(argv, **kwargs):
+        if argv[1:3] == ["worktree", "list"]:
+            assert kwargs["capture_output"] is True
+            assert kwargs["check"] is False
+            return original(argv, **kwargs)
         assert kwargs["text"] is True
         assert kwargs["capture_output"] is True
         assert kwargs["check"] is False
         if argv[1:3] == ["worktree", "remove"]:
-            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+            return original(argv, **kwargs)
         if argv[1:3] == ["branch", "-D"]:
             return subprocess.CompletedProcess(argv, 1, stdout="branch stdout", stderr="")
         return original(argv, **kwargs)
@@ -714,9 +930,11 @@ def test_cleanup_git_and_branch_failures_leave_state(repository, tmp_path, monke
     monkeypatch.setattr(core.subprocess, "run", branch_failure)
     with pytest.raises(WorkspaceError, match="branch stdout"):
         remove_workspace(record)
-    assert context.record_path.exists()
+    assert not context.record_path.exists()
+    assert not context.worktree_path.exists()
     monkeypatch.undo()
-    remove_workspace(context, force=True)
+    assert _git(repository, "show-ref", "--verify", "refs/heads/test/fail-clean")
+    # The branch ref remains available, and no workspace record is stranded.
 
 
 def test_acquire_lease_rejects_invalid_requests_and_conflicting_holder(repository, tmp_path):

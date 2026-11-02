@@ -330,13 +330,106 @@ only managed instances, each with fresh Git facts.
 ```console
 $ ciu worktree rm pkg-under-test --json
 {"schema_version": 1, "operation": "remove", "status": "removed",
- "removed_path": "...", "instance": {...}}
+ "removed_path": "...", "branch": {"name": "...", "tip": "...",
+ "outcome": "kept-unmerged", "reason": "..."},
+ "discarded_state": [], "removed_by_clean": [], "discarded_changes": [],
+ "phase_report": {"schema_version": 1,
+ "phases": {"target_resolution": "complete", "resource_cleanup": "complete",
+ "lease_release": "complete", "lifecycle_preflight": "complete",
+ "checkout_deletion": "complete", "git_registration": "complete",
+ "branch_removal": "kept-unmerged", "ciu_record_removal": "complete",
+ "shared_record_removal": "complete"}}, "instance": {...}}
 ```
 
-`rm` runs `ciu clean` then `git worktree remove` (that order is normative,
-[SPEC §S16](SPEC.md#s16--worktree-instances-ciu-worktree)). A failed clean or
-git removal raises with exit 2 and **no** success document; the error names
-the retained resources.
+`rm` runs `ciu clean` then removes the Git checkout (that order is normative,
+[SPEC §S16](SPEC.md#s16--worktree-instances-ciu-worktree)). If the target's CIU
+root marker is missing, CIU reads the exact shared workspace record and uses
+its recorded root offset and identity to run `clean` from the primary checkout.
+It resolves the target's physical CIU root and passes that as
+`--expected-checkout`; when the old checkout's generated facts contain a
+physical root, CIU cross-checks the logical root, instance ID, and detected
+physical path before using it. The identity-clean path requires every matching
+resource's `ciu.repo-root` label to match that physical path and refuses if the
+ID is the primary root's current identity. It refuses if the record, committed
+root, primary identity, or resource owner label cannot be verified. CIU-151
+remains open until this physical-path behavior is verified live on a stack;
+the stubbed owner-label test is not live evidence. `--force` can proceed after
+a failed identity clean and strand resources.
+A markerless managed CIU record with no runtime identity is record-only and
+skips `clean`.
+
+Branch deletion is conservative. A branch is deleted by default only when its
+recorded tip is proven contained in its recorded base branch (or the default
+mainline when no base branch was recorded). An unmerged or unproven branch is
+kept and its tip is reported. `--keep-branch` keeps even a merged branch;
+`--delete-branch` explicitly requests deletion, including an unmerged branch.
+The tip is compared again during deletion, so a branch that moved during
+checkout removal is preserved and reported as a failed branch phase.
+
+Tracked and non-ignored untracked changes also block removal. To authorize
+their loss, pass `--discard-changes BRANCH` with the exact checkout branch.
+Only one branch name is accepted, `all` is refused, and `-y` does not imply
+consent. For example:
+
+```console
+ciu worktree rm pkg-under-test -y --discard-changes pkg-under-test
+```
+
+CIU rechecks these paths after cleanup and refuses if a new tracked or
+non-ignored untracked path appeared. Paths removed by cleanup do not block the
+retry. If cleanup removed the original paths but a later removal phase failed,
+repeat the same command with the same exact branch name; CIU accepts the flag
+as no-op consent when that branch is now clean. A wrong branch name and a
+detached checkout still refuse. Failure JSON keeps the full current set in
+`uncommitted_changes`; the diagnostic shows at most 20 paths and the total
+count.
+
+The survey includes ignored entries. Protected `.assay/` resumable state and
+any `vol-*` path component, including below nested CIU roots, block removal
+unless the exact branch is named with `--discard-protected-state BRANCH`;
+exactly one branch is accepted and `all` is refused. `-y` alone never
+authorizes that loss. Git may list only the parent of a wholly ignored
+directory, so CIU scans below that parent for `.assay` and `vol-*` names. A
+found descendant makes the displayed parent group protected; if the bounded
+scan caps or errors before it can rule out protected content, CIU treats that
+group as protected too. This also blocks `branches -y`. Logs, artifacts,
+evidence and other fully inspected ignored paths remain unclassified: CIU
+lists them in the discard report and removes them. Before cleaning and
+immediately before deletion, CIU inventories ignored state and reports the
+latest list. When cleanup clears the lease, CIU verifies its own record
+contents and allows only that record's expected byte-count change. A group
+that cannot be sized stays in the inventory with `capped: true` and a
+`size_error`; its exact discard flag is required. The permission-specific
+privileged removal retry remains deferred to CIU-134 stage 2, so restore read
+access before retrying an unreadable checkout.
+
+On success, `discarded_state` is the second ignored-state inventory: entries
+still present when the Git checkout is deleted. `removed_by_clean` lists
+grouped entries present before cleanup and absent after `ciu clean`. The second
+inventory refuses only if an entry appeared, changed class, gained a new
+`size_error`, or grew in file count or bytes (including becoming newly capped).
+Disappearing entries and entries that shrink are allowed because `ciu clean`
+removes ignored files by design. After a partial failure, retry with the same
+exact `--discard-protected-state BRANCH` or `--discard-changes BRANCH` used on
+the first attempt. If cleanup already removed the protected state or changed
+paths, the matching branch name is accepted as no-op consent. A different
+branch name still refuses.
+
+The JSON report lists discarded ignored entries and their measured file count
+and byte size, plus the exact uncommitted paths authorized with
+`--discard-changes`. On a refusal, the complete current path list is in
+`uncommitted_changes`; the diagnostic includes at most the first 20 paths and
+the total count. `discarded_changes` is populated only after checkout deletion
+succeeds. Its `phase_report` has `schema_version: 1` and a fixed `phases`
+map for target resolution, resource cleanup, lease release, lifecycle
+preflight, checkout deletion, Git registration verification, branch removal,
+CIU record removal, and shared record removal. Successful phase values state
+what ran; skipped and failed values preserve partial progress on error.
+If failure stops before a planned deletion, branch outcome is `not-deleted`;
+if Git attempts and refuses it, the outcome is `failed` and the reported tip
+is the pre-cleanup tip.
+`--json` prints that failure document to stdout and the diagnostic to stderr,
+then exits 2. See the [design rationale](DESIGN-GUIDE.md#why-worktree-removal-preserves-refs-and-reports-ignored-state-ciu-151153154).
 
 ## 5b. Clean up forgotten branches — grounded, never age-based (S16.8)
 
@@ -346,7 +439,7 @@ guessing:
 
 ```console
 $ ciu worktree branches
-branch hygiene vs 'main' — 2 prunable, 0 merged-dirty, 3 unmerged, 1 managed-instance, 1 current, 1 base
+branch hygiene vs 'main' — 2 prunable, 0 merged-dirty, 1 merged-protected, 0 merged-ignored-unknown, 3 unmerged, 1 managed-instance, 1 current, 1 base
 
 prunable:
   fix/net-leak @ /repo/.worktrees/fix-net-leak  ahead 0 behind 4 changed 0 file(s)  last 2026-08-01
@@ -356,11 +449,23 @@ managed-instance:
 
 unmerged:
   feat/wip  ahead 3 behind 1 changed 12 file(s)  last 2026-08-21  ciu:wip(ready)
+
+merged-protected:
+  feat/assay @ /repo/.worktrees/feat-assay  ahead 0 behind 4 changed 0 file(s)
+      ignored .assay [protected] 4 file(s), 8192 bytes
 ```
 
-Survey only — nothing is removed. `-y` removes exactly the `prunable`
-category. What the gating actually guarantees: **a candidate's checkout is
-never destroyed by a refusal this command could have foreseen.** Three
+Survey only — nothing is removed. `-y` removes `prunable` branches and keeps
+`merged-protected` branches with a named skip reason. To authorize one
+protected branch, name it exactly: `ciu worktree branches -y
+--discard-protected-state feat/assay`. The option is repeatable for separate
+exact branch names; it accepts no glob or `all`. A failed ignored-state
+enumeration is `merged-ignored-unknown`, never an empty inventory, and is
+never pruned. Other ignored files are still listed with their size and class;
+regenerable caches and unclassified files do not block pruning. `dirty` keeps
+its Git meaning (tracked and non-ignored untracked changes). What the gating
+actually guarantees: **a candidate's checkout is never destroyed by a
+refusal this command could have foreseen.** Three
 read-only checks run before anything is touched — the base must be contained
 in the primary checkout's HEAD (or origin/HEAD) or `-y` refuses outright; a
 branch tracking an upstream that lacks its tip is reported `FAILED`; and a
@@ -385,7 +490,12 @@ primary checkout's branch, or the one you invoked from), `managed-instance`
 at any lifecycle state, because a bare `git worktree remove` would destroy
 the config that tells CIU what to clean; use `ciu worktree rm NAME`, which
 runs `ciu clean` first), `prunable`, `merged-dirty` (merged but its checkout
-has uncommitted work — decide by hand), and `unmerged`. Every branch carries
+has uncommitted work — decide by hand), `merged-protected` (merged and clean,
+but has protected ignored state), `merged-ignored-unknown` (ignored-state
+enumeration failed; never prunable), and `unmerged`. Every branch with a
+checkout includes `ignored_state`, including regenerable (`ciu.env`, generated
+facts, common tool caches) and unclassified entries; file and byte counts are
+capped, and symlink targets are not followed. Every branch carries
 `ahead`/`behind`, `changed_files` vs the merge-base, last-commit date, and
 its ciu instance linkage, so a human can rule on the rest. No age heuristic
 exists anywhere in this command: a branch one minute old that is fully merged
@@ -393,8 +503,8 @@ is prunable, a branch six months old that is not is not.
 
 Automation allowlists the capability id `worktree.branches.v1`
 (`ciu capabilities --json`) instead of inferring the feature from SemVer;
-the `--json` document is versioned (`schema_version: 2` — 1 predates the
-`managed-instance` category, operations `branches`/`branches-prune`, statuses
+the `--json` document is versioned (`schema_version: 3` — 2 predates the
+ignored-state categories, operations `branches`/`branches-prune`, statuses
 `survey`/`pruned`/`partial`).
 
 ```bash
@@ -2047,10 +2157,19 @@ $ ciu clean --identity OLD_ID --root-folder /path/to/checkout
 $ ciu env generate --root-folder /path/to/checkout
 ```
 
-`clean --identity` does not load the stale rendered config; it uses exact
-identity labels and the recorded physical checkout to avoid cleaning a
-different checkout. Current-format corruption remains a refusal and is not
-overwritten as a migration.
+`clean --identity` does not load the stale rendered config. When cleanup runs
+from a primary checkout for a retired linked checkout, it can require the old
+CIU root explicitly:
+
+```console
+$ ciu clean --identity OLD_ID --root-folder /path/to/primary-ciu-root \
+    --expected-checkout /path/to/old/ciu-root
+```
+
+That form requires the exact `ciu.repo-root` label to match the absolute old
+CIU root and refuses when the requested identity is the primary root's current
+identity. Current-format corruption remains a refusal and is not overwritten
+as a migration.
 
 ## 24. Resume an interrupted adopt without resetting the checkout (CIU-107)
 

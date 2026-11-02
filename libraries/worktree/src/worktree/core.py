@@ -16,7 +16,7 @@ import os
 import re
 import stat
 import subprocess
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -713,24 +713,25 @@ def write_record(record: WorkspaceRecord) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     payload = json.dumps(record.as_dict(), indent=2, sort_keys=True) + "\n"
-    directory_fd: int | None = None
-    try:
-        with temporary.open("w", encoding="utf-8") as handle:
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-        directory_fd = os.open(
-            path.parent,
-            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
-        )
-        os.fsync(directory_fd)
-    except OSError as exc:
-        temporary.unlink(missing_ok=True)
-        raise WorkspaceError(f"could not write workspace record {path}: {exc}", category="record-write") from exc
-    finally:
-        if directory_fd is not None:
-            os.close(directory_fd)
+    with ExitStack() as cleanup:
+        try:
+            with temporary.open("w", encoding="utf-8") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+            directory_fd = os.open(
+                path.parent,
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+            )
+            cleanup.callback(os.close, directory_fd)
+            os.fsync(directory_fd)
+        except OSError as exc:
+            temporary.unlink(missing_ok=True)
+            raise WorkspaceError(
+                f"could not write workspace record {path}: {exc}",
+                category="record-write",
+            ) from exc
     return path
 
 
@@ -1104,6 +1105,9 @@ def remove_unrecorded_workspace(
     expected_branch: str | None = None,
     purpose: str = "legacy",
     force: bool = False,
+    delete_branch: bool = True,
+    expected_branch_tip: str | None = None,
+    on_phase: Callable[[str, str], None] | None = None,
 ) -> None:
     """Remove a legacy linked checkout that predates a shared record.
 
@@ -1121,7 +1125,13 @@ def remove_unrecorded_workspace(
             category="stale-record",
         )
     context = adopt_workspace(source_git_root, target_path, purpose=purpose)
-    remove_workspace(context, force=force)
+    remove_workspace(
+        context,
+        force=force,
+        delete_branch=delete_branch,
+        expected_branch_tip=expected_branch_tip,
+        on_phase=on_phase,
+    )
 
 
 def remove_workspace(
@@ -1130,6 +1140,8 @@ def remove_workspace(
     cleanup: Callable[[WorkspaceContext], None] | None = None,
     force: bool = False,
     delete_branch: bool = True,
+    expected_branch_tip: str | None = None,
+    on_phase: Callable[[str, str], None] | None = None,
 ) -> None:
     """Clean adapter resources, then remove the checkout and record.
 
@@ -1169,28 +1181,89 @@ def remove_workspace(
             )
         if cleanup is not None:
             cleanup(current.context())
+        if on_phase is not None:
+            on_phase("checkout_deletion", "running")
         result = subprocess.run(
             ["git", "worktree", "remove", "--force", str(current.worktree_path)],
             cwd=current.source_git_root, text=True, capture_output=True, check=False,
         )
         if result.returncode:
+            if on_phase is not None:
+                on_phase("checkout_deletion", "failed")
             raise WorkspaceError(
-                f"git worktree remove failed ({result.returncode}): {(result.stderr or result.stdout).strip()}",
+                f"git worktree remove failed ({result.returncode}) for "
+                f"{current.worktree_path}; checkout may be partially removed: "
+                f"{(result.stderr or result.stdout).strip()}",
                 category="cleanup-refusal",
             )
+        if on_phase is not None:
+            on_phase("checkout_deletion", "complete")
+
+        if on_phase is not None:
+            on_phase("git_registration", "running")
+        try:
+            remaining = [
+                item for item in list_git_worktrees(current.source_git_root)
+                if item.path == current.worktree_path
+            ]
+        except WorkspaceError as exc:
+            if on_phase is not None:
+                on_phase("git_registration", "failed")
+            raise WorkspaceError(
+                f"could not verify Git worktree registration removal: {exc}",
+                category="cleanup-refusal",
+            ) from exc
+        if remaining:
+            if on_phase is not None:
+                on_phase("git_registration", "failed")
+            raise WorkspaceError(
+                f"Git still registers removed checkout {current.worktree_path}",
+                category="cleanup-refusal",
+            )
+        if on_phase is not None:
+            on_phase("git_registration", "complete")
+
+        if on_phase is not None:
+            on_phase("shared_record_removal", "running")
+        try:
+            current.record_path.unlink(missing_ok=True)
+        except OSError:
+            if on_phase is not None:
+                on_phase("shared_record_removal", "failed")
+            raise
+        if on_phase is not None:
+            on_phase("shared_record_removal", "complete")
+
         if delete_branch and current.branch != "HEAD":
+            if on_phase is not None:
+                on_phase("branch_removal", "running")
+            if expected_branch_tip is not None:
+                branch_argv = [
+                    "git", "update-ref", "-d", f"refs/heads/{current.branch}",
+                    expected_branch_tip,
+                ]
+            else:
+                branch_argv = ["git", "branch", "-D", current.branch]
             branch_result = subprocess.run(
-                ["git", "branch", "-D", current.branch],
+                branch_argv,
                 cwd=current.source_git_root, text=True, capture_output=True, check=False,
             )
             if branch_result.returncode:
+                if on_phase is not None:
+                    on_phase("branch_removal", "failed")
                 raise WorkspaceError(
-                    f"git branch -D {current.branch} failed "
+                    f"branch removal for {current.branch} failed "
                     f"({branch_result.returncode}): "
                     f"{(branch_result.stderr or branch_result.stdout).strip()}",
                     category="cleanup-refusal",
                 )
-        current.record_path.unlink(missing_ok=True)
+            if on_phase is not None:
+                on_phase("branch_removal", "deleted")
+        elif on_phase is not None:
+            on_phase(
+                "branch_removal",
+                "skipped-detached" if current.branch == "HEAD" else "kept",
+            )
 
 
 def remove_orphan_workspace(

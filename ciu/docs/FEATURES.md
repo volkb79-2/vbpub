@@ -46,7 +46,7 @@ now verbs (`ciu up/down/clean/health`).
 | **Fail-closed host-key pinning** | Connections are refused when no `known_host` is pinned; `CIU_SSH_INSECURE_TOFU=1` is a documented bootstrap-only escape hatch. | S14.4a |
 | **Docker-optional activation** | `ciu up --host <name> --thin` pushes a bundle and invokes the target's explicit activation contract; the target needs neither Docker nor CIU's Python runtime. | S14.6 |
 | **Governance and KSM policy** | Global and stack resource policy place services under verified cgroup slices, enforce memory/IO limits, and offer built-in KSM preload or per-service wrapper strategy. | S15 |
-| **Managed worktree instances** | `ciu worktree` creates/adopts/resumes durable logical identities with exact nested CIU roots, local sparse overrides, collision admission, optional shared-infra join, and a primary-config concurrency cap; `inspect`/`list`/`rm` emit versioned JSON documents with freshly derived Git facts; `up`/`exec` act on one exact selected instance under its own identity record (`[ciu.instance.generated]`; its `ciu.env` before 7.7.0, S3.1c), and `exec --target` runs inside a declared already-running container with a worktree-mount proof; `ciu capabilities --json` exposes the closed machine-contract allowlist. | S16, S16.4, S16.5, S16.6, S16.7 |
+| **Managed worktree instances** | `ciu worktree` creates/adopts/resumes durable logical identities with exact nested CIU roots, local sparse overrides, collision admission, optional shared-infra join, and a primary-config concurrency cap; `rm` resolves a missing old CIU root from the checked shared record and primary checkout, preserves unmerged branch tips by default, inventories ignored state, and reports each phase; branch pruning lists ignored state and blocks on protected resumable data until that exact branch is named for discard; `inspect`/`list`/`rm` emit versioned JSON documents; `up`/`exec` act on one exact selected instance under its own identity record and `exec --target` runs inside a declared already-running container with a worktree-mount proof; `ciu capabilities --json` exposes the closed machine-contract allowlist. | S16, S16.4, S16.5, S16.6, S16.7, S16.8 |
 | **Worktree image and container isolation** | Linked worktrees tag project-built images with their instance id while pulled images and the primary's tags stay unchanged; a scoped tag named by the primary image map refuses before building; an existing explicit container name is reusable only when Docker labels prove the same checkout, project, and service. | S8.8, S17.6 |
 | **Image provenance evidence** | `ciu provenance --json` verifies running images against the commit under test AND against a declared vendor baseline (`[deploy.provenance] vendor_images` → `vendor-pinned`, vendor drift → `mismatch`), making `verified-match` reachable on all-vendor deployments; documents are emitted at `schema_version: 2`; the explicit break-glass `--no-preflight` produces no verdict. | S17 |
 | **Assay-backed implementation gate** | The release gate runs the full suite (100% line+branch) inside `tester-unified` and is judged by Assay installed from the selected vbpub worktree source: the runtime version and source commit are retained in the verdict, without a drifting consumer-owned copy; the lane declares R0-R3 (changed-line coverage on `base..HEAD`, native mutation, and an import-break canary); the gate slice comes only from `$CGROUP_PARENT_DEV_GATES` (verified loaded, fail-closed); the gate's status is the Assay job's own. | S18 |
@@ -82,7 +82,7 @@ failure · `2` config/validation error · `3` environment/bootstrap error (S10.3
 | `ciu check` | Validate the whole config pipeline in memory (no deploy) | `--profile NAME`, `--live` (also probe live state), `--json` (versioned per-stage report), `--phases N,M` |
 | `ciu graph` | Render the dependency graph to STDOUT (no deploy) | `--format mermaid\|dot\|json`, `--profile NAME`, `--phases N,M` |
 | `ciu ssh <host>` | Interactive shell or one-shot command on a remote host | `--admin` (use admin key), `-- <cmd...>` (one-shot command) |
-| `ciu worktree` | Create, adopt, ensure, remove, inspect, list, start, or exec managed CIU instances; survey and prune local branches | `create LOGICAL --prefix P --feature F`; `adopt LOGICAL PATH`; `ensure LOGICAL`; `rm LOGICAL -y [--json]`; `list [--json]`; `inspect LOGICAL [--json]`; `branches [--base REF] [-y] [--json]` (S16.8); `up LOGICAL`; `exec LOGICAL [--target ALIAS] -- ARGV...` (S16, S16.6, S16.7) |
+| `ciu worktree` | Create, adopt, ensure, remove, inspect, list, start, or exec managed CIU instances; survey and prune local branches | `create LOGICAL --prefix P --feature F`; `adopt LOGICAL PATH`; `ensure LOGICAL`; `rm LOGICAL [-y] [--keep-branch] [--delete-branch] [--discard-protected-state BRANCH] [--discard-changes BRANCH] [--json]`; `list [--json]`; `inspect LOGICAL [--json]`; `branches [--base REF] [-y] [--discard-protected-state BRANCH] [--json]` (S16.8); `up LOGICAL`; `exec LOGICAL [--target ALIAS] -- ARGV...` (S16, S16.6, S16.7) |
 | `ciu capabilities` | Versioned, closed machine-contract allowlist (D-009) | `--json` (S16.5) |
 | `ciu host-secrets <host>` | Host-scoped local secrets (S14.3a): materialize/list/resolve path for pre-Vault bootstrap credentials | `--materialize`, `--list`, `--path NAME`, `-y` |
 | `ciu provenance` | Verify running images against the commit under test and the declared vendor baseline | `--ignore-mismatch` (`--force`), `--no-preflight`, `--json`, `--root-folder PATH`; `--no-preflight` and `--json` are incompatible |
@@ -153,10 +153,23 @@ ciu worktree ensure feature-x --json
 # Before a live test/evidence lane, record the artifact identity CIU inspected.
 ciu provenance --json
 
-# CIU cleans the instance before removing the checkout.
+# CIU cleans first, keeps an unmerged branch tip, and refuses protected state.
 cd -
 ciu worktree rm feature-x -y
 ```
+
+Use `--keep-branch` to retain a merged branch or `--delete-branch` to delete
+an unmerged ref explicitly. To delete a checkout containing ignored Assay
+progress or a `vol-*` data directory, name its exact branch with
+`--discard-protected-state BRANCH`; `-y` alone never discards that state. The
+same exact flag is safe to repeat after an interrupted removal if `ciu clean`
+already removed the protected data. The branch survey exposes ignored entries
+and classifies them as protected, regenerable, or unclassified. A second `rm`
+inventory becomes `discarded_state`; entries removed during `ciu clean` are
+listed separately in `removed_by_clean`. Failed removal JSON keeps the full
+current path list in `uncommitted_changes`, while diagnostics show at most 20
+paths and the total count. See the [removal rationale](DESIGN-GUIDE.md#why-worktree-removal-preserves-refs-and-reports-ignored-state-ciu-151153154)
+and [operator examples](CONSUMERS.md#5-remove-and-read-the-removal-document).
 
 For a diverging application tier that shares already-running identity, secret,
 or observability services, use `worktree create --shared-infra ...` exactly as

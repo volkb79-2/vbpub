@@ -4791,7 +4791,11 @@ def _remove_identity_networks(
 
 
 def action_clean_identity(
-    repo_root: Path, instance_id: str, *, yes: bool = False
+    repo_root: Path,
+    instance_id: str,
+    *,
+    yes: bool = False,
+    expected_checkout: str | Path | None = None,
 ) -> int:
     """Remove Docker resources carrying one retired CIU identity.
 
@@ -4831,7 +4835,42 @@ def action_clean_identity(
     )
 
     network_names = {f"{repo_name}-{instance_id}-network"}
-    expected_checkout: str | None = None
+    requested_checkout: str | None = None
+    if expected_checkout is not None:
+        requested_checkout = os.path.normpath(os.fspath(expected_checkout))
+        if not os.path.isabs(requested_checkout):
+            error("--expected-checkout must be an absolute CIU root path")
+            return 2
+        try:
+            current = read_generated_facts(repo_root, allow_repair=False)
+        except WorkspaceEnvError as exc:
+            error(
+                f"cannot verify the primary CIU identity in {repo_root}; "
+                f"refusing expected-checkout cleanup: {exc}"
+            )
+            return 1
+        primary_id = current.get("instance_id")
+        primary_checkout_physical = current.get("physical_repo_root")
+        if not primary_id or not primary_checkout_physical:
+            error(
+                f"cannot verify the primary CIU identity in {repo_root}; "
+                "refusing expected-checkout cleanup"
+            )
+            return 1
+        if instance_id == primary_id:
+            error(
+                f"refusing to clean identity {instance_id}: it is the primary "
+                f"checkout's current identity at {primary_checkout_physical}"
+            )
+            return 1
+        if requested_checkout == os.path.normpath(primary_checkout_physical):
+            error(
+                f"refusing to clean identity {instance_id}: expected checkout "
+                "is the primary CIU root"
+            )
+            return 1
+
+    old_checkout: str | None = None
     try:
         outdated = outdated_generated_identity(repo_root)
     except WorkspaceEnvError as exc:
@@ -4842,10 +4881,14 @@ def action_clean_identity(
         outdated = None
     if outdated and outdated.get("instance_id") == instance_id:
         network_names.add(outdated.get("network", ""))
-        expected_checkout = outdated.get("physical_repo_root") or None
+        old_checkout = outdated.get("physical_repo_root") or None
     network_names.discard("")
 
-    if expected_checkout is None:
+    if requested_checkout is not None:
+        expected_checkout = requested_checkout
+    elif old_checkout is not None:
+        expected_checkout = old_checkout
+    else:
         try:
             current = read_generated_facts(repo_root, allow_repair=False)
         except WorkspaceEnvError:

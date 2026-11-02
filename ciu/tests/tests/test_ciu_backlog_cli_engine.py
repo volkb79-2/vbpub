@@ -133,13 +133,25 @@ def test_clean_identity_cli_routes_and_rejects_mixed_options(monkeypatch, tmp_pa
     calls = []
     monkeypatch.setattr(
         deploy, "action_clean_identity",
-        lambda root, identity, *, yes: calls.append((root, identity, yes)) or 0,
+        lambda root, identity, *, yes, expected_checkout=None: (
+            calls.append((root, identity, yes, expected_checkout)) or 0
+        ),
     )
     monkeypatch.setattr(sys, "argv", ["ciu", "clean", "--identity", "ab12cd", "-y"])
     with pytest.raises(SystemExit) as exc:
         cli.main()
     assert exc.value.code == 0
-    assert calls == [(tmp_path, "ab12cd", True)]
+    assert calls == [(tmp_path, "ab12cd", True, None)]
+
+    expected_checkout = str(tmp_path / "old")
+    monkeypatch.setattr(
+        sys, "argv",
+        ["ciu", "clean", "--identity", "ab12cd", "--expected-checkout", expected_checkout, "-y"],
+    )
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 0
+    assert calls[-1] == (tmp_path, "ab12cd", True, expected_checkout)
 
     monkeypatch.setattr(sys, "argv", ["ciu", "clean", "--identity", "ab12cd", "--profile", "x"])
     with pytest.raises(SystemExit) as exc:

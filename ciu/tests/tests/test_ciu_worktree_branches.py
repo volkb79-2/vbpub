@@ -62,6 +62,29 @@ def _merge_into_main(repo: Path, name: str) -> None:
     assert _git(["merge", "--no-ff", "-m", f"merge {name}", name], repo).returncode == 0
 
 
+def _ignore_worktree_state(repo: Path) -> None:
+    ignore = repo / ".gitignore"
+    previous = ignore.read_text(encoding="utf-8") if ignore.exists() else ""
+    ignore.write_text(
+        previous + "\n**/.assay\nvol-*\n.pytest_cache/\n__pycache__/\nscratch/\n",
+        encoding="utf-8",
+    )
+    nested = repo / "subproject"
+    nested.mkdir(exist_ok=True)
+    (nested / "tracked.txt").write_text("tracked\n", encoding="utf-8")
+    assert _git(["add", ".gitignore", "subproject/tracked.txt"], repo).returncode == 0
+    assert _git(["commit", "-m", "ignore worktree state"], repo).returncode == 0
+
+
+def _merged_checkout(repo: Path, tmp_path: Path, name: str) -> Path:
+    _branch(repo, name)
+    _merge_into_main(repo, name)
+    checkout_name = name.replace("/", "-")
+    checkout = tmp_path / f"checkout-{checkout_name}"
+    assert _git(["worktree", "add", str(checkout), name], repo).returncode == 0
+    return checkout
+
+
 def test_survey_classifies_merged_branch_without_checkout_as_prunable(repo):
     _branch(repo, "feature/wip")           # created first: primary leaves it
     _branch(repo, "fix/merged-no-checkout")
@@ -75,6 +98,452 @@ def test_survey_classifies_merged_branch_without_checkout_as_prunable(repo):
     wip = next(b for b in doc["branches"] if b["name"] == "feature/wip")
     assert wip["ahead"] == 1 and wip["behind"] >= 1 and wip["changed_files"] >= 1
     assert wip["merged"] is False
+
+
+def test_ignored_assay_state_is_visible_and_blocks_pruning(repo, tmp_path):
+    _ignore_worktree_state(repo)
+    checkout = _merged_checkout(repo, tmp_path, "fix/assay-state")
+    state_files = {
+        ".assay/progress-lane.jsonl": b"progress\n",
+        ".assay/state/resume.json": b"resume\n",
+        ".assay/logs/campaign.log": b"log\n",
+        "subproject/.assay/artifacts/evidence.bin": b"evidence\n",
+    }
+    for relpath, content in state_files.items():
+        path = checkout / relpath
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+
+    survey = worktree.branch_hygiene(repo)
+    entry = next(b for b in survey["branches"] if b["name"] == "fix/assay-state")
+    assert _git(["status", "--porcelain"], checkout).stdout == ""
+    assert entry["category"] == "merged-protected"
+    assert entry["ignored_state"] == [
+        {"path": ".assay", "class": "protected", "file_count": 3,
+         "bytes": len(b"progress\nresume\nlog\n"), "capped": False},
+        {"path": "subproject/.assay", "class": "protected", "file_count": 1,
+         "bytes": len(b"evidence\n"), "capped": False},
+    ]
+    assert "safe to remove" not in survey["hint"]
+
+    pruned = worktree.prune_branches(repo, yes=True)
+    assert pruned["removed"] == []
+    assert pruned["skipped"] == [
+        {"branch": "fix/assay-state", "reason": "protected ignored state"}
+    ]
+    assert checkout.is_dir()
+    assert (checkout / ".assay/state/resume.json").read_bytes() == b"resume\n"
+    assert _git(["rev-parse", "fix/assay-state"], repo).returncode == 0
+
+
+def test_populated_vol_directory_is_protected_ignored_state(repo, tmp_path):
+    (repo / ".gitignore").write_text("vol-*/\n", encoding="utf-8")
+    _git(["add", ".gitignore"], repo)
+    _git(["commit", "-m", "ignore stack data dirs"], repo)
+    checkout = _merged_checkout(repo, tmp_path, "fix/volume-data")
+    data = checkout / "vol-postgres" / "base" / "backup.bin"
+    data.parent.mkdir(parents=True)
+    data.write_bytes(b"stack data\n")
+
+    survey = worktree.branch_hygiene(repo)
+    entry = next(b for b in survey["branches"] if b["name"] == "fix/volume-data")
+    assert entry["category"] == "merged-protected"
+    assert entry["ignored_state"] == [
+        {"path": "vol-postgres", "class": "protected", "file_count": 1,
+         "bytes": len(b"stack data\n"), "capped": False}
+    ]
+    result = worktree.prune_branches(repo, yes=True)
+    assert result["removed"] == []
+    assert checkout.is_dir() and data.read_bytes() == b"stack data\n"
+
+
+@pytest.mark.parametrize(
+    ("relative", "contents"),
+    [
+        ("nested/.assay/progress.jsonl", b"progress\n"),
+        ("nested/vol-postgres/base/backup.bin", b"stack data\n"),
+    ],
+)
+def test_protected_descendant_in_ignored_directory_blocks_branch_pruning(
+    repo, tmp_path, relative, contents
+):
+    (repo / ".gitignore").write_text("cache/\n", encoding="utf-8")
+    assert _git(["add", ".gitignore"], repo).returncode == 0
+    assert _git(["commit", "-m", "ignore scratch caches"], repo).returncode == 0
+    checkout = _merged_checkout(repo, tmp_path, "fix/protected-cache-child")
+    state = checkout / "cache" / relative
+    state.parent.mkdir(parents=True)
+    state.write_bytes(contents)
+
+    survey = worktree.branch_hygiene(repo)
+    entry = next(
+        branch for branch in survey["branches"]
+        if branch["name"] == "fix/protected-cache-child"
+    )
+    assert entry["category"] == "merged-protected"
+    assert entry["ignored_state"] == [{
+        "path": "cache", "class": "protected", "file_count": 1,
+        "bytes": len(contents), "capped": False,
+    }]
+
+    result = worktree.prune_branches(repo, yes=True)
+    assert result["removed"] == []
+    assert result["skipped"] == [{
+        "branch": "fix/protected-cache-child",
+        "reason": "protected ignored state",
+    }]
+    assert checkout.is_dir() and state.read_bytes() == contents
+    assert _git(["rev-parse", "fix/protected-cache-child"], repo).returncode == 0
+
+
+def test_ignored_directory_with_capped_walk_is_treated_as_protected(
+    tmp_path, monkeypatch
+):
+    checkout = tmp_path / "checkout"
+    state = checkout / "cache" / "nested" / ".assay" / "progress.jsonl"
+    state.parent.mkdir(parents=True)
+    state.write_text("progress\n", encoding="utf-8")
+    monkeypatch.setattr(
+        worktree, "_git",
+        lambda *_args: subprocess.CompletedProcess([], 0, "cache/\0", ""),
+    )
+    monkeypatch.setattr(worktree, "_IGNORED_STATE_MAX_FILES", 0)
+
+    assert worktree._ignored_state_summary(checkout) == [{
+        "path": "cache", "class": "protected", "file_count": 0,
+        "bytes": 0, "capped": True,
+    }]
+
+
+def test_explicit_protected_state_disposition_removes_only_named_branch(repo, tmp_path):
+    _ignore_worktree_state(repo)
+    first = _merged_checkout(repo, tmp_path, "fix/assay-discard")
+    second = _merged_checkout(repo, tmp_path, "fix/assay-preserve")
+    first_state = first / ".assay" / "state" / "resume.json"
+    second_state = second / ".assay" / "state" / "resume.json"
+    for path, text in ((first_state, "discarded\n"), (second_state, "preserved\n")):
+        path.parent.mkdir(parents=True)
+        path.write_text(text, encoding="utf-8")
+
+    document = worktree.prune_branches(
+        repo, yes=True, discard_protected_state=["fix/assay-discard"]
+    )
+
+    assert document["removed"] == ["fix/assay-discard"]
+    assert document["discarded"] == [
+        {"branch": "fix/assay-discard", "path": ".assay", "class": "protected",
+         "file_count": 1, "bytes": len("discarded\n"), "capped": False}
+    ]
+    assert not first.exists()
+    assert second.is_dir()
+    assert second_state.read_text(encoding="utf-8") == "preserved\n"
+    assert _git(["rev-parse", "fix/assay-preserve"], repo).returncode == 0
+
+
+@pytest.mark.parametrize("bad_names", [("fix/a", "fix/a"), ("all",), ("missing",)])
+def test_prune_rejects_non_exact_or_duplicate_dispositions(repo, bad_names):
+    _branch(repo, "fix/a")
+    _merge_into_main(repo, "fix/a")
+    with pytest.raises(worktree.WorktreeError, match="unique|exact local branch"):
+        worktree.prune_branches(repo, yes=True, discard_protected_state=bad_names)
+
+
+def test_prune_rejects_disposition_for_branch_without_protected_state(repo):
+    _branch(repo, "fix/ordinary")
+    _merge_into_main(repo, "fix/ordinary")
+    with pytest.raises(worktree.WorktreeError, match="nothing is authorized for discard"):
+        worktree.prune_branches(
+            repo, yes=True, discard_protected_state="fix/ordinary"
+        )
+
+
+@pytest.mark.parametrize("change", ["changed", "unknown"])
+def test_prune_rechecks_ignored_state_before_removing_checkout(
+    repo, tmp_path, monkeypatch, change
+):
+    _ignore_worktree_state(repo)
+    checkout = _merged_checkout(repo, tmp_path, f"fix/recheck-{change}")
+    real_summary = worktree._ignored_state_summary
+    calls = 0
+
+    def changed_summary(path):
+        nonlocal calls
+        if Path(path).resolve() != checkout.resolve():
+            return real_summary(path)
+        calls += 1
+        if calls == 1:
+            return []
+        if change == "unknown":
+            raise worktree.WorktreeError("listing unavailable")
+        return [{"path": "scratch", "class": "unclassified", "file_count": 1,
+                 "bytes": 1, "capped": False}]
+
+    monkeypatch.setattr(worktree, "_ignored_state_summary", changed_summary)
+    document = worktree.prune_branches(repo, yes=True)
+    assert document["removed"] == []
+    assert document["failed"][0]["branch"] == f"fix/recheck-{change}"
+    assert checkout.is_dir()
+    expected = "changed since the survey" if change == "changed" else (
+        "could not be enumerated before removal"
+    )
+    assert expected in document["failed"][0]["reason"]
+
+
+def test_regenerable_and_unclassified_ignored_state_is_disclosed_but_prunable(
+    repo, tmp_path
+):
+    _ignore_worktree_state(repo)
+    checkout = _merged_checkout(repo, tmp_path, "fix/cache-and-scratch")
+    cache = checkout / ".pytest_cache" / "v" / "cache"
+    scratch = checkout / "scratch" / "note.txt"
+    cache.mkdir(parents=True)
+    (cache / "nodeids").write_text("[]", encoding="utf-8")
+    scratch.parent.mkdir()
+    scratch.write_text("unknown\n", encoding="utf-8")
+
+    survey = worktree.branch_hygiene(repo)
+    entry = next(b for b in survey["branches"] if b["name"] == "fix/cache-and-scratch")
+    assert entry["category"] == "prunable"
+    assert {item["class"] for item in entry["ignored_state"]} == {
+        "regenerable", "unclassified",
+    }
+
+    document = worktree.prune_branches(repo, yes=True)
+    assert document["removed"] == ["fix/cache-and-scratch"]
+    assert not checkout.exists()
+
+
+def test_ignored_state_enumeration_failure_is_not_reported_as_empty_or_pruned(
+    repo, tmp_path, monkeypatch
+):
+    checkout = _merged_checkout(repo, tmp_path, "fix/unreadable-ignored-state")
+    real_git = worktree._git
+
+    def fail_ignored_listing(args, cwd):
+        if args[:3] == ["ls-files", "--others", "--ignored"]:
+            return subprocess.CompletedProcess(args, 2, "", "index unavailable")
+        return real_git(args, cwd)
+
+    monkeypatch.setattr(worktree, "_git", fail_ignored_listing)
+    survey = worktree.branch_hygiene(repo)
+    entry = next(
+        b for b in survey["branches"] if b["name"] == "fix/unreadable-ignored-state"
+    )
+    assert entry["category"] == "merged-ignored-unknown"
+    assert entry["ignored_state"] is None
+    assert "index unavailable" in entry["ignored_state_error"]
+
+    document = worktree.prune_branches(repo, yes=True)
+    assert document["removed"] == []
+    assert document["skipped"] == [
+        {"branch": "fix/unreadable-ignored-state",
+         "reason": "ignored state could not be enumerated"}
+    ]
+    assert checkout.is_dir()
+    assert _git(["rev-parse", "fix/unreadable-ignored-state"], repo).returncode == 0
+
+
+def test_protected_assay_symlink_is_sized_without_following_target(repo, tmp_path):
+    _ignore_worktree_state(repo)
+    checkout = _merged_checkout(repo, tmp_path, "fix/assay-link")
+    external = tmp_path / "outside"
+    external.mkdir()
+    (external / "large-state").write_bytes(b"outside data\n")
+    (checkout / ".assay").symlink_to(external, target_is_directory=True)
+
+    entry = next(
+        b for b in worktree.branch_hygiene(repo)["branches"]
+        if b["name"] == "fix/assay-link"
+    )
+    assert entry["category"] == "merged-protected"
+    assert entry["ignored_state"] == [
+        {"path": ".assay", "class": "protected", "file_count": 1,
+         "bytes": (checkout / ".assay").lstat().st_size, "capped": False}
+    ]
+
+    document = worktree.prune_branches(
+        repo, yes=True, discard_protected_state=["fix/assay-link"]
+    )
+    assert document["removed"] == ["fix/assay-link"]
+    assert (external / "large-state").read_bytes() == b"outside data\n"
+
+
+def test_ignored_state_group_rejects_unsafe_paths_and_finds_nested_cache():
+    with pytest.raises(worktree.WorktreeError, match="unsafe ignored path"):
+        worktree._ignored_state_group("../outside")
+    assert worktree._ignored_state_group("project/.pytest_cache/v/cache") == (
+        "project/.pytest_cache", "regenerable",
+    )
+    assert worktree._ignored_state_group(
+        "mattermost-server/ciu.worktree-instance.json"
+    ) == ("mattermost-server/ciu.worktree-instance.json", "regenerable")
+
+
+def test_ignored_entry_measurement_caps_files_and_bytes(tmp_path, monkeypatch):
+    tree = tmp_path / "scratch"
+    tree.mkdir()
+    for name in ("one", "two", "three"):
+        (tree / name).write_bytes(b"large")
+
+    monkeypatch.setattr(worktree, "_IGNORED_STATE_MAX_FILES", 2)
+    files, byte_count, capped, size_error, protected = worktree._measure_ignored_entry(
+        tmp_path, "scratch"
+    )
+    assert files < 3 and byte_count <= files * 5 and capped is True
+    assert size_error is None
+    assert protected is False
+
+    monkeypatch.setattr(worktree, "_IGNORED_STATE_MAX_FILES", 10)
+    monkeypatch.setattr(worktree, "_IGNORED_STATE_MAX_BYTES", 3)
+    files, byte_count, capped, size_error, protected = worktree._measure_ignored_entry(
+        tmp_path, "scratch"
+    )
+    assert files == 3 and byte_count == 3 and capped is True
+    assert size_error is None
+    assert protected is False
+
+    single = tmp_path / "single"
+    single.write_bytes(b"x")
+    monkeypatch.setattr(worktree, "_IGNORED_STATE_MAX_FILES", 1)
+    monkeypatch.setattr(worktree, "_IGNORED_STATE_MAX_BYTES", 10)
+    files, byte_count, capped, size_error, protected = worktree._measure_ignored_entry(
+        tmp_path, "single"
+    )
+    assert (files, byte_count, capped, size_error, protected) == (
+        1, 1, False, None, False
+    )
+
+
+def test_ignored_state_summary_enforces_listing_caps_and_preserves_errors(
+    tmp_path, monkeypatch
+):
+    def listing(stdout):
+        return subprocess.CompletedProcess([], 0, stdout, "")
+
+    monkeypatch.setattr(
+        worktree, "_git", lambda *_args: listing("x" * 1_048_577)
+    )
+    with pytest.raises(worktree.WorktreeError, match="1 MiB limit"):
+        worktree._ignored_state_summary(tmp_path)
+
+    monkeypatch.setattr(worktree, "_git", lambda *_args: listing("a\0b\0"))
+    monkeypatch.setattr(worktree, "_IGNORED_STATE_MAX_PATHS", 1)
+    with pytest.raises(worktree.WorktreeError, match="1-path limit"):
+        worktree._ignored_state_summary(tmp_path)
+
+
+def test_ignored_state_summary_rejects_conflicts_and_size_errors(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        worktree, "_git",
+        lambda *_args: subprocess.CompletedProcess([], 0, "a\0b\0", ""),
+    )
+    classes = iter(("regenerable", "unclassified"))
+    monkeypatch.setattr(
+        worktree, "_ignored_state_group", lambda _relative: ("same", next(classes))
+    )
+    monkeypatch.setattr(
+        worktree, "_measure_ignored_entry",
+        lambda *_args: (0, 0, False, None, False),
+    )
+    with pytest.raises(worktree.WorktreeError, match="conflicting classes"):
+        worktree._ignored_state_summary(tmp_path)
+
+    monkeypatch.setattr(
+        worktree, "_ignored_state_group", lambda relative: (relative, "unclassified")
+    )
+    monkeypatch.setattr(
+        worktree, "_measure_ignored_entry",
+        lambda *_args: (0, 0, True, "PermissionError: no access", False),
+    )
+    summary = worktree._ignored_state_summary(tmp_path)
+    assert summary == [
+        {
+            "path": "a", "class": "protected", "file_count": 0,
+            "bytes": 0, "capped": True,
+            "size_error": "PermissionError: no access",
+        },
+        {
+            "path": "b", "class": "protected", "file_count": 0,
+            "bytes": 0, "capped": True,
+            "size_error": "PermissionError: no access",
+        },
+    ]
+
+
+def test_ignored_state_summary_keeps_an_unreadable_group_unsized(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        worktree, "_git",
+        lambda *_args: subprocess.CompletedProcess(
+            [], 0, "vol-data/blocked\0vol-data/readable\0", ""
+        ),
+    )
+    measurements = iter((
+        (0, 0, True, "PermissionError: no access", False),
+        (1, 5, False, None, False),
+    ))
+    monkeypatch.setattr(
+        worktree, "_measure_ignored_entry", lambda *_args: next(measurements)
+    )
+
+    assert worktree._ignored_state_summary(tmp_path) == [{
+        "path": "vol-data", "class": "protected", "file_count": 0,
+        "bytes": 0, "capped": True,
+        "size_error": "PermissionError: no access",
+    }]
+
+
+def test_ignored_summary_protected_member_promotes_its_shared_group(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        worktree, "_git",
+        lambda *_args: subprocess.CompletedProcess(
+            [], 0, "cache/one\0cache/two\0cache/three\0", ""
+        ),
+    )
+    measurements = iter((
+        (1, 2, False, None, False),
+        (1, 3, False, None, True),
+        (1, 4, False, None, False),
+    ))
+    monkeypatch.setattr(
+        worktree, "_measure_ignored_entry", lambda *_args: next(measurements)
+    )
+
+    assert worktree._ignored_state_summary(tmp_path) == [{
+        "path": "cache", "class": "protected", "file_count": 3,
+        "bytes": 9, "capped": False,
+    }]
+
+
+def test_ignored_state_summary_does_not_measure_nested_paths_twice(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        worktree, "_git",
+        lambda *_args: subprocess.CompletedProcess(
+            [], 0, "scratch/\0scratch/nested/\0scratch/nested/file\0", ""
+        ),
+    )
+    measured = []
+
+    def measure(_checkout, relative):
+        measured.append(relative)
+        return 2, 7, False, None, False
+
+    monkeypatch.setattr(worktree, "_measure_ignored_entry", measure)
+
+    summary = worktree._ignored_state_summary(tmp_path)
+
+    assert measured == ["scratch"]
+    assert summary == [{
+        "path": "scratch", "class": "unclassified", "file_count": 2,
+        "bytes": 7, "capped": False,
+    }]
 
 
 def test_prune_removes_only_prunable_and_keeps_unmerged(repo):
@@ -188,8 +657,8 @@ def test_survey_without_yes_has_no_side_effects_and_hints(repo):
 def test_branches_document_is_versioned_envelope(repo):
     _branch(repo, "feature/z")
     doc = worktree.branch_hygiene(repo)
-    # 2 as of ciu-P28: the closed category vocabulary widened (managed-instance)
-    assert doc["schema_version"] == worktree.BRANCHES_SCHEMA_VERSION == 2
+    # 3 widens the category vocabulary for ignored-state outcomes.
+    assert doc["schema_version"] == worktree.BRANCHES_SCHEMA_VERSION == 3
     assert doc["operation"] == "branches"
     assert set(doc["counts"]) == set(worktree.BRANCH_CATEGORIES)
     assert {b["category"] for b in doc["branches"]} <= set(worktree.BRANCH_CATEGORIES)
@@ -365,7 +834,7 @@ def test_cli_branches_json_dispatch(repo, monkeypatch, capsys):
 
     assert cli._worktree(["branches", "--json", "--root-folder", str(repo)]) == 0
     doc = _json.loads(capsys.readouterr().out)
-    assert doc["schema_version"] == 2
+    assert doc["schema_version"] == 3
     assert doc["operation"] == "branches"
     assert doc["status"] == "survey"
     assert {b["name"] for b in doc["branches"]} >= {"main", "fix/merged-cli"}
