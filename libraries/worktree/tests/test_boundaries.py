@@ -728,8 +728,9 @@ def test_remove_workspace_reports_checkout_deletion_failure(repository, tmp_path
 
 
 @pytest.mark.parametrize("registration_result", ["error", "still-present"])
+@pytest.mark.parametrize("observe_phases", [True, False])
 def test_remove_workspace_reports_git_registration_verification_failures(
-    repository, tmp_path, monkeypatch, registration_result
+    repository, tmp_path, monkeypatch, registration_result, observe_phases
 ):
     context = create_workspace(
         repository, tmp_path / "checkout", branch=f"test/registration-{registration_result}",
@@ -751,16 +752,24 @@ def test_remove_workspace_reports_git_registration_verification_failures(
 
     with pytest.raises(WorkspaceError, match=expected):
         remove_workspace(
-            context, on_phase=lambda phase, status: phases.append((phase, status))
+            context,
+            on_phase=(lambda phase, status: phases.append((phase, status)))
+            if observe_phases else None,
         )
-    assert phases[-2:] == [
-        ("git_registration", "running"),
-        ("git_registration", "failed"),
-    ]
+    if observe_phases:
+        assert phases[-2:] == [
+            ("git_registration", "running"),
+            ("git_registration", "failed"),
+        ]
+    else:
+        assert phases == []
     assert context.record_path.is_file()
 
 
-def test_remove_workspace_reports_record_unlink_failure(repository, tmp_path, monkeypatch):
+@pytest.mark.parametrize("observe_phases", [True, False])
+def test_remove_workspace_reports_record_unlink_failure(
+    repository, tmp_path, monkeypatch, observe_phases
+):
     context = create_workspace(
         repository, tmp_path / "checkout", branch="test/record-unlink-failure", purpose="test"
     )
@@ -775,12 +784,17 @@ def test_remove_workspace_reports_record_unlink_failure(repository, tmp_path, mo
     monkeypatch.setattr(Path, "unlink", fail_record_unlink)
     with pytest.raises(PermissionError, match="record locked"):
         remove_workspace(
-            context, on_phase=lambda phase, status: phases.append((phase, status))
+            context,
+            on_phase=(lambda phase, status: phases.append((phase, status)))
+            if observe_phases else None,
         )
-    assert phases[-2:] == [
-        ("shared_record_removal", "running"),
-        ("shared_record_removal", "failed"),
-    ]
+    if observe_phases:
+        assert phases[-2:] == [
+            ("shared_record_removal", "running"),
+            ("shared_record_removal", "failed"),
+        ]
+    else:
+        assert phases == []
 
 
 def test_remove_preflights_git_identity_before_adapter_cleanup(repository, tmp_path, monkeypatch):
