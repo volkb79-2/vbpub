@@ -2037,7 +2037,7 @@ def test_the_postponement_marker_is_keyed_windowed_and_cleared_by_the_full_lane(
     assert 'TRACKING_ID = "B169"' in body
     assert "operator decision 2026-10-27" in body
     assert "extended by operator on 2026-10-31" in body
-    assert "WINDOW = ((10, 0, 0), (10, 3, 0))" in body
+    assert "WINDOW = ((10, 0, 0), (11, 1, 0))" in body
     assert '"result": "provisional"' in body and '"rigor_postponed": "R2"' in body
     assert '"cmru_release_gate_version_bound": transaction_version is not None' in body
     assert "not an R2 pass" in body
