@@ -6,6 +6,49 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [11.0.0] - 2026-11-02
+<!-- cmru: generated -->
+<!-- cmru: source-end=d3cfab031ff73ceacdad639646321c3dcdf7fd8f -->
+
+### Added
+- feat(assay): 11.0.0 prep (B169 window <11.1.0, tolerant procfs ppid scan, schema notes for jobs/attribution) (5a0545e5d)
+- feat(assay): isolate serial mutation windows (412273eaa)
+
+### Fixed
+- fix: close WP8 v17 full-suite gaps (1272121e5)
+- fix: import report summary through public surface (75233fdc4)
+- fix(assay-analysis): honor jobs_max in campaign analysis (254a3403f)
+- fix(assay): close PR1b gate regressions (9eeb3d0df)
+- fix(assay): harden window-host result parsing (8e991cdd8)
+- fix(assay): forward termination through window hosts (ee8e00c51)
+
+### Changed
+- Fix WP8 review findings (960981951)
+- assay: add verdict schema v17 for 11.0.0 (755b0502f)
+- assay: implement parallel native mutation scheduling (37900dc9f)
+
+### Documentation
+- docs(assay,run-gate): known issue for flaky-kill credit (B204, B205); RG-142 (6204dd4d7)
+- docs(assay): file 10.2.0 pre-release review follow-ups B196-B201 (346b6fc67)
+
+### Testing
+- test(assay): postponement window assertion matches <11.1.0 (d3cfab031)
+- test(assay): drop unused signal import (49b023434)
+- test: refresh reviewed dataclass contracts (e12a64886)
+- test: carry v17 canary cause evidence (82d89a662)
+- test: align v16 reuse refusal expectation (6c9f264df)
+- test: refresh B105 exclusion line inventory (c2d3646bf)
+- test: align policy presence fixture with verdict v17 (6700f8fc8)
+- test(assay-analysis): cover PR1b jobs_max lane semantics (12f721e66)
+- test(assay): self lanes declare jobs_max, not jobs (b1b392fd2)
+- test(assay): cover native R2 runtime worker default (8ffbfe704)
+- test(assay): distinguish mutation policy from runtime jobs (fb36b3a54)
+- test(assay): pin immutable limit broker responses (7fa1e22fd)
+- test(assay): pin PR1b gate regressions red first (8e136027d)
+- test(assay): cover PR1a liveness cleanup branches (407972710)
+- test(assay): cover PR1a worker boundary regressions (1e7790358)
+- test(assay): specify isolated mutation window host (fe85f8839)
+
 ### Documentation
 - A flaky suite test can turn a surviving mutant into a recorded kill in any run, serial or parallel (B204, B205). The 56-candidate `--jobs 1` versus `--jobs 3` pilot agreed on 53 candidates; all three disagreements trace to intermittent failures in the project under test, and `--jobs 3` matched isolated serial replays on every candidate. Treat bucket differences between runs as suite flakes unless an isolated serial replay reproduces them.
 
