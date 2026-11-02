@@ -6,7 +6,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
-### Known issues
+### Documentation
 - A flaky suite test can turn a surviving mutant into a recorded kill in any run, serial or parallel (B204, B205). The 56-candidate `--jobs 1` versus `--jobs 3` pilot agreed on 53 candidates; all three disagreements trace to intermittent failures in the project under test, and `--jobs 3` matched isolated serial replays on every candidate. Treat bucket differences between runs as suite flakes unless an isolated serial replay reproduces them.
 
 ### Added
