@@ -6,6 +6,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import select
 import signal
 import socket
 import subprocess
@@ -17,6 +18,8 @@ from pathlib import Path
 import pytest
 from _sockets import read_http_response
 from test_ocr_service import SERVICE_PATH, Fake, Image, Running, fake, needs_pil, png, running, start, svc  # noqa: F401
+
+HOLD = dict(max_connections=1, drain_s=60, socket_timeout_s=60.0, header_deadline_s=60.0)
 
 # ------------------------------------------------------------------ TSV
 
@@ -40,6 +43,65 @@ def _raw(port: int, head: bytes) -> bytes:
         while chunk := sock.recv(4096):
             raw += chunk
     return raw
+
+
+def _read_full_response(sock: socket.socket) -> bytes:
+    """Read exactly one Content-Length framed response while keeping the client socket open."""
+    raw = bytearray()
+    while b"\r\n\r\n" not in raw:
+        chunk = sock.recv(4096)
+        assert chunk, "the server closed before sending response headers"
+        raw.extend(chunk)
+    header, _, body = bytes(raw).partition(b"\r\n\r\n")
+    length = next(
+        int(line.split(b":", 1)[1])
+        for line in header.split(b"\r\n")
+        if line.lower().startswith(b"content-length:")
+    )
+    while len(body) < length:
+        chunk = sock.recv(4096)
+        assert chunk, "the server closed before sending the complete response body"
+        body += chunk
+    return header + b"\r\n\r\n" + body[:length]
+
+
+def _slot_frees_while_client_holds_socket(server: Running, request: bytes, expect: bytes) -> bytes:
+    with socket.create_connection(("127.0.0.1", server.port), timeout=10) as held:
+        held.sendall(request)
+        response = _read_full_response(held)
+        assert response.startswith(expect)
+        deadline = time.monotonic() + 15
+        while (status := server.request("GET", "/health")[0]) != 200:
+            assert status == 503, status
+            assert time.monotonic() < deadline, "the handler kept its slot after replying"
+            time.sleep(0.05)
+        held.settimeout(5)
+        assert held.recv(1) == b""
+        return response
+
+
+def test_success_reply_closes_even_when_the_client_requested_keep_alive(fake) -> None:
+    server = start(fake, **HOLD)
+    try:
+        raw = _slot_frees_while_client_holds_socket(
+            server,
+            b"GET /health HTTP/1.1\r\nHost: x\r\nConnection: keep-alive\r\n\r\n",
+            b"HTTP/1.0 200",
+        )
+        assert raw.startswith(b"HTTP/1.0 200") and b"Connection: close" in raw
+    finally:
+        server.close()
+
+
+def test_error_without_an_upload_body_does_not_start_a_drain(fake) -> None:
+    server = start(fake, **HOLD)
+    try:
+        raw = _slot_frees_while_client_holds_socket(
+            server, b"GET /missing HTTP/1.0\r\n\r\n", b"HTTP/1.0 404"
+        )
+        assert raw.startswith(b"HTTP/1.0 404")
+    finally:
+        server.close()
 
 
 def test_non_ascii_digit_content_length_is_a_411_not_a_500(running) -> None:
@@ -226,15 +288,24 @@ def test_real_server_process_stops_on_sigterm(tmp_path: Path) -> None:
     number = probe.getsockname()[1]
     probe.close()
     env = {**os.environ, "OCR_PORT": str(number), "OCR_BIND": "127.0.0.1", "PYTHONDONTWRITEBYTECODE": "1"}
-    process = subprocess.Popen([sys.executable, str(SERVICE_PATH)], env=env, stdout=subprocess.PIPE, text=True)
+    process = subprocess.Popen(
+        [sys.executable, str(SERVICE_PATH)], env=env, stdout=subprocess.PIPE, text=True
+    )
     try:
         # "listening" is printed only AFTER the handlers are installed, so signalling right away is safe
+        assert process.stdout is not None
+        readable, _, _ = select.select([process.stdout], [], [], 15)
+        assert readable, "the service did not announce readiness within fifteen seconds"
         assert "listening on" in process.stdout.readline()
         process.send_signal(signal.SIGTERM)
         assert process.wait(timeout=10) == 0
     finally:
         if process.poll() is None:
+            # The no-flush mutant leaves the readiness line buffered and the server alive.
             process.kill()
+            process.wait(timeout=5)
+        if process.stdout is not None:
+            process.stdout.close()
 
 
 # ------------------------------------------------------------------ boxes
@@ -317,6 +388,28 @@ def test_scaled_pixel_count_is_capped_before_resizing(fake) -> None:
     assert caught.value.code == "scaled_image_too_large"
 
 
+@needs_pil
+@pytest.mark.parametrize("size", [(4096, 1), (1, 4096)])
+def test_scaled_dimensions_may_equal_the_limit(fake, size: tuple[int, int]) -> None:
+    accepted = start(fake)
+    try:
+        status, body, _ = accepted.request("POST", "/v1/ocr?scale=2", png(*size))
+        assert status == 200, body
+        assert fake.calls()[0]["png"] == [size[0] * 2, size[1] * 2]
+    finally:
+        accepted.close()
+
+
+@needs_pil
+def test_scaled_pixel_count_may_equal_its_limit(fake) -> None:
+    accepted = start(fake, max_scaled_pixels=20_000)
+    try:
+        status, _body, _ = accepted.request("POST", "/v1/ocr?scale=2", png(100, 50))
+        assert status == 200  # 200 x 100 pixels is exactly the configured cap
+    finally:
+        accepted.close()
+
+
 # ------------------------------------------------------------------ stdlib-generated errors are JSON
 
 
@@ -341,7 +434,9 @@ def test_a_bad_request_line_gets_json_not_a_traceback_or_html(running, capfd) ->
     raw = _exchange(running.port, b"GARBAGE\r\n\r\n")
     assert raw.split(b" ", 2)[1] == b"400"
     assert _json_of(raw) == {"error": "bad request", "code": "bad_request"}
-    assert "Traceback" not in capfd.readouterr().err
+    logged = capfd.readouterr().err
+    assert "Traceback" not in logged
+    assert " -  -> 400" in logged  # no parsed method is logged as a dash, not the string None
     assert running.request("GET", "/health")[0] == 200  # the service lives on
 
 
@@ -476,6 +571,68 @@ def test_excess_connections_get_a_json_503_and_slots_come_back(fake) -> None:
         capped.close()
 
 
+def test_header_deadline_timer_is_a_daemon(monkeypatch, fake) -> None:
+    created = []
+
+    class RecordingTimer:
+        def __init__(self, interval, function) -> None:
+            self.interval = interval
+            self.function = function
+            self.daemon = False
+            self.started = False
+            created.append(self)
+
+        def start(self) -> None:
+            self.started = True
+
+        def cancel(self) -> None:
+            pass
+
+    monkeypatch.setattr(svc.threading, "Timer", RecordingTimer)
+    server = start(fake)
+    try:
+        assert server.request("GET", "/health")[0] == 200
+        assert any(timer.started and timer.daemon for timer in created)
+    finally:
+        server.close()
+
+
+def test_server_close_does_not_wait_for_a_stalled_handler(fake) -> None:
+    server = start(fake, socket_timeout_s=30.0, header_deadline_s=30.0)
+    handler_started = threading.Event()
+    original = server.server.RequestHandlerClass.handle_one_request
+
+    def observed_handle_one_request(handler) -> None:
+        handler_started.set()
+        original(handler)
+
+    server.server.RequestHandlerClass.handle_one_request = observed_handle_one_request
+    client = socket.create_connection(("127.0.0.1", server.port), timeout=5)
+    close_done = threading.Event()
+    close_thread = None
+    shutdown_started = False
+    try:
+        assert handler_started.wait(5)
+        server.server.shutdown()
+        shutdown_started = True
+
+        def close_server() -> None:
+            server.server.server_close()
+            close_done.set()
+
+        close_thread = threading.Thread(target=close_server, daemon=True)
+        close_thread.start()
+        assert close_done.wait(5), "server_close waited for a client that had not sent a request"
+    finally:
+        client.close()
+        if not shutdown_started:
+            server.server.shutdown()
+        if close_thread is None:
+            server.server.server_close()
+        else:
+            close_thread.join(timeout=5)
+
+
 # ------------------------------------------------------------------ engine/service edge paths
 
 
@@ -486,6 +643,31 @@ def test_body_deadline_already_expired_is_a_408(fake) -> None:
         assert (status, body["code"]) == (408, "request_timeout")
     finally:
         instant.close()
+
+
+def test_body_deadline_at_exactly_zero_remaining_is_a_408(monkeypatch) -> None:
+    config = svc.Config(body_deadline_s=1)
+    handler_type = svc.make_handler(svc.Service(config, {}))
+    handler = object.__new__(handler_type)
+    reads = []
+    ticks = iter((10.0, 11.0))
+
+    class Connection:
+        def settimeout(self, seconds: float) -> None:
+            pass
+
+    class Reader:
+        def read1(self, size: int) -> bytes:
+            reads.append(size)
+            return b"x"
+
+    handler.connection = Connection()
+    handler.rfile = Reader()
+    monkeypatch.setattr(svc.time, "monotonic", lambda: next(ticks))
+    with pytest.raises(svc.ServiceError) as caught:
+        handler._read_exact(1)
+    assert (caught.value.status, caught.value.code) == (408, "request_timeout")
+    assert reads == []
 
 
 def test_an_oserror_inside_the_engine_drops_the_connection_without_a_reply(fake) -> None:
@@ -514,6 +696,13 @@ def test_version_and_languages_survive_an_engine_that_cannot_start(fake) -> None
     assert engine.available()
     assert engine.version() == "unknown"
     assert engine.languages() == []
+
+
+def test_tesseract_version_is_not_probed_again_after_it_is_cached(fake) -> None:
+    engine = svc.TesseractEngine(str(fake.binary))
+    assert engine.version() == "5.3.4"
+    fake.mode("badversion")
+    assert engine.version() == "5.3.4"
 
 
 def test_languages_are_read_once_and_cached(fake) -> None:
@@ -569,6 +758,116 @@ def test_the_drain_gives_up_after_its_time_budget(fake) -> None:
         assert raw.startswith(b"HTTP/1.0 413")
     finally:
         small.close()
+
+
+def test_rejection_drain_consumes_only_up_to_its_byte_budget(monkeypatch) -> None:
+    config = svc.Config(drain_bytes=1, drain_s=5)
+    handler_type = svc.make_handler(svc.Service(config, {}))
+    handler = object.__new__(handler_type)
+    reads = []
+
+    class Connection:
+        def shutdown(self, _how) -> None:
+            pass
+
+        def settimeout(self, _seconds) -> None:
+            pass
+
+    class Reader:
+        def read1(self, size: int) -> bytes:
+            reads.append(size)
+            return b"x"
+
+    handler.connection = Connection()
+    handler.rfile = Reader()
+    monkeypatch.setattr(svc.time, "monotonic", lambda: 0.0)
+    handler._linger()
+    assert reads == [1]
+
+
+@pytest.mark.parametrize(
+    ("drain_bytes", "clock_values"),
+    [(0, (0.0, 0.0)), (1, (0.0, 1.0))],
+    ids=["no-byte-budget", "deadline-reached"],
+)
+def test_rejection_drain_stops_at_an_exhausted_budget(
+    monkeypatch, drain_bytes: int, clock_values: tuple[float, float]
+) -> None:
+    config = svc.Config(drain_bytes=drain_bytes, drain_s=1)
+    handler_type = svc.make_handler(svc.Service(config, {}))
+    handler = object.__new__(handler_type)
+    reads = []
+    ticks = iter(clock_values)
+
+    class Connection:
+        def shutdown(self, _how) -> None:
+            pass
+
+        def settimeout(self, _seconds) -> None:
+            pass
+
+    class Reader:
+        def read1(self, size: int) -> bytes:
+            reads.append(size)
+            return b""
+
+    handler.connection = Connection()
+    handler.rfile = Reader()
+    monkeypatch.setattr(svc.time, "monotonic", lambda: next(ticks))
+    handler._linger()
+    assert reads == []
+
+
+@pytest.mark.parametrize("declared", ["0", "0" * 18], ids=["zero", "eighteen-zeroes"])
+def test_zero_length_uploads_close_without_waiting_for_a_drain(fake, declared: str) -> None:
+    server = start(fake, **HOLD)
+    try:
+        raw = _slot_frees_while_client_holds_socket(
+            server,
+            b"POST /v1/ocr HTTP/1.0\r\nContent-Length: " + declared.encode("ascii") + b"\r\n\r\n",
+            b"HTTP/1.0 400",
+        )
+        assert raw.startswith(b"HTTP/1.0 400") and b"empty_body" in raw
+    finally:
+        server.close()
+
+
+@pytest.mark.parametrize(
+    ("declared", "payload_size"),
+    [(b"000000000000000001", 1), (b"1024", 1024)],
+    ids=["eighteen-digit-length", "configured-byte-cap"],
+)
+def test_content_length_equal_to_either_cap_reaches_image_validation(
+    fake, declared: bytes, payload_size: int
+) -> None:
+    server = start(fake, max_bytes=1024)
+    try:
+        with socket.create_connection(("127.0.0.1", server.port), timeout=5) as sock:
+            sock.sendall(
+                b"POST /v1/ocr HTTP/1.0\r\nContent-Length: "
+                + declared
+                + b"\r\n\r\n"
+                + b"x" * payload_size
+            )
+            raw = _read_full_response(sock)
+        assert raw.startswith(b"HTTP/1.0 415") and b"unsupported_image" in raw
+    finally:
+        server.close()
+
+
+def test_a_fully_read_body_does_not_trigger_a_drain_after_engine_failure(fake) -> None:
+    fake.mode("fail")
+    server = start(fake, **HOLD)
+    try:
+        body = png()
+        raw = _slot_frees_while_client_holds_socket(
+            server,
+            b"POST /v1/ocr HTTP/1.0\r\nContent-Length: %d\r\n\r\n" % len(body) + body,
+            b"HTTP/1.0 500",
+        )
+        assert raw.startswith(b"HTTP/1.0 500") and b"engine_failed" in raw
+    finally:
+        server.close()
 
 
 # ------------------------------------------------------------------ unscored words

@@ -9,7 +9,9 @@ bottom skips with an explicit reason unless the binary, Pillow and DejaVu Sans M
 
 from __future__ import annotations
 
+import contextlib
 import http.client
+import http.server
 import importlib.util
 import io
 import json
@@ -20,6 +22,7 @@ import stat
 import sys
 import threading
 import time
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 
 import pytest
@@ -31,7 +34,36 @@ _spec = importlib.util.spec_from_file_location("pwmcp_ocr_service", SERVICE_PATH
 assert _spec and _spec.loader
 svc = importlib.util.module_from_spec(_spec)
 sys.modules["pwmcp_ocr_service"] = svc
-_spec.loader.exec_module(svc)
+SERVICE_STARTED_DURING_IMPORT = False
+_serve_forever = http.server.ThreadingHTTPServer.serve_forever
+
+
+def _bounded_import_serve_forever(self, *args: object, **kwargs: object) -> None:
+    global SERVICE_STARTED_DURING_IMPORT
+    SERVICE_STARTED_DURING_IMPORT = True
+
+
+_old_bind = os.environ.get("OCR_BIND")
+_old_port = os.environ.get("OCR_PORT")
+http.server.ThreadingHTTPServer.serve_forever = _bounded_import_serve_forever  # type: ignore[method-assign]
+os.environ["OCR_BIND"] = "127.0.0.1"
+os.environ["OCR_PORT"] = "0"
+try:
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        try:
+            _spec.loader.exec_module(svc)
+        except SystemExit:
+            pass  # the import oracle checks that the patched serve_forever was entered
+finally:
+    http.server.ThreadingHTTPServer.serve_forever = _serve_forever  # type: ignore[method-assign]
+    if _old_bind is None:
+        os.environ.pop("OCR_BIND", None)
+    else:
+        os.environ["OCR_BIND"] = _old_bind
+    if _old_port is None:
+        os.environ.pop("OCR_PORT", None)
+    else:
+        os.environ["OCR_PORT"] = _old_port
 
 
 class _IncompleteEngine(svc.Engine):
@@ -54,6 +86,11 @@ def test_engine_protocol_methods_fail_when_unimplemented(
     engine = _IncompleteEngine()
     with pytest.raises(NotImplementedError, match=f"Engine\\.{method_name}"):
         getattr(engine, method_name)(*args)
+
+
+def test_importing_the_service_does_not_start_a_listener() -> None:
+    assert SERVICE_STARTED_DURING_IMPORT is False
+
 
 try:
     from PIL import Image  # type: ignore[import-not-found]
@@ -211,6 +248,16 @@ def test_parse_tsv_skips_rows_with_non_numeric_fields() -> None:
     assert svc.parse_tsv(row) == []
 
 
+def test_parse_tsv_skips_a_truncated_word_row() -> None:
+    assert svc.parse_tsv("5\t1\t1\t1") == []
+
+
+def test_zero_confidence_is_a_scored_word_not_an_unscored_one() -> None:
+    row = "5\t1\t1\t1\t1\t1\t0\t0\t1\t1\t0\tzero"
+    (word,) = svc.parse_tsv(row)
+    assert word.text == "zero" and word.conf == 0.0
+
+
 def test_parse_tsv_text_may_contain_a_tab() -> None:
     (word,) = svc.parse_tsv("5\t1\t1\t1\t1\t1\t0\t0\t5\t5\t80\ta\tb")
     assert word.text == "a\tb"
@@ -223,9 +270,28 @@ def test_params_defaults() -> None:
     assert svc.parse_params("", REGISTRY) == svc.Params("tesseract", "eng", 6, 1, None, None)
 
 
+def test_empty_query_fields_do_not_change_a_valid_parameter_set() -> None:
+    assert svc.parse_params("engine=tesseract&", REGISTRY) == svc.parse_params("engine=tesseract", REGISTRY)
+
+
+def test_unassigned_query_parameter_is_a_specific_unknown_param_error() -> None:
+    with pytest.raises(svc.ServiceError) as caught:
+        svc.parse_params("lang=eng&compact", REGISTRY)
+    assert (caught.value.status, caught.value.code) == (400, "unknown_param")
+
+
 def test_params_full_set() -> None:
     got = svc.parse_params("engine=glyphgrid&lang=eng%2Bdeu&psm=13&scale=3.0&whitelist=%3Brm+-rf&min_conf=60.5", REGISTRY)
     assert got == svc.Params("glyphgrid", "eng+deu", 13, 3, ";rm -rf", 60.5)
+
+
+def test_confidence_equal_to_threshold_is_not_flagged_low() -> None:
+    engine = svc.UnavailableEngine("tesseract")
+    response = svc.build_response(
+        [svc.Word("exact", 90.0, (0, 0, 5, 1), (0,))], svc.Params(min_conf=90), 5, 1, engine, 0
+    )
+    assert response["low_conf_words"] == 0
+    assert response["words"][0]["low_conf"] is False
 
 
 @pytest.mark.parametrize(
@@ -269,9 +335,25 @@ def test_params_rejected_with_a_specific_code(query: str, code: str) -> None:
 
 
 def test_params_accept_injection_looking_whitelists_as_plain_data() -> None:
-    for text in ['"', "'", "$(id)", "`id`", "a b", "\\", ";|&><*?"]:
+    for text in ['"', "'", "$(id)", "`id`", "a b", "\\", ";|&><*?", "~"]:
         assert svc.parse_params("whitelist=" + __import__("urllib.parse").parse.quote(text), REGISTRY).whitelist == text
     assert svc.parse_params("whitelist=" + "a" * 128, REGISTRY).whitelist == "a" * 128
+
+
+@pytest.mark.parametrize("character", [" ", "~"], ids=["lowest-printable", "highest-printable"])
+def test_whitelist_accepts_both_printable_ascii_boundaries(character: str) -> None:
+    from urllib.parse import quote
+
+    assert svc.parse_params("whitelist=" + quote(character), REGISTRY).whitelist == character
+
+
+def test_service_value_objects_reject_mutation() -> None:
+    config = svc.Config()
+    params = svc.Params()
+    word = svc.Word("screen", 90.0, (0, 0, 6, 1), (0,))
+    for value, field in ((config, "port"), (params, "psm"), (word, "text")):
+        with pytest.raises(FrozenInstanceError):
+            setattr(value, field, "changed")
 
 
 def test_config_from_env() -> None:
@@ -345,6 +427,13 @@ def test_engines_when_tesseract_missing(fake: Fake) -> None:
 def test_version_falls_back_to_unknown(fake: Fake) -> None:
     fake.mode("badversion")
     assert svc.TesseractEngine(str(fake.binary)).version() == "unknown"
+
+
+def test_missing_tesseract_does_not_attempt_a_version_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    engine = svc.TesseractEngine("missing-tesseract")
+    monkeypatch.setattr(engine, "available", lambda: False)
+    monkeypatch.setattr(engine, "_run", lambda *_args, **_kwargs: pytest.fail("an absent binary was executed"))
+    assert engine.version() is None
 
 
 @pytest.mark.parametrize(

@@ -240,6 +240,16 @@ def test_ensure_builder_verifies_registration_and_bootstrap(monkeypatch: pytest.
     assert all(kwargs == {"capture_output": True, "text": True, "check": False} for _, kwargs in calls)
 
 
+def test_plain_builder_log_names_the_selected_builder_or_current_default(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(build_push, "_inspect_builder", lambda config, *, bootstrap: "")
+    build_push.ensure_builder(build_push.BuilderConfig(name="named-builder", endpoint=""))
+    assert "Using Buildx builder named-builder (no managed BuildKit endpoint configured)" in capsys.readouterr().out
+    build_push.ensure_builder(build_push.BuilderConfig(name="", endpoint=""))
+    assert "Using Buildx builder <current> (no managed BuildKit endpoint configured)" in capsys.readouterr().out
+
+
 def test_ensure_builder_refuses_bootstrap_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     responses = iter([
         subprocess.CompletedProcess([], 0, stdout=REMOTE_INSPECT, stderr=""),

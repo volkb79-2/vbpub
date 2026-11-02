@@ -809,8 +809,44 @@ def test_update_client_runtime_requirements_validates_before_writing(
     assert files["client_requirements"].read_text(encoding="utf-8") == original_requirements
 
 
+def test_update_client_runtime_requirements_refuses_noncanonical_dependency_sets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    files = _projection_fixture(tmp_path)
+    _bind_projection_fixture(monkeypatch, files)
+    bad_sets = [
+        ["cli-extended>=0.3.0", "playwright>=1.63.0"],
+        ["cli-extended>=0.3.0", "tomli==2.2.1"],
+        ["cli-extended>=0.3.0", "playwright==1.63.0", "tomli==2.2.1"],
+    ]
+    for dependencies in bad_sets:
+        content = "\n".join(dependencies) + "\n"
+        files["client_requirements"].write_text(content, encoding="utf-8")
+        files["client_project"].write_text(
+            "[project]\ndependencies = " + json.dumps(dependencies) + "\n", encoding="utf-8"
+        )
+        with pytest.raises(SystemExit):
+            resolver.update_client_runtime_requirements(files["client_requirements"], "1.64.0")
+        assert "must declare the dependencies listed" in capsys.readouterr().err
+
+
+def test_check_client_runtime_requirements_rejects_coherent_extra_dependencies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    files = _projection_fixture(tmp_path)
+    _bind_projection_fixture(monkeypatch, files)
+    dependencies = ["cli-extended>=0.3.0", "playwright==1.63.0", "tomli==2.2.1"]
+    files["client_requirements"].write_text("\n".join(dependencies) + "\n", encoding="utf-8")
+    files["client_project"].write_text(
+        "[project]\ndependencies = " + json.dumps(dependencies) + "\n", encoding="utf-8"
+    )
+    with pytest.raises(SystemExit):
+        resolver.check_client_runtime_requirements("1.63.0")
+    assert "must declare one cli-extended minimum followed by" in capsys.readouterr().err
+
+
 def test_check_committed_inputs_refuses_contract_and_lock_drift(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     files = _projection_fixture(tmp_path)
     _bind_projection_fixture(monkeypatch, files)
@@ -860,6 +896,7 @@ def test_check_committed_inputs_refuses_contract_and_lock_drift(
     files["lock"].write_text(json.dumps(lock), encoding="utf-8")
     with pytest.raises(SystemExit):
         resolver.main(["--check"])
+    assert "must contain dependency tables" in capsys.readouterr().err
 
     lock["packages"][""]["dependencies"] = package["dependencies"]
     files["lock"].write_text(json.dumps(lock), encoding="utf-8")
@@ -883,6 +920,23 @@ def test_check_committed_inputs_refuses_contract_and_lock_drift(
     )
     files["override"].unlink()
     resolver.main(["--check"])
+
+
+@pytest.mark.parametrize("release", [None, ""])
+def test_committed_projection_requires_a_nonempty_release_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], release: str | None
+) -> None:
+    files = _projection_fixture(tmp_path)
+    _bind_projection_fixture(monkeypatch, files)
+    contract = json.loads(files["contract"].read_text(encoding="utf-8"))
+    if release is None:
+        contract.pop("release")
+    else:
+        contract["release"] = release
+    files["contract"].write_text(json.dumps(contract), encoding="utf-8")
+    with pytest.raises(SystemExit):
+        resolver.check_committed_inputs()
+    assert "must contain a non-empty release string" in capsys.readouterr().err
 
 
 def test_refresh_rejects_negative_age_window() -> None:
@@ -1113,6 +1167,7 @@ def test_fetch_dockerhub_manifest_digest_uses_a_pull_token_and_validates_the_hea
 @pytest.mark.parametrize(
     ("token_body", "headers"),
     [(b"not json", {}), (json.dumps({}).encode(), {}), (json.dumps({"token": "t"}).encode(), {}),
+     (json.dumps({"token": 17}).encode(), {"Docker-Content-Digest": DEBIAN_DIGEST}),
      (json.dumps({"token": "t"}).encode(), {"Docker-Content-Digest": "sha256:short"}),
      (json.dumps({"token": "t"}).encode(), {"Docker-Content-Digest": 5})],
 )

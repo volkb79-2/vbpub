@@ -566,7 +566,6 @@ def make_handler(service: Service) -> type[BaseHTTPRequestHandler]:
 
         def _send(self, status: int, payload: dict[str, object], *, extra: dict[str, str] | None = None) -> None:
             body = json.dumps(payload).encode("utf-8")
-            self.close_connection = True
             with contextlib.suppress(OSError):  # the client may already be gone (no traceback noise)
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
@@ -574,6 +573,7 @@ def make_handler(service: Service) -> type[BaseHTTPRequestHandler]:
                 self.send_header("Connection", "close")
                 for key, value in (extra or {}).items():
                     self.send_header(key, value)
+                self.close_connection = True  # send_header() also updates this flag for Connection headers
                 # Status line, headers and body leave in ONE write, so a client never sees a headers-only
                 # packet (end_headers() would flush the headers first and write the body separately).
                 self._headers_buffer.append(b"\r\n")
