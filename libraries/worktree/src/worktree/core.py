@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import stat
 import subprocess
 from contextlib import ExitStack, contextmanager
@@ -1098,6 +1099,207 @@ def _lease_expired(lease: Lease | None, now: datetime) -> bool:
     return _parse_timestamp(lease.expires_at_utc or "", label="expires_at_utc") <= now
 
 
+def _permission_denial(message: str) -> bool:
+    """Recognize only explicit filesystem permission failures from Git."""
+    lowered = message.lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "permission denied", "operation not permitted", "eacces", "eperm",
+        )
+    )
+
+
+def _path_present(path: Path) -> bool:
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return False
+    return True
+
+
+def _workspace_admin_snapshot(
+    current: WorkspaceRecord,
+) -> tuple[Path, tuple[int, int], str]:
+    """Capture the linked-worktree admin directory and its reverse link."""
+    admin = canonical_path(_git(current.worktree_path, "rev-parse", "--absolute-git-dir"))
+    admin_root = canonical_path(current.git_common_dir / "worktrees")
+    try:
+        admin.relative_to(admin_root)
+    except ValueError as exc:
+        raise WorkspaceError(
+            f"Git administration path {admin} is outside {admin_root}",
+            category="cleanup-refusal",
+        ) from exc
+    try:
+        info = admin.lstat()
+        if not stat.S_ISDIR(info.st_mode):
+            raise WorkspaceError(
+                f"Git administration path is not a directory: {admin}",
+                category="cleanup-refusal",
+            )
+        reverse_link = (admin / "gitdir").read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise WorkspaceError(
+            f"could not capture Git administration identity for {admin}: {exc}",
+            category="cleanup-refusal",
+        ) from exc
+    expected_link = canonical_path(current.worktree_path / ".git")
+    actual_target = Path(reverse_link)
+    if not actual_target.is_absolute():
+        actual_target = admin / actual_target
+    actual_link = canonical_path(actual_target)
+    if actual_link != expected_link:
+        raise WorkspaceError(
+            f"Git administration reverse link {actual_link} does not identify "
+            f"{expected_link}", category="cleanup-refusal",
+        )
+    return admin, (info.st_dev, info.st_ino), reverse_link
+
+
+def _verify_workspace_admin_snapshot(
+    current: WorkspaceRecord,
+    admin: Path,
+    identity: tuple[int, int],
+    reverse_link: str,
+) -> None:
+    """Refuse a changed/reused admin name before retrying its checkout."""
+    admin_root = canonical_path(current.git_common_dir / "worktrees")
+    try:
+        admin.relative_to(admin_root)
+    except ValueError as exc:
+        raise WorkspaceError(
+            f"Git administration path {admin} moved outside {admin_root}",
+            category="cleanup-refusal",
+        ) from exc
+    if _path_present(admin):
+        try:
+            info = admin.lstat()
+            current_link = (admin / "gitdir").read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise WorkspaceError(
+                f"could not recheck Git administration path {admin}: {exc}",
+                category="cleanup-refusal",
+            ) from exc
+        if (info.st_dev, info.st_ino) != identity:
+            raise WorkspaceError(
+                f"Git administration path {admin} was replaced during removal",
+                category="cleanup-refusal",
+            )
+        current_target = Path(current_link)
+        if not current_target.is_absolute():
+            current_target = admin / current_target
+        expected_target = Path(reverse_link)
+        if not expected_target.is_absolute():
+            expected_target = admin / expected_target
+        if canonical_path(current_target) != canonical_path(expected_target):
+            raise WorkspaceError(
+                f"Git administration reverse link changed during removal: {admin}",
+                category="cleanup-refusal",
+            )
+    entries = list_git_worktrees(current.source_git_root)
+    for entry in entries:
+        if canonical_path(entry.path) == current.worktree_path:
+            if entry.branch not in {current.branch, None}:
+                raise WorkspaceError(
+                    f"Git registration for {current.worktree_path} changed branch "
+                    f"to {entry.branch!r}", category="cleanup-refusal",
+                )
+            continue
+        git_file = entry.path / ".git"
+        try:
+            line = git_file.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if line.startswith("gitdir:"):
+            linked = Path(line.split(":", 1)[1].strip())
+            if not linked.is_absolute():
+                linked = git_file.parent / linked
+            if canonical_path(linked) == admin:
+                raise WorkspaceError(
+                    f"another registered checkout {entry.path} owns Git administration "
+                    f"path {admin}", category="cleanup-refusal",
+                )
+
+
+def _finish_permission_recovery(
+    current: WorkspaceRecord,
+    admin_snapshot: tuple[Path, tuple[int, int], str],
+    checkout_identity: tuple[int, int],
+) -> None:
+    """Finish an already-authorized, permission-specific checkout retry."""
+    admin, identity, reverse_link = admin_snapshot
+    _verify_workspace_admin_snapshot(current, admin, identity, reverse_link)
+    target = current.worktree_path
+    entries = list_git_worktrees(current.source_git_root)
+    matching = [entry for entry in entries if canonical_path(entry.path) == target]
+    if len(matching) > 1:
+        raise WorkspaceError(
+            f"multiple Git registrations claim {target}", category="cleanup-refusal"
+        )
+    if matching:
+        if _path_present(target):
+            info = target.lstat()
+            if (info.st_dev, info.st_ino) != checkout_identity:
+                raise WorkspaceError(
+                    f"checkout path was replaced during removal: {target}",
+                    category="cleanup-refusal",
+                )
+        retry = subprocess.run(
+            ["git", "worktree", "remove", "--force", str(target)],
+            cwd=current.source_git_root, text=True, capture_output=True, check=False,
+        )
+        if retry.returncode:
+            raise WorkspaceError(
+                f"unprivileged Git retry still cannot remove {target} "
+                f"({retry.returncode}): {(retry.stderr or retry.stdout).strip()}",
+                category="checkout-removal",
+            )
+    elif _path_present(target):
+        # Git may have already removed the registration before reporting the
+        # protected descendant. The callback removed only that descendant;
+        # finish the remaining now-accessible checkout without another root
+        # operation.
+        try:
+            info = target.lstat()
+            if (info.st_dev, info.st_ino) != checkout_identity:
+                raise WorkspaceError(
+                    f"residual checkout path was replaced during removal: {target}",
+                    category="cleanup-refusal",
+                )
+            shutil.rmtree(target)
+        except WorkspaceError:
+            raise
+        except OSError as exc:
+            raise WorkspaceError(
+                f"could not finish removing residual checkout {target}: {exc}",
+                category="checkout-removal",
+            ) from exc
+    if _path_present(target):
+        raise WorkspaceError(
+            f"checkout remains after permission retry: {target}",
+            category="checkout-removal",
+        )
+    _verify_workspace_admin_snapshot(current, admin, identity, reverse_link)
+    if _path_present(admin):
+        try:
+            shutil.rmtree(admin)
+        except OSError as exc:
+            raise WorkspaceError(
+                f"could not remove exact Git administration directory {admin}: {exc}",
+                category="checkout-removal",
+            ) from exc
+    remaining = [
+        entry for entry in list_git_worktrees(current.source_git_root)
+        if canonical_path(entry.path) == target
+    ]
+    if remaining:
+        raise WorkspaceError(
+            f"Git still registers removed checkout {target}",
+            category="checkout-removal",
+        )
+
+
 def remove_unrecorded_workspace(
     source_git_root: Path | str,
     target: Path | str,
@@ -1107,6 +1309,9 @@ def remove_unrecorded_workspace(
     force: bool = False,
     delete_branch: bool = True,
     expected_branch_tip: str | None = None,
+    checkout_recovery: Callable[
+        [WorkspaceContext, Path, WorkspaceError], bool
+    ] | None = None,
     on_phase: Callable[[str, str], None] | None = None,
 ) -> None:
     """Remove a legacy linked checkout that predates a shared record.
@@ -1130,6 +1335,7 @@ def remove_unrecorded_workspace(
         force=force,
         delete_branch=delete_branch,
         expected_branch_tip=expected_branch_tip,
+        checkout_recovery=checkout_recovery,
         on_phase=on_phase,
     )
 
@@ -1141,6 +1347,9 @@ def remove_workspace(
     force: bool = False,
     delete_branch: bool = True,
     expected_branch_tip: str | None = None,
+    checkout_recovery: Callable[
+        [WorkspaceContext, Path, WorkspaceError], bool
+    ] | None = None,
     on_phase: Callable[[str, str], None] | None = None,
 ) -> None:
     """Clean adapter resources, then remove the checkout and record.
@@ -1181,6 +1390,20 @@ def remove_workspace(
             )
         if cleanup is not None:
             cleanup(current.context())
+        try:
+            checkout_info = current.worktree_path.lstat()
+        except OSError as exc:
+            raise WorkspaceError(
+                f"could not capture checkout identity before removal: {exc}",
+                category="cleanup-refusal",
+            ) from exc
+        if not stat.S_ISDIR(checkout_info.st_mode):
+            raise WorkspaceError(
+                f"workspace checkout is not a real directory: {current.worktree_path}",
+                category="cleanup-refusal",
+            )
+        checkout_identity = (checkout_info.st_dev, checkout_info.st_ino)
+        admin_snapshot = _workspace_admin_snapshot(current)
         if on_phase is not None:
             on_phase("checkout_deletion", "running")
         result = subprocess.run(
@@ -1188,14 +1411,33 @@ def remove_workspace(
             cwd=current.source_git_root, text=True, capture_output=True, check=False,
         )
         if result.returncode:
-            if on_phase is not None:
-                on_phase("checkout_deletion", "failed")
-            raise WorkspaceError(
+            failure = WorkspaceError(
                 f"git worktree remove failed ({result.returncode}) for "
                 f"{current.worktree_path}; checkout may be partially removed: "
                 f"{(result.stderr or result.stdout).strip()}",
                 category="cleanup-refusal",
             )
+            recovered = False
+            if checkout_recovery is not None and _permission_denial(str(failure)):
+                recovered = checkout_recovery(
+                    current.context(), admin_snapshot[0], failure
+                )
+            if recovered:
+                try:
+                    _finish_permission_recovery(
+                        current, admin_snapshot, checkout_identity
+                    )
+                except WorkspaceError as exc:
+                    if on_phase is not None:
+                        on_phase("checkout_deletion", "failed")
+                    raise WorkspaceError(
+                        f"permission-specific checkout retry failed: {exc}",
+                        category="checkout-removal",
+                    ) from exc
+            else:
+                if on_phase is not None:
+                    on_phase("checkout_deletion", "failed")
+                raise failure
         if on_phase is not None:
             on_phase("checkout_deletion", "complete")
 
@@ -1247,6 +1489,193 @@ def remove_workspace(
             branch_result = subprocess.run(
                 branch_argv,
                 cwd=current.source_git_root, text=True, capture_output=True, check=False,
+            )
+            if branch_result.returncode:
+                if on_phase is not None:
+                    on_phase("branch_removal", "failed")
+                raise WorkspaceError(
+                    f"branch removal for {current.branch} failed "
+                    f"({branch_result.returncode}): "
+                    f"{(branch_result.stderr or branch_result.stdout).strip()}",
+                    category="cleanup-refusal",
+                )
+            if on_phase is not None:
+                on_phase("branch_removal", "deleted")
+        elif on_phase is not None:
+            on_phase(
+                "branch_removal",
+                "skipped-detached" if current.branch == "HEAD" else "kept",
+            )
+
+
+def finish_workspace_removal(
+    record_or_path: WorkspaceRecord | WorkspaceContext | Path | str,
+    *,
+    git_admin_dir: Path | str,
+    expected_admin_identity: tuple[int, int],
+    expected_gitdir_link: str,
+    force: bool = False,
+    delete_branch: bool = True,
+    expected_branch_tip: str | None = None,
+    on_phase: Callable[[str, str], None] | None = None,
+) -> None:
+    """Finish one checkpointed removal after Git already dropped its link.
+
+    Adapters call this only after their durable cleanup checkpoint proves that
+    product cleanup completed. The checkout must already be absent and Git
+    must no longer list it. This removes at most the one captured admin
+    directory after checking its inode and reverse ``gitdir`` link; it never
+    prunes unrelated registrations.
+    """
+    record = _coerce_record(record_or_path)
+    admin = canonical_path(git_admin_dir)
+    with _workspace_lock(record.git_common_dir):
+        current = read_record(record.record_path)
+        if (
+            current.workspace_id != record.workspace_id
+            or current.worktree_path != record.worktree_path
+            or current.git_common_dir != record.git_common_dir
+            or current.branch != record.branch
+            or current.source_git_root != record.source_git_root
+        ):
+            raise WorkspaceError(
+                "workspace record changed before removal recovery",
+                category="stale-record",
+            )
+        source_top, source_common = discover_git_root(current.source_git_root)
+        if source_top != current.source_git_root or source_common != current.git_common_dir:
+            raise WorkspaceError(
+                "workspace source no longer belongs to its recorded Git family",
+                category="cleanup-refusal",
+            )
+        if current.lease and not force and not _lease_expired(current.lease, _utc_now()):
+            raise WorkspaceError(
+                f"workspace {current.workspace_id} has an active lease held by "
+                f"{current.lease.holder!r}", category="lease-held",
+            )
+        if _path_exists(current.worktree_path):
+            raise WorkspaceError(
+                f"removal recovery requires the checkout to be absent: "
+                f"{current.worktree_path}", category="cleanup-refusal",
+            )
+        registered_target = [
+            item for item in list_git_worktrees(current.source_git_root)
+            if canonical_path(item.path) == current.worktree_path
+        ]
+        if len(registered_target) > 1 or any(
+            not item.is_prunable or item.branch not in {current.branch, None}
+            for item in registered_target
+        ):
+            raise WorkspaceError(
+                f"Git has a live or mismatched registration for recovery target "
+                f"{current.worktree_path}",
+                category="cleanup-refusal",
+            )
+        admin_root = canonical_path(current.git_common_dir / "worktrees")
+        try:
+            admin.relative_to(admin_root)
+        except ValueError as exc:
+            raise WorkspaceError(
+                f"captured Git administration path {admin} is outside {admin_root}",
+                category="cleanup-refusal",
+            ) from exc
+        if _path_exists(admin):
+            info = admin.lstat()
+            if (info.st_dev, info.st_ino) != expected_admin_identity:
+                raise WorkspaceError(
+                    f"captured Git administration path {admin} was replaced",
+                    category="cleanup-refusal",
+                )
+            try:
+                reverse_link = (admin / "gitdir").read_text(encoding="utf-8").strip()
+            except OSError as exc:
+                raise WorkspaceError(
+                    f"could not verify Git administration reverse link {admin}: {exc}",
+                    category="cleanup-refusal",
+                ) from exc
+            reverse_link_path = Path(reverse_link)
+            if not reverse_link_path.is_absolute():
+                reverse_link_path = admin / reverse_link_path
+            expected_link_path = Path(expected_gitdir_link)
+            if not expected_link_path.is_absolute():
+                expected_link_path = admin / expected_link_path
+            expected_link = canonical_path(expected_link_path)
+            if canonical_path(reverse_link_path) != expected_link:
+                raise WorkspaceError(
+                    f"Git administration reverse link changed for {admin}",
+                    category="cleanup-refusal",
+                )
+            for entry in list_git_worktrees(current.source_git_root):
+                git_file = entry.path / ".git"
+                try:
+                    line = git_file.read_text(encoding="utf-8").strip()
+                except OSError:
+                    continue
+                if line.startswith("gitdir:"):
+                    linked = Path(line.split(":", 1)[1].strip())
+                    if not linked.is_absolute():
+                        linked = git_file.parent / linked
+                    if canonical_path(linked) == admin:
+                        raise WorkspaceError(
+                            f"registered checkout {entry.path} now owns captured Git "
+                            f"administration path {admin}", category="cleanup-refusal",
+                        )
+            if on_phase is not None:
+                on_phase("git_registration", "running")
+            try:
+                shutil.rmtree(admin)
+            except OSError as exc:
+                if on_phase is not None:
+                    on_phase("git_registration", "failed")
+                raise WorkspaceError(
+                    f"could not remove captured Git administration directory "
+                    f"{admin}: {exc}", category="checkout-removal",
+                ) from exc
+        elif on_phase is not None:
+            on_phase("git_registration", "running")
+        if _path_exists(admin):
+            if on_phase is not None:
+                on_phase("git_registration", "failed")
+            raise WorkspaceError(
+                f"captured Git administration directory remains: {admin}",
+                category="checkout-removal",
+            )
+        if any(
+            canonical_path(item.path) == current.worktree_path
+            for item in list_git_worktrees(current.source_git_root)
+        ):
+            if on_phase is not None:
+                on_phase("git_registration", "failed")
+            raise WorkspaceError(
+                f"Git still registers removed checkout {current.worktree_path}",
+                category="checkout-removal",
+            )
+        if on_phase is not None:
+            on_phase("git_registration", "complete")
+        if on_phase is not None:
+            on_phase("shared_record_removal", "running")
+        try:
+            current.record_path.unlink(missing_ok=True)
+        except OSError:
+            if on_phase is not None:
+                on_phase("shared_record_removal", "failed")
+            raise
+        if on_phase is not None:
+            on_phase("shared_record_removal", "complete")
+        if delete_branch and current.branch != "HEAD":
+            if on_phase is not None:
+                on_phase("branch_removal", "running")
+            branch_argv = (
+                [
+                    "git", "update-ref", "-d", f"refs/heads/{current.branch}",
+                    expected_branch_tip,
+                ]
+                if expected_branch_tip is not None else
+                ["git", "branch", "-D", current.branch]
+            )
+            branch_result = subprocess.run(
+                branch_argv, cwd=current.source_git_root, text=True,
+                capture_output=True, check=False,
             )
             if branch_result.returncode:
                 if on_phase is not None:

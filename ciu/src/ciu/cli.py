@@ -79,7 +79,8 @@ Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
                                 adopt an existing unmanaged linked checkout
     worktree rm LOGICAL [-y] [--keep-branch | --delete-branch]
                              [--discard-protected-state BRANCH]
-                             [--discard-changes BRANCH] [--json]
+                             [--discard-changes BRANCH]
+                             [--root-escalation BRANCH] [--json]
                                 clean, THEN remove; keeps unmerged branch tips by default
                                 and requires exact branch consent for changes or
                                 protected ignored state
@@ -212,7 +213,8 @@ ciu worktree ensure LOGICAL [--base REF] [--profile P1,P2]
                              [--worktree-dir DIR] [--adopt-existing-network] [--json]
 ciu worktree rm LOGICAL [-y] [--force] [--keep-branch | --delete-branch]
                              [--discard-protected-state BRANCH]
-                             [--discard-changes BRANCH] [--json]
+                             [--discard-changes BRANCH]
+                             [--root-escalation BRANCH] [--json]
 ciu worktree list [--json]
 ciu worktree inspect LOGICAL [--json]
 ciu worktree lease LOGICAL (--extend DURATION | --perpetual | --release) [--json]
@@ -255,7 +257,10 @@ ciu worktree exec LOGICAL [--target ALIAS] -- ARGV...
   branch tips by default. It refuses protected `.assay/` or any `vol-*` path
   component without `--discard-protected-state BRANCH`; other ignored paths
   are disclosed and deleted. Use `--keep-branch` to preserve a merged ref or
-  `--delete-branch` to explicitly delete an unmerged one.
+  `--delete-branch` to explicitly delete an unmerged one. After checkout
+  deletion fails with a confirmed permission blocker, `--root-escalation
+  BRANCH` authorizes retry of only the blocked descendants for that exact
+  branch.
 
   Examples (all commands are pasteable):
     ciu worktree create pkg-under-test --base "$(git rev-parse HEAD)" --json
@@ -1938,6 +1943,10 @@ def _worktree(rest: list[str]) -> int:
         "--discard-changes", action="append", default=[], metavar="BRANCH",
         help="explicitly discard tracked or untracked changes for this exact branch",
     )
+    p_rm.add_argument(
+        "--root-escalation", action="append", default=[], metavar="BRANCH",
+        help="after a confirmed permission failure, retry blocked descendants for this exact branch",
+    )
     p_rm.add_argument("--json", action="store_true", default=False)
 
     p_list = sub.add_parser("list", add_help=False)
@@ -2093,8 +2102,10 @@ def _worktree(rest: list[str]) -> int:
             document = wt_mod.remove_document(
                 lifecycle_root, opts.name, yes=opts.yes, force=opts.force,
                 keep_branch=opts.keep_branch, delete_branch=opts.delete_branch,
+                root_escalation=opts.root_escalation,
                 discard_protected_state=opts.discard_protected_state,
                 discard_changes=opts.discard_changes,
+                json_output=opts.json,
             )
             if getattr(opts, "json", False):
                 print(json.dumps(document, sort_keys=True))

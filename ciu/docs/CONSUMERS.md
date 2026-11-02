@@ -329,14 +329,15 @@ only managed instances, each with fresh Git facts.
 
 ```console
 $ ciu worktree rm pkg-under-test --json
-{"schema_version": 1, "operation": "remove", "status": "removed",
+{"schema_version": 2, "operation": "remove", "status": "removed",
  "removed_path": "...", "branch": {"name": "...", "tip": "...",
  "outcome": "kept-unmerged", "reason": "..."},
  "discarded_state": [], "removed_by_clean": [], "discarded_changes": [],
- "phase_report": {"schema_version": 1,
+ "phase_report": {"schema_version": 2,
  "phases": {"target_resolution": "complete", "resource_cleanup": "complete",
  "lease_release": "complete", "lifecycle_preflight": "complete",
- "checkout_deletion": "complete", "git_registration": "complete",
+ "checkout_deletion": "complete", "privileged_retry": "skipped",
+ "git_registration": "complete",
  "branch_removal": "kept-unmerged", "ciu_record_removal": "complete",
  "shared_record_removal": "complete"}}, "instance": {...}}
 ```
@@ -392,16 +393,43 @@ authorizes that loss. Git may list only the parent of a wholly ignored
 directory, so CIU scans below that parent for `.assay` and `vol-*` names. A
 found descendant makes the displayed parent group protected; if the bounded
 scan caps or errors before it can rule out protected content, CIU treats that
-group as protected too. This also blocks `branches -y`. Logs, artifacts,
+group as protected too. Each ignored entry reports `protected_reason`: `name`
+means its own name is protected, `descendant` means a protected name was found
+below it, `walk-capped` means the scan limit was reached, and `unreadable`
+means sizing or enumeration failed. One 100,000-entry walk budget applies to
+the whole checkout; entries left unvisited when it runs out are protected.
+This also blocks `branches -y`. Logs, artifacts,
 evidence and other fully inspected ignored paths remain unclassified: CIU
 lists them in the discard report and removes them. Before cleaning and
 immediately before deletion, CIU inventories ignored state and reports the
 latest list. When cleanup clears the lease, CIU verifies its own record
 contents and allows only that record's expected byte-count change. A group
 that cannot be sized stays in the inventory with `capped: true` and a
-`size_error`; its exact discard flag is required. The permission-specific
-privileged removal retry remains deferred to CIU-134 stage 2, so restore read
-access before retrying an unreadable checkout.
+`size_error`; its exact discard flag is required. For a confirmed Git
+`EACCES`/`EPERM` failure after successful cleanup, `--root-escalation BRANCH`
+authorizes CIU's S6.5 helper to remove only the reported permission-blocking
+descendants for that exact branch. Without the flag, the failure document
+includes a retry command. If Git already dropped its registration, the shared
+workspace record preserves the successful-cleanup and Git identity evidence so
+the same command can resume. CIU rechecks the checkout inode, `.git` link,
+shared record, and captured Git administration identity before each helper
+call; it refuses symlinks and paths outside the real checkout. The helper
+receives the failed target in the shared record's physical path namespace and
+requires a verified loaded cgroup slice. A helper failure reports the paths
+that remain. `--force` does not authorize this retry. When the exact failed
+target is protected ignored state, also pass the separate
+`--discard-protected-state BRANCH` consent.
+
+For example, after checking `privileged_retry.targets` and confirming that the
+checkout's reported branch is `feature/api-retry`, rerun the named checkout
+with that exact branch value:
+
+```console
+ciu worktree rm pkg-under-test -y --root-escalation feature/api-retry
+```
+
+If the failure document printed a retry command, use that command so the
+logical checkout name and exact branch stay tied to the saved checkpoint.
 
 On success, `discarded_state` is the second ignored-state inventory: entries
 still present when the Git checkout is deleted. `removed_by_clean` lists
@@ -420,11 +448,17 @@ and byte size, plus the exact uncommitted paths authorized with
 `--discard-changes`. On a refusal, the complete current path list is in
 `uncommitted_changes`; the diagnostic includes at most the first 20 paths and
 the total count. `discarded_changes` is populated only after checkout deletion
-succeeds. Its `phase_report` has `schema_version: 1` and a fixed `phases`
+succeeds. Its `phase_report` has `schema_version: 2` and a fixed `phases`
 map for target resolution, resource cleanup, lease release, lifecycle
-preflight, checkout deletion, Git registration verification, branch removal,
-CIU record removal, and shared record removal. Successful phase values state
-what ran; skipped and failed values preserve partial progress on error.
+preflight, checkout deletion, privileged retry, Git registration verification,
+branch removal, CIU record removal, and shared record removal. The normal
+`privileged_retry` phase is `skipped`; other values include `offered`,
+`refused-no-blocked-target`, `refused-inventory-capped`, `awaiting-consent`,
+`running`, `failed`, and `complete`. A failed retry includes `remaining` paths
+when the checkout or captured Git admin directory is still present. Successful
+phase values state what ran; skipped and failed values preserve partial
+progress on error. Top-level worktree lifecycle JSON
+uses `schema_version: 2`.
 If failure stops before a planned deletion, branch outcome is `not-deleted`;
 if Git attempts and refuses it, the outcome is `failed` and the reported tip
 is the pre-cleanup tip.
@@ -495,7 +529,10 @@ but has protected ignored state), `merged-ignored-unknown` (ignored-state
 enumeration failed; never prunable), and `unmerged`. Every branch with a
 checkout includes `ignored_state`, including regenerable (`ciu.env`, generated
 facts, common tool caches) and unclassified entries; file and byte counts are
-capped, and symlink targets are not followed. Every branch carries
+capped, and symlink targets are not followed. Protected entries include the
+closed `protected_reason` value `name`, `descendant`, `walk-capped`, or
+`unreadable`. The per-checkout walk stops after 100,000 entries and protects
+the remaining groups. Every branch carries
 `ahead`/`behind`, `changed_files` vs the merge-base, last-commit date, and
 its ciu instance linkage, so a human can rule on the rest. No age heuristic
 exists anywhere in this command: a branch one minute old that is fully merged
@@ -503,8 +540,9 @@ is prunable, a branch six months old that is not is not.
 
 Automation allowlists the capability id `worktree.branches.v1`
 (`ciu capabilities --json`) instead of inferring the feature from SemVer;
-the `--json` document is versioned (`schema_version: 3` — 2 predates the
-ignored-state categories, operations `branches`/`branches-prune`, statuses
+the `--json` document is versioned (`schema_version: 4` — 3 adds the current
+protected-reason field and checkout-wide walk cap, 2 predates the ignored-state categories,
+operations `branches`/`branches-prune`, statuses
 `survey`/`pruned`/`partial`).
 
 ```bash

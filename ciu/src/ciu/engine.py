@@ -424,10 +424,33 @@ def privileged_fs_op(physical_path: Path, op: str, *args: str) -> None:
     *op* is ``"chown"`` or ``"chmod"``; *args* are the tool arguments preceding
     the mounted ``/t`` target (e.g. ``"0:994"`` or ``"775"``).
     """
+    parent = _root_helper_cgroup_parent()
     procutil.docker(
-        ["run", "--rm", "-v", f"{physical_path}:/t", "alpine", op, *args, "/t"],
+        [
+            "run", "--rm", "--cgroup-parent", parent,
+            "-v", f"{physical_path}:/t", "alpine", op, *args, "/t",
+        ],
         check=True,
     )
+
+
+def _root_helper_cgroup_parent() -> str:
+    """Require the configured interactive tier and prove its slice is loaded."""
+    parent = os.environ.get("CGROUP_PARENT_DEV_INTERACTIVE")
+    if not parent:
+        raise RuntimeError(
+            "CGROUP_PARENT_DEV_INTERACTIVE is required for the S6.5 root helper"
+        )
+    if not parent.endswith(".slice") or "/" in parent or any(c.isspace() for c in parent):
+        raise RuntimeError(
+            f"CGROUP_PARENT_DEV_INTERACTIVE is not a slice unit name: {parent!r}"
+        )
+    loaded, note = governance.check_slice_unit(parent)
+    if loaded is not True:
+        raise RuntimeError(
+            f"S6.5 root helper cgroup parent {parent!r} is not verified loaded: {note}"
+        )
+    return parent
 
 
 def privileged_rmtree(physical_path: Path) -> None:
@@ -442,9 +465,32 @@ def privileged_rmtree(physical_path: Path) -> None:
     all of its contents go regardless of owner. Module-level so tests can
     monkeypatch it.
     """
+    if not physical_path.is_absolute() or physical_path.name in {"", ".", ".."}:
+        raise RuntimeError(
+            f"S6.5 root helper requires one absolute child path, got {physical_path}"
+        )
+    parent_path = physical_path.parent
+    # Docker's legacy -v syntax silently creates a missing bind source as an
+    # empty directory. `--mount` fails if the daemon-side parent is absent;
+    # the in-container existence guard then refuses a missing leaf as well.
+    if "," in str(parent_path):
+        raise RuntimeError(
+            "S6.5 root helper cannot safely bind a parent path containing ','"
+        )
+    parent = _root_helper_cgroup_parent()
+    leaf = f"/t/{physical_path.name}"
+    guard_and_remove = (
+        "set -eu; target=$1; "
+        "if [ ! -e \"$target\" ] && [ ! -L \"$target\" ]; then "
+        "echo \"refusing absent bind target: $target\" >&2; exit 42; fi; "
+        "exec rm -rf -- \"$target\""
+    )
     procutil.docker(
-        ["run", "--rm", "-v", f"{physical_path.parent}:/t", "alpine",
-         "rm", "-rf", f"/t/{physical_path.name}"],
+        [
+            "run", "--rm", "--cgroup-parent", parent,
+            "--mount", f"type=bind,src={parent_path},dst=/t",
+            "alpine", "sh", "-c", guard_and_remove, "ciu-rmtree", leaf,
+        ],
         check=True,
     )
 

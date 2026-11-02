@@ -92,7 +92,20 @@ verification, shared-record removal, and branch removal or retention in that
 order. Removing the shared record before the optional compare-and-delete means
 a concurrent branch move cannot strand a record after the checkout is gone;
 the branch remains a valid ref for later use. A failed checkout deletion says
-the checkout may be partially removed. The callback is an observation seam for
-product reports and recovery tooling; it cannot alter policy or retry a failed
-phase. CIU's versioned `rm` report adds its own target resolution, resource
-cleanup, lease release and lifecycle-preflight outcomes.
+the checkout may be partially removed. `on_phase` remains an observation seam
+for product reports. A distinct `checkout_recovery` callback may run only
+after Git explicitly reports a permission denial; the adapter supplies its
+own consent, exact-target checks and recovery operation. The library then
+rechecks the original checkout inode and admin identity before finishing
+removal. It does not turn a locked-worktree or other refusal into permission
+consent.
+
+When Git has already dropped the registration before returning its permission
+error, `finish_workspace_removal` supports a later adapter invocation. It
+requires a durable product checkpoint, an absent checkout, and the original
+admin-directory inode and reverse link. It removes at most that captured
+admin path after checking that no other registered checkout owns it. It never
+prunes other worktrees. CIU uses this to resume from its successful-cleanup
+shared record after the checkout-local identity file has already been deleted.
+CIU's versioned `rm` report adds its own target resolution, resource cleanup,
+lease release, lifecycle-preflight and privileged-retry outcomes.

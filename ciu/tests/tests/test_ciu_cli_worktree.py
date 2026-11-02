@@ -597,7 +597,7 @@ class TestManagedLifecycleDispatch:
         monkeypatch.setattr(wt_mod, "ensure", lambda *_a, **_kw: _ready_record())
         assert cli._worktree(["ensure", "task-one", "--json"]) == 0
         payload = json.loads(capsys.readouterr().out)
-        assert payload["schema_version"] == 1
+        assert payload["schema_version"] == 2
         assert payload["operation"] == "ensure"
         assert payload["status"] == "ready"
         assert payload["instance"]["logical_name"] == "task-one"

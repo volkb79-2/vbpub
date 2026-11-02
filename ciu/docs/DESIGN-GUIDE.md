@@ -1086,17 +1086,24 @@ disposable cache. Protected ignored state requires its own exact branch
 disposition.
 
 The inventory is read once before cleanup and once again just before checkout
-deletion. Cleanup may take minutes, so CIU refuses if a path appears, changes
-class, gains a new sizing error, or grows in file count or bytes; it reports the
-second inventory. Paths removed or shrunk by `ciu clean` are allowed because
-cleaning ignored worktree artifacts is expected. The second inventory becomes
-`discarded_state`, while grouped entries present initially and gone after clean
-are reported separately in `removed_by_clean`. When successful cleanup clears
-the worktree lease, CIU keeps its existing exception for that record's byte
-count while still checking class and file-count growth. A size error leaves an
-unsized entry with `capped: true`, the error reason, and the protected class.
-Stage 1 does not add privileged removal; that permission-specific retry
-remains in CIU-134 stage 2.
+deletion. Cleanup may take minutes, so CIU refuses if a path appears, becomes
+protected, gains a new sizing error, or grows in file count or bytes; it reports
+the second inventory. Paths removed or shrunk by `ciu clean` are allowed
+because cleaning ignored worktree artifacts is expected. A protected entry
+that becomes unclassified or regenerable is a legitimate downgrade: CIU no
+longer needs its earlier reason to preserve that data. Any escalation to
+protected still refuses. The second inventory becomes `discarded_state`, while
+grouped entries present initially and gone after clean are reported separately
+in `removed_by_clean`. When successful cleanup clears the worktree lease, CIU
+keeps its existing exception for that record's byte count while still checking
+class and file-count growth.
+
+The walk has one 100,000-entry budget for the entire checkout. A per-root cap
+could otherwise multiply into roughly one hundred million metadata calls on a
+large ignored tree. When the shared budget runs out, every remaining group is
+protected and reports `protected_reason: walk-capped`. The four reason values
+are `name`, `descendant`, `walk-capped`, and `unreadable`; they tell the user
+why the exact-branch discard consent is being requested.
 
 Both discard consents are tied to the exact checkout branch and are idempotent
 across retries. If clean removed protected state or uncommitted paths before a
@@ -1109,13 +1116,41 @@ removed do not. Refusal messages cap dirty paths at 20 and give the total; the
 failure JSON retains the full `uncommitted_changes` list for inspection.
 
 The `rm --json` phase report records resolution, resource cleanup, lease
-release, lifecycle preflight, checkout deletion, registration verification,
-branch action, and record removal separately. A failed JSON removal still
-prints its failure document to stdout and the diagnostic to stderr. Git can
-partially delete a checkout before returning an error, so the error names that
-possibility. The shared library removes its workspace record before its
-compare-and-delete branch action; a concurrent branch move therefore leaves a
-usable branch without stranding a workspace record.
+release, lifecycle preflight, checkout deletion, privileged retry, registration
+verification, branch action, and record removal separately. A failed JSON
+removal still prints its failure document to stdout and the diagnostic to
+stderr. Git can partially delete a checkout before returning an error, so the
+error names that possibility. The shared library removes its workspace record
+before its compare-and-delete branch action; a concurrent branch move
+therefore leaves a usable branch without stranding a workspace record.
+
+### Permission-specific retry and durable removal evidence
+
+`--root-escalation BRANCH` is a separate, exact-branch consent for a helper
+retry after Git reports `EACCES` or `EPERM`. The ordinary removal never starts
+the helper. Without this flag, the failure report offers a command the operator
+can run after inspecting the exact paths; it does not prompt or infer consent
+from `-y` or `--force`. If protected ignored state is among the failed targets,
+the operator also needs `--discard-protected-state BRANCH` because deleting
+that state and using root permissions are separate decisions.
+
+The adapter persists successful cleanup and the exact Git, checkout, branch,
+admin-directory, and shared-record identities before it asks Git to remove the
+checkout. Git can drop its registration before failing on one protected
+descendant, so the durable shared record is the evidence for a second command.
+The retry rechecks the record, checkout inode, checkout `.git` link, Git
+family, captured admin inode and reverse link, then targets only validated
+descendants under the real checkout root. Symlinks, root targets, escaped
+paths, and changed identities refuse before helper invocation. The helper
+receives the target translated from the shared Git-family physical checkout
+path; deriving it from a nested CIU root would address the wrong host path in a
+Docker-outside-of-Docker layout. Its bind source must exist, and its configured
+cgroup slice must be verified loaded. Git admin cleanup removes only the
+captured identity and checks that no other registered checkout owns it; no
+broad prune can discard unrelated registrations. If the retry fails, the
+report names paths that remain. The neutral library supplies a permission-only
+recovery callback and a separate exact-checkpoint finalizer, while CIU owns
+target discovery, consent and helper policy.
 
 The normative contract is in [SPEC S16.4 and S16.8](SPEC.md#s16--worktree-instances-ciu-worktree),
 with pasteable commands in [CONSUMERS §5 and §5b](CONSUMERS.md#5-remove-and-read-the-removal-document).

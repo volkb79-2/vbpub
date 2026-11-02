@@ -258,14 +258,18 @@ class TestPrivilegedRmtree:
         """S6.5 deletion helper: mount the PARENT, rm -rf the named child so the
         directory itself goes (mounting the dir would leave the mountpoint)."""
         target = tmp_path / "vol-postgres-data"
-        with patch.object(engine.procutil, "docker", return_value=_ok()) as mock_docker:
+        with patch.dict(os.environ, {"CGROUP_PARENT_DEV_INTERACTIVE": "dev-interactive.slice"}), \
+             patch.object(engine.governance, "check_slice_unit", return_value=(True, "loaded")), \
+             patch.object(engine.procutil, "docker", return_value=_ok()) as mock_docker:
             engine.privileged_rmtree(target)
 
         cmd = mock_docker.call_args.args[0]
-        assert cmd[:3] == ["run", "--rm", "-v"]
-        assert cmd[3] == f"{tmp_path}:/t"  # PARENT mounted, not the target itself
-        assert "alpine" in cmd
-        assert cmd[-3:] == ["rm", "-rf", "/t/vol-postgres-data"]  # named child
+        assert cmd[:4] == ["run", "--rm", "--cgroup-parent", "dev-interactive.slice"]
+        assert cmd[4:6] == ["--mount", f"type=bind,src={tmp_path},dst=/t"]
+        assert cmd[6] == "alpine"
+        assert cmd[7:9] == ["sh", "-c"]
+        assert "exec rm -rf -- \"$target\"" in cmd[9]
+        assert cmd[10:] == ["ciu-rmtree", "/t/vol-postgres-data"]
         assert mock_docker.call_args.kwargs.get("check") is True
 
 

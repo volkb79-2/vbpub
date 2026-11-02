@@ -4661,7 +4661,7 @@ becomes visible.
 `ciu worktree inspect LOGICAL --json`, `ciu worktree list --json`, the
 lifecycle verbs (`create`/`ensure`/`adopt`) with `--json`,
 `ciu worktree lease --json` (S16.9) and `ciu worktree rm --json` each emit
-**exactly one JSON document on stdout** (`schema_version: 1`); diagnostics go
+**exactly one JSON document on stdout** (`schema_version: 2`); diagnostics go
 to stderr. The `operation` vocabulary is closed (`create | ensure | adopt |
 inspect | lease | list | remove`) and the `status` vocabulary is closed
 (`allocating | ready | recovery-required | removed | failed`); a `recovery-required`
@@ -4686,18 +4686,24 @@ documents, primary first in git's own order.
 
 Removal captures the validated pre-state (the instance record, when managed)
 and emits success only after resource cleanup and Git removal complete. Every
-`rm --json` result includes `phase_report: {schema_version: 1, phases: {...}}`;
+`rm --json` result includes `phase_report: {schema_version: 2, phases: {...}}`;
 failure results also emit one document on stdout with `status: failed`, include
 the same report, put the diagnostic on stderr, and exit 2. The fixed phase keys are `target_resolution`,
 `resource_cleanup`, `lease_release`, `lifecycle_preflight`, `checkout_deletion`,
-`git_registration`, `branch_removal`, `ciu_record_removal`, and
-`shared_record_removal`. The report distinguishes complete, skipped, failed,
-forced-clean continuation, branch deletion, and branch retention outcomes.
+`privileged_retry`, `git_registration`, `branch_removal`,
+`ciu_record_removal`, and `shared_record_removal`. The report distinguishes
+complete, skipped, offered, refused, failed, forced-clean continuation,
+branch deletion, and branch retention outcomes.
 On a failure before planned branch deletion, branch outcome is `not-deleted`;
 if Git attempted and refused deletion, it is `failed` and the reported tip is
 the pre-cleanup tip.
-Stage 2 of CIU-134 may add a permission-retry phase without changing the
-existing keys or report version.
+`privileged_retry` is `skipped` on ordinary removals. After a confirmed Git
+permission failure, it records `offered`, `refused-no-blocked-target`,
+`refused-inventory-capped`, `awaiting-consent`, `running`, `failed`, or
+`complete` as applicable. The `remaining` list names checkout or captured Git
+admin paths still present when a retry fails.
+The top-level lifecycle document uses schema 2; capability discovery remains
+separately versioned.
 
 Successful removal documents include `ignored_state`, `discarded_state`,
 `removed_by_clean`, and `discarded_changes`. `discarded_state` is the second
@@ -4745,7 +4751,11 @@ report `skipped-detached`.
 
 `rm` and branch pruning expose ignored entries before removal. Each checkout
 reports grouped paths with `class`, bounded `file_count` and `bytes`, and a
-`capped` bit; measurement never follows symlinks. The closed classes are
+`capped` bit; measurement never follows symlinks. A protected entry includes
+the closed `protected_reason` value `name`, `descendant`, `walk-capped`, or
+`unreadable`, in both human and JSON output. The total filesystem walk is
+limited to 100,000 entries per checkout; entries not reached after the shared
+budget expires are protected with `walk-capped`. The closed classes are
 `protected` (any `.assay/` state and any `vol-*` path component, including
 below nested CIU roots), `regenerable`
 (`ciu.env`, `ciu.instance.generated.toml`, the CIU instance record, and
@@ -4757,11 +4767,11 @@ cleanup and again immediately before checkout deletion. `rm` refuses if a path
 appeared, its class changed, a new `size_error` appeared, or its file count or
 byte count grew; paths that disappear or shrink during `ciu clean` are allowed.
 The lease-record byte-count exception remains when cleanup clears its lease;
-class and file-count growth still refuse. An entry that cannot be sized remains
-listed with its class, `capped: true`, and a `size_error` reason. Protected
-unreadable entries still require the exact disposition flag. The
-permission-specific privileged retry remains deferred to CIU-134 stage 2;
-restore read access before retrying removal.
+class and file-count growth still refuse. A protected-to-lower-class downgrade
+is allowed because it reduces the state CIU must preserve; any new protected
+entry or other inventory growth still refuses. An entry that cannot be sized
+remains listed with its class, `capped: true`, and a `size_error` reason.
+Protected unreadable entries still require the exact disposition flag.
 `--discard-protected-state BRANCH` names the exact current branch whose
 protected state may be lost; exactly one branch is accepted, `all` is refused,
 and `-y` does not authorize it. If an earlier attempt's `ciu clean` already
@@ -4770,6 +4780,22 @@ no-op so removal can be retried; a different name still refuses. Unclassified
 entries are reported in the discard list too. Enumeration failure is a
 refusal, never an empty list. If Git fails while deleting the checkout, the
 error says the checkout may be partially removed.
+
+After a confirmed `EACCES`/`EPERM` from Git and successful resource cleanup,
+`--root-escalation BRANCH` is a separate exact-branch consent for the S6.5
+permission retry. CIU inventories actual blockers, skips empty read-only
+directories, refuses an incomplete blocker walk, and offers no retry for other
+Git errors. It passes the helper only paths below the verified checkout root;
+the path is translated from the shared Git-family physical checkout mapping,
+not from a nested CIU root. It rejects symlink escapes and verifies the
+checkout inode, `.git` link, shared record, Git family, and captured Git admin
+inode/reverse link. The helper's bind source must exist and its cgroup slice
+must be verified loaded. The first refusal's JSON includes exact relative
+targets and a retry command. A durable successful-cleanup checkpoint permits
+that command to resume after Git has removed the registration; unrelated
+registrations are never pruned. A failure reports remaining checkout paths.
+If a protected ignored target is removed, the user must also give
+`--discard-protected-state BRANCH`; `--force` is not root consent.
 
 ### S16.5 — Capability discovery (D-009)
 
@@ -4958,8 +4984,8 @@ exits non-zero — a partial success is never silent. **That exit-code decision
 is made once, above the output-format branch, so `--json` and human output
 exit identically** (it previously lived inside the human arm only, and
 `--json` reported exit 0 on the same partial document). The document is
-versioned (`schema_version: 3` — bumped from 2 by the widened category
-vocabulary, the same fail-closed rule S17.3 applies; operation `branches` /
+versioned (`schema_version: 4` — bumped from 3 by the protected-reason field
+and checkout-wide walk cap; operation `branches` /
 `branches-prune`, status `survey`/`pruned`/`partial`) under the S16.4 envelope
 conventions; capability id `worktree.branches.v1`.
 
