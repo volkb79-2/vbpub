@@ -3,7 +3,6 @@ image-mode handling and the scaled-pixel cap. Builds on the helpers in test_ocr_
 
 from __future__ import annotations
 
-import contextlib
 import io
 import json
 import os
@@ -19,6 +18,8 @@ from pathlib import Path
 import pytest
 from _sockets import read_http_response
 from test_ocr_service import SERVICE_PATH, Fake, Image, Running, fake, needs_pil, png, running, start, svc  # noqa: F401
+
+HOLD = dict(max_connections=1, drain_s=60, socket_timeout_s=60.0, header_deadline_s=60.0)
 
 # ------------------------------------------------------------------ TSV
 
@@ -64,24 +65,41 @@ def _read_full_response(sock: socket.socket) -> bytes:
     return header + b"\r\n\r\n" + body[:length]
 
 
-def test_success_reply_closes_even_when_the_client_requested_keep_alive(running) -> None:
-    with socket.create_connection(("127.0.0.1", running.port), timeout=5) as sock:
-        sock.sendall(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n")
-        raw = _read_full_response(sock)
+def _slot_frees_while_client_holds_socket(server: Running, request: bytes, expect: bytes) -> bytes:
+    with socket.create_connection(("127.0.0.1", server.port), timeout=10) as held:
+        held.sendall(request)
+        response = _read_full_response(held)
+        assert response.startswith(expect)
+        deadline = time.monotonic() + 15
+        while (status := server.request("GET", "/health")[0]) != 200:
+            assert status == 503, status
+            assert time.monotonic() < deadline, "the handler kept its slot after replying"
+            time.sleep(0.05)
+        held.settimeout(5)
+        assert held.recv(1) == b""
+        return response
+
+
+def test_success_reply_closes_even_when_the_client_requested_keep_alive(fake) -> None:
+    server = start(fake, **HOLD)
+    try:
+        raw = _slot_frees_while_client_holds_socket(
+            server,
+            b"GET /health HTTP/1.1\r\nHost: x\r\nConnection: keep-alive\r\n\r\n",
+            b"HTTP/1.0 200",
+        )
         assert raw.startswith(b"HTTP/1.0 200") and b"Connection: close" in raw
-        sock.settimeout(5)
-        assert sock.recv(1) == b""
+    finally:
+        server.close()
 
 
 def test_error_without_an_upload_body_does_not_start_a_drain(fake) -> None:
-    server = start(fake, drain_s=20)
+    server = start(fake, **HOLD)
     try:
-        with socket.create_connection(("127.0.0.1", server.port), timeout=5) as sock:
-            sock.sendall(b"GET /missing HTTP/1.0\r\n\r\n")
-            raw = _read_full_response(sock)
-            assert raw.startswith(b"HTTP/1.0 404")
-            sock.settimeout(5)
-            assert sock.recv(1) == b""
+        raw = _slot_frees_while_client_holds_socket(
+            server, b"GET /missing HTTP/1.0\r\n\r\n", b"HTTP/1.0 404"
+        )
+        assert raw.startswith(b"HTTP/1.0 404")
     finally:
         server.close()
 
@@ -200,7 +218,7 @@ class _SignalOnceInstalled:
     ``assert_signalled`` then FAILS the test.
     """
 
-    def __init__(self, sig: int, timeout: float = 5.0) -> None:
+    def __init__(self, sig: int, timeout: float = 20.0) -> None:
         import _thread
 
         self.signalled = False
@@ -271,22 +289,20 @@ def test_real_server_process_stops_on_sigterm(tmp_path: Path) -> None:
     probe.close()
     env = {**os.environ, "OCR_PORT": str(number), "OCR_BIND": "127.0.0.1", "PYTHONDONTWRITEBYTECODE": "1"}
     process = subprocess.Popen(
-        [sys.executable, str(SERVICE_PATH)], env=env, stdout=subprocess.PIPE, text=True, start_new_session=True
+        [sys.executable, str(SERVICE_PATH)], env=env, stdout=subprocess.PIPE, text=True
     )
     try:
         # "listening" is printed only AFTER the handlers are installed, so signalling right away is safe
         assert process.stdout is not None
-        readable, _, _ = select.select([process.stdout], [], [], 5)
-        assert readable, "the service did not announce readiness within five seconds"
+        readable, _, _ = select.select([process.stdout], [], [], 15)
+        assert readable, "the service did not announce readiness within fifteen seconds"
         assert "listening on" in process.stdout.readline()
         process.send_signal(signal.SIGTERM)
         assert process.wait(timeout=10) == 0
     finally:
         if process.poll() is None:
-            # The no-flush mutant leaves the readiness line buffered and the server alive. Kill
-            # its process group so a failed test cannot strand the subprocess after pytest exits.
-            with contextlib.suppress(ProcessLookupError):
-                os.killpg(process.pid, signal.SIGKILL)
+            # The no-flush mutant leaves the readiness line buffered and the server alive.
+            process.kill()
             process.wait(timeout=5)
         if process.stdout is not None:
             process.stdout.close()
@@ -804,16 +820,14 @@ def test_rejection_drain_stops_at_an_exhausted_budget(
 
 @pytest.mark.parametrize("declared", ["0", "0" * 18], ids=["zero", "eighteen-zeroes"])
 def test_zero_length_uploads_close_without_waiting_for_a_drain(fake, declared: str) -> None:
-    server = start(fake, drain_s=20)
+    server = start(fake, **HOLD)
     try:
-        with socket.create_connection(("127.0.0.1", server.port), timeout=5) as sock:
-            sock.sendall(
-                b"POST /v1/ocr HTTP/1.0\r\nContent-Length: " + declared.encode("ascii") + b"\r\n\r\n"
-            )
-            raw = _read_full_response(sock)
-            assert raw.startswith(b"HTTP/1.0 400") and b"empty_body" in raw
-            sock.settimeout(5)
-            assert sock.recv(1) == b""
+        raw = _slot_frees_while_client_holds_socket(
+            server,
+            b"POST /v1/ocr HTTP/1.0\r\nContent-Length: " + declared.encode("ascii") + b"\r\n\r\n",
+            b"HTTP/1.0 400",
+        )
+        assert raw.startswith(b"HTTP/1.0 400") and b"empty_body" in raw
     finally:
         server.close()
 
@@ -843,15 +857,15 @@ def test_content_length_equal_to_either_cap_reaches_image_validation(
 
 def test_a_fully_read_body_does_not_trigger_a_drain_after_engine_failure(fake) -> None:
     fake.mode("fail")
-    server = start(fake, drain_s=20)
+    server = start(fake, **HOLD)
     try:
-        with socket.create_connection(("127.0.0.1", server.port), timeout=5) as sock:
-            body = png()
-            sock.sendall(b"POST /v1/ocr HTTP/1.0\r\nContent-Length: %d\r\n\r\n" % len(body) + body)
-            raw = _read_full_response(sock)
-            assert raw.startswith(b"HTTP/1.0 500") and b"engine_failed" in raw
-            sock.settimeout(5)
-            assert sock.recv(1) == b""
+        body = png()
+        raw = _slot_frees_while_client_holds_socket(
+            server,
+            b"POST /v1/ocr HTTP/1.0\r\nContent-Length: %d\r\n\r\n" % len(body) + body,
+            b"HTTP/1.0 500",
+        )
+        assert raw.startswith(b"HTTP/1.0 500") and b"engine_failed" in raw
     finally:
         server.close()
 

@@ -50,7 +50,10 @@ os.environ["OCR_BIND"] = "127.0.0.1"
 os.environ["OCR_PORT"] = "0"
 try:
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-        _spec.loader.exec_module(svc)
+        try:
+            _spec.loader.exec_module(svc)
+        except SystemExit:
+            pass  # the import oracle checks that the patched serve_forever was entered
 finally:
     http.server.ThreadingHTTPServer.serve_forever = _serve_forever  # type: ignore[method-assign]
     if _old_bind is None:
