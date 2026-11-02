@@ -19,8 +19,9 @@ The package exposes these stable operations:
 | `ensure_workspace` | Reopens a record only when checkout, branch, common directory, and the record's identity input still agree. |
 | `find_workspace` | Looks up a record by its exact absolute stored worktree path, without normalizing, resolving, or probing that checkout path; duplicate matches are malformed state. |
 | `inspect_workspace` | Reads the record and fresh Git facts without repairing state. |
-| `remove_workspace` | Given a handle and cleanup callback, refuses active leases, runs adapter cleanup first, and removes Git state and the record only after cleanup succeeds. `delete_branch=True` is the compatibility default; callers may override it. An optional `expected_branch_tip` makes ref deletion compare-and-delete. `on_phase` reports lifecycle events. |
-| `remove_unrecorded_workspace` | Compatibility-only bridge for a legacy checkout with no shared record; adopts it through the same record/lifecycle path and immediately removes it, forwarding branch-deletion, expected-tip, and phase-callback options. |
+| `remove_workspace` | Given a handle and cleanup callback, refuses active leases, runs adapter cleanup first, and removes Git state and the record only after cleanup succeeds. `delete_branch=True` is the compatibility default; callers may override it. An optional `expected_branch_tip` makes ref deletion compare-and-delete. `on_phase` reports lifecycle events. An optional `checkout_recovery` callback is invoked only when Git reports an explicit permission denial; a successful callback result is revalidated against captured checkout and Git-admin identities before removal continues. |
+| `finish_workspace_removal` | Finalizes one durable adapter retry after Git already dropped the checkout registration; requires the checkout to be absent, accepts only a captured prunable registration, and removes at most the exact Git-admin path whose inode and reverse link still match. It never runs a broad prune. |
+| `remove_unrecorded_workspace` | Compatibility-only bridge for a legacy checkout with no shared record; adopts it through the same record/lifecycle path and immediately removes it, forwarding branch-deletion, expected-tip, recovery-callback, and phase-callback options. |
 | `acquire_lease` / `release_lease` | Writes bounded or perpetual ownership claims under the same family lock. |
 
 `WorkspaceContext` is the typed handoff between the library and an adapter. It
@@ -106,10 +107,21 @@ usable without a stranded workspace record.
 `shared_record_removal`, and `branch_removal`. The callback reports operation
 progress and results; it neither selects policy nor retries failures. A
 product-level phase document can combine these events with its own preflight
-and cleanup phases. A failed adapter callback leaves the checkout and record
-available. A failed checkout deletion reports that the checkout may be
-partially removed. A branch-deletion failure leaves the branch ref and reports
-the pre-cleanup tip; the checkout and shared record have already been removed.
+and cleanup phases. The separate `checkout_recovery(context, git_admin_dir,
+error)` callback is considered only when Git's failure contains an explicit
+permission-denial marker. It returns `True` only after the adapter has handled
+its confirmed targets; the library then checks the original checkout inode
+and admin-directory identity before finishing its own removal. A failed
+adapter callback leaves the record available. A failed checkout deletion says
+that the checkout may be partially removed. A branch-deletion failure leaves
+the branch ref and reports the pre-cleanup tip; the checkout and shared record
+have already been removed.
+
+For a second invocation after Git removed its registration, adapters may call
+`finish_workspace_removal` only from a durable success-cleanup checkpoint. The
+method refuses a live checkout, a changed/reused admin path, a new owner of the
+admin path, or any registration that is not the exact target's prunable entry.
+It deletes no unrelated Git metadata.
 `inspect_workspace()` distinguishes a genuinely missing checkout from an
 inaccessible one; inability to inspect is not reported as absence.
 

@@ -120,9 +120,11 @@ def test_ignored_assay_state_is_visible_and_blocks_pruning(repo, tmp_path):
     assert entry["category"] == "merged-protected"
     assert entry["ignored_state"] == [
         {"path": ".assay", "class": "protected", "file_count": 3,
-         "bytes": len(b"progress\nresume\nlog\n"), "capped": False},
+         "bytes": len(b"progress\nresume\nlog\n"), "capped": False,
+         "protected_reason": "name"},
         {"path": "subproject/.assay", "class": "protected", "file_count": 1,
-         "bytes": len(b"evidence\n"), "capped": False},
+         "bytes": len(b"evidence\n"), "capped": False,
+         "protected_reason": "name"},
     ]
     assert "safe to remove" not in survey["hint"]
 
@@ -150,7 +152,8 @@ def test_populated_vol_directory_is_protected_ignored_state(repo, tmp_path):
     assert entry["category"] == "merged-protected"
     assert entry["ignored_state"] == [
         {"path": "vol-postgres", "class": "protected", "file_count": 1,
-         "bytes": len(b"stack data\n"), "capped": False}
+         "bytes": len(b"stack data\n"), "capped": False,
+         "protected_reason": "name"}
     ]
     result = worktree.prune_branches(repo, yes=True)
     assert result["removed"] == []
@@ -184,6 +187,7 @@ def test_protected_descendant_in_ignored_directory_blocks_branch_pruning(
     assert entry["ignored_state"] == [{
         "path": "cache", "class": "protected", "file_count": 1,
         "bytes": len(contents), "capped": False,
+        "protected_reason": "descendant",
     }]
 
     result = worktree.prune_branches(repo, yes=True)
@@ -211,7 +215,7 @@ def test_ignored_directory_with_capped_walk_is_treated_as_protected(
 
     assert worktree._ignored_state_summary(checkout) == [{
         "path": "cache", "class": "protected", "file_count": 0,
-        "bytes": 0, "capped": True,
+        "bytes": 0, "capped": True, "protected_reason": "walk-capped",
     }]
 
 
@@ -232,7 +236,8 @@ def test_explicit_protected_state_disposition_removes_only_named_branch(repo, tm
     assert document["removed"] == ["fix/assay-discard"]
     assert document["discarded"] == [
         {"branch": "fix/assay-discard", "path": ".assay", "class": "protected",
-         "file_count": 1, "bytes": len("discarded\n"), "capped": False}
+         "file_count": 1, "bytes": len("discarded\n"), "capped": False,
+         "protected_reason": "name"}
     ]
     assert not first.exists()
     assert second.is_dir()
@@ -358,7 +363,8 @@ def test_protected_assay_symlink_is_sized_without_following_target(repo, tmp_pat
     assert entry["category"] == "merged-protected"
     assert entry["ignored_state"] == [
         {"path": ".assay", "class": "protected", "file_count": 1,
-         "bytes": (checkout / ".assay").lstat().st_size, "capped": False}
+         "bytes": (checkout / ".assay").lstat().st_size, "capped": False,
+         "protected_reason": "name"}
     ]
 
     document = worktree.prune_branches(
@@ -463,11 +469,13 @@ def test_ignored_state_summary_rejects_conflicts_and_size_errors(
             "path": "a", "class": "protected", "file_count": 0,
             "bytes": 0, "capped": True,
             "size_error": "PermissionError: no access",
+            "protected_reason": "unreadable",
         },
         {
             "path": "b", "class": "protected", "file_count": 0,
             "bytes": 0, "capped": True,
             "size_error": "PermissionError: no access",
+            "protected_reason": "unreadable",
         },
     ]
 
@@ -493,6 +501,7 @@ def test_ignored_state_summary_keeps_an_unreadable_group_unsized(
         "path": "vol-data", "class": "protected", "file_count": 0,
         "bytes": 0, "capped": True,
         "size_error": "PermissionError: no access",
+        "protected_reason": "unreadable",
     }]
 
 
@@ -517,6 +526,7 @@ def test_ignored_summary_protected_member_promotes_its_shared_group(
     assert worktree._ignored_state_summary(tmp_path) == [{
         "path": "cache", "class": "protected", "file_count": 3,
         "bytes": 9, "capped": False,
+        "protected_reason": "descendant",
     }]
 
 
@@ -531,7 +541,7 @@ def test_ignored_state_summary_does_not_measure_nested_paths_twice(
     )
     measured = []
 
-    def measure(_checkout, relative):
+    def measure(_checkout, relative, _total_budget=None):
         measured.append(relative)
         return 2, 7, False, None, False
 
@@ -544,6 +554,33 @@ def test_ignored_state_summary_does_not_measure_nested_paths_twice(
         "path": "scratch", "class": "unclassified", "file_count": 2,
         "bytes": 7, "capped": False,
     }]
+
+
+def test_ignored_state_summary_applies_one_total_walk_budget_per_checkout(
+    tmp_path, monkeypatch
+):
+    for name in ("first", "second", "third"):
+        directory = tmp_path / name
+        directory.mkdir()
+        (directory / "state").write_bytes(b"x")
+    monkeypatch.setattr(
+        worktree, "_git",
+        lambda *_args: subprocess.CompletedProcess(
+            [], 0, "first/\0second/\0third/\0", ""
+        ),
+    )
+    monkeypatch.setattr(worktree, "_IGNORED_STATE_MAX_TOTAL_ENTRIES", 3)
+
+    summary = worktree._ignored_state_summary(tmp_path)
+
+    assert summary == [
+        {"path": "first", "class": "unclassified", "file_count": 1,
+         "bytes": 1, "capped": False},
+        {"path": "second", "class": "protected", "file_count": 0,
+         "bytes": 0, "capped": True, "protected_reason": "walk-capped"},
+        {"path": "third", "class": "protected", "file_count": 0,
+         "bytes": 0, "capped": True, "protected_reason": "walk-capped"},
+    ]
 
 
 def test_prune_removes_only_prunable_and_keeps_unmerged(repo):
@@ -658,7 +695,7 @@ def test_branches_document_is_versioned_envelope(repo):
     _branch(repo, "feature/z")
     doc = worktree.branch_hygiene(repo)
     # 3 widens the category vocabulary for ignored-state outcomes.
-    assert doc["schema_version"] == worktree.BRANCHES_SCHEMA_VERSION == 3
+    assert doc["schema_version"] == worktree.BRANCHES_SCHEMA_VERSION == 4
     assert doc["operation"] == "branches"
     assert set(doc["counts"]) == set(worktree.BRANCH_CATEGORIES)
     assert {b["category"] for b in doc["branches"]} <= set(worktree.BRANCH_CATEGORIES)
@@ -834,7 +871,7 @@ def test_cli_branches_json_dispatch(repo, monkeypatch, capsys):
 
     assert cli._worktree(["branches", "--json", "--root-folder", str(repo)]) == 0
     doc = _json.loads(capsys.readouterr().out)
-    assert doc["schema_version"] == 3
+    assert doc["schema_version"] == 4
     assert doc["operation"] == "branches"
     assert doc["status"] == "survey"
     assert {b["name"] for b in doc["branches"]} >= {"main", "fix/merged-cli"}
