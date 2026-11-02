@@ -9,13 +9,38 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [24.3.0] - 2026-11-02
+<!-- cmru: generated -->
+<!-- cmru: source-end=b0516afeb5ee33fd095fe827d0c8429d6a02432f -->
+
+### Added
+- feat(run-gate): enable native R2 jobs (36d7b97b5)
+
+### Fixed
+- fix(run-gate): address PR3 capacity review (5e1a2aae2)
+
+### Changed
+- Merge assay WP8 (verdict v17; gates green, Opus reviewed) (00b33b586)
+- assay: add verdict schema v17 for 11.0.0 (755b0502f)
+
+### Documentation
+- docs(assay,run-gate): known issue for flaky-kill credit (B204, B205); RG-142 (6204dd4d7)
+- docs(run-gate): file RG-140 (stall test leaked child) and RG-141 (idle exec-lock status on bind-mounted scratch) (ec555c502)
+- docs(run-gate): file RG-139 (R2 closeout omits --coverage) (e03ef432d)
+
+### Testing
+- test(run-gate): specify native R2 jobs selection (03b5bd194)
+- test(run-gate): tester-unified base package set includes tmux (5fd78a8e4)
+
+<!-- cmru: pending release notes begin -->
 ### Added
 - Opt native R2 Assay lanes into `jobs = N|"auto"` or `run-gate --jobs N|auto`; auto uses only enforced lane CPU/memory caps, candidate RAM declared or measured at p95, remaining candidates, Assay `jobs_max`, and Assay's cheap-clone requirement. Run-Gate records the selected count, candidate RAM source, and p95 samples in evidence/history. `--jobs` is sent only to Assay 11.0.0 or newer; an older or unknown judge remains serial unless an explicit parallel request is refused.
 
 ### Changed
 - Convert IOBench's registered R2 lane to native Assay dispatch with `jobs = "auto"`; replace the legacy `assay.toml` `jobs = 1` alias with `jobs_max = 4`. This changes the campaign state directory and progress filename; an in-progress campaign using the former command-lane paths does not carry over.
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [24.2.0] - 2026-10-31
 <!-- cmru: generated -->
