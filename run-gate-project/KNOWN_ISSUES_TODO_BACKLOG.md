@@ -6959,3 +6959,22 @@ is present.
 
 **Pointers.** `run_gate.py` closeout argv construction near lines 11508-11549;
 analyzer contract in `assay/analysis/src/assay_analysis/campaign.py`.
+
+## RG-140 — the stall test leaks a direct child process on a loaded host
+
+`tests/test_run_gate.py` (the lane-stall case that ends with `assert _direct_child_pids() == []`) failed once in the `selftest`
+lane with one remaining direct child of the pytest process, and passed on the immediate rerun with identical source. The stalled
+fake `docker logs -f` child is not always reaped by the time the assertion runs.
+
+**Expected.** The stall path waits for (or kills and reaps) every child it started before returning, so the assertion is
+deterministic; the test polls for the children to disappear with a generous bound instead of sampling once.
+
+## RG-141 — `status --json` reports a held exec lock as `idle` on a runner with a bind-mounted scratch directory
+
+`test_status_json_reads_internal_exec_lock_inflight_and_admission` holds the exec-lock file with `flock` and expects
+`status --json` to report `state == "running"`. On a Btrfs CoW runner whose lane containers bind-mount an ext4 host scratch
+directory at `/tmp`, the same test reports `idle` in both pilot arms, while it passes in the devcontainer's tester-unified.
+
+**Expected.** Either the lock status resolves the lock file through the same physical path the lane holds, or the test states the
+layout it needs and skips with a reason when the lock directory is not shared with the status reader. Root cause to be confirmed
+on that runner (mount layout versus `flock` semantics).
