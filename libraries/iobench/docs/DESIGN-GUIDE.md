@@ -168,6 +168,22 @@ consumers get a cmru-released wheel with its sha256 (never PyPI; no zipapp: it c
 | M3 | `iocost_plausibility.py`'s `rotational` rule retired |
 | M4 | `iocost_coef_gen.py`, its patches and `.sha256` flow deleted |
 
+### Registered repository gate
+
+The R2 lane is a native Assay lane in `run-gate.toml`, rather than a command
+that assembles `python -m assay.cli run` itself. Native dispatch lets
+Run-Gate apply and record its R2 `jobs` policy, while Assay owns the
+verdict, progress stream and candidate state contract. Run-Gate moves
+resumable state under the checkout's ignored `.run-gate/` area so retries
+through ephemeral worktrees retain the same campaign state.
+
+The Assay lane declares `jobs_max = 4`; Run-Gate's `jobs = "auto"` policy
+uses measured candidate RSS when available, otherwise a conservative 1 GiB
+estimate, and stays at one worker unless Assay's prepared workspace confirms
+its supported btrfs cheap clone. The old Assay `jobs = 1` key was a legacy
+alias for `jobs_max`, not a per-run worker choice, so leaving it in place
+would have capped the opt-in policy at one.
+
 ## 9. Safety design
 
 * **Target guard (finding P-01)**: a target is usable only with iobench's own marker (the last 1 MiB), written by `iobench target init`, which refuses a mounted (checked in the caller's **and** PID 1's mount namespace), swap, root-disk or signature-bearing device unless `--i-own-this-device` is given together with the matching `--expect-size` and `--expect-partuuid` (or `--expect-serial`); a device with neither identity is refused. The marker is re-verified before **every** writing stage (fio, discard, fill) in every profile; `--installer` only waives the live-host refusals. iobench never runs `mkfs`, `mount`, `umount` or a bare `wipefs` (no builder exists).

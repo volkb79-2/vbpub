@@ -4,6 +4,9 @@ All notable changes to iobench are recorded here. Entries marked `cmru: generate
 
 ## [Unreleased]
 
+### Changed
+- Run the registered R2 lane through native Run-Gate Assay dispatch with `jobs = "auto"`; raise the Assay lane ceiling from the legacy `jobs = 1` alias to canonical `jobs_max = 4`.
+
 ### Fixed
 - Keep the Assay whole-target lane measurable: exclude the docstring-only package initializer, let pytest finish the coverage run after a failure, and reap both detached subprocesses created by the bounded-reaping test.
 

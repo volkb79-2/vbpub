@@ -1138,8 +1138,9 @@ LANE_KEYS = {"kind", "environment", "argv", "assay_lane", "assay_command",
              "pins", "clean_tree", "budget", "stall_timeout", "memory",
              "description", "required_env", "artifacts", "resources",
              "profile", "exit_map", "accepts_args", "lanes", "stop_on",
-             "resource_observer"}
+             "resource_observer", "jobs"}
 PIN_KEYS = {"sha256", "version"}
+R2_CONSERVATIVE_CANDIDATE_RAM_BYTES = 1024 * 1024 * 1024
 
 
 def _validate_budget(value: object, where: str, key: str = "budget") -> None:
@@ -1233,6 +1234,14 @@ def _validate_lane(name: str, table: dict, where: str) -> None:
             fail(f"{where} [lanes.{name}]: sequence does not accept "
                  f"{', '.join(invalid)}; declare those settings on its members")
         return
+    if "jobs" in table:
+        jobs = table["jobs"]
+        if kind != "assay":
+            fail(f"{where} [lanes.{name}]: 'jobs' is supported only for "
+                 "native R2 assay lanes")
+        if not (type(jobs) is int and jobs > 0) and jobs != "auto":
+            fail(f"{where} [lanes.{name}]: 'jobs' must be a positive "
+                 f"integer or 'auto' (got {jobs!r})")
     if "lanes" in table or "stop_on" in table:
         fail(f"{where} [lanes.{name}]: 'lanes' and 'stop_on' are supported "
              "only for kind = \"sequence\"")
@@ -4626,6 +4635,94 @@ def parse_size_bytes(value: str) -> int:
     return int(m.group(1)) * _SIZE_MULT[m.group(2).lower()]
 
 
+def parse_r2_jobs_cli(value: str | None) -> int | str | None:
+    """Parse the public `--jobs N|auto` request without accepting TOML forms."""
+    if value is None:
+        return None
+    if value == "auto":
+        return value
+    if not re.fullmatch(r"[1-9][0-9]*", value):
+        fail("--jobs must be a positive integer or 'auto' "
+             f"(got {value!r})")
+    return int(value)
+
+
+def select_r2_jobs(request: int | str | None, *, jobs_max: int,
+                   cpu_cap: int | None = None,
+                   memory_budget_bytes: int | None = None,
+                   candidate_ram_bytes: int | None = None,
+                   candidate_ram_samples: int = 0,
+                   candidates_remaining: int | None = None,
+                   cheap_clone: bool | None = None,
+                   cheap_clone_backend: str | None = None,
+                   source: str | None = None) -> dict:
+    """Select and validate the worker count for one native R2 lane.
+
+    The `auto` formula is intentionally owned by Run-Gate: Assay only
+    validates the explicit result against `jobs_max`. Missing or unusable
+    caps are represented by the inputs supplied by the caller, which clamps
+    an auto request to one worker rather than inventing capacity.
+    """
+    if type(jobs_max) is not int or jobs_max < 1:
+        fail(f"Assay inventory has invalid mutation.jobs_max {jobs_max!r}")
+    if type(candidate_ram_samples) is not int or candidate_ram_samples < 0:
+        fail("candidate RAM history sample count must be a non-negative integer")
+
+    if request is None:
+        jobs = 1
+        mode = "default"
+        request_source = "default"
+    elif request == "auto":
+        mode = "auto"
+        request_source = source or "auto"
+        inputs = (cpu_cap, memory_budget_bytes, candidate_ram_bytes,
+                  candidates_remaining)
+        if any(type(value) is not int for value in inputs) \
+                or cpu_cap < 1 or memory_budget_bytes < 0 \
+                or candidate_ram_bytes < 1 or candidates_remaining < 0:
+            fail("automatic R2 jobs selection requires integer CPU, memory, "
+                 "candidate RAM and remaining-candidate inputs")
+        memory_workers = max(1, memory_budget_bytes // candidate_ram_bytes)
+        remaining_workers = max(1, candidates_remaining)
+        jobs = min(jobs_max, cpu_cap, memory_workers, remaining_workers)
+        if cheap_clone is not True:
+            jobs = 1
+    elif type(request) is int and request > 0:
+        jobs = request
+        mode = "explicit"
+        request_source = source or "explicit"
+        if jobs > jobs_max:
+            fail(f"--jobs {jobs} exceeds Assay lane mutation.jobs_max "
+                 f"({jobs_max})")
+        if jobs > 1 and cheap_clone is not True:
+            backend = (f" (detected backend {cheap_clone_backend!r})"
+                       if cheap_clone_backend else "")
+            fail(f"--jobs {jobs} requires a cheap-clone workspace; Assay "
+                 f"could not confirm the supported btrfs CoW backend{backend}. "
+                 "Use --jobs 1 or configure the supported Cowtree btrfs area")
+    else:
+        fail("R2 jobs request must be a positive integer, 'auto', or unset "
+             f"(got {request!r})")
+
+    return {
+        "jobs": jobs,
+        "mode": mode,
+        "source": request_source,
+        "request_source": source,
+        "requested": request,
+        "jobs_max": jobs_max,
+        "cpu_cap": cpu_cap,
+        "memory_budget_bytes": memory_budget_bytes,
+        "candidate_ram_bytes": candidate_ram_bytes,
+        "candidate_ram_samples": candidate_ram_samples,
+        "candidates_remaining": candidates_remaining,
+        "cheap_clone": cheap_clone,
+        "cheap_clone_backend": cheap_clone_backend,
+        # The serial default leaves Assay's existing default in control.
+        "forward": request is not None,
+    }
+
+
 def _fmt_mb(n: int) -> str:
     return f"{n / 1024 ** 2:.0f}MB"
 
@@ -5046,6 +5143,14 @@ def finish_run_record(record: dict, *, exit_code: int | None = None,
     # facts used to judge and archive that run, not public history fields.
     record.pop("_verdict_path", None)
     record.pop("_progress_path", None)
+    r2_progress_path = record.pop("_r2_progress_path", None)
+    if isinstance(r2_progress_path, str) and isinstance(
+            record.get("r2_jobs"), dict):
+        average, samples = assay_progress_candidate_ram(
+            Path(r2_progress_path), commit=record.get("commit"))
+        if average is not None and samples:
+            record["r2_candidate_ram_avg_bytes"] = average
+            record["r2_candidate_ram_samples"] = samples
     record.pop("_assay_identity_mode", None)
     record.setdefault("history_eligible", False)
     # RG-35 (RW-3): a re-attached or collected run is ONE run, and its
@@ -6232,6 +6337,24 @@ def adopt_inflight_start(run_record: dict, pending: dict) -> None:
     if isinstance(epoch, (int, float)) and not isinstance(epoch, bool):
         run_record.pop("_started_monotonic", None)
         run_record["_started_epoch"] = epoch
+
+
+def adopt_inflight_r2_jobs(lane: dict, run_record: dict | None,
+                           pending: dict) -> None:
+    """Bind the original worker decision when a container is re-attached."""
+    recorded_jobs = pending.get("r2_jobs")
+    if isinstance(recorded_jobs, dict):
+        lane["_r2_jobs_selection"] = recorded_jobs
+        if run_record is not None:
+            run_record["r2_jobs"] = recorded_jobs
+            progress = pending.get("progress")
+            if isinstance(progress, str) and progress:
+                run_record["_r2_progress_path"] = progress
+    else:
+        lane.pop("_r2_jobs_selection", None)
+        if run_record is not None:
+            run_record.pop("r2_jobs", None)
+            run_record.pop("_r2_progress_path", None)
 
 
 def record_lost_run(project_dir: Path, worktree: Path, repo: Path,
@@ -7908,9 +8031,12 @@ def build_env_probe_argv(docker: str, env: dict, env_name: str, repo: Path,
                          resolved_container_name: str | None = None,
                          resource_settings: dict | None = None
                          ) -> list[str]:
-    """The ONE way run-gate runs a short, synchronous, read-only command
-    INSIDE a lane's environment (RG-25's `assay lanes --json` inventory and
-    its `command -v` fitness checks; RG-26's base_source query).
+    """The ONE way run-gate runs a short, synchronous probe command INSIDE
+    a lane's environment (RG-25's `assay lanes --json` inventory and its
+    `command -v` fitness checks; RG-26's base_source query; PR3's R2 capacity
+    check). The existing inventory, fitness and base probes are read-only.
+    PR3's Cowtree capability check may create Cowtree-owned metadata and
+    temporary probe files under the configured MDT_COW_ROOT.
 
     It reuses the SAME reach-an-environment machinery the lane runners use —
     `resolve_container_name()` for exec mode, `physical_path()` +
@@ -9134,6 +9260,8 @@ def plan_comparison_base(lane: dict, lane_name: str, base_flag: str | None,
     entry, assay_version, why = assay_inventory_entry(
         lane, env, env_name, repo, worktree, env_source, project_dir)
     if entry is None:
+        lane["_assay_inventory_error"] = why or "Assay lane inventory is unavailable"
+        lane.pop("_assay_inventory", None)
         if lane.get("_selective_assay"):
             fail(f"selective assay flags for lane {lane_name!r} require an "
                  f"inventory proving that it declares R2: {why}")
@@ -9146,6 +9274,7 @@ def plan_comparison_base(lane: dict, lane_name: str, base_flag: str | None,
         # Without --base nothing changes: an older judge keeps working exactly
         # as it did, and assay refuses at run time if the lane needed one.
         return None, ""
+    lane.pop("_assay_inventory_error", None)
     lane["_assay_inventory"] = {"entry": entry,
                                 "assay_version": assay_version}
     if lane.get("_selective_assay"):
@@ -10228,6 +10357,442 @@ def preflight_assay_pins(lane: dict, lane_name: str,
 
 def assay_progress_rel(assay_lane: str) -> str:
     return f".assay/progress-{assay_lane}.jsonl"
+
+
+def _assay_progress_segments(path: Path) -> list[dict]:
+    """Read regular Assay progress files without following links or FIFOs."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) \
+        | getattr(os, "O_NONBLOCK", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError:
+        return []
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return []
+        with os.fdopen(fd, "r", encoding="utf-8", errors="replace") as stream:
+            fd = -1
+            segments = []
+            current = None
+            for line in stream:
+                try:
+                    event = json.loads(line)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                if event.get("event") == "run":
+                    current = {"header": event, "events": []}
+                    segments.append(current)
+                elif current is not None:
+                    current["events"].append(event)
+            return segments
+    except (OSError, UnicodeError, ValueError):
+        return []
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
+def _candidate_peak_rss(event: dict) -> int | None:
+    resources = event.get("resources")
+    raw = resources.get("peak_rss_bytes") if isinstance(resources, dict) else None
+    if raw is None:
+        raw = event.get("peak_rss_bytes")
+    if (isinstance(raw, bool) or not isinstance(raw, (int, float))
+            or raw <= 0 or isinstance(raw, float) and not math.isfinite(raw)):
+        return None
+    return int(raw)
+
+
+def assay_progress_candidate_ram(path: Path, *, commit: str | None = None
+                                ) -> tuple[int | None, int]:
+    """Return the mean per-candidate peak RSS and its sample count."""
+    samples = []
+    for segment in _assay_progress_segments(path):
+        header = segment["header"]
+        if commit is not None and header.get("commit") != commit:
+            continue
+        for event in segment["events"]:
+            if event.get("event") == "candidate":
+                peak = _candidate_peak_rss(event)
+                if peak is not None:
+                    samples.append(peak)
+    if not samples:
+        return None, 0
+    return sum(samples) // len(samples), len(samples)
+
+
+def assay_progress_candidates_remaining(path: Path, commit: str,
+                                         fallback: int
+                                         ) -> tuple[int, str]:
+    """Estimate pending candidates from the matching plan or its history.
+
+    The latest matching run's `pending_total` is exact for a resume. A new
+    commit has no plan yet, so the latest plan's total is a measured estimate;
+    before any plan exists, Assay's declared max_mutants is the upper bound.
+    """
+    segments = _assay_progress_segments(path)
+    matching = [segment for segment in segments
+                if segment["header"].get("commit") == commit]
+    if matching:
+        events = matching[-1]["events"]
+        plans = [(index, event) for index, event in enumerate(events)
+                 if event.get("event") == "candidates"]
+        if plans:
+            plan_index, plan = plans[-1]
+            pending = plan.get("pending_total")
+            if type(pending) is int and pending >= 0:
+                completed = set()
+                for event in events[plan_index + 1:]:
+                    if event.get("event") != "candidate":
+                        continue
+                    identity = event.get("candidate_id")
+                    if not isinstance(identity, str):
+                        identity = event.get("candidate_index")
+                    if type(identity) is int or isinstance(identity, str):
+                        completed.add(identity)
+                return max(0, pending - len(completed)), "matching-progress"
+    prior_plans = [event for segment in segments for event in segment["events"]
+                   if event.get("event") == "candidates"]
+    if prior_plans:
+        total = prior_plans[-1].get("candidate_total")
+        if type(total) is int and total > 0:
+            return total, "prior-progress-plan-estimate"
+    if type(fallback) is int and fallback > 0:
+        return fallback, "assay-max_mutants-upper-bound"
+    return 1, "conservative-one-candidate"
+
+
+def candidate_ram_from_history(project_dir: Path, lane_name: str,
+                               progress_path: Path
+                               ) -> tuple[int, int, str]:
+    """Use recent Run-Gate samples, then Assay's append-only progress history."""
+    store = load_history_store(history_store_path(project_dir))
+    entries = lane_history_report(store, lane_name)["history"]
+    weighted_bytes = 0
+    sample_count = 0
+    for entry in entries:
+        average = entry.get("r2_candidate_ram_avg_bytes")
+        samples = entry.get("r2_candidate_ram_samples")
+        if (type(average) is int and average > 0
+                and type(samples) is int and samples > 0):
+            weighted_bytes += average * samples
+            sample_count += samples
+    if sample_count:
+        return weighted_bytes // sample_count, sample_count, "run-gate-history"
+    average, samples = assay_progress_candidate_ram(progress_path)
+    if average is not None and samples:
+        return average, samples, "assay-progress-history"
+    return (R2_CONSERVATIVE_CANDIDATE_RAM_BYTES, 0,
+            "conservative-default-1GiB")
+
+
+_R2_CAPACITY_PROBE_CODE = r'''import json, os, pathlib
+
+def positive_limit(raw):
+    if raw is None or raw == "max":
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if 0 < value < 2**60 else None
+
+limits = []
+for name in ("/sys/fs/cgroup/memory.max",
+             "/sys/fs/cgroup/memory/memory.limit_in_bytes"):
+    try:
+        value = positive_limit(pathlib.Path(name).read_text().strip())
+    except OSError:
+        value = None
+    if value is not None:
+        limits.append(value)
+try:
+    pages = os.sysconf("SC_PHYS_PAGES")
+    page_size = os.sysconf("SC_PAGE_SIZE")
+    if type(pages) is int and type(page_size) is int and pages > 0 and page_size > 0:
+        limits.append(pages * page_size)
+except (OSError, ValueError, AttributeError):
+    pass
+memory_cap = min(limits) if limits else None
+try:
+    cpus = len(os.sched_getaffinity(0))
+except (OSError, AttributeError):
+    cpus = os.cpu_count()
+if type(cpus) is not int or cpus < 1:
+    cpus = None
+
+backend = None
+filesystem = None
+cheap_clone = False
+reason = "cowtree-unavailable"
+try:
+    if os.environ.get("COWTREE_MODE", "auto") == "off":
+        reason = "cowtree-off"
+    elif not os.environ.get("MDT_COW_ROOT"):
+        reason = "cow-root-unset"
+    else:
+        import cowtree
+        area = cowtree.detect(log=lambda _message: None)
+        if area is None:
+            reason = "cowtree-no-area"
+        else:
+            backend = area.caps.backend
+            filesystem = area.caps.fs_type
+            cheap_clone = (backend == "btrfs" and filesystem == "btrfs"
+                           and area.caps.cheap_clone is True)
+            reason = ("supported-btrfs" if cheap_clone
+                      else "assay-requires-btrfs")
+except Exception as exc:
+    reason = "cowtree-probe-" + type(exc).__name__
+
+print(json.dumps({"cpu_count": cpus, "memory_cap_bytes": memory_cap,
+                  "cheap_clone": cheap_clone, "backend": backend,
+                  "filesystem": filesystem, "cheap_clone_reason": reason}))'''
+
+
+def r2_capacity_probe(docker: str | None, lane: dict, env: dict,
+                      env_name: str, env_source: str, repo: Path,
+                      worktree: Path, project_dir: Path,
+                      resource_settings: dict) -> dict | None:
+    """Ask the lane's interpreter for its CPU, memory and Cowtree facts.
+
+    `cowtree.detect()` performs its documented capability probe under
+    MDT_COW_ROOT when configured. It creates Cowtree's private metadata and
+    temporary capability files exactly as the subsequent Assay run would.
+    The built-in bare-host environment is represented by an empty environment
+    object and runs locally; named environments use the shared probe builder.
+    """
+    parts = [f"cd {shlex.quote(str(project_dir))}"]
+    if lane.get("assay_command") is None:
+        parts.extend(assay_source_setup(lane, worktree, project_dir))
+        python = '"$ASSAY_PYTHON"'
+    else:
+        command = lane.get("assay_command") or []
+        first = command[0] if command else ""
+        if re.fullmatch(r"(?:.*/)?python(?:[0-9]+(?:\.[0-9]+)?)?", first):
+            python = shlex.quote(first)
+        else:
+            python = "python3"
+    parts.append(f"{python} -I -c {shlex.quote(_R2_CAPACITY_PROBE_CODE)}")
+    script = " && ".join(parts)
+    try:
+        argv = build_env_probe_argv(
+            docker or "", env, env_name, repo, worktree, env_source,
+            _probe_slice(env, env_source), script,
+            resource_settings=resource_settings)
+        result = subprocess.run(argv, capture_output=True, text=True)
+    except (GateError, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        document = json.loads(result.stdout)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(document, dict):
+        return None
+    cpus = document.get("cpu_count")
+    memory = document.get("memory_cap_bytes")
+    cheap = document.get("cheap_clone")
+    if (cpus is not None and (type(cpus) is not int or cpus < 1)) \
+            or (memory is not None
+                and (type(memory) is not int or memory < 1)) \
+            or type(cheap) is not bool:
+        return None
+    if document.get("backend") not in (None, "btrfs", "reflink"):
+        return None
+    if document.get("filesystem") is not None \
+            and not isinstance(document["filesystem"], str):
+        return None
+    if cheap and (document.get("backend") != "btrfs"
+                  or document.get("filesystem") != "btrfs"):
+        return None
+    return document
+
+
+def _r2_cpu_cap(lane: dict, env: dict,
+                capacity: dict | None) -> tuple[int, str]:
+    lane_cpus = lane.get("resources", {}).get("cpus")
+    env_cpus = env.get("resources", {}).get("cpus")
+    declared = lane_cpus or env_cpus
+    declared_source = "lane resources.cpus" if lane_cpus else "environment resources.cpus"
+    observed = capacity.get("cpu_count") if isinstance(capacity, dict) else None
+    if declared is not None:
+        cap = max(1, math.floor(float(declared)))
+        if type(observed) is int and observed > 0:
+            return min(cap, observed), f"{declared_source}; environment affinity {observed}"
+        return cap, declared_source
+    if type(observed) is int and observed > 0:
+        return observed, "environment CPU affinity"
+    return 1, "capacity unavailable; one-worker cap"
+
+
+def _r2_memory_cap(lane: dict, capacity: dict | None
+                   ) -> tuple[int | None, str]:
+    lane_memory = lane.get("resources", {}).get("memory") or lane.get("memory")
+    observed = capacity.get("memory_cap_bytes") if isinstance(capacity, dict) else None
+    if lane_memory:
+        declared_bytes = parse_size_bytes(lane_memory)
+        if type(observed) is int and observed > 0:
+            return (min(declared_bytes, observed),
+                    "lane memory cap and environment limit")
+        return declared_bytes, "lane memory cap"
+    if type(observed) is int and observed > 0:
+        return observed, "environment memory limit"
+    return None, "memory limit unavailable"
+
+
+def r2_memory_budget_bytes(ram_target: str, memory_cap_bytes: int | None) -> int:
+    """Resolve a size/percentage `ram_target` against the lane's memory cap."""
+    if type(memory_cap_bytes) is not int or memory_cap_bytes <= 0:
+        return 0
+    if re.fullmatch(r"[1-9][0-9]?%|100%", ram_target):
+        target = memory_cap_bytes * int(ram_target[:-1]) // 100
+    else:
+        target = parse_size_bytes(ram_target)
+    return min(memory_cap_bytes, target)
+
+
+def configure_r2_jobs(lane: dict, lane_name: str,
+                      cli_request: int | str | None,
+                      resource_settings: dict, env: dict, env_source: str,
+                      repo: Path, worktree: Path, project_dir: Path) -> dict | None:
+    """Bind the lane/CLI request to the Assay inventory and local history."""
+    configured = lane.get("jobs")
+    request = cli_request if cli_request is not None else configured
+    request_source = ("cli" if cli_request is not None else
+                      "toml" if configured is not None else None)
+    inventory = lane.get("_assay_inventory")
+    entry = inventory.get("entry") if isinstance(inventory, dict) else None
+    if not isinstance(entry, dict):
+        if request is not None:
+            reason = lane.get("_assay_inventory_error") or \
+                "Assay lane inventory entry is unavailable"
+            fail(f"run-gate --jobs / lane jobs cannot verify native R2 for "
+                 f"lane {lane_name!r}: {reason}")
+        return None
+    rigor = entry.get("rigor") if isinstance(entry, dict) else None
+    if not isinstance(rigor, list) or "R2" not in rigor:
+        if request is not None:
+            fail(f"run-gate --jobs / lane jobs requires an Assay lane that "
+                 f"declares native R2; lane {lane_name!r} inventory reports "
+                 f"rigor {rigor!r}")
+        return None
+    mutation = entry.get("mutation")
+    if not isinstance(mutation, dict):
+        mutation = {}
+    if request is not None and (not mutation or mutation.get("format") is not None):
+        fail(f"run-gate --jobs / lane jobs requires a native R2 mutation "
+             f"lane; Assay lane {lane.get('assay_lane')!r} is ingested or "
+             "does not declare native mutation settings")
+    jobs_max = mutation.get("jobs_max", 1)
+    if jobs_max is None:
+        jobs_max = 1
+    if type(jobs_max) is not int or jobs_max < 1:
+        fail(f"Assay lane {lane.get('assay_lane')!r} inventory has invalid "
+             f"mutation.jobs_max {jobs_max!r}")
+    if type(request) is int and request > jobs_max:
+        fail(f"jobs value {request} exceeds Assay lane mutation.jobs_max "
+             f"({jobs_max})")
+
+    progress_path = project_dir / assay_progress_rel(lane["assay_lane"])
+    candidate_ram, samples, candidate_ram_source = candidate_ram_from_history(
+        project_dir, lane_name, progress_path)
+    max_mutants = mutation.get("max_mutants")
+    fallback = max_mutants if type(max_mutants) is int and max_mutants > 0 else 1
+    commit = head_commit(worktree)
+    if commit is None:
+        candidates_remaining, remaining_source = (
+            fallback, "assay-max_mutants-upper-bound")
+    else:
+        candidates_remaining, remaining_source = assay_progress_candidates_remaining(
+            progress_path, commit, fallback)
+
+    needs_probe = request == "auto" or (type(request) is int and request > 1)
+    capacity = None
+    if needs_probe:
+        docker = shutil.which("docker")
+        capacity = r2_capacity_probe(
+            docker, lane, env, lane_environment_name(lane), env_source,
+            repo, worktree, project_dir, resource_settings)
+    cpu_cap = None
+    cpu_source = "not used by explicit/default selection"
+    memory_cap = None
+    memory_source = "not used by explicit/default selection"
+    memory_budget = None
+    ram_target = resource_settings.get("ram_target", "75%")
+    if request == "auto":
+        cpu_cap, cpu_source = _r2_cpu_cap(lane, env, capacity)
+        memory_cap, memory_source = _r2_memory_cap(lane, capacity)
+        memory_budget = r2_memory_budget_bytes(ram_target, memory_cap)
+    cheap_clone = capacity.get("cheap_clone") if isinstance(capacity, dict) else None
+    backend = capacity.get("backend") if isinstance(capacity, dict) else None
+    selection = select_r2_jobs(
+        request, jobs_max=jobs_max, cpu_cap=cpu_cap,
+        memory_budget_bytes=memory_budget,
+        candidate_ram_bytes=candidate_ram,
+        candidate_ram_samples=samples,
+        candidates_remaining=candidates_remaining,
+        cheap_clone=cheap_clone, cheap_clone_backend=backend,
+        source=request_source)
+    selection.update({
+        "assay_lane": lane["assay_lane"],
+        "candidate_ram_source": candidate_ram_source,
+        "candidate_remaining_source": remaining_source,
+        "ram_target": ram_target,
+        "memory_cap_bytes": memory_cap,
+        "memory_cap_source": memory_source,
+        "cpu_cap_source": cpu_source,
+        "cheap_clone_reason": (capacity.get("cheap_clone_reason")
+                               if isinstance(capacity, dict)
+                               else "not-probed" if not needs_probe
+                               else "capacity-probe-unavailable"),
+    })
+    lane["_r2_jobs_selection"] = selection
+    return selection
+
+
+def disclose_r2_jobs(lane_name: str, selection: dict | None) -> None:
+    """One INFO line names the selected count and every selection input."""
+    if not isinstance(selection, dict):
+        return
+    if selection["mode"] == "default":
+        inputs = (f"jobs_max={selection['jobs_max']}, request=unset, "
+                  "serial default")
+    elif selection["mode"] == "explicit":
+        inputs = (f"request={selection['requested']!r} from "
+                  f"{selection['source']}, jobs_max={selection['jobs_max']}, "
+                  f"cheap_clone={selection['cheap_clone']!r}")
+    else:
+        inputs = (
+            f"jobs_max={selection['jobs_max']}, cpu_cap={selection['cpu_cap']} "
+            f"({selection['cpu_cap_source']}), "
+            f"memory_budget_bytes={selection['memory_budget_bytes']} "
+            f"({selection['ram_target']} of {selection['memory_cap_bytes']} "
+            f"from {selection['memory_cap_source']}), "
+            f"candidate_ram_avg_bytes={selection['candidate_ram_bytes']} "
+            f"({selection['candidate_ram_source']}, "
+            f"n={selection['candidate_ram_samples']}), "
+            f"candidates_remaining={selection['candidates_remaining']} "
+            f"({selection['candidate_remaining_source']}), "
+            f"cheap_clone={selection['cheap_clone']!r} "
+            f"({selection['cheap_clone_reason']}), "
+            f"request_source={selection['request_source'] or 'default'})")
+    print(f"run-gate: R2 jobs: lane={lane_name} N={selection['jobs']} "
+          f"mode={selection['mode']} inputs=({inputs})", flush=True)
+
+
+def record_r2_jobs_selection(record: dict, lane: dict,
+                             selection: dict | None,
+                             project_dir: Path) -> None:
+    """Keep the selected count and its Assay progress source in run evidence."""
+    if selection is None:
+        return
+    record["r2_jobs"] = selection
+    record["_r2_progress_path"] = str(
+        project_dir / assay_progress_rel(lane["assay_lane"]))
 
 
 def _assay_failure_summary(log_path: str | None,
@@ -11442,6 +12007,9 @@ def build_assay_inner(lane: dict, project_dir: Path, repo: Path,
                 progress, "--progress-heartbeat",
                 str(ASSAY_PROGRESS_HEARTBEAT_SECONDS),
                 "--state-dir", str(state_dir)]
+    r2_jobs = lane.get("_r2_jobs_selection")
+    if isinstance(r2_jobs, dict) and r2_jobs.get("forward"):
+        run_argv += ["--jobs", str(r2_jobs["jobs"])]
     if request_base:
         # RG-26: only ever appended for a lane the INVENTORY says delegates
         # its base (base_source == "request"); assay refuses it on any other.
@@ -13416,6 +13984,8 @@ def resolve_inflight(docker: str, lane: dict, lane_name: str,
     # that exact container.
     if lane.get("kind") == "assay" and not fresh and run_record is not None:
         run_record["_assay_identity_mode"] = pending["assay_identity_mode"]
+    if lane.get("kind") == "assay" and not fresh:
+        adopt_inflight_r2_jobs(lane, run_record, pending)
     if run_record is not None and pending.get("log_path"):
         run_record["log_path"] = pending["log_path"]
     if owner is not None:
@@ -13551,10 +14121,17 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     attached = resolve_inflight(docker, lane, lane_name, project_dir, repo,
                                 worktree, fresh, dry_run, run_record)
     if attached is not None:
+        disclose_r2_jobs(
+            lane_name,
+            run_record.get("r2_jobs") if run_record is not None else None)
         disclose_image_selection(
             run_record.get("image_selection") if run_record else None,
         )
         return attached
+    disclose_r2_jobs(
+        lane_name,
+        run_record.get("r2_jobs") if run_record is not None
+        else lane.get("_r2_jobs_selection"))
     extra_flags = extra_mount_flags()
     resource_env = resource_forwarded_env(resource_settings, "ephemeral")
     preload_file = None
@@ -13749,6 +14326,8 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         "progress": progress_path,
         "state_dir": state_dir,
         "assay_identity_mode": assay_identity_mode(lane),
+        "r2_jobs": (run_record.get("r2_jobs")
+                    if run_record is not None else None),
         "revision": __revision__,
         # RG-55/contract Sec 4.1: recorded as soon as it is known — a client
         # that dies between here and `start` still leaves enough for a
@@ -14141,6 +14720,8 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
         "progress": progress_path,
         "state_dir": state_dir,
         "assay_identity_mode": assay_identity_mode(lane),
+        "r2_jobs": (run_record.get("r2_jobs")
+                    if run_record is not None else None),
         "revision": __revision__,
         "profile_token": profile_plan["token"] if profiling else None,
         "profile_daemon": profile_plan["daemon"] if profiling else None,
@@ -15627,6 +16208,8 @@ def _dispatch(argv: list[str] | None = None, *,
                         "that delegates it (assay judge.base_source = "
                         "\"request\"), and for conjunction lanes carrying a "
                         "{base} token")
+    parser.add_argument("--jobs", metavar="N|auto",
+                        help="native R2 assay worker count; positive N or auto")
     parser.add_argument("--io-sync", choices=("strict", "relaxed"),
                         help="per-invocation fsync policy override; relaxed runs "
                              "are excluded from history")
@@ -15679,9 +16262,10 @@ def _dispatch(argv: list[str] | None = None, *,
     parser.add_argument("--dry-run", action="store_true",
                         help="print the full execution plan and exit 0 — every "
                              "preflight is rehearsed and no JUDGED lane is "
-                             "started; an assay lane's read-only `assay lanes "
-                             "--json` inventory probe is a preflight and does "
-                             "run, in a short container of its own")
+                             "started; assay inventory probes run, and an "
+                             "opted-in R2 jobs=auto lane also probes capacity "
+                             "and Cowtree (which may create private Cowtree "
+                             "metadata under MDT_COW_ROOT)")
     parser.add_argument("--help", "-h", action="store_true")
     record = None  # RG-27: set once the lane resolves; see flush_run_record
     args = None
@@ -15696,12 +16280,20 @@ def _dispatch(argv: list[str] | None = None, *,
             lane_args = []
         args = parser.parse_args(parse_argv)
         args.lane_args = lane_args
+        args.jobs_request = parse_r2_jobs_cli(args.jobs)
         if args.io_sync is not None or args.cow is not None:
             if (args.lane is None or args.lane in _NO_LANE_FACT_VERBS
                     or args.lane in {"doctor", "history", "footprint",
                                      "validate-pointers"}
                     or args.list or args.check_env):
                 fail("--io-sync and --cow apply to a lane run only")
+        if args.jobs is not None and (
+                args.lane is None or args.lane in _NO_LANE_FACT_VERBS
+                or args.lane in {"doctor", "history", "footprint",
+                                 "validate-pointers", "migrate-modes",
+                                 "admission", "status"}
+                or args.list or args.check_env):
+            fail("--jobs applies to a lane run only")
         if args.allow_main_checkout:
             # Env, not a parameter: sequence members, probes and re-attached
             # lanes all reach container_mount_flags() and inherit it.
@@ -16005,6 +16597,9 @@ def _dispatch(argv: list[str] | None = None, *,
                  f"{', '.join(sorted(lanes)) or '(none)'} (config: {cfg_path}"
                  f"{f'; shared: {central_path}' if central_path else ''})")
         lane = lanes[args.lane]
+        if args.jobs_request is not None and lane.get("kind") != "assay":
+            fail(f"--jobs applies only to native R2 assay lanes; lane "
+                 f"{args.lane!r} has kind {lane.get('kind')!r}")
         if lane.get("kind") == "sequence":
             if lane_args:
                 fail(f"sequence lane {args.lane!r} cannot accept selective "
@@ -16090,6 +16685,9 @@ def _dispatch(argv: list[str] | None = None, *,
             (cfg.get("project", central.get("project", {})).get("trunk")
              if isinstance(cfg.get("project", central.get("project", {})), dict)
              else None))
+        r2_jobs_selection = configure_r2_jobs(
+            lane, args.lane, args.jobs_request, resource_settings, env,
+            env_source, repo, worktree, eff_proj)
         if lane.get("_selective_assay"):
             selected = lane["_selective_assay"]
             if selected.get("reuse_from") is not None:
@@ -16123,6 +16721,7 @@ def _dispatch(argv: list[str] | None = None, *,
             record["_project_dir"] = eff_proj
             record["resource_settings"] = resource_settings
             record["resource_sources"] = resource_sources
+            record_r2_jobs_selection(record, lane, r2_jobs_selection, eff_proj)
             image_selection = image_selection_record(
                 env, lane_environment_name(lane), env_source,
             )
@@ -16278,6 +16877,7 @@ def _dispatch(argv: list[str] | None = None, *,
             if not env:  # built-in 'bare-host' — 'host' now resolves to a
                          # non-empty synthetic env and falls through to
                          # run_container_lane() below like any named env.
+                disclose_r2_jobs(args.lane, r2_jobs_selection)
                 budget_started_epoch, budget_started_monotonic = admit_now()
                 budget_deadline = (budget_started_monotonic
                                    + budget_seconds(lane["budget"])
@@ -16298,6 +16898,7 @@ def _dispatch(argv: list[str] | None = None, *,
                         resource_settings=resource_settings),
                     enabled=not args.dry_run)
             elif env.get("mode") == "exec":
+                disclose_r2_jobs(args.lane, r2_jobs_selection)
                 # Resolved HERE, not inside run_exec_lane: the lock key and
                 # the eventual `docker exec` target must be the SAME
                 # identity, and the lock has to be held (ordering: strictly

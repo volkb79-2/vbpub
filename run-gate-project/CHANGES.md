@@ -9,6 +9,12 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+### Added
+- Opt native R2 Assay lanes into `jobs = N|"auto"` or `run-gate --jobs N|auto`; auto bounds the worker count by Assay `jobs_max`, CPU/memory capacity, candidate RSS history, remaining candidates, and Assay's cheap-clone requirement. Run-Gate records the selected count and candidate RSS samples in its invocation history.
+
+### Changed
+- Convert IOBench's registered R2 lane to native Assay dispatch with `jobs = "auto"`; replace the legacy `assay.toml` `jobs = 1` alias with `jobs_max = 4`.
+
 <!-- cmru: release history -->
 
 ## [24.2.0] - 2026-10-31

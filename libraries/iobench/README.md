@@ -50,3 +50,11 @@ Implemented (IOB-03 P3, reviewed through wave 2026-10-27): the measurement core,
 acceptance run on the designated test host (IOB-ACC-01, IOB-03 P4; `RealHost` has never run against a real device, fio or systemd) and the first cmru release (IOB-REL-01; wheel plus sha256). The CLI review cases in `docs/cli-review.toml` record real invocations and
 the outcomes observed on the fake host; an independent semantic review still has to confirm their rationales. The decisions behind it are IOB-D-001..014 and the rulings
 R-1..R-10 in the DESIGN-GUIDE. Nothing here is wired into `mdt-cockpit` or `debian-install-v2` yet (migration phases M1-M4 in the DESIGN-GUIDE).
+
+The registered repository gate runs R0–R1 and native Assay R2 through
+Run-Gate. Its R2 lane opts into `jobs = "auto"` with an Assay ceiling of
+four workers; it runs serially when the prepared workspace does not support
+Assay's btrfs cheap-clone requirement. See the
+[gate consumer guide](docs/CONSUMERS.md#repository-gate) for how to run it and
+the [design guide](docs/DESIGN-GUIDE.md#registered-repository-gate) for why
+the R2 lane uses native Assay dispatch.

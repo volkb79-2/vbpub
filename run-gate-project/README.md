@@ -138,12 +138,21 @@ lane refuses every `--io-sync` override, including
 ephemeral lane. Run-Gate refuses commas, colons, or newlines in CoW and
 repository mount paths before any Docker call; extra-mount paths reject commas
 and newlines, with colon reserved as their list separator. `ram_target` and
-lane-level `candidate_ram` are accepted and validated as configuration
-metadata; they do not currently select worker counts or change container
-capacity. A mixed-mode sequence is stored per
+lane-level `candidate_ram` remain Run-Gate metadata. Native R2 Assay lanes
+can opt into worker selection with `jobs = N` or `jobs = "auto"`; the
+`--jobs N|auto` lane flag overrides that setting. Auto derives a count from
+Assay's `jobs_max`, CPU and memory caps, measured average candidate RSS (or a
+conservative 1 GiB estimate before measurements), and the remaining candidate
+estimate. Run-Gate selects at most one worker unless Cowtree confirms the
+btrfs CoW workspace Assay 11.0 requires. With no `jobs` setting, Run-Gate
+leaves Assay's serial default untouched. See the
+[consumer example](CONSUMERS.md#native-r2-worker-selection) and
+[design rationale](docs/DESIGN-GUIDE.md#native-r2-worker-selection). A
+mixed-mode sequence is stored per
 member and excluded as an aggregate history measurement. See the [resource settings design](docs/DESIGN-GUIDE.md#combined-resource-settings)
 and [consumer examples](CONSUMERS.md#combined-resource-settings). Resource
-RAM targets are TOML metadata; there is no `--ram-target` command-line option.
+RAM targets are configured in TOML; there is no `--ram-target` command-line
+option.
 
 **Interrupting a run (SIGTERM / Ctrl-C; RG-109).** A client stopped
 gracefully while it waits on its lane removes the container it started and
@@ -430,9 +439,11 @@ This project's own `run-gate.toml` declares five lanes (dogfooding — see
    delegated to the invoking gate request (`judge.base_source =
    "request"`), never hardcoded.
 3. **`assay-r2`** — mutation testing (R2) over the same scope in a private
-   `tester-unified` container, capped at 3 CPUs with one mutant worker.
-   The worker count is one because concurrent candidates would share the
-   tester cgroup's resource-event counters. Its `resource_observer = "cgprofile"` opt-in mounts only the
+   `tester-unified` container, capped at 3 CPUs and configured for one worker
+   by its Assay lane ceiling. Assay 11.0 can schedule multiple candidate
+   windows with conservative attribution for overlapping resource events;
+   Run-Gate lanes opt in separately with `jobs = N` or `jobs = "auto"`.
+   Its `resource_observer = "cgprofile"` opt-in mounts only the
    daemon's read-only resource-observer directory after checking the daemon's
    contract-2 version advertisement; the control socket is not
    exposed, and the lane never uses `--cgroupns=host`. This lets Assay read
