@@ -79,14 +79,20 @@ algorithm.
 The neutral layer knows how to remove a Git checkout and, when explicitly
 requested, its branch ref. It cannot decide whether a product considers the
 branch merged: CIU's base-branch rules and CMRU's transaction branch rules are
-different policies. Callers therefore pass `delete_branch` explicitly. When
-they also pass `expected_branch_tip`, the library uses Git's expected-old-value
-`update-ref` form, preserving a branch that advanced while adapter cleanup ran.
-This keeps the checkout lifecycle generic while making the ref deletion
-conditional on the exact evidence the adapter inspected.
+different policies. The low-level `delete_branch=True` default stays for
+compatibility and is relied on by CMRU's ephemeral gate and release workspaces;
+CIU passes its merged-only decision explicitly. When a caller also passes
+`expected_branch_tip`, the library uses Git's expected-old-value `update-ref`
+form, preserving a branch that advanced while adapter cleanup ran. This keeps
+the checkout lifecycle generic while making ref deletion conditional on the
+exact evidence the adapter inspected.
 
 The optional phase callback reports checkout deletion, registration
-verification, branch removal or retention, and shared-record removal. It is
-an observation seam for product reports and recovery tooling; it cannot alter
-policy or retry a failed phase. CIU's versioned `rm` report adds its own target
-resolution, resource cleanup, lease release and lifecycle-preflight outcomes.
+verification, shared-record removal, and branch removal or retention in that
+order. Removing the shared record before the optional compare-and-delete means
+a concurrent branch move cannot strand a record after the checkout is gone;
+the branch remains a valid ref for later use. A failed checkout deletion says
+the checkout may be partially removed. The callback is an observation seam for
+product reports and recovery tooling; it cannot alter policy or retry a failed
+phase. CIU's versioned `rm` report adds its own target resolution, resource
+cleanup, lease release and lifecycle-preflight outcomes.

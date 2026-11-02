@@ -959,9 +959,20 @@ class TestTeardownClearsTheLease:
             raise worktree.WorktreeError("locked")
 
         monkeypatch.setattr(worktree, "_clean_in", clean_ok)
+        monkeypatch.setattr(worktree, "_worktree_change_paths", lambda *_args: [])
         monkeypatch.setattr(shared, "remove_workspace", fail_remove)
-        with pytest.raises(worktree.WorktreeError, match="locked"):
+        inventories = []
+        original_inventory = worktree._ignored_state_summary
+
+        def record_inventory(path):
+            inventory = original_inventory(path)
+            inventories.append(inventory)
+            return inventory
+
+        monkeypatch.setattr(worktree, "_ignored_state_summary", record_inventory)
+        with pytest.raises(worktree.WorktreeError, match="locked") as exc:
             worktree.remove(tmp_repo, "one")
+        assert seen, f"{exc.value}; inventories={inventories!r}"
         assert seen[0]["lease"] is None
         assert seen[0]["schema_version"] == 6
 

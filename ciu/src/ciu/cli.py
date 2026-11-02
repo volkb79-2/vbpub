@@ -78,9 +78,11 @@ Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
          [--adopt-existing-network] [--json]
                                 adopt an existing unmanaged linked checkout
     worktree rm LOGICAL [-y] [--keep-branch | --delete-branch]
-                             [--discard-protected-state BRANCH] [--json]
+                             [--discard-protected-state BRANCH]
+                             [--discard-changes BRANCH] [--json]
                                 clean, THEN remove; keeps unmerged branch tips by default
-                                and requires an exact branch to discard protected state
+                                and requires exact branch consent for changes or
+                                protected ignored state
     worktree list [--json]      list linked checkouts
     worktree inspect LOGICAL [--json]   exact record + freshly read Git facts
     worktree lease LOGICAL (--extend D | --perpetual | --release) [--json]
@@ -209,7 +211,8 @@ ciu worktree ensure LOGICAL [--base REF] [--profile P1,P2]
                              [--branch BRANCH] [--path PATH]
                              [--worktree-dir DIR] [--adopt-existing-network] [--json]
 ciu worktree rm LOGICAL [-y] [--force] [--keep-branch | --delete-branch]
-                             [--discard-protected-state BRANCH] [--json]
+                             [--discard-protected-state BRANCH]
+                             [--discard-changes BRANCH] [--json]
 ciu worktree list [--json]
 ciu worktree inspect LOGICAL [--json]
 ciu worktree lease LOGICAL (--extend DURATION | --perpetual | --release) [--json]
@@ -247,10 +250,12 @@ ciu worktree exec LOGICAL [--target ALIAS] -- ARGV...
   otherwise a declared `[ciu.worktree].up` profile list is started together.
   `exec` runs exact argv (no shell) in the
   selected root or its declared container target and never starts anything
-  implicitly. `rm` cleans before removal, keeps unmerged branch tips by default,
-  and refuses protected `.assay/` or `vol-*` ignored state without an exact
-  `--discard-protected-state BRANCH`. Use `--keep-branch` to preserve a merged
-  ref or `--delete-branch` to explicitly delete an unmerged one.
+  implicitly. `rm` cleans before removal, refuses tracked or non-ignored
+  untracked changes without `--discard-changes BRANCH`, and keeps unmerged
+  branch tips by default. It refuses protected `.assay/` or any `vol-*` path
+  component without `--discard-protected-state BRANCH`; other ignored paths
+  are disclosed and deleted. Use `--keep-branch` to preserve a merged ref or
+  `--delete-branch` to explicitly delete an unmerged one.
 
   Examples (all commands are pasteable):
     ciu worktree create pkg-under-test --base "$(git rev-parse HEAD)" --json
@@ -420,6 +425,7 @@ ciu down --host NAME [--profile NAME]
     "clean": """\
 ciu clean [--profile NAME] [--phases N,M] [-y] [--ignore-errors]
 ciu clean --identity OLD_ID [-y] [--root-folder PATH]
+  [--expected-checkout PATH]
   Tear down completely: remove ALL project containers (running AND exited, incl.
   init/sidecars), `docker compose down -v --remove-orphans`, remove project
   volumes and `vol-*` hostdirs, and remove rendered artifacts. The post-clean
@@ -439,6 +445,9 @@ ciu clean --identity OLD_ID [-y] [--root-folder PATH]
                      succeeded; a failed clean keeps them for the retry.
   --identity OLD_ID  remove resources carrying a retired instance id by
                      exact Compose labels, without loading the old config.
+  --expected-checkout PATH
+                     require the resource owner label to match this absolute
+                     CIU root; refuses the selected root's current identity.
 """,
     "health": """\
 ciu health [--profile NAME] [--phases N,M] [--root-folder PATH]
@@ -1922,8 +1931,12 @@ def _worktree(rest: list[str]) -> int:
         help="explicitly delete the branch, including an unmerged branch",
     )
     p_rm.add_argument(
-        "--discard-protected-state", default=None, metavar="BRANCH",
+        "--discard-protected-state", action="append", default=[], metavar="BRANCH",
         help="explicitly discard protected ignored state for this exact branch",
+    )
+    p_rm.add_argument(
+        "--discard-changes", action="append", default=[], metavar="BRANCH",
+        help="explicitly discard tracked or untracked changes for this exact branch",
     )
     p_rm.add_argument("--json", action="store_true", default=False)
 
@@ -2081,6 +2094,7 @@ def _worktree(rest: list[str]) -> int:
                 lifecycle_root, opts.name, yes=opts.yes, force=opts.force,
                 keep_branch=opts.keep_branch, delete_branch=opts.delete_branch,
                 discard_protected_state=opts.discard_protected_state,
+                discard_changes=opts.discard_changes,
             )
             if getattr(opts, "json", False):
                 print(json.dumps(document, sort_keys=True))
@@ -2103,6 +2117,8 @@ def _worktree(rest: list[str]) -> int:
                     f"discarded ignored state: {item['path']} [{item['class']}] "
                     f"{item['file_count']} file(s), {item['bytes']} bytes"
                 )
+            for path in document["discarded_changes"]:
+                print(f"discarded uncommitted change: {path}")
             for phase, status in document["phase_report"]["phases"].items():
                 print(f"phase {phase}: {status}")
             return 0
@@ -2653,6 +2669,7 @@ def main() -> None:
             parser = CiuArgumentParser(prog="ciu clean --identity")
             parser.add_argument("--identity", metavar="OLD_ID")
             parser.add_argument("-y", "--yes", action="store_true")
+            parser.add_argument("--expected-checkout", metavar="PATH")
             opts, remaining = parser.parse_known_args(rest)
             if remaining:
                 print(
@@ -2664,7 +2681,12 @@ def main() -> None:
             repo_root = _resolve_repo_root_deploy(define_root)
             from .deploy import action_clean_identity
             raise SystemExit(
-                action_clean_identity(repo_root, opts.identity, yes=opts.yes)
+                action_clean_identity(
+                    repo_root,
+                    opts.identity,
+                    yes=opts.yes,
+                    expected_checkout=opts.expected_checkout,
+                )
             )
         from .deploy import main as deploy_main
         raise SystemExit(deploy_main(["--clean"] + rest))

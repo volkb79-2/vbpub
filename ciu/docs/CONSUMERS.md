@@ -332,7 +332,8 @@ $ ciu worktree rm pkg-under-test --json
 {"schema_version": 1, "operation": "remove", "status": "removed",
  "removed_path": "...", "branch": {"name": "...", "tip": "...",
  "outcome": "kept-unmerged", "reason": "..."},
- "discarded_state": [], "phase_report": {"schema_version": 1,
+ "discarded_state": [], "discarded_changes": [],
+ "phase_report": {"schema_version": 1,
  "phases": {"target_resolution": "complete", "resource_cleanup": "complete",
  "lease_release": "complete", "lifecycle_preflight": "complete",
  "checkout_deletion": "complete", "git_registration": "complete",
@@ -343,8 +344,13 @@ $ ciu worktree rm pkg-under-test --json
 `rm` runs `ciu clean` then removes the Git checkout (that order is normative,
 [SPEC §S16](SPEC.md#s16--worktree-instances-ciu-worktree)). If the target's CIU
 root marker is missing, CIU reads the exact shared workspace record and uses
-its recorded root offset and identity to run `clean` from the primary checkout;
-it refuses if that committed root or durable identity cannot be verified.
+its recorded root offset and identity to run `clean` from the primary checkout.
+It passes the target CIU root as `--expected-checkout`; the identity-clean path
+requires every matching resource's `ciu.repo-root` label to match that path and
+refuses if the ID is the primary root's current identity. It refuses if the
+record, committed root, primary identity, or resource owner label cannot be
+verified. `--force` can proceed after a failed identity clean and strand
+resources.
 A markerless managed CIU record with no runtime identity is record-only and
 skips `clean`.
 
@@ -356,11 +362,33 @@ kept and its tip is reported. `--keep-branch` keeps even a merged branch;
 The tip is compared again during deletion, so a branch that moved during
 checkout removal is preserved and reported as a failed branch phase.
 
+Tracked and non-ignored untracked changes also block removal. To authorize
+their loss, pass `--discard-changes BRANCH` with the exact checkout branch.
+Only one branch name is accepted, `all` is refused, and `-y` does not imply
+consent. For example:
+
+```console
+ciu worktree rm pkg-under-test -y --discard-changes pkg-under-test
+```
+
 The survey includes ignored entries. Protected `.assay/` resumable state and
-root `vol-*` data block removal unless the exact branch is named with
-`--discard-protected-state BRANCH`; `-y` alone never authorizes that loss.
+any `vol-*` path component, including below nested CIU roots, block removal
+unless the exact branch is named with `--discard-protected-state BRANCH`;
+exactly one branch is accepted and `all` is refused. `-y` alone never
+authorizes that loss. Logs, artifacts, evidence and other ignored paths are
+unclassified: CIU lists them in the discard report and removes them. Before
+cleaning and immediately before deletion, CIU inventories ignored state; a
+changed inventory makes it refuse and report the latest list. When cleanup
+clears the lease, CIU verifies its own record contents and allows only that
+record's expected byte-count change. If a protected directory cannot be sized,
+it stays in the inventory with `capped: true` and a
+`size_error`; its exact discard flag is still required. The permission-specific
+privileged removal retry remains deferred to CIU-134 stage 2, so restore read
+access before retrying an unreadable checkout.
+
 The JSON report lists discarded ignored entries and their measured file count
-and byte size. Its `phase_report` has `schema_version: 1` and a fixed `phases`
+and byte size, plus the exact uncommitted paths authorized with
+`--discard-changes`. Its `phase_report` has `schema_version: 1` and a fixed `phases`
 map for target resolution, resource cleanup, lease release, lifecycle
 preflight, checkout deletion, Git registration verification, branch removal,
 CIU record removal, and shared record removal. Successful phase values state
@@ -2097,10 +2125,19 @@ $ ciu clean --identity OLD_ID --root-folder /path/to/checkout
 $ ciu env generate --root-folder /path/to/checkout
 ```
 
-`clean --identity` does not load the stale rendered config; it uses exact
-identity labels and the recorded physical checkout to avoid cleaning a
-different checkout. Current-format corruption remains a refusal and is not
-overwritten as a migration.
+`clean --identity` does not load the stale rendered config. When cleanup runs
+from a primary checkout for a retired linked checkout, it can require the old
+CIU root explicitly:
+
+```console
+$ ciu clean --identity OLD_ID --root-folder /path/to/primary-ciu-root \
+    --expected-checkout /path/to/old/ciu-root
+```
+
+That form requires the exact `ciu.repo-root` label to match the absolute old
+CIU root and refuses when the requested identity is the primary root's current
+identity. Current-format corruption remains a refusal and is not overwritten
+as a migration.
 
 ## 24. Resume an interrupted adopt without resetting the checkout (CIU-107)
 

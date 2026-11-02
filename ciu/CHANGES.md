@@ -176,17 +176,21 @@ the technical detail below it.
 - Keep ordinary CIU tests independent of the host Docker group and socket; Docker-GID fallback tests continue to control their own inputs.
 - Keep fixture patches scoped so the CIU suite can run from source when Python child processes have no installed CIU distribution; CLI subprocess tests provide the checkout's source path explicitly.
 - `ciu worktree rm` can clean a markerless old checkout using its exact shared workspace record and the matching committed CIU root in the primary checkout; the operation refuses when that identity cannot be verified.
+- Markerless cleanup verifies each resource's owner label against the target CIU root and refuses to clean the primary checkout's own identity. `--force` may remove the checkout after a failed or unverifiable clean and leave its resources behind.
+- `rm` now refuses tracked or non-ignored untracked changes unless `--discard-changes BRANCH` names the exact branch; the report lists the discarded paths. Protected ignored state includes `.assay/` and any `vol-*` path component, including below nested CIU roots. Other ignored paths such as logs, artifacts, and evidence are unclassified, disclosed, and removed.
 - `rm` keeps an unmerged or unproven branch tip by default, reports its full tip, and deletes a merged branch only against its recorded base. `--keep-branch` and `--delete-branch` expose the explicit choices; compare-and-delete preserves a branch that moved during cleanup.
-- The branch survey and prune disclose ignored files and directories with bounded size facts. Protected `.assay/` resume state and root `vol-*` data require an exact `--discard-protected-state BRANCH`; `-y` alone preserves them. Enumeration failures are non-prunable, and regenerable or unclassified ignored entries remain visible without blocking.
+- The branch survey and prune disclose ignored files and directories with bounded size facts. Protected `.assay/` resume state and any `vol-*` path component require an exact `--discard-protected-state BRANCH`; `-y` alone preserves them. Enumeration failures are non-prunable, and regenerable or unclassified ignored entries remain visible without blocking.
 
 ### Changed
 - `ciu worktree branches --json` advances to schema 3 for the `merged-protected` and `merged-ignored-unknown` categories. The `dirty` field retains its Git status meaning.
 - `ciu worktree rm --json` now reports a versioned per-phase lifecycle map on success and failure, along with branch outcome and ignored-state inventory. CIU-134's permission-specific retry remains stage 2 and will extend this report.
+- `rm` inventories ignored state again immediately before checkout deletion and refuses if it changed. Unreadable entries remain listed with their class, `capped: true`, and `size_error`; the permission-specific retry for root-owned, unreadable paths remains deferred to CIU-134 stage 2. A checkout deletion error reports that the checkout may be partially removed.
+- The shared lifecycle removes its record before attempting an optional branch deletion. If compare-and-delete fails, the branch remains and the record does not become stranded after the checkout is gone.
 
 ### Adoption / Migration Notes
 - Consumers that validate branch-survey JSON must accept `schema_version: 3` and the two ignored-state categories before using the document; unknown categories remain a refusal. Existing scripts can survey first, then pass an exact branch name to `--discard-protected-state` only after reviewing protected state.
 - `rm` now retains unmerged branches by default. Use `--delete-branch` only when deleting that ref is intended; use `--keep-branch` when a merged ref should remain.
-- CIU-134's root-assisted permission retry is still open. The new phase report records stage-1 progress but does not perform privileged cleanup.
+- CIU-134's permission-specific retry for root-owned paths that block inventory or checkout deletion is still open. The phase report records stage-1 progress but does not perform privileged cleanup.
 
 ## [7.16.0] - 2026-10-07
 <!-- cmru: generated -->

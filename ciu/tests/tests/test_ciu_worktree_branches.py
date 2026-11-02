@@ -316,6 +316,9 @@ def test_ignored_state_group_rejects_unsafe_paths_and_finds_nested_cache():
     assert worktree._ignored_state_group("project/.pytest_cache/v/cache") == (
         "project/.pytest_cache", "regenerable",
     )
+    assert worktree._ignored_state_group(
+        "mattermost-server/ciu.worktree-instance.json"
+    ) == ("mattermost-server/ciu.worktree-instance.json", "regenerable")
 
 
 def test_ignored_entry_measurement_caps_files_and_bytes(tmp_path, monkeypatch):
@@ -325,20 +328,28 @@ def test_ignored_entry_measurement_caps_files_and_bytes(tmp_path, monkeypatch):
         (tree / name).write_bytes(b"large")
 
     monkeypatch.setattr(worktree, "_IGNORED_STATE_MAX_FILES", 2)
-    files, byte_count, capped = worktree._measure_ignored_entry(tmp_path, "scratch")
+    files, byte_count, capped, size_error = worktree._measure_ignored_entry(
+        tmp_path, "scratch"
+    )
     assert files < 3 and byte_count <= files * 5 and capped is True
+    assert size_error is None
 
     monkeypatch.setattr(worktree, "_IGNORED_STATE_MAX_FILES", 10)
     monkeypatch.setattr(worktree, "_IGNORED_STATE_MAX_BYTES", 3)
-    files, byte_count, capped = worktree._measure_ignored_entry(tmp_path, "scratch")
+    files, byte_count, capped, size_error = worktree._measure_ignored_entry(
+        tmp_path, "scratch"
+    )
     assert files == 3 and byte_count == 3 and capped is True
+    assert size_error is None
 
     single = tmp_path / "single"
     single.write_bytes(b"x")
     monkeypatch.setattr(worktree, "_IGNORED_STATE_MAX_FILES", 1)
     monkeypatch.setattr(worktree, "_IGNORED_STATE_MAX_BYTES", 10)
-    files, byte_count, capped = worktree._measure_ignored_entry(tmp_path, "single")
-    assert (files, byte_count, capped) == (1, 1, False)
+    files, byte_count, capped, size_error = worktree._measure_ignored_entry(
+        tmp_path, "single"
+    )
+    assert (files, byte_count, capped, size_error) == (1, 1, False, None)
 
 
 def test_ignored_state_summary_enforces_listing_caps_and_preserves_errors(
@@ -370,7 +381,9 @@ def test_ignored_state_summary_rejects_conflicts_and_size_errors(
     monkeypatch.setattr(
         worktree, "_ignored_state_group", lambda _relative: ("same", next(classes))
     )
-    monkeypatch.setattr(worktree, "_measure_ignored_entry", lambda *_args: (0, 0, False))
+    monkeypatch.setattr(
+        worktree, "_measure_ignored_entry", lambda *_args: (0, 0, False, None)
+    )
     with pytest.raises(worktree.WorktreeError, match="conflicting classes"):
         worktree._ignored_state_summary(tmp_path)
 
@@ -379,10 +392,45 @@ def test_ignored_state_summary_rejects_conflicts_and_size_errors(
     )
     monkeypatch.setattr(
         worktree, "_measure_ignored_entry",
-        lambda *_args: (_ for _ in ()).throw(PermissionError("no access")),
+        lambda *_args: (0, 0, True, "PermissionError: no access"),
     )
-    with pytest.raises(worktree.WorktreeError, match="could not size ignored entry"):
-        worktree._ignored_state_summary(tmp_path)
+    summary = worktree._ignored_state_summary(tmp_path)
+    assert summary == [
+        {
+            "path": "a", "class": "unclassified", "file_count": 0,
+            "bytes": 0, "capped": True,
+            "size_error": "PermissionError: no access",
+        },
+        {
+            "path": "b", "class": "unclassified", "file_count": 0,
+            "bytes": 0, "capped": True,
+            "size_error": "PermissionError: no access",
+        },
+    ]
+
+
+def test_ignored_state_summary_keeps_an_unreadable_group_unsized(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        worktree, "_git",
+        lambda *_args: subprocess.CompletedProcess(
+            [], 0, "vol-data/blocked\0vol-data/readable\0", ""
+        ),
+    )
+    measurements = iter((
+        (0, 0, True, "PermissionError: no access"),
+        (1, 5, False, None),
+    ))
+    monkeypatch.setattr(
+        worktree, "_measure_ignored_entry", lambda *_args: next(measurements)
+    )
+
+    assert worktree._ignored_state_summary(tmp_path) == [{
+        "path": "vol-data", "class": "protected", "file_count": 0,
+        "bytes": 0, "capped": True,
+        "size_error": "PermissionError: no access",
+    }]
 
 
 def test_ignored_state_summary_does_not_measure_nested_paths_twice(
@@ -398,7 +446,7 @@ def test_ignored_state_summary_does_not_measure_nested_paths_twice(
 
     def measure(_checkout, relative):
         measured.append(relative)
-        return 2, 7, False
+        return 2, 7, False, None
 
     monkeypatch.setattr(worktree, "_measure_ignored_entry", measure)
 

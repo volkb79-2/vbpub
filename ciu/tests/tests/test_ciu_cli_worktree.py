@@ -297,6 +297,7 @@ class TestWorktreeRmDispatch:
                     "outcome": "kept-by-option", "reason": "--keep-branch was supplied",
                 },
                 "discarded_state": [],
+                "discarded_changes": [],
                 "phase_report": {"phases": {"resource_cleanup": "complete"}},
             }
 
@@ -304,11 +305,13 @@ class TestWorktreeRmDispatch:
         assert cli._worktree([
             "rm", "mypkg", "-y", "--force", "--keep-branch",
             "--discard-protected-state", "mypkg",
+            "--discard-changes", "mypkg",
         ]) == 0
         assert seen["name"] == "mypkg"
         assert seen["yes"] is True and seen["force"] is True
         assert seen["keep_branch"] is True and seen["delete_branch"] is False
-        assert seen["discard_protected_state"] == "mypkg"
+        assert seen["discard_protected_state"] == ["mypkg"]
+        assert seen["discard_changes"] == ["mypkg"]
         assert "removed:" in capsys.readouterr().out
 
     def test_defaults_yes_and_force_false(self, monkeypatch):
@@ -323,6 +326,7 @@ class TestWorktreeRmDispatch:
                     "outcome": "deleted", "reason": "merged",
                 },
                 "discarded_state": [],
+                "discarded_changes": [],
                 "phase_report": {"phases": {}},
             }
 
@@ -360,6 +364,7 @@ class TestWorktreeRmDispatch:
             "discarded_state": [
                 {"path": ".assay", "class": "protected", "file_count": 2, "bytes": 17}
             ],
+            "discarded_changes": ["tracked.txt", "untracked.txt"],
             "phase_report": {"phases": {"resource_cleanup": "complete"}},
         }
         monkeypatch.setattr(wt_mod, "remove_document", lambda *_a, **_kw: document)
@@ -367,6 +372,8 @@ class TestWorktreeRmDispatch:
         output = capsys.readouterr().out
         assert message in output
         assert "discarded ignored state: .assay [protected] 2 file(s), 17 bytes" in output
+        assert "discarded uncommitted change: tracked.txt" in output
+        assert "discarded uncommitted change: untracked.txt" in output
         assert "phase resource_cleanup: complete" in output
 
 

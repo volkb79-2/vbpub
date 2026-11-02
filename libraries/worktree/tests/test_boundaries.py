@@ -689,11 +689,36 @@ def test_remove_workspace_reports_phases_and_preserves_branch_when_requested(
         ("checkout_deletion", "complete"),
         ("git_registration", "running"),
         ("git_registration", "complete"),
-        ("branch_removal", "kept"),
         ("shared_record_removal", "running"),
         ("shared_record_removal", "complete"),
+        ("branch_removal", "kept"),
     ]
     assert _git(repository, "show-ref", "--verify", "refs/heads/test/phase-report")
+
+
+def test_remove_workspace_reports_record_removal_before_branch_deletion(
+    repository, tmp_path
+):
+    context = create_workspace(
+        repository, tmp_path / "checkout", branch="test/phase-delete", purpose="test"
+    )
+    tip = _git(repository, "rev-parse", "refs/heads/test/phase-delete")
+    phases = []
+
+    remove_workspace(
+        context,
+        expected_branch_tip=tip,
+        on_phase=lambda phase, status: phases.append((phase, status)),
+    )
+
+    assert phases[-4:] == [
+        ("shared_record_removal", "running"),
+        ("shared_record_removal", "complete"),
+        ("branch_removal", "running"),
+        ("branch_removal", "deleted"),
+    ]
+    assert not context.record_path.exists()
+    assert not _branch_exists(repository, "test/phase-delete")
 
 
 def test_remove_workspace_uses_expected_tip_as_atomic_branch_delete_guard(
@@ -725,7 +750,7 @@ def test_remove_workspace_uses_expected_tip_as_atomic_branch_delete_guard(
 
     assert _git(repository, "rev-parse", "refs/heads/test/moving-tip") == advanced_tip
     assert not context.worktree_path.exists()
-    assert context.record_path.is_file()
+    assert not context.record_path.exists()
     assert phases[-2:] == [
         ("branch_removal", "running"),
         ("branch_removal", "failed"),
@@ -745,7 +770,7 @@ def test_remove_workspace_reports_checkout_deletion_failure(repository, tmp_path
         return original(argv, **kwargs)
 
     monkeypatch.setattr(core.subprocess, "run", failed_remove)
-    with pytest.raises(WorkspaceError, match="locked"):
+    with pytest.raises(WorkspaceError, match="partially removed.*locked"):
         remove_workspace(
             context, on_phase=lambda phase, status: phases.append((phase, status))
         )
@@ -905,10 +930,11 @@ def test_cleanup_git_and_branch_failures_leave_state(repository, tmp_path, monke
     monkeypatch.setattr(core.subprocess, "run", branch_failure)
     with pytest.raises(WorkspaceError, match="branch stdout"):
         remove_workspace(record)
-    assert context.record_path.exists()
+    assert not context.record_path.exists()
+    assert not context.worktree_path.exists()
     monkeypatch.undo()
-    # The checkout has been removed before branch deletion fails; the fixture's
-    # temporary repository owns the preserved record until teardown.
+    assert _git(repository, "show-ref", "--verify", "refs/heads/test/fail-clean")
+    # The branch ref remains available, and no workspace record is stranded.
 
 
 def test_acquire_lease_rejects_invalid_requests_and_conflicting_holder(repository, tmp_path):

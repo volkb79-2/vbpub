@@ -597,9 +597,9 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-148 | `docs/SPEC.md` S15.20 and `docs/DESIGN-NOTES.md` D8 cite dstdns `docs/KSM-OPTIN-MEASUREMENTS.md`, which dstdns merged into `docs/RESOURCE-GOVERNANCE.md` (dstdns docs-sync W20) | Low | OPEN |
 | CIU-149 | `tests/tests/test_ciu_cli_worktree.py::TestWorktreeCreateDispatch::test_forwards_all_options` fails in the registered `ciu` lane (and on origin/main): `--profile` without `--root-folder` hits the S16 selected-root refusal because ciu's own directory is not a CIU root, so `--maxfail=1` ends the lane as EMPTY_COVERAGE | Medium |
 | CIU-150 | `ciu up` preflight cannot prove a named governance slice is loaded on the Docker host from a cockpit (the `systemctl` check is skipped as inconclusive) and does not look at compose-authored `cgroup_parent` at all, so a stack such as cgprofile's can start under an implicit unbounded slice | Major | OPEN (filed 2026-10-21 from the cgprofile-v1.0.0 Sol review B4; cgprofile 1.1.0 added a daemon-side refusal as the interim guard) |
-| CIU-151 | `ciu worktree rm` cannot find a CIU root in an old checkout, so it refuses and only `--force` works (found 2026-10-05; operator-reported again 2026-10-21, text not recorded); related to CIU-115 (stale identity file) and CIU-134 (partial removal, third reproduction 2026-10-21) | Medium | FIXED — rm verifies the exact shared workspace record, root offset, primary committed CIU root, and durable identity, then runs identity-scoped clean from that root; temp-repository regression coverage (stage 1, 2026-11-02) |
+| CIU-151 | `ciu worktree rm` cannot find a CIU root in an old checkout, so it refuses and only `--force` works (found 2026-10-05; operator-reported again 2026-10-21, text not recorded); related to CIU-115 (stale identity file) and CIU-134 (partial removal, third reproduction 2026-10-21) | Medium | FIXED (2026-11-02) — target CIU root is passed as `--expected-checkout`; owner labels are checked against it, the primary's current identity is refused, and stubbed-Docker tests prove correct-volume removal plus wrong-owner and forged-primary refusals. `--force` can still strand resources after failed or unverifiable cleanup. |
 | CIU-152 | Worktree record schema v6 producer contract: `base_ref` pinned to the fork SHA, moving base named separately as `base_branch_ref` (the contract run-gate 24.1.0 reads) | Low | FIXED in the 7.18 wave by CIU-135 (ciu now emits schema 6); verify against the entry text before release |
-| CIU-154 | `ciu worktree branches -y` judges a checkout by `git status --porcelain`, which omits ignored files, then removes it with a `git worktree remove` that deletes them: a Git-clean checkout holding resumable `.assay/` mutation progress is classified `prunable` and silently destroyed, and the hint calls it "safe to remove" | High | FIXED — survey/prune and rm expose bounded ignored-state inventories, block only evidence-backed protected `.assay/` and root `vol-*` state absent an exact branch disposition, and preserve dirty's Git meaning; schema 3 (2026-11-02) |
+| CIU-154 | `ciu worktree branches -y` judges a checkout by `git status --porcelain`, which omits ignored files, then removes it with a `git worktree remove` that deletes them: a Git-clean checkout holding resumable `.assay/` mutation progress is classified `prunable` and silently destroyed, and the hint calls it "safe to remove" | High | FIXED (2026-11-02) — survey/prune and rm expose bounded ignored-state inventories, block `.assay/` and any `vol-*` path component absent exact consent, require separate exact consent for dirty checkout changes, recheck before deletion, and disclose unclassified ignored paths; schema 3 |
 | CIU-153 | `ciu worktree rm` deletes the branch with `git branch -D` even when it is not merged, with no `--keep-branch` and no documentation of it: unmerged commits survive only in the reflog (found 2026-10-19; 12 unmerged branches lost from one cleanup batch) | High | FIXED — default rm deletes only a tip proven merged into the recorded base, keeps and reports an unmerged tip; `--keep-branch` and `--delete-branch` expose explicit policy; library uses expected-tip compare-and-delete (2026-11-02) |
 | CIU-155 | CIU's suite loses fixture-owned monkeypatches and later launches `python -m ciu.cli` in a child that cannot import CIU when no distribution is installed | Low | FIXED — scoped patch contexts preserve fixture patches; the full suite passes with a source-importing runner and clean child venv (2026-11-02) |
 
@@ -5055,9 +5055,13 @@ Severity: High (it stands between a stopped production stack and its own data). 
 per-phase report with target resolution, resource cleanup, lease release,
 lifecycle preflight, checkout deletion, Git registration verification,
 branch action, and record removal. Stage 2 remains responsible for the
-consented permission-specific retry through S6.5; it must add its retry phase
-to this report and preserve already completed phase facts. No privileged
-helper is implemented in stage 1.**
+consented permission-specific retry through S6.5, including root-owned paths
+that cannot be inventoried or removed by the caller; it must add its retry
+phase to this report and preserve already completed phase facts. Stage 1
+retains unreadable ignored entries with their class and sizing error, then
+refuses protected state unless explicitly named. No privileged helper is
+implemented in stage 1. A failed checkout deletion reports that the checkout
+may be partially removed.**
 
 Severity: High (a lifecycle command can complete resource cleanup but leave a broken or orphaned checkout that requires manual privileged filesystem work). Type: bugfix. Owner: CIU's worktree adapter plus `libraries/worktree`'s checkout-removal lifecycle.
 
@@ -5573,11 +5577,14 @@ record, root, or identity cannot be verified; `--force` retains its separate mea
 Oracle: a temporary Git fixture with the target marker and local CIU record removed uses the recorded identity through the
 primary CIU root and removes the target only after cleanup succeeds.
 
-**Disposition (2026-11-02): FIXED for the record-backed old-checkout case.** `ciu worktree rm` reads the local record or its
-cross-checked shared-ledger snapshot, confirms the exact checkout path, branch, and root offset, verifies the committed root in
-the primary checkout, and runs `ciu clean --root-folder <primary-root> --identity <recorded-id>`. Missing or inconsistent source
-facts fail closed. The regression uses a temporary Git repository; no real worktree or Docker resource was removed. Permission-
-specific retry remains CIU-134 stage 2.
+**Disposition (2026-11-02): FIXED.** `ciu worktree rm` reads the local record or its cross-checked shared-ledger snapshot,
+confirms the exact checkout path, branch, and root offset, verifies the committed root in the primary checkout, and passes the
+record's target CIU root to `ciu clean --expected-checkout`. Clean checks each resource's owner label against that target and
+refuses when the requested identity is the primary root's current generated identity. Stubbed-Docker regression coverage proves
+a correctly labelled volume is removed, a different checkout's label refuses removal without removing the volume, and the
+primary identity is refused before Docker cleanup. The full hermetic CIU suite passes (4,767 passed, 9 skipped); CIU CLI, deploy,
+and worktree modules have 100% line and branch coverage. `--force` can continue after failed or unverifiable cleanup and strand
+resources, so it is not a cleanup remedy. Permission-specific retry remains CIU-134 stage 2.
 
 ## CIU-152 — worktree record schema v6: pin `base_ref` to the fork SHA and name the moving base separately as `base_branch_ref` (run-gate's R-35a reader already ships)
 
@@ -5617,9 +5624,9 @@ must change in the same release wave.
 5. **`--yes` never discards protected state.** `-y` prunes exactly `prunable` and reports each `merged-protected` branch as skipped with the protected paths and sizes. Discarding requires an explicit disposition naming the exact branch: `--discard-protected-state BRANCH` (repeatable; exact names, no glob and no `all`, so one flag cannot authorise an unseen set). The result lists what was discarded (path, file count, bytes) so the loss is recorded even when intended.
 6. **Indeterminate is not empty.** If ignored state cannot be enumerated for a checkout, that checkout is never `prunable` and the entry reports the failure and its cause (AGENTS.md anti-pattern 2, absence for emptiness). `ignored_state: []` means "read, and none".
 7. **Honest wording.** The hint no longer says "safe to remove". It says what was checked: "fully merged, no tracked or untracked changes, and no protected ignored state; ignored caches that `-y` will delete are listed per branch". `README` / `DESIGN-GUIDE` / `CONSUMERS` / `FEATURES` say the same, and the DESIGN-GUIDE records why `dirty` was not widened.
-8. **Same primitive, same rule.** `ciu worktree rm` adopts the same ignored-state classification and exact disposition. The stage-1 phase report leaves CIU-134's later permission-specific retry as a separate extension.
+8. **Same primitive, same rule.** `ciu worktree rm` adopts the same ignored-state classification and exact disposition, protects any `vol-*` path component below nested CIU roots, and requires separate exact consent for tracked or non-ignored untracked changes. It rechecks both state inventories immediately before deletion. The stage-1 phase report leaves CIU-134's later permission-specific retry as a separate extension.
 
-**Disposition.** The first class table is static inside CIU: `.assay/` and `vol-*` are the evidence-backed protected paths, and a per-tool declaration marker has no consumer yet. Add a class only with owner documentation and a reviewed change to the closed vocabulary.
+**Disposition.** The first class table is static inside CIU: `.assay/` and any `vol-*` path component are the evidence-backed protected paths, and a per-tool declaration marker has no consumer yet. Add a class only with owner documentation and a reviewed change to the closed vocabulary.
 
 **Oracles (behavioral; each asserts filesystem and Git outcomes, not command strings; none is timing-based).**
 1. *Protected state is exposed.* A real repository with `.assay/` git-ignored, a merged branch whose linked checkout contains `.assay/progress-lane.jsonl` and `.assay/state/resume.json`, and an otherwise clean tree: `git status --porcelain` is empty, yet the survey reports category `merged-protected`, lists `.assay` as `protected` with its file count and bytes, and the hint does not call it safe to remove.
@@ -5635,7 +5642,15 @@ must change in the same release wave.
 
 **Not covered here.** Whether `.run-gate/` evidence and the assay state should be one class or two, and whether a mutation lane's evidence belongs to the owner tool's own retention policy, are questions for run-gate and assay; this entry lists only what CIU can evidence today.
 
-**Disposition (2026-11-02): FIXED.** Survey entries now include grouped ignored paths, evidence-backed class, bounded file/byte counts, and a cap flag without following symlinks. `dirty` retains its Git meaning. `merged-protected` and `merged-ignored-unknown` cannot be pruned by default; exact repeatable branch dispositions authorize only named protected entries. Prune re-enumerates immediately before removal and reports skipped/discarded paths. `rm` applies the same protection and reports the inventory and confirmed discarded state. Temporary-repository tests cover nested `.assay`, benign cache/unclassified state, enumeration failure, exact disposition, and symlink safety; the user docs describe the schema-3 category update.
+**Disposition (2026-11-02): FIXED.** Survey entries now include grouped ignored paths, evidence-backed classes, bounded file/byte
+counts, and cap/error facts without following symlinks. `dirty` retains its Git meaning. Protected `.assay/` state and any
+`vol-*` path component, including below nested CIU roots, require exact branch consent; `rm` separately requires exact consent for
+tracked and non-ignored untracked changes. `rm` inventories ignored state and Git status again immediately before checkout
+deletion, reports the second inventory, and allows only the verified byte-count rewrite of its own record when clearing a lease.
+Unreadable protected entries remain classified and unsized, with the CIU-134 stage-2 privileged retry named in the refusal.
+Logs, artifacts, evidence, and other ignored paths are unclassified, disclosed, and removed. Checkout-deletion failures disclose
+partial removal. The full hermetic CIU suite passes (4,767 passed, 9 skipped) and CIU's touched CLI, deploy, and worktree modules
+have 100% line and branch coverage.
 
 ## CIU-153 — `ciu worktree rm` always deletes the branch, even one that is not merged, and has no way to keep it
 

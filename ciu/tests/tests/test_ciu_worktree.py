@@ -28,7 +28,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from ciu import worktree  # noqa: E402
+from ciu import deploy, worktree, workspace_env  # noqa: E402
 from ciu.config_constants import GLOBAL_CONFIG_DEFAULTS, GLOBAL_CONFIG_RENDERED  # noqa: E402
 
 _REAL_DOCKER_NETWORK_EXISTS = worktree._docker_network_exists
@@ -3608,7 +3608,9 @@ class TestStructuredControlDocuments:
             tmp_repo,
         ).returncode == 0
         monkeypatch.setattr(worktree, "_clean_in", lambda wt, *, yes: 0)
-        doc = worktree.remove_document(tmp_repo, "unmanaged", force=True)
+        doc = worktree.remove_document(
+            tmp_repo, "unmanaged", force=True, discard_changes="unmanaged"
+        )
         assert doc["operation"] == "remove"
         assert doc["status"] == "removed"
         assert "instance" not in doc
@@ -3635,34 +3637,141 @@ class TestStructuredControlDocuments:
         assert exc.value.document["phase_report"]["phases"]["checkout_deletion"] == "skipped"
         assert exc.value.document["branch"]["outcome"] == "not-deleted"
 
-    def test_remove_falls_back_to_primary_ciu_root_for_markerless_old_checkout(
+    def test_remove_document_preserves_deleted_branch_outcome_after_later_error(
         self, tmp_repo, fake_generate_env, monkeypatch
     ):
+        record = worktree.create(tmp_repo, "branch-removed-before-later-error")
+        tip = _git(["rev-parse", record.branch], tmp_repo).stdout.strip()
+        monkeypatch.setattr(worktree, "_clean_in", lambda *_args, **_kwargs: 0)
+        monkeypatch.setattr(
+            worktree, "_branch_removal_plan",
+            lambda *_args, **_kwargs: {
+                "name": record.branch, "tip": tip, "outcome": "deleted",
+                "delete": True, "reason": "merged",
+            },
+        )
+        shared = worktree._shared_worktree()
+        remove_workspace = shared.remove_workspace
+
+        def fail_after_branch_removal(shared_record, **kwargs):
+            report_phase = kwargs["on_phase"]
+
+            def fail_after_delete(phase, status):
+                report_phase(phase, status)
+                if phase == "branch_removal" and status == "deleted":
+                    raise RuntimeError("post-branch failure")
+
+            kwargs["on_phase"] = fail_after_delete
+            return remove_workspace(shared_record, **kwargs)
+
+        monkeypatch.setattr(shared, "remove_workspace", fail_after_branch_removal)
+
+        with pytest.raises(
+            worktree.WorktreeRemovalError, match="post-branch failure"
+        ) as exc:
+            worktree.remove_document(tmp_repo, record.logical_name)
+
+        assert exc.value.document["branch"]["outcome"] == "deleted"
+        assert exc.value.phase_report["phases"]["branch_removal"] == "deleted"
+        assert not record.git_worktree_path.exists()
+        assert _git(
+            ["show-ref", "--verify", f"refs/heads/{record.branch}"], tmp_repo
+        ).returncode != 0
+
+    @pytest.mark.parametrize(
+        ("label_owner", "forge_primary_identity", "removed"),
+        [("target", False, True), ("primary", False, False), ("target", True, False)],
+    )
+    def test_remove_fallback_cleans_only_the_recorded_checkout_identity(
+        self,
+        tmp_repo,
+        fake_generate_env,
+        monkeypatch,
+        label_owner,
+        forge_primary_identity,
+        removed,
+    ):
+        fake_generate_env(tmp_repo)
         record = worktree.create(tmp_repo, "old-root", base="main")
         marker = record.ciu_root / GLOBAL_CONFIG_DEFAULTS
         assert marker.is_file()
         marker.unlink()
-        record.record_path.unlink()
-        clean_calls = []
+        if not forge_primary_identity:
+            record.record_path.unlink()
+        primary_id = workspace_env.read_generated_facts(
+            tmp_repo, allow_repair=False
+        )["instance_id"]
+        cleanup_calls = []
+        owner = str(record.ciu_root if label_owner == "target" else tmp_repo)
 
-        def clean_from_primary(primary_root, instance_id, *, yes):
-            clean_calls.append((primary_root, instance_id, yes))
-            return 0
+        def docker(args, **kwargs):
+            cleanup_calls.append(list(args))
+            if (
+                args[:2] == ["volume", "ls"]
+                and f"label=ciu.instance={primary_id if forge_primary_identity else record.instance_id}"
+                in args
+            ):
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout=f"old-volume\t{owner}\t<no value>\n",
+                    stderr="",
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(deploy.procutil, "docker", docker)
+
+        def clean_from_primary(
+            primary_root, instance_id, *, expected_checkout, yes
+        ):
+            return deploy.action_clean_identity(
+                primary_root,
+                instance_id,
+                expected_checkout=expected_checkout,
+                yes=yes,
+            )
 
         monkeypatch.setattr(worktree, "_clean_with_primary_identity", clean_from_primary)
         monkeypatch.setattr(
             worktree, "_clean_in",
             lambda *_args, **_kwargs: pytest.fail("markerless checkout must use primary config"),
         )
+        if forge_primary_identity:
+            real_find_record = worktree.find_instance_record
+            monkeypatch.setattr(
+                worktree,
+                "find_instance_record",
+                lambda *args, **kwargs: replace(
+                    real_find_record(*args, **kwargs), instance_id=primary_id
+                ),
+            )
 
-        document = worktree.remove_document(
-            tmp_repo, "old-root", keep_branch=True
-        )
+        if removed:
+            document = worktree.remove_document(
+                tmp_repo,
+                "old-root",
+                yes=True,
+                keep_branch=True,
+                discard_changes=record.branch,
+            )
+            assert document["phase_report"]["phases"]["resource_cleanup"] == "complete"
+            assert not record.git_worktree_path.exists()
+        else:
+            with pytest.raises(worktree.WorktreeRemovalError):
+                worktree.remove_document(
+                    tmp_repo,
+                    "old-root",
+                    yes=True,
+                    keep_branch=True,
+                    discard_changes=record.branch,
+                )
+            assert record.git_worktree_path.is_dir()
 
-        assert clean_calls == [(tmp_repo, record.instance_id, False)]
-        assert not record.git_worktree_path.exists()
-        assert _git(["rev-parse", "--verify", record.branch], tmp_repo).returncode == 0
-        assert document["phase_report"]["phases"]["resource_cleanup"] == "complete"
+        volume_removals = [call for call in cleanup_calls if call[:2] == ["volume", "rm"]]
+        assert volume_removals == ([ ["volume", "rm", "old-volume"] ] if removed else [])
+        if forge_primary_identity:
+            assert cleanup_calls == []
+        if removed:
+            assert _git(["rev-parse", "--verify", record.branch], tmp_repo).returncode == 0
 
     def test_rm_refuses_protected_assay_state_before_clean_without_exact_disposition(
         self, tmp_repo, fake_generate_env, monkeypatch
@@ -3720,6 +3829,349 @@ class TestStructuredControlDocuments:
         }
         assert document["phase_report"]["phases"]["branch_removal"] == "deleted"
         assert not record.git_worktree_path.exists()
+
+    def test_rm_protects_volume_directory_below_nested_ciu_root(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        nested = tmp_repo / "mattermost-server"
+        nested.mkdir()
+        (nested / GLOBAL_CONFIG_DEFAULTS).write_text("[ciu]\n", encoding="utf-8")
+        (tmp_repo / GLOBAL_CONFIG_DEFAULTS).unlink()
+        ignore = tmp_repo / ".gitignore"
+        ignore.write_text(
+            ignore.read_text(encoding="utf-8") + "mattermost-server/vol-*/\n",
+            encoding="utf-8",
+        )
+        _git(["add", "-A"], tmp_repo)
+        _git(["commit", "-m", "move ciu root below project directory"], tmp_repo)
+
+        record = worktree.create(nested, "nested-volume", base="main")
+        data = (
+            record.git_worktree_path
+            / "mattermost-server"
+            / "vol-postgres-data"
+            / "database.bin"
+        )
+        data.parent.mkdir(parents=True)
+        data.write_bytes(b"db")
+        monkeypatch.setattr(
+            worktree, "_clean_in", lambda *_args, **_kwargs: pytest.fail("must refuse first")
+        )
+
+        with pytest.raises(
+            worktree.WorktreeRemovalError, match="mattermost-server/vol-postgres-data"
+        ) as exc:
+            worktree.remove_document(nested, record.logical_name, yes=True)
+
+        protected = next(
+            item for item in exc.value.document["ignored_state"]
+            if item["path"] == "mattermost-server/vol-postgres-data"
+        )
+        assert protected == {
+            "path": "mattermost-server/vol-postgres-data",
+            "class": "protected",
+            "file_count": 1,
+            "bytes": 2,
+            "capped": False,
+        }
+        assert record.git_worktree_path.is_dir()
+        assert data.read_bytes() == b"db"
+
+    def test_rm_requires_exact_consent_for_tracked_and_untracked_changes(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        for name, path, contents in (
+            ("dirty-tracked", "README.md", "changed\n"),
+            ("dirty-untracked", "operator.txt", "untracked\n"),
+        ):
+            record = worktree.create(tmp_repo, name, base="main")
+            change = record.git_worktree_path / path
+            change.write_text(contents, encoding="utf-8")
+            clean_calls = []
+            monkeypatch.setattr(
+                worktree, "_clean_in",
+                lambda *_args, **_kwargs: clean_calls.append(True) or 0,
+            )
+
+            with pytest.raises(
+                worktree.WorktreeRemovalError, match=f"uncommitted changes.*{path}"
+            ) as exc:
+                worktree.remove_document(tmp_repo, name)
+
+            assert exc.value.phase_report["phases"]["resource_cleanup"] == "skipped-dirty-changes"
+            assert clean_calls == []
+            assert change.is_file()
+            document = worktree.remove_document(
+                tmp_repo, name, discard_changes=record.branch
+            )
+            assert document["discarded_changes"] == [path]
+            assert document["status"] == "removed"
+
+    @pytest.mark.parametrize(
+        ("disposition", "match"),
+        [
+            ("wrong-branch", "exact checkout branch"),
+            ("all", "not 'all'"),
+            (["one", "two"], "one exact --discard-changes"),
+        ],
+    )
+    def test_rm_rejects_invalid_change_dispositions(
+        self, tmp_repo, fake_generate_env, disposition, match
+    ):
+        record = worktree.create(tmp_repo, "change-disposition", branch="exact-branch")
+        (record.git_worktree_path / "work.txt").write_text("work\n", encoding="utf-8")
+
+        with pytest.raises(worktree.WorktreeRemovalError, match=match):
+            worktree.remove_document(
+                tmp_repo, record.logical_name, discard_changes=disposition
+            )
+
+    def test_rm_rejects_change_disposition_when_checkout_is_clean(
+        self, tmp_repo, fake_generate_env
+    ):
+        record = worktree.create(tmp_repo, "clean-change-disposition")
+        with pytest.raises(worktree.WorktreeRemovalError, match="no uncommitted changes"):
+            worktree.remove_document(
+                tmp_repo, record.logical_name, discard_changes=record.branch
+            )
+        with pytest.raises(worktree.WorktreeRemovalError, match="exact checkout branch"):
+            worktree.remove_document(
+                tmp_repo, record.logical_name, discard_changes="wrong-branch"
+            )
+
+    def test_worktree_change_paths_reports_renames_and_skips_only_its_record(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        record = worktree.create(tmp_repo, "change-path-parser")
+        record_path = record.record_path.relative_to(record.git_worktree_path).as_posix()
+        status = (
+            " M tracked.txt\0?? untracked.txt\0R  renamed.txt\0old-name.txt\0"
+            "C  copied.txt\0source.txt\0?? " + record_path
+            + "\0R  unknown-rename.txt\0"
+        )
+        monkeypatch.setattr(
+            worktree,
+            "_git",
+            lambda *_args: subprocess.CompletedProcess([], 0, status, ""),
+        )
+
+        assert worktree._worktree_change_paths(record.git_worktree_path, record) == [
+            "copied.txt", "old-name.txt", "renamed.txt", "source.txt",
+            "tracked.txt", "unknown-rename.txt", "untracked.txt",
+        ]
+
+    @pytest.mark.parametrize(
+        ("returncode", "stderr", "match"),
+        [(1, "status unavailable", "could not inspect uncommitted changes"),
+         (0, "", "CIU record .* is outside checkout")],
+    )
+    def test_worktree_change_paths_refuses_unknown_status_or_external_record(
+        self, tmp_repo, fake_generate_env, monkeypatch, returncode, stderr, match
+    ):
+        record = worktree.create(tmp_repo, "change-path-refusal")
+        monkeypatch.setattr(
+            worktree,
+            "_git",
+            lambda *_args: subprocess.CompletedProcess([], returncode, "", stderr),
+        )
+        target_record = (
+            replace(record, git_worktree_path=tmp_repo / "elsewhere")
+            if returncode == 0 else record
+        )
+
+        with pytest.raises(worktree.WorktreeError, match=match):
+            worktree._worktree_change_paths(record.git_worktree_path, target_record)
+
+    def test_ignored_inventory_allows_only_a_verified_nested_lease_record_rewrite(
+        self, tmp_repo, fake_generate_env
+    ):
+        record = worktree.create(tmp_repo, "nested-lease-record")
+        leased = replace(
+            worktree.acquire_lease(record, ttl_hours=24, holder="test-holder"),
+            ciu_root_offset=Path("mattermost-server"),
+        )
+        initial = [{
+            "path": "mattermost-server/ciu.worktree-instance.json",
+            "class": "regenerable", "file_count": 1, "bytes": 980,
+            "capped": False,
+        }]
+        latest = [{**initial[0], "bytes": 740}]
+
+        assert worktree._ignored_state_changed(
+            initial, latest, checkout=record.git_worktree_path, record=leased
+        ) is False
+        assert worktree._ignored_state_changed(
+            initial, latest, checkout=record.git_worktree_path,
+            record=worktree.release_lease(leased),
+        ) is True
+
+    def test_rm_refuses_unexpected_worktree_record_changes_during_cleanup(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        record = worktree.create(tmp_repo, "record-changed-during-clean")
+        worktree.apply_lease(tmp_repo, record.logical_name, extend="24h")
+
+        def clean_and_change_record(_checkout, *, yes):
+            current = worktree.read_instance_record(record.record_path)
+            worktree._write_instance_record(
+                replace(current, display_name="concurrent-edit")
+            )
+            return 0
+
+        monkeypatch.setattr(worktree, "_clean_in", clean_and_change_record)
+
+        with pytest.raises(
+            worktree.WorktreeRemovalError,
+            match="worktree record changed during cleanup",
+        ) as exc:
+            worktree.remove_document(tmp_repo, record.logical_name)
+
+        assert exc.value.phase_report["phases"]["lease_release"] == "failed"
+        assert record.git_worktree_path.is_dir()
+
+    def test_rm_rechecks_ignored_inventory_after_cleanup(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        ignore = tmp_repo / ".gitignore"
+        ignore.write_text(ignore.read_text(encoding="utf-8") + ".assay/\n", encoding="utf-8")
+        _git(["add", ".gitignore"], tmp_repo)
+        _git(["commit", "-m", "ignore assay state"], tmp_repo)
+        record = worktree.create(tmp_repo, "inventory-changed")
+
+        def clean_and_write_assay(_checkout, *, yes):
+            progress = record.git_worktree_path / ".assay" / "progress.jsonl"
+            progress.parent.mkdir()
+            progress.write_text("new progress\n", encoding="utf-8")
+            return 0
+
+        monkeypatch.setattr(worktree, "_clean_in", clean_and_write_assay)
+        with pytest.raises(
+            worktree.WorktreeRemovalError, match="ignored state changed since the initial inventory"
+        ) as exc:
+            worktree.remove_document(tmp_repo, record.logical_name)
+
+        assay_state = next(
+            item for item in exc.value.document["ignored_state"]
+            if item["path"] == ".assay"
+        )
+        assert assay_state == {
+            "path": ".assay", "class": "protected", "file_count": 1,
+            "bytes": len("new progress\n"), "capped": False,
+        }
+        assert exc.value.document["discarded_state"] == []
+        assert record.git_worktree_path.is_dir()
+
+    def test_unreadable_protected_ignored_entry_is_retained_as_unsized(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        ignore = tmp_repo / ".gitignore"
+        ignore.write_text(ignore.read_text(encoding="utf-8") + "vol-*/\n", encoding="utf-8")
+        _git(["add", ".gitignore"], tmp_repo)
+        _git(["commit", "-m", "ignore volumes"], tmp_repo)
+        record = worktree.create(tmp_repo, "unreadable-volume")
+        volume = record.git_worktree_path / "vol-postgres-data"
+        volume.mkdir()
+        (volume / "hidden.bin").write_bytes(b"hidden")
+        real_scandir = worktree.os.scandir
+
+        def denied_scandir(path):
+            if Path(path) == volume:
+                raise PermissionError("denied")
+            return real_scandir(path)
+
+        monkeypatch.setattr(worktree.os, "scandir", denied_scandir)
+        monkeypatch.setattr(
+            worktree, "_clean_in", lambda *_args, **_kwargs: pytest.fail("must refuse first")
+        )
+
+        with pytest.raises(
+            worktree.WorktreeRemovalError,
+            match="size unavailable: PermissionError: denied.*CIU-134 stage 2",
+        ) as exc:
+            worktree.remove_document(tmp_repo, record.logical_name)
+
+        item = next(
+            item for item in exc.value.document["ignored_state"]
+            if item["path"] == "vol-postgres-data"
+        )
+        assert item == {
+            "path": "vol-postgres-data", "class": "protected", "file_count": 0,
+            "bytes": 0, "capped": True, "size_error": "PermissionError: denied",
+        }
+        assert record.git_worktree_path.is_dir()
+
+    def test_rm_reports_ignored_inventory_recheck_failure(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        record = worktree.create(tmp_repo, "ignored-recheck-failure")
+        original = worktree._ignored_state_summary
+        calls = 0
+
+        def fail_second_inventory(checkout):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise worktree.WorktreeError("second inventory unavailable")
+            return original(checkout)
+
+        monkeypatch.setattr(worktree, "_ignored_state_summary", fail_second_inventory)
+        monkeypatch.setattr(worktree, "_clean_in", lambda *_args, **_kwargs: 0)
+
+        with pytest.raises(
+            worktree.WorktreeRemovalError, match="second inventory unavailable"
+        ) as exc:
+            worktree.remove_document(tmp_repo, record.logical_name)
+
+        assert exc.value.phase_report["phases"]["lifecycle_preflight"] == "failed"
+        assert record.git_worktree_path.is_dir()
+
+    def test_rm_reports_status_recheck_failure(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        record = worktree.create(tmp_repo, "status-recheck-failure")
+        original = worktree._worktree_change_paths
+        calls = 0
+
+        def fail_second_status(checkout, managed):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise worktree.WorktreeError("second status unavailable")
+            return original(checkout, managed)
+
+        monkeypatch.setattr(worktree, "_worktree_change_paths", fail_second_status)
+        monkeypatch.setattr(worktree, "_clean_in", lambda *_args, **_kwargs: 0)
+
+        with pytest.raises(
+            worktree.WorktreeRemovalError, match="second status unavailable"
+        ) as exc:
+            worktree.remove_document(tmp_repo, record.logical_name)
+
+        assert exc.value.phase_report["phases"]["lifecycle_preflight"] == "failed"
+        assert record.git_worktree_path.is_dir()
+
+    def test_rm_refuses_changes_created_during_cleanup(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        record = worktree.create(tmp_repo, "changes-during-clean")
+
+        def clean_and_create_change(_checkout, *, yes):
+            (record.git_worktree_path / "during-clean.txt").write_text(
+                "created during cleanup\n", encoding="utf-8"
+            )
+            return 0
+
+        monkeypatch.setattr(worktree, "_clean_in", clean_and_create_change)
+
+        with pytest.raises(
+            worktree.WorktreeRemovalError,
+            match="uncommitted changes changed since the initial inventory",
+        ) as exc:
+            worktree.remove_document(tmp_repo, record.logical_name)
+
+        assert exc.value.document["ignored_state"]
+        assert record.git_worktree_path.is_dir()
+        assert (record.git_worktree_path / "during-clean.txt").is_file()
 
 
 class TestRemovalBranchSafety:
@@ -3824,7 +4276,7 @@ class TestRemovalBranchSafety:
         assert exc.value.document["branch"]["outcome"] == "failed"
         assert exc.value.phase_report["phases"]["branch_removal"] == "failed"
 
-    def test_rm_preserves_deleted_outcome_when_shared_record_removal_fails(
+    def test_rm_preserves_branch_when_shared_record_removal_fails(
         self, tmp_repo, fake_generate_env, monkeypatch
     ):
         record, _tip = self._created_branch(
@@ -3851,13 +4303,13 @@ class TestRemovalBranchSafety:
                 tmp_repo, record.logical_name, delete_branch=True
             )
 
-        assert exc.value.phase_report["phases"]["branch_removal"] == "deleted"
+        assert exc.value.phase_report["phases"]["branch_removal"] == "skipped"
         assert exc.value.phase_report["phases"]["shared_record_removal"] == "failed"
-        assert exc.value.document["branch"]["outcome"] == "deleted"
+        assert exc.value.document["branch"]["outcome"] == "not-deleted"
         assert not record.git_worktree_path.exists()
         assert _git(
             ["rev-parse", "--verify", f"refs/heads/{record.branch}"], tmp_repo
-        ).returncode != 0
+        ).returncode == 0
 
     def test_rm_reports_detached_branch_as_skipped(self, tmp_repo, monkeypatch):
         target = tmp_repo.parent / "detached-remove"
@@ -3885,6 +4337,28 @@ class TestRemovalBranchSafety:
         assert document["branch"]["outcome"] == "skipped-detached"
         assert document["phase_report"]["phases"]["branch_removal"] == "skipped-detached"
         assert not target.exists()
+
+    def test_rm_requires_local_branch_consent_for_dirty_detached_checkout(
+        self, tmp_repo, monkeypatch
+    ):
+        target = tmp_repo.parent / "dirty-detached-remove"
+        assert _git(
+            ["worktree", "add", "--detach", str(target), "main"], tmp_repo
+        ).returncode == 0
+        changed = target / "README.md"
+        changed.write_text("local edit\n", encoding="utf-8")
+        monkeypatch.setattr(
+            worktree, "_clean_in",
+            lambda *_args, **_kwargs: pytest.fail("must refuse before cleanup"),
+        )
+
+        with pytest.raises(
+            worktree.WorktreeRemovalError,
+            match="uncommitted changes remain in detached checkout.*attach it",
+        ):
+            worktree.remove_document(tmp_repo, target.name)
+        assert changed.is_file()
+        assert target.is_dir()
 
 
 class TestRemovalHelpers:
@@ -4017,9 +4491,17 @@ class TestRemovalHelpers:
             lambda argv, **kwargs: (calls.append((argv, kwargs)) or
                                     subprocess.CompletedProcess(argv, 0)),
         )
-        assert worktree._clean_with_primary_identity(tmp_repo, "right-id", yes=True) == 0
+        assert worktree._clean_with_primary_identity(
+            tmp_repo,
+            "right-id",
+            expected_checkout=tmp_repo / "old-checkout",
+            yes=True,
+        ) == 0
         argv, kwargs = calls[0]
         assert argv[-1] == "-y" and "right-id" in argv
+        assert argv[argv.index("--expected-checkout") + 1] == str(
+            tmp_repo / "old-checkout"
+        )
         assert kwargs["cwd"] == str(tmp_repo)
         assert kwargs["env"].get("CIU_SERVICES_PROFILE") is None
         monkeypatch.setattr(
@@ -4027,7 +4509,12 @@ class TestRemovalHelpers:
             lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("no python")),
         )
         with pytest.raises(worktree.WorktreeError, match="could not run identity-scoped clean"):
-            worktree._clean_with_primary_identity(tmp_repo, "right-id", yes=False)
+            worktree._clean_with_primary_identity(
+                tmp_repo,
+                "right-id",
+                expected_checkout=tmp_repo / "old-checkout",
+                yes=False,
+            )
 
     def test_branch_removal_plan_fails_closed_for_missing_merge_evidence(
         self, tmp_repo, monkeypatch
@@ -4152,6 +4639,10 @@ class TestRemovalRefusals:
             worktree.remove(
                 tmp_repo, target.name, force=True, discard_protected_state="main"
             )
+        with pytest.raises(worktree.WorktreeRemovalError, match="applies only to a checkout on a local branch"):
+            worktree.remove(
+                tmp_repo, target.name, force=True, discard_changes="main"
+            )
 
     def test_rm_resolves_logical_shared_record_without_local_branch_name(
         self, tmp_repo, fake_generate_env, monkeypatch
@@ -4257,6 +4748,22 @@ class TestRemovalRefusals:
                 == "skipped-ignored-state-unknown"
             )
 
+        with monkeypatch.context() as m:
+            m.setattr(
+                worktree, "_worktree_change_paths",
+                lambda *_args: (_ for _ in ()).throw(
+                    worktree.WorktreeError("status unavailable")
+                ),
+            )
+            with pytest.raises(
+                worktree.WorktreeRemovalError, match="status unavailable"
+            ) as exc:
+                worktree.remove_document(tmp_repo, record.logical_name)
+            assert (
+                exc.value.phase_report["phases"]["resource_cleanup"]
+                == "failed-status-inspection"
+            )
+
         monkeypatch.setattr(
             worktree, "_branch_removal_plan",
             lambda *_args, **_kwargs: (_ for _ in ()).throw(worktree.WorktreeError("tip missing")),
@@ -4282,6 +4789,7 @@ class TestRemovalRefusals:
         [
             ("wrong-branch", "exact checkout branch"),
             ("physical-branch", "no protected ignored state"),
+            ("all", "not 'all'"),
         ],
     )
     def test_rm_rejects_invalid_protected_state_dispositions(
@@ -4353,7 +4861,11 @@ class TestRemovalRefusals:
             message = "ciu clean.*failed"
 
         with pytest.raises(worktree.WorktreeRemovalError, match=message) as exc:
-            worktree.remove_document(tmp_repo, record.logical_name)
+            worktree.remove_document(
+                tmp_repo,
+                record.logical_name,
+                discard_changes=record.branch,
+            )
         assert exc.value.phase_report["phases"]["resource_cleanup"] == "failed"
         assert record.git_worktree_path.is_dir()
 

@@ -1140,6 +1140,7 @@ def _removal_fixture(monkeypatch, tmp_path):
     monkeypatch.setattr(worktree, "_clean_in", lambda *_args, **_kwargs: 0)
     monkeypatch.setattr(worktree, "release_own_lease", lambda *_args: None)
     monkeypatch.setattr(worktree, "_ignored_state_summary", lambda _path: [])
+    monkeypatch.setattr(worktree, "_worktree_change_paths", lambda *_args: [])
     monkeypatch.setattr(
         worktree,
         "_branch_removal_plan",

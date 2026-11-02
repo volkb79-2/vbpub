@@ -1048,14 +1048,15 @@ owned HTTP/OpenAPI contract.
 
 ## Why worktree removal preserves refs and reports ignored state (CIU-151/153/154)
 
-`rm` has two facts to establish before deleting anything: which CIU identity
-owns a markerless old checkout, and whether its branch tip is already present
-in the intended base. The old checkout cannot supply a root it no longer has;
-the exact shared workspace record can supply the identity and root offset, and
-the primary checkout can supply the committed root at that offset. `rm`
-cross-checks both before running identity-scoped cleanup. If either fact is
-missing or disagrees, it refuses instead of treating missing data as an
-empty-resource result.
+`rm` establishes who owns a markerless old checkout before cleaning it. The
+exact shared workspace record supplies its identity and root offset; the
+primary checkout supplies the committed CIU root at that offset. Identity
+cleanup receives the target's CIU root as `--expected-checkout`, so Docker
+labels must prove that exact owner. CIU also rejects an identity matching the
+primary root's current generated identity. An edited or stale record therefore
+cannot redirect cleanup at the primary stack, and a label mismatch leaves the
+checkout in place. `--force` can still proceed after a failed clean, so the
+error says resources may be stranded.
 
 The branch policy belongs in CIU because mergedness depends on its recorded
 base branch. A tip contained in that branch is deleted with an expected-tip
@@ -1064,22 +1065,34 @@ kept and printed; `--keep-branch` and `--delete-branch` make operator intent
 explicit. The neutral worktree library only implements conditional ref
 deletion and lifecycle callbacks, leaving product policy to its adapter.
 
-Git's `dirty` result intentionally keeps its original meaning: tracked and
-non-ignored untracked changes. Ignored data is a separate inventory because
-some ignored paths are regenerable caches while `.assay/` holds resumable
-progress and `vol-*` holds CIU stack data. CIU discloses every ignored group
-with bounded sizes and assigns only evidence-backed classes: protected,
-regenerable, or unclassified. Only protected state blocks by default, and an
-exact branch disposition is required to remove it. This prevents the survey
-from treating resumable data as empty without making ordinary caches a false
-refusal.
+Git's dirty result retains its existing meaning: tracked and non-ignored
+untracked changes. `rm` requires an exact `--discard-changes BRANCH` when those
+paths exist; `-y` alone does not authorize their loss. Ignored data has a
+separate inventory because some paths are regenerable, `.assay/` holds
+resumable progress, and `vol-*` directories hold CIU stack data. Any `vol-*`
+path component is protected, including below a nested CIU root. Logs,
+artifacts, evidence and other ignored paths remain unclassified and are
+disclosed before deletion. Protected ignored state requires its own exact
+branch disposition.
+
+The inventory is read once before cleanup and once again just before checkout
+deletion. Cleanup may take minutes, so CIU refuses if ignored state changed
+during that interval and reports the second inventory. When successful cleanup
+clears the worktree lease, CIU checks the resulting record against the exact
+expected lease-only update and allows its byte count to change; other record
+changes still refuse. A permission error while sizing an ignored directory
+keeps its class in the inventory with a capped, unsized marker and the error
+reason. Stage 1 does not add privileged removal; that permission-specific
+retry remains in CIU-134 stage 2.
 
 The `rm --json` phase report records resolution, resource cleanup, lease
 release, lifecycle preflight, checkout deletion, registration verification,
-branch action, and record removal separately. Its stable schema gives the
-later CIU-134 permission-retry stage a place to report an added retry phase
-without rewriting what already completed. The retry helper itself is a
-separate stage; this change does not start privileged work.
+branch action, and record removal separately. A failed JSON removal still
+prints its failure document to stdout and the diagnostic to stderr. Git can
+partially delete a checkout before returning an error, so the error names that
+possibility. The shared library removes its workspace record before its
+compare-and-delete branch action; a concurrent branch move therefore leaves a
+usable branch without stranding a workspace record.
 
 The normative contract is in [SPEC S16.4 and S16.8](SPEC.md#s16--worktree-instances-ciu-worktree),
 with pasteable commands in [CONSUMERS §5 and §5b](CONSUMERS.md#5-remove-and-read-the-removal-document).

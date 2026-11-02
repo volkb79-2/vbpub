@@ -1191,7 +1191,9 @@ def remove_workspace(
             if on_phase is not None:
                 on_phase("checkout_deletion", "failed")
             raise WorkspaceError(
-                f"git worktree remove failed ({result.returncode}): {(result.stderr or result.stdout).strip()}",
+                f"git worktree remove failed ({result.returncode}) for "
+                f"{current.worktree_path}; checkout may be partially removed: "
+                f"{(result.stderr or result.stdout).strip()}",
                 category="cleanup-refusal",
             )
         if on_phase is not None:
@@ -1220,6 +1222,17 @@ def remove_workspace(
             )
         if on_phase is not None:
             on_phase("git_registration", "complete")
+
+        if on_phase is not None:
+            on_phase("shared_record_removal", "running")
+        try:
+            current.record_path.unlink(missing_ok=True)
+        except OSError:
+            if on_phase is not None:
+                on_phase("shared_record_removal", "failed")
+            raise
+        if on_phase is not None:
+            on_phase("shared_record_removal", "complete")
 
         if delete_branch and current.branch != "HEAD":
             if on_phase is not None:
@@ -1251,17 +1264,6 @@ def remove_workspace(
                 "branch_removal",
                 "skipped-detached" if current.branch == "HEAD" else "kept",
             )
-
-        if on_phase is not None:
-            on_phase("shared_record_removal", "running")
-        try:
-            current.record_path.unlink(missing_ok=True)
-        except OSError:
-            if on_phase is not None:
-                on_phase("shared_record_removal", "failed")
-            raise
-        if on_phase is not None:
-            on_phase("shared_record_removal", "complete")
 
 
 def remove_orphan_workspace(

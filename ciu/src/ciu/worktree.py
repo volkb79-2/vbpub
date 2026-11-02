@@ -2516,6 +2516,7 @@ def remove_document(
     keep_branch: bool = False,
     delete_branch: bool = False,
     discard_protected_state: str | tuple[str, ...] | list[str] | None = None,
+    discard_changes: str | tuple[str, ...] | list[str] | None = None,
 ) -> dict[str, Any]:
     """Run clean-then-remove and return its versioned lifecycle report."""
     repo_root = Path(repo_root).resolve()
@@ -2526,6 +2527,7 @@ def remove_document(
             repo_root, name, yes=yes, force=force,
             keep_branch=keep_branch, delete_branch=delete_branch,
             discard_protected_state=discard_protected_state,
+            discard_changes=discard_changes,
             _phase_report=phase_report, _details=details,
         )
     except WorktreeRemovalError as exc:
@@ -2539,7 +2541,9 @@ def remove_document(
         record = details.get("record")
         if record is not None:
             exc.document["instance"] = record.to_dict()
-        for key in ("branch", "ignored_state", "discarded_state"):
+        for key in (
+            "branch", "ignored_state", "discarded_state", "discarded_changes",
+        ):
             if key in details:
                 exc.document[key] = details[key]
         branch = exc.document.get("branch")
@@ -2563,6 +2567,7 @@ def remove_document(
         "branch": details["branch"],
         "ignored_state": details["ignored_state"],
         "discarded_state": details["discarded_state"],
+        "discarded_changes": details["discarded_changes"],
     }
     record = details.get("record")
     if record is not None:
@@ -2727,46 +2732,54 @@ def _ignored_state_group(relative: str) -> tuple[str, str]:
         assay_index = -1
     if assay_index >= 0:
         return "/".join(parts[: assay_index + 1]), "protected"
-    if parts[0].startswith("vol-"):
-        return parts[0], "protected"
-    cache_names = {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"}
+    volume_index = next(
+        (index for index, part in enumerate(parts) if part.startswith("vol-")),
+        -1,
+    )
+    if volume_index >= 0:
+        return "/".join(parts[: volume_index + 1]), "protected"
     if parts[0] in _REGENERABLE_IGNORED_NAMES:
         return parts[0], "regenerable"
     for index, part in enumerate(parts):
-        if part in cache_names:
+        if part in _REGENERABLE_IGNORED_NAMES:
             return "/".join(parts[: index + 1]), "regenerable"
     return parts[0], "unclassified"
 
 
-def _measure_ignored_entry(checkout: Path, relative: str) -> tuple[int, int, bool]:
+def _measure_ignored_entry(
+    checkout: Path, relative: str,
+) -> tuple[int, int, bool, str | None]:
     """Measure ignored content without following symlinks and with hard caps."""
     root = checkout / Path(*PurePosixPath(relative).parts)
     pending = [root]
     file_count = 0
     byte_count = 0
     capped = False
-    while pending:
-        path = pending.pop()
-        mode = path.lstat().st_mode
-        if stat.S_ISDIR(mode):
-            with os.scandir(path) as children:
-                for child in children:
-                    if len(pending) + file_count >= _IGNORED_STATE_MAX_FILES:
-                        capped = True
-                        break
-                    pending.append(Path(child.path))
-            if capped:
+    try:
+        while pending:
+            path = pending.pop()
+            mode = path.lstat().st_mode
+            if stat.S_ISDIR(mode):
+                with os.scandir(path) as children:
+                    for child in children:
+                        if len(pending) + file_count >= _IGNORED_STATE_MAX_FILES:
+                            capped = True
+                            break
+                        pending.append(Path(child.path))
+                if capped:
+                    break
+                continue
+            file_count += 1
+            byte_count += path.lstat().st_size
+            if byte_count > _IGNORED_STATE_MAX_BYTES:
+                byte_count = _IGNORED_STATE_MAX_BYTES
+                capped = True
+            if file_count >= _IGNORED_STATE_MAX_FILES:
+                capped = capped or bool(pending)
                 break
-            continue
-        file_count += 1
-        byte_count += path.lstat().st_size
-        if byte_count > _IGNORED_STATE_MAX_BYTES:
-            byte_count = _IGNORED_STATE_MAX_BYTES
-            capped = True
-        if file_count >= _IGNORED_STATE_MAX_FILES:
-            capped = capped or bool(pending)
-            break
-    return file_count, byte_count, capped
+    except OSError as exc:
+        return 0, 0, True, f"{type(exc).__name__}: {exc}"
+    return file_count, byte_count, capped, None
 
 
 def _ignored_state_summary(checkout: Path) -> list[dict[str, Any]]:
@@ -2810,20 +2823,103 @@ def _ignored_state_summary(checkout: Path) -> list[dict[str, Any]]:
             raise WorktreeError(
                 f"[S16.8] ignored entry {display_path!r} has conflicting classes"
             )
-        try:
-            file_count, byte_count, capped = _measure_ignored_entry(checkout, relative)
-        except OSError as exc:
-            raise WorktreeError(
-                f"[S16.8] could not size ignored entry {checkout / relative}: {exc}"
-            ) from exc
-        current["file_count"] += file_count
-        current["bytes"] = min(
-            _IGNORED_STATE_MAX_BYTES, current["bytes"] + byte_count
+        file_count, byte_count, capped, size_error = _measure_ignored_entry(
+            checkout, relative
         )
-        current["capped"] = current["capped"] or capped or (
-            current["bytes"] == _IGNORED_STATE_MAX_BYTES
-        )
+        if size_error is not None:
+            current["file_count"] = 0
+            current["bytes"] = 0
+            current["capped"] = True
+            current["size_error"] = size_error
+        elif "size_error" not in current:
+            current["file_count"] += file_count
+            current["bytes"] = min(
+                _IGNORED_STATE_MAX_BYTES, current["bytes"] + byte_count
+            )
+            current["capped"] = current["capped"] or capped or (
+                current["bytes"] == _IGNORED_STATE_MAX_BYTES
+            )
     return [grouped[path] for path in sorted(grouped)]
+
+
+def _format_ignored_state_item(item: dict[str, Any]) -> str:
+    """Render one measured or unreadable ignored-state group."""
+    if item.get("size_error"):
+        return f"{item['path']} ({item['class']}, size unavailable: {item['size_error']})"
+    return (
+        f"{item['path']} ({item['class']}, {item['file_count']} file(s), "
+        f"{item['bytes']} bytes)"
+    )
+
+
+def _ignored_state_changed(
+    initial: list[dict[str, Any]],
+    latest: list[dict[str, Any]],
+    *,
+    checkout: Path,
+    record: WorktreeInstanceRecord | None,
+) -> bool:
+    """Compare inventories, allowing CIU's successful lease rewrite of its record."""
+    if record is None or record.lease is None:
+        return initial != latest
+    # `_worktree_change_paths` has already established that this record belongs
+    # to the checkout; a violated invariant must fail closed at this boundary.
+    record_path = record.record_path.relative_to(checkout).as_posix()
+
+    def normalized(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        result = []
+        for item in items:
+            current = dict(item)
+            if (
+                current["path"] == record_path
+                and current["class"] == "regenerable"
+            ):
+                # Successful cleanup clears the lease and rewrites this
+                # regenerable metadata file. Its presence/class remain part of
+                # the inventory; only its expected byte-size change is ignored.
+                current.pop("bytes", None)
+            result.append(current)
+        return result
+
+    return normalized(initial) != normalized(latest)
+
+
+def _worktree_change_paths(
+    checkout: Path, record: WorktreeInstanceRecord | None,
+) -> list[str]:
+    """Read tracked and non-ignored untracked paths, allowing only CIU's record."""
+    result = _git(
+        ["status", "--porcelain=v1", "-z", "--untracked-files=all"], checkout
+    )
+    if result.returncode != 0:
+        raise WorktreeError(
+            f"[S16] could not inspect uncommitted changes in {checkout}: "
+            f"{(result.stderr or result.stdout).strip()}"
+        )
+    record_path: str | None = None
+    if record is not None:
+        try:
+            record_path = record.record_path.relative_to(checkout).as_posix()
+        except ValueError as exc:
+            raise WorktreeError(
+                f"[S16] CIU record {record.record_path} is outside checkout {checkout}"
+            ) from exc
+
+    raw_entries = [entry for entry in result.stdout.split("\0") if entry]
+    paths: list[str] = []
+    index = 0
+    while index < len(raw_entries):
+        entry = raw_entries[index]
+        status, path = entry[:2], entry[3:]
+        index += 1
+        if status == "??" and path == record_path:
+            continue
+        paths.append(path)
+        if "R" in status or "C" in status:
+            if index < len(raw_entries):
+                paths.append(raw_entries[index])
+                index += 1
+    return sorted(set(paths))
 
 
 def _default_branch(repo_root: Path) -> str | None:
@@ -6407,15 +6503,20 @@ def _primary_ciu_root_for_record(
 
 
 def _clean_with_primary_identity(
-    primary_ciu_root: Path, instance_id: str, *, yes: bool,
+    primary_ciu_root: Path,
+    instance_id: str,
+    *,
+    expected_checkout: Path,
+    yes: bool,
 ) -> int:
-    """Run identity-scoped clean from the primary CIU root for an old checkout."""
+    """Run identity-scoped clean from the primary root, proving the old owner."""
     import os
 
     env = {key: value for key, value in os.environ.items() if key not in _CIU_IDENTITY_ENV_KEYS}
     argv = [
         sys.executable, "-m", "ciu.cli", "clean", "--root-folder",
         str(primary_ciu_root), "--identity", instance_id,
+        "--expected-checkout", str(expected_checkout),
     ]
     if yes:
         argv.append("-y")
@@ -6520,6 +6621,7 @@ def remove(
     keep_branch: bool = False,
     delete_branch: bool = False,
     discard_protected_state: str | tuple[str, ...] | list[str] | None = None,
+    discard_changes: str | tuple[str, ...] | list[str] | None = None,
     _phase_report: dict[str, Any] | None = None,
     _details: dict[str, Any] | None = None,
 ) -> Path:
@@ -6556,8 +6658,16 @@ def remove(
         discard_names = [discard_protected_state]
     else:
         discard_names = list(discard_protected_state)
-    if len(set(discard_names)) > 1:
+    if len(discard_names) > 1:
         raise fail("rm accepts one exact --discard-protected-state branch")
+    if discard_changes is None:
+        discard_change_names: list[str] = []
+    elif isinstance(discard_changes, str):
+        discard_change_names = [discard_changes]
+    else:
+        discard_change_names = list(discard_changes)
+    if len(discard_change_names) > 1:
+        raise fail("rm accepts one exact --discard-changes branch")
 
     try:
         path_hint = find_worktree(repo_root, name)
@@ -6662,11 +6772,24 @@ def remove(
     protected_state = [item for item in ignored_state if item["class"] == "protected"]
     details["ignored_state"] = ignored_state
     details["discarded_state"] = []
+    details["discarded_changes"] = []
     exact_disposition = discard_names[0] if discard_names else None
+    exact_change_disposition = (
+        discard_change_names[0] if discard_change_names else None
+    )
     branch_name = (
         None if wt.branch in {"(detached)", "(bare)", "(unknown)", "HEAD"}
         else wt.branch
     )
+    if exact_disposition == "all":
+        raise fail("--discard-protected-state requires one exact branch name, not 'all'")
+    if exact_change_disposition == "all":
+        raise fail("--discard-changes requires one exact branch name, not 'all'")
+    try:
+        dirty_paths = _worktree_change_paths(wt.path, managed)
+    except WorktreeError as exc:
+        mark("resource_cleanup", "failed-status-inspection")
+        raise fail(str(exc)) from exc
     if protected_state and branch_name is None:
         mark("resource_cleanup", "skipped-protected-state")
         raise fail(
@@ -6678,12 +6801,19 @@ def remove(
     if protected_state and exact_disposition != branch_name:
         mark("resource_cleanup", "skipped-protected-state")
         paths = ", ".join(
-            f"{item['path']} ({item['file_count']} file(s), {item['bytes']} bytes)"
-            for item in protected_state
+            _format_ignored_state_item(item) for item in protected_state
+        )
+        unreadable = any(item.get("size_error") for item in protected_state)
+        recovery = (
+            "; unreadable protected data is retained in this inventory, but the "
+            "permission-specific removal retry is deferred to CIU-134 stage 2; "
+            "restore read access and retry"
+            if unreadable else ""
         )
         raise fail(
             f"protected ignored state remains in {path}: {paths}; to discard this "
             f"branch's state explicitly, pass --discard-protected-state {wt.branch}"
+            f"{recovery}"
         )
     if exact_disposition is not None:
         if branch_name is None:
@@ -6700,6 +6830,36 @@ def remove(
             raise fail(
                 f"branch {wt.branch!r} has no protected ignored state to discard"
             )
+
+    if dirty_paths and branch_name is None:
+        mark("resource_cleanup", "skipped-dirty-changes")
+        raise fail(
+            f"uncommitted changes remain in detached checkout {path}: "
+            f"{', '.join(dirty_paths)}; attach it to a local branch before removal"
+        )
+    if dirty_paths and exact_change_disposition != branch_name:
+        mark("resource_cleanup", "skipped-dirty-changes")
+        if exact_change_disposition is None:
+            raise fail(
+                f"uncommitted changes remain in {path}: {', '.join(dirty_paths)}; "
+                f"to discard this branch's changes explicitly, pass "
+                f"--discard-changes {branch_name}"
+            )
+        raise fail(
+            f"--discard-changes must name the exact checkout branch "
+            f"{branch_name!r}, got {exact_change_disposition!r}; changed paths: "
+            f"{', '.join(dirty_paths)}"
+        )
+    if exact_change_disposition is not None:
+        if branch_name is None:
+            raise fail("--discard-changes applies only to a checkout on a local branch")
+        if exact_change_disposition != branch_name:
+            raise fail(
+                f"--discard-changes must name the exact checkout branch "
+                f"{branch_name!r}, got {exact_change_disposition!r}"
+            )
+        if not dirty_paths:
+            raise fail(f"branch {branch_name!r} has no uncommitted changes to discard")
 
     try:
         branch = _branch_removal_plan(
@@ -6725,7 +6885,10 @@ def remove(
         try:
             primary_ciu_root = _primary_ciu_root_for_record(repo_root, managed)
             rc = _clean_with_primary_identity(
-                primary_ciu_root, managed.instance_id, yes=yes
+                primary_ciu_root,
+                managed.instance_id,
+                expected_checkout=managed.ciu_root,
+                yes=yes,
             )
         except WorktreeError as exc:
             mark("resource_cleanup", "failed")
@@ -6748,7 +6911,7 @@ def remove(
         raise fail(
             f"`ciu clean` failed (exit {rc}) in {ciu_root}; NOT removing the "
             "checkout. Fix the cleanup cause and retry, or pass --force only "
-            "when you explicitly accept the unrecovered resources",
+            "when you explicitly accept that resources may be stranded",
             phase="resource_cleanup",
         )
     if rc != 0:
@@ -6760,7 +6923,17 @@ def remove(
             if record_path is not None and not record_path.exists() and shared_record is not None:
                 shared.release_lease(shared_record)
             elif managed is not None:
-                release_own_lease(ciu_root)
+                released_record = release_own_lease(ciu_root)
+                if managed.lease is not None:
+                    expected_record = release_lease(managed)
+                    if (
+                        released_record is None
+                        or released_record.to_dict() != expected_record.to_dict()
+                    ):
+                        raise WorktreeError(
+                            f"CIU worktree record changed during cleanup at "
+                            f"{managed.record_path}; refusing removal"
+                        )
             mark("lease_release", "complete")
         except Exception as exc:
             mark("lease_release", "failed")
@@ -6778,7 +6951,8 @@ def remove(
             status = branch["outcome"]
         mark(phase, status)
         if phase == "checkout_deletion" and status == "complete":
-            details["discarded_state"] = ignored_state
+            details["discarded_state"] = latest_ignored_state
+            details["discarded_changes"] = dirty_paths
             mark(
                 "ciu_record_removal",
                 "complete" if managed is not None else "skipped-no-record",
@@ -6786,6 +6960,32 @@ def remove(
 
     try:
         mark("lifecycle_preflight", "running")
+        try:
+            latest_ignored_state = _ignored_state_summary(wt.path)
+        except WorktreeError as exc:
+            raise fail(
+                f"could not recheck ignored state before checkout removal: {exc}"
+            ) from exc
+        details["ignored_state"] = latest_ignored_state
+        if _ignored_state_changed(
+            ignored_state, latest_ignored_state, checkout=wt.path, record=managed
+        ):
+            raise fail(
+                "ignored state changed since the initial inventory; review the "
+                "reported inventory and retry"
+            )
+        try:
+            latest_dirty_paths = _worktree_change_paths(wt.path, managed)
+        except WorktreeError as exc:
+            raise fail(
+                f"could not recheck uncommitted changes before checkout removal: {exc}"
+            ) from exc
+        if latest_dirty_paths != dirty_paths:
+            raise fail(
+                "uncommitted changes changed since the initial inventory; review "
+                f"the current paths ({', '.join(latest_dirty_paths) or 'none'}) "
+                "and retry"
+            )
         if shared_record is not None:
             shared.remove_workspace(
                 shared_record,
@@ -6806,7 +7006,11 @@ def remove(
                 on_phase=report_library_phase,
             )
     except Exception as exc:
-        raise fail(f"shared worktree removal failed: {exc}") from exc
+        raise fail(
+            f"shared worktree removal failed: {exc}; if checkout deletion was "
+            "blocked by permissions, its privileged retry is deferred to "
+            "CIU-134 stage 2"
+        ) from exc
     return wt.path
 
 

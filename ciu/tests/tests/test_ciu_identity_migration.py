@@ -780,6 +780,80 @@ def test_clean_identity_uses_read_only_current_checkout_fact(tmp_path, monkeypat
     }
 
 
+def test_clean_identity_expected_checkout_scopes_old_owner_labels(tmp_path, monkeypatch):
+    expected = tmp_path / "old-checkout" / "nested-ciu"
+    current = {
+        "instance_id": "primary1",
+        "physical_repo_root": str(tmp_path / "primary-ciu"),
+    }
+    observed = {}
+    monkeypatch.setattr(workspace_env, "read_generated_facts", lambda *_a, **_kw: current)
+    monkeypatch.setattr(workspace_env, "outdated_generated_identity", lambda *_a: None)
+    monkeypatch.setattr(
+        workspace_env,
+        "_identity_labeled_resources",
+        lambda _instance, *, expected_checkout=None: (
+            observed.update(expected_checkout=expected_checkout)
+            or {"container": [], "volume": [], "network": []}
+        ),
+    )
+    monkeypatch.setattr(workspace_env, "_identity_project_labels", lambda *_a, **_kw: set())
+    monkeypatch.setattr(workspace_env, "_detect_physical_repo_root", lambda *_a: pytest.fail("must use explicit owner"))
+    monkeypatch.setattr(procutil, "docker", _docker_empty)
+
+    assert deploy.action_clean_identity(
+        tmp_path, "old123", yes=True, expected_checkout=expected
+    ) == 0
+    assert observed["expected_checkout"] == str(expected)
+
+
+@pytest.mark.parametrize(
+    ("expected", "current", "match", "status"),
+    [
+        ("relative/root", {"instance_id": "primary1", "physical_repo_root": "/primary"},
+         "must be an absolute", 2),
+        ("/old/root", {"instance_id": "old123", "physical_repo_root": "/primary"},
+         "primary checkout's current identity", 1),
+        ("/primary", {"instance_id": "primary1", "physical_repo_root": "/primary"},
+         "expected checkout is the primary", 1),
+        ("/old/root", {}, "cannot verify the primary CIU identity", 1),
+    ],
+)
+def test_clean_identity_expected_checkout_rejects_primary_or_unverifiable_owner(
+    tmp_path, monkeypatch, capsys, expected, current, match, status
+):
+    monkeypatch.setattr(workspace_env, "read_generated_facts", lambda *_a, **_kw: current)
+    monkeypatch.setattr(workspace_env, "outdated_generated_identity", lambda *_a: None)
+    monkeypatch.setattr(
+        procutil, "docker", lambda *_a, **_kw: pytest.fail("refusal must precede Docker"),
+    )
+
+    assert deploy.action_clean_identity(
+        tmp_path, "old123", yes=True, expected_checkout=expected
+    ) == status
+    assert match in capsys.readouterr().out
+
+
+def test_clean_identity_expected_checkout_refuses_unreadable_primary_facts(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setattr(
+        workspace_env,
+        "read_generated_facts",
+        lambda *_a, **_kw: (_ for _ in ()).throw(
+            workspace_env.WorkspaceEnvError("facts are unreadable")
+        ),
+    )
+    monkeypatch.setattr(
+        procutil, "docker", lambda *_a, **_kw: pytest.fail("must refuse before Docker")
+    )
+
+    assert deploy.action_clean_identity(
+        tmp_path, "old123", yes=True, expected_checkout=tmp_path / "old"
+    ) == 1
+    assert "facts are unreadable" in capsys.readouterr().out
+
+
 def test_clean_identity_validation_cancel_and_indeterminate_helpers(tmp_path, monkeypatch, capsys):
     assert deploy.action_clean_identity(tmp_path, "BADID", yes=True) == 2
     bad_repo = tmp_path / "bad!"
