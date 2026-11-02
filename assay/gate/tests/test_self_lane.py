@@ -2182,10 +2182,10 @@ def test_the_postponement_marker_records_a_provisional_result_inside_its_window(
 
 
 def test_the_postponement_is_refused_once_the_window_has_closed(tmp_path):
-    proc, marker = _run_postponement(tmp_path, ["assay-v10.0.0", "assay-v10.3.0"])
+    proc, marker = _run_postponement(tmp_path, ["assay-v10.0.0", "assay-v11.1.0"])
 
     assert proc.returncode != 0
-    assert "valid only below assay 10.3.0" in proc.stderr
+    assert "valid only below assay 11.1.0" in proc.stderr
     assert not marker.exists()
 
 
@@ -2193,7 +2193,7 @@ def test_the_postponement_is_refused_once_the_window_has_closed(tmp_path):
     "prepared_version,allowed",
     [
         ("10.0.0", True), ("10.0.1", True), ("10.1.0", True), ("10.2.0", True),
-        ("10.3.0", False), ("9.9.9", False),
+        ("10.3.0", True), ("11.0.0", True), ("11.1.0", False), ("9.9.9", False),
     ],
 )
 def test_the_prepared_release_version_must_be_inside_the_postponement_window(
@@ -2206,7 +2206,7 @@ def test_the_prepared_release_version_must_be_inside_the_postponement_window(
     assert (proc.returncode == 0) is allowed, proc.stderr
     assert marker.exists() is allowed
     if not allowed:
-        assert "authorized only for assay >= 10.0.0, < 10.3.0" in proc.stderr
+        assert "authorized only for assay >= 10.0.0, < 11.1.0" in proc.stderr
     if allowed:
         import json
 

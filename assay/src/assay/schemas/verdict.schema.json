@@ -2291,7 +2291,7 @@
           }
         },
         "jobs": {
-          "description": "B202/schema v17: the effective native R2 worker count. Required as an integer >= 1 when producer is native; forbidden when ingested.",
+          "description": "B202/schema v17: the effective native R2 worker count of THIS invocation only (a resumed campaign may mix results from other worker counts; tracked as B203). Required as an integer >= 1 when producer is native; forbidden when ingested.",
           "type": "integer",
           "minimum": 1
         },
@@ -2434,7 +2434,7 @@
           ]
         },
         "attribution": {
-          "description": "B202/schema v17: serial for one worker or overlap-conservative for multiple workers.",
+          "description": "B202/schema v17: for THIS invocation only (B203): serial for one worker or overlap-conservative for multiple workers.",
           "enum": [
             "serial",
             "overlap-conservative"

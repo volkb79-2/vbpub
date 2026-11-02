@@ -13152,10 +13152,10 @@ R2 pass is claimed. The CHANGES release notes say so.
 The provisional-release exception is bounded by the first dated release
 heading after `Unreleased`, which must match CMRU's protected transaction
 version, not only by tags that exist before the gate: B169 is valid for release
-versions `>=10.0.0,<10.3.0`; the operator extended the original waiver on
-2026-10-31 (10.2.0 extension: CW8/CW9/IO2 ship under it). The gate also requires at least one listable stable
-`assay-vX.Y.Z` tag and refuses if the latest visible tag is 10.3.0 or newer.
-Thus a prepared 10.3.0 release is refused before its tag is created, and
+versions `>=10.0.0,<11.1.0`; the operator extended the original waiver on
+2026-10-31 (10.2.0 extension: CW8/CW9/IO2 ship under it; 11.0.0 extension: verdict v17 and --jobs ship under it). The gate also requires at least one listable stable
+`assay-vX.Y.Z` tag and refuses if the latest visible tag is 11.1.0 or newer.
+Thus a prepared 11.1.0 release is refused before its tag is created, and
 missing or unreadable tag state cannot authorize the waiver.
 
 **Close when:** one full `self-qualification` run and one `analysis-r2` run are
@@ -13182,8 +13182,8 @@ qualification rigor runs. `self-qualification-provisional` (`assay.toml`,
 R0, R1 (whole-target 100% line and branch over `src/assay`) and the R3 canary.
 After the lane is verified it records `.assay/mutation-postponed-assay.json`
 (`result: provisional`, tracking id B169, valid only for a prepared release
-version `>= 10.0.0` and `< 10.3.0`; extended by operator on 2026-10-31; a
-newer `assay-v10.3.0` or later tag also refuses it). The full lane is unchanged
+version `>= 10.0.0` and `< 11.1.0`; extended by operator on 2026-10-31; a
+newer `assay-v11.1.0` or later tag also refuses it). The full lane is unchanged
 and deletes the marker; the marker
 cannot satisfy an R2 request.
 

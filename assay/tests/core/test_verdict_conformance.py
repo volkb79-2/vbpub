@@ -1418,7 +1418,7 @@ def test_v16_verdict_is_refused_with_exactly_one_diagnostic():
 #: A-477: pin the exact current verdict schema bytes. Operator decision D2
 #: freezes the v17 wire contract so producer and verifier cannot drift.
 _VERDICT_SCHEMA_SHA256 = {
-    17: "aebb04f9a66e981a7d9b2a48a32c2a63d3ddc5ef896c4439608ddab94f4420df",
+    17: "9086fbbae1cb981dbe7b9c8a9e72644fd33369a914a46cf888efa3242b90bb6a",
 }
 
 

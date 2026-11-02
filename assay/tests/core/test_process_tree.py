@@ -616,8 +616,19 @@ def test_ppid_fallback_reads_proc_stat_and_uses_the_parent_pid(
     )
     monkeypatch.setattr(
         process_tree.Path,
-        "read_text",
-        lambda _path, **_kwargs: "41 (name with ) paren) S 7 0 0",
+        "read_bytes",
+        lambda _path, **_kwargs: b"41 (name with ) paren) S 7 0 0",
+    )
+    assert process_tree._ppid_children_from_proc(7) == [41]
+
+
+def test_ppid_fallback_reads_non_ascii_process_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(process_tree.os, "scandir", lambda _path: _ScandirEntries(["41"]))
+    monkeypatch.setattr(
+        process_tree.Path, "read_bytes",
+        lambda _path, **_kwargs: "41 (wörker) S 7 0 0".encode(),
     )
     assert process_tree._ppid_children_from_proc(7) == [41]
 
@@ -627,8 +638,8 @@ def test_ppid_fallback_ignores_processes_with_a_different_parent(
 ) -> None:
     monkeypatch.setattr(process_tree.os, "scandir", lambda _path: _ScandirEntries(["41"]))
     monkeypatch.setattr(
-        process_tree.Path, "read_text",
-        lambda _path, **_kwargs: "41 (child) S 8 0 0",
+        process_tree.Path, "read_bytes",
+        lambda _path, **_kwargs: b"41 (child) S 8 0 0",
     )
     assert process_tree._ppid_children_from_proc(7) == []
 
@@ -652,9 +663,9 @@ def test_ppid_fallback_refuses_incomplete_or_malformed_procfs(
     def read_stat(_path, **_kwargs):
         if read_error is not None:
             raise read_error
-        return stat_text
+        return stat_text.encode()
 
-    monkeypatch.setattr(process_tree.Path, "read_text", read_stat)
+    monkeypatch.setattr(process_tree.Path, "read_bytes", read_stat)
     if message is None:
         assert process_tree._ppid_children_from_proc(7) == []
     else:

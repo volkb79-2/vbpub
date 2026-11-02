@@ -318,7 +318,7 @@ def _ppid_children_from_proc(parent_pid: int) -> list[int]:
             if not entry.name.isdecimal():
                 continue
             try:
-                stat = Path(entry.path, "stat").read_text(encoding="ascii")
+                stat = Path(entry.path, "stat").read_bytes().decode("utf-8", "backslashreplace")
             except (FileNotFoundError, ProcessLookupError):
                 continue
             except OSError as exc:

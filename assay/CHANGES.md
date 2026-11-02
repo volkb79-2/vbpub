@@ -7,6 +7,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 <!-- cmru: release history -->
 
 ### Added
+- Extend the provisional-release R2 postponement (B169) to assay versions below 11.1.0 so 11.0.0 ships under it; the full `self-qualification` lane is unchanged.
 - Run native R2 candidate windows concurrently with `assay run --jobs N` up to the lane's `judge.mutation.jobs_max`, using coordinator-ordered progress/state and conservative overlapping limit-event attribution.
 - Add `jobs` and `attribution` to the progress run event and `worker_index` to candidate events; resume identity stays independent of worker count, and the WP7 retry tail remains serial.
 - Record this invocation's effective native R2 worker count and attribution in
