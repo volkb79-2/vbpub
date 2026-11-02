@@ -1001,6 +1001,39 @@ def test_finish_workspace_removal_repairs_only_captured_prunable_registration(
     ]
 
 
+def test_finish_workspace_removal_tolerates_record_disappearing_after_validation(
+    repository, tmp_path
+):
+    context = create_workspace(
+        repository, tmp_path / "checkout", branch="test/finish-record-race",
+        purpose="test",
+    )
+    record = core.read_record(context.record_path)
+    admin, identity, reverse = core._workspace_admin_snapshot(record)
+    _git(repository, "worktree", "remove", "--force", str(context.worktree_path))
+    phases = []
+
+    def remove_record_during_notification(phase, status):
+        phases.append((phase, status))
+        if (phase, status) == ("shared_record_removal", "running"):
+            record.record_path.unlink()
+
+    finish_workspace_removal(
+        record,
+        git_admin_dir=admin,
+        expected_admin_identity=identity,
+        expected_gitdir_link=reverse,
+        on_phase=remove_record_during_notification,
+    )
+
+    assert not record.record_path.exists()
+    assert not _branch_exists(repository, record.branch)
+    assert phases[-2:] == [
+        ("branch_removal", "running"),
+        ("branch_removal", "deleted"),
+    ]
+
+
 def test_finish_workspace_removal_refuses_live_checkout_and_changed_admin(
     repository, tmp_path
 ):
@@ -1026,6 +1059,43 @@ def test_finish_workspace_removal_refuses_live_checkout_and_changed_admin(
             expected_gitdir_link=gitdir_link,
         )
     assert context.record_path.is_file()
+
+
+@pytest.mark.parametrize(
+    "field", ["worktree_path", "git_common_dir"],
+    ids=["checkout-path", "git-common-directory"],
+)
+def test_finish_workspace_removal_reports_each_changed_record_identity_field(
+    repository, tmp_path, monkeypatch, field
+):
+    context = create_workspace(
+        repository, tmp_path / "checkout", branch=f"test/finish-stale-{field}",
+        purpose="test",
+    )
+    record = core.read_record(context.record_path)
+    admin, identity, reverse = core._workspace_admin_snapshot(record)
+    shutil.rmtree(context.worktree_path)
+    replacement = (
+        record.worktree_path.with_name("different-checkout")
+        if field == "worktree_path" else
+        record.git_common_dir.with_name("different-common-directory")
+    )
+    monkeypatch.setattr(
+        core, "read_record", lambda _path: replace(record, **{field: replacement})
+    )
+
+    with pytest.raises(WorkspaceError) as raised:
+        finish_workspace_removal(
+            record,
+            git_admin_dir=admin,
+            expected_admin_identity=identity,
+            expected_gitdir_link=reverse,
+        )
+
+    assert raised.value.category == "stale-record"
+    assert str(raised.value) == "workspace record changed before removal recovery"
+    assert context.record_path.is_file()
+    assert admin.is_dir()
 
 
 def test_permission_admin_snapshot_refuses_invalid_paths_and_links(
@@ -1205,19 +1275,43 @@ def test_finish_permission_recovery_reports_failed_git_retry(
     monkeypatch.setattr(
         core, "list_git_worktrees", current_then_removed,
     )
-    monkeypatch.setattr(
-        core.subprocess, "run",
-        lambda argv, **_kwargs: subprocess.CompletedProcess(
-            argv, 1, stdout="", stderr="still protected"
-        ),
-    )
+    retry_calls = []
+
+    def fail_retry(argv, **kwargs):
+        retry_calls.append((argv, kwargs))
+        stdout = "git output" if kwargs.get("text") else b"git output"
+        stderr = "still protected" if kwargs.get("text") else b"still protected"
+        if not kwargs.get("capture_output"):
+            stdout = stderr = None
+        if kwargs.get("check"):
+            raise subprocess.CalledProcessError(
+                1, argv, output=stdout, stderr=stderr,
+            )
+        return subprocess.CompletedProcess(argv, 1, stdout=stdout, stderr=stderr)
+
+    monkeypatch.setattr(core.subprocess, "run", fail_retry)
     checkout_info = context.worktree_path.lstat()
     checkout_identity = (checkout_info.st_dev, checkout_info.st_ino)
 
-    with pytest.raises(WorkspaceError, match="still cannot remove.*still protected"):
+    with pytest.raises(WorkspaceError) as raised:
         core._finish_permission_recovery(
             record, (admin, identity, reverse), checkout_identity
         )
+
+    assert raised.value.category == "checkout-removal"
+    assert str(raised.value) == (
+        f"unprivileged Git retry still cannot remove {context.worktree_path} "
+        "(1): still protected"
+    )
+    assert retry_calls == [(
+        ["git", "worktree", "remove", "--force", str(context.worktree_path)],
+        {
+            "cwd": repository,
+            "text": True,
+            "capture_output": True,
+            "check": False,
+        },
+    )]
 
 
 def test_finish_permission_recovery_removes_residual_checkout_and_admin(
@@ -1913,23 +2007,48 @@ def test_finish_workspace_removal_reports_remaining_registration_and_branch_fail
     )
     record = core.read_record(context.record_path)
     admin, identity, reverse = core._workspace_admin_snapshot(record)
+    expected_tip = _git(repository, "rev-parse", f"refs/heads/{record.branch}")
     _git(repository, "worktree", "remove", "--force", str(context.worktree_path))
     monkeypatch.setattr(core, "list_git_worktrees", lambda *_args: [])
     original_run = core.subprocess.run
+    branch_calls = []
 
     def fail_branch_delete(argv, *args, **kwargs):
-        if argv[:3] == ["git", "branch", "-D"]:
-            return subprocess.CompletedProcess(argv, 1, "", "branch changed")
+        if argv[:3] == ["git", "update-ref", "-d"]:
+            branch_calls.append((argv, kwargs))
+            stdout = "git output" if kwargs.get("text") else b"git output"
+            stderr = "branch changed" if kwargs.get("text") else b"branch changed"
+            if not kwargs.get("capture_output"):
+                stdout = stderr = None
+            if kwargs.get("check"):
+                raise subprocess.CalledProcessError(
+                    1, argv, output=stdout, stderr=stderr,
+                )
+            return subprocess.CompletedProcess(argv, 1, stdout, stderr)
         return original_run(argv, *args, **kwargs)
 
     monkeypatch.setattr(core.subprocess, "run", fail_branch_delete)
     phases = []
-    with pytest.raises(WorkspaceError, match="branch removal.*branch changed"):
+    with pytest.raises(WorkspaceError) as raised:
         finish_workspace_removal(
             record, git_admin_dir=admin,
             expected_admin_identity=identity, expected_gitdir_link=reverse,
+            expected_branch_tip=expected_tip,
             on_phase=lambda phase, status: phases.append((phase, status)),
         )
+    assert raised.value.category == "cleanup-refusal"
+    assert str(raised.value) == (
+        f"branch removal for {record.branch} failed (1): branch changed"
+    )
+    assert branch_calls == [(
+        ["git", "update-ref", "-d", f"refs/heads/{record.branch}", expected_tip],
+        {
+            "cwd": repository,
+            "text": True,
+            "capture_output": True,
+            "check": False,
+        },
+    )]
     assert phases[-1] == ("branch_removal", "failed")
 
 
