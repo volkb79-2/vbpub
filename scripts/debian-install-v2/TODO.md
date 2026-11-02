@@ -164,3 +164,10 @@ for this round.
 Not designed or scoped beyond the above; no code written yet.
 
 _Captured 2026-09-08 from the netcup live-test session per operator request._
+
+## OPEN (root cap): write the boot growth guards only after the cap is validated
+
+Stage one installs the cloud-init and initramfs growth guards at its start, but the planner refuses an unsupported cap
+(swap off, no tail swap partition) later in stage one. A refused install then leaves growth disabled on an otherwise
+unchanged host. Move the guard call to just before stage two is installed and the reboot, and extend the stage-one guard
+test with a refused-cap case asserting that no guard file is written.
