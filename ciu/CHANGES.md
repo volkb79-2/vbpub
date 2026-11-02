@@ -173,6 +173,7 @@ the technical detail below it.
 ## [Unreleased]
 
 ### Fixed
+- Keep ordinary CIU tests independent of the host Docker group and socket; Docker-GID fallback tests continue to control their own inputs.
 - `ciu worktree rm` can clean a markerless old checkout using its exact shared workspace record and the matching committed CIU root in the primary checkout; the operation refuses when that identity cannot be verified.
 - `rm` keeps an unmerged or unproven branch tip by default, reports its full tip, and deletes a merged branch only against its recorded base. `--keep-branch` and `--delete-branch` expose the explicit choices; compare-and-delete preserves a branch that moved during cleanup.
 - The branch survey and prune disclose ignored files and directories with bounded size facts. Protected `.assay/` resume state and root `vol-*` data require an exact `--discard-protected-state BRANCH`; `-y` alone preserves them. Enumeration failures are non-prunable, and regenerable or unclassified ignored entries remain visible without blocking.

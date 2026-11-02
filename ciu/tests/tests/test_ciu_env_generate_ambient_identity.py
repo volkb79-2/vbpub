@@ -32,9 +32,6 @@ def _clean_ambient_identity(monkeypatch):
     Scrub it so assertions see only what each test sets."""
     for key in _IDENTITY_KEYS:
         monkeypatch.delenv(key, raising=False)
-    # A tester container has neither a docker group nor a socket, so the Docker
-    # gid is supplied explicitly instead of being detected from the host.
-    monkeypatch.setenv("DOCKER_GID", "999")
 
 
 def _derived(root: Path) -> dict:
