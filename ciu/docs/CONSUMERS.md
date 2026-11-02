@@ -330,13 +330,46 @@ only managed instances, each with fresh Git facts.
 ```console
 $ ciu worktree rm pkg-under-test --json
 {"schema_version": 1, "operation": "remove", "status": "removed",
- "removed_path": "...", "instance": {...}}
+ "removed_path": "...", "branch": {"name": "...", "tip": "...",
+ "outcome": "kept-unmerged", "reason": "..."},
+ "discarded_state": [], "phase_report": {"schema_version": 1,
+ "phases": {"target_resolution": "complete", "resource_cleanup": "complete",
+ "lease_release": "complete", "lifecycle_preflight": "complete",
+ "checkout_deletion": "complete", "git_registration": "complete",
+ "branch_removal": "kept-unmerged", "ciu_record_removal": "complete",
+ "shared_record_removal": "complete"}}, "instance": {...}}
 ```
 
-`rm` runs `ciu clean` then `git worktree remove` (that order is normative,
-[SPEC §S16](SPEC.md#s16--worktree-instances-ciu-worktree)). A failed clean or
-git removal raises with exit 2 and **no** success document; the error names
-the retained resources.
+`rm` runs `ciu clean` then removes the Git checkout (that order is normative,
+[SPEC §S16](SPEC.md#s16--worktree-instances-ciu-worktree)). If the target's CIU
+root marker is missing, CIU reads the exact shared workspace record and uses
+its recorded root offset and identity to run `clean` from the primary checkout;
+it refuses if that committed root or durable identity cannot be verified.
+A markerless managed CIU record with no runtime identity is record-only and
+skips `clean`.
+
+Branch deletion is conservative. A branch is deleted by default only when its
+recorded tip is proven contained in its recorded base branch (or the default
+mainline when no base branch was recorded). An unmerged or unproven branch is
+kept and its tip is reported. `--keep-branch` keeps even a merged branch;
+`--delete-branch` explicitly requests deletion, including an unmerged branch.
+The tip is compared again during deletion, so a branch that moved during
+checkout removal is preserved and reported as a failed branch phase.
+
+The survey includes ignored entries. Protected `.assay/` resumable state and
+root `vol-*` data block removal unless the exact branch is named with
+`--discard-protected-state BRANCH`; `-y` alone never authorizes that loss.
+The JSON report lists discarded ignored entries and their measured file count
+and byte size. Its `phase_report` has `schema_version: 1` and a fixed `phases`
+map for target resolution, resource cleanup, lease release, lifecycle
+preflight, checkout deletion, Git registration verification, branch removal,
+CIU record removal, and shared record removal. Successful phase values state
+what ran; skipped and failed values preserve partial progress on error.
+If failure stops before a planned deletion, branch outcome is `not-deleted`;
+if Git attempts and refuses it, the outcome is `failed` and the reported tip
+is the pre-cleanup tip.
+`--json` prints that failure document to stdout and the diagnostic to stderr,
+then exits 2. See the [design rationale](DESIGN-GUIDE.md#why-worktree-removal-preserves-refs-and-reports-ignored-state-ciu-151153154).
 
 ## 5b. Clean up forgotten branches — grounded, never age-based (S16.8)
 
@@ -346,7 +379,7 @@ guessing:
 
 ```console
 $ ciu worktree branches
-branch hygiene vs 'main' — 2 prunable, 0 merged-dirty, 3 unmerged, 1 managed-instance, 1 current, 1 base
+branch hygiene vs 'main' — 2 prunable, 0 merged-dirty, 1 merged-protected, 0 merged-ignored-unknown, 3 unmerged, 1 managed-instance, 1 current, 1 base
 
 prunable:
   fix/net-leak @ /repo/.worktrees/fix-net-leak  ahead 0 behind 4 changed 0 file(s)  last 2026-08-01
@@ -356,11 +389,23 @@ managed-instance:
 
 unmerged:
   feat/wip  ahead 3 behind 1 changed 12 file(s)  last 2026-08-21  ciu:wip(ready)
+
+merged-protected:
+  feat/assay @ /repo/.worktrees/feat-assay  ahead 0 behind 4 changed 0 file(s)
+      ignored .assay [protected] 4 file(s), 8192 bytes
 ```
 
-Survey only — nothing is removed. `-y` removes exactly the `prunable`
-category. What the gating actually guarantees: **a candidate's checkout is
-never destroyed by a refusal this command could have foreseen.** Three
+Survey only — nothing is removed. `-y` removes `prunable` branches and keeps
+`merged-protected` branches with a named skip reason. To authorize one
+protected branch, name it exactly: `ciu worktree branches -y
+--discard-protected-state feat/assay`. The option is repeatable for separate
+exact branch names; it accepts no glob or `all`. A failed ignored-state
+enumeration is `merged-ignored-unknown`, never an empty inventory, and is
+never pruned. Other ignored files are still listed with their size and class;
+regenerable caches and unclassified files do not block pruning. `dirty` keeps
+its Git meaning (tracked and non-ignored untracked changes). What the gating
+actually guarantees: **a candidate's checkout is never destroyed by a
+refusal this command could have foreseen.** Three
 read-only checks run before anything is touched — the base must be contained
 in the primary checkout's HEAD (or origin/HEAD) or `-y` refuses outright; a
 branch tracking an upstream that lacks its tip is reported `FAILED`; and a
@@ -385,7 +430,12 @@ primary checkout's branch, or the one you invoked from), `managed-instance`
 at any lifecycle state, because a bare `git worktree remove` would destroy
 the config that tells CIU what to clean; use `ciu worktree rm NAME`, which
 runs `ciu clean` first), `prunable`, `merged-dirty` (merged but its checkout
-has uncommitted work — decide by hand), and `unmerged`. Every branch carries
+has uncommitted work — decide by hand), `merged-protected` (merged and clean,
+but has protected ignored state), `merged-ignored-unknown` (ignored-state
+enumeration failed; never prunable), and `unmerged`. Every branch with a
+checkout includes `ignored_state`, including regenerable (`ciu.env`, generated
+facts, common tool caches) and unclassified entries; file and byte counts are
+capped, and symlink targets are not followed. Every branch carries
 `ahead`/`behind`, `changed_files` vs the merge-base, last-commit date, and
 its ciu instance linkage, so a human can rule on the rest. No age heuristic
 exists anywhere in this command: a branch one minute old that is fully merged
@@ -393,8 +443,8 @@ is prunable, a branch six months old that is not is not.
 
 Automation allowlists the capability id `worktree.branches.v1`
 (`ciu capabilities --json`) instead of inferring the feature from SemVer;
-the `--json` document is versioned (`schema_version: 2` — 1 predates the
-`managed-instance` category, operations `branches`/`branches-prune`, statuses
+the `--json` document is versioned (`schema_version: 3` — 2 predates the
+ignored-state categories, operations `branches`/`branches-prune`, statuses
 `survey`/`pruned`/`partial`).
 
 ```bash

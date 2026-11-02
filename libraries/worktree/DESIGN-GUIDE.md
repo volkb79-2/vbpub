@@ -73,3 +73,20 @@ Legacy product records that predate the shared record use
 checkout through the neutral record path and then uses the same removal
 implementation. It exists for migration only, not as a second lifecycle
 algorithm.
+
+## Removal policy stays in the adapter
+
+The neutral layer knows how to remove a Git checkout and, when explicitly
+requested, its branch ref. It cannot decide whether a product considers the
+branch merged: CIU's base-branch rules and CMRU's transaction branch rules are
+different policies. Callers therefore pass `delete_branch` explicitly. When
+they also pass `expected_branch_tip`, the library uses Git's expected-old-value
+`update-ref` form, preserving a branch that advanced while adapter cleanup ran.
+This keeps the checkout lifecycle generic while making the ref deletion
+conditional on the exact evidence the adapter inspected.
+
+The optional phase callback reports checkout deletion, registration
+verification, branch removal or retention, and shared-record removal. It is
+an observation seam for product reports and recovery tooling; it cannot alter
+policy or retry a failed phase. CIU's versioned `rm` report adds its own target
+resolution, resource cleanup, lease release and lifecycle-preflight outcomes.

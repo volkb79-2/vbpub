@@ -285,37 +285,89 @@ class TestWorktreeCreateSharedInfraDispatch:
 
 
 class TestWorktreeRmDispatch:
-    def test_forwards_yes_and_force(self, monkeypatch, capsys):
+    def test_forwards_removal_policy_and_yes(self, monkeypatch, capsys):
         seen = {}
 
-        def fake_remove(repo_root, name, *, yes, force):
-            seen.update(repo_root=repo_root, name=name, yes=yes, force=force)
-            return Path("/tmp/repo/.worktrees/mypkg")
+        def fake_remove(repo_root, name, **kwargs):
+            seen.update(repo_root=repo_root, name=name, **kwargs)
+            return {
+                "removed_path": "/tmp/repo/.worktrees/mypkg",
+                "branch": {
+                    "name": "mypkg", "tip": "0123456789abcdef",
+                    "outcome": "kept-by-option", "reason": "--keep-branch was supplied",
+                },
+                "discarded_state": [],
+                "phase_report": {"phases": {"resource_cleanup": "complete"}},
+            }
 
-        monkeypatch.setattr(wt_mod, "remove", fake_remove)
-        assert cli._worktree(["rm", "mypkg", "-y", "--force"]) == 0
+        monkeypatch.setattr(wt_mod, "remove_document", fake_remove)
+        assert cli._worktree([
+            "rm", "mypkg", "-y", "--force", "--keep-branch",
+            "--discard-protected-state", "mypkg",
+        ]) == 0
         assert seen["name"] == "mypkg"
         assert seen["yes"] is True and seen["force"] is True
+        assert seen["keep_branch"] is True and seen["delete_branch"] is False
+        assert seen["discard_protected_state"] == "mypkg"
         assert "removed:" in capsys.readouterr().out
 
     def test_defaults_yes_and_force_false(self, monkeypatch):
         seen = {}
 
-        def fake_remove(repo_root, name, *, yes, force):
-            seen.update(yes=yes, force=force)
-            return Path("/tmp/x")
+        def fake_remove(repo_root, name, **kwargs):
+            seen.update(kwargs)
+            return {
+                "removed_path": "/tmp/x",
+                "branch": {
+                    "name": "mypkg", "tip": "0123456789abcdef",
+                    "outcome": "deleted", "reason": "merged",
+                },
+                "discarded_state": [],
+                "phase_report": {"phases": {}},
+            }
 
-        monkeypatch.setattr(wt_mod, "remove", fake_remove)
+        monkeypatch.setattr(wt_mod, "remove_document", fake_remove)
         cli._worktree(["rm", "mypkg"])
-        assert seen == {"yes": False, "force": False}
+        assert seen["yes"] is False and seen["force"] is False
+        assert seen["keep_branch"] is False and seen["delete_branch"] is False
 
     def test_worktree_error_maps_to_exit_2(self, monkeypatch, capsys):
         def fake_remove(*_a, **_kw):
             raise wt_mod.WorktreeError("[S16] clean failed")
 
-        monkeypatch.setattr(wt_mod, "remove", fake_remove)
+        monkeypatch.setattr(wt_mod, "remove_document", fake_remove)
         assert cli._worktree(["rm", "mypkg"]) == 2
         assert "clean failed" in capsys.readouterr().err
+
+    @pytest.mark.parametrize(
+        ("outcome", "message"),
+        [
+            ("deleted", "deleted branch: feature (tip tip-123)"),
+            ("kept-unmerged", "kept branch: feature at tip-123 (not merged)"),
+            ("kept-by-option", "kept branch: feature at tip-123 (--keep-branch)"),
+            ("skipped-detached", "branch removal: skipped-detached"),
+        ],
+    )
+    def test_human_rm_reports_branch_state_discard_and_phases(
+        self, monkeypatch, capsys, outcome, message
+    ):
+        document = {
+            "removed_path": "/tmp/wt",
+            "branch": {
+                "name": "feature", "tip": "tip-123", "outcome": outcome,
+                "reason": "not merged",
+            },
+            "discarded_state": [
+                {"path": ".assay", "class": "protected", "file_count": 2, "bytes": 17}
+            ],
+            "phase_report": {"phases": {"resource_cleanup": "complete"}},
+        }
+        monkeypatch.setattr(wt_mod, "remove_document", lambda *_a, **_kw: document)
+        assert cli._worktree(["rm", "feature"]) == 0
+        output = capsys.readouterr().out
+        assert message in output
+        assert "discarded ignored state: .assay [protected] 2 file(s), 17 bytes" in output
+        assert "phase resource_cleanup: complete" in output
 
 
 class TestWorktreeListDispatch:
@@ -414,6 +466,54 @@ class TestWorktreeRmJsonDispatch:
         captured = capsys.readouterr()
         assert captured.out == ""
         assert "[S16] clean failed" in captured.err
+
+    def test_rm_json_failure_emits_phase_report_document(self, monkeypatch, capsys):
+        report = {
+            "schema_version": 1,
+            "phases": {"target_resolution": "complete", "resource_cleanup": "failed"},
+        }
+        error = wt_mod.WorktreeRemovalError("[S16] clean failed", report)
+        error.document = {
+            "schema_version": 1, "operation": "remove", "status": "failed",
+            "phase_report": report, "error": str(error),
+        }
+        monkeypatch.setattr(wt_mod, "remove_document", lambda *_a, **_kw: (_ for _ in ()).throw(error))
+        assert cli._worktree(["rm", "mypkg", "--json"]) == 2
+        captured = capsys.readouterr()
+        assert json.loads(captured.out)["phase_report"] == report
+        assert "clean failed" in captured.err
+
+
+def test_human_branch_prune_reports_ignored_errors_and_dispositions(
+    monkeypatch, capsys
+):
+    categories = {category: 0 for category in wt_mod.BRANCH_CATEGORIES}
+    categories["merged-ignored-unknown"] = 1
+    document = {
+        "base": "main", "status": "partial", "operation": "branches-prune",
+        "counts": categories, "branches": [{
+            "name": "feature", "category": "merged-ignored-unknown",
+            "checkout": "/tmp/feature", "dirty": False, "ahead": 0,
+            "behind": 0, "changed_files": 0, "last_commit_at": "2026-11-02",
+            "ciu_instance": None, "ignored_state": [],
+            "ignored_state_error": "permission denied",
+        }],
+        "hint": "inspect ignored state", "removed": ["removed-branch"],
+        "failed": [{"branch": "failed-branch", "reason": "Git refused"}],
+        "skipped": [{"branch": "feature", "reason": "unknown ignored state"}],
+        "discarded": [{
+            "branch": "discarded-branch", "path": ".assay", "class": "protected",
+            "file_count": 1, "bytes": 9,
+        }],
+    }
+    monkeypatch.setattr(wt_mod, "prune_branches", lambda *_a, **_kw: document)
+    assert cli._worktree(["branches", "--yes"]) == 1
+    output = capsys.readouterr().out
+    assert "ignored state unavailable: permission denied" in output
+    assert "removed: removed-branch" in output
+    assert "FAILED: failed-branch — Git refused" in output
+    assert "skipped: feature — unknown ignored state" in output
+    assert "discarded: discarded-branch .assay [protected] 1 file(s), 9 bytes" in output
 
 
 class TestCapabilitiesDispatch:

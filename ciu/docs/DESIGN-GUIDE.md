@@ -1045,3 +1045,41 @@ gate. This is supplemental behavioral evidence: Assay still judges the
 declared coverage artifact and changed-line contract, and Schemathesis is not
 used because CIU's release-facing lane is a CLI/library surface without an
 owned HTTP/OpenAPI contract.
+
+## Why worktree removal preserves refs and reports ignored state (CIU-151/153/154)
+
+`rm` has two facts to establish before deleting anything: which CIU identity
+owns a markerless old checkout, and whether its branch tip is already present
+in the intended base. The old checkout cannot supply a root it no longer has;
+the exact shared workspace record can supply the identity and root offset, and
+the primary checkout can supply the committed root at that offset. `rm`
+cross-checks both before running identity-scoped cleanup. If either fact is
+missing or disagrees, it refuses instead of treating missing data as an
+empty-resource result.
+
+The branch policy belongs in CIU because mergedness depends on its recorded
+base branch. A tip contained in that branch is deleted with an expected-tip
+compare so a concurrent ref move is preserved. An unmerged or unproven tip is
+kept and printed; `--keep-branch` and `--delete-branch` make operator intent
+explicit. The neutral worktree library only implements conditional ref
+deletion and lifecycle callbacks, leaving product policy to its adapter.
+
+Git's `dirty` result intentionally keeps its original meaning: tracked and
+non-ignored untracked changes. Ignored data is a separate inventory because
+some ignored paths are regenerable caches while `.assay/` holds resumable
+progress and `vol-*` holds CIU stack data. CIU discloses every ignored group
+with bounded sizes and assigns only evidence-backed classes: protected,
+regenerable, or unclassified. Only protected state blocks by default, and an
+exact branch disposition is required to remove it. This prevents the survey
+from treating resumable data as empty without making ordinary caches a false
+refusal.
+
+The `rm --json` phase report records resolution, resource cleanup, lease
+release, lifecycle preflight, checkout deletion, registration verification,
+branch action, and record removal separately. Its stable schema gives the
+later CIU-134 permission-retry stage a place to report an added retry phase
+without rewriting what already completed. The retry helper itself is a
+separate stage; this change does not start privileged work.
+
+The normative contract is in [SPEC S16.4 and S16.8](SPEC.md#s16--worktree-instances-ciu-worktree),
+with pasteable commands in [CONSUMERS §5 and §5b](CONSUMERS.md#5-remove-and-read-the-removal-document).

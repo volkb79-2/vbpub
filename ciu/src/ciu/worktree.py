@@ -49,6 +49,7 @@ from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Any
 
 from . import config_model
@@ -347,6 +348,14 @@ _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 # Generic lifecycle failures come from the neutral library.  CIU adds product
 # context to their messages but must not maintain a second exception taxonomy.
 WorktreeError = _shared_worktree().WorkspaceError
+
+
+class WorktreeRemovalError(WorktreeError):
+    """A failed removal with its stable per-phase report attached."""
+
+    def __init__(self, message: str, phase_report: dict[str, Any]) -> None:
+        super().__init__(message, category="cleanup-refusal")
+        self.phase_report = phase_report
 
 
 class RuntimeNetworkVerificationError(WorktreeError):
@@ -2504,22 +2513,58 @@ def remove_document(
     *,
     yes: bool = False,
     force: bool = False,
+    keep_branch: bool = False,
+    delete_branch: bool = False,
+    discard_protected_state: str | tuple[str, ...] | list[str] | None = None,
 ) -> dict[str, Any]:
-    """Run the existing clean-then-remove and return the versioned removal
-    document (S16.4). The validated pre-state (the instance record, when the
-    worktree is managed) is captured before removal; success is emitted only
-    after BOTH clean and ``git worktree remove`` complete. A failure is the
-    existing :class:`WorktreeError` (identifying retained resources) — no
-    success document is ever produced."""
+    """Run clean-then-remove and return its versioned lifecycle report."""
     repo_root = Path(repo_root).resolve()
-    record = find_instance_record(repo_root, name)
-    removed_path = remove(repo_root, name, yes=yes, force=force)
+    phase_report: dict[str, Any] = {}
+    details: dict[str, Any] = {}
+    try:
+        removed_path = remove(
+            repo_root, name, yes=yes, force=force,
+            keep_branch=keep_branch, delete_branch=delete_branch,
+            discard_protected_state=discard_protected_state,
+            _phase_report=phase_report, _details=details,
+        )
+    except WorktreeRemovalError as exc:
+        exc.document = {
+            "schema_version": WORKTREE_JSON_SCHEMA_VERSION,
+            "operation": "remove",
+            "status": "failed",
+            "phase_report": exc.phase_report,
+            "error": str(exc),
+        }
+        record = details.get("record")
+        if record is not None:
+            exc.document["instance"] = record.to_dict()
+        for key in ("branch", "ignored_state", "discarded_state"):
+            if key in details:
+                exc.document[key] = details[key]
+        branch = exc.document.get("branch")
+        if branch is not None and branch.get("outcome") == "deleted":
+            branch_phase = exc.phase_report["phases"].get("branch_removal")
+            if branch_phase != "deleted":
+                branch["outcome"] = "failed" if branch_phase == "failed" else "not-deleted"
+                branch["reason"] = (
+                    "branch removal was attempted but failed; the reported tip is "
+                    "the pre-cleanup tip"
+                    if branch_phase == "failed" else
+                    "removal stopped before branch deletion; the ref was not changed"
+                )
+        raise
     doc: dict[str, Any] = {
         "schema_version": WORKTREE_JSON_SCHEMA_VERSION,
         "operation": "remove",
         "status": "removed",
         "removed_path": str(removed_path),
+        "phase_report": phase_report,
+        "branch": details["branch"],
+        "ignored_state": details["ignored_state"],
+        "discarded_state": details["discarded_state"],
     }
+    record = details.get("record")
     if record is not None:
         doc["instance"] = record.to_dict()
     return doc
@@ -2620,11 +2665,11 @@ def capabilities_document() -> dict[str, Any]:
 # S16.8 — worktree BRANCH hygiene (CIU-25, git half): survey + prune
 # ---------------------------------------------------------------------------
 
-# 2 as of ciu-P28: the closed category vocabulary WIDENED (new
-# `managed-instance`). Strict consumers refuse unknown members fail-closed, so
-# a widened vocabulary is a schema bump — the same rule S17.3's provenance
-# document followed when its verdicts widened.
-BRANCHES_SCHEMA_VERSION = 2
+# 3 widens the closed category vocabulary with the two ignored-state outcomes.
+# Strict consumers refuse unknown members fail-closed, so a widened
+# vocabulary is a schema bump — the same rule S17.3's provenance document
+# follows when verdicts widen.
+BRANCHES_SCHEMA_VERSION = 3
 
 # Closed category vocabulary. Every local branch collapses into exactly one:
 #   base          — the branch the survey is measured against (never touched)
@@ -2648,17 +2693,137 @@ BRANCHES_SCHEMA_VERSION = 2
 #                   directories no unprivileged operator can delete
 #                   (ciu-P28 / see remove()). Dispose with `ciu worktree rm`.
 #   prunable      — fully merged into base AND (no checkout, or a clean,
-#                   non-primary, non-invoking, unmanaged checkout) → safe to
-#                   remove
+#                   non-primary, non-invoking, unmanaged checkout) with no
+#                   protected ignored state
 #   merged-dirty  — merged but its checkout carries uncommitted changes;
 #                   decide by hand what to do with the dirt first
+#   merged-protected — merged and clean, but carries protected ignored state
+#   merged-ignored-unknown — ignored state could not be enumerated; never prune
 #   unmerged      — has commits not in base → keep; attributes inform the decision
 BRANCH_CATEGORIES = (
     "base", "mainline", "current", "managed-instance",
-    "prunable", "merged-dirty", "unmerged",
+    "prunable", "merged-dirty", "merged-protected",
+    "merged-ignored-unknown", "unmerged",
 )
 
 _MAINLINE_FALLBACKS = ("main", "master")
+_IGNORED_STATE_MAX_PATHS = 10_000
+_IGNORED_STATE_MAX_FILES = 10_000
+_IGNORED_STATE_MAX_BYTES = 1_073_741_824
+_REGENERABLE_IGNORED_NAMES = frozenset({
+    "ciu.env", "ciu.instance.generated.toml", WORKTREE_INSTANCE_RECORD,
+    "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+})
+
+
+def _ignored_state_group(relative: str) -> tuple[str, str]:
+    """Return the visible ignored entry and its evidence-backed class."""
+    parts = PurePosixPath(relative.rstrip("/")).parts
+    if not parts or PurePosixPath(relative).is_absolute() or ".." in parts:
+        raise WorktreeError(f"[S16.8] Git returned an unsafe ignored path {relative!r}")
+    try:
+        assay_index = parts.index(".assay")
+    except ValueError:
+        assay_index = -1
+    if assay_index >= 0:
+        return "/".join(parts[: assay_index + 1]), "protected"
+    if parts[0].startswith("vol-"):
+        return parts[0], "protected"
+    cache_names = {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"}
+    if parts[0] in _REGENERABLE_IGNORED_NAMES:
+        return parts[0], "regenerable"
+    for index, part in enumerate(parts):
+        if part in cache_names:
+            return "/".join(parts[: index + 1]), "regenerable"
+    return parts[0], "unclassified"
+
+
+def _measure_ignored_entry(checkout: Path, relative: str) -> tuple[int, int, bool]:
+    """Measure ignored content without following symlinks and with hard caps."""
+    root = checkout / Path(*PurePosixPath(relative).parts)
+    pending = [root]
+    file_count = 0
+    byte_count = 0
+    capped = False
+    while pending:
+        path = pending.pop()
+        mode = path.lstat().st_mode
+        if stat.S_ISDIR(mode):
+            with os.scandir(path) as children:
+                for child in children:
+                    if len(pending) + file_count >= _IGNORED_STATE_MAX_FILES:
+                        capped = True
+                        break
+                    pending.append(Path(child.path))
+            if capped:
+                break
+            continue
+        file_count += 1
+        byte_count += path.lstat().st_size
+        if byte_count > _IGNORED_STATE_MAX_BYTES:
+            byte_count = _IGNORED_STATE_MAX_BYTES
+            capped = True
+        if file_count >= _IGNORED_STATE_MAX_FILES:
+            capped = capped or bool(pending)
+            break
+    return file_count, byte_count, capped
+
+
+def _ignored_state_summary(checkout: Path) -> list[dict[str, Any]]:
+    """List ignored entries with bounded size facts; errors remain distinct."""
+    result = _git(
+        ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"],
+        checkout,
+    )
+    if result.returncode != 0:
+        reason = (result.stderr or result.stdout).strip()
+        raise WorktreeError(
+            f"[S16.8] could not enumerate ignored state in {checkout}: {reason}"
+        )
+    if len(result.stdout.encode("utf-8", errors="surrogateescape")) > 1_048_576:
+        raise WorktreeError(
+            f"[S16.8] ignored-state listing in {checkout} exceeds the 1 MiB limit"
+        )
+    raw_paths = [value.rstrip("/") for value in result.stdout.split("\0") if value]
+    if len(raw_paths) > _IGNORED_STATE_MAX_PATHS:
+        raise WorktreeError(
+            f"[S16.8] ignored-state listing in {checkout} exceeds the "
+            f"{_IGNORED_STATE_MAX_PATHS}-path limit"
+        )
+    paths = sorted(set(raw_paths), key=lambda value: (value.count("/"), value))
+    roots: list[str] = []
+    for relative in paths:
+        if not any(relative.startswith(parent + "/") for parent in roots):
+            roots.append(relative)
+
+    grouped: dict[str, dict[str, Any]] = {}
+    for relative in roots:
+        display_path, entry_class = _ignored_state_group(relative)
+        current = grouped.setdefault(display_path, {
+            "path": display_path,
+            "class": entry_class,
+            "file_count": 0,
+            "bytes": 0,
+            "capped": False,
+        })
+        if current["class"] != entry_class:
+            raise WorktreeError(
+                f"[S16.8] ignored entry {display_path!r} has conflicting classes"
+            )
+        try:
+            file_count, byte_count, capped = _measure_ignored_entry(checkout, relative)
+        except OSError as exc:
+            raise WorktreeError(
+                f"[S16.8] could not size ignored entry {checkout / relative}: {exc}"
+            ) from exc
+        current["file_count"] += file_count
+        current["bytes"] = min(
+            _IGNORED_STATE_MAX_BYTES, current["bytes"] + byte_count
+        )
+        current["capped"] = current["capped"] or capped or (
+            current["bytes"] == _IGNORED_STATE_MAX_BYTES
+        )
+    return [grouped[path] for path in sorted(grouped)]
 
 
 def _default_branch(repo_root: Path) -> str | None:
@@ -2810,9 +2975,15 @@ def branch_hygiene(repo_root: Path, *, base: str = "main") -> dict[str, Any]:
         checkouts = sorted(str(p) for p in checkout_map.get(name, []))
         checkout: str | None = checkouts[0] if checkouts else None
         dirty = False
+        ignored_state: list[dict[str, Any]] | None = None
+        ignored_state_error: str | None = None
         if checkout:
             st = _git(["status", "--porcelain"], Path(checkout))
             dirty = st.returncode != 0 or bool(st.stdout.strip())
+            try:
+                ignored_state = _ignored_state_summary(Path(checkout))
+            except WorktreeError as exc:
+                ignored_state_error = str(exc)
         record = (
             records.get(Path(checkout).resolve()) if checkout else None
         )
@@ -2851,6 +3022,12 @@ def branch_hygiene(repo_root: Path, *, base: str = "main") -> dict[str, Any]:
         elif fact["merged"]:
             if checkout and dirty:
                 category = "merged-dirty"
+            elif ignored_state_error is not None:
+                category = "merged-ignored-unknown"
+            elif ignored_state and any(
+                entry["class"] == "protected" for entry in ignored_state
+            ):
+                category = "merged-protected"
             else:
                 category = "prunable"
         else:
@@ -2862,14 +3039,21 @@ def branch_hygiene(repo_root: Path, *, base: str = "main") -> dict[str, Any]:
             "checkout": checkout,
             "dirty": dirty,
             "ciu_instance": ciu_instance,
+            **({"ignored_state": ignored_state} if checkout else {}),
+            **(
+                {"ignored_state_error": ignored_state_error}
+                if ignored_state_error is not None else {}
+            ),
         })
 
     branches.sort(key=lambda b: (b["category"], b["name"]))
     counts = {c: sum(1 for b in branches if b["category"] == c) for c in BRANCH_CATEGORIES}
     prunable_n = counts["prunable"]
     hint = (
-        f"{prunable_n} branch(es) are fully merged and safe to remove; "
-        "re-run with -y/--yes to prune them."
+        f"{prunable_n} branch(es) are fully merged, have no tracked or "
+        "untracked changes, and have no protected ignored state; ignored "
+        "entries that `-y` will delete are listed per branch. re-run with "
+        "-y/--yes to prune them."
     ) if prunable_n else "nothing prunable."
     managed_n = counts["managed-instance"]
     if managed_n:
@@ -2930,9 +3114,13 @@ def _prune_candidate_refusal(git_root: Path, name: str) -> str:
 
 
 def prune_branches(
-    repo_root: Path, *, base: str = "main", yes: bool = False
+    repo_root: Path,
+    *,
+    base: str = "main",
+    yes: bool = False,
+    discard_protected_state: tuple[str, ...] | list[str] = (),
 ) -> dict[str, Any]:
-    """Remove exactly the ``prunable`` category (S16.8 / CIU-25).
+    """Remove prunable branches plus exact protected-state dispositions.
 
     Every destructive git command runs from the PRIMARY worktree, never from
     the invoking checkout: ``git branch -d`` judges mergedness against the
@@ -2951,8 +3139,44 @@ def prune_branches(
     ``pruned`` only when every prunable branch was removed. Without *yes* no
     side effect happens: the caller gets the survey with an explicit hint.
     """
+    if isinstance(discard_protected_state, str):
+        discard_names = [discard_protected_state]
+    else:
+        discard_names = list(discard_protected_state)
+    if len(set(discard_names)) != len(discard_names):
+        raise WorktreeError("[S16.8] --discard-protected-state branch names must be unique")
     survey = branch_hygiene(repo_root, base=base)
-    prunables = [b for b in survey["branches"] if b["category"] == "prunable"]
+    by_name = {branch["name"]: branch for branch in survey["branches"]}
+    for name in discard_names:
+        if not name or name == "all" or name not in by_name:
+            raise WorktreeError(
+                f"[S16.8] --discard-protected-state requires an exact local branch; "
+                f"{name!r} does not name one"
+            )
+        if by_name[name]["category"] != "merged-protected":
+            raise WorktreeError(
+                f"[S16.8] branch {name!r} is not a clean merged branch with "
+                "protected ignored state; nothing is authorized for discard"
+            )
+    authorized = set(discard_names)
+    candidates = [
+        branch for branch in survey["branches"]
+        if branch["category"] == "prunable"
+        or (branch["category"] == "merged-protected" and branch["name"] in authorized)
+    ]
+    skipped = [
+        {
+            "branch": branch["name"],
+            "reason": (
+                "protected ignored state"
+                if branch["category"] == "merged-protected"
+                else "ignored state could not be enumerated"
+            ),
+        }
+        for branch in survey["branches"]
+        if branch["category"] in {"merged-protected", "merged-ignored-unknown"}
+        and branch["name"] not in authorized
+    ]
     if not yes:
         # branch_hygiene's hint already says what -y would do; a survey is
         # side-effect-free by construction.
@@ -2966,10 +3190,21 @@ def prune_branches(
     git_root = primary_worktree_root(repo_root)
     removed: list[str] = []
     failed: list[dict[str, str]] = []
-    for branch in prunables:
+    discarded: list[dict[str, Any]] = []
+    for branch in candidates:
         name = branch["name"]
         try:
-            failure = _prune_candidate_refusal(git_root, name)
+            failure = ""
+            current_state: list[dict[str, Any]] | None = None
+            if branch["checkout"]:
+                try:
+                    current_state = _ignored_state_summary(Path(branch["checkout"]))
+                except WorktreeError as exc:
+                    failure = f"ignored state could not be enumerated before removal: {exc}"
+                if not failure and current_state != branch.get("ignored_state"):
+                    failure = "ignored state changed since the survey; review it and retry"
+            if not failure:
+                failure = _prune_candidate_refusal(git_root, name)
             if not failure and branch["checkout"]:
                 res = _git(["worktree", "remove", branch["checkout"]], git_root)
                 if res.returncode != 0:
@@ -2990,6 +3225,8 @@ def prune_branches(
             failed.append({"branch": name, "reason": failure})
         else:
             removed.append(name)
+            for item in current_state or []:
+                discarded.append({"branch": name, **item})
 
     # Re-survey AFTER the removals so the returned document reports the
     # post-prune truth (counts/branches), not the stale pre-prune snapshot.
@@ -3001,6 +3238,8 @@ def prune_branches(
     survey["status"] = "pruned" if not failed else "partial"
     survey["removed"] = removed
     survey["failed"] = failed
+    survey["skipped"] = skipped
+    survey["discarded"] = discarded
     return survey
 
 
@@ -6067,96 +6306,509 @@ def adopt(
         )
 
 
+_REMOVAL_PHASES = (
+    "target_resolution", "resource_cleanup", "lease_release",
+    "lifecycle_preflight", "checkout_deletion",
+    "git_registration", "branch_removal", "ciu_record_removal",
+    "shared_record_removal",
+)
+
+
+def _new_removal_phase_report(managed: bool) -> dict[str, Any]:
+    phases = {name: "not-run" for name in _REMOVAL_PHASES}
+    phases["target_resolution"] = "running"
+    if not managed:
+        phases["ciu_record_removal"] = "skipped-no-record"
+    return {"schema_version": 1, "phases": phases}
+
+
+def _safe_root_offset(value: object, *, label: str) -> Path:
+    if not isinstance(value, str) or not value:
+        raise WorktreeError(f"[CIU-151] {label} has no CIU-root offset")
+    offset = Path(value)
+    if offset.is_absolute() or ".." in offset.parts:
+        raise WorktreeError(f"[CIU-151] {label} has an unsafe CIU-root offset {value!r}")
+    return offset
+
+
+def _instance_record_from_shared(
+    shared_record: object, logical_name: str,
+) -> WorktreeInstanceRecord | None:
+    """Read the CIU record or its checked shared snapshot for one exact path."""
+    labels = shared_record.labels
+    if (
+        shared_record.purpose != "ciu"
+        or labels.get("ciu.logical_name") != logical_name
+    ):
+        return None
+    metadata = shared_record.metadata
+    snapshot = metadata.get(_CIU_WORKTREE_RECORD_METADATA)
+    offset = _safe_root_offset(
+        metadata.get("ciu_root_offset"),
+        label=f"shared CIU workspace {logical_name!r}",
+    )
+    record_path = shared_record.worktree_path / offset / WORKTREE_INSTANCE_RECORD
+    try:
+        mode = record_path.lstat().st_mode
+    except FileNotFoundError:
+        mode = None
+    except OSError as exc:
+        raise WorktreeError(
+            f"[CIU-151] could not inspect CIU record {record_path}: {exc}"
+        ) from exc
+    try:
+        if mode is not None:
+            if not stat.S_ISREG(mode):
+                raise WorktreeError(
+                    f"[CIU-151] CIU record {record_path} is not a regular file"
+                )
+            record = read_instance_record(record_path)
+        elif isinstance(snapshot, dict):
+            record = _record_from_dict(snapshot, record_path)
+        else:
+            raise WorktreeError(
+                f"[CIU-151] shared CIU workspace {logical_name!r} has neither "
+                "a readable checkout record nor a durable record snapshot"
+            )
+    except WorktreeError:
+        raise
+    except (OSError, ValueError, TypeError, RuntimeError) as exc:
+        raise WorktreeError(
+            f"[CIU-151] could not read the shared CIU record for "
+            f"{logical_name!r}: {exc}"
+        ) from exc
+    if (
+        record.logical_name != logical_name
+        or record.git_worktree_path.resolve() != shared_record.worktree_path.resolve()
+        or record.branch != shared_record.branch
+        or record.ciu_root_offset != offset
+    ):
+        raise WorktreeError(
+            f"[CIU-151] shared CIU record for {logical_name!r} disagrees with "
+            "the exact worktree path, branch, or root offset"
+        )
+    return record
+
+
+def _primary_ciu_root_for_record(
+    repo_root: Path, record: WorktreeInstanceRecord,
+) -> Path:
+    primary = primary_worktree_root(repo_root)
+    if not _ciu_root_committed_at_checkout(primary, record.ciu_root_offset):
+        raise WorktreeError(
+            f"[CIU-151] primary checkout {primary} does not contain the recorded "
+            f"CIU root at offset {record.ciu_root_offset}"
+        )
+    candidate = primary / record.ciu_root_offset
+    if not candidate.is_dir() or not _ciu_root_marker_present(candidate):
+        raise WorktreeError(
+            f"[CIU-151] cannot find the shared CIU root for {record.logical_name!r} "
+            f"at {candidate}"
+        )
+    return candidate
+
+
+def _clean_with_primary_identity(
+    primary_ciu_root: Path, instance_id: str, *, yes: bool,
+) -> int:
+    """Run identity-scoped clean from the primary CIU root for an old checkout."""
+    import os
+
+    env = {key: value for key, value in os.environ.items() if key not in _CIU_IDENTITY_ENV_KEYS}
+    argv = [
+        sys.executable, "-m", "ciu.cli", "clean", "--root-folder",
+        str(primary_ciu_root), "--identity", instance_id,
+    ]
+    if yes:
+        argv.append("-y")
+    try:
+        return subprocess.run(
+            argv, cwd=str(primary_ciu_root), env=env, check=False
+        ).returncode
+    except OSError as exc:
+        raise WorktreeError(
+            f"[CIU-151] could not run identity-scoped clean from "
+            f"{primary_ciu_root}: {exc}"
+        ) from exc
+
+
+def _branch_removal_plan(
+    repo_root: Path,
+    wt: WorktreeInfo,
+    record: WorktreeInstanceRecord | None,
+    *,
+    keep_branch: bool,
+    delete_branch: bool,
+) -> dict[str, Any]:
+    if wt.branch in {"(detached)", "(bare)", "(unknown)", "HEAD"}:
+        return {
+            "name": None, "tip": None, "outcome": "skipped-detached",
+            "delete": False, "reason": "checkout has no local branch",
+        }
+    tip_result = _git(
+        ["rev-parse", "--verify", f"refs/heads/{wt.branch}"], repo_root
+    )
+    if tip_result.returncode != 0:
+        raise WorktreeError(
+            f"[CIU-153] could not read branch tip for {wt.branch!r}: "
+            f"{(tip_result.stderr or tip_result.stdout).strip()}"
+        )
+    tip = tip_result.stdout.strip()
+    if keep_branch:
+        return {
+            "name": wt.branch, "tip": tip, "outcome": "kept-by-option",
+            "delete": False, "reason": "--keep-branch was supplied",
+        }
+    if delete_branch:
+        return {
+            "name": wt.branch, "tip": tip, "outcome": "deleted",
+            "delete": True, "reason": "--delete-branch was supplied",
+        }
+
+    base: str | None = None
+    if record is not None and record.base_branch_ref is not None:
+        base = record.base_branch_ref
+    elif record is not None and record.schema_version < WORKTREE_INSTANCE_BASE_BRANCH_SCHEMA_VERSION:
+        candidate = record.base_ref
+        if _git(["rev-parse", "--verify", f"refs/heads/{candidate}"], repo_root).returncode == 0:
+            base = candidate
+    if base is None:
+        base = _default_branch(repo_root)
+    if base is None:
+        base = next(
+            (
+                candidate for candidate in _MAINLINE_FALLBACKS
+                if _git(["rev-parse", "--verify", f"refs/heads/{candidate}"], repo_root).returncode == 0
+            ),
+            None,
+        )
+    if base is None:
+        return {
+            "name": wt.branch, "tip": tip, "outcome": "kept-unmerged",
+            "delete": False, "reason": "no local base branch proves this tip merged",
+        }
+    if _git(["rev-parse", "--verify", f"refs/heads/{base}"], repo_root).returncode != 0:
+        return {
+            "name": wt.branch, "tip": tip, "outcome": "kept-unmerged",
+            "delete": False,
+            "reason": f"recorded base branch {base!r} is unavailable; mergedness is unproven",
+        }
+    merged = _git(
+        ["merge-base", "--is-ancestor", tip, f"refs/heads/{base}"], repo_root
+    )
+    if merged.returncode == 0:
+        return {
+            "name": wt.branch, "tip": tip, "outcome": "deleted",
+            "delete": True, "reason": f"tip is contained in base branch {base!r}",
+        }
+    reason = (
+        f"tip is not contained in base branch {base!r}"
+        if merged.returncode == 1
+        else f"could not prove mergedness into {base!r}: "
+             f"{(merged.stderr or merged.stdout).strip()}"
+    )
+    return {
+        "name": wt.branch, "tip": tip, "outcome": "kept-unmerged",
+        "delete": False, "reason": reason,
+    }
+
+
 def remove(
     repo_root: Path,
     name: str,
     *,
     yes: bool = False,
     force: bool = False,
+    keep_branch: bool = False,
+    delete_branch: bool = False,
+    discard_protected_state: str | tuple[str, ...] | list[str] | None = None,
+    _phase_report: dict[str, Any] | None = None,
+    _details: dict[str, Any] | None = None,
 ) -> Path:
-    """Dispose of worktree *name*: ``ciu clean``, then remove the checkout.
+    """Clean and remove one checkout, retaining unmerged or requested refs."""
+    repo_root = Path(repo_root).resolve()
+    report = _new_removal_phase_report(managed=False)
+    if _phase_report is not None:
+        _phase_report.clear()
+        _phase_report.update(report)
+        report = _phase_report
+    details = _details if _details is not None else {}
 
-    Never reorders those steps — see the module docstring. A clean that fails
-    ABORTS the removal (unless *force*), because removing the checkout after a
-    failed clean destroys the only config that could complete it and leaves
-    root-owned volume dirs no unprivileged operator can delete.
+    def mark(phase: str, status: str) -> None:
+        report["phases"][phase] = status
 
-    """
-    path_hint = find_worktree(repo_root, name)
-    managed = find_instance_record(
-        repo_root, name,
-        target_path=path_hint.path if path_hint is not None else None,
-    )
-    wt = (
-        find_worktree(repo_root, str(managed.git_worktree_path))
-        if managed is not None else find_worktree(repo_root, name)
-    )
-    if wt is None:
-        raise WorktreeError(
-            f"[S16] no worktree named {name!r} under {repo_root}. "
-            "`ciu worktree list` shows what exists."
-        )
-    if wt.is_primary or wt.path.resolve() == repo_root.resolve():
-        raise WorktreeError(
-            f"[S16] refusing to remove {wt.path}: that is the PRIMARY checkout, "
-            "not a worktree instance."
+    def fail(message: str, *, phase: str | None = None) -> WorktreeRemovalError:
+        if phase is not None:
+            mark(phase, "failed")
+        for phase_name, current in report["phases"].items():
+            if current == "running":
+                report["phases"][phase_name] = "failed"
+            elif current == "not-run":
+                report["phases"][phase_name] = "skipped"
+        return WorktreeRemovalError(
+            f"[S16] worktree removal failed for {name!r}: {message}; "
+            f"phase report: {report['phases']}", report,
         )
 
-    ciu_root = managed.ciu_root if managed is not None else wt.path / _ciu_root_offset(repo_root)
+    if keep_branch and delete_branch:
+        raise fail("--keep-branch and --delete-branch cannot be used together")
+    if discard_protected_state is None:
+        discard_names: list[str] = []
+    elif isinstance(discard_protected_state, str):
+        discard_names = [discard_protected_state]
+    else:
+        discard_names = list(discard_protected_state)
+    if len(set(discard_names)) > 1:
+        raise fail("rm accepts one exact --discard-protected-state branch")
+
+    try:
+        path_hint = find_worktree(repo_root, name)
+        logical_shared = _shared_record_for_logical_name(repo_root, name)
+        if path_hint is None and logical_shared is not None:
+            path_hint = find_worktree(repo_root, str(logical_shared.worktree_path))
+        managed = find_instance_record(
+            repo_root, name,
+            target_path=path_hint.path if path_hint is not None else None,
+        )
+        if managed is None and logical_shared is not None:
+            managed = _instance_record_from_shared(logical_shared, name)
+        if managed is not None:
+            details["record"] = managed
+        wt = (
+            find_worktree(repo_root, str(managed.git_worktree_path))
+            if managed is not None else path_hint
+        )
+        if wt is None:
+            raise fail(
+                f"no worktree named {name!r} under {repo_root}; "
+                "`ciu worktree list` shows what exists"
+            )
+        if wt.is_primary or wt.path.resolve() == repo_root.resolve():
+            raise fail(
+                f"refusing to remove {wt.path}: that is the PRIMARY checkout, "
+                "not a worktree instance"
+            )
+        git_branch = "HEAD" if wt.branch == "(detached)" else wt.branch
+        if logical_shared is not None and logical_shared.worktree_path.resolve() != wt.path.resolve():
+            raise fail(
+                f"shared record for {name!r} names {logical_shared.worktree_path}, "
+                f"but Git selected {wt.path}"
+            )
+        shared = _shared_worktree()
+        try:
+            family_root, common, _family_branch, _family_head = shared.discover_git_context(repo_root)
+            worktree_top, worktree_common, worktree_branch, _worktree_head = (
+                shared.discover_git_context(wt.path)
+            )
+            if (
+                worktree_top != wt.path.resolve()
+                or worktree_common != common
+                or worktree_branch != git_branch
+            ):
+                raise WorktreeError(
+                    f"checkout Git facts changed before removal: path={worktree_top}, "
+                    f"common={worktree_common}, branch={worktree_branch}"
+                )
+            shared_record = shared.find_workspace(common, wt.path.resolve())
+        except Exception as exc:
+            raise fail(f"could not verify shared Git ownership: {exc}") from exc
+        if shared_record is None and logical_shared is not None:
+            shared_record = logical_shared
+        if managed is not None and (
+            managed.git_worktree_path.resolve() != wt.path.resolve()
+            or managed.branch != git_branch
+        ):
+            raise fail(
+                f"CIU identity record does not match checkout path/branch for {wt.path}"
+            )
+        if shared_record is not None and (
+            shared_record.worktree_path.resolve() != wt.path.resolve()
+            or shared_record.git_common_dir != common
+            or shared_record.branch != git_branch
+            or shared_record.source_git_root != family_root
+        ):
+            raise fail(
+                f"shared worktree record does not match the exact checkout path, "
+                f"Git family, or branch for {wt.path}"
+            )
+        mark("target_resolution", "complete")
+    except WorktreeRemovalError:
+        raise
+    except WorktreeError as exc:
+        raise fail(str(exc)) from exc
+
+    mark("ciu_record_removal", "not-run" if managed is not None else "skipped-no-record")
+    report["phases"]["shared_record_removal"] = "not-run"
+    path = wt.path
+    try:
+        ciu_root = (
+            managed.ciu_root if managed is not None
+            else wt.path / _ciu_root_offset(repo_root)
+        )
+        marker_present = _ciu_root_marker_present(ciu_root)
+    except WorktreeError as exc:
+        mark("resource_cleanup", "failed")
+        raise fail(str(exc)) from exc
     rootless_managed = (
         managed is not None
         and managed.state == "ready"
         and managed.instance_id is None
         and managed.network is None
-        and not _ciu_root_marker_present(managed.ciu_root)
+        and not marker_present
     )
-    rc = 0 if rootless_managed else _clean_in(ciu_root, yes=yes)
-    if rc != 0 and not force:
-        raise WorktreeError(
-            f"[S16] `ciu clean` failed (exit {rc}) in {ciu_root}; NOT removing the "
-            "checkout. Removing it now would destroy the rendered config that "
-            "tells CIU what to clean, stranding root-owned vol-* directories "
-            "that an unprivileged `rm -rf` cannot delete. Fix the cause and "
-            "retry, or pass --force to remove anyway (leftovers become your "
-            "problem)."
-        )
-
-    # S16.9 — ON SUCCESS ONLY. The lease is the evidence that something still
-    # owns this instance's Docker resources, so it is cleared exactly when the
-    # clean that removed them SUCCEEDED (rc == 0). A failed clean reaching here
-    # means --force was passed: the checkout is about to be destroyed with
-    # resources possibly still standing, which is precisely when the ownership
-    # record must NOT be erased.
-    if rc == 0 and not rootless_managed:
-        release_own_lease(ciu_root)
-
-    # New allocations have a neutral family record.  CIU has already completed
-    # its product cleanup above, so hand the final Git removal to the shared
-    # lifecycle owner; this preserves the generic cleanup-before-removal order
-    # and removes the shared record atomically with the checkout.
     try:
-        shared = _shared_worktree()
-        _top, common, _branch, _head = shared.discover_git_context(wt.path)
-        shared_record = shared.find_workspace(common, wt.path.resolve())
-    except Exception as exc:
-        raise WorktreeError(f"[S16] could not inspect shared workspace ownership: {exc}") from exc
-    if shared_record is not None:
+        ignored_state = _ignored_state_summary(wt.path)
+    except WorktreeError as exc:
+        mark("resource_cleanup", "skipped-ignored-state-unknown")
+        raise fail(str(exc)) from exc
+    protected_state = [item for item in ignored_state if item["class"] == "protected"]
+    details["ignored_state"] = ignored_state
+    details["discarded_state"] = []
+    exact_disposition = discard_names[0] if discard_names else None
+    branch_name = (
+        None if wt.branch in {"(detached)", "(bare)", "(unknown)", "HEAD"}
+        else wt.branch
+    )
+    if protected_state and branch_name is None:
+        mark("resource_cleanup", "skipped-protected-state")
+        raise fail(
+            f"protected ignored state remains in detached checkout {path}; "
+            "it has no branch name for the exact discard option. Preserve or "
+            "move that state, or attach the checkout to a local branch before "
+            "authorizing its removal"
+        )
+    if protected_state and exact_disposition != branch_name:
+        mark("resource_cleanup", "skipped-protected-state")
+        paths = ", ".join(
+            f"{item['path']} ({item['file_count']} file(s), {item['bytes']} bytes)"
+            for item in protected_state
+        )
+        raise fail(
+            f"protected ignored state remains in {path}: {paths}; to discard this "
+            f"branch's state explicitly, pass --discard-protected-state {wt.branch}"
+        )
+    if exact_disposition is not None:
+        if branch_name is None:
+            raise fail(
+                "--discard-protected-state applies only to a checkout attached "
+                "to a local branch"
+            )
+        if exact_disposition != branch_name:
+            raise fail(
+                f"--discard-protected-state must name the exact checkout branch "
+                f"{branch_name!r}, got {exact_disposition!r}"
+            )
+        if not protected_state:
+            raise fail(
+                f"branch {wt.branch!r} has no protected ignored state to discard"
+            )
+
+    try:
+        branch = _branch_removal_plan(
+            repo_root, wt, managed,
+            keep_branch=keep_branch, delete_branch=delete_branch,
+        )
+    except WorktreeError as exc:
+        raise fail(str(exc)) from exc
+    details["branch"] = {
+        key: value for key, value in branch.items() if key != "delete"
+    }
+
+    if rootless_managed:
+        rc = 0
+        mark("resource_cleanup", "skipped-no-resources")
+    elif managed is not None and not marker_present:
+        if not managed.instance_id:
+            mark("resource_cleanup", "failed")
+            raise fail(
+                f"cannot find a CIU root at {ciu_root} and the shared worktree "
+                "record has no instance id; CIU cannot verify resources to clean"
+            )
         try:
-            shared.remove_workspace(shared_record)
-            return wt.path
+            primary_ciu_root = _primary_ciu_root_for_record(repo_root, managed)
+            rc = _clean_with_primary_identity(
+                primary_ciu_root, managed.instance_id, yes=yes
+            )
+        except WorktreeError as exc:
+            mark("resource_cleanup", "failed")
+            raise fail(str(exc)) from exc
+        if rc == 0:
+            mark("resource_cleanup", "complete")
+        else:
+            mark("resource_cleanup", "failed")
+    else:
+        try:
+            rc = _clean_in(ciu_root, yes=yes)
+        except WorktreeError as exc:
+            mark("resource_cleanup", "failed")
+            raise fail(str(exc)) from exc
+        if rc == 0:
+            mark("resource_cleanup", "complete")
+        else:
+            mark("resource_cleanup", "failed")
+    if rc != 0 and not force:
+        raise fail(
+            f"`ciu clean` failed (exit {rc}) in {ciu_root}; NOT removing the "
+            "checkout. Fix the cleanup cause and retry, or pass --force only "
+            "when you explicitly accept the unrecovered resources",
+            phase="resource_cleanup",
+        )
+    if rc != 0:
+        mark("resource_cleanup", "failed-forced")
+
+    if rc == 0 and not rootless_managed:
+        try:
+            record_path = managed.record_path if managed is not None else None
+            if record_path is not None and not record_path.exists() and shared_record is not None:
+                shared.release_lease(shared_record)
+            elif managed is not None:
+                release_own_lease(ciu_root)
+            mark("lease_release", "complete")
         except Exception as exc:
-            raise WorktreeError(f"[S16] shared workspace removal failed: {exc}") from exc
+            mark("lease_release", "failed")
+            raise fail(f"could not release the CIU worktree lease: {exc}") from exc
+    else:
+        mark(
+            "lease_release",
+            "skipped-no-resources" if rootless_managed else "skipped-clean-failed",
+        )
+
+    def report_library_phase(phase: str, status: str) -> None:
+        if phase == "checkout_deletion" and status == "running":
+            mark("lifecycle_preflight", "complete")
+        if phase == "branch_removal" and status == "kept":
+            status = branch["outcome"]
+        mark(phase, status)
+        if phase == "checkout_deletion" and status == "complete":
+            details["discarded_state"] = ignored_state
+            mark(
+                "ciu_record_removal",
+                "complete" if managed is not None else "skipped-no-record",
+            )
 
     try:
-        shared.remove_unrecorded_workspace(
-            repo_root,
-            wt.path,
-            expected_branch=wt.branch,
-            purpose="ciu-legacy",
-            force=force,
-        )
+        mark("lifecycle_preflight", "running")
+        if shared_record is not None:
+            shared.remove_workspace(
+                shared_record,
+                force=force,
+                delete_branch=bool(branch["delete"]),
+                expected_branch_tip=branch["tip"] if branch["delete"] else None,
+                on_phase=report_library_phase,
+            )
+        else:
+            shared.remove_unrecorded_workspace(
+                repo_root,
+                wt.path,
+                expected_branch=git_branch,
+                purpose="ciu-legacy",
+                force=force,
+                delete_branch=bool(branch["delete"]),
+                expected_branch_tip=branch["tip"] if branch["delete"] else None,
+                on_phase=report_library_phase,
+            )
     except Exception as exc:
-        raise WorktreeError(f"[S16] shared legacy workspace removal failed: {exc}") from exc
+        raise fail(f"shared worktree removal failed: {exc}") from exc
     return wt.path
 
 

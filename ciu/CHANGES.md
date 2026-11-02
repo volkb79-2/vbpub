@@ -172,6 +172,20 @@ the technical detail below it.
 
 ## [Unreleased]
 
+### Fixed
+- `ciu worktree rm` can clean a markerless old checkout using its exact shared workspace record and the matching committed CIU root in the primary checkout; the operation refuses when that identity cannot be verified.
+- `rm` keeps an unmerged or unproven branch tip by default, reports its full tip, and deletes a merged branch only against its recorded base. `--keep-branch` and `--delete-branch` expose the explicit choices; compare-and-delete preserves a branch that moved during cleanup.
+- The branch survey and prune disclose ignored files and directories with bounded size facts. Protected `.assay/` resume state and root `vol-*` data require an exact `--discard-protected-state BRANCH`; `-y` alone preserves them. Enumeration failures are non-prunable, and regenerable or unclassified ignored entries remain visible without blocking.
+
+### Changed
+- `ciu worktree branches --json` advances to schema 3 for the `merged-protected` and `merged-ignored-unknown` categories. The `dirty` field retains its Git status meaning.
+- `ciu worktree rm --json` now reports a versioned per-phase lifecycle map on success and failure, along with branch outcome and ignored-state inventory. CIU-134's permission-specific retry remains stage 2 and will extend this report.
+
+### Adoption / Migration Notes
+- Consumers that validate branch-survey JSON must accept `schema_version: 3` and the two ignored-state categories before using the document; unknown categories remain a refusal. Existing scripts can survey first, then pass an exact branch name to `--discard-protected-state` only after reviewing protected state.
+- `rm` now retains unmerged branches by default. Use `--delete-branch` only when deleting that ref is intended; use `--keep-branch` when a merged ref should remain.
+- CIU-134's root-assisted permission retry is still open. The new phase report records stage-1 progress but does not perform privileged cleanup.
+
 ## [7.16.0] - 2026-10-07
 <!-- cmru: generated -->
 <!-- cmru: source-end=5a9154b69c381545422c6f896f269a8f947b287b -->

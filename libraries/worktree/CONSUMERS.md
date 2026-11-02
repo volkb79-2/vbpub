@@ -77,6 +77,32 @@ the recorded source and live checkout/branch before calling adapter cleanup;
 if the checkout cannot be inspected, fix the state rather than treating it as
 missing or running cleanup against an unverified target.
 
+## Removal options and phase events
+
+The adapter owns removal policy. `delete_branch=False` leaves the ref after
+checkout removal. When deletion is selected, pass the branch tip observed
+before cleanup as `expected_branch_tip`; the library uses Git's compare-and-
+delete form, so a ref moved during cleanup is preserved and the operation
+fails with the checkout already removed but its shared record retained.
+`remove_unrecorded_workspace` accepts the same options.
+
+```python
+phase_events = []
+worktree.remove_workspace(
+    context,
+    cleanup=cleanup_product_resources,
+    delete_branch=False,
+    on_phase=lambda phase, status: phase_events.append((phase, status)),
+)
+```
+
+Callback events report `checkout_deletion`, `git_registration`,
+`branch_removal`, and `shared_record_removal`. Their statuses identify when an
+operation starts, completes, fails, deletes a branch, keeps it, or skips a
+detached ref. The callback is observational: it cannot authorize an operation
+or repair a partial removal. A product-level report may combine these events
+with its own resource cleanup and identity-resolution phases.
+
 The public failure categories are `collision`, `occupied`, `root-mismatch`,
 `stale-record`, `invalid-record`, `cleanup-refusal`, `lease-held`,
 `lock-error`, `git-error`, and `invalid-input`. A caller that cannot safely

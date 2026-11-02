@@ -19,8 +19,8 @@ The package exposes these stable operations:
 | `ensure_workspace` | Reopens a record only when checkout, branch, common directory, and the record's identity input still agree. |
 | `find_workspace` | Looks up a record by its exact absolute stored worktree path, without normalizing, resolving, or probing that checkout path; duplicate matches are malformed state. |
 | `inspect_workspace` | Reads the record and fresh Git facts without repairing state. |
-| `remove_workspace` | Given a handle and cleanup callback, refuses active leases, runs adapter cleanup first, and removes Git state and the record only after cleanup succeeds. |
-| `remove_unrecorded_workspace` | Compatibility-only bridge for a legacy checkout with no shared record; adopts it through the same record/lifecycle path and immediately removes it. |
+| `remove_workspace` | Given a handle and cleanup callback, refuses active leases, runs adapter cleanup first, and removes Git state and the record only after cleanup succeeds. Callers select `delete_branch`; an optional `expected_branch_tip` makes ref deletion compare-and-delete. `on_phase` reports lifecycle events. |
+| `remove_unrecorded_workspace` | Compatibility-only bridge for a legacy checkout with no shared record; adopts it through the same record/lifecycle path and immediately removes it, forwarding branch-deletion, expected-tip, and phase-callback options. |
 | `acquire_lease` / `release_lease` | Writes bounded or perpetual ownership claims under the same family lock. |
 
 `WorkspaceContext` is the typed handoff between the library and an adapter. It
@@ -93,10 +93,25 @@ Removal first re-reads and validates the record, then verifies that the live
 checkout top level, branch, Git common directory, and source checkout agree
 with it. Missing/unreadable paths or any mismatch refuse before the adapter
 cleanup callback. After preflight, cleanup is ordered: active lease check,
-adapter callback, Git worktree removal, branch removal, record removal. A
-failed callback or Git operation leaves the record and checkout available for
-recovery. `inspect_workspace()` distinguishes a genuinely missing checkout
-from an inaccessible one; inability to inspect is not reported as absence.
+adapter callback, Git worktree removal, registration verification, optional
+branch removal, and shared-record removal. The low-level `delete_branch`
+default remains `True` for compatibility; product adapters should pass an
+explicit policy. If deletion is selected with `expected_branch_tip`, Git
+deletes only if the ref still points to that exact object id. A moved ref is
+preserved and reported as a refusal after checkout deletion, with the shared
+record retained for recovery.
+
+`on_phase(phase, status)` reports `checkout_deletion`, `git_registration`,
+`branch_removal`, and `shared_record_removal`. The callback reports operation
+progress and results; it neither selects policy nor retries failures. A
+product-level phase document can combine these events with its own preflight
+and cleanup phases. A failed adapter callback leaves the checkout and record
+available. Git failures are reported with the last observed phase; a failure
+after checkout deletion can leave the shared record available without its
+checkout, so callers must inspect Git registration and the record before
+choosing a recovery action. `inspect_workspace()` distinguishes a genuinely
+missing checkout from an inaccessible one; inability to inspect is not
+reported as absence.
 
 An adapter may retain a product-facing compatibility record, but it must not
 implement a second generic Git lifecycle or lease authority. If it mirrors

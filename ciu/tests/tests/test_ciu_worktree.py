@@ -22,13 +22,14 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from types import SimpleNamespace
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from ciu import worktree  # noqa: E402
-from ciu.config_constants import GLOBAL_CONFIG_RENDERED  # noqa: E402
+from ciu.config_constants import GLOBAL_CONFIG_DEFAULTS, GLOBAL_CONFIG_RENDERED  # noqa: E402
 
 
 def create_path(*args, **kwargs):
@@ -3582,6 +3583,20 @@ class TestStructuredControlDocuments:
         assert doc["status"] == "removed"
         assert doc["removed_path"] == str(tmp_repo / ".worktrees" / "wt1")
         assert doc["instance"]["logical_name"] == "wt1"
+        assert doc["phase_report"] == {
+            "schema_version": 1,
+            "phases": {
+                "target_resolution": "complete",
+                "resource_cleanup": "complete",
+                "lease_release": "complete",
+                "lifecycle_preflight": "complete",
+                "checkout_deletion": "complete",
+                "git_registration": "complete",
+                "branch_removal": "deleted",
+                "ciu_record_removal": "complete",
+                "shared_record_removal": "complete",
+            },
+        }
         assert not (tmp_repo / ".worktrees" / "wt1").exists()
 
     def test_remove_document_unmanaged_omits_instance(self, tmp_repo, monkeypatch):
@@ -3602,8 +3617,650 @@ class TestStructuredControlDocuments:
     ):
         create_path(tmp_repo, "wt1", base="main")
         monkeypatch.setattr(worktree, "_clean_in", lambda wt, *, yes: 1)
-        with pytest.raises(worktree.WorktreeError, match="NOT removing"):
+        with pytest.raises(worktree.WorktreeRemovalError, match="NOT removing") as exc:
             worktree.remove_document(tmp_repo, "wt1")
+        assert exc.value.document["status"] == "failed"
+        assert exc.value.document["phase_report"]["schema_version"] == 1
+        assert exc.value.document["phase_report"]["phases"]["target_resolution"] == "complete"
+        assert exc.value.document["phase_report"]["phases"]["resource_cleanup"] == "failed"
+        assert exc.value.document["phase_report"]["phases"]["checkout_deletion"] == "skipped"
+        assert exc.value.document["branch"]["outcome"] == "not-deleted"
+
+    def test_remove_falls_back_to_primary_ciu_root_for_markerless_old_checkout(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        record = worktree.create(tmp_repo, "old-root", base="main")
+        marker = record.ciu_root / GLOBAL_CONFIG_DEFAULTS
+        assert marker.is_file()
+        marker.unlink()
+        record.record_path.unlink()
+        clean_calls = []
+
+        def clean_from_primary(primary_root, instance_id, *, yes):
+            clean_calls.append((primary_root, instance_id, yes))
+            return 0
+
+        monkeypatch.setattr(worktree, "_clean_with_primary_identity", clean_from_primary)
+        monkeypatch.setattr(
+            worktree, "_clean_in",
+            lambda *_args, **_kwargs: pytest.fail("markerless checkout must use primary config"),
+        )
+
+        document = worktree.remove_document(
+            tmp_repo, "old-root", keep_branch=True
+        )
+
+        assert clean_calls == [(tmp_repo, record.instance_id, False)]
+        assert not record.git_worktree_path.exists()
+        assert _git(["rev-parse", "--verify", record.branch], tmp_repo).returncode == 0
+        assert document["phase_report"]["phases"]["resource_cleanup"] == "complete"
+
+    def test_rm_refuses_protected_assay_state_before_clean_without_exact_disposition(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        (tmp_repo / ".gitignore").write_text(
+            (tmp_repo / ".gitignore").read_text(encoding="utf-8") + ".assay/\n",
+            encoding="utf-8",
+        )
+        _git(["add", ".gitignore"], tmp_repo)
+        _git(["commit", "-m", "ignore assay state"], tmp_repo)
+        record = worktree.create(tmp_repo, "protected-rm", base="main")
+        state = record.git_worktree_path / ".assay" / "state" / "resume.json"
+        state.parent.mkdir(parents=True)
+        state.write_text("resume\n", encoding="utf-8")
+        clean_calls = []
+        monkeypatch.setattr(
+            worktree, "_clean_in",
+            lambda *_args, **_kwargs: clean_calls.append(True) or 0,
+        )
+
+        with pytest.raises(worktree.WorktreeRemovalError, match="--discard-protected-state") as exc:
+            worktree.remove_document(tmp_repo, "protected-rm", yes=True)
+
+        assert state.read_text(encoding="utf-8") == "resume\n"
+        assert record.git_worktree_path.is_dir()
+        assert clean_calls == []
+        assert exc.value.phase_report["phases"]["resource_cleanup"] == "skipped-protected-state"
+
+    def test_rm_discard_protected_state_requires_exact_branch_and_reports_loss(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        (tmp_repo / ".gitignore").write_text(
+            (tmp_repo / ".gitignore").read_text(encoding="utf-8") + ".assay/\n",
+            encoding="utf-8",
+        )
+        _git(["add", ".gitignore"], tmp_repo)
+        _git(["commit", "-m", "ignore assay state"], tmp_repo)
+        record = worktree.create(tmp_repo, "protected-discard", base="main")
+        state = record.git_worktree_path / ".assay" / "state" / "resume.json"
+        state.parent.mkdir(parents=True)
+        state.write_text("resume\n", encoding="utf-8")
+        monkeypatch.setattr(worktree, "_clean_in", lambda *_args, **_kwargs: 0)
+
+        document = worktree.remove_document(
+            tmp_repo, "protected-discard", yes=True,
+            discard_protected_state=record.branch,
+        )
+
+        assay_state = next(
+            item for item in document["discarded_state"] if item["path"] == ".assay"
+        )
+        assert assay_state == {
+            "path": ".assay", "class": "protected", "file_count": 1,
+            "bytes": len("resume\n"), "capped": False,
+        }
+        assert document["phase_report"]["phases"]["branch_removal"] == "deleted"
+        assert not record.git_worktree_path.exists()
+
+
+class TestRemovalBranchSafety:
+    def _created_branch(self, tmp_repo, fake_generate_env, name):
+        record = worktree.create(tmp_repo, name, base="main", branch=name)
+        target = record.git_worktree_path
+        (target / "branch-work.txt").write_text("work\n", encoding="utf-8")
+        _git(["add", "branch-work.txt"], target)
+        _git(["commit", "-m", f"work on {name}"], target)
+        return record, _git(
+            ["rev-parse", "--verify", f"refs/heads/{record.branch}"], tmp_repo
+        ).stdout.strip()
+
+    def test_rm_keeps_unmerged_branch_and_reports_tip(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        record, tip = self._created_branch(tmp_repo, fake_generate_env, "feature-unmerged")
+        monkeypatch.setattr(worktree, "_clean_in", lambda *_args, **_kwargs: 0)
+
+        document = worktree.remove_document(tmp_repo, record.logical_name)
+
+        assert _git(
+            ["rev-parse", "--verify", f"refs/heads/{record.branch}"], tmp_repo
+        ).stdout.strip() == tip
+        assert document["branch"]["name"] == record.branch
+        assert document["branch"]["tip"] == tip
+        assert document["branch"]["outcome"] == "kept-unmerged"
+        assert "not contained" in document["branch"]["reason"]
+        assert document["phase_report"]["phases"]["branch_removal"] == "kept-unmerged"
+
+    def test_rm_deletes_merged_branch_by_default(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        record, _tip = self._created_branch(tmp_repo, fake_generate_env, "feature-merged")
+        _git(["merge", "--no-ff", "-m", "merge feature", record.branch], tmp_repo)
+        monkeypatch.setattr(worktree, "_clean_in", lambda *_args, **_kwargs: 0)
+
+        document = worktree.remove_document(tmp_repo, record.logical_name)
+
+        assert _git(["rev-parse", "--verify", record.branch], tmp_repo).returncode != 0
+        assert document["branch"]["outcome"] == "deleted"
+
+    def test_keep_branch_preserves_even_a_merged_branch(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        record, tip = self._created_branch(tmp_repo, fake_generate_env, "feature-kept")
+        _git(["merge", "--no-ff", "-m", "merge feature", record.branch], tmp_repo)
+        monkeypatch.setattr(worktree, "_clean_in", lambda *_args, **_kwargs: 0)
+
+        document = worktree.remove_document(
+            tmp_repo, record.logical_name, keep_branch=True
+        )
+
+        assert _git(
+            ["rev-parse", "--verify", f"refs/heads/{record.branch}"], tmp_repo
+        ).stdout.strip() == tip
+        assert document["branch"]["outcome"] == "kept-by-option"
+
+    def test_delete_branch_explicitly_removes_unmerged_branch_and_reports_tip(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        record, tip = self._created_branch(tmp_repo, fake_generate_env, "feature-delete")
+        monkeypatch.setattr(worktree, "_clean_in", lambda *_args, **_kwargs: 0)
+
+        document = worktree.remove_document(
+            tmp_repo, record.logical_name, delete_branch=True
+        )
+
+        assert _git(["rev-parse", "--verify", record.branch], tmp_repo).returncode != 0
+        assert document["branch"]["name"] == record.branch
+        assert document["branch"]["tip"] == tip
+        assert document["branch"]["outcome"] == "deleted"
+
+    def test_rm_reports_compare_and_delete_failure_without_claiming_deletion(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        record, expected_tip = self._created_branch(
+            tmp_repo, fake_generate_env, "feature-raced-delete"
+        )
+        _git(["merge", "--no-ff", "-m", "merge feature", record.branch], tmp_repo)
+        tree = _git(["rev-parse", f"{expected_tip}^{{tree}}"], tmp_repo).stdout.strip()
+        advanced_tip = _git(
+            ["commit-tree", tree, "-p", expected_tip, "-m", "raced tip"], tmp_repo
+        ).stdout.strip()
+        original_run = subprocess.run
+        monkeypatch.setattr(worktree, "_clean_in", lambda *_args, **_kwargs: 0)
+
+        def move_before_delete(argv, *args, **kwargs):
+            if argv[:3] == ["git", "update-ref", "-d"]:
+                assert _git(
+                    ["update-ref", f"refs/heads/{record.branch}", advanced_tip], tmp_repo
+                ).returncode == 0
+            return original_run(argv, *args, **kwargs)
+
+        monkeypatch.setattr(worktree.subprocess, "run", move_before_delete)
+        with pytest.raises(worktree.WorktreeRemovalError, match="branch removal") as exc:
+            worktree.remove_document(tmp_repo, record.logical_name)
+        assert _git(
+            ["rev-parse", f"refs/heads/{record.branch}"], tmp_repo
+        ).stdout.strip() == advanced_tip
+        assert exc.value.document["branch"]["tip"] == expected_tip
+        assert exc.value.document["branch"]["outcome"] == "failed"
+        assert exc.value.phase_report["phases"]["branch_removal"] == "failed"
+
+    def test_rm_reports_detached_branch_as_skipped(self, tmp_repo, monkeypatch):
+        target = tmp_repo.parent / "detached-remove"
+        assert _git(
+            ["worktree", "add", "--detach", str(target), "main"], tmp_repo
+        ).returncode == 0
+        exclude = tmp_repo / ".git" / "info" / "exclude"
+        exclude.write_text(exclude.read_text(encoding="utf-8") + "\n.assay/\n", encoding="utf-8")
+        state = target / ".assay" / "progress.jsonl"
+        state.parent.mkdir()
+        state.write_text("resume\n", encoding="utf-8")
+        monkeypatch.setattr(worktree, "_clean_in", lambda *_args, **_kwargs: 0)
+
+        with pytest.raises(
+            worktree.WorktreeRemovalError, match="no branch name for the exact discard option"
+        ):
+            worktree.remove_document(tmp_repo, target.name, force=True)
+        assert state.read_text(encoding="utf-8") == "resume\n"
+
+        state.unlink()
+        state.parent.rmdir()
+        document = worktree.remove_document(tmp_repo, target.name, force=True)
+
+        assert document["branch"]["name"] is None
+        assert document["branch"]["outcome"] == "skipped-detached"
+        assert document["phase_report"]["phases"]["branch_removal"] == "skipped-detached"
+        assert not target.exists()
+
+
+class TestRemovalHelpers:
+    def test_safe_root_offset_requires_relative_repository_path(self):
+        assert worktree._safe_root_offset("services/ciu", label="test") == Path(
+            "services/ciu"
+        )
+        for value in (None, "", "/absolute", "../outside"):
+            with pytest.raises(worktree.WorktreeError, match="CIU-root offset"):
+                worktree._safe_root_offset(value, label="test")
+
+    def test_shared_record_reads_checkout_file_and_snapshot(self, tmp_repo, fake_generate_env):
+        record = worktree.create(tmp_repo, "shared-record")
+        shared_record = worktree._shared_record_for_logical_name(
+            tmp_repo, record.logical_name
+        )
+        assert shared_record is not None
+        assert worktree._instance_record_from_shared(
+            shared_record, record.logical_name
+        ) == record
+
+        record.record_path.unlink()
+        restored = worktree._instance_record_from_shared(
+            shared_record, record.logical_name
+        )
+        assert restored == record
+
+    def test_shared_record_refuses_mismatches_and_unsafe_metadata(
+        self, tmp_repo, fake_generate_env
+    ):
+        record = worktree.create(tmp_repo, "shared-mismatch")
+        shared_record = worktree._shared_record_for_logical_name(
+            tmp_repo, record.logical_name
+        )
+        assert shared_record is not None
+        assert worktree._instance_record_from_shared(
+            replace(shared_record, purpose="generic"), record.logical_name
+        ) is None
+        assert worktree._instance_record_from_shared(
+            replace(shared_record, labels={}), record.logical_name
+        ) is None
+        for offset in (None, "../escape"):
+            metadata = dict(shared_record.metadata)
+            if offset is None:
+                metadata.pop("ciu_root_offset", None)
+            else:
+                metadata["ciu_root_offset"] = offset
+            invalid = replace(shared_record, metadata=metadata)
+            with pytest.raises(worktree.WorktreeError, match="CIU-root offset"):
+                worktree._instance_record_from_shared(invalid, record.logical_name)
+        with pytest.raises(worktree.WorktreeError, match="disagrees"):
+            worktree._instance_record_from_shared(
+                replace(shared_record, branch="wrong-branch"), record.logical_name
+            )
+
+    def test_shared_record_refuses_nonregular_unreadable_and_missing_records(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        record = worktree.create(tmp_repo, "shared-record-errors")
+        shared_record = worktree._shared_record_for_logical_name(
+            tmp_repo, record.logical_name
+        )
+        assert shared_record is not None
+        record_path = record.record_path
+        original_lstat = Path.lstat
+
+        def directory_record(path):
+            if path == record_path:
+                return SimpleNamespace(st_mode=stat.S_IFDIR)
+            return original_lstat(path)
+
+        monkeypatch.setattr(Path, "lstat", directory_record)
+        with pytest.raises(worktree.WorktreeError, match="not a regular file"):
+            worktree._instance_record_from_shared(shared_record, record.logical_name)
+        monkeypatch.setattr(Path, "lstat", original_lstat)
+
+        def unreadable_record(path):
+            if path == record_path:
+                raise PermissionError("denied")
+            return original_lstat(path)
+
+        monkeypatch.setattr(Path, "lstat", unreadable_record)
+        with pytest.raises(worktree.WorktreeError, match="could not inspect CIU record"):
+            worktree._instance_record_from_shared(shared_record, record.logical_name)
+        monkeypatch.setattr(Path, "lstat", original_lstat)
+
+        monkeypatch.setattr(
+            worktree, "read_instance_record",
+            lambda *_args: (_ for _ in ()).throw(ValueError("bad record")),
+        )
+        with pytest.raises(worktree.WorktreeError, match="could not read the shared CIU record"):
+            worktree._instance_record_from_shared(shared_record, record.logical_name)
+        monkeypatch.undo()
+
+        record.record_path.unlink()
+        metadata = dict(shared_record.metadata)
+        metadata.pop(worktree._CIU_WORKTREE_RECORD_METADATA, None)
+        with pytest.raises(worktree.WorktreeError, match="neither a readable checkout"):
+            worktree._instance_record_from_shared(
+                replace(shared_record, metadata=metadata), record.logical_name
+            )
+
+    def test_primary_root_resolution_and_identity_clean_command(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        record = worktree.create(tmp_repo, "primary-clean")
+        assert worktree._primary_ciu_root_for_record(tmp_repo, record) == tmp_repo
+        monkeypatch.setattr(
+            worktree, "_ciu_root_committed_at_checkout", lambda *_args: False
+        )
+        with pytest.raises(worktree.WorktreeError, match="does not contain the recorded"):
+            worktree._primary_ciu_root_for_record(tmp_repo, record)
+
+        monkeypatch.setattr(
+            worktree, "_ciu_root_committed_at_checkout", lambda *_args: True
+        )
+        (tmp_repo / GLOBAL_CONFIG_DEFAULTS).unlink()
+        with pytest.raises(worktree.WorktreeError, match="cannot find the shared CIU root"):
+            worktree._primary_ciu_root_for_record(tmp_repo, record)
+        (tmp_repo / GLOBAL_CONFIG_DEFAULTS).write_text("[ciu]\n", encoding="utf-8")
+
+        calls = []
+        monkeypatch.setenv("CIU_SERVICES_PROFILE", "wrong-profile")
+        monkeypatch.setattr(
+            worktree.subprocess, "run",
+            lambda argv, **kwargs: (calls.append((argv, kwargs)) or
+                                    subprocess.CompletedProcess(argv, 0)),
+        )
+        assert worktree._clean_with_primary_identity(tmp_repo, "right-id", yes=True) == 0
+        argv, kwargs = calls[0]
+        assert argv[-1] == "-y" and "right-id" in argv
+        assert kwargs["cwd"] == str(tmp_repo)
+        assert kwargs["env"].get("CIU_SERVICES_PROFILE") is None
+        monkeypatch.setattr(
+            worktree.subprocess, "run",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("no python")),
+        )
+        with pytest.raises(worktree.WorktreeError, match="could not run identity-scoped clean"):
+            worktree._clean_with_primary_identity(tmp_repo, "right-id", yes=False)
+
+    def test_branch_removal_plan_fails_closed_for_missing_merge_evidence(
+        self, tmp_repo, monkeypatch
+    ):
+        checkout = worktree.WorktreeInfo(tmp_repo / "wt", "feature", "head", False)
+        monkeypatch.setattr(
+            worktree, "_git",
+            lambda *_args, **_kwargs: subprocess.CompletedProcess([], 1, "", "no branch"),
+        )
+        with pytest.raises(worktree.WorktreeError, match="could not read branch tip"):
+            worktree._branch_removal_plan(
+                tmp_repo, checkout, None, keep_branch=False, delete_branch=False
+            )
+
+        branch_tip = "a" * 40
+
+        def no_base(args, _cwd):
+            if args[:2] == ["rev-parse", "--verify"] and args[-1] == "refs/heads/feature":
+                return subprocess.CompletedProcess(args, 0, branch_tip, "")
+            return subprocess.CompletedProcess(args, 1, "", "missing")
+
+        monkeypatch.setattr(worktree, "_git", no_base)
+        monkeypatch.setattr(worktree, "_default_branch", lambda *_args: None)
+        plan = worktree._branch_removal_plan(
+            tmp_repo, checkout, None, keep_branch=False, delete_branch=False
+        )
+        assert plan["outcome"] == "kept-unmerged"
+        assert plan["reason"] == "no local base branch proves this tip merged"
+
+        monkeypatch.setattr(worktree, "_default_branch", lambda *_args: "deleted-base")
+        plan = worktree._branch_removal_plan(
+            tmp_repo, checkout, None, keep_branch=False, delete_branch=False
+        )
+        assert "unavailable" in plan["reason"]
+
+    def test_branch_removal_plan_uses_legacy_base_ref_when_available(
+        self, tmp_repo, monkeypatch
+    ):
+        legacy = worktree.WorktreeInstanceRecord(
+            logical_name="legacy", display_name="legacy", branch="feature",
+            git_worktree_path=tmp_repo / "feature", ciu_root_offset=Path("."),
+            created_at_utc="2026-11-02T00:00:00Z", base_ref="main",
+            state="ready", schema_version=5,
+        )
+        checkout = worktree.WorktreeInfo(
+            legacy.git_worktree_path, legacy.branch, "head", False
+        )
+        calls = []
+
+        def git(args, _cwd):
+            calls.append(args)
+            if args[:2] == ["merge-base", "--is-ancestor"]:
+                return subprocess.CompletedProcess(args, 0, "", "")
+            return subprocess.CompletedProcess(args, 0, "a" * 40, "")
+
+        monkeypatch.setattr(worktree, "_git", git)
+        plan = worktree._branch_removal_plan(
+            tmp_repo, checkout, legacy, keep_branch=False, delete_branch=False
+        )
+        assert plan["delete"] is True
+        assert plan["outcome"] == "deleted"
+        assert any(args[-1] == "refs/heads/main" for args in calls)
+
+
+class TestRemovalRefusals:
+    def test_rm_rejects_conflicting_branch_intents_and_multiple_state_names(self, tmp_repo):
+        with pytest.raises(worktree.WorktreeRemovalError, match="cannot be used together"):
+            worktree.remove(
+                tmp_repo, "missing", keep_branch=True, delete_branch=True
+            )
+        with pytest.raises(worktree.WorktreeRemovalError, match="one exact"):
+            worktree.remove(
+                tmp_repo, "missing", discard_protected_state=["one", "two"]
+            )
+
+    def test_rm_reports_missing_and_primary_checkouts(self, tmp_repo):
+        with pytest.raises(worktree.WorktreeRemovalError, match="no worktree named"):
+            worktree.remove(tmp_repo, "missing")
+        with pytest.raises(worktree.WorktreeRemovalError, match="PRIMARY checkout"):
+            worktree.remove(tmp_repo, str(tmp_repo))
+
+    def test_rm_rejects_discard_authorization_without_local_branch(self, tmp_repo):
+        target = tmp_repo.parent / "detached-disposition"
+        assert _git(["worktree", "add", "--detach", str(target), "main"], tmp_repo).returncode == 0
+        with pytest.raises(worktree.WorktreeRemovalError, match="applies only to a checkout attached"):
+            worktree.remove(
+                tmp_repo, target.name, force=True, discard_protected_state="main"
+            )
+
+    def test_rm_resolves_logical_shared_record_without_local_branch_name(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        record = worktree.create(
+            tmp_repo, "logical-only", branch="physical-branch"
+        )
+        real_find_worktree = worktree.find_worktree
+        monkeypatch.setattr(
+            worktree, "find_worktree",
+            lambda root, name: (
+                None if name == "logical-only" else real_find_worktree(root, name)
+            ),
+        )
+        shared = worktree._shared_worktree()
+        monkeypatch.setattr(shared, "find_workspace", lambda *_args: None)
+        monkeypatch.setattr(worktree, "_clean_in", lambda *_args, **_kw: 1)
+        with pytest.raises(worktree.WorktreeRemovalError, match="NOT removing") as exc:
+            worktree.remove_document(tmp_repo, "logical-only")
+        assert exc.value.phase_report["phases"]["target_resolution"] == "complete"
+        assert exc.value.document["instance"]["logical_name"] == "logical-only"
+        assert record.git_worktree_path.is_dir()
+
+    def test_rm_refuses_changed_git_identity_and_shared_record_facts(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        record = worktree.create(tmp_repo, "identity-check")
+        shared = worktree._shared_worktree()
+        original_discover = shared.discover_git_context
+
+        def changed_context(path):
+            if Path(path).resolve() == record.git_worktree_path.resolve():
+                return record.git_worktree_path.resolve(), Path("/wrong/common"), record.branch, "head"
+            return original_discover(path)
+
+        monkeypatch.setattr(shared, "discover_git_context", changed_context)
+        with pytest.raises(worktree.WorktreeRemovalError, match="could not verify shared Git ownership"):
+            worktree.remove(tmp_repo, record.logical_name)
+
+        monkeypatch.setattr(shared, "discover_git_context", original_discover)
+        actual_shared = shared.find_workspace(
+            record.git_worktree_path.parent.parent / ".git", record.git_worktree_path
+        )
+        if actual_shared is None:
+            actual_shared = worktree._shared_record_for_logical_name(
+                tmp_repo, record.logical_name
+            )
+        assert actual_shared is not None
+        monkeypatch.setattr(
+            shared, "find_workspace",
+            lambda *_args: replace(actual_shared, branch="wrong-branch"),
+        )
+        with pytest.raises(worktree.WorktreeRemovalError, match="shared worktree record"):
+            worktree.remove(tmp_repo, record.logical_name)
+
+    def test_rm_refuses_logical_path_and_instance_record_mismatches(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        record = worktree.create(tmp_repo, "path-mismatch")
+        shared_record = worktree._shared_record_for_logical_name(
+            tmp_repo, record.logical_name
+        )
+        assert shared_record is not None
+        wrong_path = replace(
+            shared_record, worktree_path=tmp_repo / "some-other-checkout"
+        )
+        monkeypatch.setattr(
+            worktree, "_shared_record_for_logical_name", lambda *_args: wrong_path
+        )
+        with pytest.raises(worktree.WorktreeRemovalError, match="shared record.*names"):
+            worktree.remove(tmp_repo, record.logical_name)
+
+        monkeypatch.undo()
+        original_find_record = worktree.find_instance_record
+        monkeypatch.setattr(
+            worktree, "find_instance_record",
+            lambda *args, **kwargs: replace(
+                original_find_record(*args, **kwargs), branch="wrong-branch"
+            ),
+        )
+        with pytest.raises(worktree.WorktreeRemovalError, match="CIU identity record"):
+            worktree.remove(tmp_repo, record.logical_name)
+
+    def test_rm_reports_ignored_state_and_branch_plan_failures(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        record = worktree.create(tmp_repo, "preflight-errors")
+        monkeypatch.setattr(
+            worktree, "_ignored_state_summary",
+            lambda *_args: (_ for _ in ()).throw(worktree.WorktreeError("index unavailable")),
+        )
+        with pytest.raises(worktree.WorktreeRemovalError, match="index unavailable") as exc:
+            worktree.remove_document(tmp_repo, record.logical_name)
+        assert exc.value.phase_report["phases"]["resource_cleanup"] == "skipped-ignored-state-unknown"
+
+        monkeypatch.undo()
+        monkeypatch.setattr(
+            worktree, "_branch_removal_plan",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(worktree.WorktreeError("tip missing")),
+        )
+        with pytest.raises(worktree.WorktreeRemovalError, match="tip missing"):
+            worktree.remove_document(tmp_repo, record.logical_name)
+
+    def test_rm_reports_indeterminate_ciu_root_marker(self, tmp_repo, fake_generate_env, monkeypatch):
+        record = worktree.create(tmp_repo, "marker-inspection")
+        monkeypatch.setattr(
+            worktree, "_ciu_root_marker_present",
+            lambda *_args: (_ for _ in ()).throw(
+                worktree.WorktreeError("marker unreadable")
+            ),
+        )
+        with pytest.raises(worktree.WorktreeRemovalError, match="marker unreadable") as exc:
+            worktree.remove_document(tmp_repo, record.logical_name)
+        assert exc.value.phase_report["phases"]["resource_cleanup"] == "failed"
+        assert record.git_worktree_path.is_dir()
+
+    @pytest.mark.parametrize(
+        ("disposition", "match"),
+        [
+            ("wrong-branch", "exact checkout branch"),
+            ("physical-branch", "no protected ignored state"),
+        ],
+    )
+    def test_rm_rejects_invalid_protected_state_dispositions(
+        self, tmp_repo, fake_generate_env, monkeypatch, disposition, match
+    ):
+        record = worktree.create(
+            tmp_repo, "no-protected-state", branch="physical-branch"
+        )
+        with pytest.raises(worktree.WorktreeRemovalError, match=match):
+            worktree.remove(
+                tmp_repo, record.logical_name,
+                discard_protected_state=disposition,
+            )
+
+    def test_rm_reports_clean_and_lease_release_failures(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        record = worktree.create(tmp_repo, "clean-failure")
+        monkeypatch.setattr(
+            worktree, "_clean_in",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(worktree.WorktreeError("clean raised")),
+        )
+        with pytest.raises(worktree.WorktreeRemovalError, match="clean raised"):
+            worktree.remove_document(tmp_repo, record.logical_name)
+
+        monkeypatch.undo()
+        record = worktree.create(tmp_repo, "lease-failure")
+        monkeypatch.setattr(worktree, "_clean_in", lambda *_args, **_kwargs: 0)
+        monkeypatch.setattr(
+            worktree, "release_own_lease",
+            lambda *_args: (_ for _ in ()).throw(RuntimeError("lease locked")),
+        )
+        with pytest.raises(worktree.WorktreeRemovalError, match="could not release") as exc:
+            worktree.remove_document(tmp_repo, record.logical_name)
+        assert exc.value.phase_report["phases"]["lease_release"] == "failed"
+
+    @pytest.mark.parametrize("failure", ["missing-id", "primary-root", "clean-status"])
+    def test_rm_markerless_managed_fallback_reports_each_failure(
+        self, tmp_repo, fake_generate_env, monkeypatch, failure
+    ):
+        record = worktree.create(tmp_repo, f"markerless-{failure}")
+        (record.ciu_root / GLOBAL_CONFIG_DEFAULTS).unlink()
+        if failure == "missing-id":
+            original_find_record = worktree.find_instance_record
+            monkeypatch.setattr(
+                worktree, "find_instance_record",
+                lambda *args, **kwargs: replace(
+                    original_find_record(*args, **kwargs),
+                    state="allocating", instance_id=None, network="recorded-network",
+                ),
+            )
+            message = "no instance id"
+        elif failure == "primary-root":
+            record.record_path.unlink()
+            monkeypatch.setattr(
+                worktree, "_primary_ciu_root_for_record",
+                lambda *_args: (_ for _ in ()).throw(
+                    worktree.WorktreeError("primary CIU root missing")
+                ),
+            )
+            message = "primary CIU root missing"
+        else:
+            monkeypatch.setattr(
+                worktree, "_clean_with_primary_identity",
+                lambda *_args, **_kwargs: 1,
+            )
+            message = "ciu clean.*failed"
+
+        with pytest.raises(worktree.WorktreeRemovalError, match=message) as exc:
+            worktree.remove_document(tmp_repo, record.logical_name)
+        assert exc.value.phase_report["phases"]["resource_cleanup"] == "failed"
+        assert record.git_worktree_path.is_dir()
 
 
 class TestExactWorktreeControl:
