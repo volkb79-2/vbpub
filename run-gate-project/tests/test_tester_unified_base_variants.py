@@ -27,7 +27,7 @@ from pathlib import Path
 DOCKERFILE = Path(__file__).resolve().parents[2] / "tester-unified" / "Dockerfile"
 
 BASE_PACKAGES = {"ca-certificates", "curl", "git", "jq", "libeatmydata1",
-                 "openssh-client", "util-linux"}
+                 "openssh-client", "tmux", "util-linux"}
 
 LEGACY_STEP = (
     "set -eu && apt-get update && apt-get install -y --no-install-recommends "
