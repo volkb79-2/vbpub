@@ -1881,7 +1881,6 @@ def test_resumed_records_merge_into_a_campaign_that_a_deadline_cut_short(tmp_pat
 def test_signaled_leader_leak_stays_crashed_and_its_record_resumes(
     tmp_path: Path,
 ):
-    import signal
     import sys
 
     from assay.process_tree import ProcessTreeProcessRunner
