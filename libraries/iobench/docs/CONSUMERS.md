@@ -212,6 +212,57 @@ A few more refusals you may meet (each names its condition and a remedy; all exi
 * A dry run is a plan, not an acceptance: its output says `preflight: not_run`; the same invocation without `--dry-run` may still be refused.
 * `check --section writeback --calibration` is a usage error (a calibration carries no writeback); `check` exit 5 also covers `damaged_proposals` and a `schema_minor` newer than the installed iobench.
 
+## Repository gate
+
+The registered Run-Gate configuration keeps the R2 judgment in Assay's
+native lane so Run-Gate can apply its worker policy, record the selection,
+and keep Assay's resumable state outside an ephemeral worktree. Run the
+registered lanes from the IOBench project directory:
+
+```bash
+run-gate r0-r1
+run-gate r2
+```
+
+The R2 lane opts into automatic worker selection. Assay's
+`[lanes.iobench.judge.mutation].jobs_max = 4` is its ceiling; the former
+`jobs = 1` setting was the legacy alias for that ceiling, so it limited every
+run to one worker. Run-Gate now reads the ceiling and passes the selected
+count. With no candidate history it uses a conservative 1 GiB per candidate;
+without Assay's supported btrfs cheap-clone workspace, auto remains at one.
+Use `run-gate r2 --jobs 2` to request a specific parallel count when the
+workspace supports it. A request above the ceiling or without the required
+workspace fails before mutation candidates start.
+
+<!-- run-gate-config -->
+```toml
+schema_version = 1
+
+[environments.tester-unified]
+mode = "ephemeral"
+image = "tester-unified:local"
+
+[lanes.r2]
+kind = "assay"
+assay_lane = "iobench"
+environment = "tester-unified"
+jobs = "auto"
+resource_observer = "cgprofile"
+
+[lanes.r2.resources]
+cpus = "3"
+memory = "1536m"
+pids = 8192
+```
+
+Run-Gate writes the Assay verdict and progress to
+`.assay/verdict-iobench.json` and `.assay/progress-iobench.jsonl`. Its
+resumable mutation state is stored under the repository's ignored
+`.run-gate/assay-state/` area; rerun the same lane on the same tree after a
+budget stop. The former command lane used `.assay/mutation-state-r2` and
+`.assay/progress-r2.jsonl`; those files are not imported, so an in-progress
+campaign from that configuration must be restarted under the native lane.
+
 ## 10. What a refusal looks like
 
 `error: refused: /dev/vda4 is swap-active (swapon); no iobench marker. iobench target init needs --i-own-this-device with --expect-size and --expect-partuuid.` (exit 2).

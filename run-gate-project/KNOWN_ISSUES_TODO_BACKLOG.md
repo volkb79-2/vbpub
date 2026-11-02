@@ -148,9 +148,10 @@ SPEC §9.
 | RG-128 | `container_mount_flags()` can raise `TypeError` for a missing worktree instead of `GateError` | Minor | FIXED IN THIS BRANCH (RG-241); `test_container_mount_flags_missing_worktree_is_a_gate_error` |
 | RG-129 | `dual_mount_flags()` validates the alias namespace path twice | Minor | FIXED IN THIS BRANCH (RG-241); `test_dual_mount_alias_namespace_is_validated_once` |
 | RG-130 | users are not told that Run-Gate has no `--ram-target` option | Minor | FIXED IN THIS BRANCH (RG-241); consumer docs and `test_ram_target_docs_name_the_supported_toml_surface` |
-| RG-131 | the planned R2 worker-count policy is not implemented | Enhancement | OPEN 2026-10-30; PR3 residual |
-| RG-132 | per-candidate resource metrics are not yet carried into Run-Gate history and footprint data | Enhancement | OPEN 2026-10-30; PR0 residual |
+| RG-131 | the planned R2 worker-count policy is not implemented | Enhancement | FIXED IN THIS BRANCH (PR3): native R2 `jobs` / `--jobs` selection, caps, cheap-clone gate, and Run-Gate RSS history |
+| RG-132 | per-candidate resource metrics are not yet carried into Run-Gate history and footprint data | Enhancement | OPEN 2026-10-30; PR3 adds candidate RSS p95/sample count to history for worker selection; footprint and other metrics remain |
 | RG-133 | the translated generated preload source path was not checked against Docker mount delimiters | Minor | FIXED IN THIS BRANCH (RG-241); `test_relaxed_preload_rejects_translated_source_delimiters` |
+| RG-143 | native R2 worker selection does not derive a matching container CPU cap or report repeated RAM-target overshoot | Enhancement | OPEN; split from RG-131's deferred PR0 follow-up |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -6813,39 +6814,43 @@ the unreleased notes state that `ram_target` is configured in TOML and has no
 `--ram-target` command-line option. The user-documentation oracle pins the
 consumer-facing statement.
 
-## RG-131 — the planned R2 worker-count policy is not implemented
+## RG-131 — the planned R2 worker-count policy was not implemented
 
-**Status:** OPEN. Severity: enhancement. Filed 2026-10-30 as the PR3 residual.
+**Status:** FIXED IN THIS BRANCH (PR3). Severity: enhancement. Filed
+2026-10-30.
 
-**Observed.** Run-Gate currently parses `ram_target` and `candidate_ram` as
-metadata and does not use them to select worker counts or change container
-caps (`docs/DESIGN-GUIDE.md:948-951`). The planned policy would derive `N`
-from the effective RAM target, measured average candidate RSS, the gates-slice
-CPU cap, Assay's `jobs_max`, and candidates remaining; it would pass
-`--cpus N` to Docker and `--jobs N` to Assay, default to one worker without
-measurements, and report repeated memory-target overshoot.
+**Delivered.** Native R2 Run-Gate lanes accept a positive `jobs` count or
+`"auto"`; `--jobs` overrides TOML and is forwarded only when the inventory
+proves Assay >= 11.0.0. Older or unknown versions keep auto and explicit
+one-worker runs serial; an explicit count above one is refused with the Assay
+floor. Auto uses only enforced CPU and memory caps, clamps to one when either
+is absent, and bounds workers by `jobs_max`, `ram_target`, candidates
+remaining, and the candidate RAM estimate. That estimate is the greater of
+lane `candidate_ram` and measured nearest-rank p95 RSS, with the declaration
+alone when no history exists and the 1 GiB default when neither source
+exists. Parallel selection also requires Assay's supported cheap-clone
+workspace. Evidence and INFO output include the selected count and candidate
+RAM source; history carries p95 samples. Tests cover the caps, p95, version
+floor, refusals, argv, evidence and history.
 
-**Proposed fix.** Implement the PR3 policy after its PR0 measurement inputs
-exist, with source-precedence, CPU-limit, no-sample, worker-bound, and
-overshoot oracles. Preserve the current metadata-only behavior until the
-policy is fully derived and validated.
+**Residual.** Dynamic Docker `--cpus N` selection and repeated RAM-target
+overshoot reporting were not part of PR3. They are now RG-143.
 
 ## RG-132 — per-candidate resource metrics are not yet carried into Run-Gate history and footprint data
 
-**Status:** OPEN. Severity: enhancement. Filed 2026-10-30 as the PR0 residual.
+**Status:** OPEN. Severity: enhancement. Filed 2026-10-30 as the PR0 residual;
+PR3 adds candidate RSS p95 and sample count to history for worker selection.
 
-**Observed.** Run-Gate's released-facing change note says `ram_target` and
-`candidate_ram` are metadata only (`CHANGES.md`, Unreleased). The PR0 plan
-calls for Assay candidate progress events to carry peak RSS, `write_bytes`,
-and cores, then for Run-Gate to ingest rolling mean, sample count, and judge
-share into its history and write `candidate_ram_avg` to the footprint. The
-worker policy in RG-131 needs these measurements, but no such fields are
-currently available through Run-Gate's resource metadata.
+**Observed.** Assay candidate progress supplies `peak_rss_bytes`, and
+Run-Gate records the p95 and sample count in eligible R2 history so RG-131's
+auto worker policy can use a high measured candidate-memory estimate. The broader PR0 plan
+still calls for `write_bytes`, cores and judge-share history, plus a
+`candidate_ram_p95` value in `run-gate footprint`; those facts are not
+currently exposed there.
 
-**Proposed fix.** Coordinate the candidate-resource event contract with
-Assay, ingest those per-candidate samples into Run-Gate history, and publish
-the reviewed average through `run-gate footprint`. Add the PR0 event,
-rolling-mean, and footprint oracles before enabling RG-131.
+**Proposed fix.** Extend Run-Gate history with the remaining reviewed
+candidate-resource metrics and publish candidate RSS p95 through
+`run-gate footprint`. Add event, rolling-window and footprint oracles.
 
 ## RG-133 — the generated preload source was not validated after path translation
 
@@ -6985,3 +6990,18 @@ The test failed in the R0 baseline of an unmutated tree on a Btrfs CoW runner (r
 two unrelated mutation candidates in a serial arm. Like the exec-lock status test (RG-141) it takes the exec lock under a
 Btrfs temporary directory, so a device-number or lock-path mismatch is the first lead. **Expected.** Deterministic result
 on that runner; if the layout cannot be supported, the test states its requirement and skips with a reason.
+
+## RG-143 — native R2 worker selection does not derive a matching container CPU cap or report repeated RAM-target overshoot
+
+**Status:** OPEN. Severity: enhancement. Filed from the deferred part of
+RG-131 during Run-Gate PR3.
+
+Run-Gate selects Assay's worker count from declared and visible CPU and memory
+caps, but it does not change the container's CPU quota to match the selected
+worker count or aggregate repeated candidate overshoots against
+`ram_target`. Those are separate placement and measurement policies; the
+current worker selection remains bounded by existing lane caps.
+
+**Expected.** Define and test an explicit relationship between selected
+workers and container CPU quota, then record repeated RAM-target overshoot as
+history/footprint evidence without changing mutation verdicts.

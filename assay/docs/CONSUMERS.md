@@ -5220,7 +5220,10 @@ overlapping failing candidate; the cheap-clone workspace and bounded queue
 control the execution cost. Narrow `source_roots` to the code you intend to
 judge and choose `max_mutants` for the runtime you can afford. Read-only
 `assay analyze plan-estimate --workers N` projects runtime without running
-candidates. See [native R2 parallel windows](DESIGN-GUIDE.md#native-r2-parallel-candidate-windows).
+candidates. Start with serial R2 runs under a tight lane memory cap. When you
+first enable parallel workers, watch the `crashed` candidate count closely:
+overlapping limit events can mark multiple failing candidates crashed. See
+[native R2 parallel windows](DESIGN-GUIDE.md#native-r2-parallel-candidate-windows).
 
 ## What is not shipped
 

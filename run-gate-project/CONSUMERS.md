@@ -333,10 +333,90 @@ directory. Commas and newlines in either path are refused before Docker;
 colon separates the `host=container` entries.
 
 `ram_target` accepts a size or a percentage, and `candidate_ram` accepts a
-size on a lane. Run-Gate parses and validates these values as resource
-metadata; they do not currently affect worker count or container capacity.
-There is no `--ram-target` option; configure `ram_target` in `[resources]` or
-a lane's `resources` table instead.
+size on a lane. Run-Gate parses both; `ram_target` also supplies the memory
+budget for an opted-in native R2 `jobs = "auto"` lane.
+There is no `--ram-target` option; configure `ram_target` in `[resources]`
+or a lane's `resources` table instead.
+
+### Native R2 worker selection
+
+Run-Gate leaves Assay's one-worker default in place unless the lane declares
+`jobs` or the invocation supplies `--jobs`. Use a positive integer to request
+that exact count, or `"auto"` to let Run-Gate derive and pass an explicit
+count. The CLI wins over the lane setting. The selected Assay lane must report
+native R2 in `assay lanes --json`, and its
+`[lanes.<name>.judge.mutation].jobs_max` is the hard ceiling.
+
+<!-- run-gate-config -->
+```toml
+schema_version = 1
+
+[resources]
+ram_target = "75%"
+
+[environments.tester]
+mode = "ephemeral"
+image = "tester-unified:local"
+
+[lanes.r2]
+kind = "assay"
+environment = "tester"
+assay_lane = "mutation"
+jobs = "auto"
+resource_observer = "cgprofile"
+
+[lanes.r2.resources]
+cpus = "3"
+memory = "1536m"
+pids = 8192
+candidate_ram = "300m"
+```
+
+An invocation override is `run-gate r2 --jobs 2`; the CLI value takes
+precedence over `jobs = "auto"`.
+
+For `jobs = "auto"`, Run-Gate chooses
+`max(1, min(jobs_max, cpu_cap, floor(memory_budget / candidate_RSS_p95), candidates_remaining))`.
+For ephemeral containers, `cpu_cap` comes from an enforced lane
+`resources.cpus` or its enforced environment fallback, bounded by visible CPU
+affinity; without a declared cap, auto uses one worker even when affinity
+shows more CPUs. Memory uses an enforced lane `resources.memory` (or legacy
+lane `memory`) cap, bounded by an observed cgroup limit when available. A
+`mode = "exec"` lane may use its target container's observed `memory.max`,
+which that container enforces. Without an enforced lane memory cap, auto uses
+one worker even if the capacity probe can see a host or parent limit.
+Candidate RAM uses the greater of declared lane `resources.candidate_ram` and
+the nearest-rank p95 of per-candidate peak RSS. Run-Gate checks its completed
+history first, then Assay's append-only progress stream. A declaration is the
+estimate when there is no history; with neither source, Run-Gate uses the
+conservative default of 1 GiB per candidate. The selected estimate and its
+source (`declared`, `measured p95`, or `default`) appear in the INFO line and
+Run-Gate evidence/history. The
+remaining-candidate input uses the matching Assay plan when resuming, a prior
+plan as an estimate for a new commit, then `max_mutants` as an upper bound.
+Assay requires a positive worker count, so a zero result from no remaining
+candidates or a budget smaller than one candidate resolves to one worker.
+The Assay inventory must report version 11.0.0 or newer before Run-Gate passes
+`--jobs`. With an older or unknown version, auto and explicit one-worker
+requests keep Assay's serial default and send no flag. An explicit request
+above one is refused with a message requiring Assay 11.0.0. The log prints one
+INFO line with the chosen count and its inputs; `history` records the
+selection, including the candidate RAM estimate source and p95 samples read
+at closeout.
+
+Parallel Assay R2 requires the prepared workspace to advertise
+`cheap_clone`. Run-Gate checks Cowtree in the lane environment and clamps
+`auto` to one worker when that fact is absent. Assay 11.0 currently advertises
+the required prepared cheap clone for its supported btrfs backend; a Cowtree
+`reflink` backend by itself does not pass Assay's native R2 preflight. An
+explicit request above one fails with Run-Gate's closed configuration error
+if the workspace cannot be confirmed. An explicit count above `jobs_max`
+also fails before the lane starts.
+
+An `auto` run, including `--dry-run`, may perform a short CPU/memory and
+Cowtree capability probe in the lane environment. Cowtree's documented probe
+can create its private metadata and temporary capability files under
+`MDT_COW_ROOT`; dry-run does not start the judged mutation lane.
 
 ### Per-invocation image selection
 
@@ -466,10 +546,12 @@ candidate bucket. Do not mount the control socket as a fallback: a read-only
 bind does not restrict the verbs accepted by its protocol. See the
 [design rationale](docs/DESIGN-GUIDE.md#private-namespace-r2-uses-a-read-only-cgroup-observer).
 
-For this project's native R2 lane, keep `[lanes.r2.judge.mutation] jobs = 1`
-in `assay.toml`: workers in the same tester container share cgroup event
-counters even with separate scratch trees. After a budget stop, rerun the
-registered lane on the same exact tree so Assay resumes its saved campaign.
+The Run-Gate project's own selftest R2 lane remains configured with a
+one-worker Assay ceiling. Assay 11.0 supports concurrent candidate windows
+with conservative attribution for overlapping resource events; projects can
+raise their lane ceiling and opt into Run-Gate's `jobs` policy independently.
+After a budget stop, rerun the registered lane on the same exact tree so
+Assay resumes its saved campaign.
 
 #### Native R2 resource observation refusals
 

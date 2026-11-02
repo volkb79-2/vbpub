@@ -430,12 +430,13 @@ ambiguous shared-limit activity makes the lane ERROR and requires a clean
 retry; it is not guessed away or assigned to whichever candidate happened to
 run.
 
-Two mutant workers inside one tester container still share its *leaf* event
-counters, despite separate scratch trees. An event from worker B can fall
-inside worker A's before/after window and look like A's own limit hit.
-The shipped R2 declaration therefore uses `jobs = 1`; `--resume` continues a
-budget-limited campaign on the same tree. Parallel workers require separate
-cgroups and counter bindings before they can be classified independently.
+Assay 11.0 schedules concurrent candidate windows through one coordinator and
+uses conservative attribution when their resource-event windows overlap.
+Workers still share the tester container's leaf counters, so ambiguous
+overlap can reduce mutation credit rather than being assigned to a candidate
+without evidence. Run-Gate's own selftest R2 lane remains capped at one worker;
+consumer lanes can opt in through the selection policy below. `--resume`
+continues a budget-limited campaign on the same tree.
 
 ### Assay unavailable observation is an infrastructure error
 
@@ -947,8 +948,72 @@ so its aggregate record is excluded from history while each member retains its
 own measurement.
 
 `ram_target` accepts a size or a percentage, and `candidate_ram` accepts a
-size on a lane. Both are parsed and validated resource metadata. They do not
-currently select worker counts or change container caps; this is the shipped
-contract until a separate worker-policy change defines the derivation and its
-evidence. Configure `ram_target` in TOML; there is no `--ram-target` command-
-line option.
+size on a lane. For native R2 auto selection, `ram_target` is the memory
+budget and `candidate_ram` is a declared per-candidate floor; neither is
+forwarded to Assay. Configure `ram_target` in TOML; there is no
+`--ram-target` command-line option.
+
+## Native R2 worker selection
+
+Assay 11.0.0 accepts an explicit `assay run --jobs N`, validates it against
+the native lane's `judge.mutation.jobs_max`, and refuses parallel execution
+unless its prepared workspace advertises `cheap_clone`. Assay never derives
+`N`. Run-Gate checks `assay_version` from the inventory before forwarding the
+flag. Older or unknown versions keep auto and explicit one-worker requests
+serial without the flag; an explicit count above one requires Assay 11.0.0.
+Run-Gate owns the choice only when a native R2 lane declares `jobs` or a
+caller uses `--jobs`; an omitted option preserves Assay's existing one-worker
+default and Run-Gate does not add `--jobs` to the argv.
+
+`jobs` accepts a positive integer or `"auto"`. The CLI overrides the TOML
+lane value. Auto calculates:
+
+```text
+max(1, min(jobs_max, cpu_cap,
+           floor(memory_budget / candidate_RSS_p95),
+           candidates_remaining))
+```
+
+The CPU cap is an enforced `resources.cpus` declaration on an ephemeral
+container lane, from the lane or its environment, bounded by visible CPU
+affinity. With no declared cap, auto uses one worker even if the probe sees
+every host core. `docker exec` and host subprocesses cannot apply Run-Gate's
+CPU setting, so their auto cap is also one. The memory cap is the enforced
+lane `resources.memory` (or legacy lane `memory`) value for ephemeral
+containers. A persistent `mode = "exec"` lane may use the target container's
+own observed `memory.max`; other observed limits, including host RAM, do not
+raise auto. Without an enforced lane memory cap, auto uses one worker. The
+configured `ram_target` sets the budget within the enforced cap.
+
+Candidate RSS is the nearest-rank p95 of Assay candidate `peak_rss_bytes`
+samples, first from completed Run-Gate history and then Assay's append-only
+progress history. `resources.candidate_ram`, when declared, floors this
+estimate: Run-Gate uses the greater of the declaration and measured p95. With
+no history it uses the declaration alone; with neither declaration nor
+history it uses the conservative 1 GiB default. The selected estimate and
+source (`declared`, `measured p95`, or `default`) are disclosed and recorded.
+Candidates remaining come from the matching progress plan on resume, the
+latest prior plan as a new-commit estimate, or the native lane's `max_mutants`
+upper bound.
+Assay requires a positive worker count, so a zero candidate or memory result
+resolves to one worker.
+
+Run-Gate probes these facts in the lane environment and emits one INFO line
+with the selected count and its inputs. It stores the selection in Run-Gate
+evidence/history and adds candidate RSS p95 and sample count at closeout for
+the next selection. An explicit count above `jobs_max` is a configuration
+error. For a count above one, Run-Gate requires a successful Cowtree
+capability probe; explicit requests fail closed if it cannot confirm the
+workspace, while `auto` clamps to one.
+
+The Cowtree result must match the capability Assay actually prepares. In
+Assay 11.0 that is a btrfs-backed cheap clone; Cowtree's standalone reflink
+backend does not qualify for native R2 parallelism. This narrower test
+prevents Run-Gate from reporting a parallel selection that Assay's own
+workspace preflight will reject. An `auto` request may run the capacity and
+Cowtree probes during `--dry-run`; the probe is skipped for an old or unknown
+Assay version and never starts the judged lane. When it runs, Cowtree may
+create private metadata and temporary capability files under `MDT_COW_ROOT`.
+The selected worker count does not rewrite Docker's CPU cap. It is bounded by
+the enforced declaration, and the existing lane configuration remains
+responsible for applying that cap.
