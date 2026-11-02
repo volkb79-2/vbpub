@@ -177,7 +177,7 @@ WIZARD_SECTIONS = (
 _FIXED_FIELDS = {"schema_version", "fresh_install"}
 _SECRET_FIELDS = {"telegram_bot_token", "mattermost_webhook_url"}
 _SUMMARY_HIDDEN_FIELDS = _SECRET_FIELDS | {"controller_ssh_pubkey", "ssh_authorized_keys"}
-_WIZARD_REQUIREMENTS = Path(__file__).resolve().parents[1] / "wizard-requirements.txt"
+_WIZARD_REQUIREMENTS = Path(__file__).resolve().parents[1] / "requirements-installer.txt"
 
 
 def wizard_field_names() -> frozenset[str]:

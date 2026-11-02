@@ -31,9 +31,10 @@ that operation's required settings and full invocation syntax.
 
 The settings wizard writes a validated mode-0600 JSON file. The same shipped
 configuration loader validates both wizard output and hand-authored files; the
-wizard is not a second schema. Adoption, safe install examples, and remote
-bootstrap steps are in [docs/CONSUMERS.md](docs/CONSUMERS.md); command and
-wizard design rationale is in [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md).
+wizard is not a second schema. Its optional Questionary prompts are installed
+from `requirements-installer.txt`; see [docs/CONSUMERS.md](docs/CONSUMERS.md)
+for adoption and install steps and [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md)
+for the [prompt library boundary](docs/DESIGN-GUIDE.md#prompt-library-boundary).
 Verbs that consume settings require exactly one of `--config FILE` and
 `--config-json JSON`; their generated usage shows that required choice.
 The generated remote custom-script launcher uses Python’s standard-library

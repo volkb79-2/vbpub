@@ -20,7 +20,7 @@ activate it first (the executable resolves `python3` from `PATH`):
 
 ```bash
 cd scripts/debian-install-v2
-python3 -m pip install -r wizard-requirements.txt
+python3 -m pip install -r requirements-installer.txt
 ./debian-install-v2.py wizard --output target-host.json
 ./debian-install-v2.py wizard --output target-host.json --from-config existing.json
 ```
@@ -177,7 +177,7 @@ Install the ISO builder dependencies in the checkout:
 ```bash
 cd scripts/debian-install-v2
 sudo apt-get install cloud-image-utils openssh-client
-python3 -m pip install -r wizard-requirements.txt
+python3 -m pip install -r requirements-installer.txt
 ./debian-install-v2.py build-iso --output ./debian-vbpub.iso
 ```
 

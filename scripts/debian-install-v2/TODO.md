@@ -7,6 +7,13 @@ root growth, and its cap is measured from the root partition start without
 rounding the configured length down to an absolute 1 MiB boundary. User-facing
 examples retain both the default uncapped layout and a capped layout.
 
+## DONE (requirements naming, 2026-11-02): name the optional wizard dependency by use case
+
+Renamed the ad-hoc wizard manifest to `requirements-installer.txt` and updated
+the installer, tests, generated CLI surface, and adoption/design docs. Future
+tool manifests are inventoried in the release-program requirements naming
+report and will migrate in separate tool-scoped changes.
+
 ## OPEN (MDT-016 / D-HS-01-2, 2026-10-19): the io.cost generator measures through the hypervisor cache
 
 `tools/iocost_coef_gen.py` (patched copy of the Linux generator, built by `tools/build-iocost-generator.py`)

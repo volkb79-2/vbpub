@@ -291,7 +291,7 @@ Paths below are relative to the Nyxloom project root unless they begin with
 9. `docs/SPEC.md` §§1-14, `docs/USAGE.md` §4, `docs/ARCHITECTURE.md` CLI and
    package boundaries, `docs/runtime-process-model.md` §§1-2,
    `README.md`, `docs/DESIGN-GUIDE.md`, and `docs/CONSUMERS.md`.
-10. `scripts/debian-install-v2/wizard-requirements.txt` and
+10. `scripts/debian-install-v2/requirements-installer.txt` and
     `scripts/debian-install-v2/debian_install_v2/wizard.py` for the approved
     Questionary version and existing repository usage. Do not choose a newer
     version by guesswork.
@@ -434,7 +434,7 @@ body preservation, lint, or transition invariants.
   second unmanaged source copy. The built artifact, not the checkout import,
   is the evidence.
 - Add the optional `interactive` extra to Nyxloom for Questionary, pinned from
-  `scripts/debian-install-v2/wizard-requirements.txt`; the base dependency set
+  `scripts/debian-install-v2/requirements-installer.txt`; the base dependency set
   remains free of Questionary.
 - Add a directly executable `nyxloomd` script and point the existing
   `nyxloomd/supervise.sh` default command at the installed script. Change the
