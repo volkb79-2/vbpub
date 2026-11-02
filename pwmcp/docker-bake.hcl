@@ -44,7 +44,7 @@ variable "LIGHTHOUSE_VERSION" {
 
 // CMRU's prepared, Playwright-driven pwmcp release coordinate.
 variable "PWMCP_VERSION" {
-  default = "1.64.0-r3"
+  default = "1.64.0-r4"
 }
 
 // OCR sidecar base (containers/ocr/Dockerfile): debian:<release>-slim pinned by manifest digest.
@@ -54,7 +54,7 @@ variable "DEBIAN_RELEASE" {
 }
 
 variable "DEBIAN_IMAGE_DIGEST" {
-  default = "sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad"
+  default = "sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4"
 }
 
 variable "OCI_SOURCE" {

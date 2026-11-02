@@ -143,7 +143,7 @@ aliases = ["pwmcp-mcp", "pwmcp-playwright"]
 registry = "ghcr.io"
 namespace = "volkb79-2"
 name = "pwmcp"
-tag = "1.64.0-r3"
+tag = "1.64.0-r4"
 
 # ---- OCR sidecar (PHASE 1 of PWMCP-11; opt-in, OFF by default) -----------------------
 # enabled = false: nothing is rendered and nothing changes for an existing deployment.
@@ -174,7 +174,7 @@ run_as_gid = 1000
 registry = "ghcr.io"
 namespace = "volkb79-2"
 name = "pwmcp-ocr"
-tag = "1.64.0-r3"                 # SAME coordinate as [pwmcp.unified.image] tag; kept equal by the release resolver. NOTE: this tag is rewritten at every release. 1.64.0-r3 shipped WITHOUT the OCR image; the first release made after the OCR wiring landed is the first to publish it (until then, build locally, README). From then on this default always names an existing image
+tag = "1.64.0-r4"                 # SAME coordinate as [pwmcp.unified.image] tag; kept equal by the release resolver. NOTE: this tag is rewritten at every release. 1.64.0-r3 shipped WITHOUT the OCR image; the first release made after the OCR wiring landed is the first to publish it (until then, build locally, README). From then on this default always names an existing image
 
 [pwmcp.hardening]
 # Applied in both internal and external modes.
