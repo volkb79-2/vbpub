@@ -200,7 +200,7 @@ It applies the temporary two-day default age window (overridable with
 `--age-window-days`), updates
 `ciu.defaults.toml.j2` (`unified.image.tag` and the OCR sidecar's `ocr.image.tag`, which ride the
 same release coordinate), `ciu.toml.j2`, `docker-bake.hcl`, the Dockerfile's Playwright manifest digest
-and the OCR sidecar Dockerfile's `debian:<release>-slim` manifest digest. The
+and the OCR sidecar Dockerfile's `debian:<release>-slim` manifest digest.
 The `1.64.0-r4` release publishes the OCR sidecar as `pwmcp-ocr` alongside the main image. Its tag
 tracks the main release coordinate, and `pwmcp.ocr.enabled` remains false by default, so a deployment
 does not pull it unless OCR is enabled (README "OCR sidecar"). Then complete the release:

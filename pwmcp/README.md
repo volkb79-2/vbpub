@@ -497,7 +497,7 @@ in your `ciu.toml.j2` (together with `enabled = true` under `[pwmcp.ocr]`).
 **Release verification.** The post-release smoke for `1.64.0-r4` verifies the image's health,
 confirms `/v1/engines` reports Tesseract available (and `glyphgrid` unavailable), and checks that a
 generated PNG request returns recognized text and confidence. It does not assess OCR accuracy on
-real console frames; the deployment check separately confirms the contract selects the r4 image.
+real console frames; the gateway `/contract` reports release `1.64.0-r4`.
 
 ## KSM Opt-In (default on)
 

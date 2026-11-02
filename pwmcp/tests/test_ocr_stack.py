@@ -134,7 +134,8 @@ def test_enabled_renders_the_sidecar_service_on_the_stack_network_only() -> None
     compose = yaml.safe_load(_render(_enable))
     assert sorted(compose["services"]) == ["pwmcp", "pwmcp-ocr"]
     ocr = compose["services"]["pwmcp-ocr"]
-    assert ocr["image"] == "ghcr.io/volkb79-2/pwmcp-ocr:1.64.0-r3"
+    release = json.loads((PWMCP_ROOT / "pwmcp.contract.json").read_text(encoding="utf-8"))["release"]
+    assert ocr["image"] == f"ghcr.io/volkb79-2/pwmcp-ocr:{release}"
     assert ocr["container_name"] == "proj-t1-pwmcp-ocr"
     assert ocr["networks"] == {"default": {"aliases": ["pwmcp-ocr"]}}
     # never published, never routed

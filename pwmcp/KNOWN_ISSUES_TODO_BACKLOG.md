@@ -324,8 +324,8 @@ shows. Origin: a Codex session driving a TrueNAS relaxed unattended install on a
 3. (OPEN) Guarded expect-and-send, OFF unless a config flag enables it.
 
 **Release wiring: FIXED-ON-BRANCH (operator decision 2026-10-27: extend the existing release so ONE pwmcp
-release builds, publishes and records BOTH images under one contract).** No release was cut and nothing was
-built, pushed or run through cmru/ciu/docker/the gate, so this stays UNVERIFIED until a real release is cut.
+release builds, publishes and records BOTH images under one contract).** The image is first published in `1.64.0-r4`; this stays
+UNVERIFIED until the post-release smoke has run.
 - Image: `ghcr.io/volkb79-2/pwmcp-ocr` (sibling of `ghcr.io/volkb79-2/pwmcp`, the repository naming
   convention), tagged `<PWMCP_VERSION>` (the SAME coordinate, e.g. `1.64.0-r3`) and `latest`.
 - Build/push: a `pwmcp-ocr` target in `docker-bake.hcl` (same context `.`, no extra platform/cache policy),
@@ -383,8 +383,7 @@ before the new `cmru.vars` keys fails closed; confirm the token has `write:packa
 (PWMCP-01); expect `pwmcp-ocr` to be created PRIVATE and unlinked and make it public once in the GHCR UI
 (the `org.opencontainers.image.source` label links it); if the visibility sync hard-fails after both images
 were pushed (cmru KI-97) re-run ONLY the sync step, never `cmru release --resume` without `--set-version`
-(the 2026-09-08 v1.0.0 incident). The sidecar image exists from the NEXT release after `1.64.0-r3`; until
-then enabling `pwmcp.ocr` needs a local build (README). The pwmcp gate lanes depend on the tester
+(the 2026-09-08 v1.0.0 incident). The sidecar image is first published in `1.64.0-r4`. The pwmcp gate lanes depend on the tester
 image carrying the pwmcp-client `test` extra (pytest, pillow, websockets, jinja2, pyyaml) plus node and sh.
 Operator policy 2026-10-27: a test needing an optional module or binary FAILS when it is missing (clear message
 naming it and the extra); skipping is the opt-in, `PWMCP_ALLOW_MISSING_TEST_DEPS=1` on a developer machine.
