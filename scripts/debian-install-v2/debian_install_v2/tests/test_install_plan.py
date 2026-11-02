@@ -4,10 +4,16 @@ import json
 from pathlib import Path
 import sys
 
+import pytest
+
 from debian_install_v2.actions import HostActions
 from debian_install_v2.config import Config
 from debian_install_v2.installer import Installer
 from debian_install_v2.state import StateStore
+
+
+ROOT_CAP_CLOUD_INIT_CONFIG = "/etc/cloud/cloud.cfg.d/99-debian-install-v2-root-cap.cfg"
+GROWROOT_DISABLED = "/etc/growroot-disabled"
 
 
 def run_dry_install(tmp_path: Path) -> tuple[Installer, list[str]]:
@@ -99,6 +105,36 @@ def test_default_fstab_swap_entries_are_planned(tmp_path):
     installer.resume()
     fstab = actions.dry_run_writes["/etc/fstab"]
     assert len([line for line in fstab.splitlines() if " none swap sw,pri=10,discard=once 0 0" in line]) == 4
+
+
+@pytest.mark.parametrize("root_max_size_gb", [None, 40])
+def test_stage2_disables_boot_time_root_growth_only_when_capped(tmp_path, root_max_size_gb):
+    config = Config(
+        state_dir=str(tmp_path / "state"),
+        log_dir=str(tmp_path / "logs"),
+        root_resize_policy="resize",
+        root_max_size_gb=root_max_size_gb,
+        swap_policy="off",
+        run_io_benchmark=False,
+        telegram_bot_token="",
+        telegram_chat_id="",
+        auto_reboot_after_stage1=False,
+        credential_mode="systemd",
+    )
+    actions = HostActions(dry_run=True)
+    installer = Installer(config, actions)
+    StateStore(config.state_dir).save_new(StateStore.new(config))
+
+    installer.resume()
+
+    expected = root_max_size_gb is not None
+    assert (ROOT_CAP_CLOUD_INIT_CONFIG in actions.dry_run_writes) is expected
+    assert (GROWROOT_DISABLED in actions.dry_run_writes) is expected
+    if expected:
+        assert actions.dry_run_writes[ROOT_CAP_CLOUD_INIT_CONFIG] == (
+            "growpart: {mode: off}\nresize_rootfs: false\n"
+        )
+        assert actions.dry_run_writes[GROWROOT_DISABLED] == ""
 
 
 def test_disk_transaction_manifest_and_health_gate_are_planned(tmp_path):
