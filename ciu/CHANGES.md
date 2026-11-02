@@ -21,8 +21,35 @@ the technical detail below it.
 
 <!-- cmru: release history -->
 
-## [Unreleased]
+## [7.19.0] - 2026-11-02
+<!-- cmru: generated -->
+<!-- cmru: source-end=1852853efc14b6491f5eec3e3ee81199fbf51ec0 -->
 
+### Fixed
+- fix(ciu): resume through checkpointed ignored parents (f1210e80a)
+- fix(ciu): handle unreadable retry blockers and helper exits (104138b23)
+- fix(ciu): harden permission-specific worktree retry (f81edaeab)
+- fix(ciu): add consented permission retry for worktree removal (6dbcc29b8)
+- fix(ciu): protect ignored descendants and retry dirty removal (4b1f915fa)
+- fix(ciu): make worktree rm cleanup retry-safe (15b5ad795)
+- fix(ciu): harden worktree removal safety (be0334461)
+
+### Changed
+- ciu: make worktree rm safe and observable (fcc04c5bd)
+
+### Documentation
+- docs(ciu): index rows for CIU-156..158 (2bda161e5)
+- docs(ciu): file CIU-156..158 and the stage 2 status note (ef758eaa9)
+- docs(ciu): retain the P53 review-05 report the P53 log cites (3c64fe330)
+
+### Testing
+- test(ciu): close worktree branch coverage gaps (ff9c9cc0a)
+- test(ciu): keep source-only suite fixture patches scoped (21b3a5005)
+- test(ciu): isolate tests from host Docker identity (086667246)
+- test(ciu): supply DOCKER_GID for the whole ambient-identity test module (05c3c1441)
+- test(ciu): make the contaminated-shell env generation test independent of host Docker group (9ae9289e2)
+
+<!-- cmru: pending release notes begin -->
 ### Fixed
 - `ciu worktree rm` can retry a confirmed Git permission failure through the governed S6.5 helper after successful cleanup. `--root-escalation BRANCH` is exact-branch consent; the retry is limited to validated failed descendants below the checkout's real path, supports a second invocation after Git drops its registration, and reports paths left behind on failure.
 - The S6.5 retry re-derives the host checkout path and requires it to match the shared record, verifies parent and target device/inode identities inside the helper, disables recursive bind mounts, and refuses nested mounts. The helper requires Docker CLI and Engine 25.0.0 or newer. Deferred resume re-walks the leftover checkout with a 100,000-entry limit, refuses new protected components and entries changed after the checkpoint, and keeps full remaining paths in JSON while limiting diagnostic text to 20 paths plus the total.
@@ -60,6 +87,9 @@ the technical detail below it.
 - Consumers that validate branch-survey JSON must accept `schema_version: 4`, the ignored-state categories, and the `protected_reason` vocabulary. Removal-document consumers must accept schema 2, the `privileged_retry` status vocabulary (including `awaiting-consent`), and the failure `remaining` paths. Unknown values remain a refusal.
 - `rm` now retains unmerged branches by default. Use `--delete-branch` only when deleting that ref is intended; use `--keep-branch` when a merged ref should remain.
 - Review the exact relative targets and retry command before passing `--root-escalation BRANCH`; `-y` and `--force` do not imply root consent. CIU-151 still needs a live stack probe for physical owner-label path behavior.
+<!-- cmru: pending release notes end -->
+
+## [Unreleased]
 
 ## [7.18.0] - 2026-10-28
 <!-- cmru: generated -->
