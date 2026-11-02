@@ -13717,3 +13717,19 @@ the worker count in each state record, derive the campaign maximum across
 resumed and newly executed records, and update the verdict model, schema,
 verifier, analyzer, and consumer/design documentation together. Until then,
 documents and analysis must describe the v17 fields as invocation-local.
+
+
+## B204 — a flaky test failure is credited as a killed mutant without confirmation
+
+**Status: OPEN (filed 2026-11-02).** The `--jobs` pilot on a Btrfs CoW runner (56 candidates, jobs 1 versus 3) agreed on 53
+candidates; the three disagreements were killed in the `--jobs 1` arm but survived at `--jobs 3` and in fresh isolated serial
+replays. The kills stopped the `pytest -x` run at tests that also fail intermittently on the unmutated tree, so a flaky
+failure was counted as a kill. Add an opt-in kill confirmation: rerun each killed candidate's first failing test on the unmutated
+clone and withhold credit when it fails there too (report such candidates as inconclusive). Until then, treat bucket
+differences between runs as suite flakes unless an isolated serial replay reproduces them.
+
+## B205 — killed candidates do not record the failing test
+
+**Status: OPEN (filed 2026-11-02).** A killed candidate's state record and verdict entry say only FAIL with the suite return
+code; the first failing test id is not kept, so a false kill cannot be attributed after the fact. Record the failing test id in
+the progress event and the state record now; add it to the verdict as an optional field (or with schema v18).

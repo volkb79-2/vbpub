@@ -6978,3 +6978,10 @@ directory at `/tmp`, the same test reports `idle` in both pilot arms, while it p
 **Expected.** Either the lock status resolves the lock file through the same physical path the lane holds, or the test states the
 layout it needs and skips with a reason when the lock directory is not shared with the status reader. Root cause to be confirmed
 on that runner (mount layout versus `flock` semantics).
+
+## RG-142 — `test_daemon_start_with_null_optional_target_still_stops_session` is flaky on a Btrfs scratch runner
+
+The test failed in the R0 baseline of an unmutated tree on a Btrfs CoW runner (roughly 1 in 10 runs that reach it), and stopped
+two unrelated mutation candidates in a serial arm. Like the exec-lock status test (RG-141) it takes the exec lock under a
+Btrfs temporary directory, so a device-number or lock-path mismatch is the first lead. **Expected.** Deterministic result
+on that runner; if the layout cannot be supported, the test states its requirement and skips with a reason.
