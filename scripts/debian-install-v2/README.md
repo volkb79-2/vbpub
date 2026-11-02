@@ -209,7 +209,20 @@ provider capacities (decimal GB; actual sizing uses bytes):
 | 256 GB | 8 | 16 | 32 | 48 | 48 | 48 |
 | 512 GB | 8 | 16 | 32 | 64 | 95 | 95 |
 
-Core layout settings are:
+The default root and swap layout settings are:
+
+```json
+{
+  "schema_version": 1,
+  "root_resize_policy": "resize",
+  "swap_policy": "on",
+  "swap_disk_total_gb": null,
+  "swap_partition_count": 4,
+  "preserve_root_size_gb": 10
+}
+```
+
+To cap root and choose a fixed managed swap size, use:
 
 ```json
 {
@@ -227,7 +240,13 @@ Core layout settings are:
 current root is shrunk safely and a smaller root can grow up to the cap. The
 cap must be at least `preserve_root_size_gb`. `grow-only` and `untouched`
 refuse a current root larger than the cap because honoring it would require a
-shrink. The remaining space after root and managed swap stays unallocated.
+shrink. The cap measures root partition length from its existing start, so a
+non-MiB-aligned start does not reduce the configured limit. When a cap is set,
+stage two disables later automatic root growth by writing
+`/etc/cloud/cloud.cfg.d/99-debian-install-v2-root-cap.cfg` with
+`growpart: {mode: off}` and `resize_rootfs: false`, and creating
+`/etc/growroot-disabled` for initramfs growroot. The remaining space after
+root and managed swap stays unallocated across later boots.
 
 When `swap=on` cannot fit without shrinking, `root=untouched` and
 `root=grow-only` fail with the requested and available space rather than

@@ -353,6 +353,7 @@ def test_remote_invocation_imports_config_validator_from_fetched_source(
     """The bootstrap runs outside the fetched checkout, so it must add that tree to sys.path."""
     import builtins
     import sys
+    monkeypatch.setattr(sys, "path", list(sys.path))
 
     install_dir = tmp_path / "install"
     monkeypatch.setenv("INSTALL_DIR", str(install_dir))

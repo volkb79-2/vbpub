@@ -1,5 +1,12 @@
 # debian-install-v2 — TODO / backlog
 
+## DONE (root-cap follow-ups, 2026-11-02)
+
+`root_max_size_gb` now installs cloud-init and initramfs guards against later
+root growth, and its cap is measured from the root partition start without
+rounding the configured length down to an absolute 1 MiB boundary. User-facing
+examples retain both the default uncapped layout and a capped layout.
+
 ## OPEN (MDT-016 / D-HS-01-2, 2026-10-19): the io.cost generator measures through the hypervisor cache
 
 `tools/iocost_coef_gen.py` (patched copy of the Linux generator, built by `tools/build-iocost-generator.py`)

@@ -1961,12 +1961,14 @@ MaxFileSec=1month
         policy = self.config.root_resize_policy
         root_size_cap = None
         if self.config.root_max_size_gb is not None:
+            # The configured cap is a partition length measured from the
+            # existing root start. Do not round its absolute end down: that
+            # would silently reduce the cap for a non-MiB-aligned start.
             cap_sectors = self.config.root_max_size_gb * GIB // 512
-            cap_root_end = ((root_start + cap_sectors) // alignment) * alignment
-            root_size_cap = cap_root_end - root_start
+            root_size_cap = cap_sectors
             if root_size_cap <= 0:
                 raise InstallerError(
-                    "root_max_size_gb leaves no aligned space for the root partition"
+                    "root_max_size_gb leaves no space for the root partition"
                 )
             if policy == "untouched" and root_size > root_size_cap:
                 raise InstallerError(
@@ -4350,6 +4352,16 @@ MaxFileSec=1month
             raise
         self._mark_step(step, "success", mode)
 
+    def _configure_root_cap_boot_guards(self) -> None:
+        """Keep cloud-init and initramfs from growing a capped root later."""
+        if self.config.root_max_size_gb is None:
+            return
+        self.actions.write_file(
+            "/etc/cloud/cloud.cfg.d/99-debian-install-v2-root-cap.cfg",
+            "growpart: {mode: off}\nresize_rootfs: false\n",
+        )
+        self.actions.write_file("/etc/growroot-disabled", "")
+
     def _stage2(self) -> None:
         self._packages(["e2fsprogs", "util-linux"], "stage2")
         # True iff Case B's own hook already wrote the swap partitions as
@@ -4395,6 +4407,7 @@ MaxFileSec=1month
             self._apply_known_swap_shape()
         self._ensure_disk_transaction_manifest()
         self._grow_root_to_plan()
+        self._configure_root_cap_boot_guards()
         self._activate_swap_partitions()
         self._health_gate_swap_devices()
         self._release_apt_timers()

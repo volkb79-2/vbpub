@@ -95,7 +95,12 @@ but never shrinks; `untouched` forbids root partition changes. Optional
 space after root and swap unallocated for a later data partition. It does not
 format or mount the remaining space. The cap must be at least
 `preserve_root_size_gb`; `grow-only` and `untouched` refuse if the current
-root is larger than the cap. Choose one swap
+root is larger than the cap. The cap is measured from the root partition's
+existing start, so an unaligned start does not lower the configured limit.
+When set, stage two disables later automatic root growth by writing
+`/etc/cloud/cloud.cfg.d/99-debian-install-v2-root-cap.cfg` with
+`growpart: {mode: off}` and `resize_rootfs: false`, and creating
+`/etc/growroot-disabled` for initramfs growroot. Choose one swap
 policy: `on` (default) replaces the guest's configured swap setup with native
 partitions: it disables all active swap, removes configured swapfiles and swap
 logical volumes, and replaces fstab swap entries with the managed partitions.

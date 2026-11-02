@@ -108,7 +108,16 @@ normal usage and ext-filesystem minimum checks pass. The area after root and
 managed swap remains unallocated: the installer does not invent a filesystem,
 partition, or mount point. The cap must be at least
 `preserve_root_size_gb`. `grow-only` and `untouched` refuse when a larger
-current root would have to shrink to satisfy the cap.
+current root would have to shrink to satisfy the cap. The cap is a root
+partition length measured from its existing start, not an absolute disk end;
+an unaligned start therefore does not lower the configured GiB limit.
+
+After applying a configured cap, stage two prevents boot-time growth from
+consuming that free space again. It writes
+`/etc/cloud/cloud.cfg.d/99-debian-install-v2-root-cap.cfg` with
+`growpart: {mode: off}` and `resize_rootfs: false`, and creates
+`/etc/growroot-disabled` so the initramfs growroot integration also stays off.
+Both guards are installed only when `root_max_size_gb` is set.
 
 For example, this keeps a 40 GiB root and 8 GiB of managed swap while leaving
 the rest of a larger disk available for a manually created data partition:

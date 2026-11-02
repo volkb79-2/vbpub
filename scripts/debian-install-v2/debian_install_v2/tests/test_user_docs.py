@@ -48,12 +48,25 @@ def test_all_documented_config_examples_use_the_current_loader_and_schema():
     assert count >= 2
 
 
-def test_root_size_cap_is_adoptable_from_each_user_document():
+def test_root_size_cap_is_adoptable_from_user_documents():
     for path in DOCS:
         text = path.read_text(encoding="utf-8")
-        examples = list(_markdown_config_examples(path))
         assert "`root_max_size_gb`" in text
-        assert any(example.get("root_max_size_gb") == 40 for example in examples), path
+    assert any(
+        example.get("root_max_size_gb") is not None
+        for path in DOCS
+        for example in _markdown_config_examples(path)
+    )
+
+
+def test_readme_keeps_the_uncapped_defaults_next_to_the_capped_layout():
+    examples = list(_markdown_config_examples(PROJECT / "README.md"))
+    assert any(
+        example.get("swap_disk_total_gb", "missing") is None
+        and example.get("root_max_size_gb") is None
+        for example in examples
+    )
+    assert any(example.get("root_max_size_gb") is not None for example in examples)
 
 
 def test_every_cloud_init_cleanup_mode_is_named_in_user_docs():

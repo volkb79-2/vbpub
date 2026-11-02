@@ -15,6 +15,7 @@ def make_planner(
     *,
     disk_gib: int = 20,
     root_gib: int | None = None,
+    root_start: int = 2048,
     ram_gib: int = 4,
     root_resize_policy: str = "resize",
     swap_policy: str = "on",
@@ -27,7 +28,6 @@ def make_planner(
     entries: dict[int, dict[str, str]] | None = None,
 ) -> Installer:
     disk_sectors = disk_gib * GIB // 512
-    root_start = 2048
     root_size = (
         (root_gib * GIB // 512)
         if root_gib is not None
@@ -131,6 +131,24 @@ def test_non_shrinking_policy_refuses_a_root_larger_than_its_cap(tmp_path, polic
 
     with pytest.raises(InstallerError, match=rf"root_resize_policy={policy} cannot satisfy root_max_size_gb"):
         installer._plan_swap_partitions()
+
+
+def test_untouched_root_at_its_cap_is_allowed_with_unaligned_start(tmp_path):
+    cap_sectors = 40 * GIB // 512
+    installer = make_planner(
+        tmp_path,
+        disk_gib=64,
+        root_start=2049,
+        root_gib=40,
+        root_resize_policy="untouched",
+        swap_policy="off",
+        swap_disk_total_gb=None,
+        root_max_size_gb=40,
+    )
+
+    _partitions, target_root = installer._plan_swap_partitions()
+
+    assert target_root == cap_sectors
 
 
 def _planner_with_pre_root_swap(tmp_path, *, pre_root_gib: int, swap_total_gib: int = 4):
