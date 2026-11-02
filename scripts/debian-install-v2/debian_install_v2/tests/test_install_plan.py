@@ -8,7 +8,7 @@ import pytest
 
 from debian_install_v2.actions import HostActions
 from debian_install_v2.config import Config
-from debian_install_v2.installer import Installer
+from debian_install_v2.installer import Installer, InstallerError
 from debian_install_v2.state import StateStore
 
 
@@ -82,6 +82,31 @@ def test_stage1_installs_root_cap_boot_guards_only_when_capped_before_reboot(
             "schedule delayed reboot into stage2 (avoids stranding the provider's cloud-init tracking)"
         )
         assert last_guard_write < reboot
+
+
+def test_stage1_refused_root_cap_does_not_install_boot_guards(tmp_path):
+    config = Config(
+        state_dir=str(tmp_path / "state"),
+        log_dir=str(tmp_path / "logs"),
+        stage2_output="/root/custom_script.output2",
+        swap_policy="off",
+        root_max_size_gb=40,
+        telegram_bot_token="",
+        telegram_chat_id="",
+        never_reboot=False,
+        auto_reboot_after_stage1=True,
+        credential_mode="systemd",
+    )
+    actions = HostActions(dry_run=True)
+    installer = Installer(config, actions)
+
+    with pytest.raises(InstallerError, match="root_max_size_gb needs managed swap partitions"):
+        installer.install()
+
+    descriptions = [action.description for action in actions.planned]
+    for path in (ROOT_CAP_CLOUD_INIT_CONFIG, GROWROOT_DISABLED):
+        assert path not in actions.dry_run_writes
+        assert f"write {path}" not in descriptions
 
 
 def test_state_new_excludes_secret_and_uses_stable_schema(tmp_path):
