@@ -3614,6 +3614,13 @@ class TestStructuredControlDocuments:
         assert "instance" not in doc
         assert doc["removed_path"] == str(target)
 
+    def test_remove_document_unknown_target_does_not_assume_no_record(self, tmp_repo):
+        with pytest.raises(worktree.WorktreeRemovalError) as exc:
+            worktree.remove_document(tmp_repo, "missing")
+
+        assert exc.value.phase_report["phases"]["target_resolution"] == "failed"
+        assert exc.value.phase_report["phases"]["ciu_record_removal"] == "skipped"
+
     def test_remove_document_failed_clean_produces_no_success_document(
         self, tmp_repo, fake_generate_env, monkeypatch
     ):
@@ -3816,6 +3823,41 @@ class TestRemovalBranchSafety:
         assert exc.value.document["branch"]["tip"] == expected_tip
         assert exc.value.document["branch"]["outcome"] == "failed"
         assert exc.value.phase_report["phases"]["branch_removal"] == "failed"
+
+    def test_rm_preserves_deleted_outcome_when_shared_record_removal_fails(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        record, _tip = self._created_branch(
+            tmp_repo, fake_generate_env, "feature-record-cleanup-fails"
+        )
+        monkeypatch.setattr(worktree, "_clean_in", lambda *_args, **_kwargs: 0)
+        shared_record = worktree._shared_record_for_logical_name(
+            tmp_repo, record.logical_name
+        )
+        assert shared_record is not None
+        real_unlink = Path.unlink
+
+        def fail_shared_record_unlink(path, *args, **kwargs):
+            if path == shared_record.record_path:
+                raise PermissionError("shared record is locked")
+            return real_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", fail_shared_record_unlink)
+
+        with pytest.raises(
+            worktree.WorktreeRemovalError, match="shared worktree removal failed"
+        ) as exc:
+            worktree.remove_document(
+                tmp_repo, record.logical_name, delete_branch=True
+            )
+
+        assert exc.value.phase_report["phases"]["branch_removal"] == "deleted"
+        assert exc.value.phase_report["phases"]["shared_record_removal"] == "failed"
+        assert exc.value.document["branch"]["outcome"] == "deleted"
+        assert not record.git_worktree_path.exists()
+        assert _git(
+            ["rev-parse", "--verify", f"refs/heads/{record.branch}"], tmp_repo
+        ).returncode != 0
 
     def test_rm_reports_detached_branch_as_skipped(self, tmp_repo, monkeypatch):
         target = tmp_repo.parent / "detached-remove"
@@ -4048,6 +4090,42 @@ class TestRemovalHelpers:
         assert plan["delete"] is True
         assert plan["outcome"] == "deleted"
         assert any(args[-1] == "refs/heads/main" for args in calls)
+
+    def test_branch_removal_plan_ignores_missing_legacy_base_ref(
+        self, tmp_repo, monkeypatch
+    ):
+        assert _git(["branch", "feature"], tmp_repo).returncode == 0
+        legacy = worktree.WorktreeInstanceRecord(
+            logical_name="legacy", display_name="legacy", branch="feature",
+            git_worktree_path=tmp_repo / "feature", ciu_root_offset=Path("."),
+            created_at_utc="2026-11-02T00:00:00Z", base_ref="retired-base",
+            state="ready", schema_version=5,
+        )
+        checkout = worktree.WorktreeInfo(
+            legacy.git_worktree_path, legacy.branch, "head", False
+        )
+        real_git = worktree._git
+        calls = []
+
+        def git(args, cwd):
+            calls.append(args)
+            return real_git(args, cwd)
+
+        # Observe the stale-base lookup and prove mergedness against the live
+        # local mainline selected after that saved legacy ref is unavailable.
+        monkeypatch.setattr(worktree, "_git", git)
+        plan = worktree._branch_removal_plan(
+            tmp_repo, checkout, legacy, keep_branch=False, delete_branch=False
+        )
+
+        assert plan["delete"] is True
+        assert "base branch 'main'" in plan["reason"]
+        assert ["rev-parse", "--verify", "refs/heads/retired-base"] in calls
+        assert any(
+            args[:2] == ["merge-base", "--is-ancestor"]
+            and args[-1] == "refs/heads/main"
+            for args in calls
+        )
 
 
 class TestRemovalRefusals:

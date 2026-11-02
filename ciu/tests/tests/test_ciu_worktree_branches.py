@@ -385,6 +385,32 @@ def test_ignored_state_summary_rejects_conflicts_and_size_errors(
         worktree._ignored_state_summary(tmp_path)
 
 
+def test_ignored_state_summary_does_not_measure_nested_paths_twice(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        worktree, "_git",
+        lambda *_args: subprocess.CompletedProcess(
+            [], 0, "scratch/\0scratch/nested/\0scratch/nested/file\0", ""
+        ),
+    )
+    measured = []
+
+    def measure(_checkout, relative):
+        measured.append(relative)
+        return 2, 7, False
+
+    monkeypatch.setattr(worktree, "_measure_ignored_entry", measure)
+
+    summary = worktree._ignored_state_summary(tmp_path)
+
+    assert measured == ["scratch"]
+    assert summary == [{
+        "path": "scratch", "class": "unclassified", "file_count": 2,
+        "bytes": 7, "capped": False,
+    }]
+
+
 def test_prune_removes_only_prunable_and_keeps_unmerged(repo):
     """Controlled wrong implementation check: an age-based or sloppy rule
     would take feature/wip too; after the prune it MUST still exist."""

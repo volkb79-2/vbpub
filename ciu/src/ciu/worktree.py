@@ -6314,11 +6314,9 @@ _REMOVAL_PHASES = (
 )
 
 
-def _new_removal_phase_report(managed: bool) -> dict[str, Any]:
+def _new_removal_phase_report() -> dict[str, Any]:
     phases = {name: "not-run" for name in _REMOVAL_PHASES}
     phases["target_resolution"] = "running"
-    if not managed:
-        phases["ciu_record_removal"] = "skipped-no-record"
     return {"schema_version": 1, "phases": phases}
 
 
@@ -6527,7 +6525,7 @@ def remove(
 ) -> Path:
     """Clean and remove one checkout, retaining unmerged or requested refs."""
     repo_root = Path(repo_root).resolve()
-    report = _new_removal_phase_report(managed=False)
+    report = _new_removal_phase_report()
     if _phase_report is not None:
         _phase_report.clear()
         _phase_report.update(report)
