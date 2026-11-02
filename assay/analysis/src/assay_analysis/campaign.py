@@ -1610,13 +1610,18 @@ def _check_verdict_against_lane(verdict: dict, *, lane_name: str, lane) -> dict:
                 raise ValueError(
                     f"R2 verdict policy {key} differs from the named lane declaration"
                 )
-        # The lane's ``jobs_max`` is a ceiling, while v16's verdict ``jobs``
-        # is the selected runtime count (and v16 itself currently requires 1).
-        # The verified verdict reader has already enforced the v16 wire rule;
-        # bind the recorded count to the lane's normalized ceiling here.
+        # The lane's ``jobs_max`` is a ceiling; v17 records the selected
+        # runtime count and its conservative attribution policy.
         if r2_policy["jobs"] > _declared_native_jobs_max(mutation_policy):
             raise ValueError(
                 "R2 verdict policy jobs differs from the named lane declaration"
+            )
+        expected_attribution = (
+            "serial" if r2_policy["jobs"] == 1 else "overlap-conservative"
+        )
+        if r2_policy.get("attribution") != expected_attribution:
+            raise ValueError(
+                "R2 verdict policy attribution differs from the selected worker count"
             )
     return r2_policy
 
@@ -1948,10 +1953,16 @@ def campaign(
     selected_total = None if plan_total is None else len(selection)
     completed_total = len(items) - len(never_started) if have_outcomes else None
     pending_total = None if selected_total is None else max(0, selected_total - completed_total)
-    # A newly loaded lane has no runtime ``jobs`` selection yet. The v16
-    # native policy and the run default are serial; explicit projection jobs
-    # are handled separately below.
-    jobs = 1 if native_r2 else None
+    # A newly loaded lane has no runtime selection yet, so its plan default is
+    # serial. Once a v17 verdict exists, use the recorded effective workers.
+    jobs = (
+        r2_policy["jobs"] if native_r2 and verdict is not None
+        else 1 if native_r2 else None
+    )
+    attribution = (
+        r2_policy["attribution"] if native_r2 and verdict is not None
+        else "serial" if native_r2 else None
+    )
     timing = _timing(latest, pending=pending_total, jobs=jobs)
     projection = None
     if project_jobs is not None:
@@ -2095,6 +2106,8 @@ def campaign(
             "shard": None if shard[0] is None else f"{shard[0]}/{shard[1]}",
         },
         "campaign": {
+            "jobs": jobs,
+            "attribution": attribution,
             "planned_total": plan_total,
             "selected_total": selected_total,
             "completed_total": completed_total,

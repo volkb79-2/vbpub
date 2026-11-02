@@ -28,13 +28,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
-from conftest import FakeAdapter, GitRepo, fixed_clock, make_lane, make_r1_judge
+from conftest import (
+    FakeAdapter, GitRepo, completed_process, fixed_clock, make_lane, make_r1_judge,
+)
 
 from assay import runner, safeio
 from assay.config import ResultReportConfig
 from assay.contention import ContentionObservation
 from assay.errors import Outcome, ReasonCode
 from assay.termination import Termination
+from assay.process_tree import ProcessTreeDescendant, ProcessTreeEvidence
 from termination_table import LIMITS_HIT
 
 MOMENT_A = datetime(2026, 9, 8, 10, 0, 0, tzinfo=timezone.utc)
@@ -490,6 +493,49 @@ def test_a_green_run_with_a_declared_report_is_the_unchanged_pass_shape(
     assert result.reason_code is None
     assert result.returncode == 0
     assert result.stdout_tail is None and result.stderr_tail is None
+
+
+@pytest.mark.parametrize(
+    ("failed", "returncode", "expected"),
+    [(0, 0, Outcome.PASS), (1, 1, Outcome.FAIL)],
+)
+def test_cleanup_leak_retains_completed_report_as_crashed_diagnostic(
+    tmp_path: Path, failed: int, returncode: int, expected: Outcome
+):
+    lane = make_lane(argv=("/bin/true",), result_report=VITEST_REPORT)
+    identity = ProcessTreeDescendant(pid=876543, ppid=1, comm="pytest-child")
+
+    def leaves_a_descendant(argv, *, env, cwd, timeout):
+        document = vitest_document(total=2, failed=failed)
+        (Path(cwd) / REPORT_PATH).write_text(document, encoding="utf-8")
+        result = completed_process(argv, returncode, stdout="suite", stderr="")
+        result.process_tree_evidence = ProcessTreeEvidence(
+            leader_status="exited",
+            group_signalled_before_reap=False,
+            outliving_descendants=1,
+            descendants_signalled=1,
+            descendants=(identity,),
+            clean=True,
+        ).to_dict()
+        return result
+
+    result = runner.execute_command(
+        lane,
+        cwd=tmp_path,
+        process_runner=leaves_a_descendant,
+        clock=fixed_clock(MOMENT_A, MOMENT_B),
+    )
+
+    assert result.outcome is Outcome.ERROR
+    assert result.reason_code is ReasonCode.EXEC_FAILED
+    assert result.returncode is None
+    assert result.process_tree_evidence["descendants"] == [identity.to_dict()]
+    assert result.underlying_outcome is not None
+    assert result.underlying_outcome.outcome is expected
+    assert result.underlying_outcome.returncode == returncode
+    assert result.underlying_outcome.report_summary is not None
+    assert result.underlying_outcome.report_summary.total == 2
+    assert result.underlying_outcome.report_summary.failed == failed
 
 
 # --- the other terminals are untouched by the declaration --------------------

@@ -317,7 +317,7 @@ def test_native_outcome_requires_typed_resource_and_attempt_evidence(changes, me
     ],
 )
 def test_native_policy_requires_typed_cold_and_ledger_fields(changes, message):
-    fields = dict(jobs=1, max_mutants=50,
+    fields = dict(jobs=1, attribution="serial", max_mutants=50,
                   operators=("python:compare-swap",),
                   kill_attribution="unattributed", cold_witness_kills=False)
     fields.update(changes)

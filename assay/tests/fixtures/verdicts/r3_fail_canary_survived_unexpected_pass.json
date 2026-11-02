@@ -1,5 +1,5 @@
 {
-  "schema_version": 16,
+  "schema_version": 17,
   "assay_version": "0.1.0",
   "lane": "package",
   "commit": "dddddddddddddddddddddddddddddddddddddddd",
@@ -74,7 +74,8 @@
             "disposition": "attempted",
             "control_outcome": "PASS",
             "transformed_outcome": "PASS",
-            "expected_reason_code": "UNCOVERED_LINES"
+            "expected_reason_code": "UNCOVERED_LINES",
+            "cause": null
           }
         ]
       }

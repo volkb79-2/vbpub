@@ -57,7 +57,6 @@ PROCESS_TREE_EVIDENCE = ProcessTreeEvidence(
     group_signalled_before_reap=False,
     outliving_descendants=0,
     descendants_signalled=0,
-    cleanup_seconds=0.001,
     clean=True,
 ).to_dict()
 
@@ -641,7 +640,13 @@ def test_pilot_state_requires_consistent_process_tree_evidence(
     elif damage == "invalid":
         record["process_tree_evidence"]["protocol"] = "unsupported"
     else:
-        record["process_tree_evidence"]["outliving_descendants"] = 1
+        evidence = record["process_tree_evidence"]
+        evidence.update(
+            group_signalled_before_reap=True,
+            outliving_descendants=1,
+            descendants_signalled=1,
+            descendants=[{"pid": 1234, "ppid": 1, "comm": "sleep"}],
+        )
     state_path.write_text(json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")
     dispositions = {
         row["id"]: dict(row) for row in fixture["summary"]["candidates"]

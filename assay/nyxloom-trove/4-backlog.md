@@ -13223,9 +13223,10 @@ unrepresentable. R2 itself: B169.
 
 ## B171 — retain suite verdict and descendant identity when cleanup finds a leak
 
-**Status: OPEN; implementation deferred from the 2026-10-29 Run-Gate harness
-fix.** The registered Assay `tester-unified` lane is the required gate for this
-item. Do not use an R2 campaign as its implementation gate.
+**Status: IMPLEMENTED by WP8, verdict schema v17; controller-owned
+`tester-unified` acceptance is pending.** The focused branch checks cover the
+producer, verifier, malformed evidence, and crashed-bucket contract, but the
+registered lane remains the closure gate.
 
 **Observed.** In `runner.execute_command`, a completed command whose process
 tree has `outliving_descendants > 0` is returned as `ERROR/EXEC_FAILED` before
@@ -13450,7 +13451,7 @@ handling, state replacement and resume reuse. See the [Opus design](reports/ASSA
 
 ## B180 — move remaining host-varying process evidence out of verdict v16
 
-**Status: OPEN; WP8 follow-up with B171.** In a deliberate v17 schema change,
+**Status: CLOSED by WP8, verdict schema v17.** In the schema change,
 remove `process_tree_evidence.cleanup_seconds`, add the process-tree signal
 evidence needed by verification, and expose the canary receipt cause so the
 verifier can re-derive it. Keep `budget_per_candidate_derived_s`, because it is
@@ -13694,23 +13695,25 @@ survivor, and bisect against the pre-CW8 commit.
 
 **Status: OPEN (filed at 10.2.0).** P3: only after a real XFS pilot. Source: review F6.
 
-## B202 — Verdict v16 does not retain the effective native R2 worker count
+## B202 — Verdict v16 did not retain the effective native R2 worker count
 
-**Status: OPEN (filed by PR1b, 2026-11-01).**
+**Status: CLOSED by WP8, verdict schema v17 (2026-11-01).**
 
-PR1b keeps verdict schema v16 unchanged as required. Its `judgment.r2.jobs`
-field therefore remains the v16 value `1`, while the additive progress run
-event reports the effective worker count and attribution policy. A saved v16
-verdict alone cannot reconstruct whether the campaign used serial or parallel
-execution.
+PR1b kept verdict schema v16 unchanged as required. WP8 records the effective
+worker count in `judgment.r2.jobs` and its policy in `judgment.r2.attribution`.
+The analyzer reads both values and rejects v16 artifacts consistently.
+Campaign reports expose both values. Schema and analyzer tests cover the
+serial/parallel pair and the v16 refusal.
 
-**Chosen follow-up:** WP8 owns a separately reviewed verdict-schema package
-that records actual `jobs` and the attribution mode. Do not edit v16 or reuse
-the progress keys as an implicit verdict field. Until that package lands,
-consumer audit of actual worker count requires the progress stream.
+## B203 — verdict worker attribution is invocation-local on resume
 
-**Oracles:** a future schema emits the actual runtime worker count and
-attribution in the native R2 judgment; `assay verify` validates the pair and
-rejects inconsistent combinations; reuse and migration rules distinguish the
-new schema from v16; README, DESIGN-GUIDE, and CONSUMERS explain where the
-runtime fact is recorded.
+**Status: OPEN (filed 2026-11-01).** Native R2 `judgment.r2.jobs` and
+`judgment.r2.attribution` record the current invocation's selection. Resume
+identity intentionally allows a candidate result to be reused at a different
+worker count, while the mutation-state record does not store the count that
+produced it. A verdict can therefore combine results produced under different
+worker counts while showing only the latest invocation's attribution. Store
+the worker count in each state record, derive the campaign maximum across
+resumed and newly executed records, and update the verdict model, schema,
+verifier, analyzer, and consumer/design documentation together. Until then,
+documents and analysis must describe the v17 fields as invocation-local.

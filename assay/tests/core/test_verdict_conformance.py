@@ -1058,6 +1058,7 @@ def test_verify_accepts_reconstructed_judgment_r2_and_r3():
             "r2_command": None,
             "equivalence_ledger": None,
             "jobs": 1,
+            "attribution": "serial",
             "max_mutants": 50,
             "operators": ["python:compare-swap", "python:boolop-swap"],
             "kill_attribution": "unattributed",
@@ -1111,6 +1112,7 @@ def test_the_matrix_carries_the_r2_judgment_shape_its_producer_now_emits():
             "r2_command": None,
             "equivalence_ledger": None,
             "jobs": 1,
+            "attribution": "serial",
             "max_mutants": 50,
             "operators": ["python:compare-swap", "python:bool-const-flip"],
             "kill_attribution": "unattributed",
@@ -1134,16 +1136,22 @@ def test_the_matrix_carries_the_r2_judgment_shape_its_producer_now_emits():
     assert recorded <= set(document["judgment"]["r2"]["operators"])
 
 
-def test_verify_rejects_parallel_native_r2_event_windows(
+def test_verify_accepts_parallel_native_r2_with_conservative_attribution(
     validator: Draft202012Validator,
 ):
     document = _load(JUDGMENT_R2_FIXTURE)
-    document["judgment"]["r2"]["jobs"] = 3
+    document["judgment"]["r2"].update(
+        jobs=3, attribution="overlap-conservative"
+    )
 
-    assert why_invalid(validator, document), "the packaged schema must require jobs=1"
+    assert why_invalid(validator, document) == []
+    assert verify_document(document) == []
+
+    document["judgment"]["r2"]["attribution"] = "serial"
+    assert why_invalid(validator, document)
     failures = verify_document(document)
     assert failures
-    assert any("jobs" in failure for failure in failures)
+    assert any("attribution" in failure for failure in failures)
 
 
 def test_every_r2_or_r3_judged_claim_in_the_matrix_carries_its_judgment():
@@ -1396,17 +1404,46 @@ def test_verify_refuses_every_non_current_schema_version_with_one_diagnostic(ver
     ]
 
 
+def test_v16_verdict_is_refused_with_exactly_one_diagnostic():
+    document = _load("r1_pass.json")
+    document["schema_version"] = 16
+
+    assert verify_document(document) == [
+        "schema_version 16 is not this verifier's version 17: a verdict artifact "
+        "is rejected, never upgraded in place -- re-produce it with an assay "
+        "whose VERDICT_SCHEMA_VERSION is 17"
+    ]
+
+
 #: A-477: pin the exact current verdict schema bytes. Operator decision D2
-#: accepts optional native R2 resource telemetry in schema v16 as a recorded
-#: A-477 exception; version 17 remains reserved for WP8.
+#: freezes the v17 wire contract so producer and verifier cannot drift.
 _VERDICT_SCHEMA_SHA256 = {
-    16: "15f7d159fc698dcdb55e32a8b4b02e87a5727a8ddc61af2bed128f8d7ecf604c",
+    17: "aebb04f9a66e981a7d9b2a48a32c2a63d3ddc5ef896c4439608ddab94f4420df",
 }
 
 
 def test_the_shipped_verdict_schema_is_frozen_for_its_version():
     shipped = (PROJECT_ROOT / "src" / "assay" / "schemas" / "verdict.schema.json").read_bytes()
     assert hashlib.sha256(shipped).hexdigest() == _VERDICT_SCHEMA_SHA256[VERDICT_SCHEMA_VERSION]
+
+
+def test_b171_leak_retains_underlying_suite_result_without_mutation_credit():
+    document = _load("r2_crashed_descendant_leak.json")
+    assert verify_document(document) == []
+    mutation = next(claim["mutation"] for claim in document["claims"] if claim.get("rigor") == "R2")
+    entry = mutation["crashed"][0]
+    assert entry["underlying_outcome"]["outcome"] == "PASS"
+    assert entry["process_tree_evidence"]["outliving_descendants"] == 1
+    assert entry["process_tree_evidence"]["descendants"][0]["pid"] == 876543
+
+    broken = json.loads(json.dumps(document))
+    broken_mutation = next(claim["mutation"] for claim in broken["claims"] if claim.get("rigor") == "R2")
+    leaked = broken_mutation["crashed"].pop(0)
+    broken_mutation["killed"].append(leaked)
+    assert any(
+        "cannot carry underlying_outcome" in failure
+        for failure in verify_document(broken)
+    )
 
 
 # ============================================================================
@@ -1530,6 +1567,24 @@ def test_verify_rejects_inconsistent_process_tree_signal_counts(
     ), failures
 
 
+def test_verify_rejects_a_signaled_process_tree_leader_without_its_signal(
+    validator: Draft202012Validator,
+):
+    document = _load("r2_crashed_descendant_leak.json")
+    claim = next(c for c in document["claims"] if c["rigor"] == "R2")
+    entry = claim["mutation"]["crashed"][0]
+    entry.pop("underlying_outcome")
+    evidence = entry["process_tree_evidence"]
+    evidence["leader_status"] = "signaled"
+    evidence["signal"] = None
+
+    assert why_invalid(validator, document), (
+        "the schema must require a signal for a signaled leader"
+    )
+    failures = verify_document(document)
+    assert any("signaled leader requires a signal" in failure for failure in failures)
+
+
 def _as_ingested_at_floor(document: dict, fail_under: float) -> dict:
     """Rewrite an R2 fixture into the INGESTED shape at a declared floor.
 
@@ -1552,6 +1607,7 @@ def _as_ingested_at_floor(document: dict, fail_under: float) -> dict:
         "r2_command",
         "equivalence_ledger",
         "liveness",
+        "attribution",
     ):
         judgment_r2.pop(assay_own_policy, None)
     judgment_r2["producer"] = "ingested"

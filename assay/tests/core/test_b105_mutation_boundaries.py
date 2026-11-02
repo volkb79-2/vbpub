@@ -68,12 +68,13 @@ def _record(job=None):
         "mutated_file_sha256": hashlib.sha256(mutated).hexdigest(),
         "resource_limit_evidence": zero_resource_limit_evidence_dict(),
         "process_tree_evidence": {
-            "protocol": "assay-process-tree/1",
+            "protocol": "assay-process-tree/2",
             "leader_status": "exited",
             "group_signalled_before_reap": False,
             "outliving_descendants": 0,
             "descendants_signalled": 0,
-            "cleanup_seconds": 0.001,
+            "signal": None,
+            "descendants": [],
             "clean": True,
         },
     }

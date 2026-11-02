@@ -43,6 +43,8 @@ from assay.mutation import (
     R2ManifestWriteError,
     collect_mutation_sites,
 )
+from assay.process_tree import ProcessTreeDescendant
+from assay.verdict import UnderlyingOutcome
 
 OPERATORS = ("python:compare-swap",)
 
@@ -494,7 +496,11 @@ def _tree(status="exited", outliving=0):
         group_signalled_before_reap=False,
         outliving_descendants=outliving,
         descendants_signalled=0,
-        cleanup_seconds=0.0,
+        signal=9 if status == "signaled" else None,
+        descendants=tuple(
+            ProcessTreeDescendant(pid=10_000 + index, ppid=1, comm="child")
+            for index in range(outliving)
+        ),
         clean=True,
     )
 
@@ -793,6 +799,70 @@ def test_load_record_refuses_malformed_unobserved_resource_marker(
 def test_load_record_without_process_tree_evidence_is_a_rejected_cache_miss(tmp_path):
     _put(tmp_path, _drop(_record(), "process_tree_evidence"))
     assert _load(tmp_path) == mutation._RECORD_REJECTED
+
+
+def _completed_leak_record(**overrides):
+    tree = process_tree_evidence_dict()
+    tree.update(
+        outliving_descendants=1,
+        descendants_signalled=1,
+        descendants=[{"pid": 10_001, "ppid": 1, "comm": "child"}],
+    )
+    values = {
+        "outcome_bucket": "crashed",
+        "terminal_result": {
+            "outcome": "ERROR",
+            "reason_code": "EXEC_FAILED",
+            "returncode": None,
+        },
+        "process_tree_evidence": tree,
+        "underlying_outcome": {"outcome": "PASS", "returncode": 0},
+    }
+    values.update(overrides)
+    if values.get("underlying_outcome", object()) is None:
+        values.pop("underlying_outcome")
+    return _record(**values)
+
+
+def test_load_record_retains_completed_suite_outcome_under_cleanup_crash(tmp_path):
+    _put(tmp_path, _completed_leak_record())
+
+    restored = _load(tmp_path)
+
+    assert isinstance(restored, dict)
+    assert restored["outcome_bucket"] == "crashed"
+    assert restored["underlying_outcome"] == {"outcome": "PASS", "returncode": 0}
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"underlying_outcome": "PASS"}, "underlying_outcome must be an object"),
+        (
+            {"underlying_outcome": {"outcome": "INVALID", "returncode": 0}},
+            "has invalid underlying_outcome",
+        ),
+        ({"underlying_outcome": None}, "inconsistent underlying_outcome"),
+        (
+            {
+                "process_tree_evidence": process_tree_evidence_dict(),
+                "underlying_outcome": {"outcome": "PASS", "returncode": 0},
+            },
+            "inconsistent underlying_outcome",
+        ),
+        (
+            {"outcome_bucket": "killed"},
+            "underlying_outcome outside crashed",
+        ),
+    ],
+)
+def test_load_record_refuses_invalid_retained_underlying_outcomes(
+    tmp_path, changes, message
+):
+    _put(tmp_path, _completed_leak_record(**changes))
+
+    with pytest.raises(mutation.MutationStateError, match=message):
+        _load(tmp_path)
 
 
 def test_load_record_accepts_well_formed_mutant_evidence(tmp_path):
@@ -1182,7 +1252,11 @@ class _FakePrepared:
 def _result(plan, outcome="FAIL", returncode=1, reason="COMMAND_FAILED", tree="clean"):
     evidence = process_tree_evidence_dict()
     if tree == "outliving":
-        evidence.update(outliving_descendants=1, descendants_signalled=1)
+        evidence.update(
+            outliving_descendants=1,
+            descendants_signalled=1,
+            descendants=[{"pid": 10_001, "ppid": 1, "comm": "child"}],
+        )
     elif tree != "clean":
         evidence = tree
     return CommandResult(
@@ -1190,6 +1264,17 @@ def _result(plan, outcome="FAIL", returncode=1, reason="COMMAND_FAILED", tree="c
         outcome=Outcome(outcome),
         reason_code=None if reason is None else ReasonCode(reason),
         returncode=returncode,
+        underlying_outcome=(
+            UnderlyingOutcome(
+                outcome=(
+                    Outcome.PASS if returncode == 0
+                    else Outcome.FAIL if type(returncode) is int and returncode > 0
+                    else None
+                ),
+                returncode=returncode,
+            )
+            if tree == "outliving" else None
+        ),
         started="2026-10-28T00:00:00+00:00",
         ended="2026-10-28T00:00:01+00:00",
         process_tree_evidence=evidence,
@@ -1369,6 +1454,15 @@ def test_surviving_descendants_make_a_completed_candidate_crashed(tmp_path, monk
     result, complete = _execute(tmp_path, monkeypatch, [_result(_ECHO_PLAN, tree="outliving")])
     assert [o.path for o in result.crashed] == ["src/mod.py"]
     assert result.killed == ()
+    candidate = result.crashed[0]
+    assert candidate.underlying_outcome is not None
+    assert candidate.underlying_outcome.outcome is Outcome.FAIL
+    assert candidate.underlying_outcome.returncode == 1
+    assert candidate.process_tree_evidence is not None
+    assert candidate.process_tree_evidence.outliving_descendants == 1
+    assert [descendant.to_dict() for descendant in candidate.process_tree_evidence.descendants] == [
+        {"pid": 10_001, "ppid": 1, "comm": "child"}
+    ]
 
 
 def test_judgeable_pass_with_a_non_signaled_nonterminal_leader_is_crashed(
@@ -1390,10 +1484,7 @@ def test_judgeable_pass_with_a_non_signaled_nonterminal_leader_is_crashed(
 def test_judgeable_pass_with_a_signaled_leader_is_crashed(tmp_path, monkeypatch):
     result = mutation._dataclass_replace(
         _result(_ECHO_PLAN, outcome="PASS", returncode=0, reason=None),
-        process_tree_evidence={
-            **process_tree_evidence_dict(),
-            "leader_status": "signaled",
-        },
+        process_tree_evidence=process_tree_evidence_dict(leader_status="signaled"),
     )
     mutation_result, complete = _execute(tmp_path, monkeypatch, [result])
     assert complete
@@ -1785,6 +1876,99 @@ def test_resumed_records_merge_into_a_campaign_that_a_deadline_cut_short(tmp_pat
     assert len(second.survived) == 1  # the resumed record is kept beside the cut-short candidate
     events = [json.loads(line)["event"] for line in progress.read_text().splitlines()]
     assert "resume_merged" in events
+
+
+def test_signaled_leader_leak_stays_crashed_and_its_record_resumes(
+    tmp_path: Path,
+):
+    import sys
+
+    from assay.process_tree import ProcessTreeProcessRunner
+
+    repo = GitRepo(path=tmp_path / "repo")
+    repo.path.mkdir()
+    repo.git("init", "-q", "-b", "main")
+    repo.git("config", "user.email", "assay-tests@example.com")
+    repo.git("config", "user.name", "assay tests")
+    repo.write("pkg/f.py", _TEXT)
+    repo.commit_all("seed")
+    state_root = tmp_path / "state"
+    pid_file = tmp_path / "signaled-child.pid"
+    lane = make_lane(argv=("pytest", "-q"))
+    baseline = execute_command(lane, cwd=repo.path, process_runner=_pass)
+    targets = (
+        MutationTarget(path="pkg/f.py", text=_TEXT, lines=frozenset({2})),
+    )
+
+    child = (
+        "import os,time\n"
+        "os.setsid()\n"
+        f"temporary={str(pid_file) + '.tmp'!r}\n"
+        f"destination={str(pid_file)!r}\n"
+        "with open(temporary,'w') as stream:\n"
+        " stream.write(str(os.getpid()))\n"
+        "os.replace(temporary,destination)\n"
+        "time.sleep(60)\n"
+    )
+    leader = (
+        "import os,signal,subprocess,sys,time\n"
+        f"subprocess.Popen([sys.executable,'-c',{child!r}],stdin=subprocess.DEVNULL,"
+        "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
+        "deadline=time.monotonic()+30\n"
+        f"while not os.path.exists({str(pid_file)!r}) and time.monotonic()<deadline:\n"
+        " time.sleep(0.01)\n"
+        f"if not os.path.isfile({str(pid_file)!r}): raise SystemExit('child did not publish pid')\n"
+        "os.kill(os.getpid(),signal.SIGKILL)\n"
+    )
+    tree_runner = ProcessTreeProcessRunner()
+
+    def leaves_child_then_kills_leader(argv, *, env, cwd, timeout):
+        del argv
+        return tree_runner(
+            [sys.executable, "-c", leader],
+            env=env,
+            cwd=cwd,
+            timeout=timeout,
+        )
+
+    def sweep(process_runner):
+        scratch = tmp_path / f"scratch-{len(list(tmp_path.iterdir()))}"
+        scratch.mkdir()
+        with prepared_snapshot(repo, scratch_root=scratch) as prepared:
+            return mutation.run_mutation(
+                baseline=baseline,
+                prepared=prepared,
+                plan=make_plan(lane),
+                deadline=make_deadline(),
+                targets=targets,
+                adapter=PythonAdapter(),
+                jobs=1,
+                max_mutants=10,
+                operators=_BOOL_OPS,
+                process_runner=process_runner,
+                clock=lambda: datetime.now(timezone.utc),
+                state_root=state_root,
+                resume=True,
+            )
+
+    first = sweep(leaves_child_then_kills_leader)
+    assert first.total == 1
+    assert len(first.crashed) == 1
+    assert first.crashed[0].underlying_outcome is None
+    state_record, = state_root.glob("*.json")
+    record = json.loads(state_record.read_text(encoding="utf-8"))
+    assert record["outcome_bucket"] == "crashed"
+    assert "underlying_outcome" not in record
+    assert record["process_tree_evidence"]["leader_status"] == "signaled"
+    assert record["process_tree_evidence"]["outliving_descendants"] == 1
+
+    def must_resume_without_execution(*_args, **_kwargs):
+        raise AssertionError("the persisted crashed candidate should resume")
+
+    resumed = sweep(must_resume_without_execution)
+    assert resumed.total == 1
+    assert len(resumed.crashed) == 1
+    assert resumed.crashed[0].underlying_outcome is None
 
 
 def test_close_if_open_closes_a_descriptor_and_tolerates_a_failed_open():

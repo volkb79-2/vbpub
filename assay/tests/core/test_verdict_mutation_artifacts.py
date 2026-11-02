@@ -101,6 +101,7 @@ RESOLVED = JudgmentResolved(
 #: config load until P34, so every lane this build can run renders
 #: `unattributed`.
 UNATTRIBUTED = {
+    "attribution": "serial",
     "kill_attribution": "unattributed",
     "cold_witness_kills": False,
 }
@@ -242,7 +243,6 @@ def test_budget_exceeded_matches_the_hand_written_fixture(validator: Draft202012
             group_signalled_before_reap=False,
             outliving_descendants=0,
             descendants_signalled=0,
-            cleanup_seconds=0.001,
             clean=True,
         ),
     )
@@ -554,6 +554,7 @@ def _sql_r2_policy(
 ) -> JudgmentR2:
     return JudgmentR2(
         jobs=1,
+        attribution="serial",
         max_mutants=200,
         operators=operators,
         kill_attribution=kill_attribution,

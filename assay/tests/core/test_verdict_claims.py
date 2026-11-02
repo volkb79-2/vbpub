@@ -345,7 +345,7 @@ def test_a_verdict_whose_claims_cover_the_declared_rigor_is_built():
             resolved=R1_JUDGMENT.resolved,
             r1=R1_JUDGMENT.r1,
             r2=JudgmentR2(
-                jobs=1,
+                jobs=1, attribution="serial",
                 max_mutants=50,
                 operators=("python:compare-swap",),
                 kill_attribution="unattributed",

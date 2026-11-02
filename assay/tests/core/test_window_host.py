@@ -30,7 +30,11 @@ from assay.adapters.python import PythonAdapter
 from assay.errors import AssayError, Outcome, ReasonCode
 from assay.mutation import MutationExecution, MutationTarget, MutationWitnessReceipt
 from assay import process_tree as process_tree_module
-from assay.process_tree import ProcessTreeEvidence, ProcessTreeProcessRunner
+from assay.process_tree import (
+    ProcessTreeDescendant,
+    ProcessTreeEvidence,
+    ProcessTreeProcessRunner,
+)
 from assay.resource_limits import CounterDelta, ResourceLimitEvidence
 from assay.runner import CommandResult, execute_command
 from assay.termination import Termination
@@ -329,6 +333,8 @@ def test_abrupt_window_host_exit_becomes_crashed_with_exec_failed_cause(
     evidence = ProcessTreeEvidence.from_dict(result.process_tree_evidence)
     assert evidence.leader_status == "signaled"
     assert evidence.clean
+    assert type(evidence.signal) is int
+    assert evidence.signal == signal.SIGKILL
     run = mutation._MutantRun(
         result=result,
         equivalence_bytes=None,
@@ -454,7 +460,7 @@ def test_liveness_cancellation_forces_candidate_process_group_cleanup(
                 group_signalled_before_reap=True,
                 outliving_descendants=0,
                 descendants_signalled=0,
-                cleanup_seconds=0.0,
+                signal=int(signal.SIGKILL),
                 clean=True,
             )
             return self.evidence
@@ -529,7 +535,7 @@ def test_process_tree_runner_cancellation_forces_candidate_process_group_cleanup
                 group_signalled_before_reap=True,
                 outliving_descendants=0,
                 descendants_signalled=0,
-                cleanup_seconds=0.0,
+                signal=int(signal.SIGKILL),
                 clean=True,
             )
 
@@ -952,8 +958,8 @@ def test_candidate_pid_parser_distinguishes_empty_and_invalid_records():
 
 def test_process_group_inspector_and_crash_cleanup_handle_absent_candidate(monkeypatch):
     class StatFile:
-        def read_text(self, **_kwargs):
-            return "malformed"
+        def read_bytes(self):
+            return b"malformed"
 
     class ProcEntry:
         name = "123"
@@ -1259,7 +1265,7 @@ def test_process_group_inspector_skips_disappearing_entries_and_reports_io_error
         def __truediv__(self, _child):
             return self
 
-        def read_text(self, **_kwargs):
+        def read_bytes(self):
             raise PermissionError("denied")
 
     monkeypatch.setattr(Path, "iterdir", lambda _path: (UnreadableEntry(),))
@@ -1272,12 +1278,65 @@ def test_process_group_inspector_skips_disappearing_entries_and_reports_io_error
         def __truediv__(self, _child):
             return self
 
-        def read_text(self, **_kwargs):
-            return "(candidate) S 1 nope"
+        def read_bytes(self):
+            return b"123 (candidate) S 1 nope"
 
     monkeypatch.setattr(Path, "iterdir", lambda _path: (BadIdentityEntry(),))
     with pytest.raises(Exception, match="malformed process identity"):
         _window_host._process_group_members(123)
+
+
+@pytest.mark.parametrize(
+    "ppid", ["0", "malformed"], ids=["nonpositive", "malformed"]
+)
+def test_process_group_inspector_omits_an_invalid_parent_identity(monkeypatch, ppid):
+    class InvalidIdentityEntry:
+        name = "123"
+
+        def __truediv__(self, _child):
+            return self
+
+        def read_bytes(self):
+            return f"123 (candidate) S {ppid} 123".encode("ascii")
+
+    monkeypatch.setattr(Path, "iterdir", lambda _path: (InvalidIdentityEntry(),))
+
+    members = _window_host._process_group_members(123)
+    assert len(members) == 1
+    identity, state = members[0]
+    assert state == "S"
+    assert identity.to_dict() == {"pid": 123, "ppid": None, "comm": None}
+
+
+@pytest.mark.parametrize(
+    ("name", "expected_comm"),
+    [("wörker", "wörker"), ("", None)],
+    ids=["non_ascii", "empty_name"],
+)
+def test_process_group_inspector_keeps_nonstandard_names_as_tolerant_identities(
+    monkeypatch, name, expected_comm
+):
+    stat_bytes = f"123 ({name}) S 1 123 0 0".encode("utf-8")
+
+    class StatFile:
+        def read_bytes(self):
+            return stat_bytes
+
+    class ProcEntry:
+        name = "123"
+
+        def __truediv__(self, _child):
+            return StatFile()
+
+    monkeypatch.setattr(Path, "iterdir", lambda _path: (ProcEntry(),))
+    members = _window_host._process_group_members(123)
+
+    assert len(members) == 1
+    identity, state = members[0]
+    assert state == "S"
+    assert identity.pid == 123
+    assert identity.comm == expected_comm
+    assert identity.ppid == (1 if expected_comm is not None else None)
 
 
 def test_crash_cleanup_surfaces_kill_errors_and_live_group_timeout(monkeypatch):
@@ -1297,6 +1356,28 @@ def test_crash_cleanup_surfaces_kill_errors_and_live_group_timeout(monkeypatch):
     monkeypatch.setattr(_window_host.time, "sleep", lambda _delay: None)
     with pytest.raises(Exception, match="remained live"):
         _window_host._cleanup_crashed_candidate(123)
+
+
+def test_crash_cleanup_omits_snapshot_descendants_when_group_signal_loses_race(
+    monkeypatch,
+):
+    identity = ProcessTreeDescendant(pid=124, ppid=1, comm="child")
+    snapshots = iter((((identity, "S"),), ()))
+    monkeypatch.setattr(
+        _window_host, "_process_group_members", lambda _pid: next(snapshots)
+    )
+    monkeypatch.setattr(
+        _window_host.os,
+        "killpg",
+        lambda *_args: (_ for _ in ()).throw(ProcessLookupError()),
+    )
+
+    evidence = _window_host._cleanup_crashed_candidate(123)
+
+    assert evidence.leader_status == "exited"
+    assert evidence.group_signalled_before_reap is False
+    assert evidence.outliving_descendants == 0
+    assert evidence.descendants == ()
 
 
 def test_run_window_receipt_fd_and_worker_failure_records(monkeypatch, tmp_path):

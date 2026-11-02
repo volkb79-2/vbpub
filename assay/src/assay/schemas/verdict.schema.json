@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:assay:schema:verdict:16",
-  "title": "assay verdict artifact",
+  "$id": "urn:assay:schema:verdict:17",
+  "title": "assay verdict artifact v17",
   "description": "One verdict, one lane, one commit. Computed R0-R4 claims and externally sourced evidence are separate arrays because provenance is not rigor. This hand-written schema ships as data and is never generated from the Python model. LAYER OWNERSHIP (A-182): this document owns every LOCALLY expressible rule -- enums, ranges, requiredness, string grammar, and reason/payload conditionals within a single object. It deliberately does NOT own cross-object arithmetic (candidate_count against judgment.r2.max_mutants), cross-object equality (canary.attempts[i].target against judgment.r3.targets[i]), or temporal ordering (ended >= started): Draft 2020-12 has no $data, so claiming those here would be a hollow contract. They live in the Python model AND, independently worded, in assay.verify's raw-document checks. It also does not own the BYTE bound on claim.detail -- maxLength counts characters, so the document's bound is satisfied by every legal artifact and the real one is enforced in the model and the verifier (A-428).",
   "type": "object",
   "required": [
@@ -18,9 +18,9 @@
   ],
   "properties": {
     "schema_version": {
-      "description": "The verdict schema version, independent of assay.toml lane schema version. Exactly one schema is active in a released build: producers emit v16 and the verifier refuses every other version.",
+      "description": "The verdict schema version, independent of assay.toml lane schema version. Exactly one schema is active in a released build: producers emit v17 and the verifier refuses every other version.",
       "type": "integer",
-      "const": 16
+      "const": 17
     },
     "assay_version": {
       "type": "string",
@@ -566,7 +566,7 @@
       }
     },
     {
-      "description": "B006(a)/A-269 \u00a75.1: snapshot_policy is required whenever declared_rigor contains a HIGHER-RIGOR level -- R1, R2, R3 or (from schema v10, F015/A-433) R4 -- and forbidden otherwise (an R0-only verdict, or one where no lane resolved at all). The model states this as `any(level != \"R0\")`, so this enum tracks the ladder and a new rung must be added in both places.",
+      "description": "B006(a)/A-269 §5.1: snapshot_policy is required whenever declared_rigor contains a HIGHER-RIGOR level -- R1, R2, R3 or (from schema v10, F015/A-433) R4 -- and forbidden otherwise (an R0-only verdict, or one where no lane resolved at all). The model states this as `any(level != \"R0\")`, so this enum tracks the ladder and a new rung must be added in both places.",
       "if": {
         "required": [
           "declared_rigor"
@@ -936,7 +936,7 @@
           }
         },
         {
-          "description": "wave-1 \u00a76/A-257: mirrors the exclusion-capability branch above exactly. 'unavailable' carries zero branch data; the converse is deliberately NOT a rule -- 'reported' with zero arcs is a capable format that truthfully found none on the lines this claim counted.",
+          "description": "wave-1 §6/A-257: mirrors the exclusion-capability branch above exactly. 'unavailable' carries zero branch data; the converse is deliberately NOT a rule -- 'reported' with zero arcs is a capable format that truthfully found none on the lines this claim counted.",
           "if": {
             "required": [
               "branch_capability"
@@ -1057,12 +1057,12 @@
           }
         },
         "branches_covered": {
-          "description": "wave-1 \u00a76/A-257/A-263: branch arcs COVERED across every branch source line this claim's mode counted. Zero when branch_capability is 'unavailable'.",
+          "description": "wave-1 §6/A-257/A-263: branch arcs COVERED across every branch source line this claim's mode counted. Zero when branch_capability is 'unavailable'.",
           "type": "integer",
           "minimum": 0
         },
         "branches_total": {
-          "description": "wave-1 \u00a76: branch arcs this claim's mode counted in total. Zero when branch_capability is 'unavailable'.",
+          "description": "wave-1 §6: branch arcs this claim's mode counted in total. Zero when branch_capability is 'unavailable'.",
           "type": "integer",
           "minimum": 0
         },
@@ -1074,7 +1074,7 @@
           ]
         },
         "missing_branch_lines": {
-          "description": "wave-1 \u00a76: counted, branch-source lines with at least one uncovered arc, keyed by path. A file contributing none is absent, never present with an empty array.",
+          "description": "wave-1 §6: counted, branch-source lines with at least one uncovered arc, keyed by path. A file contributing none is absent, never present with an empty array.",
           "type": "object",
           "additionalProperties": {
             "type": "array",
@@ -1123,12 +1123,13 @@
       "additionalProperties": false
     },
     "canary_attempt": {
-      "description": "ONE canary target's record (P09, A-092/A-108, restated per target by B007/A-432): a known-good control run alongside a deliberately minimal known-bad transform of the same input, both through the real pipeline, compared by cause -- not merely by pass/fail. An attempt is either 'attempted', carrying the run fields, or 'not_attempted', carrying NO run fields and a required not_attempted_reason from a closed three-member vocabulary. The two dispositions are a wire fact rather than an inference from absent fields, because 'this probe was never tried' and 'this probe was tried and produced nothing' are exactly the two statements a multi-target R3 claim must keep apart.",
+      "description": "ONE canary target's record (P09, A-092/A-108, restated per target by B007/A-432): a known-good control run alongside a deliberately minimal known-bad transform of the same input, both through the real pipeline, compared by cause -- not merely by pass/fail. An attempt is either 'attempted', carrying the run fields and receipt cause, or 'not_attempted', carrying NO run fields and a required not_attempted_reason from a closed three-member vocabulary. The two dispositions are a wire fact rather than an inference from absent fields, because 'this probe was never tried' and 'this probe was tried and produced nothing' are exactly the two statements a multi-target R3 claim must keep apart.",
       "type": "object",
       "required": [
         "target",
         "description",
-        "disposition"
+        "disposition",
+        "cause"
       ],
       "properties": {
         "target": {
@@ -1166,6 +1167,18 @@
         },
         "observed_reason_code": {
           "$ref": "#/$defs/reason_code"
+        },
+        "cause": {
+          "description": "WP8: receipt when the import-break transform wrote its private receipt, absent when it did not, and null when no transformed attempt produced a receipt result.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "receipt",
+            "absent",
+            null
+          ]
         }
       },
       "allOf": [
@@ -1224,7 +1237,12 @@
                   ]
                 }
               }
-            ]
+            ],
+            "properties": {
+              "cause": {
+                "const": null
+              }
+            }
           }
         },
         {
@@ -1580,7 +1598,7 @@
       "additionalProperties": false
     },
     "process_tree_evidence": {
-      "description": "B162: Linux child-subreaper proof for one native command. The leader status and cleanup counts are recorded, and clean is true only after waitid proves the caller has no child processes.",
+      "description": "B162/WP8: Linux child-subreaper proof for one native command, with stable signal and descendant identity evidence. Cleanup duration is host-varying and is not part of the verdict.",
       "type": "object",
       "required": [
         "protocol",
@@ -1588,21 +1606,145 @@
         "group_signalled_before_reap",
         "outliving_descendants",
         "descendants_signalled",
-        "cleanup_seconds",
+        "signal",
+        "descendants",
         "clean"
       ],
       "properties": {
-        "protocol": {"type": "string", "const": "assay-process-tree/1"},
+        "protocol": {
+          "type": "string",
+          "const": "assay-process-tree/2"
+        },
         "leader_status": {
           "type": "string",
-          "enum": ["exited", "signaled", "timeout-killed", "not-started"]
+          "enum": [
+            "exited",
+            "signaled",
+            "timeout-killed",
+            "not-started"
+          ]
         },
-        "group_signalled_before_reap": {"type": "boolean"},
-        "outliving_descendants": {"type": "integer", "minimum": 0},
-        "descendants_signalled": {"type": "integer", "minimum": 0},
-        "cleanup_seconds": {"type": "number", "minimum": 0},
-        "clean": {"type": "boolean", "const": true}
+        "group_signalled_before_reap": {
+          "type": "boolean"
+        },
+        "outliving_descendants": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "descendants_signalled": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "clean": {
+          "type": "boolean",
+          "const": true
+        },
+        "signal": {
+          "description": "The signal that terminated the command leader. Required when leader_status is signaled; null when it exited normally or was not started.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "descendants": {
+          "description": "Sorted identities for every observed outliving descendant. Null ppid and comm explicitly represent a process that vanished before procfs identity could be read.",
+          "type": "array",
+          "maxItems": 10000,
+          "items": {
+            "type": "object",
+            "required": [
+              "pid",
+              "ppid",
+              "comm"
+            ],
+            "properties": {
+              "pid": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "ppid": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 1
+              },
+              "comm": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "minLength": 1,
+                "maxLength": 128
+              }
+            },
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "ppid": {
+                      "type": "null"
+                    }
+                  },
+                  "required": [
+                    "ppid"
+                  ]
+                },
+                "then": {
+                  "properties": {
+                    "comm": {
+                      "type": "null"
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "comm": {
+                      "type": "null"
+                    }
+                  },
+                  "required": [
+                    "comm"
+                  ]
+                },
+                "then": {
+                  "properties": {
+                    "ppid": {
+                      "type": "null"
+                    }
+                  }
+                }
+              }
+            ],
+            "additionalProperties": false
+          }
+        }
       },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "leader_status": {
+                "const": "signaled"
+              }
+            },
+            "required": [
+              "leader_status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "signal": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
+        }
+      ],
       "additionalProperties": false
     },
     "mutant_outcome": {
@@ -1679,6 +1821,9 @@
         },
         "evidence": {
           "$ref": "#/$defs/mutant_evidence"
+        },
+        "underlying_outcome": {
+          "$ref": "#/$defs/underlying_outcome"
         }
       },
       "allOf": [
@@ -1727,6 +1872,35 @@
                 ]
               }
             }
+          }
+        },
+        {
+          "description": "B171: retain the completed suite result when a leader exited but descendants outlived it.",
+          "if": {
+            "required": [
+              "process_tree_evidence"
+            ],
+            "properties": {
+              "process_tree_evidence": {
+                "required": [
+                  "leader_status",
+                  "outliving_descendants"
+                ],
+                "properties": {
+                  "leader_status": {
+                    "const": "exited"
+                  },
+                  "outliving_descendants": {
+                    "minimum": 1
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "underlying_outcome"
+            ]
           }
         }
       ],
@@ -1902,7 +2076,7 @@
       "additionalProperties": false
     },
     "judge_provenance": {
-      "description": "B018/A-327: WHICH build of assay emitted this verdict. assay_version names a version string and any process can print one; this records the build artifact the running process was installed FROM, and its digest, so a consumer that resolved and verified a judge download (CIU V8 proposal \u00a711.3) can bind this evidence to that exact binary. OPTIONAL, and absent rather than partial: an invocation with no identifiable build artifact -- a source checkout, an editable install -- records nothing here and says so on its diagnostics stream, because inventing a digest for `src/` is precisely the laundering this object exists to prevent. `assay run --require-judge-provenance` turns that absence into a refusal for a consumer that needs the binding.",
+      "description": "B018/A-327: WHICH build of assay emitted this verdict. assay_version names a version string and any process can print one; this records the build artifact the running process was installed FROM, and its digest, so a consumer that resolved and verified a judge download (CIU V8 proposal §11.3) can bind this evidence to that exact binary. OPTIONAL, and absent rather than partial: an invocation with no identifiable build artifact -- a source checkout, an editable install -- records nothing here and says so on its diagnostics stream, because inventing a digest for `src/` is precisely the laundering this object exists to prevent. `assay run --require-judge-provenance` turns that absence into a refusal for a consumer that needs the binding.",
       "type": "object",
       "required": [
         "name",
@@ -1944,7 +2118,7 @@
       "additionalProperties": false
     },
     "judgment_r1": {
-      "description": "The effective R1 policy (P16, sol finding 2; mode/targets/require_branch added wave-1 \u00a76/A-260): what decided the R1 claim's PASS/FAIL, so an independent consumer can re-derive it from coverage alone. mode is REQUIRED here even though it is optional in the lane file -- the lane file records what a human declared, this records what actually judged.",
+      "description": "The effective R1 policy (P16, sol finding 2; mode/targets/require_branch added wave-1 §6/A-260): what decided the R1 claim's PASS/FAIL, so an independent consumer can re-derive it from coverage alone. mode is REQUIRED here even though it is optional in the lane file -- the lane file records what a human declared, this records what actually judged.",
       "type": "object",
       "required": [
         "coverage_format",
@@ -1983,7 +2157,7 @@
           ]
         },
         "targets": {
-          "description": "wave-1 \u00a76: required, non-empty, unique iff mode == 'whole_target'; forbidden otherwise. Sort order is cross-object/array-order and is checked independently by the model and the raw verifier, not by this schema (draft 2020-12 cannot express it).",
+          "description": "wave-1 §6: required, non-empty, unique iff mode == 'whole_target'; forbidden otherwise. Sort order is cross-object/array-order and is checked independently by the model and the raw verifier, not by this schema (draft 2020-12 cannot express it).",
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
@@ -2117,9 +2291,9 @@
           }
         },
         "jobs": {
-          "description": "Native R2 candidate event counters share one lane cgroup, so native execution is serial until each candidate has independently attributable evidence (B157). Required as 1 when producer = 'native'; FORBIDDEN when producer = 'ingested'.",
+          "description": "B202/schema v17: the effective native R2 worker count. Required as an integer >= 1 when producer is native; forbidden when ingested.",
           "type": "integer",
-          "const": 1
+          "minimum": 1
         },
         "max_mutants": {
           "description": "The declared candidate ceiling (A-163). jobs bounds WORKERS; this bounds total work and memory. Required when producer = 'native'; FORBIDDEN when producer = 'ingested' for jobs' own reason -- assay declared no ceiling on a discovery it did not perform.",
@@ -2258,6 +2432,13 @@
               "type": "null"
             }
           ]
+        },
+        "attribution": {
+          "description": "B202/schema v17: serial for one worker or overlap-conservative for multiple workers.",
+          "enum": [
+            "serial",
+            "overlap-conservative"
+          ]
         }
       },
       "additionalProperties": false,
@@ -2366,7 +2547,8 @@
               "operators",
               "cold_witness_kills",
               "r2_command",
-              "equivalence_ledger"
+              "equivalence_ledger",
+              "attribution"
             ],
             "allOf": [
               {
@@ -2526,6 +2708,55 @@
                     "type": "null"
                   }
                 }
+              }
+            }
+          }
+        },
+        {
+          "description": "B202: worker count and attribution describe one effective execution policy.",
+          "if": {
+            "required": [
+              "producer",
+              "jobs",
+              "attribution"
+            ],
+            "properties": {
+              "producer": {
+                "const": "native"
+              },
+              "jobs": {
+                "const": 1
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "attribution": {
+                "const": "serial"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "producer",
+              "jobs",
+              "attribution"
+            ],
+            "properties": {
+              "producer": {
+                "const": "native"
+              },
+              "jobs": {
+                "minimum": 2
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "attribution": {
+                "const": "overlap-conservative"
               }
             }
           }
@@ -3207,7 +3438,7 @@
           }
         },
         {
-          "description": "wave-1 \u00a74/\u00a75, A-259/A-260: BRANCH_UNAVAILABLE and TARGET_NOT_MEASURED are read off R1's own guard sequence and nowhere else -- mirrors the MUTATION_UNSUPPORTED/MUTATION_DISCOVERY_FAILED binding immediately above, one tier over. Both are already payload-free by the NO_MEASUREMENT branch elsewhere in this allOf; this binds the RIGOR.",
+          "description": "wave-1 §4/§5, A-259/A-260: BRANCH_UNAVAILABLE and TARGET_NOT_MEASURED are read off R1's own guard sequence and nowhere else -- mirrors the MUTATION_UNSUPPORTED/MUTATION_DISCOVERY_FAILED binding immediately above, one tier over. Both are already payload-free by the NO_MEASUREMENT branch elsewhere in this allOf; this binds the RIGOR.",
           "if": {
             "required": [
               "reason_code"
@@ -3707,7 +3938,7 @@
       "additionalProperties": false
     },
     "repo_tree_path": {
-      "description": "B006(a)/A-269 \u00a75.3: a repository-top-relative Git tree pathname -- at least one component, none of them empty/'.'/'..'/'.git', no backslash, no NUL, at most 4096 (Unicode code point -- the UTF-8 BYTE ceiling is cross-object and checked independently by the model and the raw verifier, since maxLength counts code points).",
+      "description": "B006(a)/A-269 §5.3: a repository-top-relative Git tree pathname -- at least one component, none of them empty/'.'/'..'/'.git', no backslash, no NUL, at most 4096 (Unicode code point -- the UTF-8 BYTE ceiling is cross-object and checked independently by the model and the raw verifier, since maxLength counts code points).",
       "type": "string",
       "minLength": 1,
       "maxLength": 4096,
@@ -4086,6 +4317,59 @@
         "expires_at_utc": {
           "type": "string",
           "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "underlying_outcome": {
+      "description": "B171: the suite outcome beneath a completed process-tree cleanup crash. Diagnostic only; it never changes the crashed bucket.",
+      "type": "object",
+      "required": [
+        "outcome",
+        "returncode"
+      ],
+      "properties": {
+        "outcome": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "PASS",
+            "FAIL",
+            null
+          ]
+        },
+        "returncode": {
+          "type": "integer"
+        },
+        "report_summary": {
+          "type": "object",
+          "required": [
+            "format",
+            "total",
+            "failed",
+            "finished"
+          ],
+          "properties": {
+            "format": {
+              "type": "string",
+              "minLength": 1
+            },
+            "total": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "failed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "finished": {
+              "type": "boolean",
+              "const": true
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false

@@ -714,7 +714,7 @@ def _expected_r2_artifact(
                 for item in mutation.get(bucket_name, []):
                     item["resource_limit_evidence"] = zero_resource_limit_evidence
                     item["process_tree_evidence"] = {
-                        "protocol": "assay-process-tree/1",
+                        "protocol": "assay-process-tree/2",
                         "leader_status": (
                             "timeout-killed"
                             if bucket_name in {"budget_exceeded", "hung"}
@@ -723,7 +723,8 @@ def _expected_r2_artifact(
                         "group_signalled_before_reap": False,
                         "outliving_descendants": 0,
                         "descendants_signalled": 0,
-                        "cleanup_seconds": 0.0,
+                        "signal": None,
+                        "descendants": [],
                         "clean": True,
                     }
             mutation["candidate_ids"] = [
@@ -811,6 +812,9 @@ def _expected_r2_artifact(
                 # few places that pins the producer against a REAL run rather
                 # than a hand-built model object.
                 "producer": "native",
+                "attribution": (
+                    "serial" if jobs == 1 else "overlap-conservative"
+                ),
                 # (B091/RW-36) present unconditionally -- "a reader sees
                 # what ran" even on the lanes this module runs, none of
                 # which invoke pytest.
@@ -923,10 +927,11 @@ def _assert_complete(real: dict, expected: dict) -> None:
                     "group_signalled_before_reap",
                     "outliving_descendants",
                     "descendants_signalled",
-                    "cleanup_seconds",
+                    "signal",
+                    "descendants",
                     "clean",
                 }
-                assert evidence["protocol"] == "assay-process-tree/1"
+                assert evidence["protocol"] == "assay-process-tree/2"
                 assert evidence["clean"] is True
                 assert evidence["outliving_descendants"] == 0
                 assert evidence["descendants_signalled"] == 0
@@ -945,9 +950,6 @@ def _assert_complete(real: dict, expected: dict) -> None:
                 if bucket == "budget_exceeded":
                     OBSERVED_BUDGET_LEADER_STATUSES.append(evidence["leader_status"])
                     evidence["leader_status"] = "timeout-killed"
-                assert isinstance(evidence["cleanup_seconds"], (int, float))
-                assert evidence["cleanup_seconds"] >= 0
-                evidence["cleanup_seconds"] = 0.0
 
     # R2 outcome data is duplicated in the top-level claims and in the
     # judgment summary. Validate and normalize both copies before comparing
@@ -1480,6 +1482,7 @@ def test_a_real_r3_lane_proves_the_canary_and_passes_through_the_wheel(
                             "target": "pkg/mod.py",
                             "description": _IMPORT_BREAK_DESCRIPTION,
                             "disposition": "attempted",
+                            "cause": "receipt",
                             "control_outcome": "PASS",
                             "transformed_outcome": "FAIL",
                             "expected_reason_code": "COMMAND_FAILED",
@@ -1576,6 +1579,7 @@ def test_a_real_r3_lane_with_a_broken_control_is_inconclusive_through_the_wheel(
                                 "of a failing lane"
                             ),
                             "disposition": "attempted",
+                            "cause": None,
                             "control_outcome": "FAIL",
                         }
                     ],
@@ -1641,6 +1645,7 @@ def test_a_real_r3_lane_whose_bad_case_unexpectedly_passes_survives_through_the_
                             "target": "pkg/mod.py",
                             "description": _IMPORT_BREAK_NO_RECEIPT_DESCRIPTION,
                             "disposition": "attempted",
+                            "cause": "absent",
                             "control_outcome": "PASS",
                             "transformed_outcome": "PASS",
                             "expected_reason_code": "COMMAND_FAILED",
@@ -1908,6 +1913,7 @@ def test_a_real_r3_lane_proves_the_uncovered_line_canary_through_the_wheel(
                             "target": "pkg/mod.py",
                             "description": _UNCOVERED_LINE_DESCRIPTION,
                             "disposition": "attempted",
+                            "cause": None,
                             "control_outcome": "PASS",
                             "transformed_outcome": "FAIL",
                             "expected_reason_code": "UNCOVERED_LINES",
@@ -2016,6 +2022,7 @@ def test_a_real_r3_lane_whose_target_is_never_imported_is_inconclusive(
                             "target": "pkg/lonely.py",
                             "description": _IMPORT_BREAK_NO_RECEIPT_DESCRIPTION,
                             "disposition": "attempted",
+                            "cause": "absent",
                             "control_outcome": "PASS",
                             "transformed_outcome": "INCONCLUSIVE",
                             "expected_reason_code": "COMMAND_FAILED",

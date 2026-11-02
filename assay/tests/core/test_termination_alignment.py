@@ -14,6 +14,7 @@ from assay.verdict import (
     Mutation,
     MutationExecution,
     MutationWitnessReceipt,
+    UnderlyingOutcome,
     candidate_id_from_fields,
 )
 from assay.verify import (
@@ -89,6 +90,17 @@ def _model_outcome(run: _MutantRun, bucket: str | None = None) -> MutantOutcome:
         mutated_file_sha256=mutated_file_sha256,
         operator=operator,
     )
+    underlying = None
+    if (
+        run.process_tree_evidence is not None
+        and run.process_tree_evidence.leader_status == "exited"
+        and run.process_tree_evidence.outliving_descendants > 0
+        and run.result.outcome in {Outcome.PASS, Outcome.FAIL}
+    ):
+        underlying = UnderlyingOutcome(
+            outcome=run.result.outcome,
+            returncode=run.result.returncode,
+        )
     return MutantOutcome(
         path=path,
         lineno=1,
@@ -107,6 +119,7 @@ def _model_outcome(run: _MutantRun, bucket: str | None = None) -> MutantOutcome:
         ),
         resource_limit_evidence=run.resource_limit_evidence,
         process_tree_evidence=run.process_tree_evidence,
+        underlying_outcome=underlying,
     )
 
 
@@ -131,10 +144,11 @@ def test_producer_revalidation_verifier_model_agree(case):
         resource_limit_evidence=run.resource_limit_evidence,
         process_tree_evidence=run.process_tree_evidence,
     )
-    # NO_MEASUREMENT is never a reusable candidate record; the producer and
-    # verdict projections still classify the leaked execution as crashed.
+    # NO_MEASUREMENT is never a reusable candidate record and has no completed
+    # suite result to project into a candidate verdict entry.
     if case.inputs["outcome"] is Outcome.NO_MEASUREMENT:
         assert state_match is False
+        return
     else:
         assert state_match is True
 

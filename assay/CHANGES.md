@@ -9,12 +9,19 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ### Added
 - Run native R2 candidate windows concurrently with `assay run --jobs N` up to the lane's `judge.mutation.jobs_max`, using coordinator-ordered progress/state and conservative overlapping limit-event attribution.
 - Add `jobs` and `attribution` to the progress run event and `worker_index` to candidate events; resume identity stays independent of worker count, and the WP7 retry tail remains serial.
+- Record this invocation's effective native R2 worker count and attribution in
+  verdict schema v17. Resumed candidate state does not retain earlier worker
+  counts, so these fields do not summarize a mixed-count campaign;
+  campaign-wide attribution is tracked in B203. Retain the underlying suite
+  outcome and descendant identities when cleanup finds a process-tree leak,
+  while keeping that candidate in `crashed`.
 
 ### Changed
-- Require a cheap-clone workspace for native R2 runs with more than one worker; keep verdict schema v16 unchanged.
+- Require a cheap-clone workspace for native R2 runs with more than one worker. Assay 11.0.0 makes verdict schema v17 a hard cut from v16, replaces process-tree `cleanup_seconds` with signal and descendant identity evidence, and adds `canary_attempt.cause` so verification can re-derive the R3 attempt.
+- Consumers must regenerate v16 verdicts; v16-era judge identities cause resumed campaign records to be re-executed. Run-Gate reads only top-level verdict fields, CMRU reads exit codes, and dstdns remains on its v15 pin.
 
 ### Fixed
-- Make campaign analysis interpret `jobs_max` (including the legacy `jobs` alias) as the native worker ceiling while retaining v16's serial verdict policy and one-worker default.
+- Make campaign analysis read v17 `judgment.r2.jobs` and `attribution`, and refuse v16 verdicts consistently. The one-worker default still applies when a native lane has no runtime selection.
 
 ## [10.2.0] - 2026-11-01
 <!-- cmru: generated -->

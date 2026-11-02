@@ -1,86 +1,87 @@
 {
- "schema_version": 16,
- "assay_version": "0.1.0",
- "lane": "package",
- "commit": "6666666666666666666666666666666666666666",
- "outcome": "INCONCLUSIVE",
- "exit_code": 5,
- "started": "2026-08-06T09:50:00+00:00",
- "ended": "2026-08-06T09:52:18+00:00",
- "reason_code": "NO_MUTANTS",
- "declared_rigor": [
-  "R0",
-  "R2"
- ],
- "declared_evidence": [],
- "argv_declared": [
-  "pytest",
-  "tests",
-  "-q"
- ],
- "argv_appended": [],
- "argv_effective": [
-  "pytest",
-  "tests",
-  "-q"
- ],
- "argv_modified": false,
- "env_declared": {},
- "env_effective": {},
- "env_passthrough": [],
- "env_effective_passthrough_sha256": {},
- "scope": "S1",
- "enforcement": "gate",
- "judgment": {
-  "resolved": {
-   "language": "python",
-   "source_roots": [
-    "pkg"
-   ],
-   "base": "0000000000000000000000000000000000000a"
+  "schema_version": 17,
+  "assay_version": "0.1.0",
+  "lane": "package",
+  "commit": "6666666666666666666666666666666666666666",
+  "outcome": "INCONCLUSIVE",
+  "exit_code": 5,
+  "started": "2026-08-06T09:50:00+00:00",
+  "ended": "2026-08-06T09:52:18+00:00",
+  "reason_code": "NO_MUTANTS",
+  "declared_rigor": [
+    "R0",
+    "R2"
+  ],
+  "declared_evidence": [],
+  "argv_declared": [
+    "pytest",
+    "tests",
+    "-q"
+  ],
+  "argv_appended": [],
+  "argv_effective": [
+    "pytest",
+    "tests",
+    "-q"
+  ],
+  "argv_modified": false,
+  "env_declared": {},
+  "env_effective": {},
+  "env_passthrough": [],
+  "env_effective_passthrough_sha256": {},
+  "scope": "S1",
+  "enforcement": "gate",
+  "judgment": {
+    "resolved": {
+      "language": "python",
+      "source_roots": [
+        "pkg"
+      ],
+      "base": "0000000000000000000000000000000000000a"
+    },
+    "r2": {
+      "producer": "native",
+      "cold_witness_kills": false,
+      "r2_command": null,
+      "equivalence_ledger": null,
+      "jobs": 1,
+      "max_mutants": 50,
+      "operators": [
+        "python:compare-swap"
+      ],
+      "kill_attribution": "unattributed",
+      "mode": "changed_lines",
+      "attribution": "serial"
+    }
   },
-  "r2": {
-   "producer": "native",
-   "cold_witness_kills": false,
-   "r2_command": null,
-   "equivalence_ledger": null,
-   "jobs": 1,
-   "max_mutants": 50,
-   "operators": [
-    "python:compare-swap"
-   ],
-   "kill_attribution": "unattributed",
-   "mode": "changed_lines"
-  }
- },
- "snapshot_policy": {
-  "selection": "repository"
- },
- "claims": [
-  {
-   "rigor": "R0",
-   "source": "computed",
-   "status": "PASS",
-   "verified_by_assay": true
+  "snapshot_policy": {
+    "selection": "repository"
   },
-  {
-   "rigor": "R2",
-   "source": "computed",
-   "status": "INCONCLUSIVE",
-   "verified_by_assay": true,
-   "reason_code": "NO_MUTANTS",
-   "mutation": {
-    "candidate_count": 0,
-    "total": 0,
-    "killed": [],
-    "survived": [],
-    "crashed": [],
-    "budget_exceeded": [],
-    "equivalent": [],
-    "hung": [],
-    "candidate_ids": []
-   }
-  }
- ],
- "evidence": []
+  "claims": [
+    {
+      "rigor": "R0",
+      "source": "computed",
+      "status": "PASS",
+      "verified_by_assay": true
+    },
+    {
+      "rigor": "R2",
+      "source": "computed",
+      "status": "INCONCLUSIVE",
+      "verified_by_assay": true,
+      "reason_code": "NO_MUTANTS",
+      "mutation": {
+        "candidate_count": 0,
+        "total": 0,
+        "killed": [],
+        "survived": [],
+        "crashed": [],
+        "budget_exceeded": [],
+        "equivalent": [],
+        "hung": [],
+        "candidate_ids": []
+      }
+    }
+  ],
+  "evidence": []
 }

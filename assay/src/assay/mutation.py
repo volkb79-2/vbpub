@@ -188,6 +188,7 @@ from .verdict import (
     MutationExecution,
     MutationProducerTool,
     MutationWitnessReceipt,
+    UnderlyingOutcome,
     SourcePosition,
     iso_utc,
 )
@@ -292,7 +293,7 @@ _STATE_RESOURCE_STARTUP_KEYS = frozenset({"to_session_start", "to_first_test"})
 #: (B088) The serialization label folded into :func:`judge_sha256`, so a
 #: future change to WHAT the judge identity covers yields visibly different
 #: digests instead of silently comparable ones.
-_JUDGE_DIGEST_LABEL = "assay-judge-identity/12"
+_JUDGE_DIGEST_LABEL = "assay-judge-identity/13"
 
 #: (B088) Returned by :func:`_load_validated_state_record` when a record was
 #: FOUND, is well-formed, and is still not evidence about this run -- its
@@ -2447,6 +2448,17 @@ def _load_validated_state_record(
         # source_sha256 specifically) would discard exactly the evidence
         # this check exists to surface.
         raise MutationStateError(f"mutation-state record {identity} has stale {key}")
+    legacy_tree = payload.get("process_tree_evidence")
+    if (
+        isinstance(legacy_tree, Mapping)
+        and legacy_tree.get("protocol") == "assay-process-tree/1"
+        and (not isinstance(payload.get("judge_sha256"), str)
+             or payload.get("judge_sha256") != judge)
+    ):
+        # Verdict v16 state carries process-tree protocol /1. Its count-only
+        # leak evidence cannot be upgraded into v17 descendant identity, and
+        # the new judge label intentionally makes it a cache miss.
+        return _RECORD_REJECTED
     if "resources" in payload:
         raw_resources = payload["resources"]
         if not isinstance(raw_resources, Mapping):
@@ -2556,12 +2568,38 @@ def _load_validated_state_record(
         # Existing records from the previous judge identity are a routine cold
         # cache. They cannot prove cleanup and must be re-executed.
         return _RECORD_REJECTED
+    underlying_outcome: UnderlyingOutcome | None = None
+    if "underlying_outcome" in payload:
+        raw_underlying = payload["underlying_outcome"]
+        if not isinstance(raw_underlying, Mapping):
+            raise MutationStateError(
+                f"mutation-state record {identity} underlying_outcome must be an object"
+            )
+        try:
+            underlying_outcome = UnderlyingOutcome.from_dict(raw_underlying)
+        except (TypeError, ValueError, KeyError) as exc:
+            raise MutationStateError(
+                f"mutation-state record {identity} has invalid underlying_outcome: {exc}"
+            ) from exc
+    completed_leak = (
+        process_tree_evidence.leader_status == "exited"
+        and process_tree_evidence.outliving_descendants > 0
+    )
+    if completed_leak != (underlying_outcome is not None):
+        raise MutationStateError(
+            f"mutation-state record {identity} has inconsistent underlying_outcome "
+            "for its process-tree evidence"
+        )
     if "outcome_bucket" not in payload:
         raise MutationStateError(f"mutation-state record {identity} is missing outcome_bucket")
     if payload["outcome_bucket"] not in MUTATION_BUCKETS:
         raise MutationStateError(
             f"mutation-state record {identity} has unknown outcome bucket "
             f"{payload['outcome_bucket']!r}"
+        )
+    if underlying_outcome is not None and payload["outcome_bucket"] != "crashed":
+        raise MutationStateError(
+            f"mutation-state record {identity} has underlying_outcome outside crashed"
         )
     try:
         _execution_from_state_record(payload)
@@ -2793,6 +2831,11 @@ def _outcome_from_record(record: Mapping[str, Any]) -> MutantOutcome:
             process_tree_evidence=(
                 ProcessTreeEvidence.from_dict(record["process_tree_evidence"])
                 if isinstance(record.get("process_tree_evidence"), Mapping)
+                else None
+            ),
+            underlying_outcome=(
+                UnderlyingOutcome.from_dict(record["underlying_outcome"])
+                if isinstance(record.get("underlying_outcome"), Mapping)
                 else None
             ),
         )
@@ -3357,6 +3400,7 @@ def _outcome_of(
     execution: MutationExecution | None = None,
     evidence: MutantEvidence | None = None,
     process_tree_evidence: ProcessTreeEvidence | None = None,
+    underlying_outcome: UnderlyingOutcome | None = None,
 ) -> MutantOutcome:
     """The artifact projection of one attempted mutant (A-180).
 
@@ -3394,6 +3438,7 @@ def _outcome_of(
         execution=execution or MutationExecution(mode="full"),
         resource_limit_evidence=resource_limit_evidence,
         process_tree_evidence=process_tree_evidence,
+        underlying_outcome=underlying_outcome,
         evidence=evidence,
     )
 
@@ -5268,6 +5313,11 @@ def _execute_mutation_jobs(
                     else {}
                 ),
                 **(
+                    {"underlying_outcome": run.result.underlying_outcome.to_dict()}
+                    if run.result.underlying_outcome is not None
+                    else {}
+                ),
+                **(
                     {"liveness_resource_evidence": run.liveness_resource_evidence}
                     if run.liveness_resource_evidence is not None
                     else {}
@@ -5337,6 +5387,11 @@ def _execute_mutation_jobs(
             **(
                 {"process_tree_evidence": run.process_tree_evidence.to_dict()}
                 if run.process_tree_evidence is not None
+                else {}
+            ),
+            **(
+                {"underlying_outcome": run.result.underlying_outcome.to_dict()}
+                if run.result.underlying_outcome is not None
                 else {}
             ),
             **(
@@ -5499,6 +5554,11 @@ def _execute_mutation_jobs(
                         "first_bucket": first_bucket,
                         "final_bucket": final_bucket,
                         "worker_index": candidate_workers[position],
+                        **(
+                            {"underlying_outcome": retry_run.result.underlying_outcome.to_dict()}
+                            if retry_run.result.underlying_outcome is not None
+                            else {}
+                        ),
                     },
                 )
             )
@@ -5558,6 +5618,7 @@ def _execute_mutation_jobs(
                 resource_limit_evidence=run.resource_limit_evidence,
                 evidence=run.evidence,
                 process_tree_evidence=run.process_tree_evidence,
+                underlying_outcome=run.result.underlying_outcome,
             )
         )
 

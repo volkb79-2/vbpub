@@ -63,6 +63,7 @@ _VERDICT_NAMES = (
     "ResourceLimitEvidence",
     "SnapshotPolicy",
     "SourcePosition",
+    "UnderlyingOutcome",
     "VERDICT_SCHEMA_VERSION",
     "Verdict",
     "WorktreeIntegrity",

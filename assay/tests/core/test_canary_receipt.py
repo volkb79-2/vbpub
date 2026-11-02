@@ -154,6 +154,7 @@ def _attempt(
     observed_reason: ReasonCode | None,
     expected_reason: ReasonCode,
     description: str,
+    cause: str | None,
 ) -> tuple[Outcome, ReasonCode | None]:
     return canary.judge_attempt(
         CanaryAttempt(
@@ -163,6 +164,7 @@ def _attempt(
             transformed_outcome=outcome,
             expected_reason_code=expected_reason,
             observed_reason_code=observed_reason,
+            cause=cause,
         )
     )
 
@@ -242,6 +244,7 @@ def test_control_clean_fail_is_recorded_as_fail():
         transformed_outcome=Outcome.INCONCLUSIVE,
         expected_reason_code=ReasonCode.COMMAND_FAILED,
         observed_reason_code=ReasonCode.CANARY_INCONCLUSIVE,
+        cause="absent",
     )
     assert canary.judge_attempt(attempt) == (
         Outcome.INCONCLUSIVE,
@@ -293,7 +296,7 @@ def test_nonjudgeable_termination_stays_inconclusive_even_with_a_receipt(
     receipt_path = tmp_path / f"{case.name}-{mechanism}.receipt"
     receipt_path.write_bytes(NONCE.encode("ascii"))
 
-    transformed, observed_reason, _description = canary._attribute_transform(
+    transformed, observed_reason, _description, cause = canary._attribute_transform(
         mechanism=mechanism,
         description="transformed source",
         termination=case.termination,
@@ -307,6 +310,7 @@ def test_nonjudgeable_termination_stays_inconclusive_even_with_a_receipt(
         Outcome.INCONCLUSIVE,
         ReasonCode.CANARY_INCONCLUSIVE,
     )
+    assert cause == ("receipt" if mechanism == "import-break" else None)
 
 
 @pytest.mark.parametrize(
@@ -320,6 +324,7 @@ def test_nonjudgeable_termination_stays_inconclusive_even_with_a_receipt(
         "expected_transform",
         "expected_observed",
         "description_fragment",
+        "expected_cause",
         "expected_attempt",
         "expected_attempt_reason",
     ),
@@ -334,6 +339,7 @@ def test_nonjudgeable_termination_stays_inconclusive_even_with_a_receipt(
             Outcome.FAIL,
             ReasonCode.COMMAND_FAILED,
             "receipt matched",
+            "receipt",
             Outcome.PASS,
             None,
         ),
@@ -347,6 +353,7 @@ def test_nonjudgeable_termination_stays_inconclusive_even_with_a_receipt(
             Outcome.INCONCLUSIVE,
             ReasonCode.CANARY_INCONCLUSIVE,
             "no receipt",
+            "absent",
             Outcome.INCONCLUSIVE,
             ReasonCode.CANARY_INCONCLUSIVE,
         ),
@@ -360,6 +367,7 @@ def test_nonjudgeable_termination_stays_inconclusive_even_with_a_receipt(
             Outcome.INCONCLUSIVE,
             ReasonCode.CANARY_INCONCLUSIVE,
             "receipt matched",
+            "receipt",
             Outcome.INCONCLUSIVE,
             ReasonCode.CANARY_INCONCLUSIVE,
         ),
@@ -373,6 +381,7 @@ def test_nonjudgeable_termination_stays_inconclusive_even_with_a_receipt(
             Outcome.PASS,
             None,
             "defect executed, suite passed",
+            "receipt",
             Outcome.FAIL,
             ReasonCode.CANARY_SURVIVED,
         ),
@@ -386,6 +395,7 @@ def test_nonjudgeable_termination_stays_inconclusive_even_with_a_receipt(
             Outcome.PASS,
             None,
             "no receipt",
+            "absent",
             Outcome.FAIL,
             ReasonCode.CANARY_SURVIVED,
         ),
@@ -399,6 +409,7 @@ def test_nonjudgeable_termination_stays_inconclusive_even_with_a_receipt(
             Outcome.INCONCLUSIVE,
             ReasonCode.CANARY_INCONCLUSIVE,
             "no receipt",
+            "absent",
             Outcome.INCONCLUSIVE,
             ReasonCode.CANARY_INCONCLUSIVE,
         ),
@@ -412,6 +423,7 @@ def test_nonjudgeable_termination_stays_inconclusive_even_with_a_receipt(
             Outcome.INCONCLUSIVE,
             ReasonCode.CANARY_INCONCLUSIVE,
             "no receipt",
+            "absent",
             Outcome.INCONCLUSIVE,
             ReasonCode.CANARY_INCONCLUSIVE,
         ),
@@ -425,6 +437,7 @@ def test_nonjudgeable_termination_stays_inconclusive_even_with_a_receipt(
             Outcome.FAIL,
             ReasonCode.UNCOVERED_LINES,
             "appended uncovered lines",
+            None,
             Outcome.PASS,
             None,
         ),
@@ -438,6 +451,7 @@ def test_nonjudgeable_termination_stays_inconclusive_even_with_a_receipt(
             Outcome.INCONCLUSIVE,
             ReasonCode.CANARY_INCONCLUSIVE,
             "appended uncovered lines",
+            None,
             Outcome.INCONCLUSIVE,
             ReasonCode.CANARY_INCONCLUSIVE,
         ),
@@ -451,6 +465,7 @@ def test_nonjudgeable_termination_stays_inconclusive_even_with_a_receipt(
             Outcome.PASS,
             None,
             "appended uncovered lines",
+            None,
             Outcome.FAIL,
             ReasonCode.CANARY_SURVIVED,
         ),
@@ -464,6 +479,7 @@ def test_nonjudgeable_termination_stays_inconclusive_even_with_a_receipt(
             Outcome.INCONCLUSIVE,
             ReasonCode.CANARY_INCONCLUSIVE,
             "appended uncovered lines",
+            None,
             Outcome.INCONCLUSIVE,
             ReasonCode.CANARY_INCONCLUSIVE,
         ),
@@ -477,6 +493,7 @@ def test_nonjudgeable_termination_stays_inconclusive_even_with_a_receipt(
             Outcome.INCONCLUSIVE,
             ReasonCode.CANARY_INCONCLUSIVE,
             "receipt matched",
+            "receipt",
             Outcome.INCONCLUSIVE,
             ReasonCode.CANARY_INCONCLUSIVE,
         ),
@@ -490,6 +507,7 @@ def test_nonjudgeable_termination_stays_inconclusive_even_with_a_receipt(
             Outcome.INCONCLUSIVE,
             ReasonCode.CANARY_INCONCLUSIVE,
             "no receipt",
+            "absent",
             Outcome.INCONCLUSIVE,
             ReasonCode.CANARY_INCONCLUSIVE,
         ),
@@ -508,6 +526,7 @@ def test_transform_attribution_table(
     expected_transform: Outcome,
     expected_observed: ReasonCode | None,
     description_fragment: str,
+    expected_cause: str | None,
     expected_attempt: Outcome,
     expected_attempt_reason: ReasonCode | None,
 ):
@@ -526,7 +545,7 @@ def test_transform_attribution_table(
 
         monkeypatch.setattr(Path, "open", denied_open)
 
-    transformed, transformed_reason, final_description = canary._attribute_transform(
+    transformed, transformed_reason, final_description, cause = canary._attribute_transform(
         mechanism=mechanism,
         description=description,
         termination=termination,
@@ -539,6 +558,7 @@ def test_transform_attribution_table(
     assert transformed is expected_transform, name
     assert transformed_reason is expected_observed, name
     assert description_fragment in final_description, name
+    assert cause == expected_cause, name
     assert _attempt(
         outcome=transformed,
         observed_reason=transformed_reason,
@@ -548,6 +568,7 @@ def test_transform_attribution_table(
             else ReasonCode.UNCOVERED_LINES
         ),
         description=final_description,
+        cause=cause,
     ) == (expected_attempt, expected_attempt_reason), name
 
 
@@ -568,7 +589,7 @@ def test_import_break_failure_requires_a_positive_returncode(
     receipt_path = tmp_path / "receipt"
     receipt_path.write_bytes(NONCE.encode("ascii"))
 
-    transformed, observed_reason, _description = canary._attribute_transform(
+    transformed, observed_reason, _description, cause = canary._attribute_transform(
         mechanism="import-break",
         description="inserted import break",
         termination=Termination.FAILED,
@@ -579,6 +600,7 @@ def test_import_break_failure_requires_a_positive_returncode(
     )
 
     assert (transformed, observed_reason) == (expected_transform, expected_reason)
+    assert cause == "receipt"
 
 
 def test_receipt_env_is_transform_only_and_receipt_dir_is_external_and_removed(

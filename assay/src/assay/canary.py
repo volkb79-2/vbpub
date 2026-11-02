@@ -234,12 +234,13 @@ def _attribute_transform(
     returncode: int | None,
     receipt_path: Path,
     nonce: str,
-) -> tuple[Outcome, ReasonCode | None, str]:
+) -> tuple[Outcome, ReasonCode | None, str, str | None]:
     """Encode the classifier and receipt evidence in existing R3 fields."""
     expected_reason = _EXPECTED_REASON_BY_MECHANISM[mechanism]
     receipt_matched = (
         mechanism == MECHANISM_IMPORT_BREAK and _receipt_matches(receipt_path, nonce)
     )
+    cause = ("receipt" if receipt_matched else "absent") if mechanism == MECHANISM_IMPORT_BREAK else None
     receipt_note = "receipt matched" if receipt_matched else "no receipt"
 
     if termination is Termination.PASSED:
@@ -247,8 +248,8 @@ def _attribute_transform(
             passed_note = (
                 "defect executed, suite passed" if receipt_matched else "no receipt"
             )
-            return Outcome.PASS, None, f"{description}; {passed_note}"
-        return Outcome.PASS, None, description
+            return Outcome.PASS, None, f"{description}; {passed_note}", cause
+        return Outcome.PASS, None, description, cause
 
     if termination not in CREDIT_JUDGEABLE:
         final_description = (
@@ -256,20 +257,20 @@ def _attribute_transform(
             if mechanism == MECHANISM_IMPORT_BREAK
             else description
         )
-        return Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE, final_description
+        return Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE, final_description, cause
 
     if observed_reason_code is expected_reason:
         if mechanism != MECHANISM_IMPORT_BREAK:
-            return Outcome.FAIL, expected_reason, description
+            return Outcome.FAIL, expected_reason, description, cause
         if receipt_matched and returncode is not None and returncode > 0:
-            return Outcome.FAIL, expected_reason, f"{description}; {receipt_note}"
+            return Outcome.FAIL, expected_reason, f"{description}; {receipt_note}", cause
 
     final_description = (
         f"{description}; {receipt_note}"
         if mechanism == MECHANISM_IMPORT_BREAK
         else description
     )
-    return Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE, final_description
+    return Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE, final_description, cause
 
 
 def _create_receipt(parent: Path | None = None) -> tuple[Path, Path]:
@@ -549,6 +550,7 @@ def run_python_canary(
             transformed_outcome,
             observed_reason_code,
             description,
+            cause,
         ) = _attribute_transform(
             mechanism=mechanism,
             description=description,
@@ -569,6 +571,7 @@ def run_python_canary(
         transformed_outcome=transformed_outcome,
         expected_reason_code=expected_reason,
         observed_reason_code=observed_reason_code,
+        cause=cause,
     )
 
 
@@ -892,6 +895,7 @@ def run_isolated_canary(
                 transformed_outcome,
                 observed_reason_code,
                 description,
+                cause,
             ) = _attribute_transform(
                 mechanism=mechanism,
                 description=description,
@@ -912,6 +916,7 @@ def run_isolated_canary(
         transformed_outcome=transformed_outcome,
         expected_reason_code=expected_reason,
         observed_reason_code=observed_reason_code,
+        cause=cause,
     )
 
 
@@ -1243,6 +1248,12 @@ def judge_attempt(attempt: CanaryAttempt) -> tuple[Outcome, ReasonCode | None]:
         return Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE
     if attempt.transformed_outcome is Outcome.PASS:
         return Outcome.FAIL, ReasonCode.CANARY_SURVIVED
+    if (
+        attempt.expected_reason_code is ReasonCode.COMMAND_FAILED
+        and attempt.observed_reason_code is attempt.expected_reason_code
+        and attempt.cause != "receipt"
+    ):
+        return Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE
     if attempt.observed_reason_code != attempt.expected_reason_code:
         return Outcome.FAIL, ReasonCode.CANARY_SURVIVED
     return Outcome.PASS, None

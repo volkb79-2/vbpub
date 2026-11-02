@@ -1,5 +1,5 @@
 {
-  "schema_version": 16,
+  "schema_version": 17,
   "assay_version": "0.1.0",
   "lane": "package",
   "commit": "ffffffffffffffffffffffffffffffffffffffff",
@@ -72,7 +72,8 @@
             "target": "pkg/greet.py",
             "description": "'not-a-real-mechanism' is not a known canary mechanism -- expected one of ['import-break', 'uncovered-line']; nothing to judge",
             "disposition": "attempted",
-            "control_outcome": "PASS"
+            "control_outcome": "PASS",
+            "cause": null
           }
         ]
       }
