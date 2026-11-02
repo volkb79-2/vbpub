@@ -1065,7 +1065,7 @@ def test_permission_admin_snapshot_refuses_invalid_paths_and_links(
 
 
 def test_permission_admin_snapshot_accepts_relative_reverse_link(
-    repository, tmp_path
+    repository, tmp_path, monkeypatch
 ):
     context = create_workspace(
         repository, tmp_path / "checkout", branch="test/admin-relative-link",
@@ -1075,6 +1075,13 @@ def test_permission_admin_snapshot_accepts_relative_reverse_link(
     admin = core.canonical_path(
         Path(_git(context.worktree_path, "rev-parse", "--absolute-git-dir"))
     )
+    # Keep Git's valid inventory before injecting a relative reverse link.
+    # Git 2.48 added relative-worktree storage; older Git marks a hand-written
+    # relative gitdir link prunable and echoes that unresolved value from
+    # `worktree list`. This test exercises snapshot path resolution, not that
+    # version-specific inventory behavior.
+    inventory = core.list_git_worktrees(record.source_git_root)
+    assert any(entry.path == context.worktree_path for entry in inventory)
     relative = os.path.relpath(context.worktree_path / ".git", admin)
     (admin / "gitdir").write_text(relative, encoding="utf-8")
 
@@ -1083,6 +1090,7 @@ def test_permission_admin_snapshot_accepts_relative_reverse_link(
     assert received_admin == admin
     assert identity == (admin.lstat().st_dev, admin.lstat().st_ino)
     assert received_link == relative
+    monkeypatch.setattr(core, "list_git_worktrees", lambda _path: inventory)
     core._verify_workspace_admin_snapshot(record, admin, identity, relative)
 
 
