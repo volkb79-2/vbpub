@@ -244,9 +244,11 @@ interaction is conventional and relatively small, while validation, defaults,
 secret handling, cancellation, and file safety remain owned by this project.
 Those decisions are product behavior and should not be delegated to a UI
 library. The dependency is pinned in the installer project's
-`wizard-requirements.txt` so the reusable CLI library does not depend on an
+`requirements-installer.txt` so the reusable CLI library does not depend on an
 interactive UI package and prompt API changes are deliberate rather than
-silently changing installation flows.
+silently changing installation flows. Requirement manifests use the
+`requirements-<use-case>.txt` pattern, with the use case naming what installs
+them.
 
 ## Remote bootstrap stays self-contained
 

@@ -283,5 +283,5 @@ def test_missing_optional_prompt_package_has_a_project_specific_install_hint(mon
     monkeypatch.setitem(sys.modules, "questionary", None)
     with pytest.raises(CliFailure, match="optional Questionary") as exc:
         _load_questionary()
-    assert "scripts/debian-install-v2/wizard-requirements.txt" in exc.value.hint
+    assert "scripts/debian-install-v2/requirements-installer.txt" in exc.value.hint
     assert shlex.quote(sys.executable) in exc.value.hint
