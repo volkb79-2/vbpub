@@ -18,7 +18,7 @@
 # digest of debian:<release>-slim from Docker Hub; --check, run by CMRU's prepare phase, fails
 # if they disagree or the digest is not a sha256). Do not edit them by hand.
 ARG DEBIAN_RELEASE=trixie
-ARG DEBIAN_IMAGE_DIGEST=sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad
+ARG DEBIAN_IMAGE_DIGEST=sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4
 FROM debian:${DEBIAN_RELEASE}-slim@${DEBIAN_IMAGE_DIGEST}
 
 # Same label set as the main image: org.opencontainers.image.source is what links the GHCR

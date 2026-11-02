@@ -480,14 +480,13 @@ package (`__init__`, `cli`, `contract`, `diagnostics`, `ocr`, `session`, `user_a
 (`containers/pwmcp/ua-override/index.js`, the run-server and MCP gateways, the admin server) is outside the
 Python judge entirely and is exercised only by the subprocess tests.
 
-**The sidecar image exists from the NEXT pwmcp release.** `pwmcp.ocr.image.tag` defaults to the
-resolver-managed pwmcp coordinate, and the current published release (`1.64.0-r3`) shipped WITHOUT the
-OCR image: with `pwmcp.ocr.enabled = true` against it, the image pull fails. Until a release that
-includes it is published, build it locally and point the config at it:
+**OCR sidecar image (`1.64.0-r4`).** The `1.64.0-r4` release publishes the `pwmcp-ocr` image
+alongside the main pwmcp image. It remains opt-in: `pwmcp.ocr.enabled` defaults to false. With the
+defaults, enabling `pwmcp.ocr` selects that published image. For local development or changes to the
+sidecar image, build it from `pwmcp/` and use the coordinate rendered by your config:
 
 ```bash
-# from the pwmcp/ directory; tag it with the coordinate your config renders (the default is shown)
-docker build -f containers/ocr/Dockerfile -t ghcr.io/volkb79-2/pwmcp-ocr:1.64.0-r3 .
+docker build -f containers/ocr/Dockerfile -t ghcr.io/volkb79-2/pwmcp-ocr:1.64.0-r4 .
 ```
 
 Compose renders `image: <registry>/<namespace>/<name>:<tag>` from `[pwmcp.ocr.image]` with
@@ -495,10 +494,10 @@ Compose renders `image: <registry>/<namespace>/<name>:<tag>` from `[pwmcp.ocr.im
 To use a different name instead, set `registry`, `namespace`, `name` and `tag` under `[pwmcp.ocr.image]`
 in your `ciu.toml.j2` (together with `enabled = true` under `[pwmcp.ocr]`).
 
-**What was and was not verified.** See `KNOWN_ISSUES_TODO_BACKLOG.md` PWMCP-11: the service,
-client, CLI and compose rendering are tested offline against a fake `tesseract`; real
-Tesseract accuracy on console frames, the TSV column layout of the packaged Tesseract, the
-image build, the second-image release wiring and the wiring under a real `ciu up` are not verified until an image is built and a release is cut.
+**Release verification.** The post-release smoke for `1.64.0-r4` verifies the image's health,
+confirms `/v1/engines` reports Tesseract available (and `glyphgrid` unavailable), and checks that a
+generated PNG request returns recognized text and confidence. It does not assess OCR accuracy on
+real console frames; the gateway `/contract` reports release `1.64.0-r4`.
 
 ## KSM Opt-In (default on)
 
@@ -599,15 +598,16 @@ Releases up to and including `1.64.0-r2` carry the bundle without the `v`
 (`pwmcp-<version>.tar.xz`). The installer (`get.py`) requests only the `v`-prefixed name, so it
 cannot install those releases (PWMCP-08); pin a later release.
 
-**Two images, one release.** (The OCR image exists from the NEXT release after `1.64.0-r3`.) A release builds and pushes BOTH `ghcr.io/volkb79-2/pwmcp:<tag>` and the
-optional OCR sidecar `ghcr.io/volkb79-2/pwmcp-ocr:<tag>` (and their `latest`) with the same `<tag>`
-(`1.64.0-r3` style) in one `docker buildx bake all`; the bundle's `ciu.defaults.toml.j2` pins both
+**Two images, one release.** The `1.64.0-r4` release builds and pushes both
+`ghcr.io/volkb79-2/pwmcp:<tag>` and the OCR sidecar `ghcr.io/volkb79-2/pwmcp-ocr:<tag>` (and their
+`latest`) with the same release coordinate (`1.64.0-r4` for this release) in one `docker buildx bake all`;
+the bundle's `ciu.defaults.toml.j2` pins both
 (`[pwmcp.unified.image] tag` and `[pwmcp.ocr.image] tag`, kept equal by
 `scripts/resolve-playwright-version.py`), so a consumer that enables `pwmcp.ocr.enabled` gets the sidecar
 built with that release. The sidecar's `debian:trixie-slim` base is pinned by manifest digest like the
 Playwright base: `--refresh` re-resolves it and `--check` refuses a tag-only or inconsistent pin.
-`pwmcp.contract.json` carries no image coordinates and is unchanged. Not yet exercised by a real release
-(see `KNOWN_ISSUES_TODO_BACKLOG.md` PWMCP-11). `bake all --push` builds and pushes the two targets CONCURRENTLY, so no order is guaranteed. A PARTIAL push
+`pwmcp.contract.json` records the release and Playwright version but carries no image coordinates; the
+resolver updates its version fields alongside the image pins. `bake all --push` builds and pushes the two targets CONCURRENTLY, so no order is guaranteed. A PARTIAL push
 looks like this: one image (and its `latest`) is in GHCR and the other is missing or stale, the step fails
 and no GitHub release or git tag has been made yet. Recovery: fix the cause (token scope, network, builder)
 and re-run the push step of the SAME prepared transaction; pushing is idempotent for identical content. Do
