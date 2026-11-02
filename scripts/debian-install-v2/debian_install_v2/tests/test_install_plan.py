@@ -4,13 +4,24 @@ import json
 from pathlib import Path
 import sys
 
+import pytest
+
 from debian_install_v2.actions import HostActions
 from debian_install_v2.config import Config
 from debian_install_v2.installer import Installer
 from debian_install_v2.state import StateStore
 
 
-def run_dry_install(tmp_path: Path) -> tuple[Installer, list[str]]:
+ROOT_CAP_CLOUD_INIT_CONFIG = "/etc/cloud/cloud.cfg.d/99-debian-install-v2-root-cap.cfg"
+GROWROOT_DISABLED = "/etc/growroot-disabled"
+
+
+def run_dry_install(
+    tmp_path: Path,
+    *,
+    root_max_size_gb: int | None = None,
+    will_reboot: bool = False,
+) -> tuple[Installer, list[str]]:
     from debian_install_v2.state import StateStore
     config = Config(
         state_dir=str(tmp_path / "state"),
@@ -18,10 +29,11 @@ def run_dry_install(tmp_path: Path) -> tuple[Installer, list[str]]:
         stage2_output="/root/custom_script.output2",
         swap_disk_total_gb=32,
         swap_partition_count=8,
+        root_max_size_gb=root_max_size_gb,
         telegram_bot_token="",
         telegram_chat_id="",
-        never_reboot=True,
-        auto_reboot_after_stage1=False,
+        never_reboot=not will_reboot,
+        auto_reboot_after_stage1=will_reboot,
         credential_mode="systemd",
     )
     actions = HostActions(dry_run=True)
@@ -41,6 +53,35 @@ def test_stage1_plans_expected_configuration_without_host_mutation(tmp_path):
     ):
         assert expected in joined
     assert "/bin/rm" not in joined
+
+
+@pytest.mark.parametrize("root_max_size_gb", [None, 40])
+def test_stage1_installs_root_cap_boot_guards_only_when_capped_before_reboot(
+    tmp_path, root_max_size_gb
+):
+    installer, descriptions = run_dry_install(
+        tmp_path,
+        root_max_size_gb=root_max_size_gb,
+        will_reboot=True,
+    )
+    expected = root_max_size_gb is not None
+
+    for path in (ROOT_CAP_CLOUD_INIT_CONFIG, GROWROOT_DISABLED):
+        assert (path in installer.actions.dry_run_writes) is expected
+        assert descriptions.count(f"write {path}") == (1 if expected else 0)
+    if expected:
+        assert installer.actions.dry_run_writes[ROOT_CAP_CLOUD_INIT_CONFIG] == (
+            "growpart: {mode: off}\nresize_rootfs: false\n"
+        )
+        assert installer.actions.dry_run_writes[GROWROOT_DISABLED] == ""
+        last_guard_write = max(
+            descriptions.index(f"write {ROOT_CAP_CLOUD_INIT_CONFIG}"),
+            descriptions.index(f"write {GROWROOT_DISABLED}"),
+        )
+        reboot = descriptions.index(
+            "schedule delayed reboot into stage2 (avoids stranding the provider's cloud-init tracking)"
+        )
+        assert last_guard_write < reboot
 
 
 def test_state_new_excludes_secret_and_uses_stable_schema(tmp_path):
@@ -99,6 +140,37 @@ def test_default_fstab_swap_entries_are_planned(tmp_path):
     installer.resume()
     fstab = actions.dry_run_writes["/etc/fstab"]
     assert len([line for line in fstab.splitlines() if " none swap sw,pri=10,discard=once 0 0" in line]) == 4
+
+
+@pytest.mark.parametrize("root_max_size_gb", [None, 40])
+def test_stage2_disables_boot_time_root_growth_only_when_capped(tmp_path, root_max_size_gb):
+    config = Config(
+        state_dir=str(tmp_path / "state"),
+        log_dir=str(tmp_path / "logs"),
+        root_resize_policy="resize",
+        root_max_size_gb=root_max_size_gb,
+        swap_policy="on",
+        swap_disk_total_gb=8,
+        run_io_benchmark=False,
+        telegram_bot_token="",
+        telegram_chat_id="",
+        auto_reboot_after_stage1=False,
+        credential_mode="systemd",
+    )
+    actions = HostActions(dry_run=True)
+    installer = Installer(config, actions)
+    StateStore(config.state_dir).save_new(StateStore.new(config))
+
+    installer.resume()
+
+    expected = root_max_size_gb is not None
+    assert (ROOT_CAP_CLOUD_INIT_CONFIG in actions.dry_run_writes) is expected
+    assert (GROWROOT_DISABLED in actions.dry_run_writes) is expected
+    if expected:
+        assert actions.dry_run_writes[ROOT_CAP_CLOUD_INIT_CONFIG] == (
+            "growpart: {mode: off}\nresize_rootfs: false\n"
+        )
+        assert actions.dry_run_writes[GROWROOT_DISABLED] == ""
 
 
 def test_disk_transaction_manifest_and_health_gate_are_planned(tmp_path):

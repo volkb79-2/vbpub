@@ -35,7 +35,7 @@ tests, and all four library documents in the same work.
 - `libraries/cli-extended/pyproject.toml`, `run-gate.toml`, and
   `libraries/cli-extended/BACKLOG.md`.
 - `scripts/debian-install-v2/debian_install_v2/wizard.py`,
-  `scripts/debian-install-v2/wizard-requirements.txt`, and
+  `scripts/debian-install-v2/requirements-wizard.txt`, and
   `scripts/netcup/install-host.py` prompt helpers. Reuse the repository's
   existing Questionary version policy; do not select a newer version by
   guesswork.

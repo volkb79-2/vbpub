@@ -152,7 +152,7 @@ declared for that reason alone, not because anything still uses them.
 - Keep interactive authoring out of this adoption and defer it to a separate Nyxloom feature.
 **Recommendation:** Add a small optional prompt/wizard layer, not a generic configuration editor. It should centralize TTY refusal, cancellation, typed text/secret/boolean/select/multi-select questions, and test injection; consumers keep schema validation and file-write policy. Preserve a dependency-free base install and expose the Questionary dependency as an explicit optional extra.
 **Decision:** Approved: add a reusable Questionary-backed prompt API to `cli-extended` behind an explicit optional dependency extra. The shared API owns prompt mechanics, TTY refusal, cancellation, and an injectable driver for tests; consumers own field meaning, domain/schema validation, summaries, diffs, and persistence. Keep the base `cli-extended` install dependency-free. Nyxloom exposes its use through its own optional `interactive` extra (see D-012).
-**Context pointers:** libraries/cli-extended/SPEC.md §§3, 5, 6, 9, 10; libraries/cli-extended/README.md "Adopt it"; scripts/debian-install-v2/debian_install_v2/wizard.py; scripts/debian-install-v2/wizard-requirements.txt; scripts/netcup/install-host.py `_prompt_choice`/`_prompt_text`/`_prompt_yes_no`.
+**Context pointers:** libraries/cli-extended/SPEC.md §§3, 5, 6, 9, 10; libraries/cli-extended/README.md "Adopt it"; scripts/debian-install-v2/debian_install_v2/wizard.py; scripts/debian-install-v2/requirements-wizard.txt; scripts/netcup/install-host.py `_prompt_choice`/`_prompt_text`/`_prompt_yes_no`.
 **Resume prompt:** "Implement the approved optional Questionary-backed prompt API in cli-extended. Keep domain validation and writes in each consumer."
 
 ## D-011 · 2026-09-27 · nyxloom-P111-review · DECIDED 2026-09-27
@@ -173,7 +173,7 @@ declared for that reason alone, not because anything still uses them.
 - Add a Nyxloom `[interactive]` extra and keep the base installation free of the prompt dependency.
 **Recommendation:** Use `[interactive]`. The CLI's ordinary help, authoring, harness, and host-control paths should not import Questionary unless a user starts an interactive workflow; the missing-extra error must name the exact install command.
 **Decision:** Approved: expose the wizard through `nyxloom[interactive]`; keep Questionary optional in the Nyxloom distribution and import it only when an interactive path is requested.
-**Context pointers:** nyxloom/pyproject.toml `[project.optional-dependencies]`; libraries/cli-extended/pyproject.toml; scripts/debian-install-v2/wizard-requirements.txt.
+**Context pointers:** nyxloom/pyproject.toml `[project.optional-dependencies]`; libraries/cli-extended/pyproject.toml; scripts/debian-install-v2/requirements-wizard.txt.
 
 ## D-013 · 2026-09-27 · nyxloom-P111-review · DECIDED 2026-09-27
 **Question:** Should legacy `nyxloom <host-control-command>` paths remain as deprecated forwarding aliases after all host-control commands move to `nyxloomctl`?

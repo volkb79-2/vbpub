@@ -31,9 +31,10 @@ that operation's required settings and full invocation syntax.
 
 The settings wizard writes a validated mode-0600 JSON file. The same shipped
 configuration loader validates both wizard output and hand-authored files; the
-wizard is not a second schema. Adoption, safe install examples, and remote
-bootstrap steps are in [docs/CONSUMERS.md](docs/CONSUMERS.md); command and
-wizard design rationale is in [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md).
+wizard is not a second schema. Its optional Questionary prompts are installed
+from `requirements-wizard.txt`; see [docs/CONSUMERS.md](docs/CONSUMERS.md)
+for adoption and install steps and [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md)
+for the [prompt library boundary](docs/DESIGN-GUIDE.md#prompt-library-boundary).
 Verbs that consume settings require exactly one of `--config FILE` and
 `--config-json JSON`; their generated usage shows that required choice.
 The generated remote custom-script launcher uses Python’s standard-library
@@ -171,6 +172,13 @@ default, `root_resize_policy: "resize"` sizes the ext root partition to the
 largest safe extent after the configured swap area; it may grow online or
 shrink offline in an initramfs pre-mount hook. `grow-only` can use available
 space but never shrinks root. `untouched` forbids root geometry changes.
+Set `root_max_size_gb` to cap the root partition while keeping space after
+root and configured swap unallocated for a later data partition. A cap requires
+`swap_policy: "on"` and at least one managed tail swap partition directly after
+root; layouts without that boundary are refused. This limit is not a request to
+format or mount that space. See the
+[root sizing design](docs/DESIGN-GUIDE.md#root-and-swap-policies) and the
+[consumer example](docs/CONSUMERS.md#root-and-swap-policy).
 
 `swap_policy: "on"` (default) replaces the guest's configured swap setup with
 native GPT swap partitions. It disables all active swap, removes configured
@@ -204,7 +212,7 @@ provider capacities (decimal GB; actual sizing uses bytes):
 | 256 GB | 8 | 16 | 32 | 48 | 48 | 48 |
 | 512 GB | 8 | 16 | 32 | 64 | 95 | 95 |
 
-Core layout settings are:
+The default root and swap layout settings are:
 
 ```json
 {
@@ -216,6 +224,36 @@ Core layout settings are:
   "preserve_root_size_gb": 10
 }
 ```
+
+To cap root and choose a fixed managed swap size, use:
+
+```json
+{
+  "schema_version": 1,
+  "root_resize_policy": "resize",
+  "root_max_size_gb": 40,
+  "swap_policy": "on",
+  "swap_disk_total_gb": 8,
+  "swap_partition_count": 4,
+  "preserve_root_size_gb": 10
+}
+```
+
+`root_max_size_gb` is an optional upper bound in GiB. With `resize`, a larger
+current root is shrunk safely and a smaller root can grow up to the cap. The
+cap must be at least `preserve_root_size_gb`. `grow-only` and `untouched`
+refuse a current root larger than the cap because honoring it would require a
+shrink. A cap requires `swap_policy: "on"` and at least one managed tail swap
+partition directly after root. Swap off, untouched swap, or a plan where
+retained pre-root swap needs no tail partition is refused because cloud-init or
+stage-two growth could otherwise consume the cap. The cap measures root
+partition length from its existing start, so a non-MiB-aligned start does not
+reduce the configured limit. When a cap is set, stage one installs and stage
+two repeats guards against automatic root growth by writing
+`/etc/cloud/cloud.cfg.d/99-debian-install-v2-root-cap.cfg` with
+`growpart: {mode: off}` and `resize_rootfs: false`, and creating
+`/etc/growroot-disabled` for initramfs growroot. The remaining space after
+root and managed swap stays unallocated across later boots.
 
 When `swap=on` cannot fit without shrinking, `root=untouched` and
 `root=grow-only` fail with the requested and available space rather than

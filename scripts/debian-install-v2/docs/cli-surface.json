@@ -2247,7 +2247,7 @@
       "confirmation": true,
       "constraints": [],
       "delegated_metadata": [],
-      "description": "guide an operator through install settings and securely write JSON; requires Questionary from wizard-requirements.txt",
+      "description": "guide an operator through install settings and securely write JSON; requires Questionary from requirements-wizard.txt",
       "group": "MODIFICATION",
       "id": "route:entrypoint:debian-install-v2/wizard",
       "kind": "invocation",

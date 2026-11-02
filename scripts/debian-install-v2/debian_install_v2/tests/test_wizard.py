@@ -146,6 +146,7 @@ def test_wizard_exposes_independent_disk_policies_and_auto_swap_size():
         for field in section.fields
     }
     assert fields_by_name["root_resize_policy"].choices == ("resize", "untouched", "grow-only")
+    assert fields_by_name["root_max_size_gb"].kind == "optional-integer"
     assert fields_by_name["swap_policy"].choices == ("on", "off", "untouched")
     assert fields_by_name["swap_disk_total_gb"].kind == "optional-integer"
 
@@ -283,5 +284,5 @@ def test_missing_optional_prompt_package_has_a_project_specific_install_hint(mon
     monkeypatch.setitem(sys.modules, "questionary", None)
     with pytest.raises(CliFailure, match="optional Questionary") as exc:
         _load_questionary()
-    assert "scripts/debian-install-v2/wizard-requirements.txt" in exc.value.hint
+    assert "scripts/debian-install-v2/requirements-wizard.txt" in exc.value.hint
     assert shlex.quote(sys.executable) in exc.value.hint

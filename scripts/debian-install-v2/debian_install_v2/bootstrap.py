@@ -406,7 +406,7 @@ def build_cli():
     registry.register(
         VerbSpec(
             name="wizard",
-            description="guide an operator through install settings and securely write JSON; requires Questionary from wizard-requirements.txt",
+            description="guide an operator through install settings and securely write JSON; requires Questionary from requirements-wizard.txt",
             summary_description="interactively create validated installation settings",
             group=VerbGroup.MODIFICATION.value,
             examples=(

@@ -40,9 +40,19 @@ def test_known_shape_loads():
 def test_disk_layout_defaults_are_configurable_and_automatic():
     config = load_config(raw_json='{"schema_version":1}')
     assert config.root_resize_policy == "resize"
+    assert config.root_max_size_gb is None
     assert config.swap_policy == "on"
     assert config.swap_disk_total_gb is None
     assert config.swap_partition_count == 4
+
+
+def test_root_max_size_is_optional_and_must_not_be_below_the_preserved_floor():
+    config = load_config(raw_json='{"root_max_size_gb":40}')
+    assert config.root_max_size_gb == 40
+    with pytest.raises(ConfigError, match="root_max_size_gb"):
+        load_config(raw_json='{"root_max_size_gb":0}')
+    with pytest.raises(ConfigError, match="root_max_size_gb.*preserve_root_size_gb"):
+        load_config(raw_json='{"preserve_root_size_gb":10,"root_max_size_gb":9}')
 
 
 @pytest.mark.parametrize("policy", ["resize", "untouched", "grow-only"])

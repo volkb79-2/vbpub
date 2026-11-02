@@ -14,6 +14,10 @@ then the sibling: it may refine or define project-scoped exceptions to particula
 rules, but it does not replace the canonical document as a whole. Everything
 below is *this repo's* delta on top of that doctrine.
 
+## Conventions
+
+A project's general/default Python dependency set is `requirements.txt`. Name every specialized set `requirements-<use-case>.txt` in lowercase kebab-case (for example `requirements-test.txt`, `requirements-docs.txt`, `requirements-wizard.txt`); never the suffix form `<use-case>-requirements.txt`. Update every consumer when a manifest is renamed. Existing tools migrate in separate, tool-scoped changes; the `assay/` manifests change with assay's next release.
+
 **Working on nyxloom itself?** Also read **`nyxloom/nyxloom-trove/DOCTRINE.md`**
 (its project delta: structlog reserved-key traps, and `build_dispatch`'s hard
 argv budget) and `nyxloom/nyxloom-trove/STANDING.md` (the current wave's frozen

@@ -318,6 +318,11 @@ class Installer:
             f"swap={_code(str(plan['swap_policy']))}, "
             f"swap total={_code(swap_total)}",
         ]
+        if plan["root_max_size_gb"] is not None:
+            plan_lines.append(
+                f"Root size cap: {_code(str(plan['root_max_size_gb']))} GiB; "
+                "space after root and swap remains unallocated"
+            )
         if plan["swap_policy"] == "on":
             plan_lines.append(
                 f"Swap allocation: {_code(retained_swap)}, {_code(tail_swap)} "
@@ -724,6 +729,7 @@ class Installer:
                 else "not required"
             ),
             "root_resize_policy": self.config.root_resize_policy,
+            "root_max_size_gb": self.config.root_max_size_gb,
             "swap_policy": self.config.swap_policy,
             "swap_total_gb": swap_total,
             "swap_retained_before_root_gb": retained_total_gb,
@@ -1952,6 +1958,29 @@ MaxFileSec=1month
         if self.config.swap_policy == "on":
             boundary = (boundary // alignment) * alignment
 
+        policy = self.config.root_resize_policy
+        root_size_cap = None
+        if self.config.root_max_size_gb is not None:
+            # The configured cap is a partition length measured from the
+            # existing root start. Do not round its absolute end down: that
+            # would silently reduce the cap for a non-MiB-aligned start.
+            cap_sectors = self.config.root_max_size_gb * GIB // 512
+            root_size_cap = cap_sectors
+            if root_size_cap <= 0:
+                raise InstallerError(
+                    "root_max_size_gb leaves no space for the root partition"
+                )
+            if policy == "untouched" and root_size > root_size_cap:
+                raise InstallerError(
+                    "root_resize_policy=untouched cannot satisfy root_max_size_gb "
+                    f"({self.config.root_max_size_gb} GiB) because the current root is larger"
+                )
+            if policy == "grow-only" and root_size > root_size_cap:
+                raise InstallerError(
+                    "root_resize_policy=grow-only cannot satisfy root_max_size_gb "
+                    f"({self.config.root_max_size_gb} GiB) without shrinking the current root"
+                )
+
         partitions: list[tuple[int, int]] = []
         actual_swap_sectors = 0
         tail_partition_count = 0
@@ -2020,13 +2049,16 @@ MaxFileSec=1month
                 "reduce swap_disk_total_gb or increase the disk size"
             )
 
-        policy = self.config.root_resize_policy
         if policy == "untouched":
             target_root_size = root_size
         elif policy == "grow-only":
             target_root_size = max(root_size, max_root_size)
+            if root_size_cap is not None:
+                target_root_size = min(target_root_size, root_size_cap)
         else:  # resize
             target_root_size = max_root_size
+            if root_size_cap is not None:
+                target_root_size = min(target_root_size, root_size_cap)
 
         if self.config.swap_policy == "on":
             root_end = root_start + target_root_size
@@ -2057,6 +2089,21 @@ MaxFileSec=1month
                 for _number, entry in sorted(swap_entries.items())
                 if "start" in entry and "size" in entry
             ]
+
+        if root_size_cap is not None:
+            aligned_root_end = (
+                (root_start + target_root_size + alignment - 1) // alignment
+            ) * alignment
+            if (
+                self.config.swap_policy != "on"
+                or not partitions
+                or partitions[0][0] != aligned_root_end
+            ):
+                raise InstallerError(
+                    "root_max_size_gb needs managed swap partitions directly after root "
+                    "(swap_policy=on with tail swap); otherwise boot-time and stage-two "
+                    "growth would consume the cap"
+                )
 
         if target_root_size < root_size and policy != "resize":
             raise InstallerError(f"root_resize_policy={policy} cannot shrink root")
@@ -4191,6 +4238,10 @@ MaxFileSec=1month
 
     def _stage1(self) -> None:
         self._secure_bootstrap_files()
+        # Cloud-init and initramfs growroot run during the first reboot,
+        # before stage two can create the tail-swap boundary. Install the
+        # configured cap guards now, then repeat them in stage two.
+        self._configure_root_cap_boot_guards()
         self._configure_persistent_ssh_keys()
         self._configure_controller_ssh_key()
         # LT-F-v1001-13: persistent journald FIRST (right after the controller
@@ -4320,6 +4371,16 @@ MaxFileSec=1month
             raise
         self._mark_step(step, "success", mode)
 
+    def _configure_root_cap_boot_guards(self) -> None:
+        """Keep cloud-init and initramfs from growing a capped root later."""
+        if self.config.root_max_size_gb is None:
+            return
+        self.actions.write_file(
+            "/etc/cloud/cloud.cfg.d/99-debian-install-v2-root-cap.cfg",
+            "growpart: {mode: off}\nresize_rootfs: false\n",
+        )
+        self.actions.write_file("/etc/growroot-disabled", "")
+
     def _stage2(self) -> None:
         self._packages(["e2fsprogs", "util-linux"], "stage2")
         # True iff Case B's own hook already wrote the swap partitions as
@@ -4365,6 +4426,7 @@ MaxFileSec=1month
             self._apply_known_swap_shape()
         self._ensure_disk_transaction_manifest()
         self._grow_root_to_plan()
+        self._configure_root_cap_boot_guards()
         self._activate_swap_partitions()
         self._health_gate_swap_devices()
         self._release_apt_timers()

@@ -100,6 +100,45 @@ a shrink. `untouched` is the strict no-partition-change choice. The existing
 `preserve_root_size_gb` remains a minimum root-capacity floor; it is not the
 resize target.
 
+`root_max_size_gb` adds an optional upper bound for hosts that need a compact
+system partition and a separate data area. Under `resize`, the planner uses
+the smaller of this cap and the largest safe root extent after swap. A current
+root below the cap can grow to it; a root above it can shrink only after the
+normal usage and ext-filesystem minimum checks pass. The area after root and
+managed swap remains unallocated: the installer does not invent a filesystem,
+partition, or mount point. The cap must be at least
+`preserve_root_size_gb`. It also requires `swap_policy: "on"` and at least one
+managed tail swap partition directly after root. Swap off, untouched swap, or
+a plan where retained pre-root swap needs no tail partition is refused because
+boot-time or stage-two growth could consume the cap. `grow-only` and
+`untouched` refuse when a larger current root would have to shrink to satisfy
+the cap. The cap is a root partition length measured from its existing start,
+not an absolute disk end; an unaligned start therefore does not lower the
+configured GiB limit.
+
+Before the first reboot, stage one prevents cloud-init or initramfs growroot
+from consuming the space before stage two can install the tail-swap boundary.
+Stage two repeats these idempotent guards. The installer writes
+`/etc/cloud/cloud.cfg.d/99-debian-install-v2-root-cap.cfg` with
+`growpart: {mode: off}` and `resize_rootfs: false`, and creates
+`/etc/growroot-disabled` so the initramfs growroot integration also stays off.
+Both guards are installed only when `root_max_size_gb` is set.
+
+For example, this keeps a 40 GiB root and 8 GiB of managed swap while leaving
+the rest of a larger disk available for a manually created data partition:
+
+```json
+{
+  "schema_version": 1,
+  "root_resize_policy": "resize",
+  "root_max_size_gb": 40,
+  "preserve_root_size_gb": 10,
+  "swap_policy": "on",
+  "swap_disk_total_gb": 8,
+  "swap_partition_count": 4
+}
+```
+
 Swap sizing is tied to both machine resources and disk capacity. A pure
 RAM-based rule can consume most of a small VM's disk, while a fixed GiB value
 does not scale across 20–512 GB images. The default is
@@ -244,9 +283,11 @@ interaction is conventional and relatively small, while validation, defaults,
 secret handling, cancellation, and file safety remain owned by this project.
 Those decisions are product behavior and should not be delegated to a UI
 library. The dependency is pinned in the installer project's
-`wizard-requirements.txt` so the reusable CLI library does not depend on an
+`requirements-wizard.txt` so the reusable CLI library does not depend on an
 interactive UI package and prompt API changes are deliberate rather than
-silently changing installation flows.
+silently changing installation flows. Requirement manifests use the
+`requirements-<use-case>.txt` pattern, with the use case naming what installs
+them.
 
 ## Remote bootstrap stays self-contained
 
