@@ -3268,8 +3268,8 @@ A missing tag or mismatched base fails the gate. If HEAD itself is
 release-tagged during a rerun, the selected baseline MUST be the highest-version
 published tag in HEAD's full ancestry after excluding every CMRU release tag at
 HEAD.
-An empty source diff writes skip evidence bound to HEAD. The serial campaign
-has a 120-second per-candidate timeout,
+An empty source diff writes skip evidence bound to HEAD. The known-good control
+and serial campaign candidates share a 600-second timeout,
 `--maxfail=1`, `--resume`, and a progress stream.
 `run-gate gate` runs the Assay R0/R1/R3 lane plus the tag-based R2 campaign,
 total coverage, and the cause-sensitive canary.

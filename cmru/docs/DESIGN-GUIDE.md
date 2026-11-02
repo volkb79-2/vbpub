@@ -713,9 +713,12 @@ registered `run-gate gate` lane to generate fresh origin facts immediately
 before mutation. The tester independently selects the highest-version
 published ancestor using Assay's sanitized ancestry API. If that source diff
 is empty, the mutation lane writes explicit
-skip evidence bound to the candidate HEAD. The serial campaign uses a
-120-second timeout per candidate and stops each failed candidate at its first
-failing test (`--maxfail=1`). Mutation outcomes live in
+skip evidence bound to the candidate HEAD. The known-good full-suite control
+and every serial candidate share a 600-second timeout, and each failed
+candidate stops at its first failing test (`--maxfail=1`). The previous
+ceiling failed to finish the full CMRU suite in tester-unified; that suite took
+439 seconds, so the 600-second ceiling leaves about 2m40s of headroom while
+keeping the control and each candidate bounded. Mutation outcomes live in
 `.assay/mutation-cmru.json`; `.assay/progress-mutation-cmru.jsonl` is only the
 append-only progress stream. Resume requires the exact test and copied-fixture
 fingerprints. An added test can change pytest collection or install an autouse

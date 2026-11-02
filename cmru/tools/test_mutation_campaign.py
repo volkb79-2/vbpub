@@ -5,8 +5,10 @@ import hashlib
 import importlib
 import json
 import py_compile
+import re
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -19,6 +21,20 @@ from assay import git as assay_git
 sys.path.insert(0, str(Path(__file__).parent))
 import mutation_campaign
 import project_fixture
+
+
+def test_registered_mutation_timeout_covers_known_good_suite():
+    config = tomllib.loads(
+        (REPO_ROOT / "cmru" / "run-gate.toml").read_text(encoding="utf-8")
+    )
+    command = "\n".join(config["lanes"]["mutation"]["argv"])
+    timeout = re.search(r"--timeout-seconds\s+([0-9]+)\b", command)
+
+    assert timeout is not None, "mutation lane must declare its candidate timeout"
+    assert int(timeout.group(1)) >= 600, (
+        "the tester-unified known-good CMRU suite took 439 seconds; "
+        "mutation control and candidates need a 600-second ceiling with headroom"
+    )
 
 
 def test_disposable_fixture_copies_shared_libraries_and_estate_configs(tmp_path, monkeypatch):

@@ -291,7 +291,7 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
         text = document.read_text(encoding="utf-8")
         normalized = " ".join(text.split())
         assert "--maxfail=1" in text
-        assert "120 seconds" in text or "120-second" in text
+        assert "600 seconds" in text or "600-second" in text
         assert "progress" in text.lower()
         assert "highest-version published" in normalized
         assert "cmru-v*" in text

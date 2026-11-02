@@ -211,7 +211,7 @@ fi
 mkdir -p .assay
 exec /opt/tester-venv/bin/python tools/mutation_campaign.py \
     --assay-source {worktree}/assay --repo-root {worktree} --project-root . \
-    --base "$BASE" --max-mutants 10000 --timeout-seconds 120 \
+    --base "$BASE" --max-mutants 10000 --timeout-seconds 600 \
     --evidence .assay/mutation-cmru.json \
     --progress .assay/progress-mutation-cmru.jsonl \
     --require-candidates --resume -- \

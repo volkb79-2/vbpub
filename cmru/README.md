@@ -1066,8 +1066,9 @@ candidate; advance the pin to a newly tagged release on the next release
 candidate.
 See the [Assay baseline design](docs/DESIGN-GUIDE.md#why-cmru-pins-assay-r1-to-a-release-tag-and-splits-r2-out).
 Mutation runs stop each
-failing candidate at its first failed test (`--maxfail=1`), cap each candidate
-at 120 seconds, and resume killed outcomes from `.assay/mutation-cmru.json` only
+failing candidate at its first failed test (`--maxfail=1`), cap the known-good
+control and each candidate at 600 seconds, and resume killed outcomes from
+`.assay/mutation-cmru.json` only
 while the test suite, copied fixture closure, and timeout are unchanged. Changing
 the timeout starts a fresh campaign because it changes whether a candidate could
 have completed. Resume also requires the selected Assay source tree to be clean
