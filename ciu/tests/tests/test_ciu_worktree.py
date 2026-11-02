@@ -31,6 +31,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from ciu import worktree  # noqa: E402
 from ciu.config_constants import GLOBAL_CONFIG_DEFAULTS, GLOBAL_CONFIG_RENDERED  # noqa: E402
 
+_REAL_DOCKER_NETWORK_EXISTS = worktree._docker_network_exists
+
 
 def create_path(*args, **kwargs):
     """Adapt path-oriented setup to CIU's typed ``create`` API."""
@@ -1491,17 +1493,17 @@ class TestManagedIdentityLifecycle:
         self, tmp_repo, fake_generate_env, monkeypatch
     ):
         shared = worktree._shared_worktree()
-        monkeypatch.setattr(
-            shared,
-            "create_workspace",
-            lambda *_a, **_kw: (_ for _ in ()).throw(
-                shared.WorkspaceError("cannot add", category="git-error")
-            ),
-        )
-        with pytest.raises(worktree.WorktreeError, match="cannot add"):
-            worktree.create(tmp_repo, "git-fails")
+        with monkeypatch.context() as m:
+            m.setattr(
+                shared,
+                "create_workspace",
+                lambda *_a, **_kw: (_ for _ in ()).throw(
+                    shared.WorkspaceError("cannot add", category="git-error")
+                ),
+            )
+            with pytest.raises(worktree.WorktreeError, match="cannot add"):
+                worktree.create(tmp_repo, "git-fails")
 
-        monkeypatch.undo()
         monkeypatch.setattr(worktree, "_clean_in", lambda *_a, **_kw: 0)
         monkeypatch.setattr(worktree, "_docker_network_exists", lambda _network: False)
         monkeypatch.setattr(
@@ -3927,13 +3929,17 @@ class TestRemovalHelpers:
             worktree._instance_record_from_shared(shared_record, record.logical_name)
         monkeypatch.setattr(Path, "lstat", original_lstat)
 
-        monkeypatch.setattr(
-            worktree, "read_instance_record",
-            lambda *_args: (_ for _ in ()).throw(ValueError("bad record")),
-        )
-        with pytest.raises(worktree.WorktreeError, match="could not read the shared CIU record"):
-            worktree._instance_record_from_shared(shared_record, record.logical_name)
-        monkeypatch.undo()
+        with monkeypatch.context() as m:
+            m.setattr(
+                worktree, "read_instance_record",
+                lambda *_args: (_ for _ in ()).throw(ValueError("bad record")),
+            )
+            with pytest.raises(
+                worktree.WorktreeError, match="could not read the shared CIU record"
+            ):
+                worktree._instance_record_from_shared(
+                    shared_record, record.logical_name
+                )
 
         record.record_path.unlink()
         metadata = dict(shared_record.metadata)
@@ -4134,13 +4140,15 @@ class TestRemovalRefusals:
         wrong_path = replace(
             shared_record, worktree_path=tmp_repo / "some-other-checkout"
         )
-        monkeypatch.setattr(
-            worktree, "_shared_record_for_logical_name", lambda *_args: wrong_path
-        )
-        with pytest.raises(worktree.WorktreeRemovalError, match="shared record.*names"):
-            worktree.remove(tmp_repo, record.logical_name)
+        with monkeypatch.context() as m:
+            m.setattr(
+                worktree, "_shared_record_for_logical_name", lambda *_args: wrong_path
+            )
+            with pytest.raises(
+                worktree.WorktreeRemovalError, match="shared record.*names"
+            ):
+                worktree.remove(tmp_repo, record.logical_name)
 
-        monkeypatch.undo()
         original_find_record = worktree.find_instance_record
         monkeypatch.setattr(
             worktree, "find_instance_record",
@@ -4155,15 +4163,22 @@ class TestRemovalRefusals:
         self, tmp_repo, fake_generate_env, monkeypatch
     ):
         record = worktree.create(tmp_repo, "preflight-errors")
-        monkeypatch.setattr(
-            worktree, "_ignored_state_summary",
-            lambda *_args: (_ for _ in ()).throw(worktree.WorktreeError("index unavailable")),
-        )
-        with pytest.raises(worktree.WorktreeRemovalError, match="index unavailable") as exc:
-            worktree.remove_document(tmp_repo, record.logical_name)
-        assert exc.value.phase_report["phases"]["resource_cleanup"] == "skipped-ignored-state-unknown"
+        with monkeypatch.context() as m:
+            m.setattr(
+                worktree, "_ignored_state_summary",
+                lambda *_args: (_ for _ in ()).throw(
+                    worktree.WorktreeError("index unavailable")
+                ),
+            )
+            with pytest.raises(
+                worktree.WorktreeRemovalError, match="index unavailable"
+            ) as exc:
+                worktree.remove_document(tmp_repo, record.logical_name)
+            assert (
+                exc.value.phase_report["phases"]["resource_cleanup"]
+                == "skipped-ignored-state-unknown"
+            )
 
-        monkeypatch.undo()
         monkeypatch.setattr(
             worktree, "_branch_removal_plan",
             lambda *_args, **_kwargs: (_ for _ in ()).throw(worktree.WorktreeError("tip missing")),
@@ -4207,14 +4222,16 @@ class TestRemovalRefusals:
         self, tmp_repo, fake_generate_env, monkeypatch
     ):
         record = worktree.create(tmp_repo, "clean-failure")
-        monkeypatch.setattr(
-            worktree, "_clean_in",
-            lambda *_args, **_kwargs: (_ for _ in ()).throw(worktree.WorktreeError("clean raised")),
-        )
-        with pytest.raises(worktree.WorktreeRemovalError, match="clean raised"):
-            worktree.remove_document(tmp_repo, record.logical_name)
+        with monkeypatch.context() as m:
+            m.setattr(
+                worktree, "_clean_in",
+                lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                    worktree.WorktreeError("clean raised")
+                ),
+            )
+            with pytest.raises(worktree.WorktreeRemovalError, match="clean raised"):
+                worktree.remove_document(tmp_repo, record.logical_name)
 
-        monkeypatch.undo()
         record = worktree.create(tmp_repo, "lease-failure")
         monkeypatch.setattr(worktree, "_clean_in", lambda *_args, **_kwargs: 0)
         monkeypatch.setattr(
@@ -5375,17 +5392,21 @@ def test_ensure_probe_permission_error_is_not_network_absence(
     tmp_repo, fake_generate_env, monkeypatch
 ):
     record = worktree.create(tmp_repo, "network-probe-denied")
-    # `fake_generate_env` stubs the network-existence probe itself; this test
-    # is about that probe's real Docker call, so restore it (create is done).
-    monkeypatch.undo()
-    monkeypatch.setattr(
-        worktree.procutil,
-        "docker",
-        lambda *_a, **_kw: (_ for _ in ()).throw(PermissionError("docker denied")),
-    )
-
-    with pytest.raises(worktree.RuntimeNetworkProbeError, match="docker denied"):
-        worktree.ensure(tmp_repo, "network-probe-denied")
+    # The fixture suppresses Docker probes during creation. Restore only the
+    # probe under test; keep its fake env generator and the other fixtures.
+    with monkeypatch.context() as m:
+        m.setattr(worktree, "_docker_network_exists", _REAL_DOCKER_NETWORK_EXISTS)
+        m.setattr(
+            worktree.procutil,
+            "docker",
+            lambda *_a, **_kw: (_ for _ in ()).throw(
+                PermissionError("docker denied")
+            ),
+        )
+        with pytest.raises(
+            worktree.RuntimeNetworkProbeError, match="docker denied"
+        ):
+            worktree.ensure(tmp_repo, "network-probe-denied")
 
     assert worktree.read_instance_record(record.record_path).state == "ready"
 

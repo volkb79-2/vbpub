@@ -206,10 +206,10 @@ def test_the_writer_never_reads_the_file_it_is_about_to_replace(
     def boom(*_a, **_kw):
         raise OSError("EIO")
 
-    monkeypatch.setattr(Path, "read_text", boom)
-    workspace_env.write_generated_facts(tmp_path, FACTS)
+    with monkeypatch.context() as m:
+        m.setattr(Path, "read_text", boom)
+        workspace_env.write_generated_facts(tmp_path, FACTS)
 
-    monkeypatch.undo()
     table = _generated_table(tmp_path / FACTS_FILE)
     assert table.pop("schema_version") == workspace_env.GENERATED_FACTS_SCHEMA_VERSION
     assert table == FACTS
@@ -319,7 +319,6 @@ def test_no_writer_anywhere_opens_the_operators_overlay_during_a_generate(
     monkeypatch.setattr(Path, "open", guard)
     _hermetic_generate(monkeypatch, tmp_path)
 
-    monkeypatch.undo()
     assert (tmp_path / OVERLAY).read_text(encoding="utf-8") == HAND_AUTHORED
 
 
