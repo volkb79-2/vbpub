@@ -150,3 +150,12 @@ run-gate worktree
 This does not release a third package. It verifies the source that CIU and CMRU
 embed; their own product lanes remain required for adapter, wheel, and release
 behavior.
+
+## Git version note
+
+The library resolves linked-worktree paths from `git worktree list` and refuses a
+non-absolute path. Git writes absolute links by default. If `worktree.useRelativePaths`
+is enabled on a host whose Git is older than 2.48, that Git lists the raw relative
+value and every worktree removal refuses with the non-absolute-path error. The refusal
+is safe: nothing is deleted. Use Git 2.48 or newer wherever relative worktree paths
+are enabled.
