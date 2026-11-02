@@ -5703,3 +5703,28 @@ path explicitly; temporary patches restore only their own behavior.
 or restore only the targeted attribute. The source-only simulation passed the
 full suite (4,761 passed, 9 skipped), and the two touched modules passed under
 the normal estate interpreter (392 passed).
+
+## CIU-156 — protected-state consent shows no reason, and size alone now triggers it
+
+**Status:** OPEN (filed 2026-11-02). Any ignored tree over 10,000 files or 1 GiB (a worktree `.venv` or `node_modules`) is now
+classified protected, so `rm` needs `--discard-protected-state` and `branches -y` skips it, but the message prints only
+"protected" and the counts. **Fix:** a `protected_reason` field (`name`, `descendant`, `walk-capped` or `unreadable`) in the
+message and in the JSON, so the consent keeps its meaning.
+
+## CIU-157 — the post-clean recheck refuses a harmless class downgrade
+
+**Status:** OPEN (filed 2026-11-02). After the clean, an entry that shrank below the size threshold or lost its protected
+descendant changes class from protected to a lower class and the recheck refuses the removal (`worktree.py` `_ignored_state_changed`).
+That refusal protects no data. **Fix:** allow a change from protected to a lower class; refuse only an escalation to protected.
+
+## CIU-158 — the ignored-state walk has no total limit per checkout
+
+**Status:** OPEN (filed 2026-11-02). The 10,000-file limit applies per ignored entry and a checkout may list up to 10,000
+entries, so a pathological tree reaches about 100 million `lstat` calls; `rm` walks twice and the `branches` survey walks every
+checkout. **Fix:** a total limit per checkout; when it runs out the remaining entries become protected because of the cap.
+
+## CIU-134 / CIU-151 status after stage 1 (2026-11-02)
+
+CIU-134 (privileged retry for root-owned paths) stays OPEN as stage 2; unreadable ignored entries are reported with a pointer
+to it. CIU-151 (root resolution for an old checkout) stays OPEN until the physical owner-label path behaviour is verified on a
+live stack.
