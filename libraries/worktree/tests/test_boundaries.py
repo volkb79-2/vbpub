@@ -38,6 +38,26 @@ def _git(path: Path, *args: str, check: bool = True) -> str:
     return result.stdout.strip()
 
 
+def _branch_exists(repository: Path, branch: str) -> bool:
+    result = subprocess.run(
+        ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
+        cwd=repository,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode not in (0, 1):
+        raise AssertionError(result.stderr)
+    return result.returncode == 0
+
+
+def _add_merged_linked_checkout(repository: Path, target: Path, branch: str) -> None:
+    _git(repository, "worktree", "add", "-q", "-b", branch, str(target), "HEAD")
+    (target / "README").write_text(f"{branch}\n", encoding="utf-8")
+    _git(target, "commit", "-q", "-am", f"commit {branch}")
+    _git(repository, "merge", "-q", "--ff-only", branch)
+
+
 @pytest.fixture
 def repository(tmp_path: Path) -> Path:
     repo = tmp_path / "repo"
@@ -471,9 +491,9 @@ def test_adopt_workspace_rejects_the_primary_checkout(repository):
         adopt_workspace(repository, repository)
 
 
-def test_remove_unrecorded_workspace_uses_the_shared_lifecycle(repository, tmp_path):
+def test_remove_unrecorded_workspace_deletes_merged_branch_by_default(repository, tmp_path):
     target = tmp_path / "legacy"
-    _git(repository, "worktree", "add", "-q", "-b", "legacy", str(target), "HEAD")
+    _add_merged_linked_checkout(repository, target, "legacy")
     with pytest.raises(WorkspaceError, match="branch changed"):
         remove_unrecorded_workspace(repository, target, expected_branch="wrong")
     assert target.is_dir()
@@ -482,7 +502,17 @@ def test_remove_unrecorded_workspace_uses_the_shared_lifecycle(repository, tmp_p
         repository, target, expected_branch="legacy", purpose="legacy-cleanup"
     )
     assert not target.exists()
-    assert _git(repository, "show-ref", "--verify", "--quiet", "refs/heads/legacy", check=False) == ""
+    assert not _branch_exists(repository, "legacy")
+
+
+def test_remove_unrecorded_workspace_can_keep_merged_branch(repository, tmp_path):
+    target = tmp_path / "legacy-kept"
+    _add_merged_linked_checkout(repository, target, "legacy-kept")
+
+    remove_unrecorded_workspace(repository, target, delete_branch=False)
+
+    assert not target.exists()
+    assert _branch_exists(repository, "legacy-kept")
 
 
 def test_adopt_workspace_rejects_wrong_top_and_family(monkeypatch, repository, tmp_path):
