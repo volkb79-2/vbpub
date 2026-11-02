@@ -657,3 +657,10 @@ to iobench's `seq1m|rand4k` workload names needs an explicit decision (a new wor
 **Acceptance:** a test that a journal with a confirmed downward shift yields export lines whose `plateau_bps` equals the window's median
 durable rate and whose `note` carries the recommendation key; `iobench ceilings add` accepts the printed line in a dry run; the design note's
 "v1 does NOT" list and MDT-023's "Next" paragraph point at each other.
+
+## MDT-032 - iogov: `test_prevention_checker_is_quiet_when_healthy_and_says_unknown_when_blind` reads the real filesystem fill (2026-11-02)
+
+The test builds its collectors from the live host (`covs(world)`) and asserts that no `fill` finding is raised. On a host whose
+root filesystem is above the fill threshold (observed at 74% used) the finding appears and the `smoke` lane fails although
+nothing in the change under test is related. **Fix:** make the test hermetic by injecting the fill collector (as the sibling test
+already does with `c["fill"]`), so verdicts do not depend on the machine's disk usage.
