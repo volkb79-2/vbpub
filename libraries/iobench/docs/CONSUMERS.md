@@ -259,7 +259,9 @@ Run-Gate writes the Assay verdict and progress to
 `.assay/verdict-iobench.json` and `.assay/progress-iobench.jsonl`. Its
 resumable mutation state is stored under the repository's ignored
 `.run-gate/assay-state/` area; rerun the same lane on the same tree after a
-budget stop.
+budget stop. The former command lane used `.assay/mutation-state-r2` and
+`.assay/progress-r2.jsonl`; those files are not imported, so an in-progress
+campaign from that configuration must be restarted under the native lane.
 
 ## 10. What a refusal looks like
 

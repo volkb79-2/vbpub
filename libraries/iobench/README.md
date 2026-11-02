@@ -57,4 +57,6 @@ four workers; it runs serially when the prepared workspace does not support
 Assay's btrfs cheap-clone requirement. See the
 [gate consumer guide](docs/CONSUMERS.md#repository-gate) for how to run it and
 the [design guide](docs/DESIGN-GUIDE.md#registered-repository-gate) for why
-the R2 lane uses native Assay dispatch.
+the R2 lane uses native Assay dispatch. Campaigns started with the former
+command lane do not resume after this storage change; see the consumer guide
+for the state paths.

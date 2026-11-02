@@ -138,14 +138,24 @@ lane refuses every `--io-sync` override, including
 ephemeral lane. Run-Gate refuses commas, colons, or newlines in CoW and
 repository mount paths before any Docker call; extra-mount paths reject commas
 and newlines, with colon reserved as their list separator. `ram_target` and
-lane-level `candidate_ram` remain Run-Gate metadata. Native R2 Assay lanes
+lane-level `candidate_ram` stay inside Run-Gate and are not forwarded to Assay.
+Native R2 Assay lanes
 can opt into worker selection with `jobs = N` or `jobs = "auto"`; the
 `--jobs N|auto` lane flag overrides that setting. Auto derives a count from
-Assay's `jobs_max`, CPU and memory caps, measured average candidate RSS (or a
-conservative 1 GiB estimate before measurements), and the remaining candidate
-estimate. Run-Gate selects at most one worker unless Cowtree confirms the
-btrfs CoW workspace Assay 11.0 requires. With no `jobs` setting, Run-Gate
-leaves Assay's serial default untouched. See the
+Assay's `jobs_max`, an enforced CPU cap, an enforced memory cap, the greater
+of declared candidate RAM and measured candidate p95 RSS (or the conservative
+1 GiB estimate when neither is available), and the remaining candidate
+estimate. With no measurement history, a declared candidate RAM value is used
+by itself. The selected estimate source is shown in the INFO line and recorded
+in Run-Gate evidence.
+Without an enforced CPU or memory cap, auto stays at one worker even if the
+probe can see more host capacity. Run-Gate sends `--jobs` only to Assay 11.0.0
+or newer; old or unknown versions keep auto/one-worker runs serial, and an
+explicit count above one is refused. Run-Gate also selects at most one worker
+unless Cowtree confirms the btrfs CoW workspace Assay requires. With no
+`jobs` setting, Run-Gate leaves Assay's serial default untouched. An auto
+selection may run the capacity and Cowtree probe during `--dry-run`, but it
+does not start the judged mutation lane. See the
 [consumer example](CONSUMERS.md#native-r2-worker-selection) and
 [design rationale](docs/DESIGN-GUIDE.md#native-r2-worker-selection). A
 mixed-mode sequence is stored per

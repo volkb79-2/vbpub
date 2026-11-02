@@ -35938,12 +35938,21 @@ class TestR2JobsPR3:
         progress.write_text("not json\n" + "".join(
             json.dumps(event) + "\n" for event in events))
         assert run_gate.assay_progress_candidate_ram(
-            progress, commit="current") == (384, 2)
-        assert run_gate.assay_progress_candidate_ram(progress) == (938, 3)
+            progress, commit="current") == (512, 2)
+        assert run_gate.assay_progress_candidate_ram(progress) == (2048, 3)
         assert run_gate.assay_progress_candidates_remaining(
             progress, "current", 100) == (0, "matching-progress")
         assert run_gate.assay_progress_candidates_remaining(
             progress, "new", 100) == (12, "prior-progress-plan-estimate")
+
+    def test_assay_progress_candidate_ram_uses_nearest_rank_p95(self, tmp_path):
+        progress = tmp_path / "progress.jsonl"
+        events = [{"event": "run", "commit": "current"}]
+        events.extend({"event": "candidate", "peak_rss_bytes": size}
+                      for size in range(1, 21))
+        progress.write_text("".join(json.dumps(event) + "\n"
+                                      for event in events))
+        assert run_gate.assay_progress_candidate_ram(progress) == (19, 20)
 
     def test_progress_reader_closes_non_regular_files_and_handles_read_errors(
             self, tmp_path, monkeypatch):
@@ -36010,7 +36019,7 @@ class TestR2JobsPR3:
         }
         finished = run_gate.finish_run_record(record, exit_code=0)
         assert finished["r2_jobs"] == {"jobs": 3, "mode": "auto"}
-        assert finished["r2_candidate_ram_avg_bytes"] == 500
+        assert finished["r2_candidate_ram_p95_bytes"] == 600
         assert finished["r2_candidate_ram_samples"] == 2
         assert "_r2_progress_path" not in finished
         assert finished["history_eligible"] is True
@@ -36027,7 +36036,7 @@ class TestR2JobsPR3:
             "verdict": "PASS", "excluded_reason": None,
         }
         finished = run_gate.finish_run_record(record, exit_code=0)
-        assert "r2_candidate_ram_avg_bytes" not in finished
+        assert "r2_candidate_ram_p95_bytes" not in finished
         assert "r2_candidate_ram_samples" not in finished
 
     def test_attached_r2_run_keeps_original_selection_and_progress_path(self):
@@ -36081,24 +36090,40 @@ class TestR2JobsPR3:
         run_gate.history_dir(project).mkdir()
         store = {"schema": run_gate.HISTORY_SCHEMA, "lanes": {
             "r2": {"latest": None, "history": [{
-                "r2_candidate_ram_avg_bytes": 1000,
+                "r2_candidate_ram_p95_bytes": 1000,
                 "r2_candidate_ram_samples": 2,
             }, {
-                "r2_candidate_ram_avg_bytes": "unknown",
+                "r2_candidate_ram_p95_bytes": "unknown",
                 "r2_candidate_ram_samples": 1,
             }]}}}
         run_gate._write_json_atomic(store, run_gate.history_store_path(project))
         assert run_gate.candidate_ram_from_history(
-            project, "r2", progress) == (1000, 2, "run-gate-history")
+            project, "r2", progress) == (1000, 2, "measured p95")
+        assert run_gate.candidate_ram_from_history(
+            project, "r2", progress, declared_candidate_ram_bytes=1200) == (
+                1200, 2, "declared")
+        assert run_gate.candidate_ram_from_history(
+            project, "r2", progress, declared_candidate_ram_bytes=900) == (
+                1000, 2, "measured p95")
         run_gate._write_json_atomic(run_gate._empty_history_store(),
                                     run_gate.history_store_path(project))
         assert run_gate.candidate_ram_from_history(
-            project, "r2", progress) == (500, 1, "assay-progress-history")
+            project, "r2", progress) == (500, 1, "measured p95")
+        assert run_gate.candidate_ram_from_history(
+            project, "r2", progress, declared_candidate_ram_bytes=600) == (
+                600, 1, "declared")
         progress.unlink()
         assert run_gate.candidate_ram_from_history(
             project, "r2", progress) == (
                 run_gate.R2_CONSERVATIVE_CANDIDATE_RAM_BYTES, 0,
-                "conservative-default-1GiB")
+                "default")
+        assert run_gate.candidate_ram_from_history(
+            project, "r2", progress, declared_candidate_ram_bytes=2048) == (
+                2048, 0, "declared")
+        with pytest.raises(run_gate.GateError,
+                           match="declared candidate RAM must be a positive"):
+            run_gate.candidate_ram_from_history(
+                project, "r2", progress, declared_candidate_ram_bytes=0)
 
     @pytest.mark.parametrize(
         "event,expected",
@@ -36119,33 +36144,42 @@ class TestR2JobsPR3:
         assert run_gate._candidate_peak_rss(event) == expected
 
     @pytest.mark.parametrize(
-        "lane,capacity,expected",
+        "lane,env,capacity,expected",
         [
-            ({"resources": {"memory": "2g"}},
-             {"memory_cap_bytes": 1024}, (1024, "lane memory cap and environment limit")),
-            ({"memory": "2g"}, None, (2 * 1024**3, "lane memory cap")),
-            ({"resources": {"memory": "3g"}}, None,
-             (3 * 1024**3, "lane memory cap")),
-            ({}, {"memory_cap_bytes": 4096},
-             (4096, "environment memory limit")),
-            ({}, None, (None, "memory limit unavailable")),
+            ({"resources": {"memory": "2g"}}, {"mode": "ephemeral"},
+             {"memory_cap_bytes": 1024},
+             (1024, "enforced lane memory cap and observed cgroup limit")),
+            ({"memory": "2g"}, {"mode": "ephemeral"}, None,
+             (2 * 1024**3, "enforced lane memory cap")),
+            ({"resources": {"memory": "3g"}}, {"mode": "host"}, None,
+             (None, "no enforced lane memory cap")),
+            ({}, {"mode": "ephemeral"}, {"memory_cap_bytes": 4096},
+             (None, "no enforced lane memory cap")),
+            ({}, {"mode": "exec"}, {"memory_cap_bytes": 4096},
+             (4096, "exec container memory.max")),
+            ({}, {"mode": "exec"}, None,
+             (None, "no enforced lane memory cap")),
         ],
     )
-    def test_memory_cap_uses_lane_and_observed_environment_limits(
-            self, lane, capacity, expected):
-        assert run_gate._r2_memory_cap(lane, capacity) == expected
+    def test_memory_cap_uses_only_enforced_lane_or_exec_container_limits(
+            self, lane, env, capacity, expected):
+        assert run_gate._r2_memory_cap(lane, capacity, env) == expected
 
     @pytest.mark.parametrize(
         "lane,env,capacity,expected",
         [
-            ({"resources": {"cpus": "4"}}, {}, {"cpu_count": 2},
+            ({"resources": {"cpus": "4"}}, {"mode": "ephemeral"}, {"cpu_count": 2},
              (2, "lane resources.cpus; environment affinity 2")),
-            ({"resources": {"cpus": "2.5"}}, {}, None,
+            ({"resources": {"cpus": "2.5"}}, {"mode": "ephemeral"}, None,
              (2, "lane resources.cpus")),
-            ({}, {"resources": {"cpus": "3"}}, None,
+            ({}, {"mode": "ephemeral", "resources": {"cpus": "3"}}, None,
              (3, "environment resources.cpus")),
-            ({}, {}, {"cpu_count": 7}, (7, "environment CPU affinity")),
-            ({}, {}, None, (1, "capacity unavailable; one-worker cap")),
+            ({}, {"mode": "ephemeral"}, {"cpu_count": 7},
+             (1, "no declared CPU cap; one-worker cap")),
+            ({}, {"mode": "exec", "resources": {"cpus": "3"}},
+             {"cpu_count": 7}, (1, "no enforced CPU cap; one-worker cap")),
+            ({}, {"mode": "ephemeral"}, None,
+             (1, "no declared CPU cap; one-worker cap")),
         ],
     )
     def test_cpu_cap_uses_declared_and_observed_capacity(
@@ -36190,6 +36224,7 @@ class TestR2JobsPR3:
         assert (result is not None) is expected
         assert seen["env"] == {"mode": "host"}
         assert "cowtree.detect" in seen["script"]
+        assert "SC_PHYS_PAGES" not in run_gate._R2_CAPACITY_PROBE_CODE
 
     @pytest.mark.parametrize("failure", [
         run_gate.GateError("probe construction failed"),
@@ -36236,17 +36271,33 @@ class TestR2JobsPR3:
             self, ram_target, cap, expected):
         assert run_gate.r2_memory_budget_bytes(ram_target, cap) == expected
 
+    @pytest.mark.parametrize(
+        "declared,estimate,samples,source,expected_jobs",
+        [("256b", 256, 0, "declared", 3),
+         (None, 300, 4, "measured p95", 2),
+         (None, run_gate.R2_CONSERVATIVE_CANDIDATE_RAM_BYTES, 0,
+          "default", 1)],
+    )
     def test_configure_auto_jobs_binds_inventory_history_and_caps(
-            self, tmp_path, monkeypatch, capsys):
+            self, tmp_path, monkeypatch, capsys,
+            declared, estimate, samples, source, expected_jobs):
+        resources = {"cpus": "3", "memory": "2g"}
+        if declared is not None:
+            resources["candidate_ram"] = declared
         lane = {"kind": "assay", "assay_lane": "mutation",
                 "environment": "runner", "jobs": "auto",
+                "resources": resources,
                 "_assay_inventory": {"entry": {
                     "rigor": ["R0", "R2"],
                     "mutation": {"jobs_max": 4, "max_mutants": 20},
-                }}}
+                }, "assay_version": "11.0.0"}}
         monkeypatch.setattr(run_gate, "head_commit", lambda _worktree: "commit")
+        def candidate_history(*_args, **kwargs):
+            assert kwargs["declared_candidate_ram_bytes"] == (
+                256 if declared is not None else None)
+            return estimate, samples, source
         monkeypatch.setattr(run_gate, "candidate_ram_from_history",
-                            lambda *_args: (300, 4, "run-gate-history"))
+                            candidate_history)
         monkeypatch.setattr(run_gate, "assay_progress_candidates_remaining",
                             lambda *_args: (6, "matching-progress"))
         monkeypatch.setattr(run_gate, "r2_capacity_probe", lambda *_args: {
@@ -36255,16 +36306,23 @@ class TestR2JobsPR3:
             "filesystem": "btrfs", "cheap_clone_reason": "supported-btrfs",
         })
         selected = run_gate.configure_r2_jobs(
-            lane, "r2", None, {"ram_target": "75%"}, {}, "runner",
+            lane, "r2", None, {"ram_target": "75%"},
+            {"mode": "ephemeral"}, "runner",
             tmp_path, tmp_path, tmp_path)
-        assert selected["jobs"] == 2
-        assert selected["candidate_ram_source"] == "run-gate-history"
+        assert selected["jobs"] == expected_jobs
+        assert selected["candidate_ram_source"] == source
+        assert selected["candidate_ram_bytes"] == estimate
         assert lane["_r2_jobs_selection"] is selected
+        record = {}
+        run_gate.record_r2_jobs_selection(
+            record, {"assay_lane": "mutation"}, selected, tmp_path)
+        assert record["r2_jobs"]["candidate_ram_source"] == source
         run_gate.disclose_r2_jobs("r2", selected)
         output = capsys.readouterr().out
         assert output.count("run-gate: R2 jobs:") == 1
-        assert "N=2" in output and "jobs_max=4" in output
-        assert "candidate_ram_avg_bytes=300" in output
+        assert f"N={expected_jobs}" in output and "jobs_max=4" in output
+        assert f"candidate_ram_estimate_bytes={estimate}" in output
+        assert f"({source}, n={samples})" in output
         assert "candidates_remaining=6" in output
 
     def test_configured_explicit_jobs_are_used_without_cli(
@@ -36273,10 +36331,10 @@ class TestR2JobsPR3:
                 "environment": "runner", "jobs": 2,
                 "_assay_inventory": {"entry": {
                     "rigor": ["R2"], "mutation": {"jobs_max": 4},
-                }}}
+                }, "assay_version": "11.0.0"}}
         monkeypatch.setattr(run_gate, "head_commit", lambda _worktree: "commit")
         monkeypatch.setattr(run_gate, "candidate_ram_from_history",
-                            lambda *_args: (300, 4, "run-gate-history"))
+                            lambda *_args, **_kwargs: (300, 4, "measured p95"))
         monkeypatch.setattr(run_gate, "assay_progress_candidates_remaining",
                             lambda *_args: (6, "matching-progress"))
         monkeypatch.setattr(run_gate, "r2_capacity_probe", lambda *_args: {
@@ -36300,7 +36358,7 @@ class TestR2JobsPR3:
                 }}}
         monkeypatch.setattr(run_gate, "head_commit", lambda _worktree: None)
         monkeypatch.setattr(run_gate, "candidate_ram_from_history",
-                            lambda *_args: (1024, 0, "default"))
+                            lambda *_args, **_kwargs: (1024, 0, "default"))
         monkeypatch.setattr(run_gate, "r2_capacity_probe",
                             lambda *_args: pytest.fail("default must not probe"))
         selected = run_gate.configure_r2_jobs(
@@ -36323,6 +36381,71 @@ class TestR2JobsPR3:
             tmp_path, tmp_path, tmp_path)
         assert selected["jobs_max"] == 1
         assert selected["jobs"] == 1
+
+    @pytest.mark.parametrize(
+        "version,supported",
+        [("10.9.9", False), ("11.0.0", True), ("11.0.1", True),
+         (None, False)],
+    )
+    def test_assay_jobs_forwarding_obeys_inventory_version(
+            self, tmp_path, monkeypatch, version, supported):
+        lane = {"kind": "assay", "assay_lane": "mutation",
+                "jobs": "auto", "environment": "runner",
+                "resources": {"cpus": "8", "memory": "4g"},
+                "_assay_inventory": {
+                    "entry": {"rigor": ["R2"], "mutation": {
+                        "jobs_max": 4, "max_mutants": 10}},
+                    "assay_version": version,
+                }}
+        monkeypatch.setattr(run_gate, "head_commit", lambda _worktree: None)
+        monkeypatch.setattr(run_gate, "candidate_ram_from_history",
+                            lambda *_args, **_kwargs: (100, 1, "measured p95"))
+        monkeypatch.setattr(run_gate, "assay_progress_candidates_remaining",
+                            lambda *_args: (8, "plan"))
+        if supported:
+            monkeypatch.setattr(run_gate, "r2_capacity_probe", lambda *_args: {
+                "cpu_count": 8, "memory_cap_bytes": 4 * 1024**3,
+                "cheap_clone": True, "backend": "btrfs",
+                "filesystem": "btrfs", "cheap_clone_reason": "supported-btrfs",
+            })
+        else:
+            monkeypatch.setattr(run_gate, "r2_capacity_probe",
+                                lambda *_args: pytest.fail(
+                                    "unsupported Assay must not be probed"))
+        selected = run_gate.configure_r2_jobs(
+            lane, "r2", None, {}, {"mode": "ephemeral"}, "runner",
+            tmp_path, tmp_path, tmp_path)
+        assert selected["jobs"] == (4 if supported else 1)
+        assert selected["forward"] is supported
+        assert selected["assay_version"] == version
+
+    @pytest.mark.parametrize("version", ["10.9.9", None])
+    def test_explicit_parallel_jobs_require_assay_110(
+            self, tmp_path, version):
+        lane = {"kind": "assay", "assay_lane": "mutation",
+                "_assay_inventory": {
+                    "entry": {"rigor": ["R2"], "mutation": {"jobs_max": 4}},
+                    "assay_version": version,
+                }}
+        with pytest.raises(run_gate.GateError,
+                           match="requires assay >= 11\\.0\\.0"):
+            run_gate.configure_r2_jobs(
+                lane, "r2", 2, {}, {"mode": "ephemeral"}, "runner",
+                tmp_path, tmp_path, tmp_path)
+
+    def test_unsupported_assay_keeps_explicit_one_serial_and_unforwarded(
+            self, tmp_path, monkeypatch):
+        lane = {"kind": "assay", "assay_lane": "mutation", "jobs": 1,
+                "_assay_inventory": {
+                    "entry": {"rigor": ["R2"], "mutation": {"jobs_max": 4}},
+                    "assay_version": "10.9.9",
+                }}
+        monkeypatch.setattr(run_gate, "head_commit", lambda _worktree: None)
+        selected = run_gate.configure_r2_jobs(
+            lane, "r2", None, {}, {}, "runner",
+            tmp_path, tmp_path, tmp_path)
+        assert selected["jobs"] == 1
+        assert selected["forward"] is False
 
     @pytest.mark.parametrize(
         "request_value,entry,match",
@@ -36349,16 +36472,16 @@ class TestR2JobsPR3:
                     lane, "fixture", request_value, {}, {}, "runner",
                     tmp_path, tmp_path, tmp_path)
 
-    def test_auto_uses_observed_memory_limit_when_lane_has_no_memory_cap(
-            self, tmp_path, monkeypatch):
+    def test_auto_uses_no_memory_cap_when_lane_has_none(
+            self, tmp_path, monkeypatch, capsys):
         lane = {"kind": "assay", "assay_lane": "mutation", "jobs": "auto",
                 "environment": "runner",
                 "_assay_inventory": {"entry": {
                     "rigor": ["R2"], "mutation": {"jobs_max": 8},
-                }}}
+                }, "assay_version": "11.0.0"}}
         monkeypatch.setattr(run_gate, "head_commit", lambda _worktree: "commit")
         monkeypatch.setattr(run_gate, "candidate_ram_from_history",
-                            lambda *_args: (100, 1, "history"))
+                            lambda *_args, **_kwargs: (100, 1, "measured p95"))
         monkeypatch.setattr(run_gate, "assay_progress_candidates_remaining",
                             lambda *_args: (8, "plan"))
         monkeypatch.setattr(run_gate, "r2_capacity_probe", lambda *_args: {
@@ -36367,21 +36490,24 @@ class TestR2JobsPR3:
         })
         selected = run_gate.configure_r2_jobs(
             lane, "r2", None, {"ram_target": "50%"},
-            {"resources": {"cpus": "8"}}, "runner",
+            {"mode": "ephemeral", "resources": {"cpus": "8"}}, "runner",
             tmp_path, tmp_path, tmp_path)
-        assert selected["memory_cap_bytes"] == 1024
-        assert selected["memory_budget_bytes"] == 512
-        assert selected["jobs"] == 5
+        assert selected["memory_cap_bytes"] is None
+        assert selected["memory_cap_source"] == "no enforced lane memory cap"
+        assert selected["memory_budget_bytes"] == 0
+        assert selected["jobs"] == 1
+        run_gate.disclose_r2_jobs("r2", selected)
+        assert "no enforced lane memory cap" in capsys.readouterr().out
 
     def test_cli_request_overrides_toml_jobs(self, tmp_path, monkeypatch):
         lane = {"kind": "assay", "assay_lane": "mutation",
                 "environment": "runner", "jobs": 1,
                 "_assay_inventory": {"entry": {
                     "rigor": ["R2"], "mutation": {"jobs_max": 4},
-                }}}
+                }, "assay_version": "11.0.0"}}
         monkeypatch.setattr(run_gate, "head_commit", lambda _worktree: "commit")
         monkeypatch.setattr(run_gate, "candidate_ram_from_history",
-                            lambda *_args: (100, 0, "conservative"))
+                            lambda *_args, **_kwargs: (100, 0, "default"))
         monkeypatch.setattr(run_gate, "assay_progress_candidates_remaining",
                             lambda *_args: (1, "fallback"))
         monkeypatch.setattr(run_gate, "r2_capacity_probe", lambda *_args: {
@@ -36408,6 +36534,7 @@ class TestR2JobsPR3:
                 tmp_path, tmp_path, tmp_path)
         lane["_assay_inventory"]["entry"] = {
             "rigor": ["R0", "R2"], "mutation": {"jobs_max": 1}}
+        lane["_assay_inventory"]["assay_version"] = "11.0.0"
         monkeypatch.setattr(run_gate, "r2_capacity_probe",
                             lambda *_args: pytest.fail("ceiling checked before probe"))
         with pytest.raises(run_gate.GateError, match=r"jobs value 2 exceeds.*\(1\)"):
@@ -36431,6 +36558,13 @@ class TestR2JobsPR3:
 
     def test_assay_inner_keeps_assay_default_when_unconfigured(self):
         lane = {"assay_lane": "mutation", "pins": {}}
+        inner = run_gate.build_assay_inner(
+            lane, Path("/repo/project"), Path("/repo"))
+        assert "--jobs" not in inner
+
+    def test_assay_inner_omits_unavailable_jobs_flag(self):
+        lane = {"assay_lane": "mutation", "pins": {},
+                "_r2_jobs_selection": {"jobs": 1, "forward": False}}
         inner = run_gate.build_assay_inner(
             lane, Path("/repo/project"), Path("/repo"))
         assert "--jobs" not in inner

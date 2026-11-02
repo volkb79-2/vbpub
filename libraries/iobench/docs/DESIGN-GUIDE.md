@@ -176,6 +176,8 @@ Run-Gate apply and record its R2 `jobs` policy, while Assay owns the
 verdict, progress stream and candidate state contract. Run-Gate moves
 resumable state under the checkout's ignored `.run-gate/` area so retries
 through ephemeral worktrees retain the same campaign state.
+The former command lane's state and progress paths are not imported: the
+native lane starts a new campaign state under the Run-Gate storage contract.
 
 The Assay lane declares `jobs_max = 4`; Run-Gate's `jobs = "auto"` policy
 uses measured candidate RSS when available, otherwise a conservative 1 GiB

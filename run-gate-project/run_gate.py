@@ -4658,10 +4658,10 @@ def select_r2_jobs(request: int | str | None, *, jobs_max: int,
                    source: str | None = None) -> dict:
     """Select and validate the worker count for one native R2 lane.
 
-    The `auto` formula is intentionally owned by Run-Gate: Assay only
-    validates the explicit result against `jobs_max`. Missing or unusable
-    caps are represented by the inputs supplied by the caller, which clamps
-    an auto request to one worker rather than inventing capacity.
+    The `auto` formula is intentionally owned by Run-Gate: Assay does not
+    derive a worker count. Missing or unusable caps are represented by the
+    inputs supplied by the caller, which clamps auto to one worker instead of
+    inventing capacity.
     """
     if type(jobs_max) is not int or jobs_max < 1:
         fail(f"Assay inventory has invalid mutation.jobs_max {jobs_max!r}")
@@ -5146,10 +5146,10 @@ def finish_run_record(record: dict, *, exit_code: int | None = None,
     r2_progress_path = record.pop("_r2_progress_path", None)
     if isinstance(r2_progress_path, str) and isinstance(
             record.get("r2_jobs"), dict):
-        average, samples = assay_progress_candidate_ram(
+        p95, samples = assay_progress_candidate_ram(
             Path(r2_progress_path), commit=record.get("commit"))
-        if average is not None and samples:
-            record["r2_candidate_ram_avg_bytes"] = average
+        if p95 is not None and samples:
+            record["r2_candidate_ram_p95_bytes"] = p95
             record["r2_candidate_ram_samples"] = samples
     record.pop("_assay_identity_mode", None)
     record.setdefault("history_eligible", False)
@@ -10407,7 +10407,7 @@ def _candidate_peak_rss(event: dict) -> int | None:
 
 def assay_progress_candidate_ram(path: Path, *, commit: str | None = None
                                 ) -> tuple[int | None, int]:
-    """Return the mean per-candidate peak RSS and its sample count."""
+    """Return nearest-rank p95 candidate peak RSS and the sample count."""
     samples = []
     for segment in _assay_progress_segments(path):
         header = segment["header"]
@@ -10420,7 +10420,11 @@ def assay_progress_candidate_ram(path: Path, *, commit: str | None = None
                     samples.append(peak)
     if not samples:
         return None, 0
-    return sum(samples) // len(samples), len(samples)
+    samples.sort()
+    # Nearest-rank p95 is the highest observation for histories shorter than
+    # twenty candidates, which avoids an average hiding a high-RSS candidate.
+    index = math.ceil(0.95 * len(samples)) - 1
+    return samples[index], len(samples)
 
 
 def assay_progress_candidates_remaining(path: Path, commit: str,
@@ -10465,27 +10469,41 @@ def assay_progress_candidates_remaining(path: Path, commit: str,
 
 
 def candidate_ram_from_history(project_dir: Path, lane_name: str,
-                               progress_path: Path
+                               progress_path: Path, *,
+                               declared_candidate_ram_bytes: int | None = None
                                ) -> tuple[int, int, str]:
-    """Use recent Run-Gate samples, then Assay's append-only progress history."""
+    """Use max(declared RSS, measured p95), or the declared/default value.
+
+    Run-Gate history stores each run's p95 rather than its raw observations;
+    taking the highest recent p95 remains conservative without pretending
+    those summaries can be recombined into a new percentile.
+    """
+    if (declared_candidate_ram_bytes is not None
+            and (type(declared_candidate_ram_bytes) is not int
+                 or declared_candidate_ram_bytes < 1)):
+        fail("declared candidate RAM must be a positive integer byte count")
     store = load_history_store(history_store_path(project_dir))
     entries = lane_history_report(store, lane_name)["history"]
-    weighted_bytes = 0
+    measured_p95s = []
     sample_count = 0
     for entry in entries:
-        average = entry.get("r2_candidate_ram_avg_bytes")
+        p95 = entry.get("r2_candidate_ram_p95_bytes")
         samples = entry.get("r2_candidate_ram_samples")
-        if (type(average) is int and average > 0
+        if (type(p95) is int and p95 > 0
                 and type(samples) is int and samples > 0):
-            weighted_bytes += average * samples
+            measured_p95s.append(p95)
             sample_count += samples
-    if sample_count:
-        return weighted_bytes // sample_count, sample_count, "run-gate-history"
-    average, samples = assay_progress_candidate_ram(progress_path)
-    if average is not None and samples:
-        return average, samples, "assay-progress-history"
-    return (R2_CONSERVATIVE_CANDIDATE_RAM_BYTES, 0,
-            "conservative-default-1GiB")
+    measured_p95 = max(measured_p95s) if measured_p95s else None
+    if measured_p95 is None:
+        measured_p95, sample_count = assay_progress_candidate_ram(progress_path)
+    if measured_p95 is not None and sample_count:
+        if (declared_candidate_ram_bytes is not None
+                and declared_candidate_ram_bytes >= measured_p95):
+            return declared_candidate_ram_bytes, sample_count, "declared"
+        return measured_p95, sample_count, "measured p95"
+    if declared_candidate_ram_bytes is not None:
+        return declared_candidate_ram_bytes, 0, "declared"
+    return R2_CONSERVATIVE_CANDIDATE_RAM_BYTES, 0, "default"
 
 
 _R2_CAPACITY_PROBE_CODE = r'''import json, os, pathlib
@@ -10508,13 +10526,6 @@ for name in ("/sys/fs/cgroup/memory.max",
         value = None
     if value is not None:
         limits.append(value)
-try:
-    pages = os.sysconf("SC_PHYS_PAGES")
-    page_size = os.sysconf("SC_PAGE_SIZE")
-    if type(pages) is int and type(page_size) is int and pages > 0 and page_size > 0:
-        limits.append(pages * page_size)
-except (OSError, ValueError, AttributeError):
-    pass
 memory_cap = min(limits) if limits else None
 try:
     cpus = len(os.sched_getaffinity(0))
@@ -10614,6 +10625,8 @@ def r2_capacity_probe(docker: str | None, lane: dict, env: dict,
 
 def _r2_cpu_cap(lane: dict, env: dict,
                 capacity: dict | None) -> tuple[int, str]:
+    if env.get("mode") != "ephemeral":
+        return 1, "no enforced CPU cap; one-worker cap"
     lane_cpus = lane.get("resources", {}).get("cpus")
     env_cpus = env.get("resources", {}).get("cpus")
     declared = lane_cpus or env_cpus
@@ -10624,24 +10637,26 @@ def _r2_cpu_cap(lane: dict, env: dict,
         if type(observed) is int and observed > 0:
             return min(cap, observed), f"{declared_source}; environment affinity {observed}"
         return cap, declared_source
-    if type(observed) is int and observed > 0:
-        return observed, "environment CPU affinity"
-    return 1, "capacity unavailable; one-worker cap"
+    return 1, "no declared CPU cap; one-worker cap"
 
 
-def _r2_memory_cap(lane: dict, capacity: dict | None
+def _r2_memory_cap(lane: dict, capacity: dict | None, env: dict
                    ) -> tuple[int | None, str]:
-    lane_memory = lane.get("resources", {}).get("memory") or lane.get("memory")
     observed = capacity.get("memory_cap_bytes") if isinstance(capacity, dict) else None
+    if env.get("mode") == "exec":
+        if type(observed) is int and observed > 0:
+            return observed, "exec container memory.max"
+        return None, "no enforced lane memory cap"
+    if env.get("mode") != "ephemeral":
+        return None, "no enforced lane memory cap"
+    lane_memory = lane.get("resources", {}).get("memory") or lane.get("memory")
     if lane_memory:
         declared_bytes = parse_size_bytes(lane_memory)
         if type(observed) is int and observed > 0:
             return (min(declared_bytes, observed),
-                    "lane memory cap and environment limit")
-        return declared_bytes, "lane memory cap"
-    if type(observed) is int and observed > 0:
-        return observed, "environment memory limit"
-    return None, "memory limit unavailable"
+                    "enforced lane memory cap and observed cgroup limit")
+        return declared_bytes, "enforced lane memory cap"
+    return None, "no enforced lane memory cap"
 
 
 def r2_memory_budget_bytes(ram_target: str, memory_cap_bytes: int | None) -> int:
@@ -10693,13 +10708,26 @@ def configure_r2_jobs(lane: dict, lane_name: str,
     if type(jobs_max) is not int or jobs_max < 1:
         fail(f"Assay lane {lane.get('assay_lane')!r} inventory has invalid "
              f"mutation.jobs_max {jobs_max!r}")
+    assay_version = inventory.get("assay_version")
+    assay_jobs_supported = (
+        isinstance(assay_version, str)
+        and assay_inventory_version_meets_floor(assay_version, (11, 0, 0)))
+    if type(request) is int and request > 1 and not assay_jobs_supported:
+        fail(f"--jobs {request} requires assay >= 11.0.0; inventory reports "
+             f"assay_version {assay_version!r}")
     if type(request) is int and request > jobs_max:
         fail(f"jobs value {request} exceeds Assay lane mutation.jobs_max "
              f"({jobs_max})")
 
     progress_path = project_dir / assay_progress_rel(lane["assay_lane"])
+    lane_resources = lane.get("resources")
+    declared_candidate_ram = (lane_resources.get("candidate_ram")
+                              if isinstance(lane_resources, dict) else None)
+    declared_candidate_ram_bytes = (parse_size_bytes(declared_candidate_ram)
+                                    if declared_candidate_ram else None)
     candidate_ram, samples, candidate_ram_source = candidate_ram_from_history(
-        project_dir, lane_name, progress_path)
+        project_dir, lane_name, progress_path,
+        declared_candidate_ram_bytes=declared_candidate_ram_bytes)
     max_mutants = mutation.get("max_mutants")
     fallback = max_mutants if type(max_mutants) is int and max_mutants > 0 else 1
     commit = head_commit(worktree)
@@ -10710,7 +10738,8 @@ def configure_r2_jobs(lane: dict, lane_name: str,
         candidates_remaining, remaining_source = assay_progress_candidates_remaining(
             progress_path, commit, fallback)
 
-    needs_probe = request == "auto" or (type(request) is int and request > 1)
+    needs_probe = assay_jobs_supported and (
+        request == "auto" or (type(request) is int and request > 1))
     capacity = None
     if needs_probe:
         docker = shutil.which("docker")
@@ -10724,9 +10753,16 @@ def configure_r2_jobs(lane: dict, lane_name: str,
     memory_budget = None
     ram_target = resource_settings.get("ram_target", "75%")
     if request == "auto":
-        cpu_cap, cpu_source = _r2_cpu_cap(lane, env, capacity)
-        memory_cap, memory_source = _r2_memory_cap(lane, capacity)
-        memory_budget = r2_memory_budget_bytes(ram_target, memory_cap)
+        if assay_jobs_supported:
+            cpu_cap, cpu_source = _r2_cpu_cap(lane, env, capacity)
+            memory_cap, memory_source = _r2_memory_cap(lane, capacity, env)
+            memory_budget = r2_memory_budget_bytes(ram_target, memory_cap)
+        else:
+            cpu_cap = 1
+            cpu_source = "Assay does not support --jobs; one-worker default"
+            memory_cap = None
+            memory_source = "no enforced lane memory cap"
+            memory_budget = 0
     cheap_clone = capacity.get("cheap_clone") if isinstance(capacity, dict) else None
     backend = capacity.get("backend") if isinstance(capacity, dict) else None
     selection = select_r2_jobs(
@@ -10739,6 +10775,8 @@ def configure_r2_jobs(lane: dict, lane_name: str,
         source=request_source)
     selection.update({
         "assay_lane": lane["assay_lane"],
+        "assay_version": assay_version,
+        "assay_jobs_supported": assay_jobs_supported,
         "candidate_ram_source": candidate_ram_source,
         "candidate_remaining_source": remaining_source,
         "ram_target": ram_target,
@@ -10749,7 +10787,11 @@ def configure_r2_jobs(lane: dict, lane_name: str,
                                if isinstance(capacity, dict)
                                else "not-probed" if not needs_probe
                                else "capacity-probe-unavailable"),
+        "compatibility_reason": (
+            None if assay_jobs_supported or request is None else
+            "requires assay >= 11.0.0; using serial default"),
     })
+    selection["forward"] = request is not None and assay_jobs_supported
     lane["_r2_jobs_selection"] = selection
     return selection
 
@@ -10764,7 +10806,10 @@ def disclose_r2_jobs(lane_name: str, selection: dict | None) -> None:
     elif selection["mode"] == "explicit":
         inputs = (f"request={selection['requested']!r} from "
                   f"{selection['source']}, jobs_max={selection['jobs_max']}, "
-                  f"cheap_clone={selection['cheap_clone']!r}")
+                  f"cheap_clone={selection['cheap_clone']!r}, "
+                  f"assay_version={selection.get('assay_version')!r}, "
+                  f"assay_jobs_supported="
+                  f"{selection.get('assay_jobs_supported')!r}")
     else:
         inputs = (
             f"jobs_max={selection['jobs_max']}, cpu_cap={selection['cpu_cap']} "
@@ -10772,14 +10817,17 @@ def disclose_r2_jobs(lane_name: str, selection: dict | None) -> None:
             f"memory_budget_bytes={selection['memory_budget_bytes']} "
             f"({selection['ram_target']} of {selection['memory_cap_bytes']} "
             f"from {selection['memory_cap_source']}), "
-            f"candidate_ram_avg_bytes={selection['candidate_ram_bytes']} "
+            f"candidate_ram_estimate_bytes={selection['candidate_ram_bytes']} "
             f"({selection['candidate_ram_source']}, "
             f"n={selection['candidate_ram_samples']}), "
             f"candidates_remaining={selection['candidates_remaining']} "
             f"({selection['candidate_remaining_source']}), "
             f"cheap_clone={selection['cheap_clone']!r} "
             f"({selection['cheap_clone_reason']}), "
-            f"request_source={selection['request_source'] or 'default'})")
+            f"request_source={selection['request_source'] or 'default'}, "
+            f"assay_version={selection.get('assay_version')!r}, "
+            f"assay_jobs_supported="
+            f"{selection.get('assay_jobs_supported')!r})")
     print(f"run-gate: R2 jobs: lane={lane_name} N={selection['jobs']} "
           f"mode={selection['mode']} inputs=({inputs})", flush=True)
 

@@ -794,10 +794,11 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   scope and is valid only for a host-mode VM lane; it is forwarded as
   `VM_DISK_CACHE`. `ram_target` accepts a positive size or `1%` through
   `100%` at central, project, environment, or lane scope. `candidate_ram`
-  accepts a positive size on a lane only. These two values are validated and
-  recorded as settings metadata; they do not currently derive worker counts,
-  alter `--cpus`, or change container capacity. `--cow off` is the only CoW
-  CLI override. `RUN_GATE_EXTRA_MOUNTS` entries use Docker's `--mount
+  accepts a positive size on a lane only; native R2 `jobs = "auto"` uses it
+  as its declared candidate-RAM estimate floor under `R-53`. `ram_target` is
+  also an input to that policy. Neither value is forwarded to the lane or
+  changes container capacity. `--cow off` is the only CoW CLI override.
+  `RUN_GATE_EXTRA_MOUNTS` entries use Docker's `--mount
   type=bind` form so absent source paths are refused instead of auto-created.
 
 - `R-19a` **safe.directory scope (RG-99):** inner commands inject
@@ -2757,6 +2758,37 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     broker, placement authority, or namespace-sharing shortcut. The separate
     socket is required because a read-only filesystem bind does not restrict
     the verbs accepted by a Unix socket protocol.
+
+- `R-53` **Native R2 worker selection (PR3).** A native R2 Assay lane may
+  declare `jobs = N|"auto"`; the CLI `--jobs N|auto` overrides TOML. An
+  omitted value leaves Assay's serial default unchanged. Run-Gate forwards
+  `--jobs` only when the inventory's `assay_version` is a comparable release
+  at or above 11.0.0. Auto and explicit one-worker requests use the serial
+  default without a flag for older or unknown versions; an explicit count
+  above one refuses with the required Assay floor. The inventory's native
+  mutation `jobs_max` is a hard upper bound.
+  - Auto selects
+    `max(1, min(jobs_max, cpu_cap, floor(memory_budget / candidate_RSS_p95),
+    candidates_remaining))`. `cpu_cap` may exceed one only when an ephemeral
+    lane or environment declares the CPU limit Run-Gate applies to the lane;
+    observed affinity alone does not establish an enforced cap. The memory
+    budget comes from the enforced lane `resources.memory` on an ephemeral
+    container or the target container's observed `memory.max` on `mode =
+    "exec"`. Host RAM, parent limits not enforced by the lane, and an
+    uncapped probe do not raise auto above one. If either cap needed for
+    parallel selection is absent, auto selects one worker.
+  - Candidate RSS is the nearest-rank p95 of valid candidate peak RSS samples
+    from Run-Gate history, falling back to Assay progress. A lane's declared
+    `resources.candidate_ram` floors measured p95; with no history, the
+    declaration alone is used. With neither history nor declaration, the
+    estimate is 1 GiB per candidate. Run-Gate prints the selected estimate's
+    source (`declared`, `measured p95`, or `default`) in the INFO line and
+    stores it with the selected count in run evidence/history. The closeout
+    stores p95 and sample count for a later selection.
+  - Parallel selection also requires a Cowtree-confirmed btrfs cheap-clone
+    workspace. Auto clamps to one if it cannot confirm the workspace;
+    explicit counts above one refuse. `--dry-run` may perform the capacity and
+    Cowtree probes for an auto request, but does not start the judged lane.
 
 ## 6. Non-goals (unchanged from CONSUMERS)
 

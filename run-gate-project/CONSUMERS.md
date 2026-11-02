@@ -369,27 +369,40 @@ resource_observer = "cgprofile"
 cpus = "3"
 memory = "1536m"
 pids = 8192
+candidate_ram = "300m"
 ```
 
 An invocation override is `run-gate r2 --jobs 2`; the CLI value takes
 precedence over `jobs = "auto"`.
 
 For `jobs = "auto"`, Run-Gate chooses
-`max(1, min(jobs_max, cpu_cap, floor(memory_budget / average_candidate_RSS), candidates_remaining))`.
-CPU uses the lane cap, falling back to the environment CPU cap, bounded by
-the CPU capacity visible to the lane. Memory uses the lane's
-`resources.memory` (or legacy lane `memory`) cap, bounded by the memory limit
-visible to the lane; without a lane memory cap, that visible limit is the
-budget ceiling. Candidate RSS comes from completed
-Run-Gate history, then Assay's progress stream. Before either has a sample,
-Run-Gate uses a conservative estimate of 1 GiB per candidate. The
+`max(1, min(jobs_max, cpu_cap, floor(memory_budget / candidate_RSS_p95), candidates_remaining))`.
+For ephemeral containers, `cpu_cap` comes from an enforced lane
+`resources.cpus` or its enforced environment fallback, bounded by visible CPU
+affinity; without a declared cap, auto uses one worker even when affinity
+shows more CPUs. Memory uses an enforced lane `resources.memory` (or legacy
+lane `memory`) cap, bounded by an observed cgroup limit when available. A
+`mode = "exec"` lane may use its target container's observed `memory.max`,
+which that container enforces. Without an enforced lane memory cap, auto uses
+one worker even if the capacity probe can see a host or parent limit.
+Candidate RAM uses the greater of declared lane `resources.candidate_ram` and
+the nearest-rank p95 of per-candidate peak RSS. Run-Gate checks its completed
+history first, then Assay's append-only progress stream. A declaration is the
+estimate when there is no history; with neither source, Run-Gate uses the
+conservative default of 1 GiB per candidate. The selected estimate and its
+source (`declared`, `measured p95`, or `default`) appear in the INFO line and
+Run-Gate evidence/history. The
 remaining-candidate input uses the matching Assay plan when resuming, a prior
 plan as an estimate for a new commit, then `max_mutants` as an upper bound.
 Assay requires a positive worker count, so a zero result from no remaining
 candidates or a budget smaller than one candidate resolves to one worker.
-The log prints one INFO line with the chosen count and all these inputs;
-`history` records the selection and any candidate RSS samples read at
-closeout.
+The Assay inventory must report version 11.0.0 or newer before Run-Gate passes
+`--jobs`. With an older or unknown version, auto and explicit one-worker
+requests keep Assay's serial default and send no flag. An explicit request
+above one is refused with a message requiring Assay 11.0.0. The log prints one
+INFO line with the chosen count and its inputs; `history` records the
+selection, including the candidate RAM estimate source and p95 samples read
+at closeout.
 
 Parallel Assay R2 requires the prepared workspace to advertise
 `cheap_clone`. Run-Gate checks Cowtree in the lane environment and clamps
@@ -400,9 +413,9 @@ explicit request above one fails with Run-Gate's closed configuration error
 if the workspace cannot be confirmed. An explicit count above `jobs_max`
 also fails before the lane starts.
 
-An `auto` run, including `--dry-run`, performs a short CPU/memory and Cowtree
-capability probe in the lane environment. Cowtree's documented probe can
-create its private metadata and temporary capability files under
+An `auto` run, including `--dry-run`, may perform a short CPU/memory and
+Cowtree capability probe in the lane environment. Cowtree's documented probe
+can create its private metadata and temporary capability files under
 `MDT_COW_ROOT`; dry-run does not start the judged mutation lane.
 
 ### Per-invocation image selection

@@ -149,7 +149,7 @@ SPEC §9.
 | RG-129 | `dual_mount_flags()` validates the alias namespace path twice | Minor | FIXED IN THIS BRANCH (RG-241); `test_dual_mount_alias_namespace_is_validated_once` |
 | RG-130 | users are not told that Run-Gate has no `--ram-target` option | Minor | FIXED IN THIS BRANCH (RG-241); consumer docs and `test_ram_target_docs_name_the_supported_toml_surface` |
 | RG-131 | the planned R2 worker-count policy is not implemented | Enhancement | FIXED IN THIS BRANCH (PR3): native R2 `jobs` / `--jobs` selection, caps, cheap-clone gate, and Run-Gate RSS history |
-| RG-132 | per-candidate resource metrics are not yet carried into Run-Gate history and footprint data | Enhancement | OPEN 2026-10-30; PR3 adds candidate RSS mean/sample count to history for worker selection; footprint and other metrics remain |
+| RG-132 | per-candidate resource metrics are not yet carried into Run-Gate history and footprint data | Enhancement | OPEN 2026-10-30; PR3 adds candidate RSS p95/sample count to history for worker selection; footprint and other metrics remain |
 | RG-133 | the translated generated preload source path was not checked against Docker mount delimiters | Minor | FIXED IN THIS BRANCH (RG-241); `test_relaxed_preload_rejects_translated_source_delimiters` |
 | RG-143 | native R2 worker selection does not derive a matching container CPU cap or report repeated RAM-target overshoot | Enhancement | OPEN; split from RG-131's deferred PR0 follow-up |
 ---
@@ -6820,14 +6820,18 @@ consumer-facing statement.
 2026-10-30.
 
 **Delivered.** Native R2 Run-Gate lanes accept a positive `jobs` count or
-`"auto"`; `--jobs` overrides TOML. Auto derives a count from Assay
-`jobs_max`, visible CPU capacity, the `ram_target` budget divided by
-average candidate peak RSS, and candidates remaining. With no samples it
-uses a conservative 1 GiB candidate estimate. Auto falls back to one worker
-without Assay's supported cheap-clone workspace; an explicit parallel count
-refuses when that workspace cannot be confirmed. The default leaves Assay's
-one-worker behavior unchanged. Tests cover derivation inputs, refusals, argv,
-evidence and history.
+`"auto"`; `--jobs` overrides TOML and is forwarded only when the inventory
+proves Assay >= 11.0.0. Older or unknown versions keep auto and explicit
+one-worker runs serial; an explicit count above one is refused with the Assay
+floor. Auto uses only enforced CPU and memory caps, clamps to one when either
+is absent, and bounds workers by `jobs_max`, `ram_target`, candidates
+remaining, and the candidate RAM estimate. That estimate is the greater of
+lane `candidate_ram` and measured nearest-rank p95 RSS, with the declaration
+alone when no history exists and the 1 GiB default when neither source
+exists. Parallel selection also requires Assay's supported cheap-clone
+workspace. Evidence and INFO output include the selected count and candidate
+RAM source; history carries p95 samples. Tests cover the caps, p95, version
+floor, refusals, argv, evidence and history.
 
 **Residual.** Dynamic Docker `--cpus N` selection and repeated RAM-target
 overshoot reporting were not part of PR3. They are now RG-143.
@@ -6835,17 +6839,17 @@ overshoot reporting were not part of PR3. They are now RG-143.
 ## RG-132 — per-candidate resource metrics are not yet carried into Run-Gate history and footprint data
 
 **Status:** OPEN. Severity: enhancement. Filed 2026-10-30 as the PR0 residual;
-PR3 adds candidate RSS mean and sample count to history for worker selection.
+PR3 adds candidate RSS p95 and sample count to history for worker selection.
 
 **Observed.** Assay candidate progress supplies `peak_rss_bytes`, and
-Run-Gate records the mean and sample count in eligible R2 history so RG-131's
-auto worker policy can use measured candidate memory. The broader PR0 plan
+Run-Gate records the p95 and sample count in eligible R2 history so RG-131's
+auto worker policy can use a high measured candidate-memory estimate. The broader PR0 plan
 still calls for `write_bytes`, cores and judge-share history, plus a
-`candidate_ram_avg` value in `run-gate footprint`; those facts are not
+`candidate_ram_p95` value in `run-gate footprint`; those facts are not
 currently exposed there.
 
 **Proposed fix.** Extend Run-Gate history with the remaining reviewed
-candidate-resource metrics and publish the candidate RSS average through
+candidate-resource metrics and publish candidate RSS p95 through
 `run-gate footprint`. Add event, rolling-window and footprint oracles.
 
 ## RG-133 — the generated preload source was not validated after path translation

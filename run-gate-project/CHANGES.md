@@ -10,10 +10,10 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 ## [Unreleased]
 
 ### Added
-- Opt native R2 Assay lanes into `jobs = N|"auto"` or `run-gate --jobs N|auto`; auto bounds the worker count by Assay `jobs_max`, CPU/memory capacity, candidate RSS history, remaining candidates, and Assay's cheap-clone requirement. Run-Gate records the selected count and candidate RSS samples in its invocation history.
+- Opt native R2 Assay lanes into `jobs = N|"auto"` or `run-gate --jobs N|auto`; auto uses only enforced lane CPU/memory caps, candidate RAM declared or measured at p95, remaining candidates, Assay `jobs_max`, and Assay's cheap-clone requirement. Run-Gate records the selected count, candidate RAM source, and p95 samples in evidence/history. `--jobs` is sent only to Assay 11.0.0 or newer; an older or unknown judge remains serial unless an explicit parallel request is refused.
 
 ### Changed
-- Convert IOBench's registered R2 lane to native Assay dispatch with `jobs = "auto"`; replace the legacy `assay.toml` `jobs = 1` alias with `jobs_max = 4`.
+- Convert IOBench's registered R2 lane to native Assay dispatch with `jobs = "auto"`; replace the legacy `assay.toml` `jobs = 1` alias with `jobs_max = 4`. This changes the campaign state directory and progress filename; an in-progress campaign using the former command-lane paths does not carry over.
 
 <!-- cmru: release history -->
 
