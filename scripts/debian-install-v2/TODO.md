@@ -171,3 +171,11 @@ _Captured 2026-09-08 from the netcup live-test session per operator request._
 Stage one now installs the cloud-init and initramfs growth guards only after the planner accepts the capped tail-swap
 layout, just before stage two is installed and the first reboot. The stage-one guard test covers capped, uncapped, and
 refused-cap installs, asserting that refusal writes neither guard file.
+
+## OPEN (root cap): no window between the initramfs shrink hook and the growth guards
+
+Stage one now writes the boot growth guards after the cap is validated, but `_plan_root_shrink` has already installed the
+initramfs shrink hook by then (a window as long as `update-initramfs -k all`). An unplanned reboot inside it would apply the
+shrink with no growth guard in place. **Fix:** resolve the plan first (`plan = root_shrink_plan or
+self._resolve_root_shrink_plan()`), write the guards, then call `_plan_root_shrink(plan)` (`installer.py` stage one,
+around the guard call), with a test asserting the guard write precedes the hook installation.

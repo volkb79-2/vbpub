@@ -122,7 +122,7 @@ Stage two repeats these idempotent guards. The installer writes
 `/etc/cloud/cloud.cfg.d/99-debian-install-v2-root-cap.cfg` with
 `growpart: {mode: off}` and `resize_rootfs: false`, and creates
 `/etc/growroot-disabled` so the initramfs growroot integration also stays off.
-Both guards are installed only when `root_max_size_gb` is set.
+Both guards are installed only when `root_max_size_gb` is set and accepted.
 
 For example, this keeps a 40 GiB root and 8 GiB of managed swap while leaving
 the rest of a larger disk available for a manually created data partition:
