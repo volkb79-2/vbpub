@@ -265,7 +265,9 @@ def test_privileged_rmtree_reports_identity_mismatch_without_deleting_other_data
     ("returncode", "message"),
     [
         (44, "nested mount below the checkout target"),
-        (42, None),
+        (42, "bind target is absent"),
+        (45, "mount information could not be read"),
+        (1, None),
     ],
 )
 def test_privileged_rmtree_reports_mount_refusal_and_preserves_other_errors(
@@ -321,6 +323,27 @@ def test_privileged_rmtree_mountinfo_guard_refuses_nested_mount(tmp_path: Path):
 
     assert result.returncode == 44
     assert "refusing nested mount below /t" in result.stderr
+
+
+def test_privileged_rmtree_script_reports_absence_before_identity_mismatch(
+    tmp_path: Path,
+):
+    mountinfo = tmp_path / "mountinfo"
+    mountinfo.write_text(
+        "36 25 0:32 / / rw,relatime - ext4 /dev/sda rw\n",
+        encoding="utf-8",
+    )
+    target = f"/t/ciu-test-absent-{tmp_path.name}"
+    result = subprocess.run(
+        [
+            "sh", "-c", engine._privileged_rmtree_script(), "ciu-rmtree",
+            target, "bad-target-identity", "bad-parent-identity", str(mountinfo),
+        ],
+        capture_output=True, text=True, check=False,
+    )
+
+    assert result.returncode == 42
+    assert "refusing absent bind target" in result.stderr
 
 
 def test_chown_with_injected_seam_uses_seam_and_never_calls_os_chown(monkeypatch, tmp_path: Path):

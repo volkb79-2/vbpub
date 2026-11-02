@@ -7016,6 +7016,7 @@ def _validated_retry_target(
 def _permission_retry_tree_snapshot(
     checkout: Path,
     checkpoint: Mapping[str, Any],
+    candidates: list[dict[str, Any]],
     *,
     enforce_checkpoint_time: bool = True,
 ) -> dict[str, tuple[int, int, int, int, int, int, bool]]:
@@ -7030,6 +7031,19 @@ def _permission_retry_tree_snapshot(
     ignored_state = checkpoint.get("ignored_state")
     if not isinstance(ignored_state, list):
         raise WorktreeError("permission checkpoint has no ignored-state inventory")
+    blocker_paths: set[str] = set()
+    for item in candidates:
+        raw_relative = item.get("path") if isinstance(item, dict) else None
+        if not isinstance(raw_relative, str) or not raw_relative:
+            raise WorktreeError("permission checkpoint has a malformed target")
+        relative = PurePosixPath(raw_relative)
+        if (
+            relative.is_absolute()
+            or not relative.parts
+            or any(part in {".", ".."} for part in relative.parts)
+        ):
+            raise WorktreeError("permission checkpoint has an unsafe retry target")
+        blocker_paths.add(relative.as_posix())
     protected_components: set[str] = set()
     for item in ignored_state:
         if not isinstance(item, dict) or not isinstance(item.get("path"), str):
@@ -7078,7 +7092,10 @@ def _permission_retry_tree_snapshot(
             info.st_mtime_ns,
             is_directory,
         )
-        if is_directory:
+        # The consented helper removes this exact blocker. Its contents may be
+        # unreadable to the unprivileged caller, so retain the directory's own
+        # lstat identity and stop the walk at the target boundary.
+        if is_directory and relative_path not in blocker_paths:
             try:
                 with os.scandir(path) as children:
                     for child in children:
@@ -7150,13 +7167,13 @@ def _refresh_permission_retry_checkpoint_time(
 ) -> None:
     """Recheck helper side effects, then move the durable cutoff forward."""
     after = _permission_retry_tree_snapshot(
-        checkout, checkpoint, enforce_checkpoint_time=False
+        checkout, checkpoint, candidates, enforce_checkpoint_time=False
     )
     _compare_permission_retry_snapshots(before, after, candidates)
     previous_time = checkpoint["checkpoint_time_ns"]
     checkpoint["checkpoint_time_ns"] = time.time_ns()
     try:
-        _permission_retry_tree_snapshot(checkout, checkpoint)
+        _permission_retry_tree_snapshot(checkout, checkpoint, candidates)
     except WorktreeError:
         checkpoint["checkpoint_time_ns"] = previous_time
         raise
@@ -7505,7 +7522,7 @@ def remove(
         engine = None
         try:
             tree_before = (
-                _permission_retry_tree_snapshot(path, checkpoint)
+                _permission_retry_tree_snapshot(path, checkpoint, candidates)
                 if root_info is not None else None
             )
             from . import engine as engine_module
@@ -7546,7 +7563,7 @@ def remove(
                     path, checkpoint, tree_before, candidates
                 )
                 _store_removal_checkpoint(shared, logical_shared, checkpoint)
-                _permission_retry_tree_snapshot(path, checkpoint)
+                _permission_retry_tree_snapshot(path, checkpoint, candidates)
                 try:
                     shutil.rmtree(path)
                 except OSError as exc:
@@ -8047,7 +8064,9 @@ def remove(
         ):
             return False
 
-        tree_before = _permission_retry_tree_snapshot(path, removal_checkpoint)
+        tree_before = _permission_retry_tree_snapshot(
+            path, removal_checkpoint, blockers
+        )
         mark("privileged_retry", "running")
         retry_document["status"] = "running"
         try:
@@ -8103,7 +8122,12 @@ def remove(
                 "permission retry has no matching residual-checkout checkpoint"
             )
         assert removal_checkpoint is not None
-        _permission_retry_tree_snapshot(checkout, removal_checkpoint)
+        # This guard only runs after the permission-recovery callback returns
+        # success, which records this inventory in the enclosing recovery state.
+        retry_candidates = recovery_state["permission_blockers"]
+        _permission_retry_tree_snapshot(
+            checkout, removal_checkpoint, retry_candidates
+        )
 
     try:
         mark("lifecycle_preflight", "running")

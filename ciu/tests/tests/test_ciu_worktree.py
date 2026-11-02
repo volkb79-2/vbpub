@@ -4549,7 +4549,7 @@ class TestPermissionRemovalRetry:
     def _permission_failed_checkout(
         tmp_repo, fake_generate_env, monkeypatch, *, consent=False,
         privileged_rmtree=None, inventory=None, fail_retry_checkpoint=False,
-        residual_guard_path=None,
+        residual_guard_path=None, deny_blocker_scandir=False,
     ):
         ignore = tmp_repo / ".gitignore"
         ignore.write_text(
@@ -4607,6 +4607,25 @@ class TestPermissionRemovalRetry:
             monkeypatch.setattr(
                 worktree, "_permission_retry_candidates", lambda *_args: inventory
             )
+        if deny_blocker_scandir:
+            real_candidates = worktree._permission_retry_candidates
+            real_scandir = worktree.os.scandir
+
+            def candidates_with_unreadable_blocker(*args):
+                result = real_candidates(*args)
+
+                def deny_blocker(path):
+                    if not isinstance(path, int) and Path(path) == blocked:
+                        raise PermissionError(errno.EACCES, "scan denied", str(path))
+                    return real_scandir(path)
+
+                monkeypatch.setattr(worktree.os, "scandir", deny_blocker)
+                return result
+
+            monkeypatch.setattr(
+                worktree, "_permission_retry_candidates",
+                candidates_with_unreadable_blocker,
+            )
         if privileged_rmtree is not None:
             from ciu import engine
             monkeypatch.setattr(
@@ -4636,7 +4655,9 @@ class TestPermissionRemovalRetry:
             outcome = exc
         if not consent:
             assert isinstance(outcome, worktree.WorktreeRemovalError)
-            assert outcome.document["privileged_retry"]["status"] == "offered"
+            assert (
+                outcome.document["privileged_retry"]["status"] == "offered"
+            ), outcome.document
         shared = worktree._shared_worktree()
         durable = shared.find_workspace(
             Path(shared_record.git_common_dir), checkout
@@ -5143,6 +5164,66 @@ class TestPermissionRemovalRetry:
         assert len(helper_targets) == 1 and helper_targets[0].name == "locked"
         assert not checkout.exists()
         assert not admin_path.exists()
+
+    def test_same_call_retry_calls_helper_for_unreadable_blocker_directory(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        helper_targets = []
+        record, checkout, blocked, _shared, durable, _admin, failure = (
+            self._permission_failed_checkout(
+                tmp_repo, fake_generate_env, monkeypatch, consent=True,
+                deny_blocker_scandir=True,
+                privileged_rmtree=lambda target, _checkout, _blocked: (
+                    helper_targets.append(target)
+                ),
+            )
+        )
+
+        assert isinstance(failure, worktree.WorktreeRemovalError)
+        assert (
+            "helper returned but blocked target remains" in str(failure)
+        ), failure.document.get("error")
+        assert len(helper_targets) == 1
+        assert helper_targets == [
+            Path(durable.physical_worktree_path) / blocked.name
+        ]
+        assert checkout.is_dir()
+
+    def test_resume_retry_calls_helper_for_unreadable_blocker_directory(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        from ciu import engine
+
+        record, checkout, blocked, _shared, durable, _admin, _outcome = (
+            self._permission_failed_checkout(tmp_repo, fake_generate_env, monkeypatch)
+        )
+        real_scandir = worktree.os.scandir
+
+        def deny_blocker(path):
+            if Path(path) == blocked:
+                raise PermissionError(errno.EACCES, "scan denied", str(path))
+            return real_scandir(path)
+
+        monkeypatch.setattr(worktree.os, "scandir", deny_blocker)
+        helper_targets = []
+        monkeypatch.setattr(
+            engine, "privileged_rmtree",
+            lambda target, **_identities: helper_targets.append(target),
+        )
+
+        with pytest.raises(
+            worktree.WorktreeRemovalError,
+            match="helper returned but blocked target remains",
+        ):
+            worktree.remove_document(
+                tmp_repo, record.logical_name, root_escalation=record.branch
+            )
+
+        assert len(helper_targets) == 1
+        assert helper_targets == [
+            Path(durable.physical_worktree_path) / blocked.name
+        ]
+        assert checkout.is_dir()
 
     def test_same_call_retry_reports_target_and_checkout_when_helper_lies(
         self, tmp_repo, fake_generate_env, monkeypatch
@@ -5746,9 +5827,11 @@ class TestPermissionRemovalRetry:
     def test_resume_rejects_a_malformed_target_record(self,
         tmp_repo, fake_generate_env, monkeypatch
     ):
-        record, _checkout, _blocked, shared, durable, _admin, _outcome = (
+        record, checkout, blocked, shared, durable, _admin, _outcome = (
             self._permission_failed_checkout(tmp_repo, fake_generate_env, monkeypatch)
         )
+        blocked.chmod(0o700)
+        shutil.rmtree(checkout)
         self._rewrite_checkpoint(
             shared, durable,
             lambda checkpoint: checkpoint.__setitem__("permission_blockers", [None]),
@@ -5759,7 +5842,41 @@ class TestPermissionRemovalRetry:
                 tmp_repo, record.logical_name, root_escalation=record.branch,
                 json_output=True,
             )
-        assert failure.value.document["privileged_retry"]["remaining"]
+        assert failure.value.document["privileged_retry"]["remaining"] == []
+
+    def test_resume_revalidates_retry_target_identity_after_snapshot(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        from ciu import engine
+
+        record, checkout, blocked, shared, durable, _admin, _outcome = (
+            self._permission_failed_checkout(tmp_repo, fake_generate_env, monkeypatch)
+        )
+        checkpoint = durable.metadata[worktree._CIU_WORKTREE_REMOVAL_METADATA]
+        old_time = checkpoint["checkpoint_time_ns"] - 1
+        replacement = checkout / "replacement"
+        replacement.mkdir()
+        (replacement / "payload").write_text("new", encoding="utf-8")
+        replacement.chmod(0o500)
+        os.utime(replacement / "payload", ns=(old_time, old_time))
+        os.utime(replacement, ns=(old_time, old_time))
+        blocked.chmod(0o700)
+        shutil.rmtree(blocked)
+        replacement.rename(blocked)
+        os.utime(checkout, ns=(old_time, old_time))
+        helper_calls = []
+        monkeypatch.setattr(
+            engine, "privileged_rmtree",
+            lambda target, **_identities: helper_calls.append(target),
+        )
+
+        with pytest.raises(worktree.WorktreeRemovalError, match="target was replaced"):
+            worktree.remove_document(
+                tmp_repo, record.logical_name, root_escalation=record.branch
+            )
+
+        assert helper_calls == []
+        assert (blocked / "payload").read_text(encoding="utf-8") == "new"
 
     def test_resume_skips_an_already_removed_target_and_keeps_unmerged_branch(
         self, tmp_repo, fake_generate_env, monkeypatch
@@ -8567,7 +8684,7 @@ def test_permission_retry_snapshot_rejects_malformed_checkpoints(
     checkout = tmp_path / "checkout"
     checkout.mkdir()
     with pytest.raises(worktree.WorktreeError, match=message):
-        worktree._permission_retry_tree_snapshot(checkout, checkpoint)
+        worktree._permission_retry_tree_snapshot(checkout, checkpoint, [])
 
 
 def test_permission_retry_snapshot_accepts_checkpointed_protected_components(tmp_path):
@@ -8580,10 +8697,65 @@ def test_permission_retry_snapshot_accepts_checkpointed_protected_components(tmp
         "ignored_state": [{"path": ".assay/prior-run/state.json"}],
     }
 
-    snapshot = worktree._permission_retry_tree_snapshot(checkout, checkpoint)
+    snapshot = worktree._permission_retry_tree_snapshot(checkout, checkpoint, [])
 
     assert ".assay" in snapshot
     assert ".assay/prior-run/state.json" in snapshot
+
+
+def test_permission_retry_snapshot_records_but_does_not_descend_into_blocker(
+    tmp_path,
+):
+    checkout = tmp_path / "checkout"
+    blocker = checkout / "locked"
+    (blocker / "nested").mkdir(parents=True)
+    (blocker / "nested" / "payload").write_text("state", encoding="utf-8")
+    checkpoint = {"checkpoint_time_ns": 2**63 - 1, "ignored_state": []}
+    candidates = [{"path": "locked"}]
+
+    snapshot = worktree._permission_retry_tree_snapshot(
+        checkout, checkpoint, candidates
+    )
+
+    blocker_info = blocker.lstat()
+    assert "locked" in snapshot
+    assert snapshot["locked"] == (
+        blocker_info.st_dev,
+        blocker_info.st_ino,
+        stat.S_IFMT(blocker_info.st_mode),
+        stat.S_IMODE(blocker_info.st_mode),
+        blocker_info.st_size,
+        blocker_info.st_mtime_ns,
+        True,
+    )
+    assert "locked/nested" not in snapshot
+    assert "locked/nested/payload" not in snapshot
+
+
+def test_permission_retry_snapshot_still_refuses_unreadable_non_target_directory(
+    tmp_path, monkeypatch
+):
+    checkout = tmp_path / "checkout"
+    blocker = checkout / "locked"
+    blocker.mkdir(parents=True)
+    other = checkout / "other"
+    other.mkdir()
+    checkpoint = {"checkpoint_time_ns": 2**63 - 1, "ignored_state": []}
+    real_scandir = worktree.os.scandir
+
+    def deny_non_target(path):
+        if Path(path) == other:
+            raise PermissionError(errno.EACCES, "scan denied", str(path))
+        return real_scandir(path)
+
+    monkeypatch.setattr(worktree.os, "scandir", deny_non_target)
+    with pytest.raises(
+        worktree.WorktreeError,
+        match="could not enumerate leftover checkout directory",
+    ):
+        worktree._permission_retry_tree_snapshot(
+            checkout, checkpoint, [{"path": "locked"}]
+        )
 
 
 def test_permission_retry_snapshot_reports_unreadable_entries_and_directories(
@@ -8602,7 +8774,7 @@ def test_permission_retry_snapshot_reports_unreadable_entries_and_directories(
         ),
     )
     with pytest.raises(worktree.WorktreeError, match="could not inspect leftover checkout entry"):
-        worktree._permission_retry_tree_snapshot(checkout, checkpoint)
+        worktree._permission_retry_tree_snapshot(checkout, checkpoint, [])
 
     monkeypatch.setattr(Path, "lstat", real_lstat)
     monkeypatch.setattr(
@@ -8611,7 +8783,7 @@ def test_permission_retry_snapshot_reports_unreadable_entries_and_directories(
         lambda _path: (_ for _ in ()).throw(PermissionError(errno.EACCES, "scan denied")),
     )
     with pytest.raises(worktree.WorktreeError, match="could not enumerate leftover checkout directory"):
-        worktree._permission_retry_tree_snapshot(checkout, checkpoint)
+        worktree._permission_retry_tree_snapshot(checkout, checkpoint, [])
 
 
 @pytest.mark.parametrize(
@@ -8636,6 +8808,28 @@ def test_permission_retry_snapshot_comparison_rejects_malformed_targets(candidat
         worktree._compare_permission_retry_snapshots({}, {}, [candidate])
 
 
+@pytest.mark.parametrize(
+    ("candidate", "message"),
+    [
+        (None, "malformed target"),
+        ({}, "malformed target"),
+        ({"path": ""}, "malformed target"),
+        ({"path": "/absolute"}, "unsafe retry target"),
+        ({"path": "../escape"}, "unsafe retry target"),
+        ({"path": "."}, "unsafe retry target"),
+    ],
+)
+def test_permission_retry_snapshot_rejects_malformed_blocker_candidates(
+    tmp_path, candidate, message
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    checkpoint = {"checkpoint_time_ns": 2**63 - 1, "ignored_state": []}
+
+    with pytest.raises(worktree.WorktreeError, match=message):
+        worktree._permission_retry_tree_snapshot(checkout, checkpoint, [candidate])
+
+
 def test_permission_retry_checkpoint_time_refresh_rolls_back_when_recheck_fails(
     tmp_path, monkeypatch
 ):
@@ -8644,7 +8838,7 @@ def test_permission_retry_checkpoint_time_refresh_rolls_back_when_recheck_fails(
     (checkout / "existing.txt").write_text("data", encoding="utf-8")
     checkpoint = {"checkpoint_time_ns": 1, "ignored_state": []}
     before = worktree._permission_retry_tree_snapshot(
-        checkout, checkpoint, enforce_checkpoint_time=False
+        checkout, checkpoint, [], enforce_checkpoint_time=False
     )
     monkeypatch.setattr(worktree.time, "time_ns", lambda: 0)
 

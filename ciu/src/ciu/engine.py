@@ -504,11 +504,11 @@ def _privileged_rmtree_script() -> str:
         "|| { echo \"could not inspect mountinfo: $mountinfo\" >&2; exit 45; }; "
         "if [ -n \"$mount_below\" ]; then "
         "echo \"refusing nested mount below /t: $mount_below\" >&2; exit 44; fi; "
+        "if [ ! -e \"$target\" ] && [ ! -L \"$target\" ]; then "
+        "echo \"refusing absent bind target: $target\" >&2; exit 42; fi; "
         "if [ \"$(stat -c '%d:%i' /t)\" != \"$expected_parent\" ] || "
         "[ \"$(stat -c '%d:%i' \"$target\")\" != \"$expected_target\" ]; then "
         "echo \"S6.5 target or parent identity mismatch\" >&2; exit 43; fi; "
-        "if [ ! -e \"$target\" ] && [ ! -L \"$target\" ]; then "
-        "echo \"refusing absent bind target: $target\" >&2; exit 42; fi; "
         "exec rm -rf -- \"$target\""
     )
 
@@ -582,6 +582,18 @@ def privileged_rmtree(
             raise RuntimeError(
                 "S6.5 helper refused a nested mount below the checkout target "
                 f"(exit 44){': ' + detail if detail else ''}"
+            ) from exc
+        if exc.returncode == 42:
+            detail = (exc.stderr or exc.output or "").strip()
+            raise RuntimeError(
+                "S6.5 helper refused because the bind target is absent "
+                f"(exit 42){': ' + detail if detail else ''}"
+            ) from exc
+        if exc.returncode == 45:
+            detail = (exc.stderr or exc.output or "").strip()
+            raise RuntimeError(
+                "S6.5 helper refused because mount information could not be read "
+                f"(exit 45){': ' + detail if detail else ''}"
             ) from exc
         raise
 
