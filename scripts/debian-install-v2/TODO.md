@@ -5,9 +5,10 @@
 `root_max_size_gb` requires `swap_policy=on` and managed tail-swap partitions
 directly after root, so neither the first reboot nor stage-two `growpart` can
 consume the cap. Stage one installs cloud-init and initramfs growth guards
-before reboot, and stage two repeats them. The cap is measured from the root
-partition start without rounding its configured length down to an absolute
-1 MiB boundary. User-facing examples retain uncapped and capped layouts.
+after the capped tail-swap plan validates and before reboot; stage two repeats
+them. The cap is measured from the root partition start without rounding its
+configured length down to an absolute 1 MiB boundary. User-facing examples
+retain uncapped and capped layouts.
 
 ## DONE (requirements naming, 2026-11-02): name the optional wizard dependency by use case
 
@@ -165,9 +166,8 @@ Not designed or scoped beyond the above; no code written yet.
 
 _Captured 2026-09-08 from the netcup live-test session per operator request._
 
-## OPEN (root cap): write the boot growth guards only after the cap is validated
+## DONE (root cap, 2026-11-02): write the boot growth guards only after the cap is validated
 
-Stage one installs the cloud-init and initramfs growth guards at its start, but the planner refuses an unsupported cap
-(swap off, no tail swap partition) later in stage one. A refused install then leaves growth disabled on an otherwise
-unchanged host. Move the guard call to just before stage two is installed and the reboot, and extend the stage-one guard
-test with a refused-cap case asserting that no guard file is written.
+Stage one now installs the cloud-init and initramfs growth guards only after the planner accepts the capped tail-swap
+layout, just before stage two is installed and the first reboot. The stage-one guard test covers capped, uncapped, and
+refused-cap installs, asserting that refusal writes neither guard file.

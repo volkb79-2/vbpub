@@ -4238,10 +4238,6 @@ MaxFileSec=1month
 
     def _stage1(self) -> None:
         self._secure_bootstrap_files()
-        # Cloud-init and initramfs growroot run during the first reboot,
-        # before stage two can create the tail-swap boundary. Install the
-        # configured cap guards now, then repeat them in stage two.
-        self._configure_root_cap_boot_guards()
         self._configure_persistent_ssh_keys()
         self._configure_controller_ssh_key()
         # LT-F-v1001-13: persistent journald FIRST (right after the controller
@@ -4289,6 +4285,9 @@ MaxFileSec=1month
             )
             self._remove_managed_swap_backings()
         self._plan_root_shrink(root_shrink_plan)
+        # The cap and tail-swap layout are now validated. Disable boot-time
+        # root growth before stage two is installed and the host reboots.
+        self._configure_root_cap_boot_guards()
         self._install_stage2()
         self._reboot()
 
