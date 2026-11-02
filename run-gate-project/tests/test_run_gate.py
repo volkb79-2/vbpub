@@ -35792,6 +35792,97 @@ class TestCowtreeAndIoSyncResources:
                 "docker", "tester:local", tmp_path)
         assert list((tmp_path / ".run-gate").iterdir()) == []
 
+
+class TestR2JobsPR3:
+    @pytest.mark.parametrize(
+        "cpu_cap,memory_budget,candidate_ram,remaining,expected",
+        [
+            (2, 8 * 1024, 512, 20, 2),  # CPU cap is the tightest input.
+            (8, 1024, 300, 20, 3),      # Floor of the memory ratio is 3.
+            (8, 8 * 1024, 512, 2, 2),   # Do not schedule beyond candidates.
+        ],
+    )
+    def test_auto_derivation_uses_each_cap(
+            self, cpu_cap, memory_budget, candidate_ram, remaining, expected):
+        selected = run_gate.select_r2_jobs(
+            "auto", jobs_max=8, cpu_cap=cpu_cap,
+            memory_budget_bytes=memory_budget,
+            candidate_ram_bytes=candidate_ram,
+            candidate_ram_samples=4, candidates_remaining=remaining,
+            cheap_clone=True)
+        assert selected["jobs"] == expected
+        assert selected["source"] == "auto"
+
+    def test_auto_falls_back_to_one_without_cheap_clone(self):
+        selected = run_gate.select_r2_jobs(
+            "auto", jobs_max=8, cpu_cap=8,
+            memory_budget_bytes=8 * 1024,
+            candidate_ram_bytes=512,
+            candidate_ram_samples=4, candidates_remaining=20,
+            cheap_clone=False)
+        assert selected["jobs"] == 1
+        assert selected["cheap_clone"] is False
+
+    def test_explicit_jobs_above_assay_ceiling_refuse(self):
+        with pytest.raises(run_gate.GateError,
+                           match=r"--jobs 5 exceeds.*jobs_max \(4\)"):
+            run_gate.select_r2_jobs(
+                5, jobs_max=4, cpu_cap=8,
+                memory_budget_bytes=8 * 1024,
+                candidate_ram_bytes=512,
+                candidate_ram_samples=4, candidates_remaining=20,
+                cheap_clone=True, source="cli")
+
+    def test_explicit_parallel_jobs_refuse_without_cheap_clone(self):
+        with pytest.raises(run_gate.GateError,
+                           match="requires a cheap-clone workspace"):
+            run_gate.select_r2_jobs(
+                2, jobs_max=4, cpu_cap=8,
+                memory_budget_bytes=8 * 1024,
+                candidate_ram_bytes=512,
+                candidate_ram_samples=4, candidates_remaining=20,
+                cheap_clone=False, source="toml")
+
+    def test_one_explicit_worker_is_allowed_without_cheap_clone(self):
+        selected = run_gate.select_r2_jobs(
+            1, jobs_max=4, cpu_cap=8,
+            memory_budget_bytes=8 * 1024,
+            candidate_ram_bytes=512,
+            candidate_ram_samples=0, candidates_remaining=20,
+            cheap_clone=False, source="cli")
+        assert selected["jobs"] == 1
+        assert selected["source"] == "cli"
+
+    def test_default_is_serial(self):
+        selected = run_gate.select_r2_jobs(
+            None, jobs_max=4, cpu_cap=8,
+            memory_budget_bytes=8 * 1024,
+            candidate_ram_bytes=512,
+            candidate_ram_samples=0, candidates_remaining=20,
+            cheap_clone=False)
+        assert selected["jobs"] == 1
+        assert selected["source"] == "default"
+
+    def test_assay_inner_passes_the_selected_worker_count(self):
+        lane = {"assay_lane": "mutation", "pins": {},
+                "_r2_jobs_selection": {"jobs": 3}}
+        inner = run_gate.build_assay_inner(
+            lane, Path("/repo/project"), Path("/repo"))
+        assert "--jobs 3" in inner
+
+    def test_lane_jobs_config_accepts_positive_count_and_auto(self):
+        for jobs in (1, 4, "auto"):
+            run_gate._validate_lane(
+                "r2", {"kind": "assay", "assay_lane": "mutation",
+                       "jobs": jobs}, "fixture")
+
+    @pytest.mark.parametrize("jobs", [0, -1, True, 1.5, "2", "AUTO", "max"])
+    def test_lane_jobs_config_is_closed_and_typed(self, jobs):
+        with pytest.raises(run_gate.GateError, match="jobs.*positive integer.*auto"):
+            run_gate._validate_lane(
+                "r2", {"kind": "assay", "assay_lane": "mutation",
+                       "jobs": jobs}, "fixture")
+
     def test_relaxed_container_dry_run_constructs_readonly_preload_bind(
             self, tmp_path, monkeypatch, capsys):
         monkeypatch.setattr(run_gate.shutil, "which", lambda _name: "/bin/docker")
