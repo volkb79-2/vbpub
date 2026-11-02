@@ -109,3 +109,11 @@ prunes other worktrees. CIU uses this to resume from its successful-cleanup
 shared record after the checkout-local identity file has already been deleted.
 CIU's versioned `rm` report adds its own target resolution, resource cleanup,
 lease release, lifecycle-preflight and privileged-retry outcomes.
+
+After a permission callback, the neutral layer verifies the checkout inode,
+then offers the adapter a `residual_checkout_guard` immediately before its
+unprivileged Git retry or its recursive delete of an unregistered leftover.
+The adapter owns time-based consent and any protected-path rules, because the
+neutral layer cannot infer CIU's `.assay` or `vol-*` data policy. A refusal
+preserves the checkout and shared record for another inspection; no adapter
+policy is embedded in the shared library.

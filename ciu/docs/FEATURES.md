@@ -164,9 +164,14 @@ progress or a `vol-*` data directory, name its exact branch with
 `--discard-protected-state BRANCH`; `-y` alone never discards that state. For a
 confirmed permission failure during checkout deletion, `--root-escalation
 BRANCH` separately consents to retry only the validated failed descendants
-through CIU's existing S6.5 helper. CIU records a retry command when consent is
-absent and can resume it after Git has dropped the registration. The same exact
-discard flag is safe to repeat after an interrupted removal if `ciu clean`
+through CIU's existing S6.5 helper. Before dispatch, CIU re-derives the host
+checkout mapping and checks it against the shared record; the helper verifies
+the mounted parent and target device/inode, disables recursive submounts, and
+refuses nested mounts. This requires Docker CLI and Engine 25.0.0 or newer.
+CIU records a retry command when consent is absent and can resume it after Git
+has dropped the registration, subject to a bounded checkpoint-time walk of the
+leftover checkout. The same exact discard flag is safe to repeat after an
+interrupted removal if `ciu clean`
 already removed the protected data. The branch survey exposes ignored entries
 and classifies them as protected, regenerable, or unclassified. A second `rm`
 inventory becomes `discarded_state`; entries removed during `ciu clean` are

@@ -1226,6 +1226,7 @@ def _finish_permission_recovery(
     current: WorkspaceRecord,
     admin_snapshot: tuple[Path, tuple[int, int], str],
     checkout_identity: tuple[int, int],
+    residual_checkout_guard: Callable[[Path], None] | None = None,
 ) -> None:
     """Finish an already-authorized, permission-specific checkout retry."""
     admin, identity, reverse_link = admin_snapshot
@@ -1245,6 +1246,16 @@ def _finish_permission_recovery(
                     f"checkout path was replaced during removal: {target}",
                     category="cleanup-refusal",
                 )
+            if residual_checkout_guard is not None:
+                try:
+                    residual_checkout_guard(target)
+                except WorkspaceError:
+                    raise
+                except Exception as exc:
+                    raise WorkspaceError(
+                        f"residual checkout guard refused {target}: {exc}",
+                        category="cleanup-refusal",
+                    ) from exc
         retry = subprocess.run(
             ["git", "worktree", "remove", "--force", str(target)],
             cwd=current.source_git_root, text=True, capture_output=True, check=False,
@@ -1267,6 +1278,16 @@ def _finish_permission_recovery(
                     f"residual checkout path was replaced during removal: {target}",
                     category="cleanup-refusal",
                 )
+            if residual_checkout_guard is not None:
+                try:
+                    residual_checkout_guard(target)
+                except WorkspaceError:
+                    raise
+                except Exception as exc:
+                    raise WorkspaceError(
+                        f"residual checkout guard refused {target}: {exc}",
+                        category="cleanup-refusal",
+                    ) from exc
             shutil.rmtree(target)
         except WorkspaceError:
             raise
@@ -1312,6 +1333,7 @@ def remove_unrecorded_workspace(
     checkout_recovery: Callable[
         [WorkspaceContext, Path, WorkspaceError], bool
     ] | None = None,
+    residual_checkout_guard: Callable[[Path], None] | None = None,
     on_phase: Callable[[str, str], None] | None = None,
 ) -> None:
     """Remove a legacy linked checkout that predates a shared record.
@@ -1336,6 +1358,7 @@ def remove_unrecorded_workspace(
         delete_branch=delete_branch,
         expected_branch_tip=expected_branch_tip,
         checkout_recovery=checkout_recovery,
+        residual_checkout_guard=residual_checkout_guard,
         on_phase=on_phase,
     )
 
@@ -1350,6 +1373,7 @@ def remove_workspace(
     checkout_recovery: Callable[
         [WorkspaceContext, Path, WorkspaceError], bool
     ] | None = None,
+    residual_checkout_guard: Callable[[Path], None] | None = None,
     on_phase: Callable[[str, str], None] | None = None,
 ) -> None:
     """Clean adapter resources, then remove the checkout and record.
@@ -1425,7 +1449,8 @@ def remove_workspace(
             if recovered:
                 try:
                     _finish_permission_recovery(
-                        current, admin_snapshot, checkout_identity
+                        current, admin_snapshot, checkout_identity,
+                        residual_checkout_guard,
                     )
                 except WorkspaceError as exc:
                     if on_phase is not None:

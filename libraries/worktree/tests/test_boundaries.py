@@ -926,6 +926,47 @@ def test_permission_recovery_refuses_replaced_checkout_before_residual_delete(
     assert context.record_path.is_file()
 
 
+def test_remove_workspace_passes_residual_guard_before_local_recovery_delete(
+    repository, tmp_path, monkeypatch
+):
+    context = create_workspace(
+        repository, tmp_path / "checkout", branch="test/residual-guard-plumbing",
+        purpose="test",
+    )
+    record = core.read_record(context.record_path)
+    admin, _identity, _reverse = core._workspace_admin_snapshot(record)
+    original_run = core.subprocess.run
+    attempts = []
+
+    def unregister_and_fail(argv, *args, **kwargs):
+        if argv[:3] == ["git", "worktree", "remove"] and not attempts:
+            attempts.append(argv)
+            shutil.rmtree(admin)
+            return subprocess.CompletedProcess(
+                argv, 1, stdout="", stderr="Permission denied"
+            )
+        return original_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(core.subprocess, "run", unregister_and_fail)
+    guard_calls = []
+
+    def guard(path):
+        guard_calls.append(path)
+        raise WorkspaceError("new adapter state", category="cleanup-refusal")
+
+    with pytest.raises(WorkspaceError, match="permission-specific checkout retry failed.*new adapter state"):
+        remove_workspace(
+            context,
+            checkout_recovery=lambda *_args: True,
+            residual_checkout_guard=guard,
+        )
+
+    assert attempts
+    assert guard_calls == [context.worktree_path]
+    assert context.worktree_path.is_dir()
+    assert context.record_path.is_file()
+
+
 def test_finish_workspace_removal_repairs_only_captured_prunable_registration(
     repository, tmp_path
 ):
@@ -1190,6 +1231,80 @@ def test_finish_permission_recovery_removes_residual_checkout_and_admin(
     assert not context.worktree_path.exists()
     assert not admin.exists()
     assert context.record_path.exists()
+
+
+def test_finish_permission_recovery_runs_residual_guard_before_unprivileged_rmtree(
+    repository, tmp_path, monkeypatch
+):
+    context = create_workspace(
+        repository, tmp_path / "checkout", branch="test/finish-residual-guard",
+        purpose="test",
+    )
+    record = core.read_record(context.record_path)
+    admin, identity, reverse = core._workspace_admin_snapshot(record)
+    monkeypatch.setattr(core, "list_git_worktrees", lambda *_args: [])
+    rmtree_calls = []
+    monkeypatch.setattr(
+        core.shutil, "rmtree", lambda path, *args, **kwargs: rmtree_calls.append(path)
+    )
+    guard_calls = []
+
+    def refuse_residual(path):
+        guard_calls.append(path)
+        raise WorkspaceError(
+            "leftover checkout changed after checkpoint", category="cleanup-refusal"
+        )
+
+    with pytest.raises(WorkspaceError, match="changed after checkpoint"):
+        core._finish_permission_recovery(
+            record, (admin, identity, reverse),
+            (context.worktree_path.lstat().st_dev, context.worktree_path.lstat().st_ino),
+            refuse_residual,
+        )
+
+    assert guard_calls == [context.worktree_path]
+    assert rmtree_calls == []
+    assert context.worktree_path.is_dir()
+
+
+@pytest.mark.parametrize(
+    ("registered", "error_kind"),
+    [(False, ValueError), (True, ValueError), (True, WorkspaceError)],
+)
+def test_finish_permission_recovery_wraps_residual_guard_errors(
+    repository, tmp_path, monkeypatch, registered, error_kind
+):
+    context = create_workspace(
+        repository, tmp_path / "checkout", branch=f"test/finish-guard-error-{registered}",
+        purpose="test",
+    )
+    record = core.read_record(context.record_path)
+    admin, identity, reverse = core._workspace_admin_snapshot(record)
+    entry = SimpleNamespace(path=context.worktree_path)
+    monkeypatch.setattr(core, "_verify_workspace_admin_snapshot", lambda *_args: None)
+    monkeypatch.setattr(
+        core, "list_git_worktrees", lambda *_args: [entry] if registered else []
+    )
+
+    original_error = (
+        WorkspaceError("original refusal", category="cleanup-refusal")
+        if error_kind is WorkspaceError else ValueError("adapter guard failure")
+    )
+
+    def fail_guard(_path):
+        raise original_error
+
+    expected = "original refusal" if error_kind is WorkspaceError else "adapter guard failure"
+    with pytest.raises(WorkspaceError, match=expected) as raised:
+        core._finish_permission_recovery(
+            record,
+            (admin, identity, reverse),
+            (context.worktree_path.lstat().st_dev, context.worktree_path.lstat().st_ino),
+            fail_guard,
+        )
+
+    assert raised.value is original_error if error_kind is WorkspaceError else raised.value.category == "cleanup-refusal"
+    assert context.worktree_path.is_dir()
 
 
 @pytest.mark.parametrize("rmtree_outcome", ["error", "no-op"])

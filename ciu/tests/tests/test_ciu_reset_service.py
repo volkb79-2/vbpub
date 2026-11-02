@@ -186,6 +186,8 @@ class TestRmtreeWithFallbackDooD:
         vol_dir = tmp_path / "vol-consul-data"
         vol_dir.mkdir()
         physical = tmp_path / "physical-vol-consul-data"
+        target_info = vol_dir.lstat()
+        parent_info = vol_dir.parent.stat()
 
         with patch.object(engine, "to_physical_path", return_value=physical) as mock_to_phys, \
              patch.object(engine.shutil, "rmtree") as mock_rmtree, \
@@ -194,23 +196,25 @@ class TestRmtreeWithFallbackDooD:
 
         mock_to_phys.assert_called_once_with(vol_dir, repo_root=Path("/workspaces/dstdns"))
         mock_rmtree.assert_not_called()  # local attempt skipped entirely in DooD
-        mock_helper.assert_called_once_with(physical)
+        mock_helper.assert_called_once_with(
+            physical,
+            target_identity=(target_info.st_dev, target_info.st_ino),
+            parent_identity=(parent_info.st_dev, parent_info.st_ino),
+        )
 
-    def test_dood_routes_through_physical_path_even_when_dir_no_longer_exists_locally(self, tmp_path):
-        """The bug's exact symptom: the operator's own UID:GID owns the data
-        (no PermissionError possible), so a local rmtree always "succeeds" —
-        but that success is on the wrong (logical) directory. Even with the
-        vol_dir already gone locally, DooD routing still fires."""
+    def test_dood_refuses_a_target_without_a_local_identity(self, tmp_path):
+        """A translated path is never trusted when its logical target is absent."""
         vol_dir = tmp_path / "vol-consul-data"  # never created — simulates the
         physical = tmp_path / "physical-vol-consul-data"  # daemon's real target
 
         with patch.object(engine, "to_physical_path", return_value=physical), \
              patch.object(engine.shutil, "rmtree") as mock_rmtree, \
              patch.object(engine, "privileged_rmtree") as mock_helper:
-            engine._rmtree_with_fallback(vol_dir, repo_root=Path("/workspaces/dstdns"))
+            with pytest.raises(RuntimeError, match="cannot verify S6.5 target identity"):
+                engine._rmtree_with_fallback(vol_dir, repo_root=Path("/workspaces/dstdns"))
 
         mock_rmtree.assert_not_called()
-        mock_helper.assert_called_once_with(physical)
+        mock_helper.assert_not_called()
 
     def test_native_host_still_uses_local_rmtree_directly(self, tmp_path):
         """to_physical_path(vol_dir) == vol_dir (S1.9, native host) → local
@@ -230,13 +234,19 @@ class TestRmtreeWithFallbackDooD:
         image, S6.7 Pattern (a)) still degrades to the root helper."""
         vol_dir = tmp_path / "vol-postgres-data"
         vol_dir.mkdir()
+        target_info = vol_dir.lstat()
+        parent_info = vol_dir.parent.stat()
 
         with patch.object(engine, "to_physical_path", return_value=vol_dir), \
              patch.object(engine.shutil, "rmtree", side_effect=PermissionError(13, "Permission denied")), \
              patch.object(engine, "privileged_rmtree") as mock_helper:
             engine._rmtree_with_fallback(vol_dir, repo_root=tmp_path)
 
-        mock_helper.assert_called_once_with(vol_dir)
+        mock_helper.assert_called_once_with(
+            vol_dir,
+            target_identity=(target_info.st_dev, target_info.st_ino),
+            parent_identity=(parent_info.st_dev, parent_info.st_ino),
+        )
 
     def test_no_repo_root_context_falls_back_to_native_behavior(self, tmp_path):
         """to_physical_path raising ValueError (no REPO_ROOT/PHYSICAL_REPO_ROOT
@@ -258,18 +268,37 @@ class TestPrivilegedRmtree:
         """S6.5 deletion helper: mount the PARENT, rm -rf the named child so the
         directory itself goes (mounting the dir would leave the mountpoint)."""
         target = tmp_path / "vol-postgres-data"
+        target.mkdir()
+        target_info = target.lstat()
+        parent_info = target.parent.stat()
+        def fake_docker(argv, **kwargs):
+            if argv[0] == "version":
+                return _ok(stdout="29.9.2|29.9.2")
+            return _ok()
         with patch.dict(os.environ, {"CGROUP_PARENT_DEV_INTERACTIVE": "dev-interactive.slice"}), \
              patch.object(engine.governance, "check_slice_unit", return_value=(True, "loaded")), \
-             patch.object(engine.procutil, "docker", return_value=_ok()) as mock_docker:
-            engine.privileged_rmtree(target)
+             patch.object(engine.procutil, "docker", side_effect=fake_docker) as mock_docker:
+            engine.privileged_rmtree(
+                target,
+                target_identity=(target_info.st_dev, target_info.st_ino),
+                parent_identity=(parent_info.st_dev, parent_info.st_ino),
+            )
 
         cmd = mock_docker.call_args.args[0]
         assert cmd[:4] == ["run", "--rm", "--cgroup-parent", "dev-interactive.slice"]
-        assert cmd[4:6] == ["--mount", f"type=bind,src={tmp_path},dst=/t"]
+        assert cmd[4:6] == [
+            "--mount",
+            f"type=bind,src={tmp_path},dst=/t,bind-recursive=disabled",
+        ]
         assert cmd[6] == "alpine"
         assert cmd[7:9] == ["sh", "-c"]
         assert "exec rm -rf -- \"$target\"" in cmd[9]
-        assert cmd[10:] == ["ciu-rmtree", "/t/vol-postgres-data"]
+        assert cmd[10:] == [
+            "ciu-rmtree", "/t/vol-postgres-data",
+            f"{target_info.st_dev}:{target_info.st_ino}",
+            f"{parent_info.st_dev}:{parent_info.st_ino}",
+            "/proc/self/mountinfo",
+        ]
         assert mock_docker.call_args.kwargs.get("check") is True
 
 

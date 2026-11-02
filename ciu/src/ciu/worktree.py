@@ -46,6 +46,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import dataclass, replace
@@ -2746,6 +2747,7 @@ _IGNORED_STATE_MAX_PATHS = 10_000
 _IGNORED_STATE_MAX_FILES = 10_000
 _IGNORED_STATE_MAX_BYTES = 1_073_741_824
 _IGNORED_STATE_MAX_TOTAL_ENTRIES = 100_000
+_PERMISSION_RETRY_WALK_MAX_ENTRIES = 100_000
 _REGENERABLE_IGNORED_NAMES = frozenset({
     "ciu.env", "ciu.instance.generated.toml", WORKTREE_INSTANCE_RECORD,
     "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
@@ -6853,7 +6855,10 @@ def _permission_retry_candidates(
     def add(path: Path) -> None:
         try:
             info = path.lstat()
+            parent_info = path.parent.lstat()
             if stat.S_ISLNK(info.st_mode):
+                return
+            if not stat.S_ISDIR(parent_info.st_mode):
                 return
             resolved = path.resolve(strict=True)
             relative = resolved.relative_to(root)
@@ -6875,6 +6880,8 @@ def _permission_retry_candidates(
         candidates[rel] = {
             "path": rel, "device": info.st_dev, "inode": info.st_ino,
             "mode": stat.S_IFMT(info.st_mode),
+            "parent_device": parent_info.st_dev,
+            "parent_inode": parent_info.st_ino,
         }
 
     pending = [root]
@@ -6989,18 +6996,189 @@ def _validated_retry_target(
         raise WorktreeError(f"permission retry target was replaced: {target}")
     if target == root_real:
         raise WorktreeError("permission retry may not target the checkout root")
+    try:
+        parent_info = target.parent.lstat()
+    except OSError as exc:
+        raise WorktreeError(
+            f"could not inspect permission retry target parent: {target.parent}: {exc}"
+        ) from exc
+    if (
+        not stat.S_ISDIR(parent_info.st_mode)
+        or (parent_info.st_dev, parent_info.st_ino)
+        != (item.get("parent_device"), item.get("parent_inode"))
+    ):
+        raise WorktreeError(
+            f"permission retry target parent was replaced: {target.parent}"
+        )
     return target
 
 
-def _physical_retry_target(shared_record: object, checkout: Path, target: Path) -> Path:
-    """Translate by the shared Git-family mapping, never by a nested CIU root."""
+def _permission_retry_tree_snapshot(
+    checkout: Path,
+    checkpoint: Mapping[str, Any],
+    *,
+    enforce_checkpoint_time: bool = True,
+) -> dict[str, tuple[int, int, int, int, int, int, bool]]:
+    """Boundedly inspect a leftover checkout without following symlinks."""
+    checkpoint_time = checkpoint.get("checkpoint_time_ns")
+    if (
+        not isinstance(checkpoint_time, int)
+        or isinstance(checkpoint_time, bool)
+        or checkpoint_time < 0
+    ):
+        raise WorktreeError("permission checkpoint has no valid checkpoint time")
+    ignored_state = checkpoint.get("ignored_state")
+    if not isinstance(ignored_state, list):
+        raise WorktreeError("permission checkpoint has no ignored-state inventory")
+    protected_components: set[str] = set()
+    for item in ignored_state:
+        if not isinstance(item, dict) or not isinstance(item.get("path"), str):
+            raise WorktreeError("permission checkpoint has a malformed ignored-state inventory")
+        relative = PurePosixPath(item["path"])
+        if relative.is_absolute() or ".." in relative.parts or not relative.parts:
+            raise WorktreeError("permission checkpoint has an unsafe ignored-state path")
+        for index, part in enumerate(relative.parts):
+            if part == ".assay" or part.startswith("vol-"):
+                protected_components.add("/".join(relative.parts[: index + 1]))
+
+    snapshot: dict[str, tuple[int, int, int, int, int, int, bool]] = {}
+    pending: list[tuple[Path, str]] = [(checkout, ".")]
+    visited = 0
+    while pending:
+        path, relative_path = pending.pop()
+        try:
+            info = path.lstat()
+        except OSError as exc:
+            raise WorktreeError(
+                f"could not inspect leftover checkout entry {path}: {exc}"
+            ) from exc
+        visited += 1
+        if enforce_checkpoint_time and info.st_mtime_ns > checkpoint_time:
+            raise WorktreeError(
+                f"leftover checkout entry changed after the permission checkpoint: "
+                f"{relative_path}"
+            )
+        relative = PurePosixPath(relative_path)
+        parts = () if relative_path == "." else relative.parts
+        for index, part in enumerate(parts):
+            if part == ".assay" or part.startswith("vol-"):
+                component = "/".join(parts[: index + 1])
+                if component not in protected_components:
+                    raise WorktreeError(
+                        f"leftover checkout contains new protected-state component: "
+                        f"{component}"
+                    )
+        is_directory = stat.S_ISDIR(info.st_mode)
+        snapshot[relative_path] = (
+            info.st_dev,
+            info.st_ino,
+            stat.S_IFMT(info.st_mode),
+            stat.S_IMODE(info.st_mode),
+            info.st_size,
+            info.st_mtime_ns,
+            is_directory,
+        )
+        if is_directory:
+            try:
+                with os.scandir(path) as children:
+                    for child in children:
+                        if visited + len(pending) >= _PERMISSION_RETRY_WALK_MAX_ENTRIES:
+                            raise WorktreeError(
+                                f"permission retry checkout walk reached its "
+                                f"{_PERMISSION_RETRY_WALK_MAX_ENTRIES}-entry limit"
+                            )
+                        child_relative = (
+                            child.name if relative_path == "."
+                            else f"{relative_path}/{child.name}"
+                        )
+                        pending.append((Path(child.path), child_relative))
+            except WorktreeError:
+                raise
+            except OSError as exc:
+                raise WorktreeError(
+                    f"could not enumerate leftover checkout directory {path}: {exc}"
+                ) from exc
+    return snapshot
+
+
+def _compare_permission_retry_snapshots(
+    before: Mapping[str, tuple[int, int, int, int, int, int, bool]],
+    after: Mapping[str, tuple[int, int, int, int, int, int, bool]],
+    candidates: list[dict[str, Any]],
+) -> None:
+    """Allow only removals below the already-consented helper targets."""
+    allowed: list[str] = []
+    for item in candidates:
+        relative = item.get("path") if isinstance(item, dict) else None
+        path = PurePosixPath(relative) if isinstance(relative, str) else None
+        if path is None or path.is_absolute() or ".." in path.parts or not path.parts:
+            raise WorktreeError("permission checkpoint has a malformed retry target")
+        allowed.append(path.as_posix())
+
+    def is_allowed_removal(relative: str) -> bool:
+        return any(
+            relative == root or relative.startswith(root + "/") for root in allowed
+        )
+
+    for relative, old in before.items():
+        current = after.get(relative)
+        if current is None:
+            if not is_allowed_removal(relative):
+                raise WorktreeError(
+                    f"leftover checkout entry disappeared outside a retry target: {relative}"
+                )
+            continue
+        if old[:4] != current[:4] or old[6] != current[6]:
+            raise WorktreeError(
+                f"leftover checkout entry changed during permission retry: {relative}"
+            )
+        if not old[6] and old[4:6] != current[4:6]:
+            raise WorktreeError(
+                f"leftover checkout file changed during permission retry: {relative}"
+            )
+    for relative in after.keys() - before.keys():
+        raise WorktreeError(
+            f"new leftover checkout entry appeared during permission retry: {relative}"
+        )
+
+
+def _refresh_permission_retry_checkpoint_time(
+    checkout: Path,
+    checkpoint: dict[str, Any],
+    before: Mapping[str, tuple[int, int, int, int, int, int, bool]],
+    candidates: list[dict[str, Any]],
+) -> None:
+    """Recheck helper side effects, then move the durable cutoff forward."""
+    after = _permission_retry_tree_snapshot(
+        checkout, checkpoint, enforce_checkpoint_time=False
+    )
+    _compare_permission_retry_snapshots(before, after, candidates)
+    previous_time = checkpoint["checkpoint_time_ns"]
+    checkpoint["checkpoint_time_ns"] = time.time_ns()
+    try:
+        _permission_retry_tree_snapshot(checkout, checkpoint)
+    except WorktreeError:
+        checkpoint["checkpoint_time_ns"] = previous_time
+        raise
+
+
+def _physical_retry_target(
+    shared_record: object, repo_root: Path, checkout: Path, target: Path,
+) -> Path:
+    """Re-derive and verify the Git-family host path before helper dispatch."""
     logical_root = Path(shared_record.worktree_path)
     recorded_root = logical_root.resolve(strict=False)
     if checkout.resolve(strict=False) != recorded_root:
         raise WorktreeError(
             f"retry checkout {checkout} differs from shared record {logical_root}"
         )
-    physical_root = Path(shared_record.physical_worktree_path)
+    physical_root = _physical_workspace_target(repo_root, checkout)
+    recorded_physical_root = Path(shared_record.physical_worktree_path)
+    if physical_root != recorded_physical_root:
+        raise WorktreeError(
+            f"mountinfo-derived physical checkout {physical_root} differs from "
+            f"shared record physical path {recorded_physical_root}"
+        )
     try:
         relative = target.relative_to(checkout)
         if relative.is_absolute() or ".." in relative.parts or not relative.parts:
@@ -7326,6 +7504,10 @@ def remove(
         details["privileged_retry"] = retry_status
         engine = None
         try:
+            tree_before = (
+                _permission_retry_tree_snapshot(path, checkpoint)
+                if root_info is not None else None
+            )
             from . import engine as engine_module
             engine = engine_module
             for item in candidates:
@@ -7345,14 +7527,26 @@ def remove(
                     Path(admin_path),
                 )
                 physical_target = _physical_retry_target(
-                    logical_shared, path, target
+                    logical_shared, repo_root, path, target
                 )
-                engine.privileged_rmtree(physical_target)
+                engine.privileged_rmtree(
+                    physical_target,
+                    target_identity=(item.get("device"), item.get("inode")),
+                    parent_identity=(
+                        item.get("parent_device"), item.get("parent_inode"),
+                    ),
+                )
                 if target.exists() or target.is_symlink():
                     raise WorktreeError(
                         f"S6.5 helper returned but blocked target remains: {target}"
                     )
             if root_info is not None:
+                assert tree_before is not None
+                _refresh_permission_retry_checkpoint_time(
+                    path, checkpoint, tree_before, candidates
+                )
+                _store_removal_checkpoint(shared, logical_shared, checkpoint)
+                _permission_retry_tree_snapshot(path, checkpoint)
                 try:
                     shutil.rmtree(path)
                 except OSError as exc:
@@ -7422,7 +7616,7 @@ def remove(
                 remaining.append(admin_path)
             retry_status["remaining"] = remaining
             remaining_text = (
-                "; remaining paths: " + ", ".join(remaining) if remaining
+                "; remaining paths: " + _format_changed_paths(remaining) if remaining
                 else "; no inventoried checkout or Git-admin path remains"
             )
             raise fail(
@@ -7802,6 +7996,11 @@ def remove(
     ) -> bool:
         """Offer exact-path recovery only after Git reports EACCES or EPERM."""
         recovery_state["permission_failure"] = str(git_failure)
+        # This callback is installed only after CIU has persisted the exact
+        # removal checkpoint above; recovery without it is a caller invariant
+        # failure, not a reason to invent a new checkpoint.
+        assert removal_checkpoint is not None
+        removal_checkpoint["checkpoint_time_ns"] = time.time_ns()
         blockers, inventory_capped = _permission_retry_candidates(
             Path(context.worktree_path), str(git_failure)
         )
@@ -7848,6 +8047,7 @@ def remove(
         ):
             return False
 
+        tree_before = _permission_retry_tree_snapshot(path, removal_checkpoint)
         mark("privileged_retry", "running")
         retry_document["status"] = "running"
         try:
@@ -7865,8 +8065,14 @@ def remove(
                     repo_root, name, managed, shared_record,
                     removal_checkpoint, git_admin_dir,
                 )
-                physical_target = _physical_retry_target(shared_record, path, target)
-                engine.privileged_rmtree(physical_target)
+                physical_target = _physical_retry_target(
+                    shared_record, repo_root, path, target
+                )
+                engine.privileged_rmtree(
+                    physical_target,
+                    target_identity=(item["device"], item["inode"]),
+                    parent_identity=(item["parent_device"], item["parent_inode"]),
+                )
                 try:
                     target.lstat()
                 except FileNotFoundError:
@@ -7875,6 +8081,9 @@ def remove(
                     raise WorktreeError(
                         f"S6.5 helper returned but blocked target remains: {target}"
                     )
+            _refresh_permission_retry_checkpoint_time(
+                path, removal_checkpoint, tree_before, blockers
+            )
         except Exception as exc:
             recovery_state["status"] = "failed"
             recovery_state["error"] = str(exc)
@@ -7886,6 +8095,15 @@ def remove(
         retry_document["status"] = "complete"
         mark("privileged_retry", "complete")
         return True
+
+    def guard_residual_checkout(checkout: Path) -> None:
+        """Recheck the checkpoint immediately before the library's local rmtree."""
+        if checkout != path:
+            raise WorktreeError(
+                "permission retry has no matching residual-checkout checkpoint"
+            )
+        assert removal_checkpoint is not None
+        _permission_retry_tree_snapshot(checkout, removal_checkpoint)
 
     try:
         mark("lifecycle_preflight", "running")
@@ -7969,6 +8187,7 @@ def remove(
                     "lease_release": report["phases"]["lease_release"],
                     "branch_plan": dict(branch),
                     "checkout_identity": _path_identity(wt.path),
+                    "checkpoint_time_ns": time.time_ns(),
                     "git_admin_path": admin["path"],
                     "git_admin_identity": {
                         "device": admin["device"], "inode": admin["inode"],
@@ -7995,6 +8214,7 @@ def remove(
                 delete_branch=bool(branch["delete"]),
                 expected_branch_tip=branch["tip"] if branch["delete"] else None,
                 checkout_recovery=retry_permission_failure if rc == 0 else None,
+                residual_checkout_guard=guard_residual_checkout,
                 on_phase=report_library_phase,
             )
         else:
@@ -8055,7 +8275,10 @@ def remove(
         )
         message = f"shared worktree removal failed: {exc}"
         if retry_doc and retry_doc.get("remaining"):
-            message += "; remaining checkout paths: " + ", ".join(retry_doc["remaining"])
+            message += (
+                "; remaining checkout paths: "
+                + _format_changed_paths(retry_doc["remaining"])
+            )
         if checkpoint_error:
             message += f"; could not persist retry checkpoint: {checkpoint_error}"
         raise fail(message, phase=phase) from exc

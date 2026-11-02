@@ -1141,16 +1141,37 @@ descendant, so the durable shared record is the evidence for a second command.
 The retry rechecks the record, checkout inode, checkout `.git` link, Git
 family, captured admin inode and reverse link, then targets only validated
 descendants under the real checkout root. Symlinks, root targets, escaped
-paths, and changed identities refuse before helper invocation. The helper
-receives the target translated from the shared Git-family physical checkout
-path; deriving it from a nested CIU root would address the wrong host path in a
-Docker-outside-of-Docker layout. Its bind source must exist, and its configured
-cgroup slice must be verified loaded. Git admin cleanup removes only the
-captured identity and checks that no other registered checkout owns it; no
-broad prune can discard unrelated registrations. If the retry fails, the
-report names paths that remain. The neutral library supplies a permission-only
-recovery callback and a separate exact-checkpoint finalizer, while CIU owns
-target discovery, consent and helper policy.
+paths, and changed identities refuse before helper invocation.
+
+The helper path is re-derived at retry time from mount information for the Git
+family and must equal the shared record's physical checkout path. This closes
+the stale-record route without statting a path from another namespace. The
+helper also receives the parent and target device/inode captured through the
+logical checkout. It checks both identities after Docker resolves the bind
+source, so a swapped parent or target fails before removal. Device numbers are
+compared with inodes because Linux bind mounts preserve both values; there is
+no namespace-local probe of the translated host path. The bind disables
+recursive submounts, and the helper refuses any mount listed below `/t`.
+Docker CLI and Engine 25.0.0 or newer are required for this mount option. The
+configured cgroup slice must still be verified loaded.
+
+A later invocation can be separated from the checkpoint by an arbitrary
+amount of time. Before any further privileged or local removal, CIU performs a
+bounded, no-follow walk of the leftover checkout. It refuses new `.assay` or
+`vol-*` components, entries whose modification time is newer than the
+checkpoint, unreadable paths, and a walk that reaches its 100,000-entry cap.
+After the helper removes only checkpointed blockers, CIU compares the tree
+again and runs the same check immediately before local recursive deletion.
+This allows the consented target to disappear while preserving any other new
+or changed entry.
+
+Git admin cleanup removes only the captured identity and checks that no other
+registered checkout owns it; no broad prune can discard unrelated
+registrations. Failed retries retain the complete remaining path list in JSON
+and cap the diagnostic at 20 paths plus the total. The neutral library
+supplies the permission-only recovery callback, a residual-checkout guard, and
+a separate exact-checkpoint finalizer, while CIU owns target discovery,
+consent and helper policy.
 
 The normative contract is in [SPEC S16.4 and S16.8](SPEC.md#s16--worktree-instances-ciu-worktree),
 with pasteable commands in [CONSUMERS §5 and §5b](CONSUMERS.md#5-remove-and-read-the-removal-document).

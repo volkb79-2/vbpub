@@ -39,6 +39,15 @@ the original checkout inode and Git administration identity before completing
 the removal. CIU's exact-branch contract and durable resume example are in its
 [worktree removal guide](../../ciu/docs/CONSUMERS.md#5-remove-and-read-the-removal-document).
 
+When a permission recovery can leave the Git registration absent while checkout
+files remain, pass `residual_checkout_guard` to `remove_workspace`. The
+library calls it after verifying the captured checkout inode and immediately
+before either the unprivileged Git retry or its `shutil.rmtree` of an
+unregistered leftover. The adapter owns the guard's checkpoint, permitted
+changes, walk limit, and refusal message; a guard error preserves the leftover
+checkout and its workspace record. Do not use this callback as a replacement
+for the earlier target validation inside `checkout_recovery`.
+
 To find an existing record by checkout, pass its exact absolute stored path:
 
 ```python

@@ -24,3 +24,7 @@ finishes removal. CIU uses this seam only after exact-branch consent and invokes
 its S6.5 helper on verified failed descendants. `finish_workspace_removal`
 supports a later invocation when Git already dropped the registration; it
 requires a durable adapter checkpoint and the captured admin identity.
+`remove_workspace` also accepts an optional `residual_checkout_guard`, called
+immediately before its unprivileged Git retry or recursive removal of an
+unregistered leftover checkout. Adapters can revalidate checkpointed data
+there without adding product policy to the neutral library.

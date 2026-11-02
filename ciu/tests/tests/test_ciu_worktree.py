@@ -4549,6 +4549,7 @@ class TestPermissionRemovalRetry:
     def _permission_failed_checkout(
         tmp_repo, fake_generate_env, monkeypatch, *, consent=False,
         privileged_rmtree=None, inventory=None, fail_retry_checkpoint=False,
+        residual_guard_path=None,
     ):
         ignore = tmp_repo / ".gitignore"
         ignore.write_text(
@@ -4610,10 +4611,21 @@ class TestPermissionRemovalRetry:
             from ciu import engine
             monkeypatch.setattr(
                 engine, "privileged_rmtree",
-                lambda physical_target: privileged_rmtree(
+                lambda physical_target, **_identities: privileged_rmtree(
                     Path(physical_target), checkout, blocked
                 ),
             )
+        if residual_guard_path is not None:
+            real_shared = worktree._shared_worktree()
+
+            class SharedProxy:
+                def __getattr__(self, name):
+                    return getattr(real_shared, name)
+
+                def remove_workspace(self, record, **kwargs):
+                    kwargs["residual_checkout_guard"](residual_guard_path)
+
+            monkeypatch.setattr(worktree, "_shared_worktree", lambda: SharedProxy())
         try:
             outcome = worktree.remove_document(
                 tmp_repo, record.logical_name,
@@ -4950,6 +4962,7 @@ class TestPermissionRemovalRetry:
             ("escape-link", "escapes the checkout"),
             ("inside-link", "contains a symlink"),
             ("replaced-target", "target was replaced"),
+        ("replaced-parent", "parent was replaced"),
             ("checkout-target", "may not target the checkout root"),
         ],
     )
@@ -4961,7 +4974,8 @@ class TestPermissionRemovalRetry:
         (checkout / "target").write_text("data", encoding="utf-8")
         identity = worktree._path_identity(checkout)
         item = {"path": "target", **worktree._path_identity(checkout / "target"),
-                "mode": stat.S_IFMT((checkout / "target").lstat().st_mode)}
+                "mode": stat.S_IFMT((checkout / "target").lstat().st_mode),
+                "parent_device": identity["device"], "parent_inode": identity["inode"]}
 
         if case == "missing-checkout":
             shutil.rmtree(checkout)
@@ -4992,6 +5006,8 @@ class TestPermissionRemovalRetry:
             item["path"] = "link"
         elif case == "replaced-target":
             item["device"] = -1
+        elif case == "replaced-parent":
+            item["parent_inode"] = -1
         elif case == "checkout-target":
             item = {"path": ".", **identity,
                     "mode": stat.S_IFMT(checkout.lstat().st_mode)}
@@ -5028,7 +5044,9 @@ class TestPermissionRemovalRetry:
                     checkout, {"path": raw}, expected_checkout_identity=identity
                 )
 
-    def test_physical_retry_target_requires_the_recorded_checkout(self, tmp_path):
+    def test_physical_retry_target_requires_the_recorded_checkout(
+        self, tmp_path, monkeypatch
+    ):
         checkout = tmp_path / "logical"
         checkout.mkdir()
         target = checkout / "locked"
@@ -5036,22 +5054,76 @@ class TestPermissionRemovalRetry:
         shared = SimpleNamespace(
             worktree_path=checkout, physical_worktree_path=tmp_path / "host" / "checkout"
         )
-        assert worktree._physical_retry_target(shared, checkout, target) == (
+        monkeypatch.setattr(
+            worktree, "_physical_workspace_target",
+            lambda _repo_root, _checkout: tmp_path / "host" / "checkout",
+        )
+        assert worktree._physical_retry_target(shared, tmp_path / "repo", checkout, target) == (
             tmp_path / "host" / "checkout" / "locked"
         )
         with pytest.raises(worktree.WorktreeError, match="differs from shared record"):
-            worktree._physical_retry_target(shared, tmp_path / "other", target)
+            worktree._physical_retry_target(
+                shared, tmp_path / "repo", tmp_path / "other", target
+            )
         with pytest.raises(worktree.WorktreeError, match="translated retry target escapes"):
             worktree._physical_retry_target(
-                shared, checkout, checkout / ".." / "outside"
+                shared, tmp_path / "repo", checkout, checkout / ".." / "outside"
             )
+        wrong_shared = SimpleNamespace(
+            worktree_path=checkout,
+            physical_worktree_path=tmp_path / "existing-but-wrong-host-root",
+        )
+        with pytest.raises(
+            worktree.WorktreeError, match="differs from shared record physical path"
+        ):
+            worktree._physical_retry_target(
+                wrong_shared, tmp_path / "repo", checkout, target
+            )
+
+    def test_resume_refuses_a_forged_existing_physical_checkout_before_helper(
+        self, tmp_repo, fake_generate_env, monkeypatch, tmp_path
+    ):
+        from ciu import engine
+
+        record, checkout, blocked, shared, durable, _admin, _outcome = (
+            self._permission_failed_checkout(tmp_repo, fake_generate_env, monkeypatch)
+        )
+        wrong_root = tmp_path / "other-existing-checkout"
+        wrong_root.mkdir()
+        protected_payload = wrong_root / "must-survive"
+        protected_payload.write_text("unrelated host data", encoding="utf-8")
+        recorded_physical = Path(durable.physical_worktree_path)
+        monkeypatch.setattr(
+            worktree, "_physical_workspace_target",
+            lambda _repo_root, _checkout: wrong_root,
+        )
+        helper_calls = []
+        monkeypatch.setattr(
+            engine, "privileged_rmtree",
+            lambda target, **_identities: helper_calls.append(target),
+        )
+
+        with pytest.raises(
+            worktree.WorktreeRemovalError,
+            match="differs from shared record physical path",
+        ):
+            worktree.remove_document(
+                tmp_repo, record.logical_name, root_escalation=record.branch
+            )
+
+        assert helper_calls == []
+        assert blocked.exists()
+        assert Path(recorded_physical) != wrong_root
+        assert protected_payload.read_text(encoding="utf-8") == "unrelated host data"
 
     def test_consent_retries_only_the_permission_paths_in_the_same_rm_call(
         self, tmp_repo, fake_generate_env, monkeypatch
     ):
         helper_targets = []
 
-        def fake_privileged_rmtree(physical_target, _checkout, local_blocked):
+        def fake_privileged_rmtree(
+            physical_target, _checkout, local_blocked, **_identities
+        ):
             physical_target = Path(physical_target)
             helper_targets.append(physical_target)
             assert physical_target.name == "locked"
@@ -5091,6 +5163,68 @@ class TestPermissionRemovalRetry:
         assert retry["remaining"] == [str(blocked)]
         assert blocked.exists()
         assert checkout.exists()
+
+    def test_same_call_retry_refuses_new_protected_state_before_library_rmtree(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        real_refresh = worktree._refresh_permission_retry_checkpoint_time
+        new_state: list[Path] = []
+
+        def add_new_state_after_checkpoint(checkout, checkpoint, before, candidates):
+            real_refresh(checkout, checkpoint, before, candidates)
+            state = checkout / ".assay" / "vol-new-campaign"
+            state.mkdir(parents=True)
+            payload = state / "mutants.json"
+            payload.write_text("preserve", encoding="utf-8")
+            new_state.append(payload)
+
+        monkeypatch.setattr(
+            worktree, "_refresh_permission_retry_checkpoint_time",
+            add_new_state_after_checkpoint,
+        )
+
+        def remove_only_blocked(_physical, _checkout, blocked, **_identities):
+            blocked.chmod(0o700)
+            shutil.rmtree(blocked)
+
+        record, checkout, _blocked, _shared, _durable, _admin, failure = (
+            self._permission_failed_checkout(
+                tmp_repo, fake_generate_env, monkeypatch, consent=True,
+                privileged_rmtree=remove_only_blocked,
+            )
+        )
+
+        assert isinstance(failure, worktree.WorktreeRemovalError)
+        assert "permission-specific checkout retry failed" in str(failure)
+        assert "changed after the permission checkpoint" in str(failure)
+        assert checkout.is_dir()
+        assert new_state[0].read_text(encoding="utf-8") == "preserve"
+
+    def test_residual_guard_refuses_a_different_checkout_path(
+        self, tmp_repo, fake_generate_env, monkeypatch, tmp_path
+    ):
+        other_checkout = tmp_path / "other-checkout"
+        other_checkout.mkdir()
+
+        def remove_blocked(_physical, _checkout, blocked):
+            blocked.chmod(0o700)
+            shutil.rmtree(blocked)
+
+        record, checkout, _blocked, _shared, _durable, _admin, failure = (
+            self._permission_failed_checkout(
+                tmp_repo,
+                fake_generate_env,
+                monkeypatch,
+                consent=True,
+                privileged_rmtree=remove_blocked,
+                residual_guard_path=other_checkout,
+            )
+        )
+
+        assert isinstance(failure, worktree.WorktreeRemovalError)
+        assert "no matching residual-checkout checkpoint" in str(failure)
+        assert checkout.is_dir()
+        assert other_checkout.is_dir()
 
     def test_same_call_retry_refuses_a_target_that_disappears_before_the_helper(
         self, tmp_repo, fake_generate_env, monkeypatch
@@ -5183,7 +5317,9 @@ class TestPermissionRemovalRetry:
             armed = True
             raise RuntimeError("helper unavailable")
 
-        monkeypatch.setattr(engine, "privileged_rmtree", fail_helper)
+        monkeypatch.setattr(
+            engine, "privileged_rmtree", lambda _target, **_ids: fail_helper(_target)
+        )
         real_lstat = Path.lstat
 
         def unreadable_checkout_stat(path, *args, **kwargs):
@@ -5371,7 +5507,11 @@ class TestPermissionRemovalRetry:
             self._permission_failed_checkout(tmp_repo, fake_generate_env, monkeypatch)
         )
         calls = []
-        monkeypatch.setattr(engine, "privileged_rmtree", lambda target: calls.append(target))
+        identities = []
+        monkeypatch.setattr(
+            engine, "privileged_rmtree",
+            lambda target, **values: (calls.append(target), identities.append(values)),
+        )
 
         with pytest.raises(worktree.WorktreeRemovalError, match="helper returned but blocked target remains") as failure:
             worktree.remove_document(
@@ -5380,6 +5520,12 @@ class TestPermissionRemovalRetry:
             )
 
         assert len(calls) == 1 and Path(calls[0]).name == "locked"
+        blocked_info = blocked.lstat()
+        parent_info = blocked.parent.lstat()
+        assert identities == [{
+            "target_identity": (blocked_info.st_dev, blocked_info.st_ino),
+            "parent_identity": (parent_info.st_dev, parent_info.st_ino),
+        }]
         retry = failure.value.document["privileged_retry"]
         assert retry["status"] == "failed"
         assert str(checkout) in retry["remaining"]
@@ -5416,6 +5562,92 @@ class TestPermissionRemovalRetry:
         with pytest.raises(worktree.WorktreeRemovalError, match="no durable successful-cleanup"):
             worktree.remove_document(tmp_repo, record.logical_name)
 
+    def test_resume_refuses_new_protected_state_even_when_mtime_is_preserved(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        from ciu import engine
+
+        record, checkout, _blocked, _shared, durable, _admin, _outcome = (
+            self._permission_failed_checkout(tmp_repo, fake_generate_env, monkeypatch)
+        )
+        checkpoint = durable.metadata[worktree._CIU_WORKTREE_REMOVAL_METADATA]
+        old_time = checkpoint["checkpoint_time_ns"] - 1
+        protected = checkout / ".assay" / "vol-new-run"
+        protected.mkdir(parents=True)
+        payload = protected / "state.json"
+        payload.write_text("keep this new state", encoding="utf-8")
+        for path in (payload, protected, protected.parent, checkout):
+            os.utime(path, ns=(old_time, old_time))
+        helper_calls = []
+        monkeypatch.setattr(
+            engine, "privileged_rmtree",
+            lambda target, **_identities: helper_calls.append(target),
+        )
+
+        with pytest.raises(
+            worktree.WorktreeRemovalError,
+            match="new protected-state component: \\.assay",
+        ):
+            worktree.remove_document(
+                tmp_repo, record.logical_name, root_escalation=record.branch
+            )
+
+        assert helper_calls == []
+        assert payload.read_text(encoding="utf-8") == "keep this new state"
+
+    def test_resume_refuses_a_file_modified_after_checkpoint_before_helper(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        from ciu import engine
+
+        record, checkout, _blocked, _shared, _durable, _admin, _outcome = (
+            self._permission_failed_checkout(tmp_repo, fake_generate_env, monkeypatch)
+        )
+        changed = checkout / "unmerged-work.txt"
+        changed.write_text("new work after the checkpoint\n", encoding="utf-8")
+        helper_calls = []
+        monkeypatch.setattr(
+            engine, "privileged_rmtree",
+            lambda target, **_identities: helper_calls.append(target),
+        )
+
+        with pytest.raises(
+            worktree.WorktreeRemovalError,
+            match="changed after the permission checkpoint: unmerged-work.txt",
+        ):
+            worktree.remove_document(
+                tmp_repo, record.logical_name, root_escalation=record.branch
+            )
+
+        assert helper_calls == []
+        assert changed.read_text(encoding="utf-8") == "new work after the checkpoint\n"
+
+    def test_resume_refuses_when_leftover_checkout_walk_reaches_its_limit(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        from ciu import engine
+
+        record, checkout, _blocked, _shared, _durable, _admin, _outcome = (
+            self._permission_failed_checkout(tmp_repo, fake_generate_env, monkeypatch)
+        )
+        helper_calls = []
+        monkeypatch.setattr(worktree, "_PERMISSION_RETRY_WALK_MAX_ENTRIES", 1)
+        monkeypatch.setattr(
+            engine, "privileged_rmtree",
+            lambda target, **_identities: helper_calls.append(target),
+        )
+
+        with pytest.raises(
+            worktree.WorktreeRemovalError,
+            match="checkout walk reached its 1-entry limit",
+        ):
+            worktree.remove_document(
+                tmp_repo, record.logical_name, root_escalation=record.branch
+            )
+
+        assert helper_calls == []
+        assert checkout.is_dir()
+
     def test_resume_supports_unrecorded_legacy_checkpoint_without_ciu_snapshot(
         self, tmp_repo, fake_generate_env, monkeypatch
     ):
@@ -5433,7 +5665,10 @@ class TestPermissionRemovalRetry:
             (blocked / "payload").unlink()
             blocked.rmdir()
 
-        monkeypatch.setattr(engine, "privileged_rmtree", remove_blocked)
+        monkeypatch.setattr(
+            engine, "privileged_rmtree",
+            lambda _target, **_ids: remove_blocked(_target),
+        )
         document = worktree.remove_document(
             tmp_repo, record.logical_name, root_escalation=record.branch,
             json_output=True,
@@ -5529,15 +5764,24 @@ class TestPermissionRemovalRetry:
     def test_resume_skips_an_already_removed_target_and_keeps_unmerged_branch(
         self, tmp_repo, fake_generate_env, monkeypatch
     ):
-        record, checkout, blocked, _shared, _durable, _admin, _outcome = (
+        record, checkout, blocked, shared, durable, _admin, _outcome = (
             self._permission_failed_checkout(tmp_repo, fake_generate_env, monkeypatch)
         )
         blocked.chmod(0o700)
         (blocked / "payload").unlink()
         blocked.rmdir()
+        self._rewrite_checkpoint(
+            shared, durable,
+            lambda checkpoint: checkpoint.__setitem__(
+                "checkpoint_time_ns", worktree.time.time_ns()
+            ),
+        )
         from ciu import engine
         helper_calls = []
-        monkeypatch.setattr(engine, "privileged_rmtree", lambda target: helper_calls.append(target))
+        monkeypatch.setattr(
+            engine, "privileged_rmtree",
+            lambda target, **_identities: helper_calls.append(target),
+        )
 
         document = worktree.remove_document(
             tmp_repo, record.logical_name, root_escalation=record.branch,
@@ -5563,7 +5807,10 @@ class TestPermissionRemovalRetry:
             (blocked / "payload").unlink()
             blocked.rmdir()
 
-        monkeypatch.setattr(engine, "privileged_rmtree", remove_blocked)
+        monkeypatch.setattr(
+            engine, "privileged_rmtree",
+            lambda _target, **_ids: remove_blocked(_target),
+        )
         real_rmtree = shutil.rmtree
 
         def fail_checkout_rmtree(path, *args, **kwargs):
@@ -5593,7 +5840,10 @@ class TestPermissionRemovalRetry:
             (blocked / "payload").unlink()
             blocked.rmdir()
 
-        monkeypatch.setattr(engine, "privileged_rmtree", remove_blocked)
+        monkeypatch.setattr(
+            engine, "privileged_rmtree",
+            lambda _target, **_ids: remove_blocked(_target),
+        )
         real_rmtree = shutil.rmtree
         monkeypatch.setattr(
             shutil, "rmtree",
@@ -5616,6 +5866,12 @@ class TestPermissionRemovalRetry:
         blocked.chmod(0o700)
         (blocked / "payload").unlink()
         blocked.rmdir()
+        self._rewrite_checkpoint(
+            shared, _durable,
+            lambda checkpoint: checkpoint.__setitem__(
+                "checkpoint_time_ns", worktree.time.time_ns()
+            ),
+        )
         monkeypatch.setattr(worktree, "_shared_worktree", lambda: shared)
         monkeypatch.setattr(
             shared, "finish_workspace_removal",
@@ -5644,7 +5900,9 @@ class TestPermissionRemovalRetry:
             armed = True
             raise RuntimeError("helper unavailable")
 
-        monkeypatch.setattr(engine, "privileged_rmtree", fail_helper)
+        monkeypatch.setattr(
+            engine, "privileged_rmtree", lambda _target, **_ids: fail_helper(_target)
+        )
         real_lstat = Path.lstat
 
         def unreadable_target_stat(path, *args, **kwargs):
@@ -5661,6 +5919,59 @@ class TestPermissionRemovalRetry:
             )
         assert str(blocked) in failure.value.document["privileged_retry"]["remaining"]
         assert str(checkout) in failure.value.document["privileged_retry"]["remaining"]
+
+    def test_resume_caps_remaining_path_diagnostic_but_keeps_full_json(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        from ciu import engine
+
+        record, checkout, _blocked, shared, durable, _admin, _outcome = (
+            self._permission_failed_checkout(tmp_repo, fake_generate_env, monkeypatch)
+        )
+        checkpoint = dict(
+            durable.metadata[worktree._CIU_WORKTREE_REMOVAL_METADATA]
+        )
+        candidates = list(checkpoint["permission_blockers"])
+        for index in range(24):
+            target = checkout / f"blocked-{index:02d}"
+            target.mkdir()
+            payload = target / "payload"
+            payload.write_text("keep", encoding="utf-8")
+            info = target.lstat()
+            parent = target.parent.lstat()
+            candidates.append({
+                "path": target.name,
+                "device": info.st_dev,
+                "inode": info.st_ino,
+                "mode": stat.S_IFMT(info.st_mode),
+                "parent_device": parent.st_dev,
+                "parent_inode": parent.st_ino,
+            })
+        checkpoint["permission_blockers"] = candidates
+        checkpoint["checkpoint_time_ns"] = worktree.time.time_ns()
+        metadata = dict(durable.metadata)
+        metadata[worktree._CIU_WORKTREE_REMOVAL_METADATA] = checkpoint
+        shared.write_record(replace(durable, metadata=metadata))
+        monkeypatch.setattr(
+            engine, "privileged_rmtree",
+            lambda _target, **_identities: (_ for _ in ()).throw(
+                RuntimeError("helper transport lost")
+            ),
+        )
+
+        with pytest.raises(
+            worktree.WorktreeRemovalError,
+            match="showing first 20 of 26 total paths",
+        ) as failure:
+            worktree.remove_document(
+                tmp_repo, record.logical_name, root_escalation=record.branch,
+                json_output=True,
+            )
+
+        remaining = failure.value.document["privileged_retry"]["remaining"]
+        assert len(remaining) == 26
+        assert str(checkout) in remaining
+        assert str(checkout / "blocked-23") in remaining
 
     def test_resume_lists_unreadable_git_admin_and_checkout_paths(
         self, tmp_repo, fake_generate_env, monkeypatch
@@ -6168,7 +6479,7 @@ class TestPermissionRemovalRetry:
         monkeypatch.setattr(worktree.subprocess, "run", unregister_then_report_permission)
         helper_targets = []
 
-        def fake_privileged_rmtree(physical_target):
+        def fake_privileged_rmtree(physical_target, **_identities):
             physical_target = Path(physical_target)
             helper_targets.append(physical_target)
             physical_root = Path(shared.physical_worktree_path)
@@ -6221,7 +6532,7 @@ class TestPermissionRemovalRetry:
         assert replacement.is_dir()
         assert _git(["worktree", "remove", "--force", str(replacement)], tmp_repo).returncode == 0
 
-        def fail_privileged_rmtree(_physical_target):
+        def fail_privileged_rmtree(_physical_target, **_identities):
             raise RuntimeError("simulated helper failure")
 
         monkeypatch.setattr(engine, "privileged_rmtree", fail_privileged_rmtree)
@@ -6298,7 +6609,7 @@ class TestPermissionRemovalRetry:
         monkeypatch.setattr(worktree.subprocess, "run", unregister_then_fail)
         helper_targets = []
 
-        def fake_privileged_rmtree(physical_target):
+        def fake_privileged_rmtree(physical_target, **_identities):
             physical_target = Path(physical_target)
             helper_targets.append(physical_target)
             assert physical_target.name == "locked"
@@ -8177,3 +8488,169 @@ def test_explicit_network_claim_cannot_replace_saved_object_id(
     failed = worktree.read_instance_record(record.record_path)
     assert failed.network_id == "2" * 64
     assert failed.state == "recovery-required"
+
+
+def test_permission_target_parent_inspection_failure_is_reported(tmp_path, monkeypatch):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    target = checkout / "target"
+    target.touch()
+    identity = worktree._path_identity(checkout)
+    target_identity = worktree._path_identity(target)
+    target_info = target.lstat()
+    item = {
+        "path": "target",
+        **target_identity,
+        "mode": stat.S_IFMT(target_info.st_mode),
+        "parent_device": identity["device"],
+        "parent_inode": identity["inode"],
+    }
+    real_lstat = Path.lstat
+    checkout_calls = 0
+
+    def fail_parent_lstat(path, *args, **kwargs):
+        nonlocal checkout_calls
+        if Path(path) == checkout:
+            checkout_calls += 1
+            if checkout_calls == 2:
+                raise PermissionError(errno.EACCES, "parent denied", str(path))
+        return real_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "lstat", fail_parent_lstat)
+    with pytest.raises(worktree.WorktreeError, match="could not inspect permission retry target parent"):
+        worktree._validated_retry_target(
+            checkout, item, expected_checkout_identity=identity
+        )
+
+
+def test_permission_inventory_does_not_record_a_target_below_a_symlink_parent(
+    tmp_path, monkeypatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    real_directory = checkout / "real-directory"
+    real_directory.mkdir()
+    target = real_directory / "target"
+    target.touch()
+    linked_parent = checkout / "linked-parent"
+    linked_parent.symlink_to(real_directory, target_is_directory=True)
+    monkeypatch.setattr(
+        worktree, "_permission_error_path", lambda _message: [linked_parent / "target"]
+    )
+
+    candidates, capped = worktree._permission_retry_candidates(
+        checkout, "permission denied"
+    )
+
+    assert candidates == []
+    assert capped is False
+
+
+@pytest.mark.parametrize(
+    ("checkpoint", "message"),
+    [
+        ({}, "no valid checkpoint time"),
+        ({"checkpoint_time_ns": True, "ignored_state": []}, "no valid checkpoint time"),
+        ({"checkpoint_time_ns": -1, "ignored_state": []}, "no valid checkpoint time"),
+        ({"checkpoint_time_ns": 2**63 - 1}, "no ignored-state inventory"),
+        ({"checkpoint_time_ns": 2**63 - 1, "ignored_state": None}, "no ignored-state inventory"),
+        ({"checkpoint_time_ns": 2**63 - 1, "ignored_state": [None]}, "malformed ignored-state inventory"),
+        ({"checkpoint_time_ns": 2**63 - 1, "ignored_state": [{"path": 7}]}, "malformed ignored-state inventory"),
+        ({"checkpoint_time_ns": 2**63 - 1, "ignored_state": [{"path": "/absolute"}]}, "unsafe ignored-state path"),
+        ({"checkpoint_time_ns": 2**63 - 1, "ignored_state": [{"path": "../escape"}]}, "unsafe ignored-state path"),
+        ({"checkpoint_time_ns": 2**63 - 1, "ignored_state": [{"path": ""}]}, "unsafe ignored-state path"),
+    ],
+)
+def test_permission_retry_snapshot_rejects_malformed_checkpoints(
+    tmp_path, checkpoint, message
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    with pytest.raises(worktree.WorktreeError, match=message):
+        worktree._permission_retry_tree_snapshot(checkout, checkpoint)
+
+
+def test_permission_retry_snapshot_accepts_checkpointed_protected_components(tmp_path):
+    checkout = tmp_path / "checkout"
+    protected = checkout / ".assay" / "prior-run"
+    protected.mkdir(parents=True)
+    (protected / "state.json").write_text("checkpointed", encoding="utf-8")
+    checkpoint = {
+        "checkpoint_time_ns": 2**63 - 1,
+        "ignored_state": [{"path": ".assay/prior-run/state.json"}],
+    }
+
+    snapshot = worktree._permission_retry_tree_snapshot(checkout, checkpoint)
+
+    assert ".assay" in snapshot
+    assert ".assay/prior-run/state.json" in snapshot
+
+
+def test_permission_retry_snapshot_reports_unreadable_entries_and_directories(
+    tmp_path, monkeypatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    checkpoint = {"checkpoint_time_ns": 2**63 - 1, "ignored_state": []}
+    real_lstat = Path.lstat
+    monkeypatch.setattr(
+        Path,
+        "lstat",
+        lambda path, *args, **kwargs: (
+            (_ for _ in ()).throw(PermissionError(errno.EACCES, "lstat denied"))
+            if Path(path) == checkout else real_lstat(path, *args, **kwargs)
+        ),
+    )
+    with pytest.raises(worktree.WorktreeError, match="could not inspect leftover checkout entry"):
+        worktree._permission_retry_tree_snapshot(checkout, checkpoint)
+
+    monkeypatch.setattr(Path, "lstat", real_lstat)
+    monkeypatch.setattr(
+        worktree.os,
+        "scandir",
+        lambda _path: (_ for _ in ()).throw(PermissionError(errno.EACCES, "scan denied")),
+    )
+    with pytest.raises(worktree.WorktreeError, match="could not enumerate leftover checkout directory"):
+        worktree._permission_retry_tree_snapshot(checkout, checkpoint)
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "candidates", "message"),
+    [
+        ({"lost": (1, 2, 3, 4, 5, 6, False)}, {}, [], "disappeared outside a retry target"),
+        ({"same": (1, 2, 3, 4, 5, 6, False)}, {"same": (8, 2, 3, 4, 5, 6, False)}, [], "changed during permission retry"),
+        ({"file": (1, 2, 3, 4, 5, 6, False)}, {"file": (1, 2, 3, 4, 7, 8, False)}, [], "file changed during permission retry"),
+        ({}, {"new": (1, 2, 3, 4, 5, 6, False)}, [], "new leftover checkout entry appeared"),
+    ],
+)
+def test_permission_retry_snapshot_comparison_refuses_unapproved_changes(
+    before, after, candidates, message
+):
+    with pytest.raises(worktree.WorktreeError, match=message):
+        worktree._compare_permission_retry_snapshots(before, after, candidates)
+
+
+@pytest.mark.parametrize("candidate", [{"path": "../escape"}, {"path": "/absolute"}, {}])
+def test_permission_retry_snapshot_comparison_rejects_malformed_targets(candidate):
+    with pytest.raises(worktree.WorktreeError, match="malformed retry target"):
+        worktree._compare_permission_retry_snapshots({}, {}, [candidate])
+
+
+def test_permission_retry_checkpoint_time_refresh_rolls_back_when_recheck_fails(
+    tmp_path, monkeypatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    (checkout / "existing.txt").write_text("data", encoding="utf-8")
+    checkpoint = {"checkpoint_time_ns": 1, "ignored_state": []}
+    before = worktree._permission_retry_tree_snapshot(
+        checkout, checkpoint, enforce_checkpoint_time=False
+    )
+    monkeypatch.setattr(worktree.time, "time_ns", lambda: 0)
+
+    with pytest.raises(worktree.WorktreeError, match="changed after the permission checkpoint"):
+        worktree._refresh_permission_retry_checkpoint_time(
+            checkout, checkpoint, before, []
+        )
+
+    assert checkpoint["checkpoint_time_ns"] == 1

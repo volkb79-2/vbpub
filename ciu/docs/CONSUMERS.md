@@ -413,11 +413,21 @@ includes a retry command. If Git already dropped its registration, the shared
 workspace record preserves the successful-cleanup and Git identity evidence so
 the same command can resume. CIU rechecks the checkout inode, `.git` link,
 shared record, and captured Git administration identity before each helper
-call; it refuses symlinks and paths outside the real checkout. The helper
-receives the failed target in the shared record's physical path namespace and
-requires a verified loaded cgroup slice. A helper failure reports the paths
-that remain. `--force` does not authorize this retry. When the exact failed
-target is protected ignored state, also pass the separate
+call; it refuses symlinks and paths outside the real checkout. Before dispatch,
+CIU re-derives the host checkout path from mount information and requires it to
+match the shared record's `physical_worktree_path`. The helper compares the
+device/inode identities of the mounted parent and failed target with the
+identities captured from the logical checkout, then refuses any mount below
+`/t`. Its bind uses `bind-recursive=disabled`; Docker CLI and Engine 25.0.0
+or newer are required, and an unknown or older version refuses before the
+helper starts. For a deferred retry, CIU walks the whole leftover checkout
+with a 100,000-entry limit and refuses new `.assay` or `vol-*` components,
+entries newer than the saved checkpoint, unreadable paths, or a capped walk.
+After helper work, it repeats the bounded comparison immediately before the
+local recursive deletion. A helper failure reports remaining paths; the JSON
+keeps the full list and the diagnostic shows at most 20 paths plus the total.
+`--force` does not authorize this retry. When the exact failed target is
+protected ignored state, also pass the separate
 `--discard-protected-state BRANCH` consent.
 
 For example, after checking `privileged_retry.targets` and confirming that the
