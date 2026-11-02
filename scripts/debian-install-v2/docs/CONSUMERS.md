@@ -20,7 +20,7 @@ activate it first (the executable resolves `python3` from `PATH`):
 
 ```bash
 cd scripts/debian-install-v2
-python3 -m pip install -r requirements-installer.txt
+python3 -m pip install -r requirements-wizard.txt
 ./debian-install-v2.py wizard --output target-host.json
 ./debian-install-v2.py wizard --output target-host.json --from-config existing.json
 ```
@@ -93,11 +93,14 @@ after managed swap and can grow or shrink; `grow-only` expands when possible
 but never shrinks; `untouched` forbids root partition changes. Optional
 `root_max_size_gb` caps the root partition at that many GiB and leaves disk
 space after root and swap unallocated for a later data partition. It does not
-format or mount the remaining space. The cap must be at least
-`preserve_root_size_gb`; `grow-only` and `untouched` refuse if the current
-root is larger than the cap. The cap is measured from the root partition's
-existing start, so an unaligned start does not lower the configured limit.
-When set, stage two disables later automatic root growth by writing
+format or mount the remaining space. A cap requires `swap_policy: "on"` and at
+least one managed tail swap partition directly after root; swap off, untouched
+swap, or a layout where retained pre-root swap needs no tail partition is
+refused. The cap must be at least `preserve_root_size_gb`; `grow-only` and
+`untouched` refuse if the current root is larger than the cap. The cap is
+measured from the root partition's existing start, so an unaligned start does
+not lower the configured limit. When set, stage one installs and stage two
+repeats guards against automatic root growth by writing
 `/etc/cloud/cloud.cfg.d/99-debian-install-v2-root-cap.cfg` with
 `growpart: {mode: off}` and `resize_rootfs: false`, and creating
 `/etc/growroot-disabled` for initramfs growroot. Choose one swap
@@ -177,7 +180,7 @@ Install the ISO builder dependencies in the checkout:
 ```bash
 cd scripts/debian-install-v2
 sudo apt-get install cloud-image-utils openssh-client
-python3 -m pip install -r requirements-installer.txt
+python3 -m pip install -r requirements-wizard.txt
 ./debian-install-v2.py build-iso --output ./debian-vbpub.iso
 ```
 

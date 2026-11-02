@@ -2090,6 +2090,21 @@ MaxFileSec=1month
                 if "start" in entry and "size" in entry
             ]
 
+        if root_size_cap is not None:
+            aligned_root_end = (
+                (root_start + target_root_size + alignment - 1) // alignment
+            ) * alignment
+            if (
+                self.config.swap_policy != "on"
+                or not partitions
+                or partitions[0][0] != aligned_root_end
+            ):
+                raise InstallerError(
+                    "root_max_size_gb needs managed swap partitions directly after root "
+                    "(swap_policy=on with tail swap); otherwise boot-time and stage-two "
+                    "growth would consume the cap"
+                )
+
         if target_root_size < root_size and policy != "resize":
             raise InstallerError(f"root_resize_policy={policy} cannot shrink root")
         if target_root_size < root_size:
@@ -4223,6 +4238,10 @@ MaxFileSec=1month
 
     def _stage1(self) -> None:
         self._secure_bootstrap_files()
+        # Cloud-init and initramfs growroot run during the first reboot,
+        # before stage two can create the tail-swap boundary. Install the
+        # configured cap guards now, then repeat them in stage two.
+        self._configure_root_cap_boot_guards()
         self._configure_persistent_ssh_keys()
         self._configure_controller_ssh_key()
         # LT-F-v1001-13: persistent journald FIRST (right after the controller

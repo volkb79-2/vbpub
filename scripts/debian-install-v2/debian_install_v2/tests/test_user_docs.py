@@ -59,6 +59,14 @@ def test_root_size_cap_is_adoptable_from_user_documents():
     )
 
 
+def test_each_user_doc_explains_the_root_cap_requires_adjacent_managed_tail_swap():
+    for path in DOCS:
+        text = re.sub(r"\s+", " ", path.read_text(encoding="utf-8").lower())
+        assert "managed tail swap partition directly after root" in text, path
+        assert "pre-root swap" in text and "needs no tail partition" in text, path
+        assert "swap_policy" in text and "root_max_size_gb" in text, path
+
+
 def test_readme_keeps_the_uncapped_defaults_next_to_the_capped_layout():
     examples = list(_markdown_config_examples(PROJECT / "README.md"))
     assert any(

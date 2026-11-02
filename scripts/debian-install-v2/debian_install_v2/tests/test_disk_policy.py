@@ -94,10 +94,31 @@ def test_root_max_size_leaves_the_remaining_disk_free_after_swap(tmp_path):
     assert target_root * 512 <= 40 * GIB
     assert target_root * 512 >= 40 * GIB - 1024 * 1024
     assert len(partitions) == 4
+    aligned_root_end = (
+        (root_start + target_root + 2048 - 1) // 2048
+    ) * 2048
+    assert partitions[0][0] == aligned_root_end
     end_of_swap = partitions[-1][0] + partitions[-1][1]
     assert end_of_swap > root_start + target_root
     assert (disk_sectors - end_of_swap) * 512 >= 79 * GIB
     assert installer.show_plan()["root_max_size_gb"] == 40
+
+
+def test_root_max_size_requires_managed_tail_swap_when_swap_is_off(tmp_path):
+    installer = make_planner(
+        tmp_path,
+        disk_gib=128,
+        root_gib=127,
+        root_max_size_gb=40,
+        swap_policy="off",
+        swap_disk_total_gb=None,
+    )
+
+    with pytest.raises(
+        InstallerError,
+        match=r"root_max_size_gb needs managed swap partitions directly after root",
+    ):
+        installer._plan_swap_partitions()
 
 
 def test_grow_only_root_policy_obeys_cap_without_shrinking(tmp_path):
@@ -141,8 +162,8 @@ def test_untouched_root_at_its_cap_is_allowed_with_unaligned_start(tmp_path):
         root_start=2049,
         root_gib=40,
         root_resize_policy="untouched",
-        swap_policy="off",
-        swap_disk_total_gb=None,
+        swap_policy="on",
+        swap_disk_total_gb=2,
         root_max_size_gb=40,
     )
 
@@ -151,12 +172,19 @@ def test_untouched_root_at_its_cap_is_allowed_with_unaligned_start(tmp_path):
     assert target_root == cap_sectors
 
 
-def _planner_with_pre_root_swap(tmp_path, *, pre_root_gib: int, swap_total_gib: int = 4):
+def _planner_with_pre_root_swap(
+    tmp_path,
+    *,
+    pre_root_gib: int,
+    swap_total_gib: int = 4,
+    root_max_size_gb: int | None = None,
+):
     installer = make_planner(
         tmp_path,
         disk_gib=20,
         swap_disk_total_gb=swap_total_gib,
         swap_partition_count=4,
+        root_max_size_gb=root_max_size_gb,
     )
     disk_sectors = 20 * GIB // 512
     pre_root_start = 4096
@@ -232,11 +260,44 @@ def test_pre_root_swap_larger_than_total_is_kept_without_tail_partitions(tmp_pat
     assert plan["swap_after_root_gb"] == 0
 
 
+def test_root_max_size_requires_tail_swap_when_pre_root_swap_meets_target(tmp_path):
+    installer, _live = _planner_with_pre_root_swap(
+        tmp_path,
+        pre_root_gib=4,
+        swap_total_gib=4,
+        root_max_size_gb=8,
+    )
+
+    with pytest.raises(
+        InstallerError,
+        match=r"root_max_size_gb needs managed swap partitions directly after root",
+    ):
+        installer._plan_swap_partitions()
+
+
 @pytest.mark.parametrize("policy", ["untouched", "grow-only"])
 def test_non_shrinking_root_policy_refuses_swap_that_does_not_fit(tmp_path, policy):
     installer = make_planner(tmp_path, root_resize_policy=policy)
 
     with pytest.raises(InstallerError, match=rf"root_resize_policy={policy} forbids the shrink"):
+        installer._plan_swap_partitions()
+
+
+def test_non_shrinking_root_cap_refusal_names_cap_before_swap_fit(tmp_path):
+    installer = make_planner(
+        tmp_path,
+        disk_gib=128,
+        root_gib=127,
+        root_resize_policy="grow-only",
+        root_max_size_gb=40,
+        swap_disk_total_gb=64,
+        preserve_root_size_gb=10,
+    )
+
+    with pytest.raises(
+        InstallerError,
+        match=r"root_resize_policy=grow-only cannot satisfy root_max_size_gb \(40 GiB\)",
+    ):
         installer._plan_swap_partitions()
 
 

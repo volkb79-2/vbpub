@@ -358,6 +358,7 @@ def test_remote_invocation_imports_config_validator_from_fetched_source(
     install_dir = tmp_path / "install"
     monkeypatch.setenv("INSTALL_DIR", str(install_dir))
     monkeypatch.setenv("VBPUB_PROFILE_KIND", "none")
+    monkeypatch.delenv("VBPUB_CONFIG_EXTRA_JSON", raising=False)
     monkeypatch.setattr(mod.os, "geteuid", lambda: 0)
 
     def fake_fetch(repo_url, branch, target, *, debug, git_path):
@@ -365,7 +366,10 @@ def test_remote_invocation_imports_config_validator_from_fetched_source(
         package.mkdir(parents=True)
         (package / "__init__.py").write_text("", encoding="utf-8")
         (package / "config.py").write_text(
-            "def load_config(*, raw_json):\n    return raw_json\n",
+            "VALIDATED_JSON = []\n"
+            "def load_config(*, raw_json):\n"
+            "    VALIDATED_JSON.append(raw_json)\n"
+            "    return raw_json\n",
             encoding="utf-8",
         )
         (target / "debian-install-v2.py").write_text("# entrypoint\n", encoding="utf-8")
@@ -394,13 +398,16 @@ def test_remote_invocation_imports_config_validator_from_fetched_source(
     captured = {}
 
     def fake_run(argv, *, check):
-        captured["validator"] = Path(sys.modules["debian_install_v2.config"].__file__).resolve()
+        validator = sys.modules["debian_install_v2.config"]
+        captured["validator"] = Path(validator.__file__).resolve()
+        captured["validated_json"] = list(validator.VALIDATED_JSON)
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(mod.subprocess, "run", fake_run)
 
     assert mod.main() == 0
     assert captured["validator"].is_relative_to(install_dir.resolve())
+    assert captured["validated_json"] == ["{}"]
 
 
 # --- released cli-extended wheel (CX-D3) ----------------------------------

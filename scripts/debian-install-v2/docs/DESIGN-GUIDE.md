@@ -107,13 +107,18 @@ root below the cap can grow to it; a root above it can shrink only after the
 normal usage and ext-filesystem minimum checks pass. The area after root and
 managed swap remains unallocated: the installer does not invent a filesystem,
 partition, or mount point. The cap must be at least
-`preserve_root_size_gb`. `grow-only` and `untouched` refuse when a larger
-current root would have to shrink to satisfy the cap. The cap is a root
-partition length measured from its existing start, not an absolute disk end;
-an unaligned start therefore does not lower the configured GiB limit.
+`preserve_root_size_gb`. It also requires `swap_policy: "on"` and at least one
+managed tail swap partition directly after root. Swap off, untouched swap, or
+a plan where retained pre-root swap needs no tail partition is refused because
+boot-time or stage-two growth could consume the cap. `grow-only` and
+`untouched` refuse when a larger current root would have to shrink to satisfy
+the cap. The cap is a root partition length measured from its existing start,
+not an absolute disk end; an unaligned start therefore does not lower the
+configured GiB limit.
 
-After applying a configured cap, stage two prevents boot-time growth from
-consuming that free space again. It writes
+Before the first reboot, stage one prevents cloud-init or initramfs growroot
+from consuming the space before stage two can install the tail-swap boundary.
+Stage two repeats these idempotent guards. The installer writes
 `/etc/cloud/cloud.cfg.d/99-debian-install-v2-root-cap.cfg` with
 `growpart: {mode: off}` and `resize_rootfs: false`, and creates
 `/etc/growroot-disabled` so the initramfs growroot integration also stays off.
@@ -278,7 +283,7 @@ interaction is conventional and relatively small, while validation, defaults,
 secret handling, cancellation, and file safety remain owned by this project.
 Those decisions are product behavior and should not be delegated to a UI
 library. The dependency is pinned in the installer project's
-`requirements-installer.txt` so the reusable CLI library does not depend on an
+`requirements-wizard.txt` so the reusable CLI library does not depend on an
 interactive UI package and prompt API changes are deliberate rather than
 silently changing installation flows. Requirement manifests use the
 `requirements-<use-case>.txt` pattern, with the use case naming what installs

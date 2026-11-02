@@ -2,14 +2,16 @@
 
 ## DONE (root-cap follow-ups, 2026-11-02)
 
-`root_max_size_gb` now installs cloud-init and initramfs guards against later
-root growth, and its cap is measured from the root partition start without
-rounding the configured length down to an absolute 1 MiB boundary. User-facing
-examples retain both the default uncapped layout and a capped layout.
+`root_max_size_gb` requires `swap_policy=on` and managed tail-swap partitions
+directly after root, so neither the first reboot nor stage-two `growpart` can
+consume the cap. Stage one installs cloud-init and initramfs growth guards
+before reboot, and stage two repeats them. The cap is measured from the root
+partition start without rounding its configured length down to an absolute
+1 MiB boundary. User-facing examples retain uncapped and capped layouts.
 
 ## DONE (requirements naming, 2026-11-02): name the optional wizard dependency by use case
 
-Renamed the ad-hoc wizard manifest to `requirements-installer.txt` and updated
+Renamed the ad-hoc wizard manifest to `requirements-wizard.txt` and updated
 the installer, tests, generated CLI surface, and adoption/design docs. Future
 tool manifests are inventoried in the release-program requirements naming
 report and will migrate in separate tool-scoped changes.
