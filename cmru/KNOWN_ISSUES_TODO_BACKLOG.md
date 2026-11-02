@@ -2592,3 +2592,11 @@ argument with the same proofs as the bulk path.
 --yes` would have deleted every versioned Release of every project except the three `-latest` pointers. The key now protects `--policy`;
 `--remove-assets` should either honour it as the default `AGE` or the SPEC should say it is `--policy`-only. Tag-only refs (a versioned tag
 with no Release) have no publication time and are still deleted by `--policy` regardless of the window (see KI-101).
+
+### KI-106 - the fixed 600 s mutation candidate timeout can record a false kill under host load
+
+**Status:** OPEN; severity: minor, correctness under contention. The mutation lane gives the known-good control and every candidate
+the same fixed `--timeout-seconds 600`. A slow control fails loudly, but a SURVIVING mutant runs the whole suite and, if host
+contention stretches it past the cap, is recorded as a killed mutant: a false kill. **Fix:** derive each candidate's timeout from the
+control duration measured in the same run (for example `max(600, 2 x control)`), and record a candidate timeout that coincides with
+measured pressure as inconclusive rather than killed.
