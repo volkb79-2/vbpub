@@ -20,7 +20,7 @@ def _install_cli_browser(
     connect_error: Exception | None = None,
     navigation_fails: bool = False,
     contract: object | None = None,
-    reported_user_agent: str | None = None,
+    reported_user_agent: object = None,
     cdp_fails: bool = False,
 ) -> dict[str, object]:
     calls: dict[str, object] = {
@@ -78,7 +78,7 @@ def _install_cli_browser(
             calls["screenshots"].append(kwargs)
             return b"fake image bytes"
 
-        def evaluate(self, expression: str) -> str | None:
+        def evaluate(self, expression: str) -> object:
             calls["evaluate"] = expression
             return reported_user_agent
 
@@ -237,6 +237,7 @@ def test_inspect_screenshot_writes_requested_image_type_and_full_page(
     [
         (["http://["], "URL is malformed"),
         (["relative/path"], "absolute http:// or https:// URL"),
+        (["https:///no-host"], "absolute http:// or https:// URL"),
         (["https://example.test", "--timeout-ms", "0"], "--timeout-ms must be a positive integer"),
         (["https://example.test", "--format", "screenshot"], "--output is required"),
         (["https://example.test", "--format", "screenshot", "--output", "page.gif"], "must end in .png, .jpg, or .jpeg"),
@@ -358,6 +359,18 @@ def test_json_result_carries_content_user_agent_and_source(
     assert cli_module.main(["inspect", "https://example.test", "--json", "--user-agent", "my-bot/1.0"]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload == {
+        "content": "rendered page text",
+        "user_agent": "my-bot/1.0",
+        "user_agent_source": "custom",
+    }
+
+
+def test_non_string_observed_user_agent_falls_back_to_the_configured_value(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _install_cli_browser(monkeypatch, reported_user_agent=123)
+    assert cli_module.main(["inspect", "https://example.test", "--json", "--user-agent", "my-bot/1.0"]) == 0
+    assert json.loads(capsys.readouterr().out) == {
         "content": "rendered page text",
         "user_agent": "my-bot/1.0",
         "user_agent_source": "custom",

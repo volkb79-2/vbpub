@@ -3,7 +3,7 @@
 This file records consumer-facing product gaps for later triage. Normative
 behavior remains in the product specification and consumer documentation.
 
-Last updated: 2026-10-27 (PWMCP-11 OCR sidecar and console watching program, phase 1 on branch).
+Last updated: 2026-11-02 (PWMCP-18 transparency gap identified during R2 survivor triage).
 
 ## PWMCP-01 — Provide a rendered-page inspection command
 
@@ -509,3 +509,21 @@ to scan.
 
 **Proposed fix.** Add the second top-level blank line or move the test below
 the module's import-time setup.
+
+## PWMCP-18 — RGB PNG color-key transparency is not composited before OCR
+
+**Status:** OPEN. Severity: P2. Filed 2026-11-02 from the PWMCP R2 survivor
+triage (`ocr_service.py:387`, `And->Or`).
+
+**Observed.** The OCR service accepts PNG images and the README says transparent
+PNGs are composited onto white. `_flatten` handles alpha-channel modes and
+palette PNGs with transparency, but an RGB PNG with a `tRNS` color key has
+`mode == "RGB"` and transparency metadata; it falls through unchanged. Its
+transparent pixels can therefore reach the engine with their stored color
+instead of white.
+
+**Proposed fix.** Add an offline Pillow fixture for an RGB PNG with a
+transparency color, composite it onto white before encoding the engine input,
+and document the supported transparency behavior in the README, design guide,
+and consumer guide. Do not add an oracle that preserves the current narrower
+behavior.

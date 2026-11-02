@@ -6,6 +6,7 @@ import json
 import re
 import subprocess
 import sys
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 
 import pytest
@@ -49,6 +50,13 @@ def test_valid_custom_string_is_used_verbatim() -> None:
     assert resolved.user_agent == "MyBot/2.0 (+https://example.test/bot)"
     assert resolved.source == "custom"
     assert ua.resolve("a/" + "x" * 510).source == "custom"
+
+
+def test_resolved_user_agent_cannot_change_after_it_is_selected() -> None:
+    resolved = ua.resolve("edge-windows")
+    with pytest.raises(FrozenInstanceError):
+        resolved.user_agent = "different identity"  # type: ignore[misc]
+    assert resolved.user_agent == EXPECTED_PRESETS["edge-windows"]
 
 
 @pytest.mark.parametrize(
