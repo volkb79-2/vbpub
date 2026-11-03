@@ -270,7 +270,7 @@ The fresh Path A API acceptance also passed the storage/VM/container/share
 scenarios, and its COW guest shut down through QMP/ACPI using `tcg_vm.py`. Its
 log is `scripts/truenas/boot-pool-patch/artifacts/live-storage-v27-path-a-20261016.log`.
 Both tester containers used the dev-gates slice because the registered
-`run-gate.py` lane cannot currently attach the target guest's Docker network;
+`run-gate` lane cannot currently attach the target guest's Docker network;
 each was capped at 25% CPU and 256 MiB memory/swap. These runs do not certify
 guest OS boot, UI submission, share client access, KVM selection, or update
 survival.

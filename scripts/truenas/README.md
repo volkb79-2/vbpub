@@ -175,8 +175,8 @@ flowchart LR
   and [VM CLI](install-vm.py) provide generic TrueNAS API and VM lifecycle
   operations. They do not apply the boot-pool patch or control Netcup boot
   workflows.
-- [`tcg_vm.py`](tcg_vm.py) and [`run-gate.py`](run-gate.py) provide local VM
-  testing and registered gates. It can run up to three disposable TrueNAS guests
+- [`tcg_vm.py`](tcg_vm.py) and the registered `run-gate` lanes in
+  [`run-gate.toml`](run-gate.toml) provide local VM testing and registered gates. It can run up to three disposable TrueNAS guests
   in the host background slice when recent cgroup memory PSI is below policy.
   `--data-disk-size` adds sparse QCOW2 disks for isolated storage-topology
   tests and pins their PCI addresses above the base boot disk. See the [guest consumer guide](docs/CONSUMERS.md#run-a-local-truenas-tcg-guest)

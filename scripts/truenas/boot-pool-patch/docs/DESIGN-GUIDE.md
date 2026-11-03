@@ -329,7 +329,7 @@ post-apply reverse dry-runs. A new version is not accepted by a version prefix.
 ### Update-survival runner boundary
 
 The three survival steps use `run-live-gate.py` for the external v1001 host,
-then delegate their verdicts to registered `run-gate.py` lanes. The wrapper
+then delegate their verdicts to registered `run-gate` lanes. The wrapper
 starts one capped tester on a selected custom bridge and keeps the repository
 mount read-only. Each invocation receives a separate, mode-0700 state bind for
 the manifest, update job id, and report; that small directory is the only

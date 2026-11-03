@@ -319,7 +319,7 @@ Full logs and feed evidence are under
 
 | Acceptance check | Runner and interface | Determinism | Remaining judgement and automation plan |
 |---|---|---|---|
-| `unit-boot-pool-patch` | `./run-gate.py` → `tester-unified` → pytest | Deterministic assertions, no host mutation. | None at run time; keep mutation/refusal oracles in unit tests. |
+| `unit-boot-pool-patch` | `run-gate <lane>` → `tester-unified` → pytest | Deterministic assertions, no host mutation. | None at run time; keep mutation/refusal oracles in unit tests. |
 | `patch_drift.py verify` / `diagnose` | Python hash/manifest checks plus GNU `patch --dry-run --fuzz=0` on an extracted source tree | Deterministic for the exact bytes. | None to report drift. Human must review semantic changes before creating a new registered adapter. |
 | `patch_drift.py upstream` | Python reads the machine-readable update feed and current source files directly; no browser is used for recurring build discovery. | Deterministic for the fetched feed/source; the feed and `master` move over time. | Human decides whether master diffs affect the patch contract; exact target verification remains authoritative. |
 | `live-inspect`, `live-api-probe`, `live-storage`, `live-boot`, `live-vdev-topology` | Python/SSH, `midclt` WebSocket JSON-RPC, ZFS/partition commands, explicit guards | Script assertions and exact inventory; host availability is external. | Guest OS boot/KVM and share-client checks need suitable hardware/network, not interpretation. Add deterministic lanes when those resources exist. |
