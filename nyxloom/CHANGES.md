@@ -4,6 +4,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Fixed
+- fix(nyxloom): session-extract effect detector (NL-35): `sudo -u`/`timeout -s` wrappers, bare `git tag` and `curl -H "a -d b"` false positives, more than 12 leading assignments, `$(...)` inside double quotes, and `$VAR` command heads listed as "possible effect, head unresolved"
+
 <!-- cmru: release history -->
 
 ## [0.12.0] - 2026-10-30
