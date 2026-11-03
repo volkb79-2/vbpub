@@ -14105,6 +14105,39 @@ class TestFootprintIoModeSeparation:
         assert lane["io_sync"] == "relaxed"
         assert lane["memory_peak_bytes"]["median"] == self.RELAXED_MIB * MIB
 
+    def test_footprint_verb_falls_back_when_the_lane_settings_do_not_resolve(
+            self, tmp_path, monkeypatch, capsys):
+        # relaxed requires an ephemeral environment: resolution refuses, so
+        # the verb uses the latest profiled run's mode instead of failing.
+        config = """\
+            schema_version = 1
+
+            [environments.bare-host]
+            mode = "host"
+
+            [lanes.suite]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["true"]
+            clean_tree = false
+
+            [lanes.suite.resources]
+            io_sync = "relaxed"
+            """
+        repo, proj = make_history_repo(tmp_path, config=config)
+        record_profiled_run(proj, repo, _peak_summary(self.STRICT_MIB),
+                            io_sync="strict")
+        record_profiled_run(proj, repo, _peak_summary(self.RELAXED_MIB),
+                            io_sync="relaxed")
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
+        assert run_gate.main(["footprint", "--json"]) == 0, \
+            capsys.readouterr().err
+        out = json.loads(capsys.readouterr().out)
+        assert out["lanes"]["suite"]["io_sync"] == "relaxed"
+        assert out["lanes"]["suite"]["memory_peak_bytes"]["median"] \
+            == self.RELAXED_MIB * MIB
+
     def test_footprint_line_compares_with_the_runs_own_mode(
             self, tmp_path, capsys):
         _, proj = self._mixed(tmp_path)
