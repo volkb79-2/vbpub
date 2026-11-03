@@ -1,5 +1,6 @@
 import ctypes
 import os
+import signal
 from pathlib import Path
 
 import pytest
@@ -50,6 +51,33 @@ def session_process_tree_is_empty():
             pytest.fail(f"test session left unreaped child process(es): {details}")
     finally:
         _set_child_subreaper(previous_subreaper)
+
+
+class TimeLimitExceeded(BaseException):
+    """A test ran past its wall-clock limit (a non-terminating loop); BaseException so a broad ``except Exception`` cannot swallow it."""
+
+
+TEST_TIME_LIMIT_S = 30.0  # the slowest real test takes about 3 s
+
+
+@pytest.fixture(autouse=True)
+def test_time_limit(request):
+    """IOB-R2-01: a mutant (or a bug) that makes a loop non-terminating must FAIL the test fast instead of running into the
+    mutation campaign's whole per-candidate budget.  The alarm re-fires every second so a handler that is swallowed cannot
+    rescue the loop; ``@pytest.mark.time_limit(seconds)`` overrides the default for one test."""
+    marker = request.node.get_closest_marker("time_limit")
+    limit = float(marker.args[0]) if marker else TEST_TIME_LIMIT_S
+
+    def expired(signum, frame):
+        raise TimeLimitExceeded(f"{request.node.nodeid} ran longer than {limit:g} s")
+
+    previous = signal.signal(signal.SIGALRM, expired)
+    signal.setitimer(signal.ITIMER_REAL, limit, 1.0)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
 
 
 @pytest.fixture

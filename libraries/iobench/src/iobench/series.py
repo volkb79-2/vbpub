@@ -183,7 +183,5 @@ def mean_overstates(reading: Reading, ratio: float) -> bool:
 
 
 def downsample(points: Sequence[Point], limit: int = MAX_STORED_POINTS) -> list[list[float]]:
-    if len(points) <= limit:
-        return [[t, v] for t, v in points]
-    step = len(points) / limit
-    return [[points[int(i * step)][0], points[int(i * step)][1]] for i in range(limit)]
+    step = max(1.0, len(points) / limit)  # a series within the limit is kept whole (step 1)
+    return [[points[int(i * step)][0], points[int(i * step)][1]] for i in range(min(limit, len(points)))]
