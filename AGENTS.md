@@ -208,7 +208,10 @@ Installing pytest or Hypothesis in the cockpit venv does not make a test run a
 valid gate and must not be used as a fallback.
 
 When installing a locally built wheel for inspection, use the estate venv:
-`/home/vscode/.venv/bin/python -m pip install ...`. `/home/vscode/.local` is
+`/opt/mdt/venv/bin/python -m pip install ...` (the image's primary venv, group
+`mdt` writable; what it receives lives in the container's writable layer and is
+gone after the container is recreated, the durable way is the image wheel list
+`mdt-cockpit/pip/wheels.list`). `/home/vscode/.local` is
 not the wheel installation environment. Any test of that wheel still runs
 through a registered tester-unified gate.
 
@@ -223,7 +226,7 @@ verify the result without disrupting its session.
 
 ## Host-side Python environment
 
-MDT puts `/home/vscode/.venv/bin` ahead of system Python on the cockpit
+MDT puts `/opt/mdt/venv/bin` ahead of system Python on the cockpit
 `PATH`, so bare `python3` and `pip` use the estate venv for host-side commands
 and `bare-host` controllers. `VIRTUAL_ENV` only indicates shell activation;
 check the selected interpreter with `command -v python3` when it matters. Gates
@@ -235,8 +238,8 @@ estate venv before running host-side Python commands or a `bare-host` gate
 controller:
 
 ```bash
-. /home/vscode/.venv/bin/activate
-command -v python3   # must resolve inside /home/vscode/.venv/bin
+. /opt/mdt/venv/bin/activate
+command -v python3   # must resolve inside /opt/mdt/venv/bin
 ```
 
 An activated venv changes `PATH`; it does not change the interpreter a parent
@@ -251,7 +254,7 @@ command to use the declared environment's interpreter.
 Python's `-I` flag does not prevent a venv interpreter from loading that venv's
 installed packages. It does ignore `PYTHONPATH` and user-site packages, so an
 isolated child must use the venv interpreter itself when it needs packages
-installed in `/home/vscode/.venv` (such as `cli-extended`).
+installed in `/opt/mdt/venv` (such as `cli-extended`).
 
 This applies to host-side orchestration and `bare-host` steps only. Test suites
 still run in their declared gate container; `tester-unified` uses

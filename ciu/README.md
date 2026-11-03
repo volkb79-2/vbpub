@@ -462,7 +462,7 @@ WHEEL_URL="https://github.com/volkb79-2/vbpub/releases/download/ciu-v<version>/c
 # this install to e.g. /home/vscode/.local/bin/ 
 python3 -m pip install --user --upgrade "$WHEEL_URL"
 
-# in mdt devcontainer install was under /home/vscode/.venv/bin/ 
+# in the mdt devcontainer the install lands in /opt/mdt/venv/bin/ (the image's primary venv)
 python3 -m pip install --upgrade "$WHEEL_URL"
 
 hash -r

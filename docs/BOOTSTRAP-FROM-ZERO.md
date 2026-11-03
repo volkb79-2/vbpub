@@ -67,8 +67,9 @@ of them in the shell that runs these steps:
 
 Also required: the configured
 digest-pinned CMRU host-probe image pulled locally, the Python environment you
-choose to own the `cmru` command (`ESTATE_PYTHON`, below; in the estate
-cockpit `/home/vscode/.venv/bin/python`), and network access to the upstream
+choose to own the `cmru` command (`ESTATE_PYTHON`, below; in the MDT cockpit
+image the primary venv, `/opt/mdt/venv/bin/python`, which the image `PATH`
+already selects), and network access to the upstream
 Python image, PyPI build backends, and GitHub. Both the bootstrap script and
 `cmru handler wheel-build` verify that the build slice is a real host systemd
 unit (`LoadState=loaded` with a non-empty `FragmentPath`, read through the
@@ -96,6 +97,16 @@ export CMRU_TESTER_PIDS_LIMIT=4096
 export CMRU_TESTER_CGROUP_PROBE_IMAGE='debian@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132'
 docker pull debian@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132
 ```
+
+In the MDT cockpit image `/opt/mdt/venv` is image-owned and writable by group
+`mdt`, so the `pip install` steps below work there without a home venv. What
+they write lives in the container's writable layer: it survives a restart but
+not a container recreation. The durable way to carry released CLIs (`cmru`,
+`ciu`, `run-gate`, ...) is the image's wheel list (`mdt-cockpit/pip/wheels.list`),
+which bakes them in at build time; reinstall the bootstrap wheels here after
+recreating the container if the image has not yet been rebuilt with the
+released versions. See `mdt-cockpit/docs/DESIGN-GUIDE.md`, "The estate venv is
+selected by PATH".
 
 This digest is also the `CMRU_TESTER_CGROUP_PROBE_IMAGE` value in
 `cmru.orchestration.toml`. The bootstrap script builds `wheel-builder:local` from
@@ -187,7 +198,7 @@ supplies the whole-source line-and-branch qualification.
    uses its separately configured digest-pinned image. The
    Dockerfile explicitly installs the host-facing tools it needs, so the
    upstream Python base does not need to inherit a vbpub or MDT release. The
-   host venv install makes this exact local candidate available to the
+   `ESTATE_PYTHON` install makes this exact local candidate available to the
    registered gates and release steps; it is built from the checkout and does
    not need a published Run-Gate tag.
 
