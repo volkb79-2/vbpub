@@ -355,7 +355,14 @@ assay exists to close that gap mechanically, not by policy:
   whose window overlaps a positive event is `crashed`; PASS remains
   `survived`. The bounded queue keeps candidate state and progress in index
   order, resume is independent of the selected worker count, and the WP7 retry
-  tail remains serial. Candidate-file pilots use `--pilot-jobs 1`; `--jobs` is
+  tail remains serial. With `--jobs` above 1, candidates are dispatched by
+  two-ended matching on predicted RSS and wall time (at most one high-RSS
+  candidate at a time, longest first), and `--memory-budget-bytes` (or
+  `ASSAY_R2_MEMORY_BUDGET_BYTES`) caps the summed predicted RSS of running
+  candidates; results never depend on the order, and progress and state drain
+  by `dispatch_position`
+  ([consumer guide](docs/CONSUMERS.md#candidate-scheduling-and-the-admission-budget-b207)).
+  Candidate-file pilots use `--pilot-jobs 1`; `--jobs` is
   refused with `--candidates-file`. The run progress
   header records `jobs` and `attribution` (`serial` or
   `overlap-conservative`), and each candidate event records `worker_index`.

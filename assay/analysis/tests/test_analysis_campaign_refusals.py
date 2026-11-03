@@ -442,6 +442,17 @@ CASES = (
         _progress(lambda r: (r.pop(3), r[3].update(candidate_index=1))),
         "not a contiguous execution sequence",
     ),
+    ("dispatch-position-invalid", _set(3, dispatch_position=-1), "invalid dispatch_position"),
+    (
+        "dispatch-position-gap",
+        _progress(lambda r: (r[3].update(dispatch_position=0), r[4].update(dispatch_position=2))),
+        "dispatch_position values are not a contiguous execution sequence",
+    ),
+    (
+        "dispatch-position-mixed",
+        _set(3, dispatch_position=0),
+        "progress mixes scheduled and unscheduled candidate events",
+    ),
     ("event-total-disagrees", _set(3, candidate_total=9), "candidate events disagree with pending_total"),
     (
         "mutation-events-without-candidates",
@@ -555,3 +566,23 @@ def test_every_campaign_refusal_is_reachable(tmp_path, monkeypatch, case_id, mut
     messages = [error["message"] for error in document["errors"]]
     assert code == 2, (case_id, document.get("status"))
     assert fragment in messages[0], (case_id, messages)
+
+
+def test_a_scheduled_dispatch_order_is_accepted_though_candidate_indexes_are_not_a_prefix(
+    tmp_path, monkeypatch
+):
+    """B207: candidates are dispatched, and their events emitted, in a
+    non-canonical order. The sequence check follows ``dispatch_position``."""
+    root, head, verdict, progress = _complete_fixture(tmp_path, monkeypatch, "r2_pass")
+
+    def schedule(records):
+        first, second = records[3], records[4]
+        records[3], records[4] = second, first
+        second["dispatch_position"] = 0
+        first["dispatch_position"] = 1
+
+    _rewrite_progress(progress, schedule)
+    code, out, _err = _invoke(root, head, verdict, progress, command_exit=0)
+    document = json.loads(out)
+    _validate(document)
+    assert code == 0, document.get("errors")

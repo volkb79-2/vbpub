@@ -305,6 +305,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="native R2 worker count; defaults to 1 and may not exceed judge.mutation.jobs_max",
     )
     run.add_argument(
+        "--memory-budget-bytes",
+        type=int,
+        default=None,
+        metavar="BYTES",
+        help=(
+            "native R2 admission budget: a candidate starts only while the "
+            "predicted peak RSS of the running candidates plus its own stays "
+            "within BYTES (one candidate always runs); defaults to "
+            f"${MEMORY_BUDGET_ENV}, else no admission limit"
+        ),
+    )
+    run.add_argument(
         "--file",
         type=Path,
         default=None,
@@ -2096,6 +2108,20 @@ def _cmd_run(
             judge=replace(
                 lane.judge,
                 mutation=replace(lane.judge.mutation, jobs=jobs_override),
+            ),
+        )
+    budget_override = _resolve_memory_budget(getattr(args, "memory_budget_bytes", None))
+    if budget_override is not None:
+        if not native_r2:
+            raise LaneConfigError("--memory-budget-bytes requires a native R2 mutation lane")
+        assert lane.judge is not None and lane.judge.mutation is not None
+        lane = replace(
+            lane,
+            judge=replace(
+                lane.judge,
+                mutation=replace(
+                    lane.judge.mutation, memory_budget_bytes=budget_override
+                ),
             ),
         )
     candidates_path = getattr(args, "candidates_file", None)
@@ -4451,6 +4477,32 @@ def _render_lanes(lane_file: LaneFile, out: TextIO) -> None:
 #: an addition (A-thread in `config.py`).
 LANE_INVENTORY_SCHEMA_VERSION = 1
 
+#: Environment spelling of ``assay run --memory-budget-bytes`` (B207).
+MEMORY_BUDGET_ENV = "ASSAY_R2_MEMORY_BUDGET_BYTES"
+
+#: Optional behaviours a caller can detect without parsing version strings.
+#: ``r2-memory-budget``: ``assay run`` accepts ``--memory-budget-bytes``.
+#: ``r2-schedule-tem``: parallel native R2 dispatches by two-ended matching.
+CAPABILITIES = ("r2-memory-budget", "r2-schedule-tem")
+
+
+def _resolve_memory_budget(flag: int | None) -> int | None:
+    """The admission budget from ``--memory-budget-bytes`` or its environment
+    spelling. The flag wins; a malformed value is refused, never ignored."""
+    if flag is not None:
+        source, raw = "--memory-budget-bytes", flag
+    else:
+        text = os.environ.get(MEMORY_BUDGET_ENV)
+        if text is None or text == "":
+            return None
+        source = MEMORY_BUDGET_ENV
+        if re.fullmatch(r"[1-9][0-9]*", text) is None:
+            raise LaneConfigError(f"{source} must be a positive integer, got {text!r}")
+        raw = int(text)
+    if raw < 1:
+        raise LaneConfigError(f"{source} must be a positive integer, got {raw}")
+    return raw
+
 
 def _render_lanes_json(lane_file: LaneFile, out: TextIO) -> None:
     """B044 -- ``assay lanes --json``: one machine-readable inventory
@@ -4500,6 +4552,7 @@ def _render_lanes_json(lane_file: LaneFile, out: TextIO) -> None:
     document = {
         "inventory_schema": LANE_INVENTORY_SCHEMA_VERSION,
         "assay_version": __version__,
+        "capabilities": list(CAPABILITIES),
         "lanes": [
             _lane_inventory_entry(
                 lane, built_in, cgroup_capability=cgroup_capability

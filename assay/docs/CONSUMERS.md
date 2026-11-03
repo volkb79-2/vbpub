@@ -4416,9 +4416,62 @@ attributed to all candidate windows whose boundary sequence ranges overlap;
 ancestor-local events follow the same rule. AP-1 precedence leaves PASS as
 `survived`, while an overlapping event makes a failing candidate `crashed`.
 No overlap leaves the existing termination classification unchanged. Candidate
-state records and progress events are written by the coordinator in candidate
-index order. Resume identity does not include `jobs`, so the same state can
+state records and progress events are written by the coordinator in dispatch
+order (see "Candidate scheduling" below; without predictions that is candidate
+index order). Resume identity does not include `jobs`, so the same state can
 resume at another count. The post-sweep WP7 retry remains serial.
+
+### Candidate scheduling and the admission budget (B207)
+
+With `--jobs N` greater than 1, assay chooses WHICH candidate starts next. Only
+the dispatch order changes; each candidate is an independent experiment in its
+own clone, so judgments never depend on the order.
+
+- Each candidate has a prediction of its wall time and peak RSS. Sources, best
+  first: the same candidate id's measurement from the last campaign, the live
+  median of its file in this run (after 5 completions), the last campaign's
+  file median, the last campaign's lane median, the lane's
+  `judge.mutation.prediction_wall_seconds` and `prediction_rss_bytes`, and
+  finally none (canonical order). The measurements are what assay already
+  records (`elapsed_seconds`, `peak_rss_bytes`), kept in
+  `.schedule-history.v1` in the state directory.
+- Candidates are classed by predicted RSS against the lane's own distribution:
+  high above `schedule_high_factor` (default 1.5) times the p95 of the mode,
+  low below `schedule_low_factor` (default 0.5) times its median.
+- At most one high runs at a time; while it runs, freed slots take lows, and a
+  queued high starts as soon as none runs. Each class is dispatched
+  longest-predicted-first.
+- `--memory-budget-bytes B` (or `ASSAY_R2_MEMORY_BUDGET_BYTES`) is the
+  admission budget: a candidate starts only while the predicted RSS of the
+  running candidates plus its own is at most B. One candidate always runs, even
+  alone over B. A queued high that does not fit stops further filling until it
+  does, so highs cannot starve. A candidate with no RSS prediction counts as
+  1 GiB. Without the flag there is no admission limit and only the order is
+  scheduled.
+- Progress candidate events carry `dispatch_position`, `prediction`
+  (`rss_peak_bytes`, `wall_seconds`, `class`, `source`) and `prediction_error`
+  (`rss_ratio`, `wall_ratio`, `class_actual`, and a `reason` when a value was
+  not measured). `candidate_index` keeps its canonical meaning. State and
+  progress drain by `dispatch_position`, so a killed run loses no finished
+  candidate whose dispatch prefix had completed. A serial run emits none of
+  these keys.
+- `schedule-summary.v1` in the state directory records the policy, thresholds, B, N,
+  the digest of the prediction inputs, source counts, the predicted-versus-actual
+  summary and the admission-overshoot count (the number of candidate starts at
+  which the summed ACTUAL peaks exceeded B, an upper envelope).
+- `assay lanes --json` lists `capabilities: ["r2-memory-budget",
+  "r2-schedule-tem"]`, so a caller can detect support without version strings.
+
+Supported worker range: `--jobs` has no hard upper bound in assay; the ceiling
+is the lane's declared `judge.mutation.jobs_max`. The limits that bind first
+are real: RAM (use the admission budget), CPU, the container's pids limit (a
+test process tree per worker), file descriptors, and the free space for
+`jobs + 1` copy-on-write clones. The coordinator writes state and progress on
+one thread, so very high counts with very short candidates are eventually
+bound by the state directory's fsync rate. Verified live: 1 and 3 (the B204
+pilot). The scheduler is exercised by deterministic replay at 3 and 6 workers
+and by fake-executor tests; counts above 3 have not been run live on a real
+suite, so raise `jobs_max` stepwise and compare buckets against a serial replay.
 
 The run event reports this invocation's `jobs` and `attribution` (`serial` or
 `overlap-conservative`); each candidate event reports `worker_index`. Verdict

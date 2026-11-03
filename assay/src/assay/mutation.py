@@ -138,6 +138,7 @@ from typing import (
 
 from . import _durable
 from . import _limit_ledger
+from . import _schedule
 from . import contention as _contention
 from . import git, liveness, safeio
 from . import termination as _termination
@@ -3671,6 +3672,10 @@ def run_mutation(
     r2_baseline_s: float | None = None,
     equivalence_ledger_sha256: str | None = None,
     manifest_node_ids: Sequence[str] = (),
+    #: (B207) Candidate scheduling inputs for ``jobs`` greater than 1: the
+    #: admission budget, class factors and operator prediction medians.
+    #: Only dispatch ORDER and admission depend on it, never a result.
+    schedule: _schedule.ScheduleOptions | None = None,
 ) -> Mutation | Literal["UNSUPPORTED"] | None:
     """The R2 execution entry point (P23 exact reexecution): every mutant is
     a FRESH, INDEPENDENT P22 replacement snapshot of the same prepared seed
@@ -3716,8 +3721,11 @@ def run_mutation(
     hold a whole batch at a barrier. On deadline expiry or a fatal worker
     error, submission stops and every already-submitted future is drained so
     its snapshot context closes. Results stay POSITION-aligned with the
-    pending job list, candidate progress is emitted in index order, and the
-    three non-killed buckets remain identity-ordered without a re-sort.
+    pending job list, candidate progress is emitted in DISPATCH order (B207:
+    canonical index order for a serial run or without predictions; with
+    ``jobs > 1`` the two-ended-matching order of :mod:`assay._schedule`, whose
+    only effect is which candidate starts next), and the three non-killed
+    buckets remain identity-ordered without a re-sort.
     When several fatal worker errors are observed, the lowest candidate
     position wins; the lane's outcome, not only its reason code, can depend
     on that choice. An expiry marks that position and every unsubmitted
@@ -4345,6 +4353,7 @@ def run_mutation(
             r2_facts=r2_facts,
             coverage_facts=coverage_facts,
             manifest_node_ids=manifest_node_ids,
+            schedule=schedule,
         )
 
         if resumed_records:
@@ -4422,6 +4431,126 @@ def run_mutation(
 _run_mutation_impl = run_mutation.__wrapped__
 
 
+def _read_schedule_history(
+    state_root: Path | str | None, state_root_fd: int | None
+) -> tuple[dict[str, _schedule.HistoryEntry], str | None]:
+    """(B207) The previous campaign's per-candidate measurements, or an empty
+    history. Predictions only order work, so an unreadable side file is
+    reported and ignored, never raised."""
+    if state_root is None:
+        return {}, None
+    name = _schedule.HISTORY_FILE_NAME
+    try:
+        if state_root_fd is None:
+            raw = safeio.read_bounded_input(
+                Path(state_root), name, limit=_schedule.HISTORY_LIMIT_BYTES
+            )
+        else:
+            try:
+                descriptor = os.open(
+                    name,
+                    os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK | os.O_NOFOLLOW,
+                    dir_fd=state_root_fd,
+                )
+            except FileNotFoundError:
+                return {}, None
+            with os.fdopen(descriptor, "rb") as stream:
+                info = os.fstat(stream.fileno())
+                if not stat.S_ISREG(info.st_mode):
+                    return {}, "schedule history is not a regular file"
+                if info.st_size > _schedule.HISTORY_LIMIT_BYTES:
+                    return {}, "schedule history exceeds its size limit"
+                raw = stream.read()
+    except (AssayError, OSError) as exc:
+        return {}, f"schedule history is unreadable: {exc}"
+    return _schedule.parse_history(raw)
+
+
+def _write_state_side_file(
+    state_root: Path, state_root_fd: int | None, name: str, payload: bytes
+) -> None:
+    """Atomically replace one non-record file in the state directory."""
+    temporary_name = f".state-{os.getpid()}-{os.urandom(8).hex()}.tmp"
+    if state_root_fd is None:
+        Path(state_root).mkdir(parents=True, exist_ok=True)
+        descriptor = os.open(
+            Path(state_root) / temporary_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o600,
+        )
+    else:
+        descriptor = os.open(
+            temporary_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o600,
+            dir_fd=state_root_fd,
+        )
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            _durable.fsync(stream.fileno())
+        if state_root_fd is None:
+            os.replace(Path(state_root) / temporary_name, Path(state_root) / name)
+        else:
+            os.replace(
+                temporary_name, name, src_dir_fd=state_root_fd, dst_dir_fd=state_root_fd
+            )
+    except BaseException:
+        try:
+            if state_root_fd is None:
+                os.unlink(Path(state_root) / temporary_name)
+            else:
+                os.unlink(temporary_name, dir_fd=state_root_fd)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def _persist_schedule_side_files(
+    state_root: Path | str | None,
+    state_root_fd: int | None,
+    *,
+    history: Mapping[str, _schedule.HistoryEntry],
+    updates: Mapping[str, _schedule.HistoryEntry],
+    scheduler: _schedule.TemScheduler | None,
+    errors: Mapping[int, Mapping[str, Any]],
+    history_reason: str | None,
+) -> None:
+    """(B207) Write ``.schedule-history.v1`` (what this run measured, merged
+    over the previous history) and ``schedule-summary.v1`` (the run's policy and its
+    predicted-versus-actual summary). Both are advisory side files: a failure
+    to write one is an advisory on stderr, never a campaign failure."""
+    if state_root is None:
+        return
+    root = Path(state_root)
+    try:
+        if updates:
+            _write_state_side_file(
+                root,
+                state_root_fd,
+                _schedule.HISTORY_FILE_NAME,
+                _schedule.render_history({**history, **updates}),
+            )
+        if scheduler is not None:
+            summary = scheduler.summary(errors=errors)
+            summary["input_sha256"] = hashlib.sha256(
+                _schedule.render_history(history)
+            ).hexdigest()
+            if history_reason is not None:
+                summary["history_reason"] = history_reason
+            _write_state_side_file(
+                root,
+                state_root_fd,
+                _schedule.SCHEDULE_FILE_NAME,
+                (json.dumps(summary, sort_keys=True, indent=2) + "\n").encode("utf-8"),
+            )
+    except OSError as exc:
+        sys.stderr.write(
+            f"Assay advisory: could not write the candidate schedule side files: {exc}\n"
+        )
+
+
 def _execute_mutation_jobs(
     *,
     job_list: Sequence[MutantJob],
@@ -4474,6 +4603,7 @@ def _execute_mutation_jobs(
     r2_facts: ReceiptFacts | None = None,
     coverage_facts: ReceiptFacts | None = None,
     manifest_node_ids: Sequence[str] = (),
+    schedule: _schedule.ScheduleOptions | None = None,
 ) -> tuple[Mutation, bool]:
 
     if job_list:
@@ -5172,7 +5302,9 @@ def _execute_mutation_jobs(
             elapsed_seconds=max(0.0, time.monotonic() - started_total),
         )
 
-    def _record_candidate(position: int, run: _MutantRun) -> Mapping[str, Any]:
+    def _record_candidate(
+        position: int, run: _MutantRun, *, slot: int | None = None
+    ) -> Mapping[str, Any]:
         # Futures can finish before the deadline and sit ready while the
         # main thread is busy draining earlier results. Check at the actual
         # classification boundary, not only in the worker.
@@ -5349,8 +5481,34 @@ def _execute_mutation_jobs(
                 state_root_fd=state_root_fd,
                 commit_guard=deadline.remaining,
             )
+        # What this candidate measured feeds the next campaign's predictions.
+        if state_root is not None and run.elapsed_seconds >= 0:
+            history_updates[candidate_id(job_list[position])] = _schedule.HistoryEntry(
+                job_list[position].path,
+                round(run.elapsed_seconds, 3),
+                run.peak_rss_bytes,
+            )
+        schedule_keys: dict[str, Any] = {}
+        if scheduler is not None and slot is not None:
+            prediction = scheduler.prediction(position)
+            error = scheduler.error(
+                position,
+                wall_seconds=run.elapsed_seconds,
+                rss_peak_bytes=run.peak_rss_bytes,
+            )
+            schedule_errors[position] = error
+            schedule_keys = {
+                "dispatch_position": slot,
+                "prediction": {
+                    "rss_peak_bytes": prediction.rss_peak_bytes,
+                    "wall_seconds": prediction.wall_seconds,
+                    "class": scheduler.predicted_class(position),
+                    "source": prediction.source,
+                },
+                "prediction_error": error,
+            }
         # Candidate state is staged only by the coordinator after the worker
-        # result reaches its index-ordered commit boundary.
+        # result reaches its dispatch-ordered commit boundary.
         return {
             # (B064) This explicit event name replaced the old unnamed record.
             "event": "candidate",
@@ -5359,6 +5517,7 @@ def _execute_mutation_jobs(
                 candidate_total=total,
                 job=job_list[position],
             ),
+            **schedule_keys,
             "worker_index": candidate_workers[position],
             "outcome_bucket": outcome_bucket,
             "execution_mode": run.execution.mode,
@@ -5411,12 +5570,49 @@ def _execute_mutation_jobs(
     budget_exceeded_mask = [False] * total
     fatals: dict[int, AssayError] = {}
     stop_submitting = False
-    next_to_submit = 0
     event_buffer = _CandidateEventBuffer(total)
+    #: future -> dispatch slot. A slot is a candidate's place in dispatch
+    #: order (B207); `dispatch_order[slot]` is its canonical index. Progress
+    #: and state drain by slot, so a late-dispatched low canonical index never
+    #: holds back candidates that were dispatched, and finished, earlier.
     in_flight: dict[Future, int] = {}
+    dispatch_order: list[int] = []
     completed_runs: dict[int, _MutantRun] = {}
     resolved_without_event: set[int] = set()
     record_cursor = 0
+    next_canonical = 0
+
+    candidate_pairs = [
+        (candidate_id(job_list[index]), job_list[index].path)
+        for index in range(total)
+    ]
+    schedule_options = schedule if schedule is not None else _schedule.ScheduleOptions()
+    history, history_reason = _read_schedule_history(state_root, state_root_fd)
+    history_updates: dict[str, _schedule.HistoryEntry] = {}
+    scheduler: _schedule.TemScheduler | None = None
+    schedule_errors: dict[int, Mapping[str, Any]] = {}
+    if jobs > 1 and total > 0:
+        scheduler = _schedule.TemScheduler(
+            candidate_pairs,
+            _schedule.resolve_predictions(
+                candidate_pairs,
+                history,
+                operator_wall_seconds=schedule_options.prediction_wall_seconds,
+                operator_rss_bytes=schedule_options.prediction_rss_bytes,
+            ),
+            budget_bytes=schedule_options.memory_budget_bytes,
+            workers=jobs,
+            high_factor=schedule_options.high_factor,
+            low_factor=schedule_options.low_factor,
+        )
+
+    def _pick_candidate() -> int | None:
+        nonlocal next_canonical
+        if scheduler is not None:
+            return scheduler.next_candidate(time.monotonic())
+        # The dispatch loop only asks while `len(dispatch_order) < total`.
+        next_canonical += 1
+        return next_canonical - 1
 
     def _record_ready_in_order() -> None:
         nonlocal record_cursor
@@ -5425,7 +5621,9 @@ def _execute_mutation_jobs(
             if run is not None:
                 event_buffer.stage(
                     record_cursor,
-                    _record_candidate(record_cursor, run),
+                    _record_candidate(
+                        dispatch_order[record_cursor], run, slot=record_cursor
+                    ),
                 )
             elif record_cursor in resolved_without_event:
                 event_buffer.resolve_without_event(record_cursor)
@@ -5440,10 +5638,14 @@ def _execute_mutation_jobs(
                 while True:
                     while (
                         not stop_submitting
-                        and next_to_submit < total
+                        and len(dispatch_order) < total
                         and len(in_flight) < jobs
                     ):
-                        position = next_to_submit
+                        position = _pick_candidate()
+                        if position is None:
+                            break
+                        slot = len(dispatch_order)
+                        dispatch_order.append(position)
                         try:
                             future = pool.submit(_run_one, position)
                         except RuntimeError as exc:
@@ -5454,11 +5656,10 @@ def _execute_mutation_jobs(
                                 outcome=Outcome.ERROR,
                                 reason_code=ReasonCode.EXEC_FAILED,
                             )
-                            resolved_without_event.add(position)
+                            resolved_without_event.add(slot)
                             stop_submitting = True
                             break
-                        in_flight[future] = position
-                        next_to_submit += 1
+                        in_flight[future] = slot
 
                     if not in_flight:
                         break
@@ -5479,7 +5680,8 @@ def _execute_mutation_jobs(
                     if not done:
                         continue
                     for future in sorted(done, key=in_flight.__getitem__):
-                        position = in_flight.pop(future)
+                        slot = in_flight.pop(future)
+                        position = dispatch_order[slot]
                         try:
                             results[position] = future.result()
                         except AssayError as exc:
@@ -5493,10 +5695,21 @@ def _execute_mutation_jobs(
                             stop_submitting = True
                         run = results[position]
                         if run is None:
-                            resolved_without_event.add(position)
+                            resolved_without_event.add(slot)
                         else:
                             executed_runs[position] = run
-                            completed_runs[position] = run
+                            completed_runs[slot] = run
+                        if scheduler is not None:
+                            scheduler.complete(
+                                position,
+                                time.monotonic(),
+                                wall_seconds=(
+                                    None if run is None else run.elapsed_seconds
+                                ),
+                                rss_peak_bytes=(
+                                    None if run is None else run.peak_rss_bytes
+                                ),
+                            )
                     _record_ready_in_order()
             except BaseException as exc:
                 if limit_broker is not None:
@@ -5505,14 +5718,28 @@ def _execute_mutation_jobs(
                 raise
 
         if stop_submitting:
-            for leftover in range(next_to_submit, total):
+            if scheduler is not None:
+                leftovers = scheduler.remaining_indices()
+            else:
+                leftovers = list(range(next_canonical, total))
+            for leftover in leftovers:
                 budget_exceeded_mask[leftover] = True
-                resolved_without_event.add(leftover)
+                resolved_without_event.add(len(dispatch_order))
+                dispatch_order.append(leftover)
         _record_ready_in_order()
     finally:
-        # An interruption may leave a hole. Only the completed index prefix is
-        # publishable; skipping a hole would reorder candidate progress/state.
+        # An interruption may leave a hole. Only the completed dispatch prefix
+        # is publishable; skipping a hole would reorder candidate progress/state.
         _emit_ready(event_buffer.drain_contiguous())
+        _persist_schedule_side_files(
+            state_root,
+            state_root_fd,
+            history=history,
+            updates=history_updates,
+            scheduler=scheduler,
+            errors=schedule_errors,
+            history_reason=history_reason,
+        )
 
     # A-195: a mutant that left Git-visible dirt/HEAD drift is never folded
     # into `crashed`. After all submitted workers drain, choose the fatal at
