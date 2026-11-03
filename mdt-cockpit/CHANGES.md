@@ -45,12 +45,16 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - The default CoW root is renamed `/srv/devcontainers-cow/<user>/` to `/srv/mdt-cockpit-cow/<user>/`
   (templates, `.devcontainer/devcontainer.json`, docs, `MDT_COW_ROOT` examples); there is no alias and no
   fallback to the old path. Existing hosts must rename the mountpoint: `findmnt /srv/devcontainers-cow`
-  to see the mount, `umount` it, `mv /srv/devcontainers-cow /srv/mdt-cockpit-cow` (the empty mountpoint
-  directory), edit the fstab entry's mountpoint field to `/srv/mdt-cockpit-cow` (the LV and filesystem
+  to see the mount, `umount` it, `chattr -i /srv/devcontainers-cow` (BTRFS-COW §3.1 sets the immutable
+  flag, which makes `mv` fail with EPERM), `mv /srv/devcontainers-cow /srv/mdt-cockpit-cow` (the empty
+  mountpoint directory), `chattr +i /srv/mdt-cockpit-cow` (still unmounted), edit the fstab entry's
+  mountpoint field to `/srv/mdt-cockpit-cow` (the LV and filesystem
   label may keep their names), `systemctl daemon-reload && mount /srv/mdt-cockpit-cow`, and check that
   the per-user directory `/srv/mdt-cockpit-cow/<user>/` is still owned by the user
   (`mdt-cow-init-user.sh`). Already-running devcontainers keep the old bind mount until they are
-  recreated; a `DEV_BUILDKITD_CACHE` host path under the old root needs the same update in
+  recreated. Migrate the host **before** the next rebuild of a container whose CoW mount is active
+  (vbpub's own devcontainer): `--mount` refuses a missing source, so the rebuild fails closed otherwise.
+  A `DEV_BUILDKITD_CACHE` host path under the old root needs the same update in
   `/etc/mdt/host-setup.env`.
 - The devcontainer templates mount one home and one `/tmp` **per checkout**:
   `${localEnv:HOME}/mdt-cockpit-${localWorkspaceFolderBasename}-home/` and `-tmp/` (the vendored

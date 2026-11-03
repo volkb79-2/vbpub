@@ -189,6 +189,13 @@ mount /srv/mdt-cockpit-cow
 Do this for every mountpoint of a btrfs filesystem, including each further `subvol=` mountpoint. To remove
 such a directory later, `chattr -i` it first.
 
+**Renaming a mountpoint** (for example the 2026-11 move `/srv/devcontainers-cow` to `/srv/mdt-cockpit-cow`):
+`umount` it, `chattr -i /srv/devcontainers-cow` (an immutable directory cannot be renamed, `mv` fails with
+EPERM), `mv` it, `chattr +i` the new directory while nothing is mounted on it, fix the fstab mountpoint
+field, then `systemctl daemon-reload && mount`. Migrate the host **before** the next rebuild of any
+container whose CoW mount is active (the vbpub devcontainer is one): `--mount` refuses a missing source,
+so the rebuild would fail closed.
+
 ### 3.2 Create the user areas
 
 The top level is root-owned; each user's directory is created once by root, the repo areas by the user or
