@@ -6,6 +6,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ### Fixed
 - fix(nyxloom): session-extract effect detector (NL-35): `sudo -u`/`timeout -s` wrappers, bare `git tag` and `curl -H "a -d b"` false positives, more than 12 leading assignments, `$(...)` inside double quotes, and `$VAR` command heads listed as "possible effect, head unresolved"
+- fix(nyxloom): a leftover `src/nyxloom.egg-info` no longer shadows the installed distribution's version when `exec-nyxloom.py` runs from a checkout (NL-24)
 
 <!-- cmru: release history -->
 
