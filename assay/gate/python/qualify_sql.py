@@ -997,8 +997,8 @@ def normalize_verdict(document: Mapping[str, Any], *, assay_version: str, head_o
     # depends on the gate host's observer, never on the judged schema: keep the
     # exact worker counts and the canonical schedule, canonicalize the counters.
     r2_policy = normalized.get("judgment", {}).get("r2")
-    if r2_policy is not None:
-        profile = r2_policy.get("profile")
+    if r2_policy is not None and "profile" in r2_policy:
+        profile = r2_policy["profile"]
         if not isinstance(profile, dict) or set(profile) != {"status_counts", "reason_counts", "observer"}:
             raise QualificationError("artifact judgment.r2.profile is not a profile summary")
         r2_policy["profile"] = "@PROFILE_SUMMARY@"
