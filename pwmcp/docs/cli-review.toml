@@ -785,13 +785,13 @@ test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-h
 id = "case:route:entrypoint:pwmcp/inspect/minimum"
 state = "active"
 decision = "accept"
-reviewed_signature = "sha256:77e2e991af2ae5e1452cf8e008082df929ef04d69f305e113b1c06fa98ce87c8"
-rationale = "The required URL is the only operand; certificate verification stays enabled, with text output, load wait, and the standard timeout by default."
+reviewed_signature = "sha256:b4d6bf6312817e97b2da619d51ad4e8361731ee7ade079226df6f36d80994f63"
+rationale = "The required URL is the only operand; certificate verification stays enabled, with text output, load wait, the standard timeout and a single attempt by default. A short result, or a page that reported console errors or failed requests, is flagged on stderr so a partial render is not mistaken for the whole page."
 invocation = ["inspect", "https://example.test"]
 expected_exit_status = 0
 expected_stdout_contains = "rendered page text"
-expected_stderr_contains = ""
-effects = ["Opens one remote browser lease, waits for the page to render, and prints its body text; the lease closes afterward."]
+expected_stderr_contains = "no --wait-for was given"
+effects = ["Opens one remote browser lease, waits for the page to render, and prints its body text; warns on stderr when the text is under 1 KiB without --wait-for or the page reported failed requests; the lease closes afterward."]
 test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test]"]
 
 [[cases]]
@@ -806,6 +806,19 @@ expected_stdout_contains = "rendered page text"
 expected_stderr_contains = ""
 effects = ["Creates one isolated Playwright context with ignore_https_errors enabled for this invocation, reads rendered text, then closes the context and lease."]
 test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---ignore-https-errors---wait-until-commit]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--retries/--retries"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:5386ba97182a8024aa8b87a6593f035ca4e402aee75c9d78cfe0247229c6cf41"
+rationale = "A caller facing a page that hydrates in stages or intermittently fails can allow bounded extra attempts (at most 10); each retry is a fresh context and navigation, and a failed attempt is reported on stderr instead of being retried silently."
+invocation = ["inspect", "https://example.test", "--retries", "1"]
+expected_exit_status = 0
+expected_stdout_contains = "rendered page text"
+expected_stderr_contains = ""
+effects = ["Reads the body text twice 0.5 s apart on every attempt but the last; an unchanged text ends the loop, a changed text or a failed navigation starts a fresh context and navigation until the allowance is spent."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---retries-1]"]
 
 [[cases]]
 id = "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--user-agent/--user-agent"
