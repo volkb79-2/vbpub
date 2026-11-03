@@ -13733,3 +13733,218 @@ differences between runs as suite flakes unless an isolated serial replay reprod
 **Status: OPEN (filed 2026-11-02).** A killed candidate's state record and verdict entry say only FAIL with the suite return
 code; the first failing test id is not kept, so a false kill cannot be attributed after the fact. Record the failing test id in
 the progress event and the state record now; add it to the verdict as an optional field (or with schema v18).
+
+
+## B206 — resource numbers come only from the cgprofile observer (no own sampler, explicit NO_MEASUREMENT)
+
+**Status: OPEN (filed 2026-11-03).** Design: `docs/design/RESOURCE-PROFILES.md`
+§2–§4 (cross-tool). Depends on cgprofile CP-39 (observer contract 3, cgprofile 1.2.0). Ships in assay 12.0.0 together
+with B208, after run-gate RG-145/RG-148 (24.4.0, dual reader).
+
+**Problem.** Native R2 records per-candidate `cpu_seconds`, `peak_rss_bytes` and `write_bytes` from assay's own
+`/proc` sampling: the liveness resource tally, then the sidecar, then `_measured_resources` (`src/assay/mutation.py:3149`).
+It also records a point-in-time `judge_rss_bytes`. This duplicates what the cgprofile observer is for. There are no IO
+operation counts and no PSI. The numbers carry no record of their source or their failure reason: they are `None` when
+unavailable, with no reason. Run-gate sizes `jobs=auto` from them (`assay_progress_candidate_ram`).
+
+**Decision record (operator, 2026-11-03, binding).**
+
+- The cgprofile observer is the single source of per-candidate resource numbers: memory peak, CPU, `io.stat` bytes and
+  IOPS, and PSI.
+- Without cgprofile, assay records no numbers. Each profile is an explicit `NO_MEASUREMENT` with a reason code.
+- There is no fallback reader, and no duplicated functionality.
+- Old keys are not kept as aliases. This follows the operator's no-alias rule of the same day, and run-gate 24.4 reads
+  both shapes.
+
+**Design.**
+
+1. **One window per candidate.** For every started candidate the worker sends `window-open` (contract 3) right after
+   spawn, with `root_pid` set to the candidate root. The mode is `cgroup` at jobs=1 and `process-tree` at jobs>1, until
+   CP-23 per-candidate leaves exist.
+   - It sends `window-close` after `waitid(WEXITED|WNOWAIT)`, before reaping, so CPU is exact.
+   - The candidate root sets `PR_SET_CHILD_SUBREAPER`.
+2. **The profile.** The reply becomes a `resource-profile/1` object (design §2), stored as:
+   - progress `candidate` event key `profile`;
+   - optional state-record key `profile` (`MUTATION_STATE_SCHEMA_VERSION` stays 1);
+   - one line in `profile-<lane>.jsonl` next to the progress stream.
+
+   `wall_seconds` is assay's own monotonic elapsed time and is always present.
+3. **Reason codes.** These are profile reasons, never verdict outcomes:
+
+   | Code | Meaning |
+   |---|---|
+   | `OBSERVER_UNAVAILABLE` | Socket absent or not mounted |
+   | `OBSERVER_REFUSED` | `peer-refused` or `observer-refused` |
+   | `OBSERVER_CONTRACT_UNSUPPORTED` | Contract 3 not advertised; asked once per run |
+   | `OBSERVER_ERROR` | Daemon error, timeout or malformed reply; after 3 consecutive failures the run stops asking |
+   | `WINDOW_LOST` | The window was lost before close |
+   | `NOT_STARTED` | The candidate never ran |
+
+   Per-metric reasons go in `missing`: `SHARED_CGROUP`, `REQUIRES_CGROUP_MODE`, `CONTROLLER_DISABLED`,
+   `PEAK_RESET_UNSUPPORTED`. A missing measurement never changes a bucket, a verdict outcome or an exit code.
+4. **Remove the old keys outright.** The progress, state and analysis keys `peak_rss_bytes`, `cpu_seconds`,
+   `write_bytes`, `judge_rss_bytes` and the `resources` object go, along with the tally's number recording.
+   - Liveness keeps only its CPU-progress reading from `/proc/<pid>/stat`, as a hang-detection control loop. The
+     reading is not recorded (REVIEW-NOTES O1). Its RSS and IO reads are deleted.
+   - `phase_seconds` and `startup_seconds` stay: they are assay's own clock.
+5. **Unchanged.** The B145 limit-event observer requirement (`CGROUP_OBSERVATION_UNAVAILABLE` lane outcome where
+   counters are required). The profile windows share its socket and preflight.
+
+**Acceptance criteria.**
+
+- **Observer absent:** every candidate profile is `NO_MEASUREMENT/OBSERVER_UNAVAILABLE`, `metrics` are all null with
+  `missing` filled, and no numeric resource key is written anywhere (progress, state, `profile-*.jsonl`, analysis).
+- **Contract 2 only:** `OBSERVER_CONTRACT_UNSUPPORTED`, asked exactly once per run.
+- **Exact cgroup mode:** with the jobs=1 fake observer returning the golden window, the stored profile equals the
+  golden numbers (byte-equal JSON for the metrics).
+- **Parallel runs:** at jobs>1 the mode is process-tree, and IOPS and PSI are `REQUIRES_CGROUP_MODE`.
+- **Error codes:** a refused or erroring window for one candidate yields that code for that candidate only, and three
+  consecutive errors stop the asking.
+- **Exact CPU:** `window-close` is sent before the reap. A test with a fake observer asserts that the root PID is still
+  a zombie at close.
+- **Verdict and buckets** of a fixture lane are identical with the observer present, absent, and failing.
+- **Source check:** a source test asserts that no assay module except the observer client opens `/proc/*/io`,
+  `/proc/*/statm`, `/proc/*/smaps*`, `memory.peak` or `io.stat`. Liveness reads `/proc/<pid>/stat` only.
+
+**Test plan.**
+
+- **Unit tests** with a fake observer socket serving the golden contract-3 fixtures (vendored byte-identical from
+  cgprofile).
+- **One lane test per reason code.**
+- **Live:** design §9 M1 on r1002 (calibration of process-tree against cgroup at jobs=1, 50 IOBench candidates).
+
+**Dependencies and order.**
+
+1. CP-39 (cgprofile 1.2.0) for live numbers. Unit tests do not need it.
+2. Run-gate 24.4.0 (RG-145, RG-148) released and in the tester-unified image **before** assay 12.0.0.
+3. Then this item, together with B208.
+
+## B207 — two-ended-matching candidate scheduling for parallel native R2 (dispatch-order drain, admission budget)
+
+**Status: OPEN (filed 2026-11-03).** Design §5 (specification, simulation, recommendation). Simulator:
+`docs/design/resource-profiles-sim/sched-sim.py`, with outputs in `sim-*.md` beside it. It can ship in 12.0.0 or 12.1.0, after B206.
+
+**Problem.** With `--jobs N`, candidates are submitted in canonical order (`mutation.py:5440-5458`), and nothing
+controls which candidates run together. When high-RSS candidates coincide, the running RSS sum approaches N × max
+instead of N × typical. In the replayed data, at N=6:
+
+- cli-extended's file order peaks at 1,404 MiB against 742 MiB with matching;
+- IOBench's peaks at 2,741 MiB against 2,286 MiB.
+
+The RAM need of a run is therefore unpredictable, and a long candidate that starts late leaves N−1 workers idle at the
+tail.
+
+**Decision record (operator, 2026-11-03).**
+
+- Use longest-first, with the running RSS sum kept near-constant through **two-ended matching**: at most one high runs;
+  while it runs, freed slots take lows; highs start early; lows fill the end.
+- Predictions come from the previous profile of the same candidate id, else the file median.
+- RAM is the scarce resource, and the goal is a predictable RAM need.
+- Only wall time changes, never results.
+
+**Design** (design §5.3–§5.8).
+
+- **Classes** (high, normal, low) come from the *predicted* RSS relative to the lane's mode:
+  - high > 1.5 × p95(mode);
+  - low < 0.5 × median(mode).
+
+  The factors are lane config `mutation.schedule_high_factor` and `mutation.schedule_low_factor`.
+- **Per-class queues** are ordered longest-predicted-first (TEM + LPT).
+- **Admission rule:** `Σ predicted RSS(running) + predicted RSS(next) ≤ B`. B is the new
+  `--memory-budget-bytes`/`ASSAY_R2_MEMORY_BUDGET_BYTES` from run-gate.
+  - At most one high runs at a time.
+  - A queued high that does not fit stops further filling until it fits, so highs cannot starve.
+  - One candidate always runs.
+- **Drain order.** `_CandidateEventBuffer` and `_record_ready_in_order` drain by **`dispatch_position`** rather than
+  canonical index, so progress and state are never held back by a late-dispatched low index. `candidate_index` keeps
+  its canonical meaning.
+- **Capability flag.** `assay lanes --json` advertises `capabilities: ["r2-memory-budget", "r2-schedule-tem"]`, so run-gate (RG-148) detects support without version strings.
+- **New progress keys:** `dispatch_position`, `prediction` (`{rss_peak_bytes, wall_seconds, class, source}`), and
+  `prediction_error` (`{rss_ratio, wall_ratio, class_actual}`).
+- **`schedule.json`** in the state directory records the policy, thresholds, B, N, the input digest, the source counts
+  and the error summary (p50/p95 of each ratio by source, class confusion matrix, admission-overshoot count).
+- **Prediction sources, in order:**
+  1. the same id's last profile;
+  2. the live file median after 5 completions in this run;
+  3. the latest campaign's file median;
+  4. the lane median;
+  5. operator medians (`mutation.prediction_wall_seconds`, `mutation.prediction_rss_bytes`);
+  6. none, which gives canonical order.
+- **Cold start:** run-gate's conservative jobs default, then live file medians.
+- **Order independence** (assumption and isolation requirement, design §5.8):
+  - one CoW clone and a fresh process tree per candidate;
+  - nothing written outside the clone except per-candidate temporary directories;
+  - no shared fixed ports or container names;
+  - deterministic tests.
+
+  Suite flakiness is B204's subject.
+
+**Acceptance criteria.**
+
+- On a flake-free fixture lane, canonical order and TEM + LPT order give identical judgments (buckets per id). The
+  verdict candidate list is identical, being canonically sorted.
+- With fixture predictions, the running predicted sum never exceeds B and never more than one high runs.
+- A queued high is started at the latest when the running sum has drained to `B − r̂(high)`.
+- The event and state drain follows dispatch order. Killing the run mid-way loses no completed candidate whose
+  dispatch prefix had completed.
+- `schedule.json` and the progress keys are present. `prediction_error` is null with the profile's reason when the
+  profile is `NO_MEASUREMENT`.
+- Without RSS predictions the order is canonical, and admission uses the declared or default RAM.
+- Replaying `tools/sched-sim.py` cases through the real dispatch loop (fake executor with recorded durations)
+  reproduces the simulator's dispatch order exactly.
+
+**Test plan.**
+
+- **Unit tests:** class derivation on synthetic distributions; admission and high-slot rules; drain order.
+- **Fake-executor replay:** the 1,456 cli-extended candidates.
+- **Live:** design §9 M4 on r1002, an A/B over the four policies on 150 IOBench candidates, with buckets identical
+  across policies.
+
+**Dependencies and order.** After B206: actual RSS for the error recording and for source 1 comes from profiles.
+Needs run-gate RG-148 to pass B. It is independent of the verdict cut (B208), but its summary lands in
+`judgment.r2.schedule` when shipped together.
+
+## B208 — verdict schema v18 (hard cut): profile and schedule summaries, B203 worker counts, B205 failing test id
+
+**Status: OPEN (filed 2026-11-03).** Design §4.2. This is the schema carrier for B203, B205, B206 and B207. Ships as
+assay 12.0.0.
+
+**Problem.** B203 needs per-record worker counts in the verdict model. B205 needs the failing test id. B206 and B207
+need a run-level summary of the profile status and the schedule. The v17 schema is `additionalProperties: false`, so
+each addition is a schema change for every validator.
+
+**Decision record.**
+
+- **One hard cut to v18**, refusing v17 on write (verifier and analyzer). This is assay's established practice
+  (v16 → v17, B202): one consumer migration instead of three.
+- **No per-candidate resource numbers in the verdict.** Profiles are telemetry, not judgment. They live in progress,
+  state and `profile-*.jsonl`.
+
+**Design.**
+
+- **`judgment.r2.profile`:**
+  - `{status_counts: {MEASURED, PARTIAL, NO_MEASUREMENT}, reason_counts: {<code>: n}, observer: {name, version, contracts, modes}}`.
+- **`judgment.r2.schedule`:**
+  - `{policy: canonical|tem-lpt, thresholds: {high_bytes, low_bytes, high_factor, low_factor}, memory_budget_bytes, jobs, prediction_sources: {<source>: n}, error: {rss_ratio: {p50, p95}, wall_ratio: {p50, p95}, class_confusion: {...}, admission_overshoots: n}}`.
+- **B203:** each state record stores its worker count. The verdict gives the campaign maximum and the per-count
+  candidate counts, replacing the invocation-local `judgment.r2.jobs` semantics.
+- **B205:** killed candidates carry an optional `first_failing_test` (string, or null when unknown).
+- **Analyzer:** reads v17 (archived campaigns, read-only) and v18. Writes v18 only. The analysis-campaign schema gets
+  a major bump, with candidate `profile` replacing `peak_rss_bytes` and `cpu_seconds`.
+
+**Acceptance criteria.**
+
+- The v18 schema validates golden verdicts for a measured, a partially measured and an unmeasured campaign.
+- The verifier refuses v17 output from the writer path.
+- The analyzer reads both versions.
+- A resumed campaign with mixed worker counts reports the maximum and per-count counts (B203 oracle).
+- A killed candidate with a known first failing test carries it (B205 oracle), and `null` otherwise.
+- Run-gate 24.4.0's reader accepts the golden v18 verdicts (a cross-repo fixture test).
+
+**Test plan.**
+
+- Schema, verifier and analyzer unit tests over the golden fixtures.
+- One cross-repo fixture, vendored byte-identical into run-gate's tests.
+
+**Dependencies and order.** Run-gate 24.4.0 (RG-148) first, then assay 12.0.0 with B206 and B208 (and B207 if
+ready). Closes B203 and B205 when merged.
