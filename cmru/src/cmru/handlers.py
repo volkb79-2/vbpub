@@ -606,6 +606,28 @@ def _wheel_builder_env_args() -> list[str]:
     return args
 
 
+WHEEL_BUILD_AGE_OVERRIDE_REASON_ENV = "CMRU_WHEEL_BUILD_AGE_OVERRIDE_REASON"
+
+
+def _wheel_builder_age_override_args() -> list[str]:
+    """The wheel-builder image bakes ``PIP_UPLOADED_PRIOR_TO=<PIP_MIN_RELEASE_AGE>``, so the build backends
+    ``python -m build`` installs at run time (``[build-system].requires``) obey the estate's 14-day window
+    and a backend pin younger than that fails the build until it ages (TB-08, operator decision D3).
+    Setting ``CMRU_WHEEL_BUILD_AGE_OVERRIDE_REASON`` to a non-blank reason lifts the window for THIS build
+    only (``-e PIP_UPLOADED_PRIOR_TO=P0D``, everything uploaded before now) and logs the reason; a set but
+    blank value is refused rather than treated as no override."""
+    if WHEEL_BUILD_AGE_OVERRIDE_REASON_ENV not in os.environ:
+        return []
+    reason = os.environ[WHEEL_BUILD_AGE_OVERRIDE_REASON_ENV].strip()
+    if not reason:
+        raise RuntimeError(
+            f"{WHEEL_BUILD_AGE_OVERRIDE_REASON_ENV} is set but blank: an override of the build-backend "
+            "age window must state its reason (unset it for the normal window)"
+        )
+    print(f"[WARN] cmru handler: build-backend age window LIFTED for this wheel build; reason: {reason}")
+    return ["-e", "PIP_UPLOADED_PRIOR_TO=P0D"]
+
+
 def cmd_wheel_build(args: argparse.Namespace) -> None:
     """Clean stale wheels + `python -m build --wheel --outdir dist` in the project."""
     cwd = Path(args.cwd).resolve()
@@ -617,6 +639,7 @@ def cmd_wheel_build(args: argparse.Namespace) -> None:
     # Verify the placement before anything is deleted or launched.
     cgroup_parent = _docker_cgroup_parent()
     require_installed_cgroup_parent(cgroup_parent, cwd)
+    age_override_args = _wheel_builder_age_override_args()
     dist = cwd / "dist"
     if dist.exists():
         for stale in dist.glob("*.whl"):
@@ -633,6 +656,7 @@ def cmd_wheel_build(args: argparse.Namespace) -> None:
             "-v", f"{host_mount}:{mount_root}",
             *_wheel_builder_git_mount_args(cwd, mount_root=mount_root),
             *_wheel_builder_env_args(),
+            *age_override_args,
             "-w", str(cwd.parent),
             image,
             "/opt/wheel-builder-venv/bin/python", "-m", "build",

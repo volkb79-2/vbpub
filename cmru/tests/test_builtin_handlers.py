@@ -420,6 +420,38 @@ def test_wheel_build_forwards_build_env_by_name_only(tmp_path, monkeypatch):
     assert "1700000000" not in argv and "9.9.9" not in argv
 
 
+def _top_level_project(tmp_path, monkeypatch):
+    _clean_build_env(monkeypatch)
+    project = tmp_path / "cmru"
+    project.mkdir()
+    monkeypatch.setattr(handlers, "_git_common_dir", lambda _cwd: tmp_path / ".git")
+    return project
+
+
+def test_wheel_build_leaves_the_images_baked_age_window_alone_by_default(tmp_path, monkeypatch, capsys):
+    """TB-08: without an override no PIP_* variable is passed, so the image's baked
+    PIP_UPLOADED_PRIOR_TO (the 14-day window) governs the build backends."""
+    monkeypatch.delenv(handlers.WHEEL_BUILD_AGE_OVERRIDE_REASON_ENV, raising=False)
+    argv = _wheel_build_argv(_top_level_project(tmp_path, monkeypatch), monkeypatch)
+    assert not any(a.startswith("PIP_") for a in argv)
+    assert "LIFTED" not in capsys.readouterr().out
+
+
+def test_wheel_build_age_override_needs_a_reason_and_logs_it(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv(handlers.WHEEL_BUILD_AGE_OVERRIDE_REASON_ENV, "  setuptools 84.0.0 security fix  ")
+    argv = _wheel_build_argv(_top_level_project(tmp_path, monkeypatch), monkeypatch)
+    assert argv[argv.index("PIP_UPLOADED_PRIOR_TO=P0D") - 1] == "-e"
+    assert argv.index("PIP_UPLOADED_PRIOR_TO=P0D") < argv.index("-w")
+    out = capsys.readouterr().out
+    assert "age window LIFTED" in out and "reason: setuptools 84.0.0 security fix" in out
+
+
+def test_wheel_build_refuses_a_blank_age_override_before_launching(tmp_path, monkeypatch):
+    monkeypatch.setenv(handlers.WHEEL_BUILD_AGE_OVERRIDE_REASON_ENV, "   ")
+    with pytest.raises(RuntimeError, match="must state its reason"):
+        _wheel_build_argv(_top_level_project(tmp_path, monkeypatch), monkeypatch)
+
+
 def test_git_toplevel_is_none_outside_a_repo_and_mount_root_falls_back(tmp_path, monkeypatch):
     shared = cli.transaction._shared_worktree()
     monkeypatch.setattr(
