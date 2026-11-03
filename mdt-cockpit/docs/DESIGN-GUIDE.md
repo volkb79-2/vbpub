@@ -66,6 +66,17 @@ and the devcontainer template exports `PWMCP_MCP_URL`. The CLI lives outside
 the network resource explicit; each agent harness still owns its MCP registration
 format.
 
+**Network join on create.** `ciu up` attaches only the container that ran it, and the
+stack (`restart: unless-stopped`) outlives a devcontainer that is recreated or rebuilt,
+which starts on the default bridge alone, so `pwmcp` would not resolve. The finalize step
+(`postCreateCommand`, so on every create and rebuild; a plain restart keeps its networks)
+therefore runs `join_pwmcp_network`: it finds the stack container with a filtered
+`docker ps` (name `^pwmcp-`, compose service label `pwmcp`), inspects it by exact name, and
+`docker network connect`s this container to a network on which it carries the alias `pwmcp`
+unless already attached. It is idempotent and never fails finalize; with no running stack
+it logs one INFO line pointing at `cd /srv/pwmcp-instance && ciu up` (which then attaches
+the container itself). It does not use ciu, only Docker labels and aliases.
+
 ## The home is user state; image assets live outside it
 
 The devcontainer persists one host directory at `/home/vscode`
