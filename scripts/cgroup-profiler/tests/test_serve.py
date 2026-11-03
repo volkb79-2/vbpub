@@ -2620,6 +2620,97 @@ def test_forced_finalize_with_a_worker_holding_the_session_lock_forever_returns(
     release.set()
 
 
+class _CountingLock:
+    """A real lock behind a counter: every acquire, however spelled, counts."""
+
+    def __init__(self):
+        self._inner = threading.Lock()
+        self.acquires = 0
+
+    def acquire(self, *args, **kwargs):
+        self.acquires += 1
+        return self._inner.acquire(*args, **kwargs)
+
+    def release(self):
+        self._inner.release()
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, *_exc):
+        self.release()
+
+
+def test_finalize_takes_the_session_lock_exactly_once(simple_server, monkeypatch):
+    """CP-27 N5 (S9): the old free-then-retake shape acquired the session lock
+    twice (a probe, then an unbounded block); the fix is structural, so pin it
+    with a counter."""
+    sess, release, closed, released = _wedge(simple_server, monkeypatch)
+    proxy = _CountingLock()
+    sess.lock = proxy
+    with simple_server._lock:
+        assert simple_server._finalize_session_locked(
+            sess, aborted_reason=None, force=True) is True
+    assert proxy.acquires == 1
+    assert closed == [True] and released == [True]
+    release.set()
+
+
+def test_own_thread_finalize_with_a_held_session_lock_logs_the_failure(
+    simple_server, monkeypatch, capsys,
+):
+    """CP-27 N6: the own-thread callers ignore the return value, so a lock held
+    for the full bound must still leave a log line, and the session stays live."""
+    sess, release, closed, released = _wedge(simple_server, monkeypatch)
+    sess.thread = threading.current_thread()  # the own-thread (no-join) path
+    holding = threading.Event()
+
+    def hold():
+        with sess.lock:
+            holding.set()
+            release.wait()
+
+    threading.Thread(target=hold, daemon=True).start()
+    assert holding.wait(timeout=5.0)
+    simple_server._finalize_after_kill(sess)
+    assert "the session lock is held" in capsys.readouterr().err
+    assert not sess.finished and closed == [] and released == []
+    release.set()
+
+
+def test_stop_with_a_busy_session_lock_does_not_blame_the_worker(
+    simple_server, monkeypatch,
+):
+    """CP-27 N8: the worker has exited but another verb holds the session lock;
+    `stop` must say the lock is busy, not that the worker did not exit."""
+    sess, release, closed, released = _wedge(simple_server, monkeypatch)
+    release.set()
+    sess.thread.join(timeout=5.0)  # the worker has exited
+    assert not sess.thread.is_alive()
+    sess.lock.acquire()
+    try:
+        response = simple_server._dispatch(_wire("stop", session=sess.session_id))
+    finally:
+        sess.lock.release()
+    assert response["ok"] is False
+    assert response["error"]["code"] == "stop-incomplete"
+    message = response["error"]["message"]
+    assert "session lock was busy" in message
+    assert "worker did not exit" not in message
+    assert closed == [] and released == []
+
+
+def test_stop_with_a_wedged_worker_still_says_the_worker_did_not_exit(
+    simple_server, monkeypatch,
+):
+    """CP-27 N8 counter-case: the wedged-worker message is unchanged."""
+    sess, release, closed, released = _wedge(simple_server, monkeypatch)
+    response = simple_server._dispatch(_wire("stop", session=sess.session_id))
+    assert "worker did not exit" in response["error"]["message"]
+    release.set()
+
+
 def test_observe_liveness_after_close_never_reaches_the_kill(
     simple_server, monkeypatch,
 ):
