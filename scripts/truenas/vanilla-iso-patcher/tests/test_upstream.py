@@ -193,3 +193,29 @@ def test_download_sha_mismatch_leaves_no_partial_iso(tmp_path, monkeypatch, asse
 
     assert not destination.exists()
     assert not list(tmp_path.glob(".*.download-*"))
+
+
+def test_ensure_in_downloads_fetches_once_then_reuses_the_verified_copy(tmp_path, monkeypatch, asset):
+    payload = b"vanilla installer ISO fixture"
+    expected = hashlib.sha256(payload).hexdigest()
+    calls = []
+    monkeypatch.setattr(upstream, "_request", lambda *a, **k: calls.append(1) or _Response(payload))
+
+    first, digest = upstream.ensure_in_downloads(asset, expected_sha256=expected, downloads_dir=tmp_path)
+    second, _ = upstream.ensure_in_downloads(asset, expected_sha256=expected, downloads_dir=tmp_path)
+
+    assert first == second == tmp_path / asset.filename
+    assert digest == expected and len(calls) == 1
+    assert (tmp_path / (asset.filename + ".sha256")).read_text().startswith(expected)
+
+
+def test_ensure_in_downloads_refuses_a_file_that_differs_from_the_published_digest(tmp_path, asset):
+    (tmp_path / asset.filename).write_bytes(b"tampered")
+    with pytest.raises(upstream.UpstreamError, match="differs from the published"):
+        upstream.ensure_in_downloads(asset, expected_sha256="0" * 64, downloads_dir=tmp_path)
+    assert (tmp_path / asset.filename).read_bytes() == b"tampered"
+
+
+def test_downloads_dir_is_the_repository_downloads_folder():
+    assert upstream.DOWNLOADS_DIR.name == "downloads"
+    assert (upstream.DOWNLOADS_DIR / "README.md").is_file()

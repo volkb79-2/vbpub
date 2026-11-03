@@ -1,5 +1,11 @@
 # TrueNAS storage and deployment work
 
+Open work is tracked in [KNOWN_ISSUES_TODO_BACKLOG.md](KNOWN_ISSUES_TODO_BACKLOG.md).
+The general TrueNAS API and VM tool is [`truenas/tnt`](../../truenas/tnt/README.md);
+the API and VM scripts here are folded into it over time (TN-02). VM state lives
+in `artifacts/vm-lab/<vm>/` ([README](artifacts/vm-lab/README.md)) and fetched
+installer ISOs in the repository `downloads/` folder.
+
 For the boot-disk storage patch's supported builds, Path A/Path B behavior,
 update and rollback workflow, and current acceptance status, see the
 [patch overview](docs/OVERVIEW.md). Its exact-build policy and adoption steps

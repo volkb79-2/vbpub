@@ -47,7 +47,7 @@ present in more than one family:
 python3 scripts/truenas/vanilla-iso-patcher/truenas-vanilla-iso.py download \
   --upstream-version 27.0.0-RC.1 \
   --family TrueNAS-27-RC \
-  --output ./TrueNAS-27.0.0-RC.1.iso
+  --output downloads/TrueNAS-27.0.0-RC.1.iso
 ```
 
 The download is written only after its SHA-256 matches the official sidecar.
@@ -69,8 +69,9 @@ sudo "$(command -v python3)" \
   --yes
 ```
 
-The command downloads the vanilla ISO to temporary storage, verifies its
-published checksum, rebuilds the SquashFS, and replaces its existing data
+The command reuses the vanilla ISO from the repository `downloads/` folder, or
+fetches it there once, and verifies its published checksum (a file whose digest
+differs is refused, never overwritten). It then rebuilds the SquashFS, and replaces its existing data
 extent in a byte-for-byte copy of the ISO. It creates the maximum-compression
 xdelta patch, applies it to a temporary copy, and checks that the reconstructed
 ISO hash matches the generator output. It publishes the ISO, delta, and JSON
@@ -198,7 +199,7 @@ before use:
 ```bash
 sudo "$(command -v python3)" \
   scripts/truenas/vanilla-iso-patcher/truenas-vanilla-iso.py create \
-  --input-iso ./TrueNAS.iso \
+  --input-iso downloads/TrueNAS.iso \
   --expected-input-sha256 REPLACE_WITH_64_HEX_DIGITS \
   --output-iso ./TrueNAS-boot-pool-24GiB.iso \
   --delta-output ./TrueNAS-boot-pool-24GiB.vcdiff \

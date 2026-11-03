@@ -324,3 +324,54 @@ def download_verified_iso(
         raise UpstreamError(f"could not download {asset.filename}: {exc}") from exc
     finally:
         temporary.unlink(missing_ok=True)
+
+
+# Estate layout (AGENTS.md "Directory conventions"): fetched installer ISOs live
+# in <repo root>/downloads/, derived from this file's location, never from an
+# environment variable.
+DOWNLOADS_DIR = Path(__file__).resolve().parents[3] / "downloads"
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(CHUNK_BYTES), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def ensure_in_downloads(
+    asset: UpstreamIso,
+    *,
+    expected_sha256: str,
+    downloads_dir: Path | None = None,
+    progress: Callable[[str], None] | None = None,
+) -> tuple[Path, str]:
+    """Return a checksum-verified copy of the ISO in downloads/, fetching it once.
+
+    A present file is reused only when its SHA-256 equals the published digest; a
+    mismatching file is refused, never overwritten. A fetch under sudo is handed
+    back to the invoking user so the shared folder does not fill with root files.
+    """
+    directory = (downloads_dir or DOWNLOADS_DIR)
+    directory.mkdir(parents=True, exist_ok=True)
+    target = directory / asset.filename
+    expected = expected_sha256.lower()
+    if target.exists():
+        actual = _file_sha256(target)
+        if actual != expected:
+            raise UpstreamError(
+                f"{target} exists but its SHA-256 {actual} differs from the published {expected}; "
+                "remove it deliberately and retry"
+            )
+        if progress is not None:
+            progress(f"Reusing verified {target}")
+        return target, actual
+    actual = download_verified_iso(asset, target, expected_sha256=expected, progress=progress)
+    sidecar = target.with_name(target.name + ".sha256")
+    if not sidecar.exists():
+        sidecar.write_text(f"{actual}  {asset.filename}\n", encoding="utf-8")
+    if os.geteuid() == 0 and os.environ.get("SUDO_UID", "").isdigit() and os.environ.get("SUDO_GID", "").isdigit():
+        for path in (target, sidecar):
+            os.chown(path, int(os.environ["SUDO_UID"]), int(os.environ["SUDO_GID"]))
+    return target, actual
