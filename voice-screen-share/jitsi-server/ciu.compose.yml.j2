@@ -101,6 +101,13 @@ services:
     mem_limit: {{ jitsi.jicofo.mem_limit }}
     memswap_limit: {{ jitsi.jicofo.mem_swap_limit }}
     cpus: {{ jitsi.jicofo.cpus }}
+    healthcheck:
+      # /about/health is 404 on this image; /about/version answers 200.
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://localhost:8888/about/version"]
+      interval: {{ jitsi.health.interval }}
+      timeout: {{ jitsi.health.timeout }}
+      retries: {{ jitsi.health.retries }}
+      start_period: {{ jitsi.health.start_period }}
     logging:
       driver: json-file
       options:
@@ -133,13 +140,6 @@ services:
       JVB_AUTH_PASSWORD: "${JITSI_JVB_AUTH_PASSWORD}"
       JVB_PORT: "{{ jitsi.jvb.port }}"
       JVB_ADVERTISE_IPS: "{{ jitsi.public_ip }}"
-{% if jitsi.jvb.tcp_fallback_port %}
-      JVB_TCP_HARVESTER_DISABLED: "false"
-      JVB_TCP_PORT: "{{ jitsi.jvb.tcp_fallback_port }}"
-      JVB_TCP_MAPPED_PORT: "{{ jitsi.jvb.tcp_fallback_port }}"
-{% else %}
-      JVB_TCP_HARVESTER_DISABLED: "true"
-{% endif %}
     secrets:
       - jvb_auth_password
     volumes:
@@ -148,14 +148,17 @@ services:
     # entrypoint for this port, and tls-edge is deliberately not modified).
     ports:
       - "{{ jitsi.jvb.port }}:{{ jitsi.jvb.port }}/udp"
-{% if jitsi.jvb.tcp_fallback_port %}
-      - "{{ jitsi.jvb.tcp_fallback_port }}:{{ jitsi.jvb.tcp_fallback_port }}/tcp"
-{% endif %}
     networks:
       - internal
     mem_limit: {{ jitsi.jvb.mem_limit }}
     memswap_limit: {{ jitsi.jvb.mem_swap_limit }}
     cpus: {{ jitsi.jvb.cpus }}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://localhost:8080/about/health"]
+      interval: {{ jitsi.health.interval }}
+      timeout: {{ jitsi.health.timeout }}
+      retries: {{ jitsi.health.retries }}
+      start_period: {{ jitsi.health.start_period }}
     logging:
       driver: json-file
       options:

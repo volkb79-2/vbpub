@@ -76,10 +76,9 @@ image_date = "2026-06-08"
 # Media port, published on the HOST (UDP). Owned by this project in the
 # voice-screen-share port plan; it must stay equal to the README port row.
 port = 10000
-# Optional TCP fallback for clients that cannot use UDP. 0 = off (default).
-# The edge has no raw-TCP entrypoint for it, so it would be a second directly
-# published host port (conventionally 4443); needs the operator's go.
-tcp_fallback_port = 0
+# No TCP media fallback: the stable-11031 jvb image's config template has no
+# TCP harvester settings (checked 2026-11-04), and the edge has no raw-TCP
+# entrypoint for one. Clients that cannot use UDP 10000 cannot get media.
 mem_limit = "1g"
 mem_swap_limit = "2g"
 cpus = "2"
@@ -133,19 +132,22 @@ user_dummy3 = { directive = "GEN_LOCAL:jitsi/user_dummy3", mode = "0600", consum
 post_compose = ["hooks/post_compose_users.py"]
 
 # ── Hostdirs (S6): config for each service; no database ─────────────────────
-# The Jitsi images start as root (s6) and chown /config themselves, so the
-# default owner/mode is enough.
+# The images start as root (s6) and chown /config to their own service user on
+# first start (measured 2026-11-04: prosody 100:994 [group unchanged], jicofo
+# 999:1000, jvb 998:1000; web leaves it alone). A later `ciu up` then fails
+# S6.3 ("existing hostdir has incompatible ownership") unless the declaration
+# states those values, so they are declared. They are image-defined uids.
 [jitsi.web.hostdir]
 config = { path = "", mode = "0775" }
 
 [jitsi.prosody.hostdir]
-config = { path = "", mode = "0775" }
+config = { path = "", uid = 100, mode = "0775" }
 
 [jitsi.jicofo.hostdir]
-config = { path = "", mode = "0775" }
+config = { path = "", uid = 999, gid = 1000, mode = "0775" }
 
 [jitsi.jvb.hostdir]
-config = { path = "", mode = "0775" }
+config = { path = "", uid = 998, gid = 1000, mode = "0775" }
 
 [jitsi.health]
 interval = "20s"
