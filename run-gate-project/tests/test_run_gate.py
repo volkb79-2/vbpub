@@ -4092,6 +4092,158 @@ exit 64
         assert done.returncode == 0, done.stderr
         assert calls == ["run", "analyze", "analyze"]
 
+    # -- RG-139: the declared coverage artifact reaches the analyzer --------
+
+    _COV = ".assay/coverage-unit.json"
+
+    def _cov_lane(self, fake, declared=_COV):
+        lane = {"assay_lane": "unit", "assay_command": [str(fake)],
+                "pins": {}}
+        if declared is not None:
+            lane["_assay_inventory"] = {"entry": {"coverage": {
+                "format": "coverage-py-json", "artifact": declared}},
+                "assay_version": "12.0.0"}
+        return lane
+
+    def _run_cov(self, tmp_path, *, knows_coverage=True, artifact=True,
+                 declared=_COV):
+        """Run the real inner script against a recording fake judge. The
+        fake writes the verdict on `run`, answers `analyze campaign --help`
+        like a judge that does or does not know `--coverage`, and records
+        every analyze call's full argv."""
+        project = tmp_path / "proj"
+        (project / ".assay").mkdir(parents=True)
+        (tmp_path / ".run-gate").mkdir()
+        if artifact:
+            (project / ".assay" / "coverage-unit.json").write_text("{}")
+        log = tmp_path / "calls.log"
+        help_text = "--coverage PATH" if knows_coverage else "--progress P"
+        fake = tmp_path / "fake-assay"
+        fake.write_text(
+            "#!/bin/sh\n"
+            f'if [ "$1" = run ]; then echo run >> {log}; '
+            ": > .assay/verdict-unit.json; exit 0; fi\n"
+            f'for a in "$@"; do [ "$a" = --help ] && '
+            f"{{ echo '{help_text}'; exit 0; }}; done\n"
+            f'echo "$*" >> {log}\nexit 0\n')
+        fake.chmod(0o755)
+        inner = run_gate.build_assay_inner(
+            self._cov_lane(fake, declared), project, tmp_path,
+            closeout_commit=self._COMMIT)
+        done = subprocess.run(["bash", "-c", inner], cwd=project,
+                              capture_output=True, text=True, timeout=60)
+        assert done.returncode == 0, done.stderr
+        return [line for line in log.read_text().splitlines()
+                if line.startswith("analyze")]
+
+    def test_the_closeout_forwards_the_declared_coverage_artifact(
+            self, tmp_path):
+        calls = self._run_cov(tmp_path)
+        assert len(calls) == 2
+        for call in calls:
+            assert f"--coverage {self._COV}" in call
+            assert "--verdict .assay/verdict-unit.json" in call
+
+    def test_a_judge_without_coverage_support_gets_the_old_closeout(
+            self, tmp_path):
+        calls = self._run_cov(tmp_path, knows_coverage=False)
+        assert len(calls) == 2 and all("--coverage" not in c for c in calls)
+
+    def test_a_missing_coverage_artifact_is_not_forwarded(self, tmp_path):
+        calls = self._run_cov(tmp_path, artifact=False)
+        assert len(calls) == 2 and all("--coverage" not in c for c in calls)
+
+    def test_a_lane_declaring_no_coverage_forwards_none(self, tmp_path):
+        calls = self._run_cov(tmp_path, declared=None)
+        assert len(calls) == 2 and all("--coverage" not in c for c in calls)
+
+    @pytest.mark.parametrize("bad", ["/abs/cov.json", "../up/cov.json", ""])
+    def test_only_a_plain_relative_declared_artifact_is_forwarded(self, bad):
+        lane = self._cov_lane("x", bad)
+        assert run_gate.assay_closeout_coverage_artifact(lane) is None
+
+    def test_a_reverified_coverage_artifact_is_retained_as_evidence(
+            self, tmp_path, monkeypatch):
+        verdict = self._seed(tmp_path, self._doc(coverage={
+            "artifact_status": "parsed_and_reverified_r1"}))
+        (verdict.parent / "coverage-unit.json").write_text('{"files": {}}')
+        monkeypatch.setenv(run_gate.EVIDENCE_DIR_ENV_VAR,
+                           str(tmp_path / "evidence"))
+        closeout = run_gate.collect_assay_closeout(
+            self._cov_lane("x"), "unit", "run1", self._COMMIT, verdict,
+            run_gate.LaneResult("FAIL", 1, assay_outcome="FAIL"), None)
+        assert closeout["coverage_status"] == "parsed_and_reverified_r1"
+        retained = Path(closeout["coverage_path"])
+        assert retained.name == "run1.coverage.json"
+        assert retained.read_bytes() == b'{"files": {}}'
+        assert retained.stat().st_mode & 0o777 == 0o600
+
+    def test_a_retained_coverage_artifact_is_named_in_the_disclosure(
+            self, tmp_path, monkeypatch, capsys):
+        verdict = self._seed(tmp_path, self._doc(coverage={
+            "artifact_status": "parsed_and_reverified_r1"}))
+        (verdict.parent / "coverage-unit.json").write_text("{}")
+        monkeypatch.setenv(run_gate.EVIDENCE_DIR_ENV_VAR,
+                           str(tmp_path / "evidence"))
+        closeout = run_gate.finish_assay_closeout(
+            self._cov_lane("x"), "unit", {"run_id": "r"}, self._COMMIT,
+            verdict, run_gate.LaneResult("FAIL", 1, assay_outcome="FAIL"),
+            None)
+        out = capsys.readouterr().out
+        assert "coverage artifact parsed_and_reverified_r1" in out
+        assert f"(retained {closeout['coverage_path']})" in out
+
+    @pytest.mark.parametrize("shape", ["absent", "unreadable"])
+    def test_a_coverage_artifact_that_cannot_be_read_is_not_retained(
+            self, tmp_path, monkeypatch, shape):
+        verdict = self._seed(tmp_path, self._doc(coverage={
+            "artifact_status": "parsed_and_reverified_r1"}))
+        if shape == "unreadable":
+            (verdict.parent / "coverage-unit.json").mkdir()
+        monkeypatch.setenv(run_gate.EVIDENCE_DIR_ENV_VAR,
+                           str(tmp_path / "evidence"))
+        closeout = run_gate.collect_assay_closeout(
+            self._cov_lane("x"), "unit", "run1", self._COMMIT, verdict,
+            run_gate.LaneResult("FAIL", 1, assay_outcome="FAIL"), None)
+        assert closeout["coverage_path"] is None
+        assert closeout["status"] == "incomplete"
+        if shape == "unreadable":
+            assert "not retained" in closeout["coverage_status"]
+
+    def test_an_unsupplied_coverage_artifact_is_named_in_the_disclosure(
+            self, tmp_path, monkeypatch, capsys):
+        verdict = self._seed(tmp_path, self._doc(coverage={
+            "artifact_status": "not_supplied"}))
+        monkeypatch.setenv(run_gate.EVIDENCE_DIR_ENV_VAR,
+                           str(tmp_path / "evidence"))
+        result = run_gate.LaneResult("FAIL", 1, assay_outcome="FAIL")
+        closeout = run_gate.finish_assay_closeout(
+            self._cov_lane("x"), "unit", {"run_id": "r"}, self._COMMIT,
+            verdict, result, None)
+        assert closeout["coverage_status"] == "not_supplied"
+        assert closeout["coverage_path"] is None
+        assert "coverage artifact not_supplied" in capsys.readouterr().out
+
+    # -- RG-115: a follower does not collect the closeout --------------------
+
+    def test_a_disowned_follower_record_skips_the_closeout(
+            self, tmp_path, monkeypatch, capsys):
+        verdict = self._seed(tmp_path)
+        monkeypatch.setenv(run_gate.EVIDENCE_DIR_ENV_VAR,
+                           str(tmp_path / "evidence"))
+        record = {"run_id": "r"}
+        run_gate.disown_run_record(record)
+        result = run_gate.LaneResult("FAIL", 1, assay_outcome="FAIL")
+        closeout = run_gate.finish_assay_closeout(
+            {"assay_lane": "unit"}, "unit", record, self._COMMIT, verdict,
+            result, None)
+        out = capsys.readouterr()
+        assert closeout["status"] == "not_applicable"
+        assert "the owning client records it" in out.out
+        assert out.err == ""
+        assert "closeout" not in record
+        assert not (tmp_path / "evidence").exists()
+
     # -- the host collector (no shell) --------------------------------------
 
     def _doc(self, **over):

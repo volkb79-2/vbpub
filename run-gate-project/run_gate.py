@@ -12439,7 +12439,8 @@ def _closeout_record(status: str, reason: str | None = None, **fields) -> dict:
         raise ValueError(f"unknown closeout status {status!r}")
     record = {"status": status, "reason": reason, "analysis_status": None,
               "analysis_exit": None, "json_path": None, "text_path": None,
-              "json_sha256": None, "text_sha256": None}
+              "json_sha256": None, "text_sha256": None,
+              "coverage_status": None, "coverage_path": None}
     record.update(fields)
     return record
 
@@ -12669,6 +12670,29 @@ def collect_assay_closeout(lane: dict, lane_name: str, run_id: str,
             retained[suffix] = str(target)
         fields["json_path"] = retained["json"]
         fields["text_path"] = retained["txt"]
+        # RG-139: the analysis says whether it re-verified the lane's coverage
+        # artifact; when it did, keep that exact artifact as run evidence.
+        cov_doc = (document or {}).get("coverage")
+        cov_status = (cov_doc.get("artifact_status")
+                      if isinstance(cov_doc, dict) else None)
+        fields["coverage_status"] = cov_status if isinstance(
+            cov_status, str) else None
+        declared = assay_closeout_coverage_artifact(lane)
+        if cov_status == "parsed_and_reverified_r1" and declared:
+            content, cov_problem = _read_closeout_artifact(
+                verdict_path.parent.parent / declared,
+                ASSAY_CLOSEOUT_MAX_BYTES)
+            if content:
+                target = directory_out / f"{run_id}.coverage.json"
+                out_fd = os.open(
+                    target,
+                    os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW,
+                    0o600)
+                with os.fdopen(out_fd, "wb") as stream:
+                    stream.write(content)
+                fields["coverage_path"] = str(target)
+            elif cov_problem is not None:
+                fields["coverage_status"] = f"{cov_status} (not retained: {cov_problem})"
     except OSError as exc:
         return _closeout_record(
             "retention_error",
@@ -12689,9 +12713,15 @@ def report_assay_closeout(closeout: dict, result: "LaneResult") -> None:
     lane_part = (f"lane verdict {result.verdict} (exit {result.exit_code}) "
                  f"is unchanged")
     if status in ("complete", "incomplete"):
+        # RG-139: say what happened to the coverage artifact instead of
+        # leaving `coverage_not_reverified` unexplained.
+        cov = closeout.get("coverage_status")
+        cov_part = f"; coverage artifact {cov}" if cov else ""
+        if closeout.get("coverage_path"):
+            cov_part += f" (retained {closeout['coverage_path']})"
         print(f"{PROG}: assay closeout: campaign {status} (analysis only; "
               f"{lane_part}); json {closeout['json_path']}, "
-              f"text {closeout['text_path']}", flush=True)
+              f"text {closeout['text_path']}{cov_part}", flush=True)
         return
     where = (f"; retained json {closeout['json_path']}, "
              f"text {closeout['text_path']}" if closeout["json_path"] else "")
@@ -12705,8 +12735,17 @@ def finish_assay_closeout(lane: dict, lane_name: str, record: dict | None,
                           verdict_document: dict | None) -> dict:
     """Collect, record and disclose the closeout. NEVER raises and NEVER
     returns anything that could replace `result`: the caller keeps its own
-    LaneResult and this only attaches the closeout to the run record."""
-    run_id = (record.get("run_id") if record else None) or secrets.token_hex(16)
+    LaneResult and this only attaches the closeout to the run record.
+
+    RG-115: a follower's record is disowned (`_flushed`); the OWNING client
+    collects and records the closeout, so a follower neither reads the
+    owner's `.assay/campaign-*` files nor retains a second copy."""
+    if record is not None and record.get("_flushed"):
+        print(f"{PROG}: assay closeout: the owning client records it",
+              flush=True)
+        return _closeout_record("not_applicable",
+                                "the owning client records the closeout")
+    run_id =(record.get("run_id") if record else None) or secrets.token_hex(16)
     try:
         closeout = collect_assay_closeout(
             lane, lane_name, run_id, commit, verdict_path, result,
@@ -13549,7 +13588,8 @@ def build_assay_inner(lane: dict, project_dir: Path, repo: Path,
     if closeout_commit:
         parts.append(assay_closeout_group(
             lane, run_text, command, closeout_commit, progress,
-            verdict, state_dir, request_base))
+            verdict, state_dir, request_base,
+            assay_closeout_coverage_artifact(lane)))
     else:
         parts.append(run_text)
     return " && ".join(parts)
@@ -13560,9 +13600,27 @@ def assay_closeout_rel(assay_lane: str, suffix: str) -> str:
     return f".assay/campaign-{assay_lane}.{suffix}"
 
 
+def assay_closeout_coverage_artifact(lane: dict) -> str | None:
+    """RG-139: the lane-declared R1 coverage artifact (project-relative), read
+    from the Assay inventory entry -- never guessed. `assay analyze campaign
+    --coverage` refuses any path but the declared one, so only the declared
+    text is ever forwarded; anything not a plain relative path is dropped."""
+    inventory = lane.get("_assay_inventory")
+    entry = inventory.get("entry") if isinstance(inventory, dict) else None
+    coverage = entry.get("coverage") if isinstance(entry, dict) else None
+    artifact = coverage.get("artifact") if isinstance(coverage, dict) else None
+    if not isinstance(artifact, str) or not artifact:
+        return None
+    path = PurePosixPath(artifact)
+    if path.is_absolute() or ".." in path.parts or "\n" in artifact:
+        return None
+    return artifact
+
+
 def assay_closeout_group(lane: dict, run_text: str, command: str,
                          commit: str, progress: str, verdict: str,
-                         state_dir: Path, request_base: str | None) -> str:
+                         state_dir: Path, request_base: str | None,
+                         coverage_artifact: str | None = None) -> str:
     """The last element of an assay inner when a closeout is requested.
 
     One brace group so an earlier setup failure short-circuits the whole
@@ -13584,6 +13642,22 @@ def assay_closeout_group(lane: dict, run_text: str, command: str,
     rel = {s: shlex.quote(assay_closeout_rel(lane_name, s))
            for s in ASSAY_CLOSEOUT_SUFFIXES}
     q = shlex.quote
+    # RG-139: forward the lane's declared coverage artifact so the analyzer can
+    # re-verify R1 (without it: `coverage_not_reverified`, never `complete`).
+    # Only when the verdict exists (the analyzer refuses --coverage without
+    # one), the artifact file exists, and the judge's `analyze campaign`
+    # knows `--coverage` (feature-detected from its help, so an older judge
+    # keeps the pre-RG-139 closeout instead of an argparse refusal). Every
+    # other case leaves the argument out and the analysis reports
+    # `coverage.artifact_status` itself, which the host discloses.
+    coverage_step = ""
+    if coverage_artifact:
+        cov = q(coverage_artifact)
+        coverage_step = (
+            f"if [ -f {q(verdict)} ] && [ -f {cov} ]; then "
+            f"__rg_co_h=$({command} analyze campaign --help 2>&1); "
+            'case "$__rg_co_h" in *--coverage*) '
+            f"__rg_co_a+=(--coverage {cov});; esac; fi; ")
     base_args = ["analyze", "campaign", lane_name, "--file", "assay.toml",
                  "--expected-commit", commit, "--progress", progress,
                  "--state-dir", str(state_dir)]
@@ -13628,6 +13702,7 @@ def assay_closeout_group(lane: dict, run_text: str, command: str,
         + left + gate_open +
         "__rg_co_t=(); if command -v timeout >/dev/null 2>&1; then "
         f"__rg_co_t=(timeout {cap}); fi; "
+        + coverage_step +
         f"{run_one} json >{rel['json']} 2>{rel['err']}; __rg_co_j=$?; "
         f"if [ \"$__rg_co_j\" -eq 124 ]; then __rg_co_x=124; "
         f"printf 'closeout analysis timed out after %s s; text rendering "
