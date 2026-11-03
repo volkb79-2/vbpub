@@ -32,7 +32,7 @@ printf 'started_utc=%s\ncommit=%s\nproject=%s\nlane=%s\nargs=%s\n' "$(date -u +%
 sampler=$!
 trap 'kill "$sampler" 2>/dev/null || true' EXIT
 
-events() { cat "$progress_dir"/progress-*.jsonl 2>/dev/null | wc -l; }
+events() { { cat "$progress_dir"/progress-*.jsonl 2>/dev/null || true; } | wc -l; }
 attempt=1; stalled=0; final=0
 while :; do
   identity_check
