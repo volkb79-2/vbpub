@@ -21,10 +21,10 @@ HOST_FOLDER_TEXT = HOST_FOLDER_PATH.read_text(encoding="utf-8")
 COW_DOC = (ROOT / "docs" / "BTRFS-COW.md").read_text(encoding="utf-8")
 
 COW_MOUNT = (
-    '"source=/srv/devcontainers-cow/${localEnv:USER},target=/srv/devcontainers-cow/${localEnv:USER},'
+    '"source=/srv/mdt-cockpit-cow/${localEnv:USER},target=/srv/mdt-cockpit-cow/${localEnv:USER},'
     'type=bind,bind-propagation=rslave"'
 )
-COW_ENV = '"MDT_COW_ROOT": "/srv/devcontainers-cow/${localEnv:USER}"'
+COW_ENV = '"MDT_COW_ROOT": "/srv/mdt-cockpit-cow/${localEnv:USER}"'
 
 # The ONLY places the host-folder variant may differ from the per-repo one.
 HOST_FOLDER_ONLY_KEYS = {"workspaceMount"}
@@ -41,7 +41,7 @@ def _uncomment_cow(text: str) -> str:
     """What an adopter does: remove the leading `// ` from the two opt-in lines."""
     out = []
     for line in text.splitlines():
-        if re.match(r'^\s*// ("source=/srv/devcontainers-cow/|"MDT_COW_ROOT")', line):
+        if re.match(r'^\s*// ("source=/srv/mdt-cockpit-cow/|"MDT_COW_ROOT")', line):
             line = line.replace("// ", "", 1)
         out.append(line)
     return "\n".join(out)
@@ -108,7 +108,7 @@ def test_the_hook_dir_env_matches_the_config_mount_target() -> None:
 def test_cow_lines_ship_commented_out_in_both_variants() -> None:
     for text in (PER_REPO_TEXT, HOST_FOLDER_TEXT):
         doc = _doc(text)
-        assert not any("devcontainers-cow" in m for m in doc["mounts"])
+        assert not any("mdt-cockpit-cow" in m for m in doc["mounts"])
         assert "MDT_COW_ROOT" not in doc["containerEnv"]
         assert f"// {COW_MOUNT}," in text
         assert f"// {COW_ENV}," in text
@@ -117,11 +117,11 @@ def test_cow_lines_ship_commented_out_in_both_variants() -> None:
 def test_uncommenting_the_cow_lines_yields_one_mount_and_one_matching_env_var() -> None:
     for text in (PER_REPO_TEXT, HOST_FOLDER_TEXT):
         doc = _doc(_uncomment_cow(text))
-        cow = [m for m in doc["mounts"] if "devcontainers-cow" in m]
+        cow = [m for m in doc["mounts"] if "mdt-cockpit-cow" in m]
         assert cow == [COW_MOUNT.strip('"')]
         target = re.search(r"target=([^,]+)", cow[0])[1]
         assert doc["containerEnv"]["MDT_COW_ROOT"] == target
-        assert target == "/srv/devcontainers-cow/${localEnv:USER}"
+        assert target == "/srv/mdt-cockpit-cow/${localEnv:USER}"
 
 
 def test_the_guide_quotes_exactly_the_template_lines() -> None:
@@ -131,8 +131,8 @@ def test_the_guide_quotes_exactly_the_template_lines() -> None:
 
 def test_cow_mount_is_scoped_to_the_user_level_only() -> None:
     # Binding the whole filesystem would expose every user's area; the default is <mount>/<user>.
-    assert 'source=/srv/devcontainers-cow,' not in PER_REPO_TEXT
-    assert 'source=/srv/devcontainers-cow,' not in HOST_FOLDER_TEXT
+    assert 'source=/srv/mdt-cockpit-cow,' not in PER_REPO_TEXT
+    assert 'source=/srv/mdt-cockpit-cow,' not in HOST_FOLDER_TEXT
 
 
 def _links_and_paths(doc_path: Path) -> list[Path]:

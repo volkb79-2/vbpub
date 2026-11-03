@@ -73,6 +73,7 @@
     // end-of-run reminder — disruptive, restarts every container, batch it
     // with any other pending daemon.json change).
     "source=/run/docker-api,target=/run/docker-api,type=bind",
+
     // Cgroup-profiler daemon control socket (RG-55 A2/D-30, run-gate-project/
     // nyxloom-trove/DESIGN-2026-09-12-liveness-placement-admission.md).
     // PURPOSE: `/run/cgprofile/ctl.sock` is the socket carrier of the RG55
@@ -93,10 +94,12 @@
     // before rebuilding a devcontainer against this template, or delete this
     // line to opt out.
     "source=/run/cgprofile,target=/run/cgprofile,type=bind",
+
     // Host-managed BuildKit is mandatory for this MDT-derived container. The
     // host installer creates the socket before a rebuild; Docker --mount then
     // fails closed if the host prerequisite is absent.
     "source=/run/mdt-buildkitd,target=/run/mdt-buildkitd,type=bind",
+
     // Host letsencrypt certs (readonly). Consider security implications.
     // "source=/etc/letsencrypt,target=/etc/letsencrypt,type=bind,consistency=cached,readonly",
 
@@ -133,18 +136,24 @@
     // ── Optional btrfs copy-on-write area (OFF by default; docs/BTRFS-COW.md) ───
     // Snapshots/rollback, reflinked copies and per-directory compression for tools such
     // as assay and ciu. Mounts ONLY this user's directory, at the same path as on the host.
-    // HOST PREREQUISITE: a btrfs filesystem mounted at /srv/devcontainers-cow with the
+    // HOST PREREQUISITE: a btrfs filesystem mounted at /srv/mdt-cockpit-cow with the
     // user's directory created (host-setup/scripts/mdt-cow-init-user.sh). Uncomment this
     // mount AND MDT_COW_ROOT in containerEnv together, and only after the host side works:
     // `mounts` entries are --mount, which refuses to start the container while the source
     // is missing (that refusal is also the fail-closed guarantee afterwards).
-    "source=/srv/devcontainers-cow/${localEnv:USER}/,target=/srv/devcontainers-cow/${localEnv:USER},type=bind,bind-propagation=rslave",
+    // The path is a literal on purpose: mounts are evaluated on the host, where containerEnv
+    // values do not exist, so neither may reference ${localEnv:MDT_COW_ROOT} or containerEnv.
+    "source=/srv/mdt-cockpit-cow/${localEnv:USER},target=/srv/mdt-cockpit-cow/${localEnv:USER},type=bind,bind-propagation=rslave",
 
     // ── Sibling-repo workspace mounts (multi-root workspace) ───────────────────
-    // "source=${localWorkspaceFolder}/../vbpub/,target=/workspaces/vbpub,type=bind,consistency=cached"
+    // "source=${localWorkspaceFolder}/../vbpub,target=/workspaces/vbpub,type=bind,consistency=cached"
+
     "source=${localWorkspaceFolder}/../netcup-api-filter,target=/workspaces/netcup-api-filter,type=bind,consistency=cached",
+
     "source=${localWorkspaceFolder}/../dstdns,target=/workspaces/dstdns,type=bind,consistency=cached",
+
     "source=${localWorkspaceFolder}/../vbpro,target=/workspaces/vbpro,type=bind,consistency=cached",
+
     "source=${localWorkspaceFolder}/../DST,target=/workspaces/DST,type=bind,consistency=cached"
   ],
 
@@ -153,6 +162,7 @@
     // Points at the directory-mounted socket above, not the default
     // /var/run/docker.sock path — see that mount's own comment.
     "DOCKER_HOST": "unix:///run/docker-api/docker.sock",
+
     // Host dev-tier cgroup governance (see AGENTS.md "Host cgroup placement
     // for spawned containers" and mdt's host-setup/README.md "Tiering model").
     // This is the ONE place every dev-tier slice name is declared — every
@@ -163,11 +173,14 @@
     // below (two spellings, one file — there is no cross-reference between
     // the containerEnv and runArgs substitution contexts: runArgs is evaluated
     // host-side, containerEnv applies inside the running container).
+    "CGROUP_PARENT_DEV_INTERACTIVE": "dev-interactive.slice",
+
     // CGROUP_PARENT_DEV_BACKGROUND is the Docker daemon's default parent that
     // host-setup writes to daemon.json (DOCKER_DAEMON_CGROUP_PARENT). This
     // devcontainer never joins the background or gates slice, so those two
     // have no runArgs counterpart.
-    //
+    "CGROUP_PARENT_DEV_BACKGROUND": "dev-background.slice",
+
     // CGROUP_PARENT_DEV_GATES (RG-55 D-19/D-24): gate/lane containers, the
     // admission capacity object — see host-setup/README.md "dev-gates: why".
     // Consumer rule: gate consumers require this value and fail closed when
@@ -178,25 +191,27 @@
     // per design amendment A1/D-29 it is a host deployment with its own
     // top-level `cgprofile.slice`, authored directly in its own compose
     // template, not one of mdt's dev-tier slices.
-    "CGROUP_PARENT_DEV_INTERACTIVE": "dev-interactive.slice",
-    "CGROUP_PARENT_DEV_BACKGROUND": "dev-background.slice",
     "CGROUP_PARENT_DEV_GATES": "dev-gates.slice",
+
     // Optional CoW area root (see the opt-in mount above): per user, tools append the target
     // repo. Uncomment together with that mount.
-    // "MDT_COW_ROOT": "/srv/devcontainers-cow/${localEnv:USER}",
+    "MDT_COW_ROOT":"/srv/mdt-cockpit-cow/${localEnv:USER}",
+
     // Buildx and agent settings persist as part of the complete home mount.
     "BUILDX_CONFIG": "/home/vscode/.config/docker/buildx",
+
     // Explicitly select the durable host-managed remote for all builds.
     "BUILDX_BUILDER": "mdt-managed",
+
     "BUILDKIT_HOST": "unix:///run/mdt-buildkitd/buildkitd.sock",
+
     // Share Codex's SQLite session database across the dual-profile setup.
-    "CODEX_SQLITE_HOME": "/home/vscode/.codex/sqlite-shared",
+    "CODEX_SQLITE_HOME": "/home/vscode/.codex/sqlite-shared"
+
     // Deliberately NOT set here: PATH and NPM_CONFIG_PREFIX. The image defines
     // them once (Dockerfile ENV PATH: /opt/mdt/bin, /opt/mdt/venv/bin,
     // /opt/mdt/npm/bin and /srv/pwmcp-instance/bin first, ~/.local/bin last;
     // NPM_CONFIG_PREFIX=/opt/mdt/npm). A second spelling here could only drift.
-
-    "MDT_COW_ROOT": "/srv/devcontainers-cow/${localEnv:USER}"
   },
 
   // MCP registration remains harness-specific. No PATH here: see containerEnv.
@@ -207,15 +222,20 @@
   // ─── 8. Docker runtime arguments ──────────────────────────────────────────────
   "runArgs": [
     "--hostname", "mdt-cockpit-${localEnv:USER}-${localWorkspaceFolderBasename}",
+
     "--name", "mdt-cockpit-${localEnv:USER}-${localWorkspaceFolderBasename}",
+
     // DOCKER_GID must be exported in the host shell before launch:
     //   export DOCKER_GID=$(getent group docker | cut -d: -f3)
     // (docs/CONSUMERS.md "Host cgroup preflight" and host-setup/README.md explain why).
     "--group-add", "${localEnv:DOCKER_GID}",
+
     // sshfs / mount(2) inside container
     "--cap-add", "SYS_ADMIN",
     "--device", "/dev/fuse",
+
     "--security-opt", "apparmor=unconfined",
+
     "--security-opt", "seccomp=unconfined",
 
     // Host resource governance (cgroup v2) — required by this template.
@@ -268,7 +288,11 @@
           "**/pytest-of-*/**": true,
           "**/.venv/**": true,
           "**/__pycache__/**": true,
-          "**/.hypothesis/**": true
+          "**/.hypothesis/**": true,
+          "**/artifacts/**": true,
+          "**/downloads/**": true,
+          "**/evidence/**": true,
+          "**/logs/**": true
         },
         "search.exclude": {
           "**/.worktrees": true,

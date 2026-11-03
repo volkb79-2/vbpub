@@ -53,7 +53,7 @@ creates them and `mdt-host-check.sh` verifies them. Nothing in the container can
 | `/sys/kernel/debug` (read-only) | debugfs statistics such as zswap | mount |
 | `DOCKER_GID` | host `docker` group, so the container can use the socket | `--group-add ${localEnv:DOCKER_GID}`; export it in the host shell before launching |
 | `/etc/mdt/host-setup.env` | host policy, including `DEVCONTAINER_MISSING_BIND_SOURCE_POLICY` | read by phase 1 |
-| Optional btrfs area `/srv/devcontainers-cow/<user>` | snapshots, reflinks | commented-out mount + `MDT_COW_ROOT` ([BTRFS-COW.md](BTRFS-COW.md)) |
+| Optional btrfs area `/srv/mdt-cockpit-cow/<user>` | snapshots, reflinks | commented-out mount + `MDT_COW_ROOT` ([BTRFS-COW.md](BTRFS-COW.md)) |
 
 Governance detail: [host-setup/README.md](../host-setup/README.md),
 [CONSUMERS.md, host prerequisite](CONSUMERS.md#host-prerequisite).
@@ -103,7 +103,7 @@ because the managed remote builder cannot see the local image store.
 
 | Argument | Why |
 |---|---|
-| `--name`, `--hostname` | stable identity (`<repo>-devcontainer-<user>`, or `mdt-cockpit-<user>` in the host-folder variant) |
+| `--name`, `--hostname` | stable identity (`mdt-cockpit-<user>-<repo>`, or `mdt-cockpit-<user>` in the host-folder variant) |
 | `--group-add ${localEnv:DOCKER_GID}` | access to the Docker and BuildKit sockets |
 | `--cgroup-parent=dev-interactive.slice` | host resource tier; placement is create-time only |
 | `--cap-add SYS_ADMIN`, `--device /dev/fuse` | sshfs and `mount(2)` inside the container |
