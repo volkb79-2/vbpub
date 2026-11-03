@@ -457,6 +457,12 @@ _MUTATION_OPTIONAL_FIELDS: tuple[str, ...] = (
     "liveness",
     "liveness_cpu_window",
     "liveness_idle_floor",
+    # (B207) Candidate scheduling for parallel native R2: class factors and
+    # the operator medians used as the last prediction source.
+    "schedule_high_factor",
+    "schedule_low_factor",
+    "prediction_wall_seconds",
+    "prediction_rss_bytes",
 )
 
 #: (B046) The fields an INGESTED R2 lane declares: which report FORMAT the
@@ -622,6 +628,19 @@ class MutationConfig:
     #: (B012) The declared shard cardinality; required with ``shard_index``.
     #: See the B026 N-5 note on ``shard_index`` above -- identically inert.
     shard_count: int | None = None
+    #: (B207) Class factors for two-ended-matching dispatch: a candidate is
+    #: high above ``schedule_high_factor * p95(mode)`` of predicted RSS and low
+    #: below ``schedule_low_factor * median(mode)``. ``None`` means the default
+    #: (1.5 and 0.5). They only order work; they never change a result.
+    schedule_high_factor: float | None = None
+    schedule_low_factor: float | None = None
+    #: (B207) Operator-declared medians, the last prediction source before
+    #: canonical order: wall seconds and peak RSS bytes of a typical candidate.
+    prediction_wall_seconds: float | None = None
+    prediction_rss_bytes: int | None = None
+    #: (B207) Runtime admission budget in bytes, selected by the run path
+    #: (``--memory-budget-bytes``), never declared in a lane file.
+    memory_budget_bytes: int | None = None
 
     @property
     def liveness_cpu_window_s(self) -> float | None:
@@ -686,6 +705,14 @@ class MutationConfig:
         if self.shard_index is not None and self.shard_count is not None:
             payload["shard_index"] = self.shard_index
             payload["shard_count"] = self.shard_count
+        for key in (
+            "schedule_high_factor",
+            "schedule_low_factor",
+            "prediction_wall_seconds",
+            "prediction_rss_bytes",
+        ):
+            if getattr(self, key) is not None:
+                payload[key] = getattr(self, key)
         return payload
 
 
@@ -3407,6 +3434,23 @@ def _load_mutation(
                 f"{where}: 'judge.mutation.shard_index' {shard_index} is outside "
                 f"0..{shard_count - 1}"
             )
+    schedule_high_factor = _load_positive_number(
+        value, where, "schedule_high_factor", minimum_exclusive=1.0
+    )
+    schedule_low_factor = _load_positive_number(
+        value, where, "schedule_low_factor", maximum_exclusive=1.0
+    )
+    prediction_wall_seconds = _load_positive_number(
+        value, where, "prediction_wall_seconds"
+    )
+    prediction_rss_bytes = value.get("prediction_rss_bytes")
+    if prediction_rss_bytes is not None and (
+        not is_strict_int(prediction_rss_bytes) or prediction_rss_bytes < 1
+    ):
+        raise LaneConfigError(
+            f"{where}: 'judge.mutation.prediction_rss_bytes' must be a positive "
+            f"integer byte count, got {prediction_rss_bytes!r}"
+        )
     return MutationConfig(
         jobs=None,
         jobs_max=jobs_max,
@@ -3421,7 +3465,44 @@ def _load_mutation(
         identity_exclude=identity_exclude,
         shard_index=shard_index,
         shard_count=shard_count,
+        schedule_high_factor=schedule_high_factor,
+        schedule_low_factor=schedule_low_factor,
+        prediction_wall_seconds=prediction_wall_seconds,
+        prediction_rss_bytes=prediction_rss_bytes,
     )
+
+
+def _load_positive_number(
+    value: Mapping[str, Any],
+    where: str,
+    key: str,
+    *,
+    minimum_exclusive: float | None = None,
+    maximum_exclusive: float | None = None,
+) -> float | None:
+    """A declared ``judge.mutation.<key>``: a finite, positive number (a TOML
+    int or float, never a bool) strictly inside the optional bounds."""
+    if key not in value:
+        return None
+    raw = value[key]
+    if (
+        isinstance(raw, bool)
+        or not isinstance(raw, (int, float))
+        or not math.isfinite(raw)
+        or raw <= 0
+        or (minimum_exclusive is not None and raw <= minimum_exclusive)
+        or (maximum_exclusive is not None and raw >= maximum_exclusive)
+    ):
+        bounds = ""
+        if minimum_exclusive is not None:
+            bounds = f" greater than {minimum_exclusive}"
+        if maximum_exclusive is not None:
+            bounds = f" below {maximum_exclusive}"
+        raise LaneConfigError(
+            f"{where}: 'judge.mutation.{key}' must be a finite positive "
+            f"number{bounds}, got {raw!r}"
+        )
+    return float(raw)
 
 
 def _load_ingested_mutation(
@@ -3476,6 +3557,8 @@ def _load_ingested_mutation(
         & {
             "budget_per_candidate", "shard_index", "shard_count", "liveness",
             "liveness_cpu_window", "liveness_idle_floor",
+            "schedule_high_factor", "schedule_low_factor",
+            "prediction_wall_seconds", "prediction_rss_bytes",
         }
     )
     if orchestration_only:

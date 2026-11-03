@@ -13821,7 +13821,9 @@ unavailable, with no reason. Run-gate sizes `jobs=auto` from them (`assay_progre
 
 ## B207 — two-ended-matching candidate scheduling for parallel native R2 (dispatch-order drain, admission budget)
 
-**Status: OPEN (filed 2026-11-03).** Design §5 (specification, simulation, recommendation). Simulator:
+**Status: IMPLEMENTED on branch fan-assay-sched-20261103 (2026-11-03), not merged or released.** Landed without B206: predictions use `elapsed_seconds` and `peak_rss_bytes` that assay already records, kept in `.schedule-history.v1`; sources 1 and 3-6 of the design list are live, `NO_MEASUREMENT` is reported as a `reason` on `prediction_error` today and becomes the profile's reason with B206. `judgment.r2.schedule` waits for B208. Open: the live design §9 M4 A/B on r1002; `candidate_ram` history in run-gate still uses its own estimate until RG-148 passes B. (Originally filed 2026-11-03.)
+
+**Status at filing: OPEN (filed 2026-11-03).** Design §5 (specification, simulation, recommendation). Simulator:
 `docs/design/resource-profiles-sim/sched-sim.py`, with outputs in `sim-*.md` beside it. It can ship in 12.0.0 or 12.1.0, after B206.
 
 **Problem.** With `--jobs N`, candidates are submitted in canonical order (`mutation.py:5440-5458`), and nothing

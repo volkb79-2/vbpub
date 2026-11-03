@@ -99,6 +99,7 @@ from typing import (
 )
 
 from . import (
+    _schedule,
     contention,
     coverage,
     diff,
@@ -3815,6 +3816,26 @@ def _read_prepared_source_text(
         ) from exc
 
 
+def _schedule_options(config: Any) -> "_schedule.ScheduleOptions":
+    """(B207) The candidate-scheduling inputs a native R2 lane config carries:
+    the runtime admission budget, the class factors and the operator medians."""
+    return _schedule.ScheduleOptions(
+        memory_budget_bytes=config.memory_budget_bytes,
+        high_factor=(
+            config.schedule_high_factor
+            if config.schedule_high_factor is not None
+            else _schedule.DEFAULT_HIGH_FACTOR
+        ),
+        low_factor=(
+            config.schedule_low_factor
+            if config.schedule_low_factor is not None
+            else _schedule.DEFAULT_LOW_FACTOR
+        ),
+        prediction_wall_seconds=config.prediction_wall_seconds,
+        prediction_rss_bytes=config.prediction_rss_bytes,
+    )
+
+
 def _mutation_context_sources(
     *,
     prepared: "isolation.SnapshotRepository",
@@ -5463,6 +5484,7 @@ def _run_prepared_lane(
                     ),
                     adapter=adapter,
                     jobs=lane.judge.mutation.jobs,
+                    schedule=_schedule_options(lane.judge.mutation),
                     max_mutants=lane.judge.mutation.max_mutants,
                     operators=lane.judge.mutation.operators,
                     process_runner=candidate_process_runner,

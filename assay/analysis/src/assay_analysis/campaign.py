@@ -546,6 +546,8 @@ def _run_summary(
     events = run["events"]
     candidates: dict[str, dict] = {}
     candidate_positions: set[int] = set()
+    # (B207) Scheduled runs dispatch out of canonical order and drain by this slot.
+    dispatch_positions: list[int] = []
     candidates_event = None
     shard_event = None
     resume_event = None
@@ -622,6 +624,15 @@ def _run_summary(
             if index in candidate_positions:
                 raise ValueError(f"progress run repeats candidate_index {index}")
             candidate_positions.add(index)
+            dispatch_position = event.get("dispatch_position")
+            if dispatch_position is not None:
+                if (
+                    isinstance(dispatch_position, bool)
+                    or not isinstance(dispatch_position, int)
+                    or dispatch_position < 0
+                ):
+                    raise ValueError("progress candidate event has an invalid dispatch_position")
+                dispatch_positions.append(dispatch_position)
             elapsed = _finite_number(event.get("elapsed_seconds"), "candidate elapsed_seconds")
             emitted_at = _timestamp(event.get("emitted_at"), "candidate emitted_at")
             outcome = verdict_by_id.get(candidate_id) if compare_verdict else None
@@ -720,7 +731,17 @@ def _run_summary(
             min(candidate_positions) < 0 or max(candidate_positions) >= pending_total
         ):
             raise ValueError("progress candidate_index is outside the pending candidate range")
-        if candidate_positions and candidate_positions != set(range(len(candidate_positions))):
+        if dispatch_positions:
+            # Scheduled order (B207): candidates are dispatched out of canonical
+            # order, so the finished set is a contiguous prefix of DISPATCH
+            # positions, emitted in that order, not of canonical indexes.
+            if len(dispatch_positions) != len(candidate_positions):
+                raise ValueError("progress mixes scheduled and unscheduled candidate events")
+            if dispatch_positions != list(range(len(dispatch_positions))):
+                raise ValueError(
+                    "progress dispatch_position values are not a contiguous execution sequence"
+                )
+        elif candidate_positions and candidate_positions != set(range(len(candidate_positions))):
             raise ValueError("progress candidate_index values are not a contiguous execution sequence")
         if any(event.get("candidate_total") != pending_total for _line, event in events
                if event.get("event") == "candidate"):

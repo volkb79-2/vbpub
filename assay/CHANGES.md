@@ -4,6 +4,13 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Added
+- B207: two-ended-matching candidate scheduling for parallel native R2 (`--jobs` above 1). Candidates are classed high, normal or low by predicted peak RSS and dispatched longest-first with at most one high running; `--memory-budget-bytes` (`ASSAY_R2_MEMORY_BUDGET_BYTES`) adds an admission rule on the predicted RSS sum (one candidate always runs, a queued high reserves the slot). Predictions come from what assay already records (`elapsed_seconds`, `peak_rss_bytes`, kept in `.schedule-history.v1` in the state directory), then live and last-campaign file medians, lane medians, and the new lane keys `judge.mutation.prediction_wall_seconds` and `prediction_rss_bytes`; the class factors are `schedule_high_factor` and `schedule_low_factor`. Progress candidate events gain `dispatch_position`, `prediction` and `prediction_error`; the state directory gains `schedule-summary.v1` (not `*.json`, so candidate-record globs stay exact); `assay lanes --json` gains `capabilities` (`r2-memory-budget`, `r2-schedule-tem`). Results are unchanged and independent of the order. Cgprofile-sourced numbers (B206) and the verdict schema fields (B208) are not part of this change.
+
+### Changed
+- Native R2 progress and state now drain by dispatch position instead of canonical index when scheduling is active (`--jobs` above 1); a serial run is unchanged. `assay analyze campaign` accepts a progress stream whose finished candidates are a contiguous prefix of dispatch order rather than of canonical index.
+- Documented the supported `--jobs` range and the limits that bind at high worker counts (consumer guide, "Candidate scheduling and the admission budget").
+
 <!-- cmru: release history -->
 
 ## [11.0.0] - 2026-11-02
