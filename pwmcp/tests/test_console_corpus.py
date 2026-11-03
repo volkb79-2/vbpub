@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
-import os
 import re
 import struct
 import sys
@@ -13,6 +12,7 @@ import zlib
 from pathlib import Path
 
 import pytest
+from _testdeps import REQUIRE_CONSOLE_CORPUS_VAR, optional_local_data
 
 PWMCP = Path(__file__).resolve().parents[1]
 _spec = importlib.util.spec_from_file_location(
@@ -24,7 +24,6 @@ sys.modules[_spec.name] = cc
 _spec.loader.exec_module(cc)
 
 CURATED = PWMCP / "tests" / "corpus" / "console" / "truenas-27-vanilla" / "frames"
-REQUIRE_ENV = "PWMCP_REQUIRE_CONSOLE_CORPUS"
 
 
 def _png(width: int, height: int, seed: int) -> bytes:
@@ -287,21 +286,20 @@ def test_committed_pin_has_a_local_source_and_matches_the_full_series_index() ->
     assert {(record["width"], record["height"]) for record in index.values()} == {(1280, 800)}
 
 
-def _real_frames() -> Path:
-    try:
-        return cc.locate()
-    except cc.CorpusMissing as exc:
-        reason = f"local console corpus tests skipped: {exc}"
-        if os.environ.get(REQUIRE_ENV) == "1":
-            pytest.fail(reason, pytrace=False)
-        pytest.skip(reason)
+def _real_frames(locate=cc.locate) -> Path:
+    return optional_local_data(
+        locate,
+        cc.CorpusMissing,
+        description="local console corpus",
+        require_env=REQUIRE_CONSOLE_CORPUS_VAR,
+    )
 
 
 def test_absent_local_corpus_skips_with_an_explicit_reason(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv(cc.ENV_DIR, raising=False)
-    monkeypatch.delenv(REQUIRE_ENV, raising=False)
+    monkeypatch.delenv(REQUIRE_CONSOLE_CORPUS_VAR, raising=False)
     with pytest.raises(pytest.skip.Exception) as skipped:
         _real_frames()
     assert cc.ENV_DIR in str(skipped.value)
@@ -311,10 +309,33 @@ def test_required_absent_local_corpus_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv(cc.ENV_DIR, raising=False)
-    monkeypatch.setenv(REQUIRE_ENV, "1")
+    monkeypatch.setenv(REQUIRE_CONSOLE_CORPUS_VAR, "1")
     with pytest.raises(pytest.fail.Exception) as failed:
         _real_frames()
     assert cc.ENV_DIR in str(failed.value)
+
+
+def test_selected_but_invalid_local_corpus_is_not_skipped(
+    mini: dict, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(cc.ENV_DIR, str(tmp_path / "missing-corpus"))
+
+    with pytest.raises(cc.CorpusError, match=re.escape("does not verify")):
+        _real_frames(
+            lambda: cc.locate(
+                assets_file=mini["assets"], corpus_root=mini["corpus_root"]
+            )
+        )
+
+
+def test_selected_valid_local_corpus_returns_verified_frames(
+    mini: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(cc.ENV_DIR, str(mini["directory"]))
+
+    assert _real_frames(
+        lambda: cc.locate(assets_file=mini["assets"], corpus_root=mini["corpus_root"])
+    ) == mini["frames"]
 
 
 def test_real_corpus_is_complete_and_verified() -> None:

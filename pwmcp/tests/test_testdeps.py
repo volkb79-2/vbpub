@@ -12,7 +12,15 @@ from pathlib import Path
 
 import pytest
 import _testdeps
-from _testdeps import ALLOW_VAR, REQUIRE_TESSERACT_VAR, missing, optional_module, require_binary
+from _testdeps import (
+    ALLOW_VAR,
+    REQUIRE_CONSOLE_CORPUS_VAR,
+    REQUIRE_TESSERACT_VAR,
+    missing,
+    optional_local_data,
+    optional_module,
+    require_binary,
+)
 
 PWMCP = Path(__file__).resolve().parents[1]
 GONE = "pwmcp_no_such_module_for_tests"
@@ -82,6 +90,84 @@ def test_a_missing_binary_fails_by_default_and_skips_on_opt_in(monkeypatch: pyte
 
 def test_a_present_binary_is_returned(strict) -> None:
     assert Path(require_binary(Path(sys.executable).name, "python itself")).name
+
+
+class LocalDataMissing(Exception):
+    pass
+
+
+class LocalDataInvalid(Exception):
+    pass
+
+
+def _missing_local_data() -> Path:
+    raise LocalDataMissing("PWMCP_CONSOLE_CORPUS_DIR was not selected")
+
+
+def test_absent_local_data_skips_with_its_reason(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(REQUIRE_CONSOLE_CORPUS_VAR, raising=False)
+    with pytest.raises(pytest.skip.Exception) as skipped:
+        optional_local_data(
+            _missing_local_data,
+            LocalDataMissing,
+            description="local console corpus",
+            require_env=REQUIRE_CONSOLE_CORPUS_VAR,
+        )
+    assert "local console corpus is unavailable" in str(skipped.value)
+    assert "PWMCP_CONSOLE_CORPUS_DIR was not selected" in str(skipped.value)
+
+
+def test_required_absent_local_data_fails_with_the_same_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(REQUIRE_CONSOLE_CORPUS_VAR, raising=False)
+    with pytest.raises(pytest.skip.Exception) as skipped:
+        optional_local_data(
+            _missing_local_data,
+            LocalDataMissing,
+            description="local console corpus",
+            require_env=REQUIRE_CONSOLE_CORPUS_VAR,
+        )
+
+    monkeypatch.setenv(REQUIRE_CONSOLE_CORPUS_VAR, "1")
+    with pytest.raises(pytest.fail.Exception) as failed:
+        optional_local_data(
+            _missing_local_data,
+            LocalDataMissing,
+            description="local console corpus",
+            require_env=REQUIRE_CONSOLE_CORPUS_VAR,
+        )
+    assert str(failed.value) == str(skipped.value)
+
+
+def test_selected_but_invalid_local_data_is_a_hard_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(REQUIRE_CONSOLE_CORPUS_VAR, raising=False)
+
+    def load_invalid() -> Path:
+        raise LocalDataInvalid("selected local data does not verify")
+
+    with pytest.raises(LocalDataInvalid, match="does not verify"):
+        optional_local_data(
+            load_invalid,
+            LocalDataMissing,
+            description="local console corpus",
+            require_env=REQUIRE_CONSOLE_CORPUS_VAR,
+        )
+
+
+def test_selected_valid_local_data_returns_its_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv(REQUIRE_CONSOLE_CORPUS_VAR, raising=False)
+    selected = tmp_path / "verified-corpus" / "frames"
+    assert optional_local_data(
+        lambda: selected,
+        LocalDataMissing,
+        description="local console corpus",
+        require_env=REQUIRE_CONSOLE_CORPUS_VAR,
+    ) == selected
 
 
 def test_a_module_missing_for_one_test_does_not_abort_the_others(tmp_path: Path) -> None:

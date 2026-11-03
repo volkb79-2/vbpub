@@ -147,8 +147,10 @@ copy can be checked without downloading it. `PWMCP_CONSOLE_CORPUS_DIR` is the
 only source: it must name an absolute directory containing `frames/`. There is
 no cache, tester-image copy, release URL, or fallback path. An unset variable
 means the optional full-corpus checks are unavailable; a bad explicit path is
-an error. The two real-corpus tests skip with a reason unless
-`PWMCP_REQUIRE_CONSOLE_CORPUS=1` makes absence a failure. Registered gate lanes
+an error. The two real-corpus tests use the shared
+`tests/_testdeps.py::optional_local_data` helper: an unselected corpus skips
+with its reason unless `PWMCP_REQUIRE_CONSOLE_CORPUS=1` makes that absence a
+failure, while invalid selected data stays an error. Registered gate lanes
 remain corpus-free. See the [local verification example](CONSUMERS.md#local-console-corpus)
 and the [OCR phase design](DESIGN-OCR-PHASE2-3.md#1-local-console-corpus).
 
