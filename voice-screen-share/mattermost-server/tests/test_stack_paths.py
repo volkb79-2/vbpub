@@ -1,4 +1,4 @@
-"""Guard for the project-folder path (the stack lives at <vbpub>/mattermost-server).
+"""Guard for the project-folder path (the stack lives at <vbpub>/voice-screen-share/mattermost-server).
 
 The plain-compose fallback binds ABSOLUTE host paths and the ciu defaults name
 the provisioning hook by a stack-relative path; a revert to the old
@@ -8,7 +8,8 @@ oracles pin them directly.
 
 The ciu STACK/SERVICE name stays `mattermost` (service keys, the secret-store
 subpath `.ciu/secrets/mattermost/<name>`, `GEN_LOCAL:mattermost/<name>`,
-container and hostname names); only the project FOLDER is `mattermost-server`.
+container and hostname names); only the project FOLDER is `mattermost-server`,
+nested in the `voice-screen-share/` area.
 """
 from __future__ import annotations
 
@@ -27,6 +28,9 @@ OLD = "nyxloom/mattermost"
 OLD_PROJECT_PATH = re.compile(r"vbpub>?/mattermost(?![\w-])")
 # `{worktree}/mattermost` in the lane argv has the same shape.
 OLD_LANE_PATH = re.compile(r"\{worktree\}/mattermost(?![\w-])")
+# The pre-voice-screen-share location (2026-11-04): `<vbpub>/mattermost-server` WITHOUT
+# the `voice-screen-share/` area folder in between.
+PRE_AREA_PATH = re.compile(r"vbpub>?/mattermost-server|\{worktree\}/mattermost-server")
 # Files that must never name the old location (explanatory comments live elsewhere).
 STACK_FILES = [
     "docker-compose.yml", "ciu.compose.yml.j2", "ciu.defaults.toml.j2",
@@ -56,17 +60,18 @@ def test_stack_files_do_not_name_the_pre_rename_project_path(relative):
     text = _text(relative)
     assert not OLD_PROJECT_PATH.findall(text), relative
     assert not OLD_LANE_PATH.findall(text), relative
+    assert not PRE_AREA_PATH.findall(text), relative
 
 
 def test_old_project_path_pattern_does_not_flag_the_stack_name_or_secret_store():
     ok = [
-        "/home/vb/volkb79-2/vbpub/mattermost-server/vol-postgres-data",
-        "<vbpub>/mattermost-server",
+        "/home/vb/volkb79-2/vbpub/voice-screen-share/mattermost-server/vol-postgres-data",
+        "<vbpub>/voice-screen-share/mattermost-server",
         ".ciu/secrets/mattermost/postgres_password",
         "GEN_LOCAL:mattermost/admin_password",
-        "mattermost-server/.ciu/secrets/mattermost/operator_password",
+        "voice-screen-share/mattermost-server/.ciu/secrets/mattermost/operator_password",
         "image = mattermost/mattermost-team-edition",
-        "{worktree}/mattermost-server && pytest",
+        "{worktree}/voice-screen-share/mattermost-server && pytest",
     ]
     bad = [
         "/home/vb/volkb79-2/vbpub/mattermost/vol-postgres-data",
@@ -82,10 +87,11 @@ def test_old_project_path_pattern_does_not_flag_the_stack_name_or_secret_store()
 
 def test_compose_absolute_paths_stay_inside_the_mattermost_server_dir():
     """Every absolute host path under a `vbpub` checkout (binds, secret `file:`,
-    comment recipes) must be `<...>/vbpub/mattermost-server/...`, never a sibling dir."""
-    found = re.findall(r"/[\w./-]*?/vbpub/([\w.-]+)", _text("docker-compose.yml"))
-    assert found, "expected absolute vbpub paths in the pre-rendered fallback"
+    comment recipes) must be `<...>/vbpub/voice-screen-share/mattermost-server/...`, never a sibling dir."""
+    found = re.findall(r"/[\w./-]*?/vbpub/voice-screen-share/([\w.-]+)", _text("docker-compose.yml"))
+    assert found, "expected absolute vbpub/voice-screen-share paths in the pre-rendered fallback"
     assert set(found) == {FOLDER}, found
+    assert "vbpub/mattermost" not in _text("docker-compose.yml")
 
 
 def test_compose_bind_mounts_are_the_three_stack_hostdirs():

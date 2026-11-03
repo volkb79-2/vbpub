@@ -61,18 +61,24 @@ image = "tecnativa/docker-socket-proxy:v0.4.2"
 bind_ip = ""
 http = 80
 https = 443
-https_alt = 8443
+# Public alternate HTTPS port. Not 8443: public 8443 (TCP and UDP) is the
+# Mattermost Calls media pair (see [tls_edge.calls]); the container-internal
+# alt entrypoint stays :8443.
+https_alt = 9443
 # DEFAULT OFF: the edge is a TLS-only service; port 80 stays free on the host.
 # Enabling adds the HTTP->HTTPS redirect entrypoint and permits tls.mode
 # "acme-http" (HTTP-01 challenge).
 expose_http = false
 
 [tls_edge.calls]
-# Optional raw media listeners for Mattermost Calls. Disabled for normal
-# tls-edge deployments. If enabled, TCP and UDP share one public port; TCP
-# uses its own Traefik container entrypoint so it cannot collide with HTTPS.
-enabled = false
-public_port = 8444
+# Raw media listeners for Mattermost Calls: ON by default, in agreement with
+# the Mattermost project's own default ([mattermost.calls] port/public_port =
+# 8443). TCP and UDP share one public port (8443); TCP uses its own Traefik
+# container entrypoint (8444) so it cannot collide with the alt HTTPS
+# entrypoint (:8443/TCP). Agreement is pinned by tests/test_calls_defaults_agree.py.
+# Set enabled = false for an edge that must not open a media port.
+enabled = true
+public_port = 8443
 tcp_internal_port = 8444
 udp_internal_port = 8443
 

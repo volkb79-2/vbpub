@@ -12,7 +12,7 @@
 # Routing fallback: port-based (use when the subdomain cannot be made to
 #   resolve or, in static-cert mode, is not in the certificate SAN list).
 #   Replace entrypoints=websecure with entrypoints=websecure-alt and reach
-#   the service at https://my.domain:8443 instead.
+#   the service at https://my.domain:9443 instead.
 #
 # NOTE: the edge serves TLS only — port 80 is off by default, so there is no
 #   HTTP→HTTPS redirect.  Always publish https:// URLs.
@@ -49,7 +49,7 @@ services:
 
       # ── Port-based routing fallback ────────────────────────────────────────
       # Use these labels INSTEAD of the subdomain labels above.  The service
-      # is then reached at https://my.domain:8443.
+      # is then reached at https://my.domain:9443.
       # - traefik.http.routers.pattern-a-app.rule=Host(`my.domain`)
       # - traefik.http.routers.pattern-a-app.entrypoints=websecure-alt
 

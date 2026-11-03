@@ -1,9 +1,10 @@
 # tls-edge
 
 tls-edge provides TLS termination as a shared host service: one hardened
-Traefik v3 container handles HTTPS (ports 443 and 8443 by default; port 80
-off by default) for Docker Compose stacks on a host. Optional Mattermost Calls
-support adds raw TCP and UDP media forwarding on a configured public port.
+Traefik v3 container handles HTTPS (ports 443 and 9443 by default; port 80
+off by default) for Docker Compose stacks on a host. Mattermost Calls support
+is on by default and adds raw TCP and UDP media forwarding on public port 8443
+(`[tls_edge.calls] enabled = false` turns it off).
 Consumers join the shared `ingress_public` network and declare labels — TLS
 certificates are handled by the edge, including automatic issuance and
 zero-downtime renewal via Let's Encrypt. A docker-socket-proxy (POST denied)
@@ -375,7 +376,7 @@ only `live/` causes silent TLS failure inside the container.
 | Check | What it verifies |
 |---|---|
 | Stack health | Both containers report healthy (`docker inspect`) |
-| Port binding | 443 and 8443 are bound on the expected interface |
+| Port binding | 443, 9443 and (Calls) TCP+UDP 8443 are bound on the expected interface |
 | TLS handshake | `openssl s_client` against the host FQDN; cert loaded (not the Traefik default self-signed) |
 | ACME volume | `acme.json` exists, is non-empty, and has mode 0600 |
 | Network | `ingress_public` network exists and Traefik is attached |

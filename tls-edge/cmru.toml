@@ -36,6 +36,7 @@ wheels = []
 quiet = true
 commands = [
   { label = "tls-edge: standalone render validation", argv = ["cmru", "tester-gate", "--cwd", ".", "--", "/opt/tester-venv/bin/python", "scripts/render_standalone.py", "--check", "--defaults-only"], cwd = "." },
+  { label = "tls-edge: Calls defaults agreement", argv = ["cmru", "tester-gate", "--cwd", ".", "--", "/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q", "-p", "no:cacheprovider"], cwd = "." },
 ]
 
 [steps.build]

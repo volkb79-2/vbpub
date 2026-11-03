@@ -6,6 +6,11 @@
 
 ### Mattermost Calls: tls-edge and mattermost-server defaults disagree (INT-01 A-06, filed 2026-10-19)
 
+**RESOLVED 2026-11-04 (operator decision: Calls on by default, both sides):** tls-edge now defaults
+`[tls_edge.calls] enabled = true, public_port = 8443` and `https_alt = 9443`; a test pins agreement
+(`tests/test_calls_defaults_agree.py`). `edge-proxy/` already matched. Still open: the `mmctl plugin list`
+acceptance probe and the plugin-env-name verification. Original analysis:
+
 Introduced by `93c6a39aa` (no review recorded, no test or lane). tls-edge defaults
 `[tls_edge.calls] enabled = false, public_port = 8444`; mattermost-server defaults
 `[mattermost.calls] enabled = true, port = 8443, public_port = 8443` and advertises
