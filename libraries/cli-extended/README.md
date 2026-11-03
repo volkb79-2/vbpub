@@ -527,6 +527,10 @@ the packaged `cli-extended-adoption` skill, which records its decisions as
 orders the steps; the [design guide](docs/DESIGN-GUIDE.md#audit-mechanically-judge-with-a-skill)
 explains the split and the contract is [SPEC §13](SPEC.md#project-configuration-findings-and-the-cli-extended-command).
 
+Tip: with the pytest plugin on (AC-22), a focused run such as a single test
+file errors with "no tests ran" because the review-case check is strict. Pass
+`--cli-case-partial` for such local runs; CI and gate runs stay strict.
+
 ```bash
 cli-extended audit            # text report
 cli-extended audit --json     # machine-readable items and summary
