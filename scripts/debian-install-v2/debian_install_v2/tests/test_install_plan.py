@@ -20,6 +20,7 @@ def run_dry_install(
     tmp_path: Path,
     *,
     root_max_size_gb: int | None = None,
+    preserve_root_size_gb: int = 10,
     will_reboot: bool = False,
 ) -> tuple[Installer, list[str]]:
     from debian_install_v2.state import StateStore
@@ -30,6 +31,7 @@ def run_dry_install(
         swap_disk_total_gb=32,
         swap_partition_count=8,
         root_max_size_gb=root_max_size_gb,
+        preserve_root_size_gb=preserve_root_size_gb,
         telegram_bot_token="",
         telegram_chat_id="",
         never_reboot=not will_reboot,
@@ -84,6 +86,24 @@ def test_stage1_installs_root_cap_boot_guards_only_when_capped_before_reboot(
         assert last_guard_write < reboot
 
 
+def test_stage1_writes_root_cap_boot_guards_before_installing_shrink_hook(tmp_path):
+    _, descriptions = run_dry_install(
+        tmp_path,
+        root_max_size_gb=5,
+        preserve_root_size_gb=1,
+        will_reboot=True,
+    )
+
+    last_guard_write = max(
+        descriptions.index(f"write {ROOT_CAP_CLOUD_INIT_CONFIG}"),
+        descriptions.index(f"write {GROWROOT_DISABLED}"),
+    )
+    hook_write = descriptions.index("write /etc/initramfs-tools/hooks/vbpub-root-shrink")
+    rebuild_initramfs = descriptions.index("rebuild initramfs with the root-shrink hook")
+
+    assert last_guard_write < hook_write < rebuild_initramfs
+
+
 def test_stage1_refused_root_cap_does_not_install_boot_guards(tmp_path):
     config = Config(
         state_dir=str(tmp_path / "state"),
@@ -104,7 +124,14 @@ def test_stage1_refused_root_cap_does_not_install_boot_guards(tmp_path):
         installer.install()
 
     descriptions = [action.description for action in actions.planned]
-    for path in (ROOT_CAP_CLOUD_INIT_CONFIG, GROWROOT_DISABLED):
+    for path in (
+        ROOT_CAP_CLOUD_INIT_CONFIG,
+        GROWROOT_DISABLED,
+        "/etc/vbpub/root-shrink-plan.sfdisk",
+        "/etc/vbpub/root-shrink-plan.env",
+        "/etc/initramfs-tools/hooks/vbpub-root-shrink",
+        "/etc/initramfs-tools/scripts/local-premount/vbpub-root-shrink",
+    ):
         assert path not in actions.dry_run_writes
         assert f"write {path}" not in descriptions
 

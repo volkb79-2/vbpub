@@ -5,10 +5,10 @@
 `root_max_size_gb` requires `swap_policy=on` and managed tail-swap partitions
 directly after root, so neither the first reboot nor stage-two `growpart` can
 consume the cap. Stage one installs cloud-init and initramfs growth guards
-after the capped tail-swap plan validates and before reboot; stage two repeats
-them. The cap is measured from the root partition start without rounding its
-configured length down to an absolute 1 MiB boundary. User-facing examples
-retain uncapped and capped layouts.
+after the capped tail-swap plan validates and before any initramfs shrink hook
+is installed; stage two repeats them. The cap is measured from the root
+partition start without rounding its configured length down to an absolute
+1 MiB boundary. User-facing examples retain uncapped and capped layouts.
 
 ## DONE (requirements naming, 2026-11-02): name the optional wizard dependency by use case
 
@@ -172,10 +172,11 @@ Stage one now installs the cloud-init and initramfs growth guards only after the
 layout, just before stage two is installed and the first reboot. The stage-one guard test covers capped, uncapped, and
 refused-cap installs, asserting that refusal writes neither guard file.
 
-## OPEN (root cap): no window between the initramfs shrink hook and the growth guards
+## DONE (root cap, 2026-11-03): install growth guards before the initramfs shrink hook
 
-Stage one now writes the boot growth guards after the cap is validated, but `_plan_root_shrink` has already installed the
-initramfs shrink hook by then (a window as long as `update-initramfs -k all`). An unplanned reboot inside it would apply the
-shrink with no growth guard in place. **Fix:** resolve the plan first (`plan = root_shrink_plan or
-self._resolve_root_shrink_plan()`), write the guards, then call `_plan_root_shrink(plan)` (`installer.py` stage one,
-around the guard call), with a test asserting the guard write precedes the hook installation.
+Stage one resolves the root-shrink plan before writing anything that could
+change boot behavior, then writes the cap guards before `_plan_root_shrink`
+installs the hook and rebuilds initramfs images. An unplanned reboot during
+`update-initramfs -k all` therefore has the guards already in place. The
+recorded dry-run test asserts both guard writes precede the hook write and
+initramfs rebuild; refused and uncapped paths remain covered.

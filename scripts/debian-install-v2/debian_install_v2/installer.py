@@ -4284,10 +4284,13 @@ MaxFileSec=1month
                 root_safety_facts=safety_facts
             )
             self._remove_managed_swap_backings()
-        self._plan_root_shrink(root_shrink_plan)
-        # The cap and tail-swap layout are now validated. Disable boot-time
-        # root growth before stage two is installed and the host reboots.
+        # Resolve any remaining plan before writing guards: an unsupported
+        # cap must refuse without leaving either guard or a shrink hook.
+        root_shrink_plan = root_shrink_plan or self._resolve_root_shrink_plan()
+        # Disable boot-time root growth before installing the initramfs hook;
+        # update-initramfs can take long enough for an unplanned reboot.
         self._configure_root_cap_boot_guards()
+        self._plan_root_shrink(root_shrink_plan)
         self._install_stage2()
         self._reboot()
 
