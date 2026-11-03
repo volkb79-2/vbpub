@@ -454,6 +454,38 @@ def test_rel04_promotion_gives_up_after_bounded_attempts(e2e, monkeypatch):
     assert counter["n"] == 3
 
 
+def test_ki55_backup_branch_follows_the_candidate_through_merge_retries(e2e, monkeypatch):
+    workspace = _real_candidate(e2e, "cmru/release/ki55")
+    other = e2e.root / "racer55"
+    e2e.git("clone", "-q", str(e2e.origin), str(other), cwd=e2e.root)
+    real_merge = transaction._merge_origin_main_into_candidate
+
+    def racing_merge(*args, **kwargs):
+        merged = real_merge(*args, **kwargs)
+        (other / "race55.txt").write_text(f"{merged}\n")
+        e2e.git("add", "-A", cwd=other)
+        e2e.git("commit", "-q", "-m", "race 55", cwd=other)
+        e2e.git("push", "-q", "origin", "HEAD:refs/heads/main", cwd=other)
+        return merged
+
+    monkeypatch.setattr(transaction, "_merge_origin_main_into_candidate", racing_merge)
+    (other / "race55a.txt").write_text("x\n")
+    e2e.git("add", "-A", cwd=other)
+    e2e.git("commit", "-q", "-m", "race 55a", cwd=other)
+    e2e.git("push", "-q", "origin", "HEAD:refs/heads/main", cwd=other)
+
+    with pytest.raises(RuntimeError, match="was not promoted|Gave up"):
+        transaction.promote_workspace(
+            workspace, project_paths=("demo",), release_label="demo-v9", max_attempts=1,
+        )
+
+    local_tip = e2e.out("rev-parse", "HEAD", cwd=workspace.path)
+    remote_tip = e2e.out(
+        "--git-dir", str(e2e.origin), "rev-parse", "refs/heads/cmru/release/ki55", cwd=e2e.root,
+    )
+    assert remote_tip == local_tip
+
+
 def test_rel05_failed_build_rolls_the_tag_back_and_resume_proceeds(e2e):
     e2e.fail_build.write_text("")
 

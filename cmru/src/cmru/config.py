@@ -1461,6 +1461,15 @@ def _parse_project_document(
         )
     if build_step not in steps:
         _error(f"project.release.build_step={build_step!r} is not declared in [steps]")
+    if build_step == "push":
+        # KI-56: the release tag is rolled back when the build phase fails; that
+        # rollback is only safe because the build phase publishes nothing. The
+        # `push` step is the publishing phase, so it must never double as the build.
+        _error(
+            "project.release.build_step='push' is refused: the push step publishes, and the "
+            "release tag rollback after a failed build phase is only safe when the build "
+            "phase has published nothing. Declare a separate non-publishing build step."
+        )
     return (
         ProjectS2Config(
             name=name,
