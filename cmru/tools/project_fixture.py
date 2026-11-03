@@ -38,6 +38,8 @@ SHARED_LIBRARIES = (
 #   copies it into the throw-away tree it bootstraps (the script hashes it);
 # - docs/BOOTSTRAP-FROM-ZERO.md: linked from CMRU's README, DESIGN-GUIDE and
 #   CONSUMERS (test_docs_config_examples' cross-document link oracle).
+# - wings-patchstack/stack.conf: test_tester_image_cli_extended_identity reads
+#   it at module import, before its module-level skip marker is applied.
 SUITE_COLLECTION_INPUTS = (
     Path("tester-unified/Dockerfile"),
     Path("nyxloom/pyproject.toml"),
@@ -47,6 +49,7 @@ SUITE_COLLECTION_INPUTS = (
     Path("assay/src"),
     Path("docs/BOOTSTRAP-FROM-ZERO.md"),
     Path("tester-base/Dockerfile"),
+    Path("wings-patchstack/stack.conf"),
 )
 # mutation_campaign fingerprints and dirty-checks exactly the pathspecs of the
 # four fixture constants, so the collection inputs join this one rather than
@@ -175,6 +178,17 @@ def tracked_paths(repo_root: Path, pathspecs: tuple[str, ...] | list[str]) -> li
     return [os.fsdecode(raw) for raw in listed.stdout.split(b"\0") if raw]
 
 
+def fixture_pathspecs(project_prefix: str) -> list[str]:
+    """Return the exact tracked pathspecs copied into each CMRU fixture."""
+    return [
+        project_prefix,
+        *ROOT_CMRU_ARTIFACTS,
+        *(path.as_posix() for path in EXTERNAL_DOC_ARTIFACTS),
+        *(path.as_posix() for path in SHARED_LIBRARIES),
+        *(path.as_posix() for path in ESTATE_CONFIG_FIXTURES),
+    ]
+
+
 def copy_project_fixture(*, repo_root: Path, project_root: Path, workspace: Path) -> Path:
     """Copy CMRU and the external files its full test suite reads.
 
@@ -190,11 +204,7 @@ def copy_project_fixture(*, repo_root: Path, project_root: Path, workspace: Path
         project_prefix = project_root.relative_to(repo_root).as_posix()
     except ValueError as exc:
         raise ValueError("CMRU fixture project must be inside the selected Git worktree") from exc
-    pathspecs = [project_prefix]
-    pathspecs.extend(ROOT_CMRU_ARTIFACTS)
-    pathspecs.extend(path.as_posix() for path in EXTERNAL_DOC_ARTIFACTS)
-    pathspecs.extend(path.as_posix() for path in SHARED_LIBRARIES)
-    pathspecs.extend(path.as_posix() for path in ESTATE_CONFIG_FIXTURES)
+    pathspecs = fixture_pathspecs(project_prefix)
     files = tracked_paths(repo_root, pathspecs)
     if not any(path == project_prefix or path.startswith(project_prefix + "/") for path in files):
         raise ValueError(f"CMRU fixture has no tracked project files: {project_root}")

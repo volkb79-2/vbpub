@@ -2600,3 +2600,27 @@ the same fixed `--timeout-seconds 600`. A slow control fails loudly, but a SURVI
 contention stretches it past the cap, is recorded as a killed mutant: a false kill. **Fix:** derive each candidate's timeout from the
 control duration measured in the same run (for example `max(600, 2 x control)`), and record a candidate timeout that coincides with
 measured pressure as inconclusive rather than killed.
+
+### KI-107 — the coverage canary's control fixture omits an import-time test input
+
+**Status:** FIXED 2026-11-03 (this branch); severity: minor, release-gate correctness. `cmru release cmru --set-version 7.1.3`
+reported that the known-good control failed while collecting `test_tester_image_cli_extended_identity.py`: its module-level
+`STACK` assignment reads `wings-patchstack/stack.conf` before pytest applies the module skip marker. The canary copied only a
+sparse tracked fixture and omitted that file, so the control did not test the known-good suite. The failed run also left
+`.assay/coverage-canary-cmru.control.log` beside the declared evidence, producing a second snapshot refusal.
+
+**Fix.** Add the stack configuration to the declared suite-collection inputs, use the fixture's shared pathspec function in both
+copying and closure checks, and check module-level root reads even in skip-guarded test modules. Failed-control output remains
+available in a uniquely named temporary log; a new run removes any legacy adjacent log before starting. Tests pin both the
+missing-input refusal and the absence of a stray `.assay` log (`tests/test_project_fixture.py`).
+
+### KI-108 — the coverage-canary control log disappears with disposable gate containers
+
+**Status:** FIXED 2026-11-03 (this branch); severity: minor, release-gate diagnostics. A red known-good control wrote its full output to a
+temporary file and named that path in the error. In a tester-unified command lane the file is under the container's `/tmp`, which is
+removed when the lane exits; the retained lane log contained only the bounded failure excerpt, losing the control's full collection or
+test output.
+
+**Fix.** Keep the temporary copy and also stream the complete captured control output to stderr before raising. The refusal says the
+full output is above in the lane log and does not point to the disappearing path. The focused test asserts the complete stderr and
+message, and redirects/cleans the temporary copy under its own `tmp_path` (`tests/test_project_fixture.py`).

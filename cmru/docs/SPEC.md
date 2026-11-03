@@ -3306,8 +3306,12 @@ state, coverage outputs, and untracked files are not candidate inputs. The
 controller and child processes use private bytecode caches. Both campaigns preserve their own resume state. The mutation and canary controls copy the CMRU test closure,
 including `topos/cmru.toml` and `nyxloom/cmru.toml`, which the estate adoption
 contract test reads. Missing closure files fail the control before mutation or
-canary evidence is written. The `gate` lane runs these with the total-coverage
-and cause-sensitive canary checks as one release contract.
+canary evidence is written. The fixture also carries repository-root files
+read at test-module import time, including in modules whose test bodies are
+skipped after import. A failed canary control writes its full log to temporary
+storage and leaves no control log beside `.assay` evidence. The `gate` lane
+runs these with the total-coverage and cause-sensitive canary checks as one
+release contract.
 
 **S16.3 — Admission boundary.** The canonical entrypoint is the installed
 `run-gate` CLI; the tester-unified lane requires the estate-provided

@@ -1,3 +1,4 @@
+import ast
 import json
 import re
 from pathlib import Path
@@ -50,6 +51,7 @@ SUPPORT_FILES = (
     "assay/src/assay/__init__.py",
     "assay/src/assay/git.py",
     "docs/BOOTSTRAP-FROM-ZERO.md",
+    "wings-patchstack/stack.conf",
 )
 
 
@@ -73,6 +75,7 @@ def _estate(repo_root: Path) -> Path:
         # Suite collection inputs, and their tracked siblings that must stay out:
         # gen-requirements.py and build-image.sh are the tester modules' skip keys.
         "tester-base/Dockerfile",
+        "wings-patchstack/stack.conf",
         "tester-unified/Dockerfile",
         "tester-unified/gen-requirements.py",
         "tester-unified/build-image.sh",
@@ -243,9 +246,9 @@ def test_canary_refuses_an_uncovered_candidate_that_fails_for_another_reason(tmp
     assert document["observed_expected_reason"] is False
 
 
-# Test modules whose repository-root reads are deliberately NOT carried by the
-# fixture, because each skips itself in an isolated tree. A module listed here
-# is excluded from the read scan below, with the guard that justifies it.
+# Test modules whose test bodies are deliberately not carried by the fixture,
+# because each skips itself in an isolated tree. Their import-time reads still
+# run before pytest applies the skip marker and are checked separately below.
 SKIP_GUARDED_MODULES = {
     "test_tester_image_cli_extended_identity.py": "module pytestmark skipif: tester-unified absent (isolated canary tree)",
     "test_tester_unified_image.py": "module pytestmark skipif: tester-unified generator absent (isolated canary tree)",
@@ -278,18 +281,101 @@ def _repo_root_reads() -> dict[str, set[str]]:
     return reads
 
 
+def _module_scope_repo_root_reads(source: str) -> set[str]:
+    """Return literal REPO_ROOT files read while a test module is imported.
+
+    A module-level pytest skip marker is applied only after Python has executed
+    the module body, so these inputs still belong in the isolated fixture.
+    """
+    aliases: dict[str, tuple[str, ...]] = {"REPO_ROOT": ()}
+    reads: set[str] = set()
+
+    def path_parts(node: ast.AST) -> tuple[str, ...] | None:
+        if isinstance(node, ast.Name):
+            return aliases.get(node.id)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+            base = path_parts(node.left)
+            if (
+                base is None
+                or not isinstance(node.right, ast.Constant)
+                or not isinstance(node.right.value, str)
+            ):
+                return None
+            return (*base, node.right.value)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "joinpath":
+            base = path_parts(node.func.value)
+            if base is None or any(
+                not isinstance(arg, ast.Constant) or not isinstance(arg.value, str)
+                for arg in node.args
+            ):
+                return None
+            return (*base, *(arg.value for arg in node.args))
+        return None
+
+    def visit(node: ast.AST) -> None:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            # Defaults and decorators execute during import; the function body does not.
+            for expression in (*node.decorator_list, *node.args.defaults, *node.args.kw_defaults):
+                if expression is not None:
+                    visit(expression)
+            return
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            value = node.value
+            if value is not None:
+                parts = path_parts(value)
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                if parts is not None:
+                    for target in targets:
+                        if isinstance(target, ast.Name):
+                            aliases[target.id] = parts
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            if node.func.attr in {"read_text", "read_bytes", "open"}:
+                parts = path_parts(node.func.value)
+                if parts is not None:
+                    reads.add("/".join(parts))
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "open"
+            and node.args
+        ):
+            parts = path_parts(node.args[0])
+            if parts is not None:
+                reads.add("/".join(parts))
+        for child in ast.iter_child_nodes(node):
+            visit(child)
+
+    visit(ast.parse(source))
+    return reads
+
+
+def _has_module_skip_marker(source: str) -> bool:
+    module = ast.parse(source)
+    for statement in module.body:
+        if not isinstance(statement, (ast.Assign, ast.AnnAssign)):
+            continue
+        targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+        if not any(isinstance(target, ast.Name) and target.id == "pytestmark" for target in targets):
+            continue
+        if statement.value is None:
+            continue
+        if any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "skipif"
+            for node in ast.walk(statement.value)
+        ):
+            return True
+    return False
+
+
 def _fixture_pathspecs() -> list[str]:
-    return [
-        "cmru",
-        *(path for path in project_fixture.ROOT_CMRU_ARTIFACTS),
-        *(path.as_posix() for path in project_fixture.SHARED_LIBRARIES),
-        *(path.as_posix() for path in project_fixture.EXTERNAL_DOC_ARTIFACTS),
-        *(path.as_posix() for path in project_fixture.ESTATE_CONFIG_FIXTURES),
-    ]
+    return project_fixture.fixture_pathspecs("cmru")
 
 
 def test_fixture_carries_every_repo_root_file_the_suite_reads():
     reads = _repo_root_reads()
+    repo_root = Path(__file__).resolve().parents[2]
     # The parser must find reads, or this test would pass vacuously.
     assert len(reads) >= 5 and sum(len(paths) for paths in reads.values()) >= 20, reads
     assert "test_installed_wheel_subprocess.py" in reads, sorted(reads)
@@ -302,7 +388,10 @@ def test_fixture_carries_every_repo_root_file_the_suite_reads():
         for module, paths in reads.items() if module not in SKIP_GUARDED_MODULES
         for path in paths
         if path not in UNCARRIED_PATHS
-        and not any(path == spec or path.startswith(spec + "/") for spec in pathspecs)
+        and (
+            not any(path == spec or path.startswith(spec + "/") for spec in pathspecs)
+            or not (repo_root / path).exists()
+        )
     )
     assert not missing, (
         "the canary/mutation fixture does not carry these repository-root files, so the "
@@ -310,10 +399,47 @@ def test_fixture_carries_every_repo_root_file_the_suite_reads():
     )
 
 
-def test_canary_control_failure_keeps_the_first_failure_section_in_the_message_and_a_full_log(tmp_path):
+def test_fixture_carries_import_time_root_reads_even_in_skip_guarded_modules():
+    repo_root = Path(__file__).resolve().parents[2]
+    pathspecs = _fixture_pathspecs()
+    sources = {
+        module_name: (Path(__file__).parent / module_name).read_text(encoding="utf-8")
+        for module_name in SKIP_GUARDED_MODULES
+    }
+    for module_name, guard in SKIP_GUARDED_MODULES.items():
+        if guard.startswith("module pytestmark"):
+            assert _has_module_skip_marker(sources[module_name]), module_name
+    missing = sorted(
+        f"{module_name}: {path}"
+        for module_name in SKIP_GUARDED_MODULES
+        for path in _module_scope_repo_root_reads(sources[module_name])
+        if path not in UNCARRIED_PATHS
+        and (
+            not any(path == spec or path.startswith(spec + "/") for spec in pathspecs)
+            or not (repo_root / path).is_file()
+        )
+    )
+    assert not missing, (
+        "the isolated fixture must carry repository-root files read before a module-level "
+        f"pytest skip marker runs: {missing}"
+    )
+
+
+def test_canary_control_failure_keeps_the_first_failure_section_and_streams_a_full_log(
+    tmp_path, monkeypatch, capsys
+):
     project_root = _estate(tmp_path / "repo")
     summary = "".join(f"FAILED tests/test_x.py::test_case_number_{n:03d}\n" for n in range(80))
     assert len(summary) > 2000  # the old stdout[-2000:] kept only this
+    full_output = (
+        "....F.....\n"
+        "=================================== FAILURES ===================================\n"
+        "____ test_real_cause ____\n"
+        "E   FileNotFoundError: /scratch/tester-base/Dockerfile\n"
+        "=========================== short test summary info ============================\n"
+        + summary
+        + "== 80 failed in 1.00s ==\n"
+    )
     (project_root / "noisy_control.py").write_text(textwrap.dedent(f'''\
         import sys
         print("....F.....")
@@ -327,21 +453,29 @@ def test_canary_control_failure_keeps_the_first_failure_section_in_the_message_a
     '''), encoding="utf-8")
     subprocess.run(["git", "-C", str(project_root.parent), "add", "-A"], check=True)  # the fixture copies tracked files
     evidence = tmp_path / "canary.json"
+    monkeypatch.setattr(coverage_canary.tempfile, "tempdir", str(tmp_path))
 
-    with pytest.raises(RuntimeError, match="known-good canary control failed with exit 1") as raised:
-        coverage_canary.run([
-            "--repo-root", str(project_root.parent), "--project-root", str(project_root),
-            "--target", "src/cmru/config.py", "--evidence", str(evidence),
-            "--", sys.executable, "noisy_control.py",
-        ])
+    try:
+        with pytest.raises(RuntimeError, match="known-good canary control failed with exit 1") as raised:
+            coverage_canary.run([
+                "--repo-root", str(project_root.parent), "--project-root", str(project_root),
+                "--target", "src/cmru/config.py", "--evidence", str(evidence),
+                "--", sys.executable, "noisy_control.py",
+            ])
 
-    assert "FileNotFoundError: /scratch/tester-base/Dockerfile" in str(raised.value)
-    log = tmp_path / "canary.control.log"
-    assert str(log) in str(raised.value)
-    text = log.read_text(encoding="utf-8")
-    assert text.startswith("....F.....") and "80 failed in 1.00s" in text
-    assert "FileNotFoundError: /scratch/tester-base/Dockerfile" in text
-    assert not evidence.exists()
+        error = str(raised.value)
+        assert "FileNotFoundError: /scratch/tester-base/Dockerfile" in error
+        assert "full output is above in the lane log" in error
+        assert "full output:" not in error
+        assert capsys.readouterr().err == "known-good canary control output follows:\n" + full_output + "\n"
+        logs = list(tmp_path.glob("cmru-coverage-canary-*.control.log"))
+        assert len(logs) == 1
+        assert logs[0].read_text(encoding="utf-8") == full_output
+        assert not evidence.exists()
+        assert not evidence.with_suffix(".control.log").exists()
+    finally:
+        for log in tmp_path.glob("cmru-coverage-canary-*.control.log"):
+            log.unlink(missing_ok=True)
 
 
 def _real_pytest_output(tmp_path: Path, source: str) -> str:
@@ -434,17 +568,22 @@ def _run_noisy_canary(project_root: Path, evidence: Path) -> None:
     ])
 
 
-def test_canary_reports_both_the_control_failure_and_an_unwritable_control_log(tmp_path):
+def test_canary_reports_both_the_control_failure_and_an_unwritable_control_log(tmp_path, monkeypatch):
     project_root = _estate(tmp_path / "repo")
     _noisy_control(project_root)
     evidence = tmp_path / "canary.json"
-    (tmp_path / "canary.control.log").mkdir()  # the log path cannot be written as a file
+
+    def unwritable_control_log(*_args, **_kwargs):
+        raise OSError("temporary storage is unavailable")
+
+    monkeypatch.setattr(coverage_canary.tempfile, "NamedTemporaryFile", unwritable_control_log)
 
     with pytest.raises(RuntimeError, match="known-good canary control failed with exit 1") as raised:
         _run_noisy_canary(project_root, evidence)
 
     assert "could not be written" in str(raised.value)
     assert "E   boom" in str(raised.value)
+    assert not list(tmp_path.glob("*.control.log"))
 
 
 def test_a_green_canary_control_removes_a_stale_control_log(tmp_path):
