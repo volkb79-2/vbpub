@@ -1521,10 +1521,12 @@ def remove_workspace(
         admin_snapshot = _workspace_admin_snapshot(current)
         if on_phase is not None:
             on_phase("checkout_deletion", "running")
-        # Re-read the table right before the deletion: the cleanup callback
-        # above may take long enough for a mount to appear (narrows, does not
-        # close, the time-of-check window).
-        _refuse_if_mounts_under(current.worktree_path, mountinfo_reader)
+        # Re-read the table right before the deletion when an adapter cleanup
+        # callback ran: it can take long enough for a mount to appear (narrows,
+        # does not close, the time-of-check window). Without a callback the
+        # first check is already immediately before the deletion.
+        if cleanup is not None:
+            _refuse_if_mounts_under(current.worktree_path, mountinfo_reader)
         result = subprocess.run(
             ["git", "worktree", "remove", "--force", str(current.worktree_path)],
             cwd=current.source_git_root, text=True, capture_output=True, check=False,
