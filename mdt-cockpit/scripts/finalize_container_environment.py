@@ -538,17 +538,37 @@ PWMCP_OVERRIDE_ENV = "PWMCP_STACK_CONTAINER"
 _INSTANCE_ID_RE = re.compile(r'^\s*(?:export\s+)?INSTANCE_ID=["\']?([A-Za-z0-9_-]+)["\']?\s*$', re.M)
 
 
+PWMCP_INSTANCE_DIR_ENV = "PWMCP_INSTANCE_DIR"
+PWMCP_INSTANCE_DIR_DEFAULT = "/srv/pwmcp-instance"
+
+
+def pwmcp_instance_dir() -> Path:
+    """Directory of the shipped PWMCP instance (compose working dir of its stack)."""
+    return Path(os.environ.get(PWMCP_INSTANCE_DIR_ENV, "").strip() or PWMCP_INSTANCE_DIR_DEFAULT)
+
+
 def pwmcp_stack_container_name(workspace: Path | None = None) -> tuple[str | None, str]:
     """The exact name of THIS cockpit's PWMCP stack container, and where it came from.
 
     Every PWMCP stack is named `pwmcp-<INSTANCE_ID>-pwmcp`, and instance, worktree, gate and
     other users' stacks all match a generic filter, so the name is derived from this
-    workspace's identity: PWMCP_STACK_CONTAINER (explicit override), else INSTANCE_ID from the
-    environment, else the INSTANCE_ID line of <workspace>/ciu.env. (None, "") when unknown.
+    workspace's identity: PWMCP_STACK_CONTAINER (explicit override), else the INSTANCE_ID of the
+    shipped instance itself (`<instance dir>/ciu.env` or `.ciu/ciu.env`; the workspace's own
+    INSTANCE_ID is a different ciu instance and would name a stack that does not exist), else
+    INSTANCE_ID from the environment, else the INSTANCE_ID line of <workspace>/ciu.env.
+    (None, "") when unknown.
     """
     override = os.environ.get(PWMCP_OVERRIDE_ENV, "").strip()
     if override:
         return override, PWMCP_OVERRIDE_ENV
+    inst = pwmcp_instance_dir()
+    for rel in ("ciu.env", ".ciu/ciu.env"):
+        try:
+            m = _INSTANCE_ID_RE.search((inst / rel).read_text(encoding="utf-8"))
+        except OSError:
+            m = None
+        if m:
+            return f"pwmcp-{m.group(1)}-pwmcp", str(inst / rel)
     iid = os.environ.get("INSTANCE_ID", "").strip()
     if iid:
         return f"pwmcp-{iid}-pwmcp", "INSTANCE_ID"
@@ -587,6 +607,18 @@ def join_pwmcp_network(workspace: Path | None = None) -> None:
         warn(f"pwmcp: docker ps failed ({detail[-1] if detail else 'no output'}); skipped")
         return
     names = sorted(listed.stdout.split())
+    if source not in (PWMCP_OVERRIDE_ENV,) and not source.startswith(str(pwmcp_instance_dir())):
+        # The instance's generated ciu.env is not kept on disk after `ciu up`; its running stack
+        # still carries the compose working-dir label, which identifies it exactly.
+        inst = pwmcp_instance_dir()
+        by_dir = _docker(
+            "ps", "--filter", "name=^pwmcp-", "--filter", "label=com.docker.compose.service=pwmcp",
+            "--filter", f"label=com.docker.compose.project.working_dir={inst}",
+            "--format", "{{.Names}}",
+        )
+        found = sorted(by_dir.stdout.split()) if by_dir is not None and by_dir.returncode == 0 else []
+        if len(found) == 1 and found[0] in names:
+            expected, source = found[0], f"compose working dir {inst}"
     if expected is None:
         info(f"pwmcp: this workspace's PWMCP identity is unknown (found: {', '.join(names) or 'none'}); "
              f"not joining any stack; {choose}")
