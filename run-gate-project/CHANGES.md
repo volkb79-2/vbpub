@@ -59,6 +59,14 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   the plugin's own files is RG-145's.
 
 ### Fixed
+- Fix (RG-139): the R2 campaign closeout forwards the lane's declared coverage
+  artifact (`--coverage`, from the Assay inventory; only when the verdict and
+  the artifact exist and the judge's `analyze campaign` knows the flag), retains
+  it as `<run-id>.coverage.json` evidence when the analysis re-verified it, and
+  names the analysis's `coverage.artifact_status` in the closeout line.
+- Fix (RG-115): a follower (disowned record) no longer collects the Assay
+  closeout; it prints `assay closeout: the owning client records it` and keeps
+  no second evidence copy or spurious `unavailable` WARNING.
 - Fix (RG-116 item 3, `tools/coverage_gate.py`): `--source` is repeatable and
   the selftest lane passes `run_gate.py` and `run_gate_admission.py`, so the
   admission module shipped in the wheel is diff-judged too.
