@@ -1357,6 +1357,34 @@ def test_cx26_skills_verbs_accept_the_consumer_global_option(pkg, tmp_path, verb
     assert code in (0, 1)
 
 
+@pytest.mark.parametrize("flag", ["--dry-run", "--json"])
+def test_cx30_consumer_legacy_global_colliding_with_a_library_flag_is_filtered(
+    pkg, tmp_path, flag
+):
+    from cli_extended import OptionSpec
+
+    registry = CliRegistry(
+        CliIdentity("MYTOOL", "1.0.0", "My tool", "mytool"),
+        prog="mytool", description="My tool.",
+        global_options=(
+            OptionSpec((flag,), "legacy", parser_kwargs={"action": "store_true"}),
+            OptionSpec(("--tag-prefix",), "prefix", parser_kwargs={"action": "store_true"}),
+        ),
+    )
+    registry.register(VerbSpec(
+        "own", description="own", handler=lambda *_: 0, include_json=False,
+    ))
+    register_skills_verbs(registry, package=pkg)
+    app = registry.build()
+    out, err = io.StringIO(), io.StringIO()
+    code = app.run(
+        argv=["skills", "list", "--tag-prefix", "--dest", str(tmp_path / "d")],
+        stdout=out, stderr=err,
+    )
+    assert "unrecognized arguments" not in err.getvalue()
+    assert code in (0, 1)
+
+
 def test_cx26_surface_has_no_incomplete_syntax_and_lists_the_global(pkg):
     from cli_extended.surface import export_cli_surface
 
