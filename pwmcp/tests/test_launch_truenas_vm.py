@@ -40,7 +40,7 @@ def test_usage_exit_2(env):
 def test_missing_disk_refused_never_created(env, tmp_path):
     w = tmp_path / "w"
     r = run(env, str(w), "none")
-    assert r.returncode == 1 and "no installed disk" in r.stderr and "main checkout" in r.stderr
+    assert r.returncode == 1 and "no installed disk" in r.stderr and "holds it" in r.stderr
     assert (w / "OVMF_VARS.fd").is_file() and not (w / "disk.qcow2").exists()
 
 
