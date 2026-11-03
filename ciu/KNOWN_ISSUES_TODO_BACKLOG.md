@@ -5768,3 +5768,102 @@ from git. No mount-over, no `MDT_*` or other environment path override.
   rm refusing under a foreign mount, rm with protected state needing consent.
 - One live btrfs run on the tester host proves a clean `git status` after create and no residue after rm.
 - Nothing in `ciu/` names `vm-lab`, `downloads` or `artifacts` outside tests.
+
+<!-- Id note (2026-11-04): CIU-159 is the highest id on main and on all fix-ciu-* branches at filing time; verify before merging. -->
+
+## CIU-160 — `docker_gid` is derived by `stat` of the effective Docker socket; the `DOCKER_GID` input and the `ciu.env` key are removed
+
+**Status: OPEN (filed 2026-11-04).**
+
+**Problem.** `_detect_docker_gid` (`workspace_env.py:511-526`) tries the `DOCKER_GID` environment variable, then `stat` of
+`/var/run/docker{-host,}.sock`, then `getgrnam("docker")`, and raises "DOCKER_GID not found" otherwise. The result is persisted into `ciu.env`
+(`:2036`) and feeds hostdir ownership (`engine.py:757-788` `CONTAINER_UID:DOCKER_GID 0775`), secret chowns (`secrets/materialize.py:206,384`),
+TLS readability checks (`workspace_env.py:1007-1095`) and the TLS helper container's `user_uid:docker_gid` (`:1021`). In the cockpit the socket
+is `/run/docker-api/docker.sock` (`DOCKER_HOST`), a path the stat fallbacks no longer probe, and `getgrnam("docker")` inside an image can name
+another gid; the persisted number is a machine fact wrong on any other host. Seen 2026-11-04: `ciu worktree create` aborts multi-root
+preparation with this message (CIU-161).
+
+**Decision record (operator, 2026-11-04, binding).** The cockpit uses the fixed `mdt-docker` group (gid 2751, mdt-cockpit MDT-053/054) on the relay
+socket; every consumer derives the gid by `stat` on the socket it mounts. The ciu env key is removed from the ciu.env writer with NO alias.
+New acceptance criterion from the operator: repo tools must keep working when a user does NOT use the mdt cockpit.
+
+**Design.**
+
+- `docker_gid` becomes a value computed on demand by `stat` of the effective socket: `DOCKER_HOST` when it is `unix://...`, else
+  `/var/run/docker.sock`, then `/var/run/docker-host.sock` (the old second probe); gid 0 or an unreadable socket gives one clear error naming the
+  path that was read and the remedy ("the user needs the docker access of this environment"), never a group name.
+- The `DOCKER_GID` environment input is no longer read. A set `DOCKER_GID` env var or a `DOCKER_GID` key in an existing `ciu.env` is refused with
+  a message naming the replacement (derived from the socket) so a stale file cannot silently win.
+- The `ciu.env` writer stops emitting the key; consumers inside ciu (hostdirs, secrets, TLS helper, checks) call the one derive function.
+- Ownership coupling stays as is (`hostdir_group` decoupling would be a separate change); migration note in `docs/CIU.md`: `chgrp` existing
+  hostdirs per the mdt-cockpit README recipe after the group change.
+- `getgrnam("docker")` fallback removed.
+
+**Acceptance criteria.**
+
+- Unit tests: `DOCKER_HOST=unix://<tmp socket>` with an arbitrary gid is read; default paths; missing socket error text; `ciu.env` with
+  the old key is refused; no `DOCKER_GID` key is written; hostdir and TLS paths use the derived gid.
+- Grep test: no `DOCKER_GID` in `ciu/src` except the refusal message.
+- **Non-mdt path (operator criterion).** A test and a CONSUMERS note: on a plain Debian host or a non-mdt devcontainer the gid comes from the
+  socket actually used, a user with only the normal docker access works, and nothing requires `mdt-docker` or the mdt cockpit.
+
+**Test plan.** Unit tests with temp sockets and monkeypatched `stat`; one cockpit run of `ciu env generate` showing no key and a correct hostdir owner.
+
+**Dependencies and order.** After mdt-cockpit MDT-053/054 (the group exists) for the live check; the code can land earlier because it only reads
+the socket. Unblocks CIU-161 for the cockpit case.
+
+## CIU-161 — `ciu worktree create` fails multi-root preparation with "DOCKER_GID not found" and ignores the requested `--branch` name
+
+**Status: OPEN (filed 2026-11-04, observed live the same day).** Known defect; workers use `git worktree add` meanwhile.
+
+**Observed.**
+
+1. In the cockpit, `ciu worktree create` stops in multi-root preparation (`worktree.py:5957`, `[S16] multi-root preparation failed ...`) with
+   `DOCKER_GID not found. Ensure docker group exists or set DOCKER_GID.` (`workspace_env.py:526`): the env derivation runs as part of preparing the new
+   root and the stat fallbacks miss the relay socket (CIU-160 root cause).
+2. The created branch is renamed: the requested `--branch` name is not honored (the worktree carries another, generated name).
+
+**Design.**
+
+- Root cause 1 is removed by CIU-160; additionally, preparing a worktree must not require the Docker socket at all unless the root declares
+  stacks that use it: a missing socket downgrades to a skipped step with one INFO line, not a hard failure of `worktree create`.
+- Root cause 2: trace where the branch name is rewritten (the worktree record or the S16 preparation path) and honor the requested name exactly,
+  failing clearly if the name is invalid or exists; a rename is only ever an explicit option, never a silent default.
+- `worktree create` must leave no half-created state when preparation fails (branch and checkout either both exist and are usable, or neither).
+
+**Acceptance criteria.**
+
+- Test: `worktree create --branch X` yields branch `X` exactly, on success and on a prepared-with-warning path.
+- Test: with no Docker socket and no `DOCKER_GID`, create succeeds for a root without Docker stacks and prints one INFO line.
+- Test: a failing preparation step cleans up or names exactly what was left.
+- **Non-mdt path.** The same create works on a plain host and in a non-mdt devcontainer (no mdt paths read).
+
+**Test plan.** Temp-repo tests with a FakeBackend for the Docker probe; a live create in the cockpit and on a plain checkout.
+
+**Dependencies and order.** CIU-160 first; then this fix.
+
+## CIU-162 — `ciu env generate` and `ciu up --dry-run` have side effects: they create a Docker network and attach the devcontainer
+
+**Status: OPEN (filed 2026-11-04, observed live the same day).**
+
+**Observed.** Commands documented as generation or dry-run create a Docker network and attach the running devcontainer to it as a side effect
+(shared-infra join in the workspace environment step). A dry run must not change Docker state; an attached network also outlives the command and
+shows up in later cleanup, and a name collision across checkouts is the class behind CIU-104.
+
+**Design.**
+
+- Split the env step into a pure derivation (read-only: stat the socket, inspect existing networks) and the join/create step. `env generate` and
+  every `--dry-run` run only the pure part; they print "would create network X / attach container Y" instead.
+- The real `ciu up`/`ciu env` (non-dry) keeps creating and attaching, with the exact container named in the message.
+- Cleanup stays as today for real runs; a dry run leaves nothing to clean.
+
+**Acceptance criteria.**
+
+- A test with a fake Docker client records zero mutating calls (network create, connect) for `env generate` and `up --dry-run`, and the
+  expected calls for the real run.
+- Docs (`docs/CIU.md`) state which commands are read-only.
+- **Non-mdt path.** The pure derivation works with no devcontainer and no mdt paths.
+
+**Test plan.** FakeBackend call-recording tests; one live check that `docker network ls` is unchanged after a dry run (filter to the project's own network name only, no all-container inventories).
+
+**Dependencies and order.** Independent of CIU-160/161; can land in any order.
