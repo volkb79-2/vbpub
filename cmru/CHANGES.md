@@ -33,6 +33,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 - feat(cmru): check the planned CMRU release version, Run-Gate image identity, and bootstrap guide version during `cmru release --dry-run`, before allocating a candidate worktree (KI-109, KI-111).
 - fix(cmru): stop writing an unnamed temporary copy of failed coverage-canary control output; the complete output remains in stderr and the lane log (KI-110).
+- fix(cmru): `cmru handler wheel-build` honours the wheel-builder's baked build-backend age window and accepts a per-build `CMRU_WHEEL_BUILD_AGE_OVERRIDE_REASON` override that is logged (tester-base TB-08); the bootstrap refuses a tester-unified image tagged `tester-base:local` (TB-11).
 
 <!-- cmru: release history -->
 
