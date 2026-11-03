@@ -43,8 +43,8 @@ Rows are candidates that can be part of the answer. `RC` column states consent m
 
 | Solution | Markdown chat | Persistent voice rooms | Group calls (limit) | Screen share | Remote control | Noise suppression |
 |---|---|---|---|---|---|---|
-| **Mattermost Team Edition + Calls** (live 11.10.1; latest 12.0.1 [V]) | ✓ full md, threads | ✗ calls attach to a channel, no occupancy UX | **unresolved**: docs say 3+ needs a paid plan [V]; other docs say "unlimited, recommended 50" [S]; test | ✓ 1:1 free [V]; group per limit | ✗ | partial: browser WebRTC defaults only [R] |
-| **Mattermore** (patch-set fork, v1.6.2 [V]) | ✓ same as Mattermost v12 | ✗ same call model | ✓ unlocks group audio 3+ via `MM_CALLS_GROUP_CALLS_ALLOWED` (unverified in practice); group video "being ported" | ✓ (inherited) | ✗ | partial: browser defaults [R] |
+| **Mattermost Team Edition + Calls** (live 11.10.1; latest 12.0.1 [V]) | ✓ full md, threads | ✗ calls attach to a channel, no occupancy UX | **unresolved**: docs say 3+ needs a paid plan [V]; other docs say "unlimited, recommended 50" [S]; test | ✓ 1:1 free [V]; group per limit | ✗ (same prototype route as Mattermore) | partial: browser-level only (`noiseSuppression` constraint, no neural filter) [V source] |
+| **Mattermore** (patch-set fork, v1.6.2 [V]) | ✓ same as Mattermost v12 | ✗ same call model | ✓ unlocks group audio 3+ via `MM_CALLS_GROUP_CALLS_ALLOWED` (unverified in practice); group video "being ported" | ✓ one sharer per call, VP8/AV1, no transcoding (section 11) | ✗ native; prototype route: plugin hands off a `rustdesk://` link after sharer approval (S), real agent M-L | partial: browser-level only, upgradeable with an RNNoise AudioWorklet patch (M) |
 | **Mumble** (server+client, v1.5.939 [V]) | ✗ (text-only side chat) | **✓ best TeamSpeak feel**: channel tree, PTT/VAD, ACLs | ✓ tens of users, `MUMBLE_CONFIG_USERS` | ✗ | ✗ | **✓ client RNNoise** [V mumble.info 1.5.629 RC3 blog] |
 | **Jitsi Meet + Jitsi Meet Electron** (Electron v2026.10.0 [V]) | partial: in-meeting chat only | partial: permanent room names, no presence | ✓ JVB SFU, dozens (hardware bound) | ✓ web and Electron | **✓ Electron only, since 2026.8.0, native consent dialog; both ends need the desktop app** [V release notes] | ✓ RNNoise in web app [R] |
 | **RustDesk OSS** (client 1.5.1, server 1.1.16 [V]) | partial: built-in 1:1 text chat | ✗ | ✗ (1:1 sessions, multi-viewer unverified) | ✓ view only | **✓ core feature, per-session accept or ID+password, P2P with relay fallback** | ✗ (audio forwarded raw) |
@@ -57,7 +57,7 @@ Rows are candidates that can be part of the answer. `RC` column states consent m
 
 Row notes:
 - Mattermost 3-participant limit: the first thing to settle empirically; it decides whether Mattermore is needed at all.
-- Mattermore internals (screen share, RC, noise suppression): see section 11.
+- Mattermore/Calls internals (screen share, RC, noise suppression, build and mount): section 11.
 
 ## 3. Capability matrix, part B: security, access, clients, licence, maintenance
 
@@ -104,7 +104,7 @@ database, proxy routes and media wiring, a week or more including live test.
 | LiveKit clients (Matrix, Fluxer, Stoat): browser built-in WebRTC noise suppression/echo cancel; Krisp is LiveKit-Cloud only, not self-hosted | [S] docs.livekit.io |
 | RNNoise: BSD-3, v0.2 (2024-04), repo idle since 2025-02: stable, unmaintained. DeepFilterNet: v0.5.6 (2023-08), dormant | [V] |
 | A noise gate (Havok) is not neural suppression | agreed |
-| Mattermost/Mattermore: Calls widget relies on browser defaults | [R], see section 11 |
+| Mattermost/Mattermore: Calls passes only browser `noiseSuppression`; an RNNoise AudioWorklet patch is the upgrade (section 11.3) | [V] source |
 | Workstation-level fallback: NVIDIA Broadcast/RTX Voice, or PipeWire `filter-chain` with RNNoise/DeepFilterNet LADSPA | [R] |
 
 Consequence: R3 is met by choosing clients with a built-in neural filter (Mumble, Jitsi) or by an OS-level filter on every
@@ -198,6 +198,15 @@ Default combination: **scenario A**, built additively in three small trials. Kee
 and neural noise suppression, RustDesk gives consent-based RC, Jitsi gives group screen share with in-call RC.
 Matrix and Fluxer are replace-chat experiments, only after A is judged.
 
+Alternative to A: **a custom plugin set on Mattermore** (scenario B+) instead of running Mumble, RustDesk and Jitsi separately.
+What it costs (section 11): an RNNoise AudioWorklet patch for noise suppression (M, 1-2 weeks); remote control as a separate
+plugin, prototype via `rustdesk://` handoff (S, still needs RustDesk) or a standalone Rust agent with consent dialog (M-L, 2-4
+weeks plus hardening); per-user volume (S-M) and persistent voice channel UI (M-L) to approach Mumble; group video re-port (M).
+Ongoing cost: a patch repo rebased against each upstream Calls/server bump, our own bundle with a higher plugin version, a single
+maintainer upstream, and AGPL source publication. It yields one window and one login, but still no always-on voice parity with
+Mumble and no in-call remote control without the agent. Recommendation: run trials 1-3 first, then build the plugins only if the
+separate-apps experience is judged too fragmented.
+
 | Order | Trial | Why this order | Effort |
 |---|---|---|---|
 | 0 | Mattermost Calls 3-account test on the existing project; ask the operator whether "Mattermore" was meant as the `dennisklappe` fork | 5 minutes, settles the group-call limit and whether Mattermore is needed | none |
@@ -236,21 +245,70 @@ different network (mobile hotspot) to exercise NAT/UDP.
 Exit criteria for scenario A: R1-R6 each demonstrably met by at least one trial, all media ports open and documented in the section 8
 table, each ciu project passes its own gate, and an independent adversarial review precedes any merge.
 
-## 11. Mattermore capabilities: to be filled
+## 11. Mattermore / Mattermost Calls internals
 
-<!-- TO BE FILLED: fold in /home/vscode/vbpub-release-program-20261027/reports/MATTERMORE-CAPABILITIES-2026-11-04.md -->
+Source: source-level research of the Mattermore tag v1.6.2, the Calls plugin (Mattermore pins v1.12.6), rtcd v1.2.6 and
+calls-common, 2026-11-04. All items [V] in source unless marked.
 
-Known from the area's mattermore README (researched 2026-11-04): group audio calls (3+) unlocked via `MM_CALLS_GROUP_CALLS_ALLOWED`;
-call recording and local transcription via an optional `calls-offloader`; OIDC SSO and guests unlocked; group video "being ported".
+### 11.1 Screen share implementation
 
-Open questions to be answered by the capabilities report or a trial:
+| Aspect | Finding |
+|---|---|
+| Capture | browser `getDisplayMedia` (no resolution/fps constraints); Desktop app uses `getUserMedia` with `chromeMediaSource: desktop` and the plugin's own source-picker modal |
+| Media stack | native `RTCPeerConnection` wrapped by `RTCPeer` in `@mattermost/calls-common`; one DataChannel for signaling |
+| SFU | `rtcd` (Go, pion/webrtc), embedded in the plugin or run as a separate service; re-publishes RTP to every receiver, **no transcoding** |
+| Codecs | Opus, VP8 (screen default), AV1 (optional); no VP9, no H.264 |
+| Simulcast | off by default; when on: 500 kbps / 5 fps and 2.5 Mbps / 20 fps layers; Firefox falls back to one 1 Mbps / 10 fps encoding |
+| Limits | **one sharer per call** (server-enforced), host can force-stop a share, share audio only where the browser/OS provides it (Windows [R]); mobile can view, not share [R] |
+| Group video | **disabled in Mattermore** (patch 0002 needs a port to the Calls 1.12.5 widget rewrite) |
 
-| Topic | Question | Status |
+### 11.2 Remote control
+
+Not available. The Calls WebSocket whitelists message types (no input events), rtcd has no application DataChannel, a browser cannot
+inject OS input, and the Desktop app exposes no injection API to plugins. Closest prior art: Jitsi Meet Electron (robotjs in the
+Electron main process, native consent dialog in main, input events over a channel; Apache-2.0).
+
+| Route | What | Effort | Notes |
+|---|---|---|---|
+| **Prototype: RustDesk handoff** | separate small plugin: "Request control" next to a share; sharer approves; plugin posts a call-scoped `rustdesk://<id>` link; RustDesk's own accept dialog stays authoritative | **S** (2-4 days) | second app and separate capture, not inside the call; never put a permanent password in the URL; launching RustDesk as a separate process is licence-clean |
+| **Real feature** | standalone Rust agent (enigo) on the sharer machine listening on localhost + separate plugin for relay over plugin WS events + consent in the agent's native dialog; view/control toggle, one controller, time limit, kill hotkey, on-screen banner | **M-L** (2-4 weeks, plus hardening) | keeps Mattermost Desktop unforked; Wayland and macOS permissions are friction; injection is RCE-adjacent so consent must be enforced natively |
+| Desktop fork with built-in injector | Mattermost Desktop (Apache-2.0) plus robotjs-style module | L, ongoing | signing, auto-update, per-OS permissions: not recommended |
+
+### 11.3 Noise suppression
+
+Today: only browser constraints (`noiseSuppression`, echo cancel, AGC passed to `getUserMedia`); no AudioWorklet or insertable
+streams; Mattermore patches do not touch audio. Browser NS is classical DSP, good for stationary noise only.
+
+| Upgrade | Licence | Effort | Notes |
+|---|---|---|---|
+| `@jitsi/rnnoise-wasm` AudioWorklet before `replaceTrack` (Jitsi's own pattern) | Apache-2.0 (RNNoise BSD-3) | **M** (1-2 weeks) | new Calls patch in the Mattermore series; hook the mic paths in `client.ts` (initial, device change, unmute); setting Off/Standard; disable browser NS when on; needs CSP, Electron, Firefox/Safari checks and an A/B recording test; mobile app stays native |
+| DeepFilterNet as a "High" option | MIT/Apache-2.0 | +M | better on non-stationary noise, heavier CPU; upstream idle since 2024-10 |
+| Krisp, Maxine/RTX Voice | proprietary | n/a | not usable in an AGPL self-hosted stack |
+
+Teams reference (secondary sources only [S]): sender-side deep-neural-network suppression with Auto/Low/High/Off; which model it
+ships is not documented.
+
+### 11.4 Shipping a custom build
+
+The Calls plugin is built separately (clone upstream tag, apply `patches/calls/*`, `make dist`, re-stamp the manifest to id
+`com.mattermost.calls`, version `1000.<upstream>`) and prepackaged into the image at `/mattermost/prepackaged_plugins/`. A ciu
+project can therefore build its own bundle from its own patch repo and mount or `COPY` it with a **higher version** (the server only
+replaces a prepackaged plugin when the new version is strictly higher). Additive features (remote-control relay, PTT UI) belong in
+their own plugin id to avoid rebasing against each upstream Calls bump. Changes to codecs/layers also need forks of `calls-common`
+and `rtcd` (go.mod `replace`, or run an external rtcd container). Licence: a modified Calls build is AGPL-3.0; publish the patch
+repo (planned anyway).
+
+### 11.5 Discord/TeamSpeak gaps in Calls
+
+| Gap | State | Effort |
 |---|---|---|
-| Screen share | group screen share in calls with 3+ participants; browser and desktop app | to be filled |
-| Remote control | any remote-control feature in the Calls plugin (expected: none) | to be filled |
-| Noise suppression | where it runs, which algorithm; browser defaults only? | to be filled |
-| Call limit | does the plugin honour group calls on Team Edition 11.x data, or only v12? | to be filled |
+| Push-to-talk | exists as `space` in the popout/expanded view only; global PTT needs the Desktop app | in-window S; global L |
+| Per-user volume | absent | S-M (Web Audio gain per participant) |
+| Persistent voice channels with sidebar occupancy | absent; server already allows calls without ringing in channels | M-L plugin/webapp UI |
+| Multiple simultaneous screen shares | absent, server hard limit of 1 | server change |
+| Group video (Mattermore) | disabled | M re-port |
+
+Cheapest wins in order: per-user volume, noise suppression, in-window PTT polish, RustDesk handoff, group-video re-port.
 
 ## 12. Evidence status and next steps
 
