@@ -92,7 +92,7 @@ from .config import Lane
 from .coverage_parsers.model import CoverageProfile
 from .diff import AddedLines
 from .errors import AssayError, Outcome, ReasonCode
-from .evaluate import evaluate_coverage
+from .evaluate import _is_test_filename, evaluate_coverage
 from .isolation import SnapshotRepository
 from .process_tree import ProcessTreeEvidence
 from .runner import (
@@ -690,13 +690,30 @@ def run_isolated_canary(
     claim the same way it already renders any other P22 structural failure.
     """
     if adapter.is_test_path(target):
-        raise AssayError(
-            f"judge.canary.target {target!r} is a test path (per the "
-            f"{adapter.name!r} adapter's own convention) -- a canary "
-            f"transforms real source, never a test file",
-            outcome=Outcome.ERROR,
-            reason_code=ReasonCode.BAD_LANE_CONFIG,
-        )
+        # (B085) The same layout assertion R1/R2 honour: a lane declaring
+        # ``judge.allow_test_path_targets = true`` says its library code merely
+        # lives under a test directory. A target whose own FILENAME is a test
+        # name is never admitted, exactly as in the other two gates.
+        if not lane.judge.allow_test_path_targets:
+            raise AssayError(
+                f"judge.canary.target {target!r} is a test path (per the "
+                f"{adapter.name!r} adapter's own convention) -- a canary "
+                f"transforms real source, never a test file. If this file is "
+                f"library code that merely LIVES under a test directory, "
+                f"declare judge.allow_test_path_targets = true on this lane "
+                f"(whole_target mode with R1) to assert that",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.BAD_LANE_CONFIG,
+            )
+        if _is_test_filename(adapter, target):
+            raise AssayError(
+                f"judge.canary.target {target!r} is a test path by its own "
+                f"FILENAME per the {adapter.name!r} adapter's convention, "
+                f"which judge.allow_test_path_targets does not override: a "
+                f"canary transforms real source, never a test file",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.BAD_LANE_CONFIG,
+            )
 
     # (B067) ONE attempt = this target's whole probe: its control
     # materialisation, its control run, its transform materialisation and its
