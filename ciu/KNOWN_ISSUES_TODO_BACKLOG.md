@@ -5896,7 +5896,7 @@ pwmcp is the candidate to verify) hits the same refusals.
 - **Non-mdt path.** The test needs no devcontainer, no Docker socket and no mdt paths (uses the pure derivation of CIU-162).
 
 **Dependencies and order.** After CIU-162 (shares the env-step split).
-## CIU-163 — `ciu up` of a NEW ciu root inside a linked git worktree always fails S16.3 ("derived primary CIU root ... does not exist")
+## CIU-167 — `ciu up` of a NEW ciu root inside a linked git worktree always fails S16.3 ("derived primary CIU root ... does not exist")
 
 **Status: OPEN (filed 2026-11-04, observed live the same day on `voice-screen-share/fluxer-server`).**
 

@@ -105,7 +105,7 @@ ciu up --dir voice-screen-share/fluxer-server -y --root-folder voice-screen-shar
 
 Known tool issues (filed in the ciu backlog): `ciu env generate` attaches the devcontainer to a new network
 (CIU-162; detach it by exact name afterwards), a root that exists only in a linked worktree cannot `ciu up`
-(CIU-163; run it from the main checkout), and the S6.5 root helper refuses to run in a devcontainer
+(CIU-167; run it from the main checkout), and the S6.5 root helper refuses to run in a devcontainer
 (see the jitsi-server README; this project uses named volumes and is not affected). `ciu up` from the main
 checkout was verified on 2026-11-04 with `expose_public = true`: 21 containers up, accounts created, the edge
 issued the certificate for `fluxer.<PUBLIC_FQDN>`.
