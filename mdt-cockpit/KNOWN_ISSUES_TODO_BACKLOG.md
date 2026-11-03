@@ -733,7 +733,7 @@ already does with `c["fill"]`), so verdicts do not depend on the machine's disk 
     - `install.sh`, `units/dev-buildkitd.slice.in`, `check.sh`;
     - `README.md`, `cgroup-cpu-swap-redesign-HANDOFF.md`;
     - `tests/test_hs02.py`, `tests/test_buildkit_governance.py`.
-  - Not changed: the deprecated `modern-debian-tools-python-debug/` tree.
+  - Not changed: the deprecated pre-rename tree.
   - The operator renames the live `/etc/mdt/host-setup.env` with the table before the next install.
 - **MDT-033.b Derived sizing (overcommit by design).**
 
