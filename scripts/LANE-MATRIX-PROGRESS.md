@@ -132,7 +132,7 @@ types), then applied every verified fix myself against the real source
 (trust-but-verify: several proposed fixes were checked/adjusted before
 applying, see below). A local scratch venv
 (`/tmp/cgprofile-review-venv`, from this project's own pinned
-requirements.txt: pandas 3.0.5/plotly 6.9.0/ruptures 1.1.9/etc.) was built to
+requirements-report.txt: pandas 3.0.5/plotly 6.9.0/ruptures 1.1.9/etc.) was built to
 actually run the full suite including the pandas/plotly-dependent test files,
 none of which have local deps installed in this devcontainer by default.
 
@@ -304,10 +304,10 @@ tests, not source):
 
 Verification: 910 passed, 0 failed, 0 skipped, run against the real pinned
 report-tier deps in /tmp/cgprofile-review-venv (this project has no local
-venv checked in — `./setup.sh` builds one from requirements.txt; the scratch
+venv checked in — `./setup.sh` builds one from requirements-report.txt; the scratch
 venv is NOT part of the repo, rebuild with
 `python3 -m venv /tmp/cgprofile-review-venv && /tmp/cgprofile-review-venv/bin/pip
-install -q -r requirements.txt` if resuming in a fresh shell).
+install -q -r requirements-report.txt` if resuming in a fresh shell).
 `python3 -m compileall` clean on lib/, cgprofile.py, and tests/.
 
 ## Commits (this branch, this session)

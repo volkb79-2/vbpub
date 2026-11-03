@@ -2,7 +2,7 @@
 kind: backlog-entry
 schema_version: 1
 id: CP-32
-title: "requirements.txt lock omits coverage although pyproject [test] extra requires it; setup.sh --check cannot vouch for the coverage gate"
+title: "requirements-report.txt lock omits coverage although pyproject [test] extra requires it; setup.sh --check cannot vouch for the coverage gate"
 status: open
 type: "bugfix"
 severity: "low"
@@ -18,8 +18,8 @@ filed_date: "2026-10-27"
 ## Observed
 
 `pyproject.toml` declares `test = ["cgroup-profiler[report]", "pytest>=8", "coverage[toml]>=7.6"]` and says the
-lock `requirements.txt` is generated from it by `./setup.sh --relock` (`pip freeze` of a venv built from `.[test]`).
-The committed lock has no `coverage` line at all (`grep -c coverage requirements.txt` is 0): it was generated before
+lock `requirements-report.txt` is generated from it by `./setup.sh --relock` (`pip freeze` of a venv built from `.[test]`).
+The committed lock has no `coverage` line at all (`grep -c coverage requirements-report.txt` is 0): it was generated before
 coverage joined the extra and never re-locked. Consequences:
 
 - a venv built by `./setup.sh` cannot run `tools/gate.sh <wt> coverage`'s command locally (`python -m coverage` is
@@ -34,7 +34,7 @@ directly, not from this lock. The review venv for 2026-10-27 had to `pip install
 - Re-lock with `./setup.sh --relock` under the estate freshness rule (prefer the latest release at least 14 days old)
   and commit the diff; the lock must contain every distribution the `[test]` extra resolves to.
 - Add a test (collector-tier, `tests/test_deployment_contract.py` is the natural home) that every top-level
-  distribution named in `[project.optional-dependencies].test`/`.report` appears in `requirements.txt`, so the lock
+  distribution named in `[project.optional-dependencies].test`/`.report` appears in `requirements-report.txt`, so the lock
   cannot drift silently again.
 
 ## Oracles

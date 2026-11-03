@@ -532,7 +532,7 @@ running).
 
 Multi-stage Dockerfile (base `python:3.14-slim`, matching DESIGN.md §6's
 dev-environment fact) — builder stage installs `build-essential` and builds
-`venv/` from `requirements.txt` (`ruptures==1.1.9` has no cp314 wheel yet
+`venv/` from the report lock (`ruptures==1.1.9` has no cp314 wheel yet
 and needs gcc to compile); final stage copies only the finished venv, never
 the compiler, since this image runs `--privileged --pid=host --cgroupns=host`.
 `docker-bake.hcl`/`build-push.py` mirror pwmcp's variable/target/group

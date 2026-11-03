@@ -2599,7 +2599,7 @@ class TestDefaultsDriftGuard:
     build_parser() should not have to import lib.serve just to read a
     default) — this is the guard against the two drifting apart, the same
     "lock file, not a second source of truth" shape pyproject.toml already
-    uses for requirements.txt."""
+    uses for requirements-report.txt."""
 
     def test_ctl_socket_matches_lib_serve(self):
         assert cg.DEFAULT_CTL_SOCKET == serve_lib.DEFAULT_SOCKET_PATH

@@ -188,9 +188,11 @@ See [the design guide](docs/DESIGN-GUIDE.md#private-namespaces-and-host-views)
 for the namespace rationale and [the consumer guide](docs/CONSUMERS.md#resolve-a-target-from-a-cockpit)
 for a working helper-mode command.
 
-**Nothing at run time.** Dependencies are pinned in `requirements.txt` and
-built once by `./setup.sh`. No code path installs, downloads, or fetches while
-profiling — that would add exactly the load the tool exists to measure.
+**Nothing at run time.** Report dependencies are pinned in
+`requirements-report.txt` and built once by `./setup.sh`. The lock retains the
+existing install set; `pyproject.toml` remains the dependency source of truth.
+No code path installs, downloads, or fetches while profiling — that would add
+exactly the load the tool exists to measure.
 
 ## Running the daemon
 

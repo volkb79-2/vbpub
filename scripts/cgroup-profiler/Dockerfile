@@ -14,7 +14,7 @@
 #   - COLLECTOR (`serve`, `ctl`, `mark`): stdlib only, runs on the system
 #     python3 this base image already ships.
 #   - REPORT (`ctl report`'s subprocess, `cgprofile report`): pandas/
-#     plotly/etc., built into venv/ from requirements.txt (the pinned
+#     plotly/etc., built into venv/ from requirements-report.txt (the pinned
 #     lock — see that file's own header) at BUILD time only.
 #
 # Two stages: `ruptures==1.1.9` (pyproject.toml's pin) ships no prebuilt
@@ -35,13 +35,13 @@ RUN if [ -z "${CGPROFILE_VERSION}" ]; then echo >&2 'CGPROFILE_VERSION build arg
     && if [ -z "${GIT_REVISION}" ]; then echo >&2 'GIT_REVISION build arg is required'; exit 1; fi
 
 WORKDIR /opt/cgprofile
-COPY requirements.txt ./requirements.txt
+COPY requirements-report.txt ./requirements-report.txt
 RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential \
     && rm -rf /var/lib/apt/lists/* \
     && python3 -m venv /opt/cgprofile/venv \
     && /opt/cgprofile/venv/bin/pip install --no-cache-dir --upgrade pip setuptools wheel \
-    && /opt/cgprofile/venv/bin/pip install --no-cache-dir -r requirements.txt \
+    && /opt/cgprofile/venv/bin/pip install --no-cache-dir -r requirements-report.txt \
     && /opt/cgprofile/venv/bin/python -c "import matplotlib, numpy, pandas, plotly, ruptures, scipy; import plotly.offline"
 
 FROM python:3.14-slim

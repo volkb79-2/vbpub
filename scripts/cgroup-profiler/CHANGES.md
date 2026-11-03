@@ -8,6 +8,9 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
 
 ## [Unreleased]
 
+### Changed
+- Rename the report dependency lock to `requirements-report.txt`; keep the same pinned packages in `setup.sh` and the image build.
+
 <!-- cmru: release history -->
 
 ## [1.1.0] - 2026-10-27

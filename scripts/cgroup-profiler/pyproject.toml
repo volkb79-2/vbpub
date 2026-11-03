@@ -1,9 +1,9 @@
 # SINGLE SOURCE OF TRUTH for this project's dependency closure.
 #
 # `tester-unified` derives the gate image's closure from this file (see that
-# Dockerfile's header), and `setup.sh` builds the local venv from it. Add a
-# dependency here and nowhere else — `requirements.txt` beside this file is a
-# generated lock, not a second list to maintain.
+# Dockerfile's header), and `setup.sh` builds the local report venv from the
+# generated `requirements-report.txt` lock. Add a dependency here and nowhere
+# else; do not maintain the lock as a second list.
 
 [build-system]
 requires = ["setuptools>=68"]

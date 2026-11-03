@@ -4,14 +4,14 @@
 # A profiler that reaches for the network while a gate is running is adding
 # exactly the load it was sent to measure.
 #
-#   ./setup.sh              build (or rebuild) venv/ from requirements.txt
+#   ./setup.sh              build (or rebuild) venv/ from requirements-report.txt
 #   ./setup.sh --check      verify the venv satisfies the lock, no writes
 #   ./setup.sh --relock     re-resolve from pyproject.toml and rewrite the lock
 #
-# pyproject.toml is the single source of dependency truth; requirements.txt is
-# a generated lock pinning what was actually resolved, so a rebuild months from
-# now reproduces this venv rather than whatever PyPI has moved on to. Only
-# --relock changes the lock, and it is a deliberate act with a diff to review.
+# pyproject.toml is the single source of dependency truth; requirements-report.txt
+# is the generated lock installed for the analysis/report environment. The
+# existing lock and install selection are preserved. Only --relock changes the
+# lock, and it is a deliberate act with a diff to review.
 #
 # The venv is deliberately self-contained rather than --system-site-packages:
 # the devcontainer's own interpreter is already a venv, so "system" site
@@ -21,7 +21,7 @@ set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 venv="$here/venv"
-req="$here/requirements.txt"
+req="$here/requirements-report.txt"
 
 mode="${1:-build}"
 

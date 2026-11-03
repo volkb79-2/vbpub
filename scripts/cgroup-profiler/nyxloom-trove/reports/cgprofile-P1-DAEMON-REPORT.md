@@ -694,7 +694,7 @@ ok/not-ok exit codes). 100%/100% maintained.
 
 Multi-stage Dockerfile, base `python:3.14-slim` (matches DESIGN.md §6's
 dev-environment fact). Builder stage installs `build-essential` and builds
-`venv/` from `requirements.txt` — `ruptures==1.1.9` ships no cp314 wheel
+`venv/` from the report lock — `ruptures==1.1.9` ships no cp314 wheel
 yet and compiles a C extension needing gcc; the final stage copies only
 the finished venv, never the compiler, since this image runs
 `--privileged --pid=host --cgroupns=host` and every package not needed at
