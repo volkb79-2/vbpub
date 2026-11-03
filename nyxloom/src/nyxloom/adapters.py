@@ -110,7 +110,7 @@ INTERFACE CONTRACT (frozen):
   exec-nyxloom.py can dispatch into it instead of silently falling back to
   host mode. env['NYXLOOM_CONTAINER'] (default os.environ) wins outright
   when it names a running container. Otherwise, if container_prefix is
-  given (the ciu.toml `container_prefix` value, e.g. "nyxloom-prod"),
+  given (the ciu.toml `container_prefix` value, e.g. "nyxloom-<instance_id>"),
   matches the exact name `<container_prefix>-nyxloomd` -- the literal
   container_name the compose template renders. Without a prefix, matches
   any running name ending in "-nyxloomd" (the fixed service-name suffix

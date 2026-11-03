@@ -70,7 +70,7 @@ while true; do
   if [ "$fails" -ge "$MAX_RAPID_FAILURES" ]; then
     log "${MAX_RAPID_FAILURES} consecutive rapid failures — refusing to respawn."
     log "The daemon is DOWN ON PURPOSE. Fix the fault (see the last traceback above),"
-    log "then 'docker restart nyxloom-prod-nyxloomd'. Holding the container alive and"
+    log "then restart this container ('docker restart <the nyxloomd container name>'). Holding the container alive and"
     log "UNHEALTHY for inspection (not flapping)."
     exec sleep infinity
   fi
