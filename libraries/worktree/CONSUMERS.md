@@ -129,6 +129,25 @@ checkout is absent and the captured admin identity is unchanged. A
 product-level report may combine these events with its own resource cleanup
 and identity-resolution phases.
 
+### Mounts under the checkout (WT-OW-01)
+
+`remove_workspace`, `remove_unrecorded_workspace` and `remove_orphan_workspace` read the mount table
+(`/proc/self/mountinfo`, octal escapes decoded, the checkout path symlink-resolved) and refuse with
+category `cleanup-refusal` when any mount sits at or under the checkout: bind mounts, btrfs subvolume
+mounts and nested mounts alike. The message names every mount point ("detach it first"). The check
+runs after the identity and lease checks and before the `cleanup` callback and any deletion, emits no
+phase event, never unmounts, and `force` does not override it. An unreadable or malformed table also
+refuses (fail closed). `mounts_under(path, mountinfo_reader=None)` is public so an adapter can run the
+same check before its own destructive steps (ciu does, ahead of `ciu clean`); tests inject
+`mountinfo_reader` (a zero-argument callable returning the table text). Out of scope: mounts that exist
+only in another mount namespace are invisible to this process, and the check is a point-in-time read, not
+a lock against a mount appearing afterwards.
+
+**Release coupling.** The library source is embedded in both the ciu and the cmru wheels (the same
+top-level `worktree` package). Both tools must be re-released with identical library copies, ciu
+installed first, then cmru. Affected consumer surfaces: `ciu worktree rm` and cmru's release/build
+workspace cleanup and `cmru abandon`.
+
 The public failure categories are `collision`, `occupied`, `root-mismatch`,
 `stale-record`, `invalid-record`, `cleanup-refusal`, `lease-held`,
 `lock-error`, `git-error`, and `invalid-input`. A caller that cannot safely
@@ -162,7 +181,7 @@ are enabled.
 
 ## Open work
 
-- **WT-OW-01 refuse removal when a mount sits under the worktree.** Removal today walks the tree and deletes. A bind mount, or
+- **WT-OW-01 refuse removal when a mount sits under the worktree.** FIXED 2026-11-04 (b59dbf12d; see "Mounts under the checkout" above). Original text: Removal today walks the tree and deletes. A bind mount, or
   a subvolume mounted at a path inside the worktree, makes `rm -rf` fail with EBUSY or, worse, descend into the mounted content
   and delete it (VM disks, for instance). Before any deletion, list the mounts under the worktree (`findmnt -R <worktree>`, or
   the mount table read directly) and refuse with a message naming each mount point and "detach it first". Exit as the other
