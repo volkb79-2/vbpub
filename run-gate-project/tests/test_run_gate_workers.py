@@ -536,6 +536,15 @@ class TestWorkersRunPlumbing:
         assert record["_workers_junit"] == str(directory / "junit.xml")
         assert record["_workers_profile_dir"] == str(directory)
         assert record["workers"]["workers"] == 2
+        assert directory.stat().st_mode & 0o777 == 0o777   # H1: lane uid
+
+    def test_prepare_survives_a_failed_chmod(self, tmp_path, monkeypatch):
+        def refuse(*_args, **_kwargs):
+            raise PermissionError("not ours")
+        monkeypatch.setattr(run_gate.os, "chmod", refuse)
+        table, record = self.table(), {"run_id": "r3"}
+        run_gate.prepare_workers_run(table, record, tmp_path)
+        assert Path(table["_workers_env"]["RUN_GATE_PROFILE_DIR"]).is_dir()
 
     def test_prepare_leaves_pytest_addopts_alone_when_nothing_to_add(
             self, tmp_path, monkeypatch):
