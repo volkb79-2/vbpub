@@ -121,7 +121,7 @@ commands = [
 
 [versions.targets."oci.socket-proxy"]
 mode = "single"
-constraint = ">=0.4.2"
+constraint = ">=0.5.0"
 
 [versions.targets."oci.socket-proxy".oci]
 image = "docker.io/tecnativa/docker-socket-proxy"

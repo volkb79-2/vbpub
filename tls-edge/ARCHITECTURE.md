@@ -352,7 +352,7 @@ service itself, increasing drift risk.
 Traefik needs to watch Docker events to discover containers.  This requires
 access to the Docker socket, which in turn grants significant host control.
 
-**Mitigation**: Docker socket proxy (`tecnativa/docker-socket-proxy:v0.4.2`).
+**Mitigation**: Docker socket proxy (`tecnativa/docker-socket-proxy:v0.5.0`).
 
 The socket proxy is a separate container that accepts a restricted subset of
 Docker API calls and proxies them to the real socket.  Configuration:
@@ -433,7 +433,7 @@ lateral movement to other containers, no persistence mechanism, no host escape.
 - `security_opt: no-new-privileges:true` on the socket proxy container.
 - Socket proxy is attached to `traefik_internal` only — it is not reachable
   from `ingress_public` or any consumer network.
-- Socket proxy image is version-pinned (`tecnativa/docker-socket-proxy:v0.4.2`)
+- Socket proxy image is version-pinned (`tecnativa/docker-socket-proxy:v0.5.0`)
   for reproducibility.
 
 See [Section 5](#5-edge-proxy-selection) for the edge proxy selection rationale.
@@ -702,7 +702,7 @@ middlewares, and the static certificate store.
 | `volumes: /var/run/docker.sock:ro` | Socket mounted read-only to the proxy container |
 | Healthcheck: `wget /version` | Confirms the proxy is accepting API calls before Traefik starts |
 | Logging: json-file, 10 m × 3 | Bounded log storage |
-| Image pinned: `tecnativa/docker-socket-proxy:v0.4.2` | Reproducible deployments |
+| Image pinned: `tecnativa/docker-socket-proxy:v0.5.0` | Reproducible deployments |
 
 ### Secure-headers middleware
 
