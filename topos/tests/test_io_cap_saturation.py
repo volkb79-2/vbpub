@@ -273,7 +273,7 @@ def test_read_io_max_caps_by_device_keeps_devices_apart(tmp_path: Path) -> None:
     from topos.collect.cgroup import read_io_max_caps_by_device
 
     path = tmp_path / "io.max"
-    path.write_text("8:16 rbps=1000 wbps=max\n8:32 rbps=max wbps=5000 riops=bad\n8:48 rbps=max\n")
+    path.write_text("8:16 rbps=1000 wbps=max\n\n8:32 rbps=max wbps=5000 riops=bad\n8:48 rbps=max\n")
     devices, src = read_io_max_caps_by_device(path)
     assert src == "exact"
     assert devices == {"8:16": {"rbps": 1000}, "8:32": {"wbps": 5000}}

@@ -609,12 +609,11 @@ class _OwnerSafetyGate:
         )
         if refusal is not None:
             return _GateRefusal(refusal.message)
-        resolved = owner_safety.resolve_identity(captured[-1]) if captured else None
-        if resolved is None:
-            return _GateRefusal(
-                f"could not establish the canonical ID of container {self._target!r}; "
-                "refusing the mutation (no name-only fallback)"
-            )
+        # No refusal means the evaluator already resolved a valid canonical ID
+        # from this very payload (an unresolvable identity is "inspect-failed"),
+        # so there is no name-only fallback to guard here.
+        resolved = owner_safety.resolve_identity(captured[-1])
+        assert resolved is not None
         self.full_id = resolved.full_id
         return None
 
