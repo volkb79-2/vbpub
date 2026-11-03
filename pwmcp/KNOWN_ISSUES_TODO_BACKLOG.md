@@ -566,3 +566,29 @@ location, and make that the documented place to point `PWMCP_CONSOLE_CORPUS_DIR`
 the corpus design (`docs/DESIGN-OCR-PHASE2-3.md`) deliberately has no fallback, so an unset variable must keep raising
 `CorpusMissing`; any change there is a design decision, not a path derivation. Replace the `eval_glyphgrid.py` home-directory default with a
 location derived from the same folder, and update the corpus README, `docs/CONSUMERS.md#local-console-corpus` and this tool's README.
+
+<!-- Id note (2026-11-04): PWMCP-22 exists on branch finish-pwmcp-1-20261104 (not on main). The id below is PWMCP-23. -->
+
+## PWMCP-23 — find the local base image behind the release's `BUILDX_BUILDER=default` bypass, or drop the bypass
+
+**Status:** OPEN (investigation). Filed 2026-11-04.
+
+**Problem.** The pwmcp release is documented to need `BUILDX_BUILDER=default BUILDKIT_HOST=` (environment only; `build-push.py:127` requires both variables
+when building through the configured endpoint, and `docs/ARCHITECTURE.md:130` says `BUILDX_BUILDER = "mdt-managed"`). `build-push.py:115-195` supports both
+paths and no committed text says why the default builder is needed. A bypass loses governance (`dev-buildkitd.slice`), the btrfs cache and the
+fail-closed shim (mdt-cockpit MDT-056); on the host the shim may even remap `BUILDX_BUILDER=default` back to `mdt-managed` (MDT-057).
+
+**Decision record (operator, 2026-11-04).** `mdt-managed` is the only builder; local bases come in as OCI-layout build contexts pinned by digest
+(`--build-context <ref>=oci-layout://...@sha256:...`); a bypass is allowed only for the fresh-host bootstrap and is never selected by environment.
+
+**Design / steps.**
+
+1. Identify what the build needs from the local store: a `FROM <local-tag>` (a base image built by another project), a `--load` consumer, or a
+   registry-auth reason. Record the finding in this entry.
+2. If a local base exists: build it as an OCI layout and consume it with `--build-context`, following the tester-chain pilot (TB-14).
+3. If none exists: drop the bypass from the release instructions and from the script, and run the release through `mdt-managed`.
+
+**Acceptance.** The release procedure names no environment-selected bypass; a test (or the release dry-run) shows the build runs on
+`mdt-managed`; docs updated. **Non-mdt path:** the build still works with any buildx builder (document the plain-host form).
+
+**Dependencies and order.** Package 5 of MDT-056, after TB-14 and the cmru `build_contexts` option (KI-113).
