@@ -2624,3 +2624,23 @@ test output.
 **Fix.** Keep the temporary copy and also stream the complete captured control output to stderr before raising. The refusal says the
 full output is above in the lane log and does not point to the disappearing path. The focused test asserts the complete stderr and
 message, and redirects/cleans the temporary copy under its own `tmp_path` (`tests/test_project_fixture.py`).
+
+## KI-109 — a cmru minor release cannot pass its own release gate while KI-79 (R2 postponement) is the only mutation evidence
+
+**Status:** OPEN (filed 2026-11-03). The release gate authorizes the R2 postponement only for patch lines below 7.2.0, so `cmru release cmru`
+with a minor bump (cmru proposed 7.2.0 from the commit types) is refused in `gate-provisional`. 7.1.3 was released as a patch instead.
+**Fix options:** run a real R2 for the whole source (KI-79/KI-99) before the next minor, or widen the waiver window with a recorded reason.
+The dry-run should say the version is outside the waiver window instead of failing 25 minutes later in the gate.
+
+## KI-110 — the canary leaves an unnamed temporary copy of a red control log
+
+**Status:** OPEN (filed 2026-11-03, Opus review of KI-108, severity P3). `tools/coverage_canary.py` still writes a temporary copy of the
+red control's full output although stderr already carries it and nothing names the path; in a local run each red control leaves an
+unnamed `cmru-coverage-canary-*.control.log` in the system temp directory. **Fix:** stop writing it, or name it in the message.
+
+## KI-111 — the release dry-run does not exercise the gate preconditions that failed the first three cmru release attempts
+
+**Status:** OPEN (filed 2026-11-03). `cmru release --dry-run` showed a clean plan three times while the real release then failed in its
+gate: (1) the waiver window (KI-109), (2) the tester-unified image's Run-Gate wheel not matching the released Run-Gate, (3) a docs/version
+consistency test. **Fix:** a `--check-gate-preconditions` step in the dry-run (window, image wheel identity via the same preflight the gate
+runs, `docs/BOOTSTRAP-FROM-ZERO.md` Run-Gate version vs `run-gate-project/CHANGES.md`).
