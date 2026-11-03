@@ -35376,8 +35376,9 @@ class TestRunGateR1DirectCoverage:
         assert "--memory-swap 2g" in argv
         assert ("type=bind,source=/mnt/cow/fixture,target=/mnt/cow/fixture"
                 in argv)
-        assert "COWTREE_MODE=<redacted>" in argv
-        assert "MDT_COW_ROOT=<redacted>" in argv
+        # Resource facts ride the docker client's environment: names only.
+        assert "-e COWTREE_MODE " in argv and "COWTREE_MODE=" not in argv
+        assert "-e MDT_COW_ROOT " in argv and "MDT_COW_ROOT=" not in argv
 
     @pytest.mark.parametrize("failure", ["missing-docker", "docker-ps"])
     def test_exec_lane_refuses_missing_docker_or_failed_ps(
@@ -37039,7 +37040,8 @@ argv = ["true"]
         argv = next(line for line in output.splitlines()
                     if "run-gate: docker argv:" in line)
         assert "target=/etc/ld.so.preload,readonly" in argv
-        assert "RUN_GATE_IO_SYNC=<redacted>" in argv
+        assert "-e RUN_GATE_IO_SYNC " in argv
+        assert "RUN_GATE_IO_SYNC=" not in argv
         assert list((tmp_path / ".run-gate").glob("ld.so.preload.*")) == []
 
     def test_relaxed_preload_file_closes_when_docker_run_fails(
@@ -37110,8 +37112,9 @@ argv = ["true"]
         output = capsys.readouterr().out
         argv = next(line for line in output.splitlines()
                     if "run-gate: docker argv:" in line)
-        assert "RUN_GATE_IO_SYNC=<redacted>" in argv
-        assert "COWTREE_MODE=<redacted>" in argv
+        assert "-e RUN_GATE_IO_SYNC " in argv
+        assert "-e COWTREE_MODE " in argv
+        assert "=<redacted>" not in argv and "COWTREE_MODE=" not in argv
 
     def test_host_lane_passes_resource_environment_to_child(
             self, tmp_path, monkeypatch):

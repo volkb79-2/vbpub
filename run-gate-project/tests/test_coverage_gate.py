@@ -1052,4 +1052,4 @@ def test_selftest_lane_judges_both_shipped_modules():
     command = config["lanes"]["selftest"]["argv"][-1]
     sources = [part for part in command.split("--source ")[1:]]
     assert [s.split()[0].rstrip('"') for s in sources] == [
-        "run_gate.py", "run_gate_admission.py"]
+        "run_gate.py", "run_gate_admission.py", "run_gate_profile.py"]

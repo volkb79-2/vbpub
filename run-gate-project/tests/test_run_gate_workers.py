@@ -536,6 +536,15 @@ class TestWorkersRunPlumbing:
         assert record["_workers_junit"] == str(directory / "junit.xml")
         assert record["_workers_profile_dir"] == str(directory)
         assert record["workers"]["workers"] == 2
+        assert directory.stat().st_mode & 0o777 == 0o777   # H1: lane uid
+
+    def test_prepare_survives_a_failed_chmod(self, tmp_path, monkeypatch):
+        def refuse(*_args, **_kwargs):
+            raise PermissionError("not ours")
+        monkeypatch.setattr(run_gate.os, "chmod", refuse)
+        table, record = self.table(), {"run_id": "r3"}
+        run_gate.prepare_workers_run(table, record, tmp_path)
+        assert Path(table["_workers_env"]["RUN_GATE_PROFILE_DIR"]).is_dir()
 
     def test_prepare_leaves_pytest_addopts_alone_when_nothing_to_add(
             self, tmp_path, monkeypatch):
@@ -960,8 +969,11 @@ class TestWorkersContainerRunners:
         proc = run_tool(proj, "suite")
         assert proc.returncode == 0, proc.stderr
         argv = docker_runs(log)[0]
-        assert "RUN_GATE_WORKERS=2" in argv
-        assert any(part.startswith("RUN_GATE_PROFILE_DIR=") for part in argv)
+        assert "RUN_GATE_WORKERS=2" not in argv     # name only on argv
+        assert any(left == "-e" and right == "RUN_GATE_WORKERS"
+                   for left, right in zip(argv, argv[1:]))
+        assert any(left == "-e" and right == "RUN_GATE_PROFILE_DIR"
+                   for left, right in zip(argv, argv[1:]))
         assert any("pytest -n 2" in part for part in argv)
         assert "parity=absent" in proc.stdout
 
@@ -984,12 +996,19 @@ class TestWorkersContainerRunners:
         ).replace('echo hello"]', 'pytest -n {workers}"]\nworkers = 1'))
         log = fake_docker(tmp_path, monkeypatch)
         shim = shim_dir_of(monkeypatch) / "docker"
+        seen = tmp_path / "carried-env"
         shim.write_text(shim.read_text().replace(
-            'case "$1" in', 'case "$1" in\n  ps) echo "custom-name" ;;'))
+            'case "$1" in',
+            'case "$1" in\n  ps) echo "custom-name" ;;\n'
+            f'  exec) printf "%s" "$RUN_GATE_WORKERS" > {seen} ;;'))
         proc = run_tool(proj, "suite", "--worktree", str(repo))
         assert proc.returncode == 0, proc.stderr
+        # M1: the value travelled in the docker client's environment.
+        assert seen.read_text() == "1"
         call = docker_execs(log)[0]
-        assert "RUN_GATE_WORKERS=1" in call
+        assert "RUN_GATE_WORKERS=1" not in call
+        assert any(left == "-e" and right == "RUN_GATE_WORKERS"
+                   for left, right in zip(call, call[1:]))
         assert any("pytest -n 1" in part for part in call)
 
 
@@ -1065,6 +1084,22 @@ class TestProfilePlugin:
                                       "kind": "xdist-worker", "id": "gw0",
                                       "tests": 1}
         assert run_gate.aggregate_worker_profiles([written]) is None
+
+    def test_unwritable_profile_dir_never_raises(
+            self, monkeypatch, tmp_path, capsys):
+        """H1: a profile that cannot be written is a warning, not a failure
+        of pytest's unconfigure (which would turn a PASS lane into FAIL)."""
+        blocker = tmp_path / "blocker"
+        blocker.write_text("a file where the directory should be")
+        monkeypatch.setenv(run_gate_profile.PROFILE_DIR_ENV,
+                           str(blocker / "profiles"))
+        monkeypatch.delenv(run_gate_profile.OBSERVER_SOCKET_ENV,
+                           raising=False)
+        run_gate_profile.pytest_configure(self.config())
+        run_gate_profile.pytest_unconfigure(self.config())
+        assert run_gate_profile._PROFILE is None
+        err = capsys.readouterr().err
+        assert "NO_MEASUREMENT" in err and "controller" in err
 
     def test_unreachable_observer_is_a_reasoned_no_measurement(
             self, monkeypatch, tmp_path):
