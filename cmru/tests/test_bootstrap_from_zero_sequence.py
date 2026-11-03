@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pytest
 
+from cmru.release_preconditions import bootstrap_run_gate_version_error
 from tests.test_installed_wheel_subprocess import (
     CX_LIB,
     PROJECT_DIR,
@@ -892,12 +893,8 @@ def test_the_release_commands_follow_the_declared_graph_and_one_set_of_versions(
     named |= set(re.findall(r"run_gate-([0-9][0-9.]*)-\*\.whl", text))
     named.add(versions["run-gate-project"])
     assert len(named) == 1, named
-    # ... and it is not behind what the project's own changelog says was already released.
+    # ... and every explicit guide reference matches the latest stable release heading.
     changes = REPO_ROOT / "run-gate-project" / "CHANGES.md"
     if changes.is_file():
-        released = [
-            tuple(map(int, found.split(".")))
-            for found in re.findall(r"(?m)^## \[(\d+\.\d+\.\d+)\]", changes.read_text("utf-8"))
-        ]
-        (run_gate_version,) = named
-        assert tuple(map(int, run_gate_version.split("."))) >= max(released)
+        version_error = bootstrap_run_gate_version_error(text, changes.read_text("utf-8"))
+        assert version_error is None, version_error

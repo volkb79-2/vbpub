@@ -158,6 +158,30 @@ pids = 8192
 memory = "2g"
 memory_swap = "16g"
 
+# Fast regression slice for CMRU's release gate policy and its precondition
+# report. The full coverage lane below still judges every production branch.
+[lanes.release-preconditions]
+kind = "command"
+environment = "tester-unified"
+argv = [
+  "bash",
+  "-c",
+  '''
+set -euo pipefail
+cd {worktree}/cmru
+exec /opt/tester-venv/bin/python -m pytest \
+  tests/test_release_gate_preconditions.py \
+  tests/test_release_gate_provisional.py \
+  tests/test_project_fixture.py -q --cli-case-partial
+''',
+]
+budget = "10m"
+
+[lanes.release-preconditions.resources]
+pids = 8192
+memory = "2g"
+memory_swap = "16g"
+
 # Dedicated ephemeral environment for CMRU's mutation lane. Inheriting the
 # central tester-unified definition preserves its shared image/cgroup policy;
 # this name adds only CMRU-specific release-baseline facts.

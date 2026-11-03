@@ -425,7 +425,7 @@ def test_fixture_carries_import_time_root_reads_even_in_skip_guarded_modules():
     )
 
 
-def test_canary_control_failure_keeps_the_first_failure_section_and_streams_a_full_log(
+def test_canary_control_failure_streams_full_output_without_a_temporary_log(
     tmp_path, monkeypatch, capsys
 ):
     project_root = _estate(tmp_path / "repo")
@@ -455,27 +455,21 @@ def test_canary_control_failure_keeps_the_first_failure_section_and_streams_a_fu
     evidence = tmp_path / "canary.json"
     monkeypatch.setattr(coverage_canary.tempfile, "tempdir", str(tmp_path))
 
-    try:
-        with pytest.raises(RuntimeError, match="known-good canary control failed with exit 1") as raised:
-            coverage_canary.run([
-                "--repo-root", str(project_root.parent), "--project-root", str(project_root),
-                "--target", "src/cmru/config.py", "--evidence", str(evidence),
-                "--", sys.executable, "noisy_control.py",
-            ])
+    with pytest.raises(RuntimeError, match="known-good canary control failed with exit 1") as raised:
+        coverage_canary.run([
+            "--repo-root", str(project_root.parent), "--project-root", str(project_root),
+            "--target", "src/cmru/config.py", "--evidence", str(evidence),
+            "--", sys.executable, "noisy_control.py",
+        ])
 
-        error = str(raised.value)
-        assert "FileNotFoundError: /scratch/tester-base/Dockerfile" in error
-        assert "full output is above in the lane log" in error
-        assert "full output:" not in error
-        assert capsys.readouterr().err == "known-good canary control output follows:\n" + full_output + "\n"
-        logs = list(tmp_path.glob("cmru-coverage-canary-*.control.log"))
-        assert len(logs) == 1
-        assert logs[0].read_text(encoding="utf-8") == full_output
-        assert not evidence.exists()
-        assert not evidence.with_suffix(".control.log").exists()
-    finally:
-        for log in tmp_path.glob("cmru-coverage-canary-*.control.log"):
-            log.unlink(missing_ok=True)
+    error = str(raised.value)
+    assert "FileNotFoundError: /scratch/tester-base/Dockerfile" in error
+    assert "full output is above in the lane log" in error
+    assert "full output:" not in error
+    assert capsys.readouterr().err == "known-good canary control output follows:\n" + full_output + "\n"
+    assert not list(tmp_path.glob("cmru-coverage-canary-*.control.log"))
+    assert not evidence.exists()
+    assert not evidence.with_suffix(".control.log").exists()
 
 
 def _real_pytest_output(tmp_path: Path, source: str) -> str:
@@ -566,24 +560,6 @@ def _run_noisy_canary(project_root: Path, evidence: Path) -> None:
         "--target", "src/cmru/config.py", "--evidence", str(evidence),
         "--", sys.executable, "noisy_control.py",
     ])
-
-
-def test_canary_reports_both_the_control_failure_and_an_unwritable_control_log(tmp_path, monkeypatch):
-    project_root = _estate(tmp_path / "repo")
-    _noisy_control(project_root)
-    evidence = tmp_path / "canary.json"
-
-    def unwritable_control_log(*_args, **_kwargs):
-        raise OSError("temporary storage is unavailable")
-
-    monkeypatch.setattr(coverage_canary.tempfile, "NamedTemporaryFile", unwritable_control_log)
-
-    with pytest.raises(RuntimeError, match="known-good canary control failed with exit 1") as raised:
-        _run_noisy_canary(project_root, evidence)
-
-    assert "could not be written" in str(raised.value)
-    assert "E   boom" in str(raised.value)
-    assert not list(tmp_path.glob("*.control.log"))
 
 
 def test_a_green_canary_control_removes_a_stale_control_log(tmp_path):

@@ -31,6 +31,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
      volume); it skips it with a stderr WARN. The release-notes generator picks this up from
      the `fix(cmru): ...` commit subject. -->
 
+- feat(cmru): check the planned CMRU release version, Run-Gate image identity, and bootstrap guide version during `cmru release --dry-run`, before allocating a candidate worktree (KI-109, KI-111).
+- fix(cmru): stop writing an unnamed temporary copy of failed coverage-canary control output; the complete output remains in stderr and the lane log (KI-110).
+
 <!-- cmru: release history -->
 
 ## [7.1.3] - 2026-11-03

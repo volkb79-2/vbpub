@@ -763,6 +763,7 @@ rather than a cockpit pytest command:
 
 ```sh
 run-gate --list
+run-gate release-preconditions  # focused tests for dry-run gate preconditions
 run-gate gate
 ```
 
@@ -785,8 +786,8 @@ The native-R2 `mutation` lane requests contract-2 event evidence from
 `cgprofile`. The `installed-wheel`, `installed-wheel-live`, `ref-probe`,
 `assay`, `coverage`, and `canary` lanes declare 2 GiB memory and an
 8192-process ceiling but do not collect event evidence; KI-77 tracks adding
-working observation to those command lanes. The release step for the current
-6.2.0 candidate runs `run-gate gate-provisional`, which skips the long mutation
+working observation to those command lanes. The CMRU release step currently
+runs `run-gate gate-provisional`, which skips the long mutation
 lane and records that deferral in `.assay/mutation-postponed-cmru.json` under
 KI-79. The deferral is authorized only for CMRU >= 6.2.0 and < 6.3.0 (the 6.2 patch line) or >= 7.0.0 and < 7.1.0 (the 7.0 patch line) or >= 7.1.0 and < 7.2.0 (the 7.1 patch line;
 6.3.x, 7.2.0 and everything else refuse), so a 6.2.x, 7.0.x or 7.1.x release is an ordinary patch release; a
@@ -800,6 +801,29 @@ gate` when full R2 evidence is required (the recorded `follow_up_lane` is `gate`
 includes the mutation campaign. If cleanup fails after the lanes pass, the gate exits non-zero and
 leaves `"state": "failed"` with an empty `deferred_lanes` and no marker; an invocation refused
 before a new gate starts leaves the previous run's marker and manifest untouched.
+
+Before creating a release candidate worktree, the dry-run checks the plan and
+the three gate preconditions that can be checked cheaply. Run it with the same
+version flags you intend to release:
+
+```sh
+cmru release cmru --minor --dry-run
+```
+
+The check compares the planned version with the gate's KI-79 window, inspects
+the selected tester image's Run-Gate version and wheel digest, and requires
+`docs/BOOTSTRAP-FROM-ZERO.md` to name the latest stable Run-Gate version in
+`run-gate-project/CHANGES.md`. When all checks pass, the existing preview gains
+one `Release gate preconditions: PASS` line. If Docker is unavailable, the
+image row says `SKIPPED` and the dry-run continues; that row does not certify
+the image. A failure prints its remedy and exits 4 before a worktree is
+created. For a version outside the KI-79 window, run the full `gate` lane for
+that release or obtain an explicit operator decision to widen the window. For
+an image mismatch, rebuild the selected image with the exact published
+Run-Gate wheel named in the remedy. For a stale bootstrap guide, update every
+Run-Gate version in the guide to the version recorded by the Run-Gate changelog.
+The [design guide](DESIGN-GUIDE.md#release-dry-run-checks-gate-preconditions)
+explains how these checks share the gate's own rules.
 
 For a CMRU repository with no published stable `cmru-vX.Y.Z` tag, the
 protected `gate-provisional` release workflow first verifies that origin was

@@ -6834,6 +6834,133 @@ def _preflight_feature_worktree_source(
     return branch, local_head
 
 
+def _release_gate_preconditions_before_dispatch(
+    repo_root: Path, config_path: Path, configs, project_names: Sequence[str], vargs, *,
+    git_auth: GitHubGitAuth | None, report: bool,
+) -> str | None:
+    """Check CMRU's dry-run gate inputs before dispatch or workspace creation."""
+    if (
+        not getattr(vargs, "dry_run", False)
+        or getattr(vargs, "resume", None)
+        or "cmru" not in project_names
+    ):
+        return None
+
+    from cmru.release_preconditions import (
+        GatePrecondition,
+        evaluate_release_gate_preconditions,
+        format_gate_precondition_report,
+    )
+    from cmru.version import status_records
+
+    groups = transaction.project_git_family_groups(repo_root, [configs["cmru"]])
+    source_git_root = next(iter(groups))
+    if getattr(vargs, "from_worktree", False):
+        _branch, revision = _preflight_feature_worktree_source(
+            source_git_root, repo_root, git_auth=git_auth,
+        )
+    else:
+        revision = transaction.fetch_origin_main(source_git_root, git_auth=git_auth)
+
+    cmru_project = _project_config_for_release_snapshot(
+        source_git_root, revision, config_path, configs,
+    )
+    all_families = transaction.project_git_family_groups(repo_root, list(configs.values()))
+    known_members = all_families.get(source_git_root, [cmru_project])
+    known_names = [getattr(project, "name") for project in known_members]
+    known_configs = _configs_for_git_family(configs, known_names, source_git_root)
+    records = status_records(
+        source_git_root,
+        {"cmru": cmru_project},
+        minor=getattr(vargs, "minor", False),
+        major=getattr(vargs, "major", False),
+        set_version=getattr(vargs, "set_version", None),
+        ref=revision,
+        known_projects=known_configs,
+        known_project_names=_known_project_scope_names(known_configs),
+    )
+    record = records[0]
+    next_tag = record["next_version"]
+    prefix = getattr(cmru_project, "prefix", None) or "cmru-v"
+    planned_version = (
+        next_tag[len(prefix):]
+        if record["changed"] and isinstance(next_tag, str) and next_tag.startswith(prefix)
+        else None
+    )
+    if getattr(vargs, "skip_gates", None) is not None:
+        rows = [GatePrecondition(
+            "cmru", "Release gate", "SKIPPED",
+            f"release gates were explicitly skipped: {vargs.skip_gates}",
+        )]
+    elif planned_version is None:
+        rows = [GatePrecondition(
+            "cmru", "Release gate", "SKIPPED",
+            "cmru has no CMRU-derived tagged release version in this plan.",
+        )]
+    else:
+        rows = evaluate_release_gate_preconditions(
+            repo_root, source_git_root, revision, {"cmru": planned_version},
+        )
+
+    if any(row.status == "FAIL" for row in rows):
+        print(format_gate_precondition_report(rows), file=sys.stderr)
+        log_error("release gate preconditions failed; no release workspace was created")
+        raise SystemExit(exit_codes.REFUSED)
+    if report:
+        if all(row.status == "PASS" for row in rows):
+            log_info(
+                f"Release gate preconditions: PASS (cmru {planned_version})."
+            )
+        else:
+            print(format_gate_precondition_report(rows))
+    return revision
+
+
+def _project_config_for_release_snapshot(
+    source_git_root: Path, revision: str, config_path: Path,
+    configs: Mapping[str, ProjectConfig],
+) -> ProjectConfig:
+    """Parse CMRU's project config from the exact source commit, without a worktree."""
+    config_rel = _project_config_paths_at_snapshot(
+        source_git_root, revision, config_path, configs, ["cmru"],
+    )["cmru"]
+    content = _read_git_path_at_commit(
+        source_git_root, revision, config_rel,
+        source_label=f"release source ({revision[:12]}:{config_rel.as_posix()})",
+    )
+    with tempfile.TemporaryDirectory(prefix="cmru-release-config-") as temporary:
+        snapshot_config = Path(temporary) / PROJECT_CONFIG_FILENAME
+        snapshot_config.write_text(content, encoding="utf-8")
+        from cmru.config import _parse_project_document
+
+        parsed, _github, _targets = _parse_project_document(
+            snapshot_config, require_repository_facts=False,
+        )
+    document = tomllib.loads(content)
+    project_raw = document["project"]
+    version = _parse_version_spec(project_raw.get("version"), "cmru")
+    artifacts, git_tag, commit_generated = _parse_release_policy(
+        project_raw, "cmru", version,
+    )
+    project_rel = config_rel.parent
+    cwd = project_rel.as_posix() if project_rel.parts else "."
+    extra_paths = list(version.paths) if version else []
+    paths = [cwd] + [
+        (project_rel / Path(path)).as_posix() if project_rel.parts else path
+        for path in extra_paths
+    ]
+    return ProjectConfig(
+        name="cmru", env=parsed.env, steps={}, template_revision=parsed.template_revision,
+        prefix=parsed.prefix, scm_dist=parsed.scm_dist, cwd=cwd, version=version,
+        paths=paths, artifacts=artifacts, git_tag=git_tag,
+        commit_generated=commit_generated, changelog=parsed.changelog,
+        project_root=source_git_root / project_rel, build_metadata=parsed.build_metadata,
+        artifact_dirs=tuple(parsed.artifact_dirs), evidence_paths=tuple(parsed.evidence_paths),
+        build_step=parsed.build_step, runtime_kind=parsed.runtime_kind,
+        tool_dependencies=tuple(parsed.tool_dependencies),
+    )
+
+
 def _release_launcher(
     rest: List[str], vargs, cfg_path: Path, repo_root: Path, configs, ordered,
     project_order, selected_names: List[str], resume_scope, git_auth,
@@ -6846,6 +6973,7 @@ def _release_launcher(
     release_scope = selected_names
     origin_main_snapshots = None
     feature_requested = bool(getattr(vargs, "from_worktree", False))
+    cmru_precondition_base = None
     if feature_requested:
         if vargs.allow_uncommitted:
             raise UsageRefusal(
@@ -6870,6 +6998,21 @@ def _release_launcher(
             origin_main_snapshots = _preflight_multi_family_release_tag_support(
                 repo_root, configs, release_scope,
                 config_path=cfg_path, git_auth=git_auth,
+            )
+        except CmruError as exc:
+            _exit_for_domain_error(exc)
+        except _DOMAIN_ERRORS as exc:
+            log_error(str(exc))
+            sys.exit(1)
+
+    if vargs.dry_run and not getattr(vargs, "resume", None) and "cmru" in release_scope:
+        try:
+            selected_families = transaction.project_git_family_groups(
+                repo_root, [configs[name] for name in release_scope],
+            )
+            cmru_precondition_base = _release_gate_preconditions_before_dispatch(
+                repo_root, cfg_path, configs, release_scope, vargs, git_auth=git_auth,
+                report=len(selected_families) <= 1,
             )
         except CmruError as exc:
             _exit_for_domain_error(exc)
@@ -6944,6 +7087,12 @@ def _release_launcher(
                         )
                         raise RuntimeError(f"{detail}\n{advice}") from exc
                     raise
+            if (
+                cmru_precondition_base is not None
+                and not feature_requested
+                and preflighted_base is None
+            ):
+                preflighted_base = cmru_precondition_base
             if preflighted_base is not None:
                 verified_base = transaction.fetch_origin_main(
                     transaction_root, git_auth=git_auth,
@@ -7071,6 +7220,14 @@ def _release_launcher(
                         transaction_root, git_auth=git_auth,
                     )
                 )
+                if (
+                    cmru_precondition_base is not None
+                    and base != cmru_precondition_base
+                ):
+                    raise RefusedBeforeChange(
+                        "the release source changed after CMRU's gate precondition check; "
+                        "rerun the dry-run against one consistent source snapshot"
+                    )
                 snapshot_config_paths = _project_config_paths_at_snapshot(
                     transaction_root, base, cfg_path, configs, release_scope,
                 )

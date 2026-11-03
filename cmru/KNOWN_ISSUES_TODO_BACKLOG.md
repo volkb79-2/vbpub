@@ -2610,8 +2610,8 @@ sparse tracked fixture and omitted that file, so the control did not test the kn
 `.assay/coverage-canary-cmru.control.log` beside the declared evidence, producing a second snapshot refusal.
 
 **Fix.** Add the stack configuration to the declared suite-collection inputs, use the fixture's shared pathspec function in both
-copying and closure checks, and check module-level root reads even in skip-guarded test modules. Failed-control output remains
-available in a uniquely named temporary log; a new run removes any legacy adjacent log before starting. Tests pin both the
+copying and closure checks, and check module-level root reads even in skip-guarded test modules. Failed-control output is streamed
+in full to stderr and retained in the lane log; no temporary control-log copy is written. A new run removes any legacy adjacent log before starting. Tests pin both the
 missing-input refusal and the absence of a stray `.assay` log (`tests/test_project_fixture.py`).
 
 ### KI-108 — the coverage-canary control log disappears with disposable gate containers
@@ -2621,26 +2621,26 @@ temporary file and named that path in the error. In a tester-unified command lan
 removed when the lane exits; the retained lane log contained only the bounded failure excerpt, losing the control's full collection or
 test output.
 
-**Fix.** Keep the temporary copy and also stream the complete captured control output to stderr before raising. The refusal says the
-full output is above in the lane log and does not point to the disappearing path. The focused test asserts the complete stderr and
-message, and redirects/cleans the temporary copy under its own `tmp_path` (`tests/test_project_fixture.py`).
+**Fix.** Initially stream the complete output to stderr as well as keeping the temporary copy. KI-110 removed that unnamed copy; the
+refusal now points only to the complete output above in the lane log. The focused test asserts complete stderr and the absence of any
+`cmru-coverage-canary-*.control.log` (`tests/test_project_fixture.py`).
 
 ## KI-109 — a cmru minor release cannot pass its own release gate while KI-79 (R2 postponement) is the only mutation evidence
 
-**Status:** OPEN (filed 2026-11-03). The release gate authorizes the R2 postponement only for patch lines below 7.2.0, so `cmru release cmru`
+**Status:** FIXED 2026-11-03. The release gate authorizes the R2 postponement only for patch lines below 7.2.0, so `cmru release cmru`
 with a minor bump (cmru proposed 7.2.0 from the commit types) is refused in `gate-provisional`. 7.1.3 was released as a patch instead.
-**Fix options:** run a real R2 for the whole source (KI-79/KI-99) before the next minor, or widen the waiver window with a recorded reason.
-The dry-run should say the version is outside the waiver window instead of failing 25 minutes later in the gate.
+`cmru release --dry-run` now calls the gate's own KI-79 validator for the planned version before creating a candidate worktree and exits 4 with a remedy if the gate would refuse it. The KI-79 window is unchanged: run the full `gate` lane for a version outside it, or widen the window only through a recorded operator decision.
 
 ## KI-110 — the canary leaves an unnamed temporary copy of a red control log
 
-**Status:** OPEN (filed 2026-11-03, Opus review of KI-108, severity P3). `tools/coverage_canary.py` still writes a temporary copy of the
-red control's full output although stderr already carries it and nothing names the path; in a local run each red control leaves an
-unnamed `cmru-coverage-canary-*.control.log` in the system temp directory. **Fix:** stop writing it, or name it in the message.
+**Status:** FIXED 2026-11-03 (filed during KI-108 review; severity P3). `tools/coverage_canary.py` no longer writes a temporary copy of the
+red control's full output. It already streams that output to stderr, so the lane log is the retained record; the focused test verifies no
+`cmru-coverage-canary-*.control.log` is left behind.
 
 ## KI-111 — the release dry-run does not exercise the gate preconditions that failed the first three cmru release attempts
 
-**Status:** OPEN (filed 2026-11-03). `cmru release --dry-run` showed a clean plan three times while the real release then failed in its
-gate: (1) the waiver window (KI-109), (2) the tester-unified image's Run-Gate wheel not matching the released Run-Gate, (3) a docs/version
-consistency test. **Fix:** a `--check-gate-preconditions` step in the dry-run (window, image wheel identity via the same preflight the gate
-runs, `docs/BOOTSTRAP-FROM-ZERO.md` Run-Gate version vs `run-gate-project/CHANGES.md`).
+**Status:** FIXED 2026-11-03. Before any release worktree is created, `cmru release --dry-run` checks the planned version with the gate's
+KI-79 validator, verifies the selected tester image's Run-Gate version and wheel digest through the release gate's own identity preflight
+(image inspection only; Docker-unavailable is explicitly `SKIPPED`), and compares the bootstrap guide with the latest stable Run-Gate
+changelog version. The bootstrap check shares its parser with the zero-release sequence test. Any failed check prints a remedy and exits 4
+without creating a workspace; widening the waiver window remains an operator decision, not part of this fix.

@@ -1013,6 +1013,35 @@ bypasses snapshotting and should use a secret-free checkout. KI-64/65/73's maski
 restoration requirements are superseded by the exact-snapshot design tracked
 in KI-74; their original incidents remain in the backlog for history.
 
+## Release dry-run checks gate preconditions
+
+Three gate failures were knowable before the release candidate worktree was
+created: the planned version could be outside KI-79's R2 postponement window,
+the selected tester image could carry a different Run-Gate wheel than the gate
+requires, or the zero-release guide could name an older Run-Gate release than
+its changelog. Letting a dry-run report only tags and versions sent each case
+through worktree setup and the start of a long gate before it refused.
+
+The launcher checks those facts against the release source snapshot before
+allocating a worktree. The KI-79 check makes a temporary prepared changelog and
+calls the gate's `_validate_postponement`, so the bounds and authorization
+remain defined in one place. The image check uses the gate's installed-wheel,
+published-wheel, and image-label identity preflight; it inspects the selected
+image without starting a tester container. If Docker is unavailable, it says
+`SKIPPED` instead of treating an unreachable image as empty or as a match. The
+bootstrap comparison uses one parser shared with the zero-release sequence
+test, so the preflight and test reject the same stale or conflicting version
+references.
+
+Any failed check prints the observed fact and an actionable remedy, then exits
+4 before a candidate worktree is created. The launcher compares the checked
+source revision again before allocation, so the plan cannot drift between the
+check and the candidate. When every check passes, one summary line preserves
+the existing dry-run output. This check does not widen KI-79: a release outside
+its windows must run the full `gate` lane or follow a recorded operator
+decision to change the window. The focused `release-preconditions` lane covers
+the three checks and their refusal paths.
+
 ## The bare-host gate controller runs in the installed CMRU environment (KI-81)
 
 `gate` and `gate-provisional` are `bare-host` lanes: the controller must reach the
