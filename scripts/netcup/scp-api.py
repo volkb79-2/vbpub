@@ -296,7 +296,7 @@ def _guard_server_mutation(client: NetcupSCPClient, server_id: int, operation: s
         return
     endpoint = f"/api/v1/servers/{server_id}"
     details = _response_dict(_api_call(client.get, endpoint), f"GET {endpoint}")
-    netcup_scp_client.assert_server_mutation_allowed(server_id, details.get("name"), operation)
+    netcup_scp_client.assert_server_operation_allowed(server_id, details.get("name"), operation)
 
 
 def _server_targets(client: NetcupSCPClient, server_id: Any) -> List[Dict[str, Any]]:
@@ -1700,6 +1700,65 @@ def cmd_snapshots(client: NetcupSCPClient, args, pal: _Palette) -> None:
         )
         emit(result, args.json, lambda d: print_kv(d, pal) if d else print(pal.green("snapshot requested")))
         return
+    if args.action == "revert":
+        server_id = _require_server_id(args, "revert")
+        name = args.snapshot_name
+        _guard_server_mutation(client, server_id, "revert server from snapshot")
+        endpoint = f"/api/v1/servers/{server_id}/snapshots"
+        existing = _response_rows(_api_call(client.get, endpoint), f"GET {endpoint}")
+        matches = [row for row in existing if row.get("name") == name]
+        if len(matches) > 1:
+            raise CliFailure(
+                f"server {server_id} has {len(matches)} snapshots named {name!r}; refusing to pick one",
+                exit_code=2,
+                hint=f"inspect snapshots in the provider panel; list: ./scp-api.py snapshots {server_id}",
+            )
+        match = matches[0] if matches else None
+        if match is None:
+            known = ", ".join(str(row.get("name")) for row in existing) or "none"
+            raise CliFailure(
+                f"server {server_id} has no snapshot named {name!r} (existing: {known})",
+                exit_code=2,
+                hint=f"list them with ./scp-api.py snapshots {server_id}",
+            )
+        if getattr(args, "dry_run", False):
+            planned = {"dryRun": True, "serverId": server_id, "wouldRevert": match}
+            emit(
+                planned,
+                args.json,
+                lambda d: print(
+                    pal.yellow(
+                        f"dry run: would revert server {server_id} to snapshot {name!r}; nothing sent"
+                    )
+                ),
+            )
+            return
+        _refuse_if_tasks_active(client, server_id, "revert to a snapshot")
+        if not confirm(
+            f"Revert server {server_id} to snapshot {name!r}? This replaces its current disk contents.",
+            args.yes,
+            pal,
+        ):
+            print("aborted")
+            return
+        result = _response_dict(
+            _api_call(client.post, f"{endpoint}/{urllib.parse.quote(name, safe='')}/revert", None),
+            f"POST {endpoint}/{name}/revert",
+        )
+        task_uuid = result.get("uuid")
+        if not isinstance(task_uuid, str) or not _TASK_UUID_RE.fullmatch(task_uuid):
+            raise CliFailure("Netcup snapshot revert response did not contain a task UUID")
+        emit(
+            result,
+            args.json,
+            lambda d: print(
+                pal.green(
+                    f"snapshot revert submitted (task {task_uuid}); "
+                    f"watch: ./monitor-task.py watch {task_uuid}"
+                )
+            ),
+        )
+        return
     if args.action == "delete":
         server_id = _require_server_id(args, "delete")
         name = args.snapshot_name
@@ -2274,7 +2333,7 @@ def _configure_protected_servers(env_path: Path, client: NetcupSCPClient) -> int
         _diagnostic(
             "info",
             "Login succeeded. Protected-server selection was skipped because this is not an interactive terminal. "
-            "Run `scp-api.py login` from a terminal, or set NETCUP_SCP_API_PROTECTED_SERVERS to comma-separated "
+            "Run `scp-api.py login` from a terminal, or set NETCUP_PROTECTED_SERVERS to comma-separated "
             "v<digits> names in .env.",
         )
         return 0
@@ -2403,12 +2462,12 @@ def _configure_rescue(parser):
 def _configure_snapshots(parser):
     _add_actions(
         parser,
-        ("create", "dryrun", "delete"),
-        "create a snapshot, check whether creation is currently possible, or delete a named snapshot (confirmed)",
+        ("create", "dryrun", "delete", "revert"),
+        "create, check, delete, or restore a named server snapshot (confirmed)",
     )
     parser.add_argument(
         "snapshot_name", nargs="?", metavar="SNAPSHOT_NAME", type=_nonempty_text, default=None,
-        help="name of the snapshot to delete; required with delete (see the list shown by 'snapshots SERVER_ID')",
+        help="snapshot name; required with delete or revert (see 'snapshots SERVER_ID')",
     )
 
 
@@ -2518,13 +2577,13 @@ def _command_handler(command: str, implementation):
                     _boot_order_value(args.order)
                 elif command == "boot-order" and args.order is not None:
                     raise ValueError("boot-order ORDER is only valid with the set action")
-                elif command == "snapshots" and args.action == "delete":
+                elif command == "snapshots" and args.action in {"delete", "revert"}:
                     if args.server_id is None:
-                        raise ValueError("snapshots delete requires a server ID")
+                        raise ValueError(f"snapshots {args.action} requires a server ID")
                     if args.snapshot_name is None:
-                        raise ValueError("snapshots delete requires a SNAPSHOT_NAME")
+                        raise ValueError(f"snapshots {args.action} requires a SNAPSHOT_NAME")
                 elif command == "snapshots" and args.snapshot_name is not None:
-                    raise ValueError("snapshots SNAPSHOT_NAME is only valid with the delete action")
+                    raise ValueError("snapshots SNAPSHOT_NAME is only valid with delete or revert")
                 elif command == "tasks" and args.uuid is not None:
                     if args.uuid == "cancel" and args.action is None:
                         raise ValueError("cancel requires a task UUID")
@@ -2710,8 +2769,8 @@ def build_cli():
         examples=("./scp-api.py rescuesystem 799611", "./scp-api.py rescuesystem 799611 deactivate --yes"), mutating=True,
     )
     register(
-        "snapshots", "[server_id] [create|dryrun|delete SNAPSHOT_NAME]", "list, check, create, or delete server snapshots",
-        "List snapshots for one or every server. dryrun asks SCP whether creation is possible (an empty answer means possible); create makes a snapshot and is confirmed. delete SNAPSHOT_NAME removes that snapshot (DELETE /api/v1/servers/{id}/snapshots/{name}, identified by NAME): it is irreversible, honours the protected-server denylist, is refused when the name is not in the server's snapshot list, and is confirmed; with --dry-run it only shows what would be deleted. The API answers a task, which ./monitor-task.py watch can follow. create and dryrun need a disk: the server's only disk is used unless --disk-name is given, or pass --online. Note: the server record's snapshotCount can exceed the list this verb shows; the provider list endpoint takes no paging parameters, so that difference is provider-side.",
+        "snapshots", "[server_id] [create|dryrun|delete|revert SNAPSHOT_NAME]", "list, check, create, delete, or restore server snapshots",
+        "List snapshots for one or every server. dryrun asks SCP whether creation is possible (an empty answer means possible); create makes a snapshot and is confirmed. delete SNAPSHOT_NAME removes the named snapshot. revert SNAPSHOT_NAME replaces the server disk contents from that snapshot (POST /api/v1/servers/{id}/snapshots/{name}/revert). Both actions are confirmed, require one existing unique snapshot name, and honour the protected-server denylist. Revert refuses while server tasks are active and supports --dry-run. The API answers a task; follow it with ./monitor-task.py watch TASK_UUID. create and dryrun need a disk: the server's only disk is used unless --disk-name is given, or pass --online. Note: the server record's snapshotCount can exceed the list this verb shows; the provider list endpoint takes no paging parameters, so that difference is provider-side.",
         "MIXED OPERATIONS", cmd_snapshots,
         arguments=(server_id_optional,), configure=_configure_snapshots,
         options=(
@@ -2720,7 +2779,7 @@ def build_cli():
             _option(("--online",), "take an online snapshot (no disk name needed; cannot be combined with --disk-name; the provider may refuse online snapshots on UEFI hosts, error online.uefi)", group="SNAPSHOT OPTIONS", action="store_true", default=False),
             _option(("--description",), "snapshot description for create", group="SNAPSHOT OPTIONS", metavar="TEXT", type=_nonempty_text, default=None),
         ),
-        examples=("./scp-api.py snapshots 799611", "./scp-api.py snapshots 799611 dryrun", "./scp-api.py snapshots 799611 create --name before-upgrade --yes", "./scp-api.py snapshots 799611 delete before-upgrade --dry-run", "./scp-api.py snapshots 799611 delete before-upgrade --yes"), mutating=True, dry_run=True,
+        examples=("./scp-api.py snapshots 799611", "./scp-api.py snapshots 799611 dryrun", "./scp-api.py snapshots 799611 create --name before-upgrade --yes", "./scp-api.py snapshots 799611 delete before-upgrade --dry-run", "./scp-api.py snapshots 799611 delete before-upgrade --yes", "./scp-api.py snapshots 799611 revert before-upgrade --dry-run", "./scp-api.py snapshots 799611 revert before-upgrade --yes"), mutating=True, dry_run=True,
     )
     register(
         "tasks", "[task_uuid] [cancel]", "list/filter tasks, inspect one, or cancel one",

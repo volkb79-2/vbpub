@@ -1,0 +1,2908 @@
+{
+  "candidates": [
+    {
+      "id": "case:route:entrypoint:install-restore-iso/finish/argument-shape/argument:route:entrypoint:install-restore-iso/finish/server_id",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:install-restore-iso/finish/server_id"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/finish",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:install-restore-iso/finish/server_id"
+      },
+      "signature": "sha256:2da9dbef39cabf70e37de010339ae5d9e8404183f1f91dac99b61b162c909d8c"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/finish/minimum",
+      "kind": "minimum",
+      "members": [
+        "argument:route:entrypoint:install-restore-iso/finish/server_id",
+        "option:route:entrypoint:install-restore-iso/finish/--restore-complete",
+        "option:route:entrypoint:install-restore-iso/finish/--ssh-host",
+        "option:route:entrypoint:install-restore-iso/finish/--ssh-identity-file",
+        "option:route:entrypoint:install-restore-iso/finish/--ssh-known-hosts",
+        "option:route:entrypoint:install-restore-iso/finish/--ssh-timeout-seconds",
+        "option:route:entrypoint:install-restore-iso/finish/--server-ready-timeout-seconds"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/finish",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:install-restore-iso/finish/--restore-complete",
+          "option:route:entrypoint:install-restore-iso/finish/--ssh-timeout-seconds",
+          "option:route:entrypoint:install-restore-iso/finish/--server-ready-timeout-seconds"
+        ],
+        "required_argument_values": {
+          "argument:route:entrypoint:install-restore-iso/finish/server_id": 1
+        },
+        "required_arguments": [
+          "argument:route:entrypoint:install-restore-iso/finish/server_id"
+        ],
+        "required_exclusive_groups": {},
+        "required_options": [
+          "option:route:entrypoint:install-restore-iso/finish/--restore-complete",
+          "option:route:entrypoint:install-restore-iso/finish/--ssh-host",
+          "option:route:entrypoint:install-restore-iso/finish/--ssh-identity-file",
+          "option:route:entrypoint:install-restore-iso/finish/--ssh-known-hosts"
+        ]
+      },
+      "signature": "sha256:976cc7cd89f0bee36572095809e246310df6e9c874e991fd0dc7352dc0304e3c"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/finish/option-spelling/option:route:entrypoint:install-restore-iso/finish/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-restore-iso/finish/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/finish",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-restore-iso/finish/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:bce466b5207476709bf8d31380ee8798b126e9b8858b12b3fad6988f8f6fc2f4"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/finish/option-spelling/option:route:entrypoint:install-restore-iso/finish/--dry-run/--dry-run",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-restore-iso/finish/--dry-run"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/finish",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-restore-iso/finish/--dry-run",
+        "spelling": "--dry-run"
+      },
+      "signature": "sha256:eeba268edc223d0e198811f0cdf54d90850d77b1972c9fd30390f513a48f629f"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/finish/option-spelling/option:route:entrypoint:install-restore-iso/finish/--restore-complete/--restore-complete",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-restore-iso/finish/--restore-complete"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/finish",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-restore-iso/finish/--restore-complete",
+        "spelling": "--restore-complete"
+      },
+      "signature": "sha256:1b1883f12bd9a97fadb46361d5f034966ecd279e5d31786f4d5887dd3acccee9"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/finish/option-spelling/option:route:entrypoint:install-restore-iso/finish/--server-ready-timeout-seconds/--server-ready-timeout-seconds",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-restore-iso/finish/--server-ready-timeout-seconds"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/finish",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-restore-iso/finish/--server-ready-timeout-seconds",
+        "spelling": "--server-ready-timeout-seconds"
+      },
+      "signature": "sha256:85f7164bf7d6a22f35fccc4bed39ae55da53577cbf008eddf79c96b855927ab7"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/finish/option-spelling/option:route:entrypoint:install-restore-iso/finish/--ssh-host-key-alias/--ssh-host-key-alias",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-restore-iso/finish/--ssh-host-key-alias"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/finish",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-restore-iso/finish/--ssh-host-key-alias",
+        "spelling": "--ssh-host-key-alias"
+      },
+      "signature": "sha256:bf6269199fa3b227ea42aee48abca48c3e49f0d9c32e74b4704fbe906f9979f9"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/finish/option-spelling/option:route:entrypoint:install-restore-iso/finish/--ssh-host/--ssh-host",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-restore-iso/finish/--ssh-host"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/finish",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-restore-iso/finish/--ssh-host",
+        "spelling": "--ssh-host"
+      },
+      "signature": "sha256:fd928954f2800eeefe4da2936db3379b413e603524f5102950fc333cd5c1b3a8"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/finish/option-spelling/option:route:entrypoint:install-restore-iso/finish/--ssh-identity-file/--ssh-identity-file",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-restore-iso/finish/--ssh-identity-file"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/finish",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-restore-iso/finish/--ssh-identity-file",
+        "spelling": "--ssh-identity-file"
+      },
+      "signature": "sha256:953894b011d945a4590b86dd13067cdfc31c5b16510f3b22f53ddfd75daf0a92"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/finish/option-spelling/option:route:entrypoint:install-restore-iso/finish/--ssh-known-hosts/--ssh-known-hosts",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-restore-iso/finish/--ssh-known-hosts"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/finish",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-restore-iso/finish/--ssh-known-hosts",
+        "spelling": "--ssh-known-hosts"
+      },
+      "signature": "sha256:74cea0a709bcb5e8fbe031e36c75d55689242e78f20ecc108620bfcac018d9ec"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/finish/option-spelling/option:route:entrypoint:install-restore-iso/finish/--ssh-timeout-seconds/--ssh-timeout-seconds",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-restore-iso/finish/--ssh-timeout-seconds"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/finish",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-restore-iso/finish/--ssh-timeout-seconds",
+        "spelling": "--ssh-timeout-seconds"
+      },
+      "signature": "sha256:73cf7cbd18d8d4773bd913e19af1bf80b959ad052c16d7d5e11a543230e4bac5"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/finish/option-spelling/option:route:entrypoint:install-restore-iso/finish/--state-file/--state-file",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-restore-iso/finish/--state-file"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/finish",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-restore-iso/finish/--state-file",
+        "spelling": "--state-file"
+      },
+      "signature": "sha256:c2e0b28cc56cade59f2c54ad59fa13f3b226a9a7194c0829d5a8298712cdcc3a"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/finish/option-spelling/option:route:entrypoint:install-restore-iso/finish/--task-timeout-seconds/--task-timeout-seconds",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-restore-iso/finish/--task-timeout-seconds"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/finish",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-restore-iso/finish/--task-timeout-seconds",
+        "spelling": "--task-timeout-seconds"
+      },
+      "signature": "sha256:02f459e245ba6639d7f8d2f571838a9e732c1449a1e28ded906df415135e8fa4"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/finish/option-spelling/option:route:entrypoint:install-restore-iso/finish/--yes/--yes",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-restore-iso/finish/--yes"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/finish",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-restore-iso/finish/--yes",
+        "spelling": "--yes"
+      },
+      "signature": "sha256:eb00ea29c507ee2e81ba3db224debe86c39cd8d0de33c32c25299e74627c642e"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/install/argument-shape/argument:route:entrypoint:install-restore-iso/install/server_id",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:install-restore-iso/install/server_id"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/install",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:install-restore-iso/install/server_id"
+      },
+      "signature": "sha256:11ba28f80e899be69c731ae1b04c75c2ea0fc37365032fd67cbc6e4aef91313d"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/install/constraint-requires/1",
+      "kind": "constraint-requires",
+      "members": [
+        "option:route:entrypoint:install-restore-iso/install/--ready-text",
+        "option:route:entrypoint:install-restore-iso/install/--ready-url"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/install",
+      "shape": {
+        "any_of": [
+          "--ready-url"
+        ],
+        "kind": "requires",
+        "option": "--ready-text",
+        "reason": "response text matching requires an HTTP readiness URL"
+      },
+      "signature": "sha256:26f272ad5b14191d9839451ebfba1be613cc34d210b28a596fe0a7ccae6ac06d"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/install/constraint-requires/2",
+      "kind": "constraint-requires",
+      "members": [
+        "option:route:entrypoint:install-restore-iso/install/--http-ready-timeout-seconds",
+        "option:route:entrypoint:install-restore-iso/install/--ready-url"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/install",
+      "shape": {
+        "any_of": [
+          "--ready-url"
+        ],
+        "kind": "requires",
+        "option": "--http-ready-timeout-seconds",
+        "reason": "HTTP readiness timeout requires an HTTP readiness URL"
+      },
+      "signature": "sha256:efb4f606953c5d9cbf359cfa3e63e6c62e6a366958b2ca97bd6588e4992a9d0a"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/install/minimum",
+      "kind": "minimum",
+      "members": [
+        "argument:route:entrypoint:install-restore-iso/install/server_id",
+        "option:route:entrypoint:install-restore-iso/install/--iso",
+        "option:route:entrypoint:install-restore-iso/install/--part-size-mib",
+        "option:route:entrypoint:install-restore-iso/install/--install-timeout-seconds",
+        "option:route:entrypoint:install-restore-iso/install/--server-ready-timeout-seconds"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/install",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:install-restore-iso/install/--part-size-mib",
+          "option:route:entrypoint:install-restore-iso/install/--install-timeout-seconds",
+          "option:route:entrypoint:install-restore-iso/install/--server-ready-timeout-seconds"
+        ],
+        "required_argument_values": {
+          "argument:route:entrypoint:install-restore-iso/install/server_id": 1
+        },
+        "required_arguments": [
+          "argument:route:entrypoint:install-restore-iso/install/server_id"
+        ],
+        "required_exclusive_groups": {},
+        "required_options": [
+          "option:route:entrypoint:install-restore-iso/install/--iso"
+        ]
+      },
+      "signature": "sha256:12ecb1897ee115fedd08f3616c6d5fdd011be059576c8906897c21c460064908"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/install/option-spelling/option:route:entrypoint:install-restore-iso/install/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-restore-iso/install/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-restore-iso/install/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:12e6550f2cf698dac59e3b205f5f919c27295d1575372fea845d7290ef95c6fc"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/install/option-spelling/option:route:entrypoint:install-restore-iso/install/--dry-run/--dry-run",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-restore-iso/install/--dry-run"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-restore-iso/install/--dry-run",
+        "spelling": "--dry-run"
+      },
+      "signature": "sha256:d7965e8ac6bbcab8d2d31c003f85d6751dae456df3a8fd1c177832a069bdebbb"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/install/option-spelling/option:route:entrypoint:install-restore-iso/install/--http-ready-timeout-seconds/--http-ready-timeout-seconds",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-restore-iso/install/--http-ready-timeout-seconds"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-restore-iso/install/--http-ready-timeout-seconds",
+        "spelling": "--http-ready-timeout-seconds"
+      },
+      "signature": "sha256:f0cd5189bae71321046ee1f1fc23f9aef2e7414941d56b93c5be5bb9449838ba"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/install/option-spelling/option:route:entrypoint:install-restore-iso/install/--install-timeout-seconds/--install-timeout-seconds",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-restore-iso/install/--install-timeout-seconds"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-restore-iso/install/--install-timeout-seconds",
+        "spelling": "--install-timeout-seconds"
+      },
+      "signature": "sha256:7d26600c2795df6cb810ec4f2c45fc899fbd6095ccc8787b440de60e7ba00b21"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/install/option-spelling/option:route:entrypoint:install-restore-iso/install/--iso/--iso",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-restore-iso/install/--iso"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-restore-iso/install/--iso",
+        "spelling": "--iso"
+      },
+      "signature": "sha256:64915c0ec76978793984f8aac64e64beb3be4f5bf4dd2d4d3f9985f76510300b"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/install/option-spelling/option:route:entrypoint:install-restore-iso/install/--part-size-mib/--part-size-mib",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-restore-iso/install/--part-size-mib"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-restore-iso/install/--part-size-mib",
+        "spelling": "--part-size-mib"
+      },
+      "signature": "sha256:017ce5b291bf9f426bff2d30330ff0d6d70620ae11f37e3d1280a712475b2a6b"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/install/option-spelling/option:route:entrypoint:install-restore-iso/install/--ready-text/--ready-text",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-restore-iso/install/--ready-text"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-restore-iso/install/--ready-text",
+        "spelling": "--ready-text"
+      },
+      "signature": "sha256:2b1c7ddf61a9a256256d7db6e2e8474c5585466897d48a5ac4df69271c568089"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/install/option-spelling/option:route:entrypoint:install-restore-iso/install/--ready-url/--ready-url",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-restore-iso/install/--ready-url"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-restore-iso/install/--ready-url",
+        "spelling": "--ready-url"
+      },
+      "signature": "sha256:f5f5e1af32e28b2d2accf26b805e8422fcdf24f23f9dc1ff2f91e3d501483008"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/install/option-spelling/option:route:entrypoint:install-restore-iso/install/--server-ready-timeout-seconds/--server-ready-timeout-seconds",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-restore-iso/install/--server-ready-timeout-seconds"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-restore-iso/install/--server-ready-timeout-seconds",
+        "spelling": "--server-ready-timeout-seconds"
+      },
+      "signature": "sha256:f66a38c088ada7826ba40948c215a96fbf4d33aab74561c1ea792e233f69b139"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/install/option-spelling/option:route:entrypoint:install-restore-iso/install/--state-file/--state-file",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-restore-iso/install/--state-file"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-restore-iso/install/--state-file",
+        "spelling": "--state-file"
+      },
+      "signature": "sha256:25eb6ed93aa29e2540ffa97605f83a0c43d86333b3e91a93b3cb187057cb8562"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/install/option-spelling/option:route:entrypoint:install-restore-iso/install/--task-timeout-seconds/--task-timeout-seconds",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-restore-iso/install/--task-timeout-seconds"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-restore-iso/install/--task-timeout-seconds",
+        "spelling": "--task-timeout-seconds"
+      },
+      "signature": "sha256:7dee49b5b1b8b4581bf894da98ef601ed666c9193b20bca895965dffefdfd71c"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/install/option-spelling/option:route:entrypoint:install-restore-iso/install/--user-iso-name/--user-iso-name",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-restore-iso/install/--user-iso-name"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-restore-iso/install/--user-iso-name",
+        "spelling": "--user-iso-name"
+      },
+      "signature": "sha256:a252c398fc748f48e6a1c48b42837f9bd3b02cdf8ef870e6a71cceb54e576b1f"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/install/option-spelling/option:route:entrypoint:install-restore-iso/install/--yes/--yes",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-restore-iso/install/--yes"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-restore-iso/install/--yes",
+        "spelling": "--yes"
+      },
+      "signature": "sha256:e1fd63f736a1bc284a97d1dc5553b490da85158c072af47cb479d385b220ee79"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/recover/argument-shape/argument:route:entrypoint:install-restore-iso/recover/server_id",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:install-restore-iso/recover/server_id"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/recover",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:install-restore-iso/recover/server_id"
+      },
+      "signature": "sha256:6ddce8dfe5b816bc7d706a41b1e023afb4f7ff4250521061b4ecc03bc3188909"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/recover/minimum",
+      "kind": "minimum",
+      "members": [
+        "argument:route:entrypoint:install-restore-iso/recover/server_id",
+        "option:route:entrypoint:install-restore-iso/recover/--try-disk-boot",
+        "option:route:entrypoint:install-restore-iso/recover/--ssh-host",
+        "option:route:entrypoint:install-restore-iso/recover/--ssh-identity-file",
+        "option:route:entrypoint:install-restore-iso/recover/--ssh-known-hosts",
+        "option:route:entrypoint:install-restore-iso/recover/--ssh-timeout-seconds",
+        "option:route:entrypoint:install-restore-iso/recover/--server-ready-timeout-seconds"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/recover",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:install-restore-iso/recover/--try-disk-boot",
+          "option:route:entrypoint:install-restore-iso/recover/--ssh-timeout-seconds",
+          "option:route:entrypoint:install-restore-iso/recover/--server-ready-timeout-seconds"
+        ],
+        "required_argument_values": {
+          "argument:route:entrypoint:install-restore-iso/recover/server_id": 1
+        },
+        "required_arguments": [
+          "argument:route:entrypoint:install-restore-iso/recover/server_id"
+        ],
+        "required_exclusive_groups": {},
+        "required_options": [
+          "option:route:entrypoint:install-restore-iso/recover/--try-disk-boot",
+          "option:route:entrypoint:install-restore-iso/recover/--ssh-host",
+          "option:route:entrypoint:install-restore-iso/recover/--ssh-identity-file",
+          "option:route:entrypoint:install-restore-iso/recover/--ssh-known-hosts"
+        ]
+      },
+      "signature": "sha256:3f23c44eedaecc20fc3526424d1db7f4703d6c0d0e977fbcae73437c81ef01ca"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/recover/option-spelling/option:route:entrypoint:install-restore-iso/recover/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-restore-iso/recover/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/recover",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-restore-iso/recover/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:9355d1f1a58a55ef2b703baa430da11b535f6644f775f56a55f0f46af1ff7f1a"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/recover/option-spelling/option:route:entrypoint:install-restore-iso/recover/--dry-run/--dry-run",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-restore-iso/recover/--dry-run"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/recover",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-restore-iso/recover/--dry-run",
+        "spelling": "--dry-run"
+      },
+      "signature": "sha256:d191b65f1683f575f45fc7b4f2bc34a2f2dd89825c7c2d89961e2b57febd76f2"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/recover/option-spelling/option:route:entrypoint:install-restore-iso/recover/--server-ready-timeout-seconds/--server-ready-timeout-seconds",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-restore-iso/recover/--server-ready-timeout-seconds"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/recover",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-restore-iso/recover/--server-ready-timeout-seconds",
+        "spelling": "--server-ready-timeout-seconds"
+      },
+      "signature": "sha256:dabad90f82c4d77bd347f4ce207f060ad453405bb37dde2103b4cbead35ae20b"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/recover/option-spelling/option:route:entrypoint:install-restore-iso/recover/--ssh-host-key-alias/--ssh-host-key-alias",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-restore-iso/recover/--ssh-host-key-alias"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/recover",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-restore-iso/recover/--ssh-host-key-alias",
+        "spelling": "--ssh-host-key-alias"
+      },
+      "signature": "sha256:506155ab7b60812a1dcf1c71b85df13600e668e7a3ff1e13233134672d01920d"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/recover/option-spelling/option:route:entrypoint:install-restore-iso/recover/--ssh-host/--ssh-host",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-restore-iso/recover/--ssh-host"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/recover",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-restore-iso/recover/--ssh-host",
+        "spelling": "--ssh-host"
+      },
+      "signature": "sha256:78f73f2c780c45fcf86affb8960cebd27feeb7e4fd53f2274bf42319d2f02a56"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/recover/option-spelling/option:route:entrypoint:install-restore-iso/recover/--ssh-identity-file/--ssh-identity-file",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-restore-iso/recover/--ssh-identity-file"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/recover",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-restore-iso/recover/--ssh-identity-file",
+        "spelling": "--ssh-identity-file"
+      },
+      "signature": "sha256:66a0ea2ac6eddf5c4a257aef74424ad802a7e747b8052e899e65833c14b430ae"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/recover/option-spelling/option:route:entrypoint:install-restore-iso/recover/--ssh-known-hosts/--ssh-known-hosts",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-restore-iso/recover/--ssh-known-hosts"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/recover",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-restore-iso/recover/--ssh-known-hosts",
+        "spelling": "--ssh-known-hosts"
+      },
+      "signature": "sha256:b1602b7556e3f0080277e49fa79c60ab3dd739b5698c4afc098600ee9cc3177a"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/recover/option-spelling/option:route:entrypoint:install-restore-iso/recover/--ssh-timeout-seconds/--ssh-timeout-seconds",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-restore-iso/recover/--ssh-timeout-seconds"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/recover",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-restore-iso/recover/--ssh-timeout-seconds",
+        "spelling": "--ssh-timeout-seconds"
+      },
+      "signature": "sha256:d36289e845edb638986e2c6d08a3e26a3135e53871abe65c579f097688928737"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/recover/option-spelling/option:route:entrypoint:install-restore-iso/recover/--state-file/--state-file",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-restore-iso/recover/--state-file"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/recover",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-restore-iso/recover/--state-file",
+        "spelling": "--state-file"
+      },
+      "signature": "sha256:1d872f1c2a34d5581a83840a4276d82f19a3e747e331324643bc89db2e2e0321"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/recover/option-spelling/option:route:entrypoint:install-restore-iso/recover/--task-timeout-seconds/--task-timeout-seconds",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-restore-iso/recover/--task-timeout-seconds"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/recover",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-restore-iso/recover/--task-timeout-seconds",
+        "spelling": "--task-timeout-seconds"
+      },
+      "signature": "sha256:64394bf03a2afe394601bf697b3d1e78a6e8a2b144f254397194bdca4c9811d6"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/recover/option-spelling/option:route:entrypoint:install-restore-iso/recover/--try-disk-boot/--try-disk-boot",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-restore-iso/recover/--try-disk-boot"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/recover",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-restore-iso/recover/--try-disk-boot",
+        "spelling": "--try-disk-boot"
+      },
+      "signature": "sha256:7b3ff76d8304294e26cf506a3b09aaf6462f5aaafc4caf3ab4e9a858f92ac03b"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/recover/option-spelling/option:route:entrypoint:install-restore-iso/recover/--yes/--yes",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-restore-iso/recover/--yes"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/recover",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-restore-iso/recover/--yes",
+        "spelling": "--yes"
+      },
+      "signature": "sha256:bd817654019222277711e4b3c46289a2916a9719b0c3eb6958be31f9063ae707"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/start/argument-shape/argument:route:entrypoint:install-restore-iso/start/server_id",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:install-restore-iso/start/server_id"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/start",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:install-restore-iso/start/server_id"
+      },
+      "signature": "sha256:0a4099c44bba5a163f5844694fcd2fd4c3b4ceb09e05af54b391ccf51077c2fa"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/start/minimum",
+      "kind": "minimum",
+      "members": [
+        "argument:route:entrypoint:install-restore-iso/start/server_id",
+        "option:route:entrypoint:install-restore-iso/start/--iso",
+        "option:route:entrypoint:install-restore-iso/start/--part-size-mib",
+        "option:route:entrypoint:install-restore-iso/start/--replace-state"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/start",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:install-restore-iso/start/--part-size-mib",
+          "option:route:entrypoint:install-restore-iso/start/--replace-state"
+        ],
+        "required_argument_values": {
+          "argument:route:entrypoint:install-restore-iso/start/server_id": 1
+        },
+        "required_arguments": [
+          "argument:route:entrypoint:install-restore-iso/start/server_id"
+        ],
+        "required_exclusive_groups": {},
+        "required_options": [
+          "option:route:entrypoint:install-restore-iso/start/--iso"
+        ]
+      },
+      "signature": "sha256:b435c4e823c0f1d4dea1de4c5e0699d82b40ede8692ee91f34996ef5045b45ae"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/start/option-spelling/option:route:entrypoint:install-restore-iso/start/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-restore-iso/start/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/start",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-restore-iso/start/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:84b0d42a2e9a6c37c20070478bbb1d16c7a40f1ce1b777868517967b090ce3fb"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/start/option-spelling/option:route:entrypoint:install-restore-iso/start/--dry-run/--dry-run",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-restore-iso/start/--dry-run"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/start",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-restore-iso/start/--dry-run",
+        "spelling": "--dry-run"
+      },
+      "signature": "sha256:4f535005652bfd6bb17da9f09e7aef4bb84fe4fee1deae6bff67e99ddf0542ea"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/start/option-spelling/option:route:entrypoint:install-restore-iso/start/--iso/--iso",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-restore-iso/start/--iso"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/start",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-restore-iso/start/--iso",
+        "spelling": "--iso"
+      },
+      "signature": "sha256:b51fedd73dc8d12cb4e18019cd0809dc7e2bad305091d707374ff0131a663584"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/start/option-spelling/option:route:entrypoint:install-restore-iso/start/--part-size-mib/--part-size-mib",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-restore-iso/start/--part-size-mib"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/start",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-restore-iso/start/--part-size-mib",
+        "spelling": "--part-size-mib"
+      },
+      "signature": "sha256:31cea4db7a3ab3113f16ced10440587bf009006e144e22a0743aaa3e384778c6"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/start/option-spelling/option:route:entrypoint:install-restore-iso/start/--replace-state/--replace-state",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-restore-iso/start/--replace-state"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/start",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-restore-iso/start/--replace-state",
+        "spelling": "--replace-state"
+      },
+      "signature": "sha256:f75819cb0df0246c9145590e2581f30438648ae39bc1677da61cae7cea6de66d"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/start/option-spelling/option:route:entrypoint:install-restore-iso/start/--state-file/--state-file",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-restore-iso/start/--state-file"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/start",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-restore-iso/start/--state-file",
+        "spelling": "--state-file"
+      },
+      "signature": "sha256:5601fcad7062426744705bc2b24eba3f5ede824091c732b9070c7f28d9b839ae"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/start/option-spelling/option:route:entrypoint:install-restore-iso/start/--task-timeout-seconds/--task-timeout-seconds",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-restore-iso/start/--task-timeout-seconds"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/start",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-restore-iso/start/--task-timeout-seconds",
+        "spelling": "--task-timeout-seconds"
+      },
+      "signature": "sha256:94d2ea42746218b9e7bdde276fff7b56496920ecddaa297bc8e21c16c43f502a"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/start/option-spelling/option:route:entrypoint:install-restore-iso/start/--user-iso-name/--user-iso-name",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-restore-iso/start/--user-iso-name"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/start",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-restore-iso/start/--user-iso-name",
+        "spelling": "--user-iso-name"
+      },
+      "signature": "sha256:2146fe7271a7bf1185cac89ef99fc59fe1f0c8d2fa4105d4e32bf432a2148bc6"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/start/option-spelling/option:route:entrypoint:install-restore-iso/start/--yes/--yes",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-restore-iso/start/--yes"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/start",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-restore-iso/start/--yes",
+        "spelling": "--yes"
+      },
+      "signature": "sha256:753f276708d4401275312497bf3b475a53f8145f33672c4cee535d195738f8ea"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/status/argument-shape/argument:route:entrypoint:install-restore-iso/status/server_id",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:install-restore-iso/status/server_id"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/status",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:install-restore-iso/status/server_id"
+      },
+      "signature": "sha256:27bda3f7b18e8b06f29b20363da92ba10fd89edc6f01f58b97eba82fcd9f0c9c"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/status/minimum",
+      "kind": "minimum",
+      "members": [
+        "argument:route:entrypoint:install-restore-iso/status/server_id"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/status",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {
+          "argument:route:entrypoint:install-restore-iso/status/server_id": 1
+        },
+        "required_arguments": [
+          "argument:route:entrypoint:install-restore-iso/status/server_id"
+        ],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:bdcf098a0ab7c875d6ee2f475256c16e1df4cd194f120f1ad754940ec7ce1010"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/status/option-spelling/option:route:entrypoint:install-restore-iso/status/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-restore-iso/status/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/status",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-restore-iso/status/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:f32117d64cd5df8834a88d7820ad87c2daa48d5422cda8e3ad0684868a412b4f"
+    },
+    {
+      "id": "case:route:entrypoint:install-restore-iso/status/option-spelling/option:route:entrypoint:install-restore-iso/status/--state-file/--state-file",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:install-restore-iso/status/--state-file"
+      ],
+      "route_id": "route:entrypoint:install-restore-iso/status",
+      "shape": {
+        "option_id": "option:route:entrypoint:install-restore-iso/status/--state-file",
+        "spelling": "--state-file"
+      },
+      "signature": "sha256:65252de4280f527d0aa635b6674d56fc807f4bfcd293a267531074af290bde47"
+    }
+  ],
+  "entrypoint": {
+    "allow_abbrev": false,
+    "builtins": [
+      "help",
+      "help <verb>",
+      "version",
+      "--help",
+      "--version"
+    ],
+    "command": "install-restore-iso",
+    "display_name": "NETCUP SCP",
+    "fromfile_prefix_chars": null,
+    "id": "entrypoint:install-restore-iso",
+    "long_name": "Netcup SCP ISO installation and restore workflows",
+    "no_args_action": false,
+    "prefix_chars": "-",
+    "prog": "install-restore-iso.py",
+    "single_command": false
+  },
+  "incomplete": [],
+  "interaction_issues": [],
+  "library_contract": {
+    "name": "cli-extended",
+    "version": 1
+  },
+  "routes": [
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "Netcup server ID recorded by start.",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:install-restore-iso/finish/server_id",
+          "kind": "argument",
+          "metavar": "SERVER_ID",
+          "minimum_values": 1,
+          "name": "server_id",
+          "nargs": null,
+          "parser_kwargs": {
+            "type": {
+              "callable": "_cli_extended_surface_install_restore_iso._positive_int"
+            }
+          },
+          "parser_path": [
+            "finish"
+          ],
+          "required": true,
+          "scope": "positional",
+          "type": {
+            "callable": "_cli_extended_surface_install_restore_iso._positive_int"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--state-file",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Private workflow checkpoint path.",
+          "dest": "state_file",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--state-file"
+          ],
+          "help_group": "RECOVERY",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-restore-iso/finish/--state-file",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "type": {
+              "callable": "pathlib.Path"
+            }
+          },
+          "parser_path": [
+            "finish"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "pathlib.Path"
+          }
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--restore-complete",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "Assert that the restore ISO reported completion and disk verification before removing it.",
+          "dest": "restore_complete",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--restore-complete"
+          ],
+          "help_group": "RESTORE HANDOFF",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-restore-iso/finish/--restore-complete",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true",
+            "required": true
+          },
+          "parser_path": [
+            "finish"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": true,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--ssh-host",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "TrueNAS host or address for final root SSH verification.",
+          "dest": "ssh_host",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--ssh-host"
+          ],
+          "help_group": "GUEST VERIFICATION",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-restore-iso/finish/--ssh-host",
+          "kind": "option",
+          "metavar": "HOST",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "required": true
+          },
+          "parser_path": [
+            "finish"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": true,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--ssh-host-key-alias",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Known-hosts identity to verify when the SSH destination differs from its pinned name.",
+          "dest": "ssh_host_key_alias",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--ssh-host-key-alias"
+          ],
+          "help_group": "GUEST VERIFICATION",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-restore-iso/finish/--ssh-host-key-alias",
+          "kind": "option",
+          "metavar": "ALIAS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "finish"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--ssh-identity-file",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Pinned root Ed25519 private key.",
+          "dest": "ssh_identity_file",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--ssh-identity-file"
+          ],
+          "help_group": "GUEST VERIFICATION",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-restore-iso/finish/--ssh-identity-file",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "required": true,
+            "type": {
+              "callable": "pathlib.Path"
+            }
+          },
+          "parser_path": [
+            "finish"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": true,
+          "scope": "verb-local",
+          "type": {
+            "callable": "pathlib.Path"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--ssh-known-hosts",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Known-hosts file containing the pinned TrueNAS host key.",
+          "dest": "ssh_known_hosts",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--ssh-known-hosts"
+          ],
+          "help_group": "GUEST VERIFICATION",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-restore-iso/finish/--ssh-known-hosts",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "required": true,
+            "type": {
+              "callable": "pathlib.Path"
+            }
+          },
+          "parser_path": [
+            "finish"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": true,
+          "scope": "verb-local",
+          "type": {
+            "callable": "pathlib.Path"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--ssh-timeout-seconds",
+          "choices": null,
+          "const": null,
+          "default": 900,
+          "default_present": true,
+          "description": "Maximum time to wait for TrueNAS SSH and boot-pool health.",
+          "dest": "ssh_timeout_seconds",
+          "effective_default": 900,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--ssh-timeout-seconds"
+          ],
+          "help_group": "STOP CONDITIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-restore-iso/finish/--ssh-timeout-seconds",
+          "kind": "option",
+          "metavar": "SECONDS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": 900,
+            "type": {
+              "callable": "_cli_extended_surface_install_restore_iso._positive_finite"
+            }
+          },
+          "parser_path": [
+            "finish"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "_cli_extended_surface_install_restore_iso._positive_finite"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--server-ready-timeout-seconds",
+          "choices": null,
+          "const": null,
+          "default": 300,
+          "default_present": true,
+          "description": "Maximum time for Netcup to report RUNNING with configChanged=false.",
+          "dest": "server_ready_timeout_seconds",
+          "effective_default": 300,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--server-ready-timeout-seconds"
+          ],
+          "help_group": "STOP CONDITIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-restore-iso/finish/--server-ready-timeout-seconds",
+          "kind": "option",
+          "metavar": "SECONDS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": 300,
+            "type": {
+              "callable": "_cli_extended_surface_install_restore_iso._positive_finite"
+            }
+          },
+          "parser_path": [
+            "finish"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "_cli_extended_surface_install_restore_iso._positive_finite"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--task-timeout-seconds",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Maximum wait for each SCP task; omit to wait until it ends.",
+          "dest": "task_timeout_seconds",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--task-timeout-seconds"
+          ],
+          "help_group": "STOP CONDITIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-restore-iso/finish/--task-timeout-seconds",
+          "kind": "option",
+          "metavar": "SECONDS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "type": {
+              "callable": "_cli_extended_surface_install_restore_iso._positive_finite"
+            }
+          },
+          "parser_path": [
+            "finish"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "_cli_extended_surface_install_restore_iso._positive_finite"
+          }
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating",
+        "dry-run",
+        "potentially expensive"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--dry-run",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--progress",
+        "--quiet",
+        "--traceback",
+        "--version",
+        "--yes"
+      ],
+      "confirmation": true,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "After the restore-complete notification, detach the provider ISO, restore saved boot order, cold-boot, and verify TrueNAS.",
+      "group": "MODIFICATION",
+      "id": "route:entrypoint:install-restore-iso/finish",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [
+        "argument:route:entrypoint:install-restore-iso/finish/server_id.type",
+        "option:route:entrypoint:install-restore-iso/finish/--server-ready-timeout-seconds.type",
+        "option:route:entrypoint:install-restore-iso/finish/--ssh-identity-file.type",
+        "option:route:entrypoint:install-restore-iso/finish/--ssh-known-hosts.type",
+        "option:route:entrypoint:install-restore-iso/finish/--ssh-timeout-seconds.type",
+        "option:route:entrypoint:install-restore-iso/finish/--state-file.type",
+        "option:route:entrypoint:install-restore-iso/finish/--task-timeout-seconds.type"
+      ],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "finish"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "finish"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "After the restore-complete notification, detach the provider ISO, restore saved boot order, cold-boot, and verify TrueNAS. [mutating; dry-run; potentially expensive]",
+      "synopsis_override": "server_id",
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "Netcup server ID to install.",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:install-restore-iso/install/server_id",
+          "kind": "argument",
+          "metavar": "SERVER_ID",
+          "minimum_values": 1,
+          "name": "server_id",
+          "nargs": null,
+          "parser_kwargs": {
+            "type": {
+              "callable": "_cli_extended_surface_install_restore_iso._positive_int"
+            }
+          },
+          "parser_path": [
+            "install"
+          ],
+          "required": true,
+          "scope": "positional",
+          "type": {
+            "callable": "_cli_extended_surface_install_restore_iso._positive_int"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--iso",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Local installer ISO. It must power off the guest after successful installation so provider media can be removed before disk boot.",
+          "dest": "iso",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--iso"
+          ],
+          "help_group": "ISO UPLOAD",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-restore-iso/install/--iso",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "required": true,
+            "type": {
+              "callable": "pathlib.Path"
+            }
+          },
+          "parser_path": [
+            "install"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": true,
+          "scope": "verb-local",
+          "type": {
+            "callable": "pathlib.Path"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--user-iso-name",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Optional unique filename in Netcup user ISO storage; otherwise derived from the image hash and current UTC time.",
+          "dest": "user_iso_name",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--user-iso-name"
+          ],
+          "help_group": "ISO UPLOAD",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-restore-iso/install/--user-iso-name",
+          "kind": "option",
+          "metavar": "NAME",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "install"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--part-size-mib",
+          "choices": null,
+          "const": null,
+          "default": 64,
+          "default_present": true,
+          "description": "Multipart upload part size in MiB.",
+          "dest": "part_size_mib",
+          "effective_default": 64,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--part-size-mib"
+          ],
+          "help_group": "ISO UPLOAD",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-restore-iso/install/--part-size-mib",
+          "kind": "option",
+          "metavar": "MIB",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": 64,
+            "type": {
+              "callable": "_cli_extended_surface_install_restore_iso._positive_int"
+            }
+          },
+          "parser_path": [
+            "install"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "_cli_extended_surface_install_restore_iso._positive_int"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--ready-url",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Optional HTTP(S) URL on the installed guest to probe after disk boot.",
+          "dest": "ready_url",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--ready-url"
+          ],
+          "help_group": "GUEST READINESS",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-restore-iso/install/--ready-url",
+          "kind": "option",
+          "metavar": "URL",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "install"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--ready-text",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Optional text that must appear in the readiness response body; requires --ready-url.",
+          "dest": "ready_text",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--ready-text"
+          ],
+          "help_group": "GUEST READINESS",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-restore-iso/install/--ready-text",
+          "kind": "option",
+          "metavar": "TEXT",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "install"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--state-file",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Private workflow checkpoint path; reuse it to resume an interrupted handoff.",
+          "dest": "state_file",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--state-file"
+          ],
+          "help_group": "RECOVERY",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-restore-iso/install/--state-file",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "type": {
+              "callable": "pathlib.Path"
+            }
+          },
+          "parser_path": [
+            "install"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "pathlib.Path"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--install-timeout-seconds",
+          "choices": null,
+          "const": null,
+          "default": 3600,
+          "default_present": true,
+          "description": "Maximum time to wait for the installer guest to power off.",
+          "dest": "install_timeout_seconds",
+          "effective_default": 3600,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--install-timeout-seconds"
+          ],
+          "help_group": "STOP CONDITIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-restore-iso/install/--install-timeout-seconds",
+          "kind": "option",
+          "metavar": "SECONDS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": 3600,
+            "type": {
+              "callable": "_cli_extended_surface_install_restore_iso._positive_finite"
+            }
+          },
+          "parser_path": [
+            "install"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "_cli_extended_surface_install_restore_iso._positive_finite"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--http-ready-timeout-seconds",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Maximum time to wait for the optional HTTP readiness URL (default 900 seconds).",
+          "dest": "http_ready_timeout_seconds",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--http-ready-timeout-seconds"
+          ],
+          "help_group": "STOP CONDITIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-restore-iso/install/--http-ready-timeout-seconds",
+          "kind": "option",
+          "metavar": "SECONDS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "type": {
+              "callable": "_cli_extended_surface_install_restore_iso._positive_finite"
+            }
+          },
+          "parser_path": [
+            "install"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "_cli_extended_surface_install_restore_iso._positive_finite"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--server-ready-timeout-seconds",
+          "choices": null,
+          "const": null,
+          "default": 300,
+          "default_present": true,
+          "description": "Maximum time for Netcup to report RUNNING with configChanged=false.",
+          "dest": "server_ready_timeout_seconds",
+          "effective_default": 300,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--server-ready-timeout-seconds"
+          ],
+          "help_group": "STOP CONDITIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-restore-iso/install/--server-ready-timeout-seconds",
+          "kind": "option",
+          "metavar": "SECONDS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": 300,
+            "type": {
+              "callable": "_cli_extended_surface_install_restore_iso._positive_finite"
+            }
+          },
+          "parser_path": [
+            "install"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "_cli_extended_surface_install_restore_iso._positive_finite"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--task-timeout-seconds",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Maximum wait for each SCP task; omit to wait until it ends.",
+          "dest": "task_timeout_seconds",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--task-timeout-seconds"
+          ],
+          "help_group": "STOP CONDITIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-restore-iso/install/--task-timeout-seconds",
+          "kind": "option",
+          "metavar": "SECONDS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "type": {
+              "callable": "_cli_extended_surface_install_restore_iso._positive_finite"
+            }
+          },
+          "parser_path": [
+            "install"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "_cli_extended_surface_install_restore_iso._positive_finite"
+          }
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating",
+        "dry-run",
+        "potentially expensive"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--dry-run",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--progress",
+        "--quiet",
+        "--traceback",
+        "--version",
+        "--yes"
+      ],
+      "confirmation": true,
+      "constraints": [
+        {
+          "any_of": [
+            "--ready-url"
+          ],
+          "kind": "requires",
+          "option": "--ready-text",
+          "reason": "response text matching requires an HTTP readiness URL"
+        },
+        {
+          "any_of": [
+            "--ready-url"
+          ],
+          "kind": "requires",
+          "option": "--http-ready-timeout-seconds",
+          "reason": "HTTP readiness timeout requires an HTTP readiness URL"
+        }
+      ],
+      "delegated_metadata": [],
+      "description": "Upload a generic installer ISO, detach provider media after successful guest poweroff, restore boot order, and boot the installed system; optionally probe HTTP readiness.",
+      "group": "MODIFICATION",
+      "id": "route:entrypoint:install-restore-iso/install",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [
+        "argument:route:entrypoint:install-restore-iso/install/server_id.type",
+        "option:route:entrypoint:install-restore-iso/install/--http-ready-timeout-seconds.type",
+        "option:route:entrypoint:install-restore-iso/install/--install-timeout-seconds.type",
+        "option:route:entrypoint:install-restore-iso/install/--iso.type",
+        "option:route:entrypoint:install-restore-iso/install/--part-size-mib.type",
+        "option:route:entrypoint:install-restore-iso/install/--server-ready-timeout-seconds.type",
+        "option:route:entrypoint:install-restore-iso/install/--state-file.type",
+        "option:route:entrypoint:install-restore-iso/install/--task-timeout-seconds.type"
+      ],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "install"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "install"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "Upload a generic installer ISO, detach provider media after successful guest poweroff, restore boot order, and boot the installed system; optionally probe HTTP readiness. [mutating; dry-run; potentially expensive]",
+      "synopsis_override": "server_id",
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "Netcup server ID recorded by start.",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:install-restore-iso/recover/server_id",
+          "kind": "argument",
+          "metavar": "SERVER_ID",
+          "minimum_values": 1,
+          "name": "server_id",
+          "nargs": null,
+          "parser_kwargs": {
+            "type": {
+              "callable": "_cli_extended_surface_install_restore_iso._positive_int"
+            }
+          },
+          "parser_path": [
+            "recover"
+          ],
+          "required": true,
+          "scope": "positional",
+          "type": {
+            "callable": "_cli_extended_surface_install_restore_iso._positive_int"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--state-file",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Private workflow checkpoint path.",
+          "dest": "state_file",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--state-file"
+          ],
+          "help_group": "RECOVERY",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-restore-iso/recover/--state-file",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "type": {
+              "callable": "pathlib.Path"
+            }
+          },
+          "parser_path": [
+            "recover"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "pathlib.Path"
+          }
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--try-disk-boot",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "Acknowledge this only attempts disk boot; it does not certify the restore.",
+          "dest": "try_disk_boot",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--try-disk-boot"
+          ],
+          "help_group": "RECOVERY",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-restore-iso/recover/--try-disk-boot",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true",
+            "required": true
+          },
+          "parser_path": [
+            "recover"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": true,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--ssh-host",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "TrueNAS host or address for root SSH verification.",
+          "dest": "ssh_host",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--ssh-host"
+          ],
+          "help_group": "GUEST VERIFICATION",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-restore-iso/recover/--ssh-host",
+          "kind": "option",
+          "metavar": "HOST",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "required": true
+          },
+          "parser_path": [
+            "recover"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": true,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--ssh-host-key-alias",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Known-hosts identity to verify when the SSH destination differs from its pinned name.",
+          "dest": "ssh_host_key_alias",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--ssh-host-key-alias"
+          ],
+          "help_group": "GUEST VERIFICATION",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-restore-iso/recover/--ssh-host-key-alias",
+          "kind": "option",
+          "metavar": "ALIAS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "recover"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--ssh-identity-file",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Pinned root Ed25519 private key.",
+          "dest": "ssh_identity_file",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--ssh-identity-file"
+          ],
+          "help_group": "GUEST VERIFICATION",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-restore-iso/recover/--ssh-identity-file",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "required": true,
+            "type": {
+              "callable": "pathlib.Path"
+            }
+          },
+          "parser_path": [
+            "recover"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": true,
+          "scope": "verb-local",
+          "type": {
+            "callable": "pathlib.Path"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--ssh-known-hosts",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Known-hosts file containing the pinned TrueNAS host key.",
+          "dest": "ssh_known_hosts",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--ssh-known-hosts"
+          ],
+          "help_group": "GUEST VERIFICATION",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-restore-iso/recover/--ssh-known-hosts",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "required": true,
+            "type": {
+              "callable": "pathlib.Path"
+            }
+          },
+          "parser_path": [
+            "recover"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": true,
+          "scope": "verb-local",
+          "type": {
+            "callable": "pathlib.Path"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--ssh-timeout-seconds",
+          "choices": null,
+          "const": null,
+          "default": 900,
+          "default_present": true,
+          "description": "Maximum time to wait for TrueNAS SSH and boot-pool health.",
+          "dest": "ssh_timeout_seconds",
+          "effective_default": 900,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--ssh-timeout-seconds"
+          ],
+          "help_group": "STOP CONDITIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-restore-iso/recover/--ssh-timeout-seconds",
+          "kind": "option",
+          "metavar": "SECONDS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": 900,
+            "type": {
+              "callable": "_cli_extended_surface_install_restore_iso._positive_finite"
+            }
+          },
+          "parser_path": [
+            "recover"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "_cli_extended_surface_install_restore_iso._positive_finite"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--server-ready-timeout-seconds",
+          "choices": null,
+          "const": null,
+          "default": 300,
+          "default_present": true,
+          "description": "Maximum time for Netcup to report RUNNING with configChanged=false.",
+          "dest": "server_ready_timeout_seconds",
+          "effective_default": 300,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--server-ready-timeout-seconds"
+          ],
+          "help_group": "STOP CONDITIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-restore-iso/recover/--server-ready-timeout-seconds",
+          "kind": "option",
+          "metavar": "SECONDS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": 300,
+            "type": {
+              "callable": "_cli_extended_surface_install_restore_iso._positive_finite"
+            }
+          },
+          "parser_path": [
+            "recover"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "_cli_extended_surface_install_restore_iso._positive_finite"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--task-timeout-seconds",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Maximum wait for each SCP task; omit to wait until it ends.",
+          "dest": "task_timeout_seconds",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--task-timeout-seconds"
+          ],
+          "help_group": "STOP CONDITIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-restore-iso/recover/--task-timeout-seconds",
+          "kind": "option",
+          "metavar": "SECONDS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "type": {
+              "callable": "_cli_extended_surface_install_restore_iso._positive_finite"
+            }
+          },
+          "parser_path": [
+            "recover"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "_cli_extended_surface_install_restore_iso._positive_finite"
+          }
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating",
+        "dry-run",
+        "potentially expensive"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--dry-run",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--progress",
+        "--quiet",
+        "--traceback",
+        "--version",
+        "--yes"
+      ],
+      "confirmation": true,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "After an incomplete ISO run, detach media and try disk boot without asserting restore completion.",
+      "group": "MODIFICATION",
+      "id": "route:entrypoint:install-restore-iso/recover",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [
+        "argument:route:entrypoint:install-restore-iso/recover/server_id.type",
+        "option:route:entrypoint:install-restore-iso/recover/--server-ready-timeout-seconds.type",
+        "option:route:entrypoint:install-restore-iso/recover/--ssh-identity-file.type",
+        "option:route:entrypoint:install-restore-iso/recover/--ssh-known-hosts.type",
+        "option:route:entrypoint:install-restore-iso/recover/--ssh-timeout-seconds.type",
+        "option:route:entrypoint:install-restore-iso/recover/--state-file.type",
+        "option:route:entrypoint:install-restore-iso/recover/--task-timeout-seconds.type"
+      ],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "recover"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "recover"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "After an incomplete ISO run, detach media and try disk boot without asserting restore completion. [mutating; dry-run; potentially expensive]",
+      "synopsis_override": "server_id",
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "Explicit Netcup server ID to restore.",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:install-restore-iso/start/server_id",
+          "kind": "argument",
+          "metavar": "SERVER_ID",
+          "minimum_values": 1,
+          "name": "server_id",
+          "nargs": null,
+          "parser_kwargs": {
+            "type": {
+              "callable": "_cli_extended_surface_install_restore_iso._positive_int"
+            }
+          },
+          "parser_path": [
+            "start"
+          ],
+          "required": true,
+          "scope": "positional",
+          "type": {
+            "callable": "_cli_extended_surface_install_restore_iso._positive_int"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--iso",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Local bootable restore ISO.",
+          "dest": "iso",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--iso"
+          ],
+          "help_group": "ISO UPLOAD",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-restore-iso/start/--iso",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "required": true,
+            "type": {
+              "callable": "pathlib.Path"
+            }
+          },
+          "parser_path": [
+            "start"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": true,
+          "scope": "verb-local",
+          "type": {
+            "callable": "pathlib.Path"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--user-iso-name",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Optional unique filename in Netcup user ISO storage; otherwise derived from the image hash and current UTC time.",
+          "dest": "user_iso_name",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--user-iso-name"
+          ],
+          "help_group": "ISO UPLOAD",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-restore-iso/start/--user-iso-name",
+          "kind": "option",
+          "metavar": "NAME",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "start"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--part-size-mib",
+          "choices": null,
+          "const": null,
+          "default": 64,
+          "default_present": true,
+          "description": "Multipart upload part size in MiB.",
+          "dest": "part_size_mib",
+          "effective_default": 64,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--part-size-mib"
+          ],
+          "help_group": "ISO UPLOAD",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-restore-iso/start/--part-size-mib",
+          "kind": "option",
+          "metavar": "MIB",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": 64,
+            "type": {
+              "callable": "_cli_extended_surface_install_restore_iso._positive_int"
+            }
+          },
+          "parser_path": [
+            "start"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "_cli_extended_surface_install_restore_iso._positive_int"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--state-file",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Private workflow checkpoint path.",
+          "dest": "state_file",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--state-file"
+          ],
+          "help_group": "RECOVERY",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-restore-iso/start/--state-file",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "type": {
+              "callable": "pathlib.Path"
+            }
+          },
+          "parser_path": [
+            "start"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "pathlib.Path"
+          }
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--replace-state",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "Replace an existing completed workflow checkpoint.",
+          "dest": "replace_state",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--replace-state"
+          ],
+          "help_group": "RECOVERY",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-restore-iso/start/--replace-state",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true",
+            "default": false
+          },
+          "parser_path": [
+            "start"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--task-timeout-seconds",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Maximum wait for an SCP task; omit to wait until it ends.",
+          "dest": "task_timeout_seconds",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--task-timeout-seconds"
+          ],
+          "help_group": "STOP CONDITIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-restore-iso/start/--task-timeout-seconds",
+          "kind": "option",
+          "metavar": "SECONDS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "type": {
+              "callable": "_cli_extended_surface_install_restore_iso._positive_finite"
+            }
+          },
+          "parser_path": [
+            "start"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "_cli_extended_surface_install_restore_iso._positive_finite"
+          }
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating",
+        "dry-run",
+        "potentially expensive"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--dry-run",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--progress",
+        "--quiet",
+        "--traceback",
+        "--version",
+        "--yes"
+      ],
+      "confirmation": true,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "Upload a restore ISO, attach it, and boot into its unattended restore runtime.",
+      "group": "MODIFICATION",
+      "id": "route:entrypoint:install-restore-iso/start",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [
+        "argument:route:entrypoint:install-restore-iso/start/server_id.type",
+        "option:route:entrypoint:install-restore-iso/start/--iso.type",
+        "option:route:entrypoint:install-restore-iso/start/--part-size-mib.type",
+        "option:route:entrypoint:install-restore-iso/start/--state-file.type",
+        "option:route:entrypoint:install-restore-iso/start/--task-timeout-seconds.type"
+      ],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "start"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "start"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "Upload a restore ISO, attach it, and boot into its unattended restore runtime. [mutating; dry-run; potentially expensive]",
+      "synopsis_override": "server_id",
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "Netcup server ID recorded by start.",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:install-restore-iso/status/server_id",
+          "kind": "argument",
+          "metavar": "SERVER_ID",
+          "minimum_values": 1,
+          "name": "server_id",
+          "nargs": null,
+          "parser_kwargs": {
+            "type": {
+              "callable": "_cli_extended_surface_install_restore_iso._positive_int"
+            }
+          },
+          "parser_path": [
+            "status"
+          ],
+          "required": true,
+          "scope": "positional",
+          "type": {
+            "callable": "_cli_extended_surface_install_restore_iso._positive_int"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--state-file",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Private workflow checkpoint path.",
+          "dest": "state_file",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--state-file"
+          ],
+          "help_group": "RECOVERY",
+          "hidden": false,
+          "id": "option:route:entrypoint:install-restore-iso/status/--state-file",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "type": {
+              "callable": "pathlib.Path"
+            }
+          },
+          "parser_path": [
+            "status"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "pathlib.Path"
+          }
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "Show the last saved ISO workflow phase and recovery checkpoint.",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:install-restore-iso/status",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [
+        "argument:route:entrypoint:install-restore-iso/status/server_id.type",
+        "option:route:entrypoint:install-restore-iso/status/--state-file.type"
+      ],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "status"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "status"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "Show the last saved ISO workflow phase and recovery checkpoint.",
+      "synopsis_override": "server_id",
+      "syntax_complete": true,
+      "usage_override": null
+    }
+  ],
+  "schema_version": 7,
+  "syntax_complete": true
+}

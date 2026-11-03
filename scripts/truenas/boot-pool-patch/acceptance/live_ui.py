@@ -1,0 +1,2666 @@
+#!/usr/bin/env python3
+"""Exercise patched storage workflows in the TrueNAS UI through PWMCP."""
+
+from __future__ import annotations
+
+import importlib.metadata
+import json
+import os
+from pathlib import Path
+import re
+import shlex
+import stat
+import sys
+import time
+import uuid
+
+import tomllib
+from playwright.sync_api import Error as PlaywrightError
+from playwright.sync_api import expect
+from pwmcp_client import BrowserLease, PwmcpError
+
+from path_b_provisioner import provision_path_b
+from path_b_ui_setup import (
+    contains_pool_create_request,
+    pool_create_request_evidence,
+    reserved_partition_four_name,
+    resolve_path_b_setup_mode,
+    check_checkbox_via_visible_label,
+    validate_pool_create_topology,
+)
+from path_a_ui_provisioner import PathARootProvisionError, provision_path_a_ui_root
+from observed_patch_manifest import (
+    ObservedPatchManifestError,
+    load_observed_patch_manifest,
+    verify_observed_patch_files,
+)
+from patch_install_record import (
+    V27_INSTALL_RECORD,
+    V27_RELEASES,
+    manifest_paths,
+    select_v28_record,
+)
+from remote import RemoteError, Target, flatten_datasets
+from ui_resume import (
+    managed_v28_patch_root_entries,
+    unexpected_ui_root_snapshots,
+    validate_resumed_ui_dataset,
+    ui_root_internal_datasets,
+)
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise RemoteError(message)
+
+
+def report(stage: str, detail: str) -> None:
+    print(f"[{stage}] {detail}", flush=True)
+
+
+def create_pool_control(page):
+    """Return the one visible Create Pool control, regardless of semantic role."""
+    matches = []
+    for role in ("button", "link"):
+        control = page.get_by_role(role, name=re.compile(r"^create pool$", re.IGNORECASE))
+        if control.count() == 1 and control.is_visible():
+            matches.append(control)
+    return matches[0] if len(matches) == 1 else None
+
+
+def connect_pwmcp(ws_url: str) -> BrowserLease:
+    """Retry only a pre-session WebSocket handshake reset during worker recycle."""
+    for attempt in range(3):
+        try:
+            return BrowserLease.connect(
+                ws_url=ws_url,
+                lease_seconds=3600,
+                label="truenas-live-ui",
+                timeout_ms=120_000,
+            )
+        except PlaywrightError as exc:
+            if "socket hang up" not in str(exc).lower() or attempt == 2:
+                raise
+            delay = 2 ** attempt
+            report("retry", f"PWMCP worker handshake reset; retrying in {delay}s ({attempt + 1}/2)")
+            time.sleep(delay)
+
+
+def inspect_session_timeout_ui(page, username: str) -> None:
+    """Record whether the current UI exposes Session Timeout through its navigation."""
+    page.set_default_timeout(30_000)
+    keywords = re.compile(
+        r"preferences|session|timeout|access|advanced|configure|system|account|admin",
+        re.IGNORECASE,
+    )
+
+    def report_visible(label: str) -> str:
+        snapshot = page.locator("body").aria_snapshot()
+        lines = [line.strip() for line in snapshot.splitlines() if keywords.search(line)]
+        report(label, f"url={page.url}; controls={lines[:100]!r}")
+        return snapshot
+
+    try:
+        page.get_by_text("Datasets", exact=True).first.wait_for(state="visible", timeout=60_000)
+        report_visible("session-timeout-dashboard")
+
+        user_menu = page.get_by_role(
+            "button", name=re.compile(rf"^{re.escape(username)}(?:\s|$)")
+        )
+        if user_menu.count() == 1 and user_menu.is_visible():
+            user_menu.click()
+            page.wait_for_timeout(500)
+            report_visible("session-timeout-user-menu")
+            preferences = page.get_by_text("Preferences", exact=True)
+            visible_preferences = [
+                preferences.nth(index)
+                for index in range(preferences.count())
+                if preferences.nth(index).is_visible()
+            ]
+            if len(visible_preferences) == 1:
+                visible_preferences[0].click()
+                page.wait_for_timeout(1_000)
+                snapshot = report_visible("session-timeout-preferences")
+                if "Session Timeout" in snapshot:
+                    report("session-timeout-ui", "Session Timeout is visible in Preferences")
+                    return
+        else:
+            report("session-timeout-user-menu", f"user menu control count={user_menu.count()}")
+
+        dashboard = page.get_by_role("link", name=re.compile(r"Dashboard$"))
+        if dashboard.count() == 1 and dashboard.is_visible():
+            dashboard.click()
+            page.wait_for_timeout(500)
+        system_menu = page.get_by_role(
+            "button", name=re.compile(r"^System(?:\s+submenu)?$", re.IGNORECASE)
+        )
+        if system_menu.count() == 1 and system_menu.is_visible():
+            system_menu.click()
+            page.wait_for_timeout(500)
+            report_visible("session-timeout-system-menu")
+            advanced = page.get_by_text("Advanced Settings", exact=True)
+            visible_advanced = [
+                advanced.nth(index)
+                for index in range(advanced.count())
+                if advanced.nth(index).is_visible()
+            ]
+            if len(visible_advanced) == 1:
+                visible_advanced[0].click()
+                page.wait_for_load_state("domcontentloaded", timeout=30_000)
+                page.wait_for_timeout(1_000)
+                snapshot = report_visible("session-timeout-advanced-settings")
+                if "Session Timeout" in snapshot:
+                    report("session-timeout-ui", "Session Timeout is visible on Advanced Settings")
+                else:
+                    access = page.get_by_text("Access", exact=True)
+                    visible_access = [
+                        access.nth(index)
+                        for index in range(access.count())
+                        if access.nth(index).is_visible()
+                    ]
+                    configure = []
+                    for item in visible_access:
+                        card = item.locator("xpath=ancestor::mat-card[1]")
+                        if card.count() == 1:
+                            button = card.get_by_role("button", name="Configure", exact=True)
+                            if button.count() == 1 and button.is_visible():
+                                configure.append(button)
+                    if len(configure) == 1:
+                        configure[0].click()
+                        page.wait_for_timeout(1_000)
+                        snapshot = report_visible("session-timeout-access-settings")
+                    result = "Session Timeout is visible" if "Session Timeout" in snapshot else "Session Timeout was not found in inspected settings views"
+                    report("session-timeout-ui", result)
+            else:
+                report("session-timeout-advanced-settings", f"visible link count={len(visible_advanced)}")
+        else:
+            report("session-timeout-system-menu", f"System submenu control count={system_menu.count()}")
+    except PlaywrightError as exc:
+        report("session-timeout-ui", f"navigation inspection stopped: {type(exc).__name__}: {str(exc).splitlines()[0]}")
+
+
+def required_env(name: str) -> str:
+    value = os.environ.get(name, "").strip()
+    if not value:
+        raise RemoteError(f"{name} is required")
+    return value
+
+
+def wait_dataset(target: Target, dataset: str, *, present: bool, timeout: int = 120) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        rows = flatten_datasets(target.query("pool.dataset.query", timeout=120))
+        exists = dataset in rows
+        if exists is present:
+            return True
+        time.sleep(3)
+    return False
+
+
+def selected_pool(profile: str) -> str:
+    return "boot-pool" if profile == "path-a" else "boot-disk-data"
+
+
+def selected_dataset_parent(profile: str) -> str:
+    return "boot-pool/user-data" if profile == "path-a" else "boot-disk-data"
+
+
+def verify_preprovisioned_path_b_pool(
+    target: Target, *, disk: str, boot_pool_partition: str, expected_version: str,
+) -> dict:
+    """Require Path B's exact registered partition-4 pool without writing storage."""
+    result = provision_path_b(
+        target,
+        disk=disk,
+        boot_pool_partition=boot_pool_partition,
+        expected_version=expected_version,
+        apply=False,
+    )
+    require(
+        result.get("state") == "already_configured",
+        "preprovisioned Path B requires the exact registered pool and partition-4 layout; "
+        f"read-only provisioner returned {result!r}",
+    )
+    return result
+
+
+def container_storage_root(profile: str) -> str:
+    if profile == "path-a":
+        return "boot-pool/user-data/.truenas_containers"
+    return "boot-disk-data/.truenas_containers"
+
+
+def find_container_storage_dataset(target: Target, profile: str, name: str) -> str:
+    root = container_storage_root(profile)
+    rows = target.run(["zfs", "list", "-H", "-o", "name", "-r", root], timeout=90).splitlines()
+    candidates = [
+        row for row in rows
+        if row.rsplit("/", 1)[-1] == name and "/containers/" in f"/{row}/"
+    ]
+    require(len(candidates) == 1,
+            f"expected one middleware container dataset named {name!r} below {root}, found {candidates!r}")
+    return candidates[0]
+
+
+def zfs_property(target: Target, dataset: str, property_name: str) -> str:
+    return target.run(["zfs", "get", "-H", "-p", "-o", "value", property_name, dataset])
+
+
+def assert_filesystem_backing(target: Target, dataset: str, expected_mountpoint: str) -> int:
+    rows = flatten_datasets(target.query("pool.dataset.query", timeout=120))
+    row = rows.get(dataset)
+    require(row is not None, f"middleware dataset query omits {dataset}")
+    require(row.get("type") == "FILESYSTEM", f"{dataset} is not a filesystem dataset: {row.get('type')!r}")
+    mountpoint = zfs_property(target, dataset, "mountpoint")
+    require(mountpoint == expected_mountpoint,
+            f"{dataset} mounts at {mountpoint!r}, expected {expected_mountpoint!r}")
+    source = target.run(["findmnt", "-n", "-o", "SOURCE", "--target", expected_mountpoint])
+    require(source == dataset, f"{expected_mountpoint} is backed by {source!r}, not {dataset!r}")
+    used = int(zfs_property(target, dataset, "used"))
+    return used
+
+
+def record_dialog(page, dialog, label: str, *, limit: int = 2200) -> str:
+    snapshot = dialog.aria_snapshot()
+    lines = [line.strip() for line in snapshot.splitlines() if line.strip()]
+    summary = " | ".join(lines if limit > 2200 else lines[:32])
+    report(label, f"visible form: {summary[:limit]}")
+    return snapshot
+
+
+def _redact_rpc_value(value):
+    if isinstance(value, dict):
+        return {
+            key: "<redacted>" if re.search(r"password|secret|token|private.?key", key, re.IGNORECASE)
+            else _redact_rpc_value(child)
+            for key, child in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_rpc_value(child) for child in value]
+    return value
+
+
+def observe_rpc_method(
+    page,
+    method: str,
+    *,
+    log_response: bool = False,
+    response_sink: list[dict] | None = None,
+) -> list[dict]:
+    """Capture sanitized browser WebSocket traffic for one TrueNAS RPC method."""
+    requests: list[dict] = []
+    request_ids: dict[str, str] = {}
+
+    def walk_dicts(value):
+        if isinstance(value, dict):
+            yield value
+            for child in value.values():
+                yield from walk_dicts(child)
+        elif isinstance(value, list):
+            for child in value:
+                yield from walk_dicts(child)
+
+    def visit(value):
+        for item in walk_dicts(value):
+            if item.get("method") == method:
+                yield item
+
+    def on_websocket(websocket) -> None:
+        def on_frame_sent(payload) -> None:
+            if isinstance(payload, bytes):
+                raw = payload.decode("utf-8", errors="replace")
+            elif isinstance(payload, str):
+                raw = payload
+            else:
+                return
+            if method not in raw:
+                return
+            try:
+                frame = json.loads(raw)
+            except json.JSONDecodeError:
+                report("browser-rpc", f"could not decode {method} frame: {raw[:1600]!r}")
+                return
+            for request in visit(frame):
+                sanitized = _redact_rpc_value(request)
+                requests.append(sanitized)
+                if request.get("id") is not None:
+                    request_ids[str(request["id"])] = method
+                report("browser-rpc", f"{method} request: {json.dumps(sanitized, sort_keys=True)[:5000]}")
+
+        def on_frame_received(payload) -> None:
+            if isinstance(payload, bytes):
+                raw = payload.decode("utf-8", errors="replace")
+            elif isinstance(payload, str):
+                raw = payload
+            else:
+                return
+            try:
+                frame = json.loads(raw)
+            except json.JSONDecodeError:
+                return
+            for response in walk_dicts(frame):
+                response_id = response.get("id")
+                if response_id is None or request_ids.pop(str(response_id), None) != method:
+                    continue
+                if response.get("error") is not None or log_response:
+                    sanitized = _redact_rpc_value(response)
+                    if response_sink is not None:
+                        response_sink.append(sanitized)
+                    report(
+                        "browser-rpc-response",
+                        f"{method} response: {json.dumps(sanitized, sort_keys=True)[:5000]}",
+                    )
+
+        websocket.on("framesent", on_frame_sent)
+        websocket.on("framereceived", on_frame_received)
+
+    page.on("websocket", on_websocket)
+    return requests
+
+
+def dataset_create_properties(requests: list[dict], dataset: str) -> dict | None:
+    for request in requests:
+        if request.get("method") != "pool.dataset.create":
+            continue
+        params = request.get("params")
+        if not isinstance(params, list):
+            continue
+        for item in params:
+            if isinstance(item, dict) and item.get("name") == dataset:
+                return item
+    return None
+
+
+def rpc_object_for_name(requests: list[dict], method: str, name: str) -> dict | None:
+    for request in requests:
+        if request.get("method") != method:
+            continue
+        params = request.get("params")
+        if not isinstance(params, list):
+            continue
+        for item in params:
+            if isinstance(item, dict) and item.get("name") == name:
+                return item
+    return None
+
+
+def cleanup_stale_ui_container(
+    target: Target, profile: str, container_name: str, image_name: str,
+) -> None:
+    """Delete only the named, empty, stopped orphan from a failed UI acceptance run."""
+    require(profile == "path-a", "stale UI container recovery is valid only for Path A")
+    require(
+        re.fullmatch(r"uiacceptance[0-9a-f]{8}", container_name) is not None,
+        "stale UI container recovery requires an exact uiacceptance<8 lowercase hex> name",
+    )
+    root = "boot-pool/user-data"
+    dataset = f"{root}/.truenas_containers/containers/{container_name}"
+    records = target.query("container.query", timeout=120)
+    require(len(records) == 1, f"stale UI recovery expected exactly one container record: {records!r}")
+    record = records[0]
+    require(record.get("name") == container_name,
+            f"stale UI recovery found unexpected container name {record.get('name')!r}")
+    require(type(record.get("id")) is int, f"stale UI recovery found invalid container id: {record!r}")
+    require(record.get("dataset") == dataset,
+            f"stale UI recovery found container backing dataset {record.get('dataset')!r}, expected {dataset!r}")
+    require((record.get("status") or {}).get("state") == "STOPPED",
+            f"stale UI recovery requires a stopped container: {record.get('status')!r}")
+    require(target.query("vm.query", timeout=120) == [],
+            "stale UI recovery refuses while VM records exist")
+    require(target.shell("zpool list -H -o name,health", timeout=90).splitlines() == ["boot-pool\tONLINE"],
+            "stale UI recovery requires boot-pool ONLINE with no other imported pools")
+
+    quota = zfs_property(target, root, "quota")
+    require(quota.isdecimal() and 1_000_000_000 <= int(quota) < 2**64 - 1,
+            f"stale UI recovery requires the existing finite Path A root quota: {quota!r}")
+    mountpoint = zfs_property(target, root, "mountpoint")
+    require(mountpoint == "/mnt/boot-pool/user-data",
+            f"stale UI recovery found unexpected root mountpoint {mountpoint!r}")
+    require(zfs_property(target, root, "canmount") == "on",
+            "stale UI recovery requires canmount=on for the existing root")
+    require(target.run(["findmnt", "-n", "-o", "SOURCE", "--target", mountpoint]) == root,
+            "stale UI recovery requires the existing root to be mounted from boot-pool/user-data")
+
+    direct_names = target.run([
+        "zfs", "list", "-H", "-t", "filesystem,volume", "-o", "name", "-r", "boot-pool",
+    ], timeout=90).splitlines()
+    try:
+        descendants, image_datasets = ui_root_internal_datasets(
+            direct_names, root, image_name, stale_container_name=container_name,
+        )
+    except ValueError as exc:
+        raise RemoteError(str(exc)) from exc
+    require(dataset in descendants, f"stale UI recovery cannot find {dataset}")
+    require(bool(image_datasets), "stale UI recovery requires the pinned image cache from the failed UI run")
+    require(zfs_property(target, dataset, "used") == "0",
+            f"stale UI recovery refuses a container dataset with allocated contents: {dataset}")
+    dataset_tree = target.run([
+        "zfs", "list", "-H", "-t", "filesystem,volume,snapshot", "-o", "name", "-r", dataset,
+    ], timeout=45)
+    snapshots = [name for name in dataset_tree.splitlines() if "@" in name]
+    require(not snapshots, f"stale UI recovery refuses a container dataset with snapshots: {snapshots!r}")
+
+    report(
+        "stale-ui-container-recovery",
+        f"deleting only stopped empty container {container_name} id={record['id']}; "
+        f"preserving root={root} and image-cache-datasets={image_datasets!r}",
+    )
+    delete_job = target.call("container.delete", record["id"], {
+        "force": False,
+        "recursive": False,
+    }, timeout=120)
+    if isinstance(delete_job, int):
+        target.wait_job(delete_job, timeout=600, label="stale UI container cleanup")
+    remaining_records = target.query("container.query", timeout=120)
+    require(not remaining_records,
+            f"stale UI container record remains after targeted delete: {remaining_records!r}")
+    remaining_names = target.run([
+        "zfs", "list", "-H", "-t", "filesystem,volume", "-o", "name", "-r", "boot-pool",
+    ], timeout=90).splitlines()
+    require(dataset not in remaining_names,
+            f"stale UI container dataset remains after targeted delete: {dataset}")
+    _, remaining_images = ui_root_internal_datasets(remaining_names, root, image_name)
+    require(remaining_images == image_datasets,
+            f"targeted cleanup changed the retained image cache: before={image_datasets!r}, after={remaining_images!r}")
+    require(zfs_property(target, root, "quota") == quota,
+            "targeted cleanup changed the Path A root quota")
+    require(target.run(["findmnt", "-n", "-o", "SOURCE", "--target", mountpoint]) == root,
+            "targeted cleanup changed the Path A root mount source")
+    report("stale-ui-container-recovery", "target container record and dataset removed; Path A root and image cache preserved")
+
+
+def click_dialog_submit(page, dialog, labels: tuple[str, ...]) -> str:
+    for label in labels:
+        button = dialog.get_by_role("button", name=label, exact=True)
+        if button.count() == 1 and button.is_visible() and button.is_enabled():
+            button.click()
+            return label
+    snapshot = dialog.aria_snapshot()
+    raise RemoteError(f"form has no enabled submit button from {labels!r}; ARIA form={snapshot[:2400]!r}")
+
+
+def submit_result_details(page, dialog) -> tuple[str, list[str]]:
+    """Capture visible overlays and field errors when a UI submit does not close."""
+    overlays = page.get_by_role("dialog")
+    visible: list[str] = []
+    for index in range(overlays.count()):
+        overlay = overlays.nth(index)
+        if not overlay.is_visible():
+            continue
+        label = overlay.get_attribute("aria-label") or "unnamed dialog"
+        text = " ".join(overlay.inner_text(timeout=2_000).split())
+        snapshot = overlay.aria_snapshot()
+        visible.append(f"{label}: text={text[:1600]!r} aria={snapshot[:2400]!r}")
+    errors = [
+        text.strip()
+        for text in dialog.locator("mat-error").all_text_contents()
+        if text.strip()
+    ]
+    return " | ".join(visible), errors
+
+
+def fill_labeled_textbox(dialog, labels: tuple[str, ...], value: str, *, required: bool = True) -> bool:
+    for label in labels:
+        field = dialog.get_by_role("textbox", name=label, exact=True)
+        if field.count() == 1 and field.is_visible():
+            field.fill(value)
+            return True
+    if required:
+        snapshot = dialog.aria_snapshot()
+        raise RemoteError(f"form has no textbox labeled {labels!r}; ARIA form={snapshot[:2400]!r}")
+    return False
+
+
+def inventory_before_ui_mutation(
+    target: Target, profile: str, image_name: str, *, resume_existing_root: bool = False,
+    resume_existing_ui_dataset: str = "", path_b_setup: str | None = None,
+) -> bool:
+    pool = selected_pool(profile)
+    root = selected_dataset_parent(profile)
+    rows = flatten_datasets(target.query("pool.dataset.query", timeout=120))
+    pool_rows = target.query("pool.query", timeout=120)
+    direct_pools = target.shell("zpool list -H -o name,health", timeout=90).splitlines()
+    pool_health = {
+        line.split("\t", 1)[0]: line.split("\t", 1)[1]
+        for line in direct_pools if "\t" in line
+    }
+    require(pool_health.get("boot-pool") == "ONLINE",
+            f"fresh guest direct ZFS inventory omits boot-pool ONLINE: {direct_pools!r}")
+    if profile != "path-b" or path_b_setup == "ui-wizard":
+        require("boot-disk-data" not in pool_health,
+                f"fresh guest already has Path B pool boot-disk-data: {direct_pools!r}")
+    elif path_b_setup == "preprovisioned":
+        require(pool_health.get("boot-disk-data") == "ONLINE",
+                f"preprovisioned Path B requires boot-disk-data ONLINE: {direct_pools!r}")
+    else:
+        raise RemoteError("Path B inventory requires an explicit setup mode")
+    expected_release = required_env("TRUENAS_EXPECTED_VERSION")
+    patch_record: dict = {}
+    record_path = ""
+    observed_manifest_path = os.environ.get("TRUENAS_OBSERVED_PATCH_MANIFEST", "")
+    allow_observed_patch = os.environ.get("TRUENAS_TEST_ALLOW_UNRECORDED_PATCH", "")
+    if observed_manifest_path or allow_observed_patch:
+        require(
+            allow_observed_patch == "1" and bool(observed_manifest_path),
+            "unrecorded patch UI checks require both the explicit guard and an observed-code manifest",
+        )
+        require(profile == "path-a" and expected_release == "27.0.0-RC.1",
+                "unrecorded patch UI checks support only the observed v27 Path A target")
+        marker_state = target.shell(
+            f"if test -e {shlex.quote(V27_INSTALL_RECORD)}; then printf present; else printf absent; fi",
+            timeout=30,
+        )
+        require(marker_state == "absent",
+                "observed-code UI checks require the v27 patch-install record to remain absent")
+        try:
+            observed_manifest = load_observed_patch_manifest(
+                observed_manifest_path,
+                target_host=required_env("TRUENAS_TEST_HOST"),
+                expected_version=expected_release,
+                profile=profile,
+            )
+            verify_observed_patch_files(target, observed_manifest)
+        except ObservedPatchManifestError as exc:
+            raise RemoteError(f"observed v27 source check failed: {exc}") from exc
+        report(
+            "unrecorded-patch-state",
+            "target source matches the pinned observed v27 fingerprint; UI result is exploratory and does not certify the current patch bundle",
+        )
+    elif expected_release in V27_RELEASES:
+        marker_state = target.shell(
+            f"if test -f {shlex.quote(V27_INSTALL_RECORD)}; then printf present; else printf absent; fi",
+            timeout=30,
+        )
+        require(marker_state == "present", "live-ui requires the registered v27 patch-install record")
+        try:
+            patch_record = json.loads(target.shell(
+                f"cat -- {shlex.quote(V27_INSTALL_RECORD)}", timeout=30,
+            ))
+        except (RemoteError, ValueError) as exc:
+            raise RemoteError("live-ui requires the registered v27 patch-install record") from exc
+        require(
+            patch_record.get("root_create_guard") == "root-excluded-from-descendant-readiness-v1",
+            f"live-ui requires the v27 root-create guard marker from the current patch bundle: {patch_record!r}",
+        )
+    else:
+        try:
+            paths = manifest_paths(expected_release)
+            contents = {}
+            for path in paths:
+                quoted = shlex.quote(path)
+                raw = target.shell(
+                    f"if test -L {quoted}; then printf '__TRUENAS_SYMLINK__'; "
+                    f"elif test -f {quoted}; then cat -- {quoted}; "
+                    "else printf '__TRUENAS_ABSENT__'; fi",
+                    timeout=30,
+                )
+                if raw == "__TRUENAS_SYMLINK__":
+                    raise ValueError(f"registered patch record is a symlink: {path}")
+                if raw != "__TRUENAS_ABSENT__":
+                    contents[path] = raw
+            record_path, patch_record = select_v28_record(contents, expected_release)
+        except (RemoteError, ValueError) as exc:
+            raise RemoteError(f"live-ui requires one valid registered patch record: {exc}") from exc
+        report(
+            "registered-patch-state",
+            f"version={expected_release} profile={patch_record['storage_profile']} "
+            f"bundle_sha256={patch_record['bundle_sha256']} record={record_path}",
+        )
+    if profile == "path-b":
+        require(path_b_setup in {"ui-wizard", "preprovisioned"},
+                "Path B inventory requires an explicit setup mode")
+        require(not resume_existing_root,
+                "TRUENAS_TEST_RESUME_EXISTING_UI_ROOT is valid only for Path A live-ui")
+        require(not resume_existing_ui_dataset,
+                "TRUENAS_TEST_RESUME_EXISTING_UI_DATASET is valid only for Path A live-ui")
+        disk = required_env("TRUENAS_DISK_DEVICE")
+        boot_partition = required_env("TRUENAS_BOOT_POOL_PARTITION")
+        block_devices = json.loads(target.run([
+            "lsblk", "--json", "--tree", "--paths", "--bytes", "--output",
+            "PATH,NAME,TYPE,SIZE,RO,RM,PARTN,PARTTYPE,PARTLABEL", disk,
+        ], timeout=90))
+        middleware_disks = target.query("disk.query", timeout=120)
+        report("path-b-device-inventory", {
+            "selected_disk": disk,
+            "boot_pool_partition": boot_partition,
+            "block_devices": block_devices,
+            "middleware_disks": [
+                {
+                    key: row.get(key)
+                    for key in ("name", "devname", "identifier", "size", "model")
+                    if key in row
+                }
+            for row in middleware_disks
+            if isinstance(row, dict)
+            ],
+        })
+        if path_b_setup == "ui-wizard":
+            require("boot-disk-data" not in rows,
+                    "Path B UI-wizard mode requires no existing boot-disk-data pool")
+        else:
+            configured = verify_preprovisioned_path_b_pool(
+                target,
+                disk=disk,
+                boot_pool_partition=boot_partition,
+                expected_version=required_env("TRUENAS_EXPECTED_VERSION"),
+            )
+            direct_names = target.run([
+                "zfs", "list", "-H", "-t", "filesystem,volume", "-o", "name", "-r", pool,
+            ], timeout=90).splitlines()
+            # Once boot-disk-data is a regular pool, middleware moves the system
+            # dataset there (<pool>/.system/*). That is platform state, not a
+            # test descendant, so it must not fail the fresh-target check.
+            system_dataset = re.compile(
+                rf"^{re.escape(pool)}/\.system(/(configs-[0-9a-f]{{32}}|cores|netdata-[0-9a-f]{{32}}|nfs|samba4"
+                r"|truenas_zfstierd|truesearch|vm|webshare)(/.*)?)?$"
+            )
+            user_names = [name for name in direct_names if not system_dataset.match(name)]
+            require(user_names == [pool],
+                    f"preprovisioned Path B must have no test descendants before UI mutation: {direct_names!r}")
+            root_mountpoint = zfs_property(target, pool, "mountpoint")
+            require(root_mountpoint == f"/mnt/{pool}",
+                    f"preprovisioned Path B root mountpoint is {root_mountpoint!r}")
+            root_source = target.run([
+                "findmnt", "-n", "-o", "SOURCE", "--target", root_mountpoint,
+            ], timeout=45)
+            require(root_source == pool,
+                    f"preprovisioned Path B root is mounted from {root_source!r}, expected {pool!r}")
+            choices = target.call("container.pool_choices", timeout=120)
+            require(pool in choices,
+                    f"container pool choices omit preprovisioned Path B pool {pool}: {choices!r}")
+            report(
+                "path-b-preprovisioned-inventory",
+                f"strict provisioner verified disk={configured.get('disk')} "
+                f"partition={configured.get('partition')}; pool root is clean and mounted; "
+                "container.pool_choices includes boot-disk-data",
+            )
+    containers = target.query("container.query", timeout=120)
+    vms = target.query("vm.query", timeout=120)
+    require(containers == [], f"fresh UI target has existing container records: {containers!r}")
+    require(vms == [], f"fresh UI target has existing VM records: {vms!r}")
+    # In UI-wizard mode Path B has no selected pool yet. Preprovisioned mode
+    # requires its pool root to be the only existing dataset before this run.
+    direct_names = []
+    if pool in pool_health:
+        direct_names = target.run([
+            "zfs", "list", "-H", "-t", "filesystem,volume", "-o", "name", "-r", pool,
+        ], timeout=90).splitlines()
+    existing_root = profile == "path-a" and root in rows
+    if existing_root:
+        require(resume_existing_root,
+                f"fresh Path A target already has {root}; set the guarded UI resume flag only "
+                "after intentionally retaining or provisioning this root")
+        try:
+            descendants, cached_images = ui_root_internal_datasets(
+                direct_names, root, image_name, resumed_ui_dataset=resume_existing_ui_dataset,
+            )
+        except ValueError as exc:
+            raise RemoteError(str(exc)) from exc
+        require(
+            not any("/containers/" in name for name in descendants),
+            f"UI resume requires no existing container datasets: {descendants!r}",
+        )
+        root_row = rows[root]
+        require(root_row.get("type") == "FILESYSTEM",
+                f"existing Path A root is not a filesystem dataset: {root_row.get('type')!r}")
+        mountpoint = zfs_property(target, root, "mountpoint")
+        canmount = zfs_property(target, root, "canmount")
+        quota_text = zfs_property(target, root, "quota")
+        require(mountpoint == "/mnt/boot-pool/user-data",
+                f"UI resume root mountpoint is {mountpoint!r}")
+        require(canmount == "on", f"UI resume root canmount is {canmount!r}")
+        require(quota_text.isdecimal() and 1_000_000_000 <= int(quota_text) < 2**64 - 1,
+                f"UI resume root must retain a finite quota of at least 1 GiB: {quota_text!r}")
+        mount_source = target.run(["findmnt", "-n", "-o", "SOURCE", "--target", mountpoint])
+        require(mount_source == root,
+                f"UI resume root mount source is {mount_source!r}, expected {root!r}")
+        root_tree = target.run([
+            "zfs", "list", "-H", "-t", "filesystem,volume,snapshot", "-o", "name", "-r", root,
+        ], timeout=45)
+        root_snapshots = [name for name in root_tree.splitlines() if "@" in name]
+        unexpected_snapshots = unexpected_ui_root_snapshots(root_snapshots, cached_images)
+        require(not unexpected_snapshots,
+                "UI resume refuses snapshots outside the pinned middleware image cache: "
+                f"{unexpected_snapshots!r}")
+        if resume_existing_ui_dataset:
+            prior_dataset = resume_existing_ui_dataset
+            prior_dataset_row = rows.get(prior_dataset)
+            require(prior_dataset_row is not None and prior_dataset_row.get("type") == "FILESYSTEM",
+                    f"explicitly resumed UI dataset is not a middleware filesystem row: {prior_dataset_row!r}")
+            prior_mountpoint = f"/mnt/{prior_dataset}"
+            require(zfs_property(target, prior_dataset, "mountpoint") == prior_mountpoint,
+                    f"explicitly resumed UI dataset has an unexpected mountpoint: {prior_dataset!r}")
+            require(zfs_property(target, prior_dataset, "canmount") == "on",
+                    f"explicitly resumed UI dataset is not mounted with canmount=on: {prior_dataset!r}")
+            require(target.run([
+                "findmnt", "-n", "-o", "SOURCE", "--target", prior_mountpoint,
+            ]) == prior_dataset,
+                f"explicitly resumed UI dataset is not mounted from its own ZFS dataset: {prior_dataset!r}")
+            for zvol_name in (f"{prior_dataset}/vm-disk", f"{prior_dataset}/cache-device"):
+                require(zvol_name in rows and rows[zvol_name].get("type") == "VOLUME",
+                        f"explicitly resumed UI zvol is not a middleware volume row: {zvol_name!r}")
+                assert_zvol_backing(target, zvol_name)
+                require(zfs_property(target, zvol_name, "volblocksize") == "16384",
+                        f"explicitly resumed UI zvol does not have a 16 KiB block size: {zvol_name!r}")
+        root_contents = target.run([
+            "find", mountpoint, "-mindepth", "1", "-maxdepth", "1", "-printf", "%f\\n",
+        ]).splitlines()
+        allowed_root_contents = {".truenas_containers"}
+        try:
+            patch_root_entries = managed_v28_patch_root_entries(
+                expected_release, patch_record.get("storage_profile", ""),
+                record_path, patch_record, mountpoint,
+            )
+        except ValueError as exc:
+            raise RemoteError(f"UI resume rejected v28 patch storage metadata: {exc}") from exc
+        if patch_root_entries:
+            backup_root_name = ".truenas-boot-pool-patch-backups"
+            replacement_root_name = ".truenas-boot-pool-patch-replacements"
+            backup_path = patch_record["backup"]
+            backup_root = f"{mountpoint}/{backup_root_name}"
+            archive_path = f"{backup_path}/targets.tar.gz"
+            backup_state = target.shell(
+                "if test -d " + shlex.quote(backup_root)
+                + " && test ! -L " + shlex.quote(backup_root)
+                + " && test -d " + shlex.quote(backup_path)
+                + " && test ! -L " + shlex.quote(backup_path)
+                + " && test -f " + shlex.quote(archive_path)
+                + " && test ! -L " + shlex.quote(archive_path)
+                + "; then printf valid; else printf invalid; fi",
+                timeout=30,
+            )
+            require(backup_state == "valid",
+                    "UI resume requires the registered v28 original-file backup and archive")
+            replacement_root = f"{mountpoint}/{replacement_root_name}"
+            replacement_state = target.shell(
+                "if test -e " + shlex.quote(replacement_root)
+                + " || test -L " + shlex.quote(replacement_root)
+                + "; then if test -d " + shlex.quote(replacement_root)
+                + " && test ! -L " + shlex.quote(replacement_root)
+                + "; then printf directory; else printf unsafe; fi; else printf absent; fi",
+                timeout=30,
+            )
+            require(replacement_state in {"directory", "absent"},
+                    "UI resume found unsafe v28 patch replacement metadata")
+            allowed_root_contents.update(patch_root_entries)
+        if resume_existing_ui_dataset:
+            allowed_root_contents.add(resume_existing_ui_dataset.rsplit("/", 1)[-1])
+        require(set(root_contents) <= allowed_root_contents,
+                f"UI resume found user data outside the managed container cache: {root_contents!r}")
+        require(bool(cached_images) or ".truenas_containers" not in root_contents,
+                "UI resume found a container cache directory without a verified pinned image dataset")
+    else:
+        require(not resume_existing_root,
+                f"UI resume flag requires the existing UI-created root {root}")
+        require(not resume_existing_ui_dataset,
+                f"TRUENAS_TEST_RESUME_EXISTING_UI_DATASET requires the existing UI-created root {root}")
+    require(not any("uiacceptance" in name for name in direct_names),
+            "read-only inventory found a stale UI acceptance dataset before mutation")
+    report(
+        "readonly-inventory",
+        f"profile={profile} pool={pool} "
+        f"{'resuming-verified-ui-root=' + root if existing_root else 'unconfigured-root=' + root} "
+        f"direct-pools={pool_health!r} middleware-pool-query={pool_rows!r} "
+        f"datasets={len(rows)} containers=0 vms=0 direct-zfs-rows={len(direct_names)} "
+        f"cached-ui-images={cached_images if existing_root else []!r}",
+    )
+    return existing_root
+
+
+def _select_ui_option(page, dialog, labels: tuple[str, ...], value: str) -> bool:
+    for label in labels:
+        selector = dialog.get_by_role("combobox", name=re.compile(label, re.IGNORECASE))
+        if selector.count() == 1 and selector.is_visible():
+            selector.click()
+            option = page.get_by_role("option", name=re.compile(rf"^{re.escape(value)}$", re.IGNORECASE))
+            option.wait_for(state="visible", timeout=30_000)
+            option.click()
+            expect(selector).to_contain_text(value, timeout=30_000)
+            return True
+    return False
+
+
+def create_path_a_root_in_ui(
+    page, base_url: str, target: Target, dataset_create_requests: list[dict]
+) -> str:
+    """Create and configure the Path A namespace using the dataset UI only."""
+    root = "boot-pool/user-data"
+    page.goto(base_url + "/ui/datasets/boot-pool", wait_until="domcontentloaded", timeout=120_000)
+    add = page.get_by_role("button", name="Add Dataset", exact=True)
+    add.wait_for(state="visible", timeout=120_000)
+    add.click()
+    dialog = page.get_by_role(
+        "dialog", name=re.compile(r"^(?:Slide-in form|Add Dataset)$", re.IGNORECASE),
+    )
+    dialog.wait_for(state="visible", timeout=60_000)
+    snapshot = record_dialog(page, dialog, "path-a-root-ui-form")
+    fill_labeled_textbox(dialog, ("Name",), "user-data")
+
+    advanced = dialog.get_by_role("button", name=re.compile(r"advanced", re.IGNORECASE))
+    if advanced.count() == 1 and advanced.is_visible():
+        advanced.click()
+        basic_options = dialog.get_by_role("button", name=re.compile(r"basic options", re.IGNORECASE))
+        basic_options.wait_for(state="visible", timeout=30_000)
+    snapshot = record_dialog(page, dialog, "path-a-root-ui-advanced-form", limit=6000)
+
+    mountpoint = dialog.get_by_role(
+        "textbox", name=re.compile(r"^(mount.?point|path)$", re.IGNORECASE)
+    )
+    if mountpoint.count() == 1 and mountpoint.is_visible():
+        mountpoint.fill("/mnt/boot-pool/user-data")
+        report("path-a-root-ui", "set the root mountpoint in the dataset form")
+    else:
+        report("path-a-root-ui", "dataset form uses its default mountpoint; verifying it after creation")
+
+    quota = dialog.get_by_role(
+        "textbox", name="Quota for this dataset and all children", exact=True
+    )
+    if quota.count() != 1 or not quota.is_visible():
+        snapshot = dialog.aria_snapshot()
+        raise RemoteError(
+            "Path A dataset UI does not expose the all-children quota control for boot-pool/user-data; "
+            f"visible form={snapshot[:2400]!r}"
+        )
+    quota.fill("2 GiB")
+    quota_value_before_blur = quota.input_value()
+    quota.press("Tab")
+    page.wait_for_timeout(500)
+    quota_value_after_blur = quota.input_value()
+    quota_dom = quota.evaluate(
+        """el => ({value: el.value, type: el.type, name: el.name, id: el.id,
+                    ariaLabel: el.getAttribute('aria-label'), dataTest: el.getAttribute('data-test'),
+                    parent: el.parentElement?.outerHTML?.slice(0, 1400)})"""
+    )
+    require(
+        quota_value_before_blur == quota_value_after_blur == "2 GiB",
+        "Path A all-children quota control did not retain the finite value after blur: "
+        f"before={quota_value_before_blur!r}, after={quota_value_after_blur!r}",
+    )
+    require(
+        quota_dom.get("dataTest") == "input-quota",
+        "Path A all-children quota label is not bound to the TrueNAS quota field: "
+        f"data-test={quota_dom.get('dataTest')!r}",
+    )
+    report(
+        "path-a-quota-control",
+        f"filled={quota_value_before_blur!r}; after blur={quota_value_after_blur!r}; "
+        f"DOM={json.dumps(quota_dom, sort_keys=True)[:2200]}",
+    )
+
+    canmount = dialog.get_by_role("checkbox", name=re.compile(r"can.?mount", re.IGNORECASE))
+    if canmount.count() == 1 and canmount.is_visible() and not canmount.is_checked():
+        canmount.check()
+    else:
+        _select_ui_option(page, dialog, ("can.?mount",), "On")
+
+    request_count_before_submit = len(dataset_create_requests)
+    click_dialog_submit(page, dialog, ("Save", "Create", "Add"))
+    request_deadline = time.monotonic() + 5
+    while len(dataset_create_requests) == request_count_before_submit and time.monotonic() < request_deadline:
+        page.wait_for_timeout(100)
+    create_requests = dataset_create_requests[request_count_before_submit:]
+    root_request = next(
+        (request for request in create_requests if "user-data" in json.dumps(request)),
+        None,
+    )
+    report(
+        "path-a-root-ui-wire",
+        f"captured {len(create_requests)} pool.dataset.create request(s); "
+        f"root request={json.dumps(root_request, sort_keys=True)[:5000] if root_request else 'missing'}",
+    )
+    root_properties = dataset_create_properties(create_requests, root)
+    validation = page.get_by_role("dialog", name=re.compile(r"validation error", re.IGNORECASE))
+    submitted = False
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        if validation.count() and validation.first.is_visible():
+            break
+        if dialog.count() == 0 or not dialog.is_visible():
+            submitted = True
+            break
+        page.wait_for_timeout(250)
+    if validation.count() and validation.first.is_visible():
+        validation_text = " ".join(validation.first.inner_text(timeout=10_000).split())
+        overlays, form_errors = submit_result_details(page, dialog)
+        raise RemoteError(
+            "Path A dataset UI rejected the root configuration; "
+            f"validation={validation_text!r} request={root_request!r} "
+            f"overlays={overlays!r} field_errors={form_errors!r}"
+        )
+    if not submitted:
+        overlays, form_errors = submit_result_details(page, dialog)
+        root_exists = wait_dataset(target, root, present=True, timeout=20)
+        if root_exists:
+            report(
+                "path-a-root-ui",
+                "Save left the UI form visible, but read-only middleware inventory confirms "
+                f"the UI-created root exists; overlays={overlays!r} field_errors={form_errors!r}",
+            )
+            page.goto(base_url + "/ui/datasets/boot-pool", wait_until="domcontentloaded", timeout=120_000)
+        else:
+            raise RemoteError(
+                "Path A dataset UI Save did not close or create boot-pool/user-data within 20 seconds; "
+                f"overlays={overlays!r} field_errors={form_errors!r}"
+            )
+    require(root_properties is not None,
+            "TrueNAS UI did not submit pool.dataset.create for boot-pool/user-data")
+    ui_quota = root_properties.get("quota")
+    require(type(ui_quota) is int and ui_quota >= 1_000_000_000,
+            "TrueNAS UI request must submit an explicit finite quota of at least 1 GiB; "
+            f"request quota={ui_quota!r}, refquota={root_properties.get('refquota')!r}")
+    require(wait_dataset(target, root, present=True),
+            "the Path A root created through the dataset UI is missing from middleware query")
+    actual_mountpoint = zfs_property(target, root, "mountpoint")
+    actual_canmount = zfs_property(target, root, "canmount")
+    actual_quota = int(zfs_property(target, root, "quota"))
+    require(actual_mountpoint == "/mnt/boot-pool/user-data",
+            f"UI-created Path A root mountpoint is {actual_mountpoint!r}")
+    require(actual_canmount == "on", f"UI-created Path A root canmount is {actual_canmount!r}")
+    require(actual_quota >= 1_000_000_000,
+            f"UI-created Path A root quota is not a finite 1 GiB or larger value: {actual_quota}")
+    source = target.run(["findmnt", "-n", "-o", "SOURCE", "--target", actual_mountpoint])
+    require(source == root,
+            f"UI-created Path A root mount source is {source!r}, expected {root!r}")
+    choices = target.call("container.pool_choices", timeout=120)
+    require("boot-pool" in choices,
+            f"patched container pool choices omit boot-pool after UI root setup: {choices!r}")
+    report(
+        "path-a-root-ui",
+        f"created {root}; mountpoint={actual_mountpoint}; canmount={actual_canmount}; "
+        f"quota={actual_quota}; findmnt source={source}; container pool choice includes boot-pool",
+    )
+    return root
+
+
+def create_path_b_pool_in_ui(
+    page,
+    base_url: str,
+    target: Target,
+    pool_create_requests: list[dict],
+    expected_partition: str,
+) -> str:
+    """Try the supported pool wizard, accepting only the reserved free-tail partition."""
+    jobs_before = target.call("core.get_jobs", [["method", "=", "pool.create"]], timeout=120)
+    body = page.locator("body")
+    create = create_pool_control(page)
+    if create is None:
+        storage_link = page.get_by_text("Storage", exact=True).first
+        if storage_link.count() == 0 or not storage_link.is_visible():
+            # Return to the authenticated dashboard using the UI so its
+            # navigation shell is mounted before opening the Storage section.
+            page.goto(base_url + "/", wait_until="domcontentloaded", timeout=120_000)
+            page.get_by_text("Datasets", exact=True).first.wait_for(state="visible", timeout=60_000)
+            storage_link = page.get_by_text("Storage", exact=True).first
+        if storage_link.count() == 1 and storage_link.is_visible():
+            storage_link.click()
+            deadline = time.monotonic() + 60
+            while time.monotonic() < deadline:
+                create = create_pool_control(page)
+                if create is not None:
+                    break
+                page.wait_for_timeout(500)
+        else:
+            snapshot = body.aria_snapshot()
+            raise RemoteError(
+                "Path B UI cannot reach the Storage section from the authenticated UI; "
+                f"page={page.url!r} form={snapshot[:2600]!r}"
+            )
+    if create is None:
+        snapshot = body.aria_snapshot()
+        raise RemoteError(
+            "Path B UI cannot open the storage pool creation wizard; "
+            f"page={page.url!r} form={snapshot[:2600]!r}"
+        )
+    create.click()
+    dialog = page.get_by_role("dialog")
+    if dialog.count() == 0:
+        dialog = body
+    dialog.wait_for(state="visible", timeout=60_000)
+    snapshot = record_dialog(page, dialog, "path-b-pool-ui-wizard")
+
+    name = dialog.get_by_role("textbox", name=re.compile(r"name", re.IGNORECASE))
+    if name.count() == 1 and name.is_visible():
+        name.fill("boot-disk-data")
+
+    # The patched middleware offers only the reserved free-tail partition as a
+    # pseudo-disk. The boot disk itself must never be offered to this wizard.
+    unused = target.call("disk.details", {"type": "UNUSED", "join_partitions": False}, timeout=120)
+    unused_names = sorted(row.get("name") for row in unused)
+    require(unused_names == [expected_partition],
+            f"the wizard must be offered exactly the reserved partition {expected_partition!r}: {unused_names!r}")
+    next_wizard = page.get_by_role("button", name=re.compile(r"^next$", re.IGNORECASE))
+    next_wizard.first.click()
+    page.wait_for_timeout(1000)
+
+    def choose(label: str, option: str | None = None) -> None:
+        combo = page.get_by_role("combobox", name=re.compile(label, re.IGNORECASE))
+        require(combo.count() == 1, f"Data step has no single {label!r} control")
+        combo.first.click()
+        options = page.get_by_role("option")
+        options.first.wait_for(state="visible", timeout=30_000)
+        if option is None:
+            require(options.count() == 1,
+                    f"{label} must offer exactly one choice for the single reserved partition: "
+                    f"{options.all_inner_texts()!r}")
+            options.first.click()
+        else:
+            page.get_by_role("option", name=re.compile(option, re.IGNORECASE)).first.click()
+        page.wait_for_timeout(500)
+
+    choose("Layout", "^Stripe$")
+    choose("Disk Size")
+    choose("Width")
+    choose("Number of VDEVs")
+    preview = " ".join(body.inner_text(timeout=30_000).split())
+    require("1 \u00d7 STRIPE" in preview and "No disks available" in preview,
+            f"Data step preview does not show one Stripe VDEV using the only disk: {preview[-600:]!r}")
+
+    for _ in range(8):
+        create_final = page.get_by_role("button", name=re.compile(r"^(create pool|create)$", re.IGNORECASE))
+        if create_final.count() == 1 and create_final.is_enabled():
+            create_final.click()
+            break
+        next_button = page.get_by_role(
+            "button", name=re.compile(r"^(next|save and go to review)$", re.IGNORECASE)
+        )
+        if next_button.count() != 1 or not next_button.is_enabled():
+            snapshot = dialog.aria_snapshot()
+            raise RemoteError(
+                f"pool wizard cannot advance with {expected_partition} selected: {snapshot[:2600]!r}"
+            )
+        next_button.click()
+        page.wait_for_timeout(500)
+        dialog = page.get_by_role("dialog")
+        if dialog.count() == 0:
+            dialog = body
+        snapshot = record_dialog(page, dialog, "path-b-pool-ui-review")
+    else:
+        raise RemoteError("Path B pool wizard did not reach its final create action")
+
+    confirmation = page.get_by_role("dialog")
+    require(confirmation.count() == 1 and confirmation.is_visible(),
+            "the pool wizard did not show its disk-erase confirmation dialog")
+    warning = " ".join(confirmation.inner_text(timeout=30_000).split())
+    require("erased" in warning, f"unexpected pool-creation confirmation text: {warning!r}")
+    try:
+        check_checkbox_via_visible_label(confirmation, "Confirm")
+    except ValueError as exc:
+        raise RemoteError(f"pool erase confirmation could not be acknowledged: {exc}") from exc
+    proceed = confirmation.get_by_role("button", name=re.compile(r"^(continue|create pool|create)$", re.IGNORECASE))
+    require(proceed.count() == 1 and proceed.is_enabled(), "the erase confirmation cannot be continued")
+    proceed.click()
+    deadline = time.monotonic() + 600
+    while time.monotonic() < deadline:
+        pools = target.query("pool.query", timeout=120)
+        match = next((row for row in pools if row.get("name") == "boot-disk-data"), None)
+        if match is not None and match.get("status") == "ONLINE":
+            jobs_after = target.call(
+                "core.get_jobs", [["method", "=", "pool.create"]], timeout=120,
+            )
+            try:
+                request, evidence_source = pool_create_request_evidence(
+                    pool_create_requests, jobs_before, jobs_after, "boot-disk-data",
+                )
+                validate_pool_create_topology(request.get("topology"), expected_partition)
+            except ValueError as exc:
+                raise RemoteError(f"Path B pool-create evidence failed: {exc}") from exc
+            report("path-b-pool-ui-evidence", evidence_source)
+            choices = target.call("container.pool_choices", timeout=120)
+            require("boot-disk-data" in choices,
+                    f"container pool choices omit UI-created Path B pool: {choices!r}")
+            vdev = target.shell("zpool status -P boot-disk-data", timeout=90)
+            partuuid = target.run(["lsblk", "-no", "PARTUUID", f"/dev/{expected_partition}"])
+            require(bool(re.fullmatch(r"[0-9a-fA-F-]{36}", partuuid)),
+                    f"reserved partition {expected_partition} has no valid PARTUUID: {partuuid!r}")
+            expected_vdev = f"/dev/disk/by-partuuid/{partuuid}"
+            require(expected_vdev in vdev,
+                    f"UI-created boot-disk-data is not backed by reserved PARTUUID {partuuid}: {vdev!r}")
+            report(
+                "path-b-pool-ui",
+                f"evidence={evidence_source}; pool.create used {expected_partition} "
+                f"(PARTUUID {partuuid}) only; vdev={vdev}; expected={expected_vdev}; "
+                "middleware registered it ONLINE and container.pool_choices includes it",
+            )
+            return "boot-disk-data"
+        time.sleep(5)
+    raise RemoteError("UI pool creation did not register boot-disk-data ONLINE within 600 seconds")
+
+
+def inspect_path_b_partition_ui(page) -> None:
+    """Record disk-screen controls related to partition creation without mutating storage."""
+    try:
+        storage_link = page.get_by_text("Storage", exact=True).first
+        if storage_link.count() != 1 or not storage_link.is_visible():
+            snapshot = page.locator("body").aria_snapshot()
+            report(
+                "path-b-partition-ui-inventory",
+                "authenticated UI has no single visible Storage sidebar link; "
+                f"page={page.url!r} form={snapshot[:2500]!r}",
+            )
+            return
+        storage_link.click()
+        page.get_by_role("heading", name="Storage Dashboard").wait_for(
+            state="visible", timeout=60_000,
+        )
+        page.wait_for_url(re.compile(r"/ui/storage(?:[?#]|$)"), timeout=30_000)
+        page.wait_for_timeout(700)
+        candidates = []
+        for role in ("button", "link"):
+            control = page.get_by_role(role, name=re.compile(r"^disks$", re.IGNORECASE))
+            if control.count() == 1 and control.is_visible():
+                candidates.append((role, control))
+        if len(candidates) != 1:
+            snapshot = page.locator("body").aria_snapshot()
+            report(
+                "path-b-partition-ui-inventory",
+                "Storage dashboard did not expose exactly one visible Disks navigation control; "
+                f"found={len(candidates)} page={page.url!r} form={snapshot[:2500]!r}",
+            )
+            return
+        role, control = candidates[0]
+        control.click()
+        page.wait_for_url(re.compile(r"/ui/storage/disks(?:[?#]|$)"), timeout=30_000)
+        page.wait_for_load_state("domcontentloaded", timeout=30_000)
+        page.wait_for_timeout(700)
+        body = page.locator("body")
+        body.wait_for(state="visible", timeout=60_000)
+        body_text = " ".join(body.inner_text(timeout=30_000).split())
+        controls: list[dict[str, str]] = []
+        for role in ("button", "link"):
+            locator = page.get_by_role(role)
+            for index in range(locator.count()):
+                item = locator.nth(index)
+                if not item.is_visible():
+                    continue
+                text = " ".join(item.inner_text(timeout=5_000).split())
+                aria_label = item.get_attribute("aria-label") or ""
+                title = item.get_attribute("title") or ""
+                label = " ".join(value for value in (text, aria_label, title) if value)
+                if re.search(r"disk|partition|wipe|edit|create", label, re.IGNORECASE):
+                    controls.append({"role": role, "label": label[:180]})
+        partition_mentions = re.findall(r"[^.]{0,70}partition[^.]{0,100}", body_text, re.IGNORECASE)
+        report("path-b-partition-ui-inventory", json.dumps({
+            "navigation_role": role,
+            "resolved_url": page.url,
+            "partition_mentions": partition_mentions[:20],
+            "disk_related_controls": controls[:40],
+            "screen_text": body_text[:3500],
+        }, sort_keys=True))
+    except PlaywrightError as exc:
+        try:
+            rendered_dom = page.locator("body").aria_snapshot(timeout=10_000)
+        except PlaywrightError as snapshot_exc:
+            rendered_dom = f"<snapshot unavailable: {type(snapshot_exc).__name__}: {str(snapshot_exc)[:300]}>"
+        report(
+            "path-b-partition-ui-inventory",
+            f"could not inspect the TrueNAS Disks screen: {type(exc).__name__}: {str(exc)[:500]}; "
+            f"page={page.url!r}; rendered DOM={rendered_dom[:5000]!r}",
+        )
+def select_dataset_parent(page, base_url: str, profile: str) -> str:
+    parent = selected_dataset_parent(profile)
+
+    pool = parent.split("/", 1)[0]
+    page.goto(f"{base_url}/ui/datasets/{pool}", wait_until="domcontentloaded", timeout=120_000)
+    page.get_by_role("button", name="Add Dataset", exact=True).wait_for(state="visible", timeout=120_000)
+    if parent != pool:
+        page.get_by_role("tree").get_by_text(parent.rsplit("/", 1)[1], exact=True).first.click()
+        selected_path = f"Path: {parent}"
+        expect(page.locator("body")).to_contain_text(selected_path, timeout=60_000)
+    body = page.locator("body").inner_text(timeout=30_000)
+    normalized_body = " ".join(body.split())
+    if f"Path: {parent}" not in normalized_body:
+        matching_lines = [
+            line.strip() for line in body.splitlines()
+            if "boot-pool" in line or "user-data" in line
+        ]
+        raise RemoteError(
+            f"datasets page at {page.url} did not select expected parent {parent}; "
+            f"visible matching text={matching_lines[:30]!r}"
+        )
+    require("boot-pool/ROOT" not in body and ".system" not in body,
+            "datasets UI exposes protected boot-pool system datasets")
+    return parent
+
+
+def create_dataset_in_ui(page, parent: str, name: str) -> str:
+    add_button = page.get_by_role("button", name="Add Dataset", exact=True)
+    add_button.click()
+    dialog = page.get_by_role(
+        "dialog", name=re.compile(r"^(?:Slide-in form|Add Dataset)$", re.IGNORECASE),
+    )
+    if not (dialog.count() == 1 and dialog.is_visible()):
+        button_state = add_button.evaluate(
+            """el => ({outerHTML: el.outerHTML.slice(0, 3000), disabled: !!el.disabled,
+                       ariaDisabled: el.getAttribute('aria-disabled'),
+                       ariaHaspopup: el.getAttribute('aria-haspopup'),
+                       ariaExpanded: el.getAttribute('aria-expanded'),
+                       title: el.getAttribute('title')})"""
+        )
+        report("dataset-create-add-state", json.dumps(button_state, sort_keys=True))
+        dataset_options = []
+        for role in ("menuitem", "option"):
+            option = page.get_by_role(
+                role, name=re.compile(r"^(?:create\s+)?dataset$", re.IGNORECASE), exact=True,
+            )
+            dataset_options.extend(
+                option.nth(index)
+                for index in range(option.count())
+                if option.nth(index).is_visible()
+            )
+        if len(dataset_options) == 1:
+            dataset_options[0].click()
+            report("dataset-create-add-menu", "selected the Dataset action from the Add Dataset menu")
+        elif len(dataset_options) > 1:
+            snapshot = page.locator("body").aria_snapshot()
+            raise RemoteError(
+                "Add Dataset exposed multiple Dataset menu actions; refusing to guess: "
+                f"{snapshot[:3000]!r}"
+            )
+        else:
+            try:
+                dialog.wait_for(state="visible", timeout=5_000)
+            except PlaywrightError as exc:
+                snapshot = page.locator("body").aria_snapshot()
+                raise RemoteError(
+                    "Add Dataset opened neither the dataset form nor a unique Dataset menu action; "
+                    f"URL={page.url!r}; rendered DOM={snapshot[:10000]!r}"
+                ) from exc
+    dialog.wait_for(state="visible", timeout=60_000)
+    record_dialog(page, dialog, "dataset-create-ui-form-loading")
+    progress = dialog.get_by_role("progressbar")
+    if progress.count() == 1:
+        progress.wait_for(state="hidden", timeout=60_000)
+    record_dialog(page, dialog, "dataset-create-ui-form-ready", limit=6000)
+    fill_labeled_textbox(dialog, ("Name", "Dataset Name"), name)
+    dialog.get_by_role("button", name="Save", exact=True).click()
+    validation = page.get_by_role("dialog", name=re.compile(r"Validation Error", re.IGNORECASE))
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if validation.count() == 1 and validation.is_visible():
+            details = " ".join(validation.inner_text(timeout=5_000).split())
+            raise RemoteError(
+                f"TrueNAS UI rejected dataset creation for {parent}/{name}: {details[:1200]}"
+            )
+        if dialog.count() == 1 and not dialog.is_visible():
+            return f"{parent}/{name}"
+        page.wait_for_timeout(100)
+    dialog.wait_for(state="hidden", timeout=120_000)
+    return f"{parent}/{name}"
+
+
+def open_dataset_in_ui(page, base_url: str, dataset: str) -> None:
+    pool = dataset.split("/", 1)[0]
+    page.goto(f"{base_url}/ui/datasets/{pool}", wait_until="domcontentloaded", timeout=120_000)
+    page.get_by_role("button", name="Add Dataset", exact=True).wait_for(state="visible", timeout=120_000)
+    tree = page.get_by_role("tree")
+    components = dataset.split("/")[1:]
+    selected = pool
+    for index, name in enumerate(components):
+        node = tree.get_by_text(name, exact=True).first
+        try:
+            node.wait_for(state="visible", timeout=60_000)
+        except PlaywrightError as exc:
+            snapshot = tree.aria_snapshot()
+            raise RemoteError(
+                f"dataset tree did not reveal {name!r} while opening {dataset}; "
+                f"selected ancestor={selected!r}; tree={snapshot[:3200]!r}"
+            ) from exc
+        node.click()
+        selected = f"{selected}/{name}"
+        expect(page.locator("body")).to_contain_text(f"Path: {selected}", timeout=60_000)
+        if index < len(components) - 1:
+            item = node.locator("xpath=ancestor-or-self::*[@role='treeitem'][1]")
+            if item.count() == 1 and item.get_attribute("aria-expanded") == "false":
+                item.focus()
+                page.keyboard.press("ArrowRight")
+                expect(item).to_have_attribute("aria-expanded", "true", timeout=30_000)
+
+
+def create_zvol_in_ui(
+    page,
+    base_url: str,
+    parent_dataset: str,
+    name: str,
+    dataset_create_requests: list[dict],
+) -> str:
+    open_dataset_in_ui(page, base_url, parent_dataset)
+    add_zvol = page.get_by_role("button", name=re.compile(r"add\s+zvol", re.IGNORECASE))
+    if add_zvol.count() == 1 and add_zvol.is_visible():
+        add_zvol.click()
+    else:
+        add_menu = page.get_by_role("button", name="Add Dataset", exact=True)
+        add_menu.click()
+        option = page.get_by_role("menuitem", name=re.compile(r"zvol", re.IGNORECASE))
+        if option.count() == 0:
+            option = page.get_by_role("option", name=re.compile(r"zvol", re.IGNORECASE))
+        option.first.wait_for(state="visible", timeout=30_000)
+        option.first.click()
+
+    dialog = page.get_by_role(
+        "dialog", name=re.compile(r"^(?:Slide-in form|Add Zvol)$", re.IGNORECASE),
+    )
+    dialog.wait_for(state="visible", timeout=60_000)
+    record_dialog(page, dialog, "zvol-ui-form-loading")
+    progress = dialog.get_by_role("progressbar")
+    if progress.count() == 1:
+        progress.wait_for(state="hidden", timeout=60_000)
+    record_dialog(page, dialog, "zvol-ui-form-ready", limit=6000)
+    fill_labeled_textbox(dialog, ("Name", "Dataset Name"), name)
+    size = dialog.get_by_role("textbox", name="Size", exact=True)
+    if size.count() != 1:
+        snapshot = dialog.aria_snapshot()
+        raise RemoteError(f"Zvol form does not expose exactly one size control; ARIA form={snapshot[:2400]!r}")
+    size.fill("128 MiB")
+    size.press("Tab")
+    page.wait_for_timeout(250)
+    size_value_after_blur = size.input_value()
+    require(
+        bool(size_value_after_blur.strip()),
+        f"Zvol size textbox lost the explicit 128 MiB value after blur: {size_value_after_blur!r}",
+    )
+    sparse = dialog.get_by_role("checkbox", name=re.compile(r"sparse", re.IGNORECASE))
+    if sparse.count() == 1 and not sparse.is_checked():
+        # The v27 size input can leave an Angular overlay active after blur;
+        # the checkbox remains keyboard-operable while its pointer is covered.
+        sparse.focus()
+        sparse.press("Space")
+        require(sparse.is_checked(), "keyboard interaction did not enable sparse zvol allocation")
+
+    size_dom = size.evaluate(
+        """el => ({value: el.value, type: el.type, invalid: el.getAttribute('aria-invalid'),
+                    placeholder: el.getAttribute('placeholder'), dataTest: el.getAttribute('data-test')})"""
+    )
+    form_errors = [text.strip() for text in dialog.locator("mat-error").all_text_contents() if text.strip()]
+    record_dialog(page, dialog, "zvol-ui-ready-form", limit=6000)
+    report(
+        "zvol-ui-size-control",
+        f"after blur value={size_value_after_blur!r}; DOM={json.dumps(size_dom, sort_keys=True)}; "
+        f"field errors={form_errors!r}",
+    )
+    save_button = dialog.get_by_role("button", name="Save", exact=True)
+    if save_button.count() == 1 and not save_button.is_enabled():
+        form_state = dialog.locator("form").evaluate(
+            """form => ({
+              submit: [...form.querySelectorAll('button[type="submit"]')].map(el => ({
+                text: el.innerText.trim(), disabled: el.disabled,
+              })),
+              invalid: [...form.querySelectorAll('[aria-invalid="true"]')].map(el => ({
+                tag: el.tagName, role: el.getAttribute('role'), label: el.getAttribute('aria-label'),
+                name: el.getAttribute('name'), value: el.value ?? null,
+                dataTest: el.getAttribute('data-test'),
+                context: el.parentElement?.innerText?.trim()?.slice(0, 240),
+              })),
+              required: [...form.querySelectorAll('[aria-required="true"], [required]')].map(el => ({
+                tag: el.tagName, role: el.getAttribute('role'), label: el.getAttribute('aria-label'),
+                name: el.getAttribute('name'), value: el.value ?? null,
+                dataTest: el.getAttribute('data-test'), disabled: el.disabled ?? false,
+              })),
+            })"""
+        )
+        overlays, form_errors = submit_result_details(page, dialog)
+        raise RemoteError(
+            f"Zvol UI Save is disabled before submit for {parent_dataset}/{name}; "
+            f"size_dom={size_dom!r}; form_state={json.dumps(form_state, sort_keys=True)}; "
+            f"overlays={overlays!r}; field_errors={form_errors!r}"
+        )
+    request_count_before_submit = len(dataset_create_requests)
+    click_dialog_submit(page, dialog, ("Save", "Create", "Add"))
+    dataset = f"{parent_dataset}/{name}"
+    validation = page.get_by_role("dialog", name=re.compile(r"validation error", re.IGNORECASE))
+    submitted = False
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        if validation.count() and validation.first.is_visible():
+            break
+        if dialog.count() == 0 or not dialog.is_visible():
+            submitted = True
+            break
+        page.wait_for_timeout(250)
+    if validation.count() and validation.first.is_visible():
+        validation_text = " ".join(validation.first.inner_text(timeout=10_000).split())
+        overlays, form_errors = submit_result_details(page, dialog)
+        zvol_request = dataset_create_properties(
+            dataset_create_requests[request_count_before_submit:], dataset,
+        )
+        raise RemoteError(
+            f"Zvol UI rejected {dataset}; validation={validation_text!r}; request={zvol_request!r}; "
+            f"overlays={overlays!r}; field_errors={form_errors!r}; size_dom={size_dom!r}"
+        )
+    if not submitted:
+        overlays, form_errors = submit_result_details(page, dialog)
+        zvol_request = dataset_create_properties(
+            dataset_create_requests[request_count_before_submit:], dataset,
+        )
+        raise RemoteError(
+            f"Zvol UI did not close the form for {dataset}; request={zvol_request!r}; "
+            f"overlays={overlays!r}; field_errors={form_errors!r}; size_dom={size_dom!r}"
+        )
+
+    request_deadline = time.monotonic() + 5
+    properties = None
+    while time.monotonic() < request_deadline:
+        properties = dataset_create_properties(dataset_create_requests[request_count_before_submit:], dataset)
+        if properties is not None:
+            break
+        page.wait_for_timeout(100)
+    require(properties is not None, f"UI did not send pool.dataset.create for zvol {dataset}")
+    require(properties.get("type") == "VOLUME",
+            f"UI create request for {dataset} is not a VOLUME: {properties!r}")
+    volsize = properties.get("volsize")
+    require(
+        type(volsize) is int and volsize == 128 * 1024 * 1024,
+        f"UI create request for {dataset} has volsize={volsize!r}; expected exactly 134217728 bytes",
+    )
+    report(
+        "zvol-ui-wire",
+        f"{dataset} request type={properties.get('type')!r} volsize={volsize} bytes "
+        f"after size textbox blur value={size_value_after_blur!r}",
+    )
+    return dataset
+
+
+def assert_zvol_backing(target: Target, dataset: str, expected_size: int = 128 * 1024 * 1024) -> int:
+    rows = flatten_datasets(target.query("pool.dataset.query", timeout=120))
+    row = rows.get(dataset)
+    require(row is not None, f"middleware dataset query omits zvol {dataset}")
+    require(row.get("type") == "VOLUME", f"{dataset} is not a ZFS volume: {row.get('type')!r}")
+    volsize = row.get("volsize", {}).get("parsed")
+    require(volsize == expected_size, f"{dataset} has volsize {volsize!r}, expected {expected_size}")
+    device = f"/dev/zvol/{dataset}"
+    target.shell(f"test -b {shlex.quote(device)}", timeout=45)
+    return int(zfs_property(target, dataset, "used"))
+
+
+def allocate_zvol_probe(target: Target, dataset: str, *, marker: str) -> tuple[int, str]:
+    device = f"/dev/zvol/{dataset}"
+    target.run([
+        "dd", "if=/dev/urandom", f"of={device}", "bs=4096", "count=16", "conv=notrunc", "status=none",
+    ], timeout=90)
+    digest = target.shell(
+        f"dd if={shlex.quote(device)} bs=4096 count=16 status=none | sha256sum",
+        timeout=60,
+    )
+    require(bool(re.fullmatch(r"[0-9a-f]{64}  -", digest)),
+            f"cannot verify data written to zvol {dataset}")
+    used = int(zfs_property(target, dataset, "used"))
+    require(used > 0, f"writing {marker} to {dataset} did not allocate ZFS space")
+    return used, digest.split()[0]
+
+
+def ensure_select_value(page, dialog, label: str, value: str) -> None:
+    """Keep a valid default, allowing async form defaults to finish loading."""
+    selector = dialog.get_by_role("combobox", name=label, exact=True)
+    selector.wait_for(state="visible", timeout=60_000)
+    try:
+        expect(selector).to_contain_text(value, timeout=8_000)
+    except AssertionError:
+        selector.click()
+        option = page.get_by_role("option", name=value, exact=True)
+        option.wait_for(state="visible", timeout=60_000)
+        option.click()
+    expect(selector).to_contain_text(value, timeout=60_000)
+
+
+def select_single_available_option(page, dialog, label: str) -> str:
+    """Select a required UI option only when the UI exposes one unambiguous choice."""
+    selector = dialog.get_by_role("combobox", name=label, exact=True)
+    require(selector.count() == 1 and selector.is_visible(),
+            f"form does not expose one visible {label!r} selector")
+    selector.click()
+    options = page.get_by_role("option")
+    choices = []
+    for index in range(options.count()):
+        option = options.nth(index)
+        if not option.is_visible() or not option.is_enabled():
+            continue
+        name = " ".join(option.inner_text().split())
+        if name:
+            choices.append((name, option))
+    names = [name for name, _ in choices]
+    require(len(choices) == 1,
+            f"{label!r} requires one UI choice for this disposable VM test; available={names!r}")
+    name, option = choices[0]
+    option.click()
+    expect(selector).to_contain_text(name, timeout=60_000)
+    report("vm-ui-network", f"selected the only available {label} option {name!r}")
+    return name
+
+
+def ensure_combobox_option(page, dialog, labels: tuple[str, ...], value: str) -> bool:
+    for label in labels:
+        selector = dialog.get_by_role("combobox", name=label, exact=True)
+        if selector.count() == 1 and selector.is_visible():
+            try:
+                expect(selector).to_contain_text(value, timeout=3_000)
+                return True
+            except AssertionError:
+                selector.click()
+                option = page.get_by_role("option", name=re.compile(re.escape(value), re.IGNORECASE))
+                option.first.wait_for(state="visible", timeout=60_000)
+                option.first.click()
+                expect(selector).to_contain_text(value, timeout=60_000)
+                return True
+    return False
+
+
+def ensure_image_choice(page, dialog, image_name: str, image_version: str) -> None:
+    image_pattern = re.compile(r"image", re.IGNORECASE)
+    selectors = dialog.get_by_role("combobox", name=image_pattern)
+    if selectors.count():
+        selector = selectors.first
+        selector.click()
+        option = page.get_by_role("option", name=re.compile(re.escape(image_name), re.IGNORECASE))
+        option.first.wait_for(state="visible", timeout=90_000)
+        option.first.click()
+        return
+    textboxes = dialog.get_by_role("textbox", name=image_pattern)
+    if textboxes.count():
+        field = textboxes.first
+        field_state = field.evaluate(
+            "el => ({readOnly: el.readOnly, disabled: el.disabled, value: el.value, dataTest: el.getAttribute('data-test')})"
+        )
+        if field_state["readOnly"] or field_state["disabled"]:
+            # The v27 Add Container form exposes Image as a read-only picker
+            # field. Its supported UI path is Browse Catalog → Select Image →
+            # Select on the matching image row; filling that textbox can never
+            # make a real container submission.
+            browse = dialog.get_by_role("button", name="Browse Catalog", exact=True)
+            if browse.count() != 1 or not browse.is_enabled():
+                snapshot = dialog.aria_snapshot()
+                raise RemoteError(
+                    "container image textbox is read-only and Browse Catalog is unavailable; "
+                    f"field={field_state!r}; ARIA form={snapshot[:2400]!r}"
+                )
+            browse.click()
+            picker_title = page.get_by_text("Select Image", exact=True)
+            picker_title.wait_for(state="visible", timeout=90_000)
+
+            dialogs = page.get_by_role("dialog")
+            picker = dialogs.last if dialogs.count() >= 2 else dialogs.first
+            if picker.count() == 0 or not picker.is_visible():
+                picker = page.locator("body")
+            record_dialog(page, picker, "container-image-picker", limit=6000)
+
+            # The first Select Image render populates its catalog table
+            # asynchronously. Wait for the catalog loading indicators before
+            # deciding whether the expected row is absent.
+            progressbars = picker.get_by_role("progressbar")
+            for index in range(progressbars.count()):
+                progressbar = progressbars.nth(index)
+                if progressbar.is_visible():
+                    progressbar.wait_for(state="hidden", timeout=90_000)
+
+            search = picker.get_by_role("textbox", name=re.compile(r"search", re.IGNORECASE))
+            if search.count() == 1 and search.is_visible() and not search.is_disabled():
+                search.fill(image_name)
+                page.wait_for_timeout(1_000)
+
+            image_tokens = image_name.split(":")
+            image_id = image_tokens[0]
+            image_tag = image_tokens[1] if len(image_tokens) > 1 else ""
+            rows = picker.get_by_role("row")
+            candidates = []
+            for index in range(rows.count()):
+                row = rows.nth(index)
+                row_text = " ".join(row.inner_text(timeout=5_000).split())
+                folded = row_text.casefold()
+                if (
+                    image_id.casefold() in folded
+                    and (not image_tag or image_tag.casefold() in folded)
+                    and image_version.casefold() in folded
+                ):
+                    candidates.append(row)
+            if len(candidates) != 1:
+                snapshot = picker.aria_snapshot()
+                raise RemoteError(
+                    f"image picker did not show one row for {image_name!r} version {image_version!r}; "
+                    f"matched_rows={len(candidates)}; ARIA picker={snapshot[:4200]!r}"
+                )
+            select = candidates[0].get_by_role("button", name="Select", exact=True)
+            if select.count() != 1 or not select.is_enabled():
+                snapshot = candidates[0].aria_snapshot()
+                raise RemoteError(
+                    f"image row for {image_name!r} version {image_version!r} "
+                    "has no enabled Select action; "
+                    f"ARIA row={snapshot[:2400]!r}"
+                )
+            select.click()
+            page.wait_for_timeout(500)
+            selected_value = field.input_value().strip()
+            require(
+                image_id.casefold() in selected_value.casefold()
+                and (not image_tag or image_tag.casefold() in selected_value.casefold()),
+                f"Browse Catalog selected {selected_value!r}, not {image_name!r}",
+            )
+            report(
+                "container-image-ui",
+                f"selected {selected_value!r} version {image_version!r} through Browse Catalog",
+            )
+            return
+
+        field.fill(image_name)
+        option = page.get_by_role("option", name=re.compile(re.escape(image_name), re.IGNORECASE))
+        try:
+            option.first.wait_for(state="visible", timeout=10_000)
+            option.first.click()
+        except PlaywrightError:
+            field.press("Enter")
+        return
+    snapshot = dialog.aria_snapshot()
+    raise RemoteError(f"container form has no image control; ARIA form={snapshot[:2400]!r}")
+
+
+def fill_numeric_control(dialog, label: str, value: str) -> bool:
+    for role in ("spinbutton", "textbox"):
+        field = dialog.get_by_role(role, name=label, exact=True)
+        if field.count() == 1 and field.is_visible():
+            field.fill(value)
+            return True
+    return False
+
+
+def wait_for_container_form(page, *, timeout_ms: int = 120_000):
+    """Find the unique visible container form from its required storage controls."""
+    deadline = time.monotonic() + timeout_ms / 1000
+    last_visible = []
+    while time.monotonic() < deadline:
+        dialogs = page.get_by_role("dialog")
+        matches = []
+        last_visible = []
+        for index in range(dialogs.count()):
+            dialog = dialogs.nth(index)
+            if not dialog.is_visible():
+                continue
+            snapshot = dialog.aria_snapshot()
+            last_visible.append(snapshot[:3000])
+            autostart = dialog.get_by_role("checkbox", name="Autostart", exact=True)
+            pool_selector = dialog.get_by_role("combobox", name="Pool", exact=True)
+            if autostart.count() == 1 and pool_selector.count() == 1:
+                matches.append(dialog)
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            raise RemoteError(
+                "container creation exposed multiple forms with Autostart and Pool controls; "
+                f"visible forms={last_visible!r}"
+            )
+        page.wait_for_timeout(250)
+    raise RemoteError(
+        "container creation did not expose one visible form with Autostart and Pool controls; "
+        f"URL={page.url!r}; visible forms={last_visible!r}"
+    )
+
+
+def create_container_in_ui(
+    page, base_url: str, *, pool: str, name: str, image_name: str, image_version: str,
+    autostart: bool = True,
+) -> None:
+    page.goto(base_url + "/ui/containers", wait_until="domcontentloaded", timeout=120_000)
+    page.get_by_role("button", name="Create New Container", exact=True).click()
+    dialog = wait_for_container_form(page)
+    record_dialog(page, dialog, "container-ui-form")
+    autostart_control = dialog.get_by_role("checkbox", name="Autostart", exact=True)
+    require(autostart_control.count() == 1,
+            "container form does not expose one Autostart control")
+    if autostart_control.is_checked() != autostart:
+        label = dialog.get_by_text("Autostart", exact=True)
+        visible_labels = [
+            label.nth(index)
+            for index in range(label.count())
+            if label.nth(index).is_visible()
+        ]
+        require(len(visible_labels) == 1,
+                f"container form does not expose one visible Autostart label: {dialog.aria_snapshot()[:2400]!r}")
+        visible_labels[0].click()
+    require(autostart_control.is_checked() == autostart,
+            f"container UI Autostart control did not retain {autostart}")
+    report("container-ui-autostart", f"selected Autostart={autostart} through the UI")
+    pool_selector = dialog.get_by_role("combobox", name="Pool", exact=True)
+    pool_selector.wait_for(state="visible", timeout=60_000)
+    require(
+        ensure_combobox_option(page, dialog, ("Pool",), pool),
+        f"container form has no Pool option for {pool!r}; ARIA form={dialog.aria_snapshot()[:2400]!r}",
+    )
+    expect(pool_selector).to_contain_text(pool, timeout=60_000)
+    require(pool_selector.inner_text().strip() == pool,
+            f"container UI selected {pool_selector.inner_text().strip()!r}; expected {pool!r}")
+    fill_labeled_textbox(dialog, ("Name", "Container Name"), name)
+    ensure_image_choice(page, dialog, image_name, image_version)
+
+    for _ in range(5):
+        errors = [text.strip() for text in dialog.locator("mat-error").all_text_contents() if text.strip()]
+        require(not errors, f"container UI form has validation errors: {errors}")
+        next_button = dialog.get_by_role("button", name="Next", exact=True)
+        if next_button.count() != 1 or not next_button.is_enabled():
+            break
+        next_button.click()
+        page.wait_for_timeout(750)
+        record_dialog(page, dialog, "container-ui-step")
+    click_dialog_submit(page, dialog, ("Create", "Save", "Create Container"))
+    creating_dialog = page.get_by_role("dialog", name="Creating Container", exact=True)
+    try:
+        creating_dialog.wait_for(state="visible", timeout=5_000)
+    except PlaywrightError:
+        pass
+    else:
+        creating_dialog.wait_for(state="hidden", timeout=900_000)
+    dialog.wait_for(state="hidden", timeout=900_000)
+
+
+def wait_named_row(target: Target, method: str, name: str, *, timeout: int = 900) -> dict:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        rows = target.query(method, timeout=120)
+        row = next((item for item in rows if item.get("name") == name), None)
+        if row is not None:
+            return row
+        time.sleep(3)
+    raise RemoteError(f"{method} did not return the new object named {name!r} within {timeout}s")
+
+
+def select_existing_zvol_in_vm_wizard(page, dialog, zvol: str) -> None:
+    """Select a previously UI-created zvol on the wizard's Disks step."""
+    record_dialog(page, dialog, "vm-ui-disks")
+    # The panel appears in TrueNAS' ARIA snapshot but is not consistently
+    # discoverable as a named region by Chromium's role locator. Anchor on its
+    # visible, uniquely named control inside the wizard dialog instead.
+    existing_disk_choice = dialog.get_by_role(
+        "radio", name="Use existing disk image", exact=True
+    )
+    try:
+        expect(existing_disk_choice).to_have_count(1, timeout=30_000)
+    except AssertionError:
+        snapshot = dialog.aria_snapshot()
+        raise RemoteError(
+            "VM wizard does not expose one Use existing disk image radio; "
+            f"radio_count={existing_disk_choice.count()} "
+            f"form={snapshot[:2600]!r}"
+        )
+    if not existing_disk_choice.is_checked():
+        label = dialog.get_by_text("Use existing disk image", exact=True)
+        visible_labels = [
+            label.nth(index)
+            for index in range(label.count())
+            if label.nth(index).is_visible()
+        ]
+        if len(visible_labels) != 1:
+            snapshot = dialog.aria_snapshot()
+            raise RemoteError(
+                "VM wizard does not expose one visible Use existing disk image label; "
+                f"label_count={label.count()} visible_count={len(visible_labels)} "
+                f"form={snapshot[:2600]!r}"
+            )
+        visible_labels[0].click()
+    expect(existing_disk_choice).to_be_checked(timeout=15_000)
+    report("vm-ui-existing-disk", "selected and verified Use existing disk image")
+
+    disk_type = dialog.get_by_role("combobox", name="Select Disk Type", exact=True)
+    if disk_type.count() == 1 and disk_type.is_visible():
+        try:
+            expect(disk_type).to_contain_text("VirtIO", timeout=3_000)
+        except AssertionError:
+            disk_type.click()
+            page.get_by_role("option", name="VirtIO", exact=True).click()
+            expect(disk_type).to_contain_text("VirtIO", timeout=60_000)
+
+    dataset = zvol.removeprefix("/dev/zvol/")
+    zvol_selector = dialog.get_by_role("combobox", name="Select Existing Zvol", exact=True)
+    if zvol_selector.count() != 1 or not zvol_selector.is_visible():
+        snapshot = dialog.aria_snapshot()
+        raise RemoteError(
+            f"VM wizard does not expose one existing-zvol selector for {dataset}; "
+            f"visible form={snapshot[:2600]!r}"
+        )
+    zvol_selector.click()
+    option = page.get_by_role("option", name=dataset, exact=True)
+    if option.count() != 1:
+        available = page.get_by_role("option").all_text_contents()
+        raise RemoteError(
+            f"VM wizard does not offer existing zvol {dataset}; available={available[:30]!r}"
+        )
+    option.click()
+    expect(zvol_selector).to_contain_text(dataset, timeout=60_000)
+    report("vm-ui-disk", f"selected existing zvol {dataset} in the VM wizard")
+
+
+def vm_region_next_button(dialog, expected_name: str):
+    region = dialog.get_by_role("region", name=re.compile(expected_name, re.IGNORECASE))
+    if region.count() == 1:
+        button = region.get_by_role("button", name="Next", exact=True)
+        require(
+            button.count() == 1 and button.is_visible() and button.is_enabled(),
+            f"VM wizard {expected_name!r} region has no unique enabled Next button: "
+            f"{region.aria_snapshot()[:2400]!r}",
+        )
+        return button
+    require(
+        region.count() == 0,
+        f"VM wizard expected one {expected_name!r} region, found {region.count()}: "
+        f"{dialog.aria_snapshot()[:3000]!r}",
+    )
+
+    list_items = dialog.get_by_role("listitem")
+    candidates = []
+    snapshots = []
+    for index in range(list_items.count()):
+        item = list_items.nth(index)
+        snapshot = item.aria_snapshot()
+        snapshots.append(snapshot[:1100])
+        step = re.search(r'(?m)^\s*- button "\d+ ([^"]+)"', snapshot)
+        if not step or expected_name.casefold() not in step.group(1).casefold():
+            continue
+        button = item.get_by_role("button", name="Next", exact=True)
+        if button.count() == 1 and button.is_visible() and button.is_enabled():
+            candidates.append(button)
+    require(
+        len(candidates) == 1,
+        f"VM wizard expected one active {expected_name!r} list item with an enabled Next button; "
+        f"found {len(candidates)}: {snapshots!r}",
+    )
+    return candidates[0]
+
+
+def active_vm_step_next_button(dialog):
+    """Find Next only inside the one active wizard region, excluding edit summaries."""
+    regions = dialog.get_by_role("region")
+    candidates = []
+    snapshots = []
+    for index in range(regions.count()):
+        region = regions.nth(index)
+        snapshot = region.aria_snapshot()
+        snapshots.append(snapshot[:900])
+        match = re.match(r'\s*- region(?: "([^"]+)")?', snapshot)
+        name = match.group(1) if match else ""
+        if not name or name.casefold().startswith("pencil "):
+            continue
+        button = region.get_by_role("button", name="Next", exact=True)
+        if button.count() == 1 and button.is_visible() and button.is_enabled():
+            candidates.append((name, button))
+    require(
+        len(candidates) <= 1,
+        f"VM wizard has multiple active regions with enabled Next buttons: "
+        f"{[name for name, _ in candidates]!r}; regions={snapshots!r}",
+    )
+    if candidates:
+        return candidates[0]
+
+    list_items = dialog.get_by_role("listitem")
+    for index in range(list_items.count()):
+        item = list_items.nth(index)
+        snapshot = item.aria_snapshot()
+        snapshots.append(snapshot[:900])
+        step = re.search(r'(?m)^\s*- button "\d+ ([^"]+)"', snapshot)
+        if not step or step.group(1).casefold().startswith("pencil "):
+            continue
+        button = item.get_by_role("button", name="Next", exact=True)
+        if button.count() == 1 and button.is_visible() and button.is_enabled():
+            candidates.append((step.group(1), button))
+    require(
+        len(candidates) <= 1,
+        f"VM wizard has multiple active list items with enabled Next buttons: "
+        f"{[name for name, _ in candidates]!r}; steps={snapshots!r}",
+    )
+    return candidates[0] if candidates else (None, None)
+
+
+def wait_for_vm_form_area(page, *, timeout_ms: int = 120_000):
+    """Find the visible VM wizard whether this release renders a dialog or page."""
+    deadline = time.monotonic() + timeout_ms / 1000
+    last_snapshot = ""
+    while time.monotonic() < deadline:
+        dialogs = page.get_by_role("dialog")
+        for index in range(dialogs.count()):
+            candidate = dialogs.nth(index)
+            if not candidate.is_visible():
+                continue
+            snapshot = candidate.aria_snapshot()
+            last_snapshot = f"visible dialog: {snapshot[:4500]}"
+            if "Guest Operating System" in snapshot and "Password" in snapshot:
+                return candidate
+
+        main = page.get_by_role("main")
+        if main.count() == 1 and main.is_visible():
+            snapshot = main.aria_snapshot()
+            last_snapshot = f"main page: {snapshot[:4500]}"
+            if "Guest Operating System" in snapshot and "Password" in snapshot:
+                return main
+        page.wait_for_timeout(250)
+    raise RemoteError(
+        "VM wizard did not expose one form with Guest Operating System and Password controls; "
+        f"last visible controls={last_snapshot!r}"
+    )
+
+
+def vm_form_create(page, base_url: str, *, name: str, password: str, zvol: str) -> None:
+    page.goto(base_url + "/ui/vm", wait_until="domcontentloaded", timeout=120_000)
+    entry_pattern = re.compile(
+        r"^(?:add|create)(?:\s+(?:a|new))?\s+(?:vm|virtual machine)$",
+        re.IGNORECASE,
+    )
+    entry_button = page.get_by_role(
+        "button",
+        name=entry_pattern,
+    )
+    add_button = page.get_by_role("button", name="Add", exact=True)
+    if entry_button.count() == 0 and not (add_button.count() == 1 and add_button.is_visible()):
+        try:
+            entry_button.first.wait_for(state="visible", timeout=60_000)
+        except PlaywrightError:
+            pass
+    page_snapshot = page.locator("body").aria_snapshot()
+    report("vm-create-entry-page", f"url={page.url}; controls={page_snapshot[:5000]}")
+    if entry_button.count() == 1:
+        report("vm-create-entry", entry_button.aria_snapshot())
+        entry_button.click()
+    else:
+        require(
+            entry_button.count() == 0,
+            "VM page exposes multiple Add VM or Add Virtual Machine controls; "
+            f"visible page controls={page_snapshot[:5000]!r}",
+        )
+        require(
+            add_button.count() == 1 and add_button.is_visible(),
+            "VM page exposes neither one Add VM control nor one generic Add button; "
+            f"visible page controls={page_snapshot[:5000]!r}",
+        )
+        add_button.click()
+        menu_snapshot = page.locator("body").aria_snapshot()
+        report("vm-create-entry-menu", f"controls={menu_snapshot[:5000]}")
+        menu_option_pattern = re.compile(
+            r"^(?:virtual machine|vm|create(?:\s+a)?\s+(?:vm|virtual machine))$",
+            re.IGNORECASE,
+        )
+        menu_option = None
+        for role in ("menuitem", "button", "link", "option"):
+            candidate = page.get_by_role(role, name=menu_option_pattern)
+            if candidate.count() == 1 and candidate.is_visible():
+                menu_option = candidate
+                break
+        if menu_option is None:
+            candidate = page.get_by_text(menu_option_pattern)
+            if candidate.count() == 1 and candidate.is_visible():
+                menu_option = candidate
+        require(
+            menu_option is not None,
+            "generic VM Add menu does not expose one Virtual Machine action; "
+            f"menu controls={menu_snapshot[:5000]!r}",
+        )
+        report("vm-create-entry-selected", menu_option.aria_snapshot())
+        menu_option.click()
+    form_page_snapshot = page.locator("body").aria_snapshot()
+    report("vm-create-form-page", f"url={page.url}; controls={form_page_snapshot[:5000]}")
+    form_area = wait_for_vm_form_area(page)
+    record_dialog(page, form_area, "vm-ui-form", limit=5000)
+    dialog = form_area
+    for label, value in (
+        ("Guest Operating System", "Linux"),
+        ("System Clock", "Local"),
+        ("Boot Method", "UEFI"),
+        ("Bind", "0.0.0.0"),
+    ):
+        ensure_select_value(page, dialog, label, value)
+    fill_labeled_textbox(dialog, ("Name",), name)
+    fill_labeled_textbox(dialog, ("Password",), password)
+    errors = [text.strip() for text in dialog.locator("mat-error").all_text_contents() if text.strip()]
+    require(not errors, f"VM wizard first step has validation errors: {errors}")
+    next_button = vm_region_next_button(dialog, "Operating System")
+    expect(next_button).to_be_enabled(timeout=60_000)
+    next_button.click()
+    dialog.get_by_text("CPU Mode", exact=True).wait_for(state="visible", timeout=60_000)
+    snapshot = record_dialog(page, dialog, "vm-ui-cpu-memory")
+    require("Virtual CPUs" in snapshot and "Memory Size" in snapshot,
+            "VM wizard does not expose vCPU and memory controls")
+    for label, value in (("Virtual CPUs", "1"), ("Memory Size", "256")):
+        if not fill_numeric_control(dialog, label, value):
+            raise RemoteError(f"VM wizard does not expose an editable {label} control")
+
+    next_button = vm_region_next_button(dialog, "CPU And Memory")
+    next_button.click()
+    select_existing_zvol_in_vm_wizard(page, dialog, zvol)
+
+    for _ in range(5):
+        step_name, next_button = active_vm_step_next_button(dialog)
+        if next_button is None:
+            attach_nic = dialog.get_by_role("combobox", name="Attach NIC", exact=True)
+            if attach_nic.count() == 1 and attach_nic.is_visible():
+                select_single_available_option(page, dialog, "Attach NIC")
+                continue
+            break
+        report("vm-ui-step", f"advancing the active {step_name} wizard region")
+        next_button.click()
+        page.wait_for_timeout(750)
+        record_dialog(page, dialog, "vm-ui-step")
+    errors = [text.strip() for text in dialog.locator("mat-error").all_text_contents() if text.strip()]
+    require(not errors, f"VM wizard has validation errors before submission: {errors}")
+    click_dialog_submit(page, dialog, ("Create", "Save", "Add"))
+    dialog.wait_for(state="hidden", timeout=120_000)
+
+
+def main() -> int:
+    target = Target.from_environment()
+    profile = required_env("TRUENAS_STORAGE_PROFILE")
+    if profile not in {"path-a", "path-b"}:
+        raise RemoteError("TRUENAS_STORAGE_PROFILE must be path-a or path-b")
+    try:
+        path_b_setup = resolve_path_b_setup_mode(
+            profile, os.environ.get("TRUENAS_PATH_B_SETUP", ""),
+        )
+    except ValueError as exc:
+        raise RemoteError(str(exc)) from exc
+    preserve_setting = os.environ.get("TRUENAS_TEST_PRESERVE_UI_WORKLOADS", "")
+    if preserve_setting not in {"", "0", "1"}:
+        raise RemoteError("TRUENAS_TEST_PRESERVE_UI_WORKLOADS must be unset, 0, or 1")
+    preserve_ui_workloads = preserve_setting == "1"
+    if preserve_ui_workloads and profile != "path-a":
+        raise RemoteError("TRUENAS_TEST_PRESERVE_UI_WORKLOADS=1 is only supported for Path A")
+    workload_manifest_path: Path | None = None
+    if preserve_ui_workloads:
+        manifest_value = required_env("TRUENAS_UI_WORKLOAD_MANIFEST")
+        workload_manifest_path = Path(manifest_value).resolve()
+        if workload_manifest_path.exists():
+            raise RemoteError(f"refusing to overwrite existing UI workload manifest: {workload_manifest_path}")
+    resume_existing_root = os.environ.get("TRUENAS_TEST_RESUME_EXISTING_UI_ROOT", "")
+    if resume_existing_root not in {"", "1"}:
+        raise RemoteError("TRUENAS_TEST_RESUME_EXISTING_UI_ROOT must be unset or 1")
+    if resume_existing_root == "1" and profile != "path-a":
+        raise RemoteError("TRUENAS_TEST_RESUME_EXISTING_UI_ROOT=1 is only valid for Path A")
+    provision_path_a_root = os.environ.get("TRUENAS_TEST_ALLOW_PATH_A_ROOT_PROVISION", "")
+    if provision_path_a_root not in {"", "1"}:
+        raise RemoteError("TRUENAS_TEST_ALLOW_PATH_A_ROOT_PROVISION must be unset or 1")
+    observed_patch_mode = os.environ.get("TRUENAS_TEST_ALLOW_UNRECORDED_PATCH", "") == "1"
+    if provision_path_a_root == "1":
+        if not observed_patch_mode or profile != "path-a":
+            raise RemoteError(
+                "Path A root provisioning is restricted to the fingerprinted external v1001 Path A lane"
+            )
+        if resume_existing_root == "1":
+            raise RemoteError(
+                "Path A root provisioning and TRUENAS_TEST_RESUME_EXISTING_UI_ROOT are mutually exclusive"
+            )
+    elif observed_patch_mode and resume_existing_root != "1":
+        raise RemoteError(
+            "the observed v1001 UI lane requires either the guarded Path A root provision "
+            "or the guarded existing-root resume setting"
+        )
+    try:
+        resume_existing_ui_dataset = validate_resumed_ui_dataset(
+            os.environ.get("TRUENAS_TEST_RESUME_EXISTING_UI_DATASET", "").strip()
+        )
+    except ValueError as exc:
+        raise RemoteError(str(exc)) from exc
+    if resume_existing_ui_dataset and (resume_existing_root != "1" or profile != "path-a"):
+        raise RemoteError(
+            "TRUENAS_TEST_RESUME_EXISTING_UI_DATASET requires Path A and "
+            "TRUENAS_TEST_RESUME_EXISTING_UI_ROOT=1"
+        )
+    stale_container_cleanup = os.environ.get("TRUENAS_TEST_CLEANUP_STALE_UI_CONTAINER", "")
+    if stale_container_cleanup and re.fullmatch(r"uiacceptance[0-9a-f]{8}", stale_container_cleanup) is None:
+        raise RemoteError(
+            "TRUENAS_TEST_CLEANUP_STALE_UI_CONTAINER must be an exact uiacceptance<8 lowercase hex> name"
+        )
+    if stale_container_cleanup and (profile != "path-a" or resume_existing_root != "1"):
+        raise RemoteError(
+            "TRUENAS_TEST_CLEANUP_STALE_UI_CONTAINER requires Path A and "
+            "TRUENAS_TEST_RESUME_EXISTING_UI_ROOT=1"
+        )
+    expected_version = required_env("TRUENAS_EXPECTED_VERSION")
+    if os.environ.get("TRUENAS_TEST_ALLOW_MUTATIONS") != "1":
+        raise RemoteError("set TRUENAS_TEST_ALLOW_MUTATIONS=1 only for a disposable TrueNAS guest")
+
+    base_url = required_env("TRUENAS_UI_URL").rstrip("/")
+    ws_url = required_env("PWMCP_WS_URL")
+    expected_playwright = required_env("PWMCP_PLAYWRIGHT_VERSION")
+    secret_path = Path(required_env("TRUENAS_UI_SECRET_FILE"))
+    if not secret_path.is_file():
+        raise RemoteError(f"TrueNAS UI credential file does not exist: {secret_path}")
+    mode = stat.S_IMODE(secret_path.stat().st_mode)
+    if mode & 0o077:
+        raise RemoteError("TrueNAS UI credential file must not be accessible by group or others")
+    try:
+        secrets = tomllib.loads(secret_path.read_text())
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise RemoteError(f"cannot read UI credential TOML: {type(exc).__name__}") from None
+    admin = secrets.get("truenas_admin", {})
+    username = admin.get("username")
+    password = admin.get("password")
+    if not isinstance(username, str) or not username or not isinstance(password, str) or not password:
+        raise RemoteError("TrueNAS UI credential TOML is missing truenas_admin username/password")
+
+    playwright_version = importlib.metadata.version("playwright")
+    require(playwright_version == expected_playwright,
+            f"PWMCP Playwright client version {expected_playwright} required, found {playwright_version}")
+    info = target.call("system.info")
+    version = str(info.get("version", ""))
+    require(version == expected_version, f"expected TrueNAS {expected_version}, got {version!r}")
+
+    suffix = time.strftime("%Y%m%d%H%M%S", time.gmtime()) + uuid.uuid4().hex[:6]
+    dataset_parent = selected_dataset_parent(profile)
+    pool = selected_pool(profile)
+    dataset_name = f"ui-acceptance-{suffix}"
+    created_dataset = f"{dataset_parent}/{dataset_name}"
+    mountpoint = f"/mnt/{created_dataset}"
+    vm_name = f"uiacceptancevm{suffix[-8:]}"
+    container_name = f"uiacceptance{suffix[-8:]}"
+    vm_zvol = ""
+    cache_zvol = ""
+    container_dataset = ""
+    dataset_created = False
+    vm_id: int | None = None
+    container_id: int | None = None
+    temporary_pool_name: str | None = None
+    cache_attached = False
+    cleanup_errors: list[str] = []
+    preserve_created_workloads = False
+    page = None
+    ui_stage = "before-browser"
+    image_name = "alpine:3.24:amd64:default"
+    image_rows = target.call("container.image.query_registry", timeout=120)
+    image_row = next((row for row in image_rows if row.get("name") == image_name), None)
+    require(image_row is not None and image_row.get("versions"),
+            f"container image registry does not offer the pinned UI test image {image_name}")
+    image_version = sorted(row["version"] for row in image_row["versions"])[-1]
+    report(
+        "container-image-registry",
+        f"target UI image entry: {json.dumps({'name': image_row.get('name'), 'version': image_version}, sort_keys=True)}",
+    )
+    if stale_container_cleanup:
+        cleanup_stale_ui_container(
+            target, profile, stale_container_cleanup, image_name,
+        )
+    existing_ui_root = inventory_before_ui_mutation(
+        target, profile, image_name, resume_existing_root=resume_existing_root == "1",
+        resume_existing_ui_dataset=resume_existing_ui_dataset, path_b_setup=path_b_setup,
+    )
+    if provision_path_a_root == "1":
+        require(not existing_ui_root,
+                "Path A root provisioning guard was set but the root already exists")
+        try:
+            root_result = provision_path_a_ui_root(target)
+        except PathARootProvisionError as exc:
+            raise RemoteError(f"guarded Path A root provisioning failed: {exc}") from exc
+        report(
+            "path-a-root-bootstrap",
+            "created and verified the empty 2 GiB boot-pool/user-data root outside dataset CRUD; "
+            f"details={json.dumps(root_result, sort_keys=True)}",
+        )
+        existing_ui_root = inventory_before_ui_mutation(
+            target, profile, image_name, resume_existing_root=True,
+            resume_existing_ui_dataset=resume_existing_ui_dataset, path_b_setup=path_b_setup,
+        )
+        require(existing_ui_root,
+                "Path A root bootstrap completed but the strict existing-root inventory did not admit it")
+
+    try:
+        ui_stage = "connect-pwmcp"
+        report("browser", "connecting to PWMCP Playwright endpoint with a managed browser lease")
+        with connect_pwmcp(ws_url) as browser_lease:
+            browser = browser_lease.browser
+            report("browser", "connected to PWMCP")
+            context = browser.new_context(ignore_https_errors=True, viewport={"width": 1440, "height": 1000})
+            page = context.new_page()
+            dataset_create_requests = observe_rpc_method(page, "pool.dataset.create")
+            pool_create_requests = observe_rpc_method(page, "pool.create", log_response=True)
+            observe_rpc_method(page, "pool.dataset.query")
+            observe_rpc_method(page, "pool.dataset.recommended_zvol_blocksize", log_response=True)
+            observe_rpc_method(page, "pool.dataset.compression_choices", log_response=True)
+            observe_rpc_method(page, "disk.query", log_response=True)
+            observe_rpc_method(page, "container.image.query_registry", log_response=True)
+            container_create_requests = observe_rpc_method(page, "container.create")
+            page.set_default_timeout(30_000)
+            ui_stage = "open-signin"
+            report("navigation", f"opening TrueNAS sign-in at {base_url}")
+            page.goto(base_url + "/", wait_until="domcontentloaded", timeout=120_000)
+            report("navigation", f"sign-in page loaded at {page.url}")
+            ui_stage = "signin-username"
+            username_field = page.get_by_role("textbox", name="Username")
+            report("login", "waiting for the username field to become enabled")
+            username_field.wait_for(state="visible", timeout=120_000)
+            expect(username_field).to_be_enabled(timeout=120_000)
+            username_field.fill(username)
+            ui_stage = "signin-password"
+            password_field = page.get_by_role("textbox", name="Password")
+            report("login", "username entered; waiting for the password field to become enabled")
+            expect(password_field).to_be_enabled(timeout=120_000)
+            password_field.fill(password)
+            ui_stage = "signin-submit"
+            report("login", "credentials entered; submitting login")
+            page.get_by_role("button", name="Log In", exact=True).click()
+            ui_stage = "signin-complete"
+            page.wait_for_url(re.compile(r"/ui/(?!signin)"), timeout=120_000)
+            report("login", f"login redirected to {page.url}")
+            ui_stage = "sidebar-ready"
+            page.wait_for_load_state("domcontentloaded", timeout=30_000)
+            page.wait_for_timeout(5_000)
+            dashboard_text = page.locator("body").inner_text(timeout=30_000)
+            require("Datasets" in dashboard_text,
+                    "authenticated dashboard does not expose the Datasets navigation text")
+            report("login", f"PWMCP browser authenticated to TrueNAS {version}")
+            inspect_session_timeout_ui(page, username)
+
+            for label, route in (
+                ("Datasets", "/ui/datasets"),
+                ("Containers", "/ui/containers"),
+                ("Virtual Machines", "/ui/vm"),
+                ("Shares", "/ui/sharing"),
+            ):
+                ui_stage = f"page-{label.lower().replace(' ', '-')}"
+                report("page", f"opening {label} route")
+                page.goto(base_url + route, wait_until="domcontentloaded", timeout=120_000)
+                page.get_by_text(label, exact=True).first.wait_for(state="visible", timeout=60_000)
+                report("page", f"{label} route loaded")
+
+            ui_stage = "profile-storage-setup"
+            if profile == "path-a":
+                if existing_ui_root:
+                    report(
+                        "path-a-root-ui",
+                        "using the strictly verified pre-existing Path A root; root provisioning is outside this UI workflow",
+                    )
+                else:
+                    create_path_a_root_in_ui(page, base_url, target, dataset_create_requests)
+            else:
+                inspect_path_b_partition_ui(page)
+                if path_b_setup == "ui-wizard":
+                    disk = required_env("TRUENAS_DISK_DEVICE")
+                    try:
+                        expected_partition = reserved_partition_four_name(disk)
+                    except ValueError as exc:
+                        raise RemoteError(str(exc)) from exc
+                    pool = create_path_b_pool_in_ui(
+                        page, base_url, target, pool_create_requests, expected_partition,
+                    )
+                else:
+                    disk = required_env("TRUENAS_DISK_DEVICE")
+                    boot_partition = required_env("TRUENAS_BOOT_POOL_PARTITION")
+                    configured = verify_preprovisioned_path_b_pool(
+                        target,
+                        disk=disk,
+                        boot_pool_partition=boot_partition,
+                        expected_version=expected_version,
+                    )
+                    require(
+                        not contains_pool_create_request(pool_create_requests),
+                        "preprovisioned Path B UI unexpectedly submitted a pool.create request: "
+                        f"{pool_create_requests!r}",
+                    )
+                    report(
+                        "path-b-preprovisioned-ui",
+                        f"using verified existing {pool} on {configured.get('partition')}; "
+                        "pool creation remains outside the UI storage acceptance",
+                    )
+
+            ui_stage = "dataset-parent"
+            parent = select_dataset_parent(page, base_url, profile)
+            ui_stage = "dataset-create"
+            created_dataset = create_dataset_in_ui(page, parent, dataset_name)
+            dataset_created = True
+            require(wait_dataset(target, created_dataset, present=True),
+                    f"dataset created in UI is missing from middleware query: {created_dataset}")
+            dataset_used_before = assert_filesystem_backing(target, created_dataset, mountpoint)
+            probe_file = f"{mountpoint}/ui-disk-probe.bin"
+            target.run([
+                "dd", "if=/dev/urandom", f"of={probe_file}", "bs=4096", "count=16", "status=none",
+            ], timeout=90)
+            probe_bytes = int(target.run(["wc", "-c", probe_file]).split()[0])
+            probe_sha256 = target.shell(f"sha256sum {shlex.quote(probe_file)}").split()[0]
+            dataset_used_after = assert_filesystem_backing(target, created_dataset, mountpoint)
+            require(
+                probe_bytes == 65_536
+                and re.fullmatch(r"[0-9a-f]{64}", probe_sha256) is not None
+                and dataset_used_after > dataset_used_before,
+                    f"dataset write did not increase ZFS use: before={dataset_used_before}, "
+                    f"after={dataset_used_after}, bytes={probe_bytes}")
+            report(
+                "dataset-ui",
+                f"created {created_dataset}; findmnt source matches; 65536-byte probe increased "
+                f"ZFS used from {dataset_used_before} to {dataset_used_after}",
+            )
+
+            ui_stage = "vm-zvol-create"
+            vm_zvol = create_zvol_in_ui(
+                page, base_url, created_dataset, "vm-disk", dataset_create_requests,
+            )
+            require(wait_dataset(target, vm_zvol, present=True), f"UI-created VM zvol is missing: {vm_zvol}")
+            vm_zvol_used = assert_zvol_backing(target, vm_zvol)
+            vm_zvol_used, vm_zvol_sha256 = allocate_zvol_probe(
+                target, vm_zvol, marker="VM disk probe",
+            )
+            report(
+                "zvol-ui",
+                f"created {vm_zvol}; 65536 bytes written; SHA-256={vm_zvol_sha256}; "
+                f"ZFS used={vm_zvol_used}",
+            )
+
+            ui_stage = "cache-zvol-create"
+            cache_zvol = create_zvol_in_ui(
+                page, base_url, created_dataset, "cache-device", dataset_create_requests,
+            )
+            require(wait_dataset(target, cache_zvol, present=True),
+                    f"UI-created cache-device zvol is missing: {cache_zvol}")
+            cache_zvol_used = assert_zvol_backing(target, cache_zvol)
+            require(cache_zvol_used >= 0, f"invalid ZFS used value for {cache_zvol}: {cache_zvol_used}")
+            cache_zvol_used, cache_zvol_sha256 = allocate_zvol_probe(
+                target, cache_zvol, marker="cache-device zvol probe",
+            )
+
+            ui_stage = "cache-vdev-use"
+            if preserve_ui_workloads:
+                report(
+                    "cache-device",
+                    f"UI-created {cache_zvol} and wrote a 65536-byte data probe with "
+                    f"SHA-256={cache_zvol_sha256}; skipped direct zpool role attachment in UI migration mode",
+                )
+            else:
+                temporary_pool_name = f"patchcache{suffix[-10:]}"
+                temporary_pool_file = f"{mountpoint}/cache-target.img"
+                target.run(["truncate", "-s", "256M", temporary_pool_file], timeout=90)
+                target.shell(
+                    "zpool create -f -o cachefile=none -o altroot=/mnt -O mountpoint=none "
+                    f"{shlex.quote(temporary_pool_name)} {shlex.quote(temporary_pool_file)}",
+                    timeout=120,
+                )
+                cache_device = f"/dev/zvol/{cache_zvol}"
+                target.shell(
+                    f"zpool add {shlex.quote(temporary_pool_name)} cache {shlex.quote(cache_device)}",
+                    timeout=120,
+                )
+                cache_attached = True
+                cache_status = target.shell(f"zpool status -P {shlex.quote(temporary_pool_name)}")
+                require(cache_device in cache_status and "cache" in cache_status.lower(),
+                        "temporary pool status does not show the UI-created zvol as a cache vdev")
+                cache_pool_health = target.shell(
+                    f"zpool list -H -o health {shlex.quote(temporary_pool_name)}"
+                )
+                require(cache_pool_health == "ONLINE",
+                        f"temporary cache target pool health is {cache_pool_health!r}")
+                target.shell(
+                    f"zpool remove {shlex.quote(temporary_pool_name)} {shlex.quote(cache_device)}",
+                    timeout=120,
+                )
+                cache_attached = False
+                require(cache_device not in target.shell(f"zpool status -P {shlex.quote(temporary_pool_name)}"),
+                        "cache vdev removal did not remove the UI-created zvol")
+                cache_zvol_used = int(zfs_property(target, cache_zvol, "used"))
+                require(cache_zvol_used > 0, f"cache vdev writes did not allocate space on {cache_zvol}")
+                target.shell(f"zpool export {shlex.quote(temporary_pool_name)}", timeout=120)
+                remaining_pools = target.shell("zpool list -H -o name").splitlines()
+                require(temporary_pool_name not in remaining_pools,
+                        f"temporary cache pool {temporary_pool_name} remains imported")
+                report(
+                    "cache-device",
+                    f"UI-created {cache_zvol} stored ZFS data and served as a cache vdev for a "
+                    f"temporary file-backed pool; add/status/remove/export passed (ZFS used={cache_zvol_used})",
+                )
+                temporary_pool_name = None
+
+            ui_stage = "container-create"
+            report("container-ui", f"submitting a container on pool {pool} using {image_name}")
+            create_container_in_ui(
+                page, base_url, pool=pool, name=container_name, image_name=image_name,
+                image_version=image_version, autostart=not preserve_ui_workloads,
+            )
+            submitted_container = rpc_object_for_name(
+                container_create_requests, "container.create", container_name,
+            )
+            require(submitted_container is not None,
+                    f"UI did not submit container.create for {container_name}")
+            submitted_image = submitted_container.get("image")
+            require(submitted_container.get("pool") == pool,
+                    f"UI container.create submitted pool {submitted_container.get('pool')!r}, expected {pool!r}")
+            require(
+                isinstance(submitted_image, dict)
+                and submitted_image.get("name") == image_name
+                and submitted_image.get("version") == image_version,
+                f"UI container.create submitted unexpected image {submitted_image!r}; "
+                f"expected {image_name!r} version {image_version!r}",
+            )
+            report(
+                "container-ui-wire",
+                f"UI request submitted pool={pool}, image={image_name}, version={image_version}",
+            )
+            container_row = wait_named_row(target, "container.query", container_name)
+            container_id = int(container_row["id"])
+            container_root = container_storage_root(profile)
+            container_dataset = find_container_storage_dataset(target, profile, container_name)
+            container_zfs_row = target.run([
+                "zfs", "list", "-H", "-p", "-o", "name,used,refer",
+                "-t", "filesystem,volume", container_dataset,
+            ], timeout=90).split("\t")
+            require(
+                len(container_zfs_row) == 3 and container_zfs_row[0] == container_dataset,
+                f"direct ZFS inventory did not return one row for {container_dataset}: {container_zfs_row!r}",
+            )
+            container_used, container_referenced = map(int, container_zfs_row[1:])
+            require(container_referenced > 0,
+                    f"UI-created container dataset {container_dataset} references no ZFS data")
+            image_dataset = f"{container_root}/images/{image_name}:{image_version}"
+            image_zfs_row = target.run([
+                "zfs", "list", "-H", "-p", "-o", "name,used", "-t", "filesystem,volume", image_dataset,
+            ], timeout=90).split("\t")
+            require(
+                len(image_zfs_row) == 2 and image_zfs_row[0] == image_dataset and int(image_zfs_row[1]) > 0,
+                f"UI-selected image has no allocated backing dataset on {pool}: {image_zfs_row!r}",
+            )
+            visible_datasets = flatten_datasets(target.query("pool.dataset.query", timeout=120))
+            hidden_internal = [
+                item for item in visible_datasets
+                if item == container_root or item.startswith(container_root + "/")
+            ]
+            require(not hidden_internal,
+                    f"dataset UI/API query exposes container-managed datasets: {hidden_internal[:8]!r}")
+            report(
+                "container-ui",
+                f"created container {container_name} on {pool}; direct ZFS dataset {container_dataset} "
+                f"used={container_used} bytes, referenced={container_referenced} bytes; image dataset "
+                f"{image_dataset} uses {int(image_zfs_row[1])} bytes; selected pool and storage root match",
+            )
+
+            ui_stage = "vm-create"
+            report("vm-ui", f"submitting VM wizard {vm_name}")
+            vm_form_create(
+                page, base_url, name=vm_name, password=uuid.uuid4().hex[:8],
+                zvol=f"/dev/zvol/{vm_zvol}",
+            )
+            vm_row = wait_named_row(target, "vm.query", vm_name, timeout=120)
+            vm_id = int(vm_row["id"])
+            vm_devices = target.query("vm.device.query", [["vm", "=", vm_id]], timeout=120)
+            attached_paths = [
+                (device.get("attributes") or {}).get("path", device.get("path"))
+                for device in vm_devices
+            ]
+            require(f"/dev/zvol/{vm_zvol}" in attached_paths,
+                    f"VM created through the UI is not attached to its user-data zvol: {attached_paths!r}")
+            vm_zvol_used = int(zfs_property(target, vm_zvol, "used"))
+            require(vm_zvol_used > 0, f"VM zvol {vm_zvol} has no allocated ZFS storage")
+            report(
+                "vm-ui",
+                f"UI wizard created VM {vm_name} with existing zvol /dev/zvol/{vm_zvol}; "
+                f"zvol is on {pool} and uses {vm_zvol_used} bytes",
+            )
+
+            if preserve_ui_workloads:
+                container_state = (container_row.get("status") or {}).get("state")
+                require(
+                    container_state != "RUNNING",
+                    f"UI-created container is running despite Autostart=false: {container_state!r}",
+                )
+                require(workload_manifest_path is not None,
+                        "migration mode has no UI workload manifest path")
+                manifest = {
+                    "schema_version": 1,
+                    "target_version": version,
+                    "profile": profile,
+                    "pool": pool,
+                    "filesystem": {
+                        "dataset": created_dataset,
+                        "mountpoint": mountpoint,
+                        "probe_file": probe_file,
+                        "probe_bytes": probe_bytes,
+                        "probe_sha256": probe_sha256,
+                    },
+                    "container": {
+                        "name": container_name,
+                        "id": container_id,
+                        "pool": pool,
+                        "state_before_reboot": container_state,
+                        "dataset": container_dataset,
+                        "image_dataset": image_dataset,
+                        "image_name": image_name,
+                        "image_version": image_version,
+                    },
+                    "vm": {
+                        "name": vm_name,
+                        "id": vm_id,
+                        "pool": pool,
+                        "zvol": vm_zvol,
+                        "device_path": f"/dev/zvol/{vm_zvol}",
+                    },
+                    "zvols": {
+                        "vm_disk": {"dataset": vm_zvol, "sha256": vm_zvol_sha256, "bytes": 65_536},
+                        "cache_device": {
+                            "dataset": cache_zvol,
+                            "sha256": cache_zvol_sha256,
+                            "bytes": 65_536,
+                        },
+                    },
+                }
+                workload_manifest_path.parent.mkdir(parents=True, exist_ok=True)
+                workload_manifest_path.write_text(
+                    json.dumps(manifest, sort_keys=True, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+                preserve_created_workloads = True
+                report(
+                    "migration-manifest",
+                    f"preserving UI-created dataset/container/VM/zvols; manifest={workload_manifest_path}",
+                )
+
+            ui_stage = "shares-page"
+            report("shares-ui", "opening SMB and NFS sections")
+            page.goto(base_url + "/ui/sharing", wait_until="domcontentloaded", timeout=120_000)
+            page.get_by_role("heading", name=re.compile(r"Windows \(SMB\) Shares")).wait_for(
+                state="visible", timeout=60_000
+            )
+            page.get_by_role("heading", name=re.compile(r"UNIX \(NFS\) Shares")).wait_for(
+                state="visible", timeout=60_000
+            )
+            share_text = page.locator("body").inner_text(timeout=30_000)
+            share_sections_present = (
+                "Windows (SMB) Shares" in share_text and "UNIX (NFS) Shares" in share_text
+            )
+            require(share_sections_present,
+                    "sharing UI does not expose both SMB and NFS sections")
+            share_add_actions = page.get_by_role("button", name=re.compile(r"\bAdd\b")).count()
+            require(share_add_actions >= 2,
+                    "sharing UI does not expose the SMB and NFS Add actions")
+            report("shares-ui", "SMB and NFS share pages/actions are available")
+            report(
+                "shares-ui",
+                f"SMB/NFS sections present={share_sections_present}; Add actions={share_add_actions}",
+            )
+            if path_b_setup == "preprovisioned":
+                require(
+                    not contains_pool_create_request(pool_create_requests),
+                    "preprovisioned Path B UI submitted a pool.create request during storage checks: "
+                    f"{pool_create_requests!r}",
+                )
+            context.close()
+
+    except PwmcpError as exc:
+        detail = str(exc).strip().replace("\n", " ")[-1600:]
+        raise RemoteError(
+            f"PWMCP browser lease failed during {ui_stage}: {type(exc).__name__}: {detail}"
+        ) from None
+    except PlaywrightError as exc:
+        detail = str(exc).strip().replace("\n", " ")[-1600:]
+        raise RemoteError(
+            f"PWMCP Playwright UI interaction failed during {ui_stage}: "
+            f"{type(exc).__name__}: {detail}"
+        ) from None
+    finally:
+        if container_id is not None and not preserve_created_workloads:
+            try:
+                current = target.query("container.query", [["id", "=", container_id]], timeout=60)
+                if current and (current[0].get("status") or {}).get("state") == "RUNNING":
+                    stop_job = target.call("container.stop", container_id, {
+                        "force": False,
+                        "force_after_timeout": True,
+                    }, timeout=120)
+                    if isinstance(stop_job, int):
+                        target.wait_job(stop_job, timeout=600, label="UI container stop")
+                delete_job = target.call("container.delete", container_id, {
+                    "force": False,
+                    "recursive": False,
+                }, timeout=120)
+                if isinstance(delete_job, int):
+                    target.wait_job(delete_job, timeout=600, label="UI container delete")
+                if target.query("container.query", [["id", "=", container_id]], timeout=60):
+                    cleanup_errors.append(f"UI container {container_id} remains after delete")
+                if container_dataset and target.run(
+                    ["zfs", "list", "-H", "-o", "name", container_dataset], check=False,
+                ) == container_dataset:
+                    cleanup_errors.append(f"UI container dataset {container_dataset} remains after delete")
+            except Exception as exc:
+                cleanup_errors.append(f"UI container {container_id}: {exc}")
+        if vm_id is not None and not preserve_created_workloads:
+            try:
+                current = target.query("vm.query", [["id", "=", vm_id]], timeout=60)
+                if current and (current[0].get("status") or {}).get("state") == "RUNNING":
+                    stop_job = target.call("vm.stop", vm_id, {"force": False}, timeout=120)
+                    if isinstance(stop_job, int):
+                        target.wait_job(stop_job, timeout=300, label="UI VM stop")
+                target.call("vm.delete", vm_id, timeout=120)
+                if target.query("vm.query", [["id", "=", vm_id]], timeout=60):
+                    cleanup_errors.append(f"UI VM {vm_id} remains after delete")
+            except Exception as exc:
+                cleanup_errors.append(f"UI VM {vm_id}: {exc}")
+        if temporary_pool_name is not None:
+            try:
+                pools = target.shell("zpool list -H -o name").splitlines()
+                if temporary_pool_name in pools:
+                    if cache_attached and cache_zvol:
+                        target.shell(
+                            f"zpool remove {shlex.quote(temporary_pool_name)} "
+                            f"{shlex.quote('/dev/zvol/' + cache_zvol)}",
+                            timeout=120,
+                        )
+                    target.shell(f"zpool export {shlex.quote(temporary_pool_name)}", timeout=120)
+                if temporary_pool_name in target.shell("zpool list -H -o name").splitlines():
+                    cleanup_errors.append(f"temporary cache pool {temporary_pool_name} remains imported")
+            except Exception as exc:
+                cleanup_errors.append(f"temporary cache pool {temporary_pool_name}: {exc}")
+        if dataset_created and not preserve_created_workloads:
+            try:
+                existing = flatten_datasets(target.query("pool.dataset.query", timeout=120))
+                if created_dataset in existing:
+                    target.call("pool.dataset.delete", created_dataset, {"recursive": True}, timeout=120)
+                remaining = flatten_datasets(target.query("pool.dataset.query", timeout=120))
+                leftovers = [name for name in remaining if name == created_dataset or name.startswith(created_dataset + "/")]
+                if leftovers:
+                    cleanup_errors.append(f"UI test dataset remains after cleanup: {leftovers[:8]!r}")
+                direct = target.run(
+                    ["zfs", "list", "-H", "-t", "filesystem,volume", "-o", "name", "-r", created_dataset],
+                    check=False,
+                )
+                if direct and created_dataset in direct.splitlines():
+                    cleanup_errors.append(f"UI test ZFS tree remains after cleanup: {created_dataset}")
+                report("cleanup", f"removed UI test tree {created_dataset}")
+            except Exception as exc:
+                cleanup_errors.append(f"UI test dataset cleanup failed: {exc}")
+        if cleanup_errors:
+            report("cleanup-error", "; ".join(cleanup_errors))
+        if preserve_created_workloads:
+            report("cleanup", "retained the manifest-backed UI workload tree for migration acceptance")
+
+    if cleanup_errors:
+        raise RemoteError("cleanup failed: " + "; ".join(cleanup_errors))
+    report("result", f"PASS TrueNAS {version} {profile} UI")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (RemoteError, KeyError, TypeError, ValueError) as exc:
+        print(f"FAIL: {exc}", file=sys.stderr, flush=True)
+        raise SystemExit(1)

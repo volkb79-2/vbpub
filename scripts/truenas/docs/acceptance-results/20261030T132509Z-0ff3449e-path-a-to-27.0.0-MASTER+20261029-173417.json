@@ -1,0 +1,66 @@
+{
+  "completed_at_utc": "2026-10-30T13:28:32+00:00",
+  "continued_from": "scripts/truenas/docs/acceptance-results/20261030T131248Z-7fc7324d-path-a-to-27.0.0-MASTER+20261029-173417.json",
+  "from_source": "27.0.0-RC.1",
+  "from_version": "27.0.0-RC.1",
+  "official_update": {
+    "checksum": "e75221fc2170b37c1969ab73d2ef56c895bbe1eb32e3558db26523656089a6c2",
+    "filename": "TrueNAS-27.0.0-MASTER+20261029-173417.update",
+    "filesize": 2305646592,
+    "profile": "DEVELOPER",
+    "train": "TrueNAS-27-Nightlies",
+    "version": "27.0.0-MASTER+20261029-173417"
+  },
+  "patched_target": "reapply",
+  "restore_snapshot": null,
+  "result": "PASS",
+  "result_file": "scripts/truenas/docs/acceptance-results/20261030T132509Z-0ff3449e-path-a-to-27.0.0-MASTER+20261029-173417.json",
+  "run_directory": "scripts/truenas/boot-pool-patch/artifacts/acceptance-runs/20261030T132509Z-0ff3449e",
+  "run_id": "20261030T132509Z-0ff3449e",
+  "schema_version": 1,
+  "stage_results": [
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/workspaces/vbpub/.worktrees/truenas-restore-iso/scripts/truenas/boot-pool-patch/run-live-gate.py",
+        "live-inspect",
+        "--docker-network",
+        "dstdns-hox0ju-network",
+        "--allow-dirty",
+        "--allow-high-psi"
+      ],
+      "completed_at": "2026-10-30T13:25:46+00:00",
+      "exit_code": 0,
+      "log": "scripts/truenas/boot-pool-patch/artifacts/acceptance-runs/20261030T132509Z-0ff3449e/live-inspect.log",
+      "started_at": "2026-10-30T13:25:13+00:00"
+    },
+    {
+      "argv": [
+        "/usr/local/bin/python3",
+        "/workspaces/vbpub/.worktrees/truenas-restore-iso/scripts/truenas/boot-pool-patch/run-live-gate.py",
+        "live-storage",
+        "--docker-network",
+        "dstdns-hox0ju-network",
+        "--allow-dirty",
+        "--allow-high-psi"
+      ],
+      "completed_at": "2026-10-30T13:28:32+00:00",
+      "exit_code": 0,
+      "log": "scripts/truenas/boot-pool-patch/artifacts/acceptance-runs/20261030T132509Z-0ff3449e/live-storage-path-a.log",
+      "started_at": "2026-10-30T13:25:46+00:00"
+    }
+  ],
+  "start_inventory": {
+    "path_a": "present",
+    "path_b": "absent",
+    "post_update_state": "path-a",
+    "version": "27.0.0-MASTER+20261029-173417"
+  },
+  "start_state": "path-a",
+  "started_at_utc": "2026-10-30T13:25:09+00:00",
+  "steps": [
+    "api"
+  ],
+  "survival_state_directory": "scripts/truenas/boot-pool-patch/artifacts/.update-survival-20261030T131248Z-7fc7324d",
+  "to_version": "27.0.0-MASTER+20261029-173417"
+}

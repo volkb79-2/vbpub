@@ -1,0 +1,36 @@
+From ac0d677d04add3d1a09ce1d486965c12d5936a41 Mon Sep 17 00:00:00 2001
+From: TrueNAS Patch Series <patchseries@vbpub.invalid>
+Date: Fri, 30 Oct 2026 00:00:00 +0000
+Subject: [PATCH] Default boot-pool zvol block size to 16 KiB
+
+Return the existing 16 KiB recommendation only for boot-pool zvols.
+
+Change-Id: boot-pool-zvol-default
+Capability: zvol-layout
+Role: plumbing
+Risk: low
+Requires: path-a-dataset-api
+Forwarded: not-needed
+---
+ middlewared/plugins/pool_/dataset_info.py | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/middlewared/plugins/pool_/dataset_info.py b/middlewared/plugins/pool_/dataset_info.py
+index 5f608cdd8c70e097e6c92ba1111b25f4d074828d..1061e40471f47704b166862899812a4749fdf97b 100644
+--- a/middlewared/plugins/pool_/dataset_info.py
++++ b/middlewared/plugins/pool_/dataset_info.py
+@@ -49,6 +49,11 @@ class PoolDatasetService(Service):
+                 "params": ["tank"]
+             }
+         """
++        if pool == 'boot-pool':
++            # The boot pool is excluded from pool.query. Use the existing
++            # 16K recommendation for single-disk and mirror layouts.
++            return '16K'
++
+         pool = await self.middleware.call('pool.query', [['name', '=', pool]], {'get': True})
+ 
+         """
+-- 
+2.55.0
+

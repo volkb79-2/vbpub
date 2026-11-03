@@ -1,0 +1,71 @@
+{
+  "method": "pool.create",
+  "release": "28.0.0-MASTER+20261027-175229",
+  "observed_on": "2026-10-29",
+  "retrieved_with": "core.get_methods",
+  "required_fields": [
+    "name",
+    "topology"
+  ],
+  "fields": {
+    "all_sed": {
+      "default": false
+    },
+    "allow_duplicate_serials": {
+      "default": false
+    },
+    "checksum": {
+      "default": null
+    },
+    "dedup_table_quota": {
+      "default": "AUTO"
+    },
+    "dedup_table_quota_value": {
+      "default": null
+    },
+    "deduplication": {
+      "default": null
+    },
+    "encryption": {
+      "default": false
+    },
+    "encryption_options": {
+      "nested_fields": [
+        "generate_key",
+        "key",
+        "passphrase",
+        "pbkdf2iters"
+      ],
+      "nested_defaults": {
+        "generate_key": false,
+        "key": "",
+        "passphrase": "",
+        "pbkdf2iters": 1300000
+      }
+    },
+    "force_topology": {
+      "default": false
+    },
+    "name": {
+      "required": true
+    },
+    "topology": {
+      "nested_fields": [
+        "cache",
+        "data",
+        "dedup",
+        "log",
+        "spares",
+        "special"
+      ],
+      "nested_defaults": {
+        "cache": [],
+        "dedup": [],
+        "log": [],
+        "spares": [],
+        "special": []
+      },
+      "required": true
+    }
+  }
+}

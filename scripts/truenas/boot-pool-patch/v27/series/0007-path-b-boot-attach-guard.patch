@@ -1,0 +1,32 @@
+From 88fc146f6cc0032affcc722382169c3a89bdc048 Mon Sep 17 00:00:00 2001
+From: TrueNAS Patch Series <patchseries@vbpub.invalid>
+Date: Fri, 30 Oct 2026 00:00:00 +0000
+Subject: [PATCH] Refuse reserved partition attachment as a boot device
+
+Reject boot attachment of a partition reserved for Path B data storage.
+
+Change-Id: path-b-boot-attach-guard
+Capability: reserved-partition-pool
+Role: guard
+Risk: high
+Requires: none
+Forwarded: not-needed
+---
+ middlewared/plugins/boot.py | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/middlewared/plugins/boot.py b/middlewared/plugins/boot.py
+index da1cc164c52513254675db93b0a7eaf947dbcd9c..00ba34543e9bfabb5aea1fd270429e85a606393f 100644
+--- a/middlewared/plugins/boot.py
++++ b/middlewared/plugins/boot.py
+@@ -104,6 +104,7 @@ class BootService(Service):
+         `expand` option will determine whether the new disk partition will be
+                  the maximum available or the same size as the current disk.
+         """
++        await self.middleware.call('boot_disk_partition.assert_boot_attach_allowed', dev)
+         await self.check_update_ashift_property()
+         disks = list(await self.get_disks())
+         if len(disks) > 1:
+-- 
+2.55.0
+

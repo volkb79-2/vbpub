@@ -140,7 +140,7 @@ def test_unknown_name_is_refused_before_any_delete(explore_mod, tmp_path, monkey
 )
 @pytest.mark.parametrize(
     "env_text",
-    ["NETCUP_SCP_API_PROTECTED_SERVERS=v42\n", "NETCUP_SCP_API_PROTECTED_SERVER_IDS=42\n"],
+    ["NETCUP_PROTECTED_SERVERS=v42\n", "NETCUP_PROTECTED_SERVER_IDS=42\n"],
     ids=["by-name", "by-id"],
 )
 def test_protected_server_is_refused_end_to_end(explore_mod, tmp_path, monkeypatch, capsys, flags, env_text):
@@ -187,7 +187,7 @@ def test_delete_requires_a_name_and_a_server_before_any_request(explore_mod, tmp
 
 def test_a_name_with_another_action_is_refused(explore_mod, tmp_path, monkeypatch, capsys):
     run = _run(explore_mod, ["snapshots", "42", "create", "before", "--yes"], tmp_path, monkeypatch, capsys)
-    assert run.status == 2 and "only valid with the delete action" in run.err and run.calls == []
+    assert run.status == 2 and "only valid with delete or revert" in run.err and run.calls == []
 
 
 @pytest.mark.parametrize("verb_args", [["snapshots", "42"], ["snapshots"]])

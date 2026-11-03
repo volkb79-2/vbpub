@@ -1,0 +1,19 @@
+--- a/truenas_pylibvirt/domain/vm/xml.py
++++ b/truenas_pylibvirt/domain/vm/xml.py
+@@ -5,6 +5,7 @@
+ from xml.etree import ElementTree
+ 
+ from ...device.display import DisplayDevice, DisplayDeviceType
++from ...utils import kvm_supported
+ from ...xml import xml_element
+ from ..base.xml import BaseDomainXmlGenerator
+ from .configuration import VmBootloader, VmCpuMode, VmVideoModel
+@@ -20,7 +21,7 @@
+     domain: VmDomain
+ 
+     def _type(self) -> str:
+-        return "kvm"
++        return "kvm" if kvm_supported() else "qemu"
+ 
+     def _os_xml(self) -> ElementTree.Element:
+         hvm_attributes = {}

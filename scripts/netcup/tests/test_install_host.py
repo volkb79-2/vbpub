@@ -730,7 +730,7 @@ def test_install_from_payload_refuses_protected_server_before_account_key_work(
     }
     payload_path = tmp_path / "target-host.jsonc"
     payload_path.write_text(json.dumps(payload))
-    monkeypatch.setenv("NETCUP_SCP_API_PROTECTED_SERVERS", "v2202503209318326780")
+    monkeypatch.setenv("NETCUP_PROTECTED_SERVERS", "v2202503209318326780")
     client = fake_client(
         get_responses=[{"id": 12345, "name": "v2202503209318326780"}],
         allow=("get",),

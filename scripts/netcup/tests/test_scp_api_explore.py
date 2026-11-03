@@ -124,14 +124,14 @@ def test_build_client_happy_path(explore_mod, monkeypatch):
 
 
 def test_protected_policy_requires_v_digit_names_and_positive_ids(explore_mod, monkeypatch):
-    monkeypatch.setenv("NETCUP_SCP_API_PROTECTED_SERVERS", "v2202503209318326780")
-    monkeypatch.setenv("NETCUP_SCP_API_PROTECTED_SERVER_IDS", "42")
+    monkeypatch.setenv("NETCUP_PROTECTED_SERVERS", "v2202503209318326780")
+    monkeypatch.setenv("NETCUP_PROTECTED_SERVER_IDS", "42")
     assert explore_mod.netcup_scp_client.protected_server_policy() == (
         {"v2202503209318326780"},
         {42},
     )
 
-    monkeypatch.setenv("NETCUP_SCP_API_PROTECTED_SERVERS", "my-host")
+    monkeypatch.setenv("NETCUP_PROTECTED_SERVERS", "my-host")
     with pytest.raises(ValueError, match="v<digits>"):
         explore_mod.netcup_scp_client.protected_server_policy()
 
@@ -159,8 +159,8 @@ def test_login_offers_v_named_servers_and_persists_mode_0600(
 
     assert explore_mod.cmd_login(types.SimpleNamespace()) == 0
     content = env_path.read_text()
-    assert "NETCUP_SCP_API_PROTECTED_SERVERS=v2202503209318326780" in content
-    assert "NETCUP_SCP_API_PROTECTED_SERVER_IDS=42" in content
+    assert "NETCUP_PROTECTED_SERVERS=v2202503209318326780" in content
+    assert "NETCUP_PROTECTED_SERVER_IDS=42" in content
     assert env_path.stat().st_mode & 0o777 == 0o600
     out = capsys.readouterr().out
     assert "friendly-name" not in out
@@ -906,6 +906,104 @@ def test_cmd_snapshots_create_with_explicit_name(explore_mod, fake_client):
     ]
 
 
+def test_cmd_snapshots_revert_dry_run_only_reads_snapshot_list(explore_mod, fake_client, capsys):
+    snapshot = {"name": "before-live-test", "state": "SHUTOFF"}
+    client = fake_client(get_responses=[[snapshot]], allow=("get",))
+    pal = explore_mod._Palette(enabled=False)
+    explore_mod.cmd_snapshots(
+        client,
+        _ns(server_id=804027, action="revert", snapshot_name=snapshot["name"], dry_run=True, yes=False),
+        pal,
+    )
+    assert client.calls == [("get", "/api/v1/servers/804027/snapshots", None)]
+    assert "would revert server 804027" in capsys.readouterr().out
+
+
+def test_cmd_snapshots_revert_posts_confirmed_task_after_active_task_checks(explore_mod, fake_client):
+    snapshot = {"name": "restore / baseline", "state": "SHUTOFF"}
+    task_uuid = "3a27fe8e-e747-4f3b-80b0-f930c0d0db3f"
+    client = fake_client(
+        get_responses=[[snapshot], [], [], []],
+        post_responses=[{"uuid": task_uuid, "state": "PENDING"}],
+        allow=("get", "post"),
+    )
+    pal = explore_mod._Palette(enabled=False)
+    explore_mod.cmd_snapshots(
+        client,
+        _ns(server_id=804027, action="revert", snapshot_name=snapshot["name"], dry_run=False, yes=True),
+        pal,
+    )
+    assert client.calls == [
+        ("get", "/api/v1/servers/804027/snapshots", None),
+        ("get", "/api/v1/tasks", {"serverId": 804027, "state": "PENDING"}),
+        ("get", "/api/v1/tasks", {"serverId": 804027, "state": "RUNNING"}),
+        ("get", "/api/v1/tasks", {"serverId": 804027, "state": "WAITING_FOR_CANCEL"}),
+        ("post", "/api/v1/servers/804027/snapshots/restore%20%2F%20baseline/revert", None),
+    ]
+
+
+def test_cmd_snapshots_revert_refuses_active_task_before_post(explore_mod, fake_client):
+    snapshot = {"name": "before-live-test", "state": "SHUTOFF"}
+    client = fake_client(
+        get_responses=[
+            [snapshot],
+            [],
+            [{"uuid": "3a27fe8e-e747-4f3b-80b0-f930c0d0db3f", "name": "power cycle", "state": "RUNNING"}],
+        ],
+        allow=("get", "post"),
+    )
+    pal = explore_mod._Palette(enabled=False)
+    with pytest.raises(CliFailure, match="still RUNNING"):
+        explore_mod.cmd_snapshots(
+            client,
+            _ns(server_id=804027, action="revert", snapshot_name=snapshot["name"], dry_run=False, yes=True),
+            pal,
+        )
+    assert [call[0] for call in client.calls] == ["get", "get", "get"]
+
+
+def test_cmd_snapshots_revert_declined_confirmation_never_posts(explore_mod, fake_client, monkeypatch):
+    monkeypatch.setattr("builtins.input", lambda *args: "n")
+    snapshot = {"name": "before-live-test", "state": "SHUTOFF"}
+    client = fake_client(get_responses=[[snapshot], [], [], []], allow=("get",))
+    pal = explore_mod._Palette(enabled=False)
+    explore_mod.cmd_snapshots(
+        client,
+        _ns(server_id=1, action="revert", snapshot_name=snapshot["name"], dry_run=False, yes=False),
+        pal,
+    )
+    assert [call[0] for call in client.calls] == ["get", "get", "get", "get"]
+
+
+def test_cmd_snapshots_revert_refuses_missing_or_ambiguous_name(explore_mod, fake_client):
+    pal = explore_mod._Palette(enabled=False)
+    missing = fake_client(get_responses=[[]], allow=("get",))
+    with pytest.raises(CliFailure, match="no snapshot named"):
+        explore_mod.cmd_snapshots(
+            missing,
+            _ns(server_id=1, action="revert", snapshot_name="missing", dry_run=False, yes=True),
+            pal,
+        )
+    assert missing.calls == [("get", "/api/v1/servers/1/snapshots", None)]
+
+    duplicate = fake_client(
+        get_responses=[
+            [
+                {"name": "same", "uuid": "one"},
+                {"name": "same", "uuid": "two"},
+            ]
+        ],
+        allow=("get",),
+    )
+    with pytest.raises(CliFailure, match="refusing to pick one"):
+        explore_mod.cmd_snapshots(
+            duplicate,
+            _ns(server_id=1, action="revert", snapshot_name="same", dry_run=False, yes=True),
+            pal,
+        )
+    assert duplicate.calls == [("get", "/api/v1/servers/1/snapshots", None)]
+
+
 @pytest.mark.parametrize(
     "command,args",
     [
@@ -914,6 +1012,7 @@ def test_cmd_snapshots_create_with_explicit_name(explore_mod, fake_client):
                      "change_boot_device_to_cdrom": False, "yes": True}),
         ("rescue", {"server_id": 1, "action": "deactivate", "yes": True}),
         ("snapshot", {"server_id": 1, "action": "create", "name": "before", "yes": True}),
+        ("snapshot", {"server_id": 1, "action": "revert", "snapshot_name": "before", "dry_run": False, "yes": True}),
         ("firewall", {"server_id": 1, "mac": "aa:bb:cc:dd:ee:ff", "action": "set",
                        "consistency_check": False, "copied_policy_ids": [],
                        "user_policy_ids": [], "active": True, "yes": True}),
@@ -923,7 +1022,7 @@ def test_cmd_snapshots_create_with_explicit_name(explore_mod, fake_client):
 def test_protected_server_blocks_every_server_mutation_before_request(
     explore_mod, fake_client, monkeypatch, command, args
 ):
-    monkeypatch.setenv("NETCUP_SCP_API_PROTECTED_SERVERS", "v2202503209318326780")
+    monkeypatch.setenv("NETCUP_PROTECTED_SERVERS", "v2202503209318326780")
     client = fake_client(get_responses=[{"id": 1, "name": "v2202503209318326780"}])
     pal = explore_mod._Palette(enabled=False)
     dispatch = {
@@ -941,7 +1040,7 @@ def test_protected_server_blocks_every_server_mutation_before_request(
 
 
 def test_protected_task_cancel_requires_and_verifies_server(explore_mod, fake_client, monkeypatch):
-    monkeypatch.setenv("NETCUP_SCP_API_PROTECTED_SERVERS", "v2202503209318326780")
+    monkeypatch.setenv("NETCUP_PROTECTED_SERVERS", "v2202503209318326780")
     pal = explore_mod._Palette(enabled=False)
     missing_server = fake_client(allow=())
     with pytest.raises(CliFailure, match="requires --server-id"):
@@ -1193,7 +1292,7 @@ def test_subcommand_help_separates_actions_from_options(explore_mod, monkeypatch
     assert explore_mod.main(["snapshots", "--help"]) == 0
     out = capsys.readouterr().out
     assert "ACTIONS:" in out
-    assert "{create,dryrun,delete}" in out
+    assert "{create,dryrun,delete,revert}" in out
     assert "--create" not in out
     assert "--yes" in out
 

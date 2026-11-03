@@ -1,0 +1,64 @@
+From 884b05ff7895488906638f275458ce27fa78ea0d Mon Sep 17 00:00:00 2001
+From: TrueNAS Patch Series <patchseries@vbpub.invalid>
+Date: Fri, 30 Oct 2026 00:00:00 +0000
+Subject: [PATCH] Expose QEMU TCG as a non-KVM virtualization backend
+
+Report the QEMU TCG backend only when its architecture-specific system binary is executable.
+
+Change-Id: tcg-virtualization-api
+Capability: tcg-virtualization
+Role: enable
+Risk: medium
+Requires: none
+Forwarded: not-needed
+---
+ middlewared/plugins/vm/info.py | 11 ++++++-----
+ 1 file changed, 6 insertions(+), 5 deletions(-)
+
+diff --git a/middlewared/plugins/vm/info.py b/middlewared/plugins/vm/info.py
+index 13c8cfde2089d3e0ecf6d0107e5f5b6ead725fb6..23015253a7078ff7f56d115da2ef0c011ea4610b 100644
+--- a/middlewared/plugins/vm/info.py
++++ b/middlewared/plugins/vm/info.py
+@@ -2,6 +2,7 @@ import os
+ import re
+ 
+ from truenas_pylibvirt.utils import kvm_supported
++from .virtualization_support import virtualization_backend
+ from truenas_pylibvirt.utils.cpu import get_cpu_model_choices
+ from truenas_pylicensed.features import LicenseFeature
+ 
+@@ -27,7 +28,7 @@ class VMService(Service):
+         """
+         Returns "true" if system supports virtualization, "false" otherwise
+         """
+-        return kvm_supported()
++        return virtualization_backend() is not None
+ 
+     @private
+     async def license_active(self):
+@@ -41,9 +42,10 @@ class VMService(Service):
+         """
+         Retrieve details if virtualization is supported on the system and in case why it's not supported if it isn't.
+         """
++        backend = virtualization_backend()
+         return {
+-            'supported': kvm_supported(),
+-            'error': None if kvm_supported() else 'Your CPU does not support KVM extensions',
++            'supported': backend is not None,
++            'error': None if backend else 'No KVM or QEMU TCG VM backend is available',
+         }
+ 
+     @api_method(VMMaximumSupportedVcpusArgs, VMMaximumSupportedVcpusResult, roles=['VM_READ'])
+@@ -64,8 +66,7 @@ class VMService(Service):
+             'amd_rvi': False,
+             'amd_asids': False,
+         }
+-        supports_vm = await self.middleware.call('vm.supports_virtualization')
+-        if not supports_vm:
++        if not kvm_supported():
+             return flags
+ 
+         cp = await run(['lscpu'], check=False)
+-- 
+2.55.0
+

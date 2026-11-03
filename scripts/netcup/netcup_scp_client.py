@@ -194,12 +194,14 @@ def load_env_file() -> None:
 # --- local protected-server policy -----------------------------------------
 
 PROTECTED_SERVER_NAME_RE = re.compile(r"^v[0-9]+$")
-PROTECTED_SERVER_NAMES_ENV = "NETCUP_SCP_API_PROTECTED_SERVERS"
-PROTECTED_SERVER_IDS_ENV = "NETCUP_SCP_API_PROTECTED_SERVER_IDS"
+PROTECTED_SERVER_NAMES_ENV = "NETCUP_PROTECTED_SERVERS"
+PROTECTED_SERVER_IDS_ENV = "NETCUP_PROTECTED_SERVER_IDS"
+LEGACY_PROTECTED_SERVER_NAMES_ENV = "NETCUP_SCP_API_PROTECTED_SERVERS"
+LEGACY_PROTECTED_SERVER_IDS_ENV = "NETCUP_SCP_API_PROTECTED_SERVER_IDS"
 
 
 class ProtectedServerError(RuntimeError):
-    """A local safety policy refuses or cannot safely authorize a mutation."""
+    """A local safety policy refuses or cannot authorize an automated operation."""
 
 
 def is_protectable_server_name(value: Any) -> bool:
@@ -238,11 +240,23 @@ def _parse_protected_csv(raw: str, *, kind: str) -> List[str]:
 
 
 def protected_server_policy() -> Tuple[Set[str], Set[int]]:
-    """Read and validate the local protected-server denylist.
+    """Read and validate the shared local protected-server policy.
 
     An empty policy is disabled.  A non-empty policy is deliberately strict:
-    configuration errors are raised before a command can reach the API.
+    configuration errors are raised before an automated server operation can
+    proceed.
     """
+    legacy_values = [
+        name
+        for name in (LEGACY_PROTECTED_SERVER_NAMES_ENV, LEGACY_PROTECTED_SERVER_IDS_ENV)
+        if os.environ.get(name, "").strip()
+    ]
+    if legacy_values:
+        raise ValueError(
+            "legacy protected-server setting(s) are no longer read: "
+            f"{', '.join(legacy_values)}; migrate them to "
+            f"{PROTECTED_SERVER_NAMES_ENV} and {PROTECTED_SERVER_IDS_ENV}"
+        )
     names = set(_parse_protected_csv(
         os.environ.get(PROTECTED_SERVER_NAMES_ENV, ""),
         kind="protected server names",
@@ -280,20 +294,21 @@ def write_protected_server_policy(path: Path, names: List[str], ids: List[int]) 
     })
 
 
-def assert_server_mutation_allowed(server_id: Any, server_name: Any, operation: str) -> None:
-    """Refuse a mutation targeting a protected or indeterminate server.
+def assert_server_operation_allowed(server_id: Any, server_name: Any, operation: str) -> None:
+    """Refuse an automated operation targeting a protected or indeterminate server.
 
     The ID companion set is authoritative for servers selected by the login
     wizard, so a rename remains protected.  When names are configured without
     a matching ID, a missing/malformed response name is indeterminate and is
-    refused rather than silently treated as an unprotected server.
+    refused rather than silently treated as an unprotected server. API and UI
+    automation can share this guard; manual SCP website actions cannot.
     """
     names, ids = protected_server_policy()
     if not names and not ids:
         return
     if not isinstance(server_id, int) or isinstance(server_id, bool) or server_id <= 0:
         raise ProtectedServerError(
-            f"refusing {operation}: API returned an invalid server ID while the local protected-server policy is active"
+            f"refusing {operation}: server record has an invalid server ID while the local protected-server policy is active"
         )
     if server_id in ids:
         shown_name = server_name if isinstance(server_name, str) and server_name else "<unnamed>"

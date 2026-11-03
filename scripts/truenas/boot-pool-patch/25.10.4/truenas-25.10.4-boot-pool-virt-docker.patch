@@ -1,0 +1,246 @@
+diff --git a/usr/lib/python3/dist-packages/middlewared/plugins/docker/backup_to_pool.py b/usr/lib/python3/dist-packages/middlewared/plugins/docker/backup_to_pool.py
+index a735c96..8057c16 100644
+--- a/usr/lib/python3/dist-packages/middlewared/plugins/docker/backup_to_pool.py
++++ b/usr/lib/python3/dist-packages/middlewared/plugins/docker/backup_to_pool.py
+@@ -35,7 +35,7 @@ class DockerService(Service):
+         if target_pool == docker_config['pool']:
+             verrors.add('target_pool', 'Target pool cannot be the same as the current Docker pool')
+ 
+-        target_root_ds = await self.middleware.call('pool.dataset.query', [['id', '=', target_pool]], {
++        target_root_ds = await self.middleware.call('zfs.dataset.query', [['id', '=', target_pool]], {
+             'extra': {
+                 'retrieve_children': False,
+                 'properties': ['encryption', 'keystatus', 'mountpoint', 'keyformat', 'encryptionroot'],
+diff --git a/usr/lib/python3/dist-packages/middlewared/plugins/docker/fs_manage.py b/usr/lib/python3/dist-packages/middlewared/plugins/docker/fs_manage.py
+index 714c69f..b2c3782 100644
+--- a/usr/lib/python3/dist-packages/middlewared/plugins/docker/fs_manage.py
++++ b/usr/lib/python3/dist-packages/middlewared/plugins/docker/fs_manage.py
+@@ -62,7 +62,7 @@ class DockerFilesystemManageService(Service):
+                 docker_ds, {
+                     'properties': {
+                         'mountpoint': {
+-                            'value': docker_dataset_custom_props(docker_ds.split('/')[-1])['mountpoint']
++                            'value': docker_dataset_custom_props(docker_ds)['mountpoint']
+                         },
+                     },
+                 }
+@@ -79,9 +79,6 @@ class DockerFilesystemManageService(Service):
+                 return False
+             raise
+ 
+-        if fs_details['source'].startswith('boot-pool/'):
+-            return False
+-
+         if dataset_to_check:
+             return fs_details['source'] == dataset_to_check
+ 
+diff --git a/usr/lib/python3/dist-packages/middlewared/plugins/docker/migrate.py b/usr/lib/python3/dist-packages/middlewared/plugins/docker/migrate.py
+index 2da64ae..f6fda8d 100644
+--- a/usr/lib/python3/dist-packages/middlewared/plugins/docker/migrate.py
++++ b/usr/lib/python3/dist-packages/middlewared/plugins/docker/migrate.py
+@@ -3,7 +3,7 @@ from datetime import datetime
+ 
+ from middlewared.service import CallError, private, Service
+ 
+-from .state_utils import DatasetDefaults, Status
++from .state_utils import DatasetDefaults, Status, docker_dataset_custom_props
+ from .utils import applications_ds_name, MIGRATION_NAMING_SCHEMA
+ 
+ 
+@@ -25,11 +25,11 @@ class DockerService(Service):
+ 
+         try:
+             job.set_progress(40, f'Replicating datasets from {old_config["pool"]!r} to {new_pool!r} pool')
++            new_ds = applications_ds_name(config['pool'])
++            create_props = DatasetDefaults.create_time_props(os.path.basename(new_ds))
++            create_props.update(docker_dataset_custom_props(new_ds))
+             await self.middleware.call('zfs.dataset.create', {
+-                'name': applications_ds_name(config['pool']), 'type': 'FILESYSTEM',
+-                'properties': DatasetDefaults.create_time_props(
+-                    os.path.basename(applications_ds_name(config['pool']))
+-                ),
++                'name': new_ds, 'type': 'FILESYSTEM', 'properties': create_props,
+             })
+             await (await self.middleware.call('docker.fs_manage.umount')).wait()
+ 
+diff --git a/usr/lib/python3/dist-packages/middlewared/plugins/docker/state_setup.py b/usr/lib/python3/dist-packages/middlewared/plugins/docker/state_setup.py
+index 651d3c0..3615c71 100644
+--- a/usr/lib/python3/dist-packages/middlewared/plugins/docker/state_setup.py
++++ b/usr/lib/python3/dist-packages/middlewared/plugins/docker/state_setup.py
+@@ -9,7 +9,8 @@ from middlewared.service import CallError, private, Service
+ from middlewared.utils.interface import wait_for_default_interface_link_state_up
+ 
+ from .state_utils import (
+-    DatasetDefaults, DOCKER_DATASET_NAME, docker_datasets, IX_APPS_MOUNT_PATH, missing_required_datasets,
++    DatasetDefaults, DOCKER_DATASET_NAME, docker_dataset_custom_props, docker_datasets, IX_APPS_MOUNT_PATH,
++    missing_required_datasets,
+ )
+ 
+ 
+@@ -108,10 +109,12 @@ class DockerSetupService(Service):
+                     )
+             else:
+                 self.move_conflicting_dir(dataset_name)
++                create_props = DatasetDefaults.create_time_props(os.path.basename(dataset_name))
++                if dataset_name == docker_ds:
++                    create_props.update(docker_dataset_custom_props(dataset_name))
++
+                 self.middleware.call_sync('zfs.dataset.create', {
+-                    'name': dataset_name, 'type': 'FILESYSTEM', 'properties': DatasetDefaults.create_time_props(
+-                        os.path.basename(dataset_name)
+-                    ),
++                    'name': dataset_name, 'type': 'FILESYSTEM', 'properties': create_props,
+                 })
+ 
+     @private
+diff --git a/usr/lib/python3/dist-packages/middlewared/plugins/docker/state_utils.py b/usr/lib/python3/dist-packages/middlewared/plugins/docker/state_utils.py
+index 81ed20c..7c4d105 100644
+--- a/usr/lib/python3/dist-packages/middlewared/plugins/docker/state_utils.py
++++ b/usr/lib/python3/dist-packages/middlewared/plugins/docker/state_utils.py
+@@ -4,12 +4,15 @@ import enum
+ import os
+ import typing
+ 
++from middlewared.utils import BOOT_POOL_NAME_VALID
++
+ 
+ APPS_STATUS: collections.namedtuple = collections.namedtuple('Status', ['status', 'description'])
+ CATALOG_DATASET_NAME: str = 'truenas_catalog'
+ DOCKER_DATASET_NAME: str = 'ix-apps'
+ IX_APPS_DIR_NAME = '.ix-apps'
+ IX_APPS_MOUNT_PATH: str = os.path.join('/mnt', IX_APPS_DIR_NAME)
++IX_APPS_DEFAULT_MOUNTPOINT_PROP: str = os.path.join('/', IX_APPS_DIR_NAME)
+ 
+ 
+ @dataclasses.dataclass(slots=True, frozen=True)
+@@ -29,7 +32,7 @@ class DatasetDefaults:
+     dedup: DatasetProp = DatasetProp('off', False)
+     encryption: DatasetProp = DatasetProp('off', True, DOCKER_DATASET_NAME)
+     exec: DatasetProp = DatasetProp('on', False)
+-    mountpoint: DatasetProp = DatasetProp(f'/{IX_APPS_DIR_NAME}', True, DOCKER_DATASET_NAME)
++    mountpoint: DatasetProp = DatasetProp(IX_APPS_DEFAULT_MOUNTPOINT_PROP, True, DOCKER_DATASET_NAME)
+     normalization: DatasetProp = DatasetProp('none', True)
+     overlay: DatasetProp = DatasetProp('on', False)
+     setuid: DatasetProp = DatasetProp('on', False)
+@@ -105,14 +108,22 @@ def docker_datasets(docker_ds: str) -> typing.List[str]:
+     ]
+ 
+ 
++def docker_dataset_mountpoint_prop(ds: str) -> str:
++    pool = ds.split('/', 1)[0] if '/' in ds else None
++    if pool in BOOT_POOL_NAME_VALID:
++        return IX_APPS_MOUNT_PATH
++
++    return IX_APPS_DEFAULT_MOUNTPOINT_PROP
++
++
+ def docker_dataset_custom_props(ds: str) -> typing.Dict:
+     props = {
+         'ix-apps': {
+             'encryption': 'off',
+-            'mountpoint': f'/{IX_APPS_DIR_NAME}',
++            'mountpoint': docker_dataset_mountpoint_prop(ds),
+         },
+     }
+-    return props.get(ds, dict())
++    return props.get(os.path.basename(ds), dict())
+ 
+ 
+ def docker_dataset_update_props(props: dict) -> typing.Dict[str, str]:
+diff --git a/usr/lib/python3/dist-packages/middlewared/plugins/docker/update.py b/usr/lib/python3/dist-packages/middlewared/plugins/docker/update.py
+index a91eb33..92289c7 100644
+--- a/usr/lib/python3/dist-packages/middlewared/plugins/docker/update.py
++++ b/usr/lib/python3/dist-packages/middlewared/plugins/docker/update.py
+@@ -58,6 +58,26 @@ class DockerService(ConfigService):
+ 
+         return can_run_apps
+ 
++    @private
++    async def pool_root_dataset_encryption_info(self, pool):
++        datasets = await self.middleware.call(
++            'zfs.dataset.query', [['id', '=', pool]], {
++                'extra': {
++                    'retrieve_children': False,
++                    'properties': ['encryption', 'keystatus', 'keyformat'],
++                }
++            }
++        )
++        if not datasets:
++            raise CallError(f'{pool!r} pool not found.')
++
++        dataset = datasets[0]
++        key_format = dataset['properties']['keyformat']['value']
++        return {
++            'locked': dataset['encrypted'] and not dataset['key_loaded'],
++            'key_format': None if key_format == 'none' else key_format.upper(),
++        }
++
+     @private
+     async def validate_data(self, old_config, config, schema='docker_update'):
+         verrors = ValidationErrors()
+@@ -143,12 +163,8 @@ class DockerService(ConfigService):
+                     )
+ 
+                 # Now let's add some validation for destination
+-                destination_root_ds = await self.middleware.call(
+-                    'pool.dataset.get_instance_quick', config['pool'], {
+-                        'encryption': True,
+-                    }
+-                )
+-                if destination_root_ds['key_format']['value'] == 'PASSPHRASE':
++                destination_root_ds = await self.pool_root_dataset_encryption_info(config['pool'])
++                if destination_root_ds['key_format'] == 'PASSPHRASE':
+                     verrors.add(
+                         f'{schema}.migrate_applications',
+                         f'{ix_apps_ds[0]["id"]!r} can only be migrated to a destination pool '
+diff --git a/usr/lib/python3/dist-packages/middlewared/plugins/virt/global.py b/usr/lib/python3/dist-packages/middlewared/plugins/virt/global.py
+index 74dbacf..5c53ab3 100644
+--- a/usr/lib/python3/dist-packages/middlewared/plugins/virt/global.py
++++ b/usr/lib/python3/dist-packages/middlewared/plugins/virt/global.py
+@@ -20,7 +20,7 @@ from middlewared.api.current import (
+ from middlewared.service import job, private
+ from middlewared.service import ConfigService, ValidationErrors
+ from middlewared.service_exception import CallError
+-from middlewared.utils import run, BOOT_POOL_NAME_VALID
++from middlewared.utils import run
+ 
+ from .utils import (
+     VirtGlobalStatus, incus_call, VNC_PASSWORD_DIR, TRUENAS_STORAGE_PROP_STR, INCUS_BRIDGE, INCUS_STORAGE
+@@ -229,19 +229,31 @@ class VirtGlobalService(ConfigService):
+         """
+         pools = {POOL_DISABLED: '[Disabled]'}
+         for p in (await self.middleware.call('zfs.pool.query_imported_fast')).values():
+-            # Do not show boot pools or pools with spaces in their name
+             # Incus is not gracefully able to handle pools which have spaces in their names
+             # https://ixsystems.atlassian.net/browse/NAS-134244
+-            if p['name'] in BOOT_POOL_NAME_VALID or ' ' in p['name']:
++            if ' ' in p['name']:
+                 continue
+ 
+-            ds = await self.middleware.call(
+-                'pool.dataset.get_instance_quick', p['name'], {'encryption': True},
+-            )
+-            if not ds['locked']:
++            if await self.pool_unlocked(p['name']):
+                 pools[p['name']] = p['name']
+         return pools
+ 
++    @private
++    async def pool_unlocked(self, pool_name):
++        datasets = await self.middleware.call(
++            'zfs.dataset.query', [['id', '=', pool_name]], {
++                'extra': {
++                    'retrieve_children': False,
++                    'properties': ['encryption', 'keystatus'],
++                }
++            }
++        )
++        if not datasets:
++            return False
++
++        ds = datasets[0]
++        return not (ds['encrypted'] and not ds['key_loaded'])
++
+     @private
+     async def internal_interfaces(self):
+         return [INCUS_BRIDGE]

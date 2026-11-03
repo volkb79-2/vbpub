@@ -1,0 +1,24 @@
+--- a/middlewared/plugins/pool_/import_pool.py
++++ b/middlewared/plugins/pool_/import_pool.py
+@@ -23,6 +23,7 @@
+ from middlewared.utils.filesystem import attrs as fs_attrs
+ from middlewared.utils.zfs import query_imported_fast_impl
+ 
++from .boot_pool_mount import mount_boot_pool_user_data
+ from .utils import ZPOOL_CACHE_FILE
+ 
+ 
+@@ -659,6 +660,13 @@
+ 
+         # TODO: we need to fix this. There is 0 reason to do all this stuff
+         # and block the entire boot-up process.
++        # boot-pool is not registered in storage.volume, so mount its opted-in
++        # user-data namespace explicitly after normal data-pool imports.
++        try:
++            mount_boot_pool_user_data(self)
++        except Exception:
++            self.logger.error('Unexpected error mounting boot-pool user-data datasets', exc_info=True)
++
+         self.logger.debug('Calling pool.post_import')
+         self.middleware.call_hook_sync('pool.post_import', None)
+         self.logger.debug('Finished calling pool.post_import')

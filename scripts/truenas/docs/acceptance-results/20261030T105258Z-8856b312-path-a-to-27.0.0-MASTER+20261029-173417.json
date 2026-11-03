@@ -1,0 +1,31 @@
+{
+  "completed_at_utc": "2026-10-30T10:53:02+00:00",
+  "error": "provider CLI did not return valid JSON in /workspaces/vbpub/.worktrees/truenas-restore-iso/scripts/truenas/boot-pool-patch/artifacts/acceptance-runs/20261030T105258Z-8856b312/provider-revert.json: Expecting value: line 1 column 2 (char 1)",
+  "from_source": "tn-v27rc1-path-a-patched-20261030",
+  "from_version": "27.0.0-RC.1",
+  "official_update": {
+    "checksum": "e75221fc2170b37c1969ab73d2ef56c895bbe1eb32e3558db26523656089a6c2",
+    "filename": "TrueNAS-27.0.0-MASTER+20261029-173417.update",
+    "filesize": 2305646592,
+    "profile": "DEVELOPER",
+    "train": "TrueNAS-27-Nightlies",
+    "version": "27.0.0-MASTER+20261029-173417"
+  },
+  "patched_target": "none",
+  "restore_snapshot": "tn-v27rc1-path-a-patched-20261030",
+  "result": "FAIL",
+  "result_file": "scripts/truenas/docs/acceptance-results/20261030T105258Z-8856b312-path-a-to-27.0.0-MASTER+20261029-173417.json",
+  "run_directory": "scripts/truenas/boot-pool-patch/artifacts/acceptance-runs/20261030T105258Z-8856b312",
+  "run_id": "20261030T105258Z-8856b312",
+  "schema_version": 1,
+  "stage_results": [],
+  "start_state": "path-a",
+  "started_at_utc": "2026-10-30T10:52:58+00:00",
+  "steps": [
+    "plant",
+    "update",
+    "verify"
+  ],
+  "survival_state_directory": "scripts/truenas/boot-pool-patch/artifacts/.update-survival-20261030T105258Z-8856b312",
+  "to_version": "27.0.0-MASTER+20261029-173417"
+}

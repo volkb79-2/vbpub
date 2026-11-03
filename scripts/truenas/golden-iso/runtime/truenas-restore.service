@@ -1,0 +1,18 @@
+[Unit]
+Description=Unattended TrueNAS whole-disk restore
+After=local-fs.target network.target
+Wants=network.target
+ConditionPathIsMountPoint=/run/live/medium
+ConditionPathExists=/run/live/medium/truenas-restore/manifest.json
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/lib/truenas-unattended-restore/truenas-restore.py
+StandardOutput=journal+console
+StandardError=journal+console
+TimeoutStartSec=infinity
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

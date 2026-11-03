@@ -111,9 +111,19 @@ def _check_against_schema(schema_name, payload):
     schema = SCHEMAS[schema_name]
     assert set(schema.get("required", [])) <= set(payload), "required field missing"
     assert set(payload) <= set(schema["properties"]), "field not in the schema"
+    python_types = {
+        "string": str,
+        "boolean": bool,
+        "integer": int,
+        "number": (int, float),
+        "object": dict,
+        "array": list,
+        "null": type(None),
+    }
     for key, value in payload.items():
         wanted = schema["properties"][key]["type"]
-        assert isinstance(value, {"string": str, "boolean": bool}[wanted])
+        wanted_types = wanted if isinstance(wanted, list) else [wanted]
+        assert isinstance(value, tuple(python_types[item] for item in wanted_types))
         if "maxLength" in schema["properties"][key]:
             assert len(value) <= schema["properties"][key]["maxLength"]
 
@@ -451,7 +461,7 @@ def test_boot_order_set_needs_consent(explore_mod, tmp_path, monkeypatch, capsys
 
 
 def test_boot_order_set_honours_the_protected_server_guard(explore_mod, fake_client, monkeypatch):
-    monkeypatch.setenv("NETCUP_SCP_API_PROTECTED_SERVERS", "v2202503209318326780")
+    monkeypatch.setenv("NETCUP_PROTECTED_SERVERS", "v2202503209318326780")
     client = fake_client(get_responses=[{"id": 1, "name": "v2202503209318326780"}], allow=("get", "patch"))
     with pytest.raises(explore_mod.netcup_scp_client.ProtectedServerError):
         explore_mod.cmd_boot_order(client, _ns(server_id=1, action="set", order="HDD", yes=True), _pal(explore_mod))

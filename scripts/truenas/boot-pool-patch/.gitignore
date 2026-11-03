@@ -1,0 +1,4 @@
+# Live acceptance evidence and private test credentials stay local.
+artifacts/
+__pycache__/
+*.py[cod]

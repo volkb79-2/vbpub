@@ -1,0 +1,14 @@
+schema_version = 1
+
+capabilities = [
+  "boot-pool-mount",
+  "boot-pool-user-data",
+  "container-storage",
+  "reserved-partition-pool",
+  "storage-boundary",
+  "tcg-virtualization",
+  "zvol-layout",
+]
+
+roles = ["enable", "guard", "plumbing"]
+risks = ["low", "medium", "high"]
