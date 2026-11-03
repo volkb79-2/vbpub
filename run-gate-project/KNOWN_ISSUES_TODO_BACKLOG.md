@@ -7251,3 +7251,72 @@ exists but is unmeasured.
 **Test plan.** Unit tests with the cross-repo golden fixtures from assay B208. Image check in the tester rebuild.
 
 **Order.** First of the run-gate items to ship (24.4.0), together with RG-144 and RG-145.
+
+## RG-149 — `relaxed` becomes the default `io_sync` for ephemeral lanes; `strict` and `durable` are explicit
+
+**Status:** OPEN. Severity: throughput; operator direction 2026-11-04. Filed 2026-11-03.
+
+**Problem.**
+
+- `io_sync` defaults to `strict` (no preload). Every fsync in a disposable run (pytest tmpdirs, git, sqlite, package
+  installs, assay R2 candidate clones) is paid in full, on a CoW filesystem where the data is regenerable by
+  construction.
+- fsync cost is the likely bottleneck at high worker counts with short tests (RG-146, B207).
+- Operator direction: tests and mutation campaigns on the CoW setup (worktrees, cowtree clones, R2 candidate clones, VM
+  disks) run without fsync by default. Only declared special cases keep it.
+
+**Decision record.**
+
+- **Default flips to `relaxed`** for a lane that is ephemeral and whose image carries the
+  `org.vbpub.tester.eatmydata-lib` label.
+- **A default is never an error.** If the lane is not ephemeral, or the label is missing or invalid, the effective mode
+  is `strict`, with exactly one INFO line naming the lane and the reason. The existing refusal for an explicit
+  `relaxed` (lane key or `--io-sync relaxed`) stays.
+- **`strict` and `durable` are explicit opt-ins.** `durable` stays lane-only and absolute. `--io-sync strict` is the
+  operator override on non-durable lanes.
+- Page cache survives a process or container kill; only a host crash or power loss loses unsynced data. That is
+  acceptable for disposable lanes, and is why the special-case matrix below names what needs the guarantee.
+
+**Special-case matrix.**
+
+| Lane kind | Mode | Why |
+|---|---|---|
+| IO or fsync measurement (iobench R0-R1/R2) | `durable` | the measurement is the real IO |
+| asserts durability or crash consistency (own persistence tests) | `durable` | the test is the point |
+| host-level or bare-host lane (no container, no preload possible) | `durable` (declared) | the preload mechanism does not apply; the lane says so instead of falling back silently |
+| operator wants the old behavior for one run | `strict` via `--io-sync strict` | ineligible for history (existing rule) |
+| everything else ephemeral with the label | `relaxed` (default) | |
+
+**Design.**
+
+- **Resolution order:** lane `durable` > command-line override > lane key > project default > built-in default. The
+  built-in default is `relaxed` where eligible, else `strict` plus the INFO line.
+- **History identity** stays `(lane, commit, io_sync)`. Old entries without the field keep meaning `strict`, so the flip
+  does not rewrite history. After the flip, a lane's new measurements land in the `relaxed` bucket and its trend
+  restarts there.
+- **Marking the flip.** The run record and history output carry the effective `io_sync` and whether it came from the
+  built-in default or a declaration. `history --json` gains a `default_flip` marker at the first relaxed-by-default
+  entry per lane. The CHANGES entry and README state that relaxed and strict samples are never mixed in one statistic
+  (existing rule) and that sizing bases (RG-144/RG-145 profiles) read only same-mode samples.
+- **Docs.** README and SPEC `io_sync` text changes "absent means `strict`" to the resolution order above.
+  The tester-unified image keeps installing `libeatmydata1` and the label.
+- **Declarations to add with the flip:** `durable` on the iobench lanes and on any lane that asserts crash consistency;
+  an audit of every `run-gate.toml` in the estate lists lanes to review, run as a read-only report before the release.
+
+**Acceptance.**
+
+- An ephemeral lane with the label and no `io_sync` key resolves to `relaxed` and mounts the preload read-only.
+- The same lane without the label resolves to `strict` with one INFO line and exit 0, not a refusal.
+- A non-ephemeral lane resolves to `strict` with one INFO line.
+- An explicit `relaxed` on a lane without the label still refuses.
+- A `durable` lane rejects every override, as today.
+- `--io-sync strict` runs strict and stays out of history.
+- History keeps old entries as `strict`, separates statistics by mode, and marks the first default-relaxed entry.
+- Sequence members on different modes remain excluded from aggregate measurement.
+
+**Test plan.** Resolver table tests over (lane kind, label present, override, project default). History fixture with
+pre-flip strict entries plus new relaxed entries. One tester-lane run showing `/etc/ld.so.preload` mounted and the
+`RUN_GATE_IO_SYNC` value. The measurement for the benefit is part of assay B209.
+
+**Order.** In 24.4.0 or later, after RG-146 (workers), so the worker-count work and the fsync flip are measured
+separately. Ships with the `durable` declarations in the same release.
