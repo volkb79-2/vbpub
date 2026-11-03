@@ -7613,15 +7613,15 @@
             "dry-run"
           ],
           "confirmation": false,
-          "description": "DEPRECATED alias of 'cmru installer render' (removal in cmru 7.0). Renders the configured standalone installer for one or more projects; without --output/--output-dir it prints one project's installer to stdout.",
+          "description": "DEPRECATED alias of 'cmru installer render' (removal in a later major release). Renders the configured standalone installer for one or more projects; without --output/--output-dir it prints one project's installer to stdout.",
           "group": "MODIFICATION",
           "id": null,
           "name": "get-py",
-          "summary": "DEPRECATED alias of 'cmru installer render' (removal in cmru 7.0). Renders the configured standalone installer for one or more projects; without --output/--output-dir it prints one project's installer to stdout. [mutating; dry-run]",
+          "summary": "DEPRECATED alias of 'cmru installer render' (removal in a later major release). Renders the configured standalone installer for one or more projects; without --output/--output-dir it prints one project's installer to stdout. [mutating; dry-run]",
           "synopsis": null
         }
       ],
-      "description": "DEPRECATED alias of 'installer render' (removal in cmru 7.0).",
+      "description": "DEPRECATED alias of 'installer render' (removal in a later major release).",
       "group": "MODIFICATION",
       "id": "route:entrypoint:cmru/get-py",
       "kind": "invocation",
@@ -7665,7 +7665,7 @@
       "subcommand_groups": [],
       "subcommands": [],
       "subcommands_required": false,
-      "summary": "DEPRECATED alias of 'installer render' (removal in cmru 7.0). [mutating]",
+      "summary": "DEPRECATED alias of 'installer render' (removal in a later major release). [mutating]",
       "synopsis_override": null,
       "syntax_complete": true,
       "usage_override": null

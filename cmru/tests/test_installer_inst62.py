@@ -105,7 +105,7 @@ class TestInstallerCli:
                                  "--output", str(tmp_path / "o.py")]) == 0
         captured = capsys.readouterr()
         warning = ("[WARN] 'cmru get-py' is deprecated; use 'cmru installer render' "
-                   "(removal in cmru 7.0)")
+                   "(removal in a later major release)")
         assert captured.err.splitlines().count(warning) == 1
         assert captured.err.count("deprecated") == 1
         assert "deprecated" not in captured.out

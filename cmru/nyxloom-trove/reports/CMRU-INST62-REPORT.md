@@ -1,9 +1,12 @@
 # CMRU-INST62 report: cmru 6.2 installer features
 
-Worktree `cmru-inst62` (branch from main `4670f53a6`). Backlog entry: KI-69 (FIXED).
-Commits: `7c9d5a23f` (feature, tests, docs, regenerated surface), `162f50fe4` (re-rendered
-`ciu/get.py` and `tls-edge/get.py` plus reference updates), `5bd1a557e` (KI-69). The tip also
-carries this report.
+Worktree `cmru-inst62` (branch from main `4670f53a6`; rebased 2026-11-04 onto main as
+`finish-cmru-1-20261104`). Backlog entry: KI-112 (originally drafted as KI-69, an id main
+later gave to the release-identity fix). Original commits: `7c9d5a23f` (feature, tests, docs,
+regenerated surface), `162f50fe4` (re-rendered `ciu/get.py` and `tls-edge/get.py` plus
+reference updates), `5bd1a557e` (backlog). The gate verdict below is the 2026-10-07 one, not
+a re-run on the rebased tree. The deprecated `get-py` alias now says "removal in a later major
+release" (the original text named cmru 7.0, which has shipped).
 
 ## Gate verdict (read this first)
 

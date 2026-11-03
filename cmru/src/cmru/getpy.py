@@ -2,7 +2,7 @@
 
 CLI: cmru installer render [all|project[,project...]] [--config <toml>] [--output <file>]
      cmru installer check  [project] --installer <file> [--config <toml>]
-     cmru get-py ...        (deprecated alias of ``installer render``; removal in cmru 7.0)
+     cmru get-py ...        (deprecated alias of ``installer render``; removal in a later major release)
 
 The emitted get.py is a self-contained Python 3 transactional installer that handles
 install, update, rollback, status, scope (system/user), bundled-wheel venv, SHA256 +
@@ -580,7 +580,7 @@ def render_from_config(project_name: str, config_path: Path) -> str:
 
 
 DEPRECATED_GET_PY_WARNING = (
-    "[WARN] 'cmru get-py' is deprecated; use 'cmru installer render' (removal in cmru 7.0)"
+    "[WARN] 'cmru get-py' is deprecated; use 'cmru installer render' (removal in a later major release)"
 )
 
 
@@ -674,7 +674,7 @@ def getpy_cli():
     )
     registry.register(_render_verb(
         "get-py",
-        "DEPRECATED alias of 'cmru installer render' (removal in cmru 7.0). Renders the "
+        "DEPRECATED alias of 'cmru installer render' (removal in a later major release). Renders the "
         "configured standalone installer for one or more projects; without "
         "--output/--output-dir it prints one project's installer to stdout.",
         _run_getpy_deprecated,

@@ -32,6 +32,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
      the `fix(cmru): ...` commit subject. -->
 
 - feat(cmru): check the planned CMRU release version, Run-Gate image identity, and bootstrap guide version during `cmru release --dry-run`, before allocating a candidate worktree (KI-109, KI-111).
+- feat(cmru): `cmru installer render` and `cmru installer check` (byte-for-byte drift check), `[project.installer]` `stable_dir`, `stub_launchers`, installer self-copy to `<root>/bin/<project>-installer`, and `[[project.installer.questions]]` wizard prompts with `--unattended [--answers FILE]` (KI-112, CMRU-INST62); `cmru get-py` remains as a deprecated alias of `installer render` that prints one `[WARN]`.
 - fix(cmru): stop writing an unnamed temporary copy of failed coverage-canary control output; the complete output remains in stderr and the lane log (KI-110).
 
 <!-- cmru: release history -->
