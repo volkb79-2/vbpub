@@ -1,0 +1,388 @@
+{
+ "comment": "Font files for the console-extra atlas. Paths are relative to --src-root (NOTICE.md: how the tree is produced). sha256 is of the file as shipped.",
+ "entries": [
+  {
+   "atlas_font": "font:linux-ter16x32",
+   "kind": "kernel-ter-16x32",
+   "file": "debian-13.7.0-amd64-netinst/vmlinuz",
+   "sha256": "2b2358b37674d2505350528875bb17afae2a36522a9e8a9417eaca65a7da0e08",
+   "origin": {
+    "image": "debian-13.7.0-amd64-netinst.iso",
+    "path_in_image": "/install.amd/vmlinuz",
+    "kernel": "6.12.107+deb13-amd64",
+    "licence": "GPL-2.0 (Linux kernel lib/fonts/font_ter16x32.c; the glyphs are Terminus Bold 16x32, OFL-1.1)"
+   }
+  },
+  {
+   "atlas_font": "font:terminus-8x16",
+   "kind": "psf",
+   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Uni3-Terminus16.psf.gz",
+   "sha256": "2bc51a16e2bbd3aee7463d8318935f819684579127defff2ef23f092f98c9420",
+   "origin": {
+    "package": "console-setup-linux",
+    "version": "1.242~deb13u1",
+    "url": "http://deb.debian.org/debian trixie/main amd64 (all)",
+    "path": "/usr/share/consolefonts/Uni3-Terminus16.psf.gz",
+    "licence": "OFL-1.1 (Terminus Font, (c) 2010 Dimitar Toshkov Zhekov, Reserved Font Name \"Terminus Font\"; copyright.fonts of console-setup)",
+    "used_by": "console-setup FONTFACE=Terminus FONTSIZE=8x16 (grml default)"
+   }
+  },
+  {
+   "atlas_font": "font:terminus-bold-8x16",
+   "kind": "psf",
+   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Uni3-TerminusBold16.psf.gz",
+   "sha256": "7c580d03f9ea4e0da24b1db042a4f482d0d021c1f40a5c948f51696d2fbe7fe5",
+   "origin": {
+    "package": "console-setup-linux",
+    "version": "1.242~deb13u1",
+    "url": "http://deb.debian.org/debian trixie/main amd64 (all)",
+    "path": "/usr/share/consolefonts/Uni3-TerminusBold16.psf.gz",
+    "licence": "OFL-1.1 (Terminus Font, (c) 2010 Dimitar Toshkov Zhekov, Reserved Font Name \"Terminus Font\"; copyright.fonts of console-setup)",
+    "used_by": "console-setup FONTFACE=TerminusBold 8x16"
+   }
+  },
+  {
+   "atlas_font": "font:terminus-8x14",
+   "kind": "psf",
+   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Uni3-Terminus14.psf.gz",
+   "sha256": "27381672f14435611ca9bf5d017f85da5bcf4c2f3d19b14623268c06cfd1d1da",
+   "origin": {
+    "package": "console-setup-linux",
+    "version": "1.242~deb13u1",
+    "url": "http://deb.debian.org/debian trixie/main amd64 (all)",
+    "path": "/usr/share/consolefonts/Uni3-Terminus14.psf.gz",
+    "licence": "OFL-1.1 (Terminus Font, (c) 2010 Dimitar Toshkov Zhekov, Reserved Font Name \"Terminus Font\"; copyright.fonts of console-setup)",
+    "used_by": "console-setup Terminus 8x14"
+   }
+  },
+  {
+   "atlas_font": "font:terminus-6x12",
+   "kind": "psf",
+   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Uni3-Terminus12x6.psf.gz",
+   "sha256": "d8fec3bade8da7baaf3ff7b1635fe62e2cdbc0914518bdeedb8b66b8f2ee448a",
+   "origin": {
+    "package": "console-setup-linux",
+    "version": "1.242~deb13u1",
+    "url": "http://deb.debian.org/debian trixie/main amd64 (all)",
+    "path": "/usr/share/consolefonts/Uni3-Terminus12x6.psf.gz",
+    "licence": "OFL-1.1 (Terminus Font, (c) 2010 Dimitar Toshkov Zhekov, Reserved Font Name \"Terminus Font\"; copyright.fonts of console-setup)",
+    "used_by": "console-setup Terminus 6x12"
+   }
+  },
+  {
+   "atlas_font": "font:terminus-10x18",
+   "kind": "psf",
+   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Uni3-Terminus18x10.psf.gz",
+   "sha256": "5e4f30fddf41903658003c2fb45e4bb7d870fb753000953f87ee51f46e8690b4",
+   "origin": {
+    "package": "console-setup-linux",
+    "version": "1.242~deb13u1",
+    "url": "http://deb.debian.org/debian trixie/main amd64 (all)",
+    "path": "/usr/share/consolefonts/Uni3-Terminus18x10.psf.gz",
+    "licence": "UNVERIFIED: presumably OFL-1.1 (Terminus Font) but the copyright.fonts licence block names only ter-u12, u14, u16, u20, u24, u28, u32; the u18 and u22 sizes this file derives from are not named there",
+    "used_by": "console-setup Terminus 10x18"
+   }
+  },
+  {
+   "atlas_font": "font:terminus-10x20",
+   "kind": "psf",
+   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Uni3-Terminus20x10.psf.gz",
+   "sha256": "51a4aa8a1bbff36fa7ae6b5bd905a9308a64fbf57cfb01c52fe5396a8853d27c",
+   "origin": {
+    "package": "console-setup-linux",
+    "version": "1.242~deb13u1",
+    "url": "http://deb.debian.org/debian trixie/main amd64 (all)",
+    "path": "/usr/share/consolefonts/Uni3-Terminus20x10.psf.gz",
+    "licence": "OFL-1.1 (Terminus Font, (c) 2010 Dimitar Toshkov Zhekov, Reserved Font Name \"Terminus Font\"; copyright.fonts of console-setup)",
+    "used_by": "console-setup Terminus 10x20"
+   }
+  },
+  {
+   "atlas_font": "font:terminus-11x22",
+   "kind": "psf",
+   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Uni3-Terminus22x11.psf.gz",
+   "sha256": "817a7aecd5414410e43dd41320539473b617fe217a332ba25f0f219a40011165",
+   "origin": {
+    "package": "console-setup-linux",
+    "version": "1.242~deb13u1",
+    "url": "http://deb.debian.org/debian trixie/main amd64 (all)",
+    "path": "/usr/share/consolefonts/Uni3-Terminus22x11.psf.gz",
+    "licence": "UNVERIFIED: presumably OFL-1.1 (Terminus Font) but the copyright.fonts licence block names only ter-u12, u14, u16, u20, u24, u28, u32; the u18 and u22 sizes this file derives from are not named there",
+    "used_by": "console-setup Terminus 11x22"
+   }
+  },
+  {
+   "atlas_font": "font:terminus-12x24",
+   "kind": "psf",
+   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Uni3-Terminus24x12.psf.gz",
+   "sha256": "efc268dcd69ef86e3cd5f5a0bfbf4d0e7ae618334e27198c605b7cd00315616b",
+   "origin": {
+    "package": "console-setup-linux",
+    "version": "1.242~deb13u1",
+    "url": "http://deb.debian.org/debian trixie/main amd64 (all)",
+    "path": "/usr/share/consolefonts/Uni3-Terminus24x12.psf.gz",
+    "licence": "OFL-1.1 (Terminus Font, (c) 2010 Dimitar Toshkov Zhekov, Reserved Font Name \"Terminus Font\"; copyright.fonts of console-setup)",
+    "used_by": "console-setup Terminus 12x24"
+   }
+  },
+  {
+   "atlas_font": "font:terminus-14x28",
+   "kind": "psf",
+   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Uni3-Terminus28x14.psf.gz",
+   "sha256": "cd0975a4639fdfce20a24607d458ff32d181805ed71101438f2e59c94156f799",
+   "origin": {
+    "package": "console-setup-linux",
+    "version": "1.242~deb13u1",
+    "url": "http://deb.debian.org/debian trixie/main amd64 (all)",
+    "path": "/usr/share/consolefonts/Uni3-Terminus28x14.psf.gz",
+    "licence": "OFL-1.1 (Terminus Font, (c) 2010 Dimitar Toshkov Zhekov, Reserved Font Name \"Terminus Font\"; copyright.fonts of console-setup)",
+    "used_by": "console-setup Terminus 14x28"
+   }
+  },
+  {
+   "atlas_font": "font:terminus-16x32",
+   "kind": "psf",
+   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Uni3-Terminus32x16.psf.gz",
+   "sha256": "a13bd9ced51d694bd0f9c40592dd18e747a441616ed6578d797ee8e33a2e2f69",
+   "origin": {
+    "package": "console-setup-linux",
+    "version": "1.242~deb13u1",
+    "url": "http://deb.debian.org/debian trixie/main amd64 (all)",
+    "path": "/usr/share/consolefonts/Uni3-Terminus32x16.psf.gz",
+    "licence": "OFL-1.1 (Terminus Font, (c) 2010 Dimitar Toshkov Zhekov, Reserved Font Name \"Terminus Font\"; copyright.fonts of console-setup)",
+    "used_by": "console-setup Terminus 16x32 (hidpi consoles)"
+   }
+  },
+  {
+   "atlas_font": "font:terminus-bold-12x24",
+   "kind": "psf",
+   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Uni3-TerminusBold24x12.psf.gz",
+   "sha256": "e939fdac22cd698dd1e57d29ef38e0e366f4dee632d65b794996bb4250f80e1b",
+   "origin": {
+    "package": "console-setup-linux",
+    "version": "1.242~deb13u1",
+    "url": "http://deb.debian.org/debian trixie/main amd64 (all)",
+    "path": "/usr/share/consolefonts/Uni3-TerminusBold24x12.psf.gz",
+    "licence": "OFL-1.1 (Terminus Font, (c) 2010 Dimitar Toshkov Zhekov, Reserved Font Name \"Terminus Font\"; copyright.fonts of console-setup)",
+    "used_by": "console-setup TerminusBold 12x24"
+   }
+  },
+  {
+   "atlas_font": "font:terminus-bold-16x32",
+   "kind": "psf",
+   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Uni3-TerminusBold32x16.psf.gz",
+   "sha256": "6c9390e7a8101e3600b5e007333eef482154ea21846a0ac3b17672206a5406a8",
+   "origin": {
+    "package": "console-setup-linux",
+    "version": "1.242~deb13u1",
+    "url": "http://deb.debian.org/debian trixie/main amd64 (all)",
+    "path": "/usr/share/consolefonts/Uni3-TerminusBold32x16.psf.gz",
+    "licence": "OFL-1.1 (Terminus Font, (c) 2010 Dimitar Toshkov Zhekov, Reserved Font Name \"Terminus Font\"; copyright.fonts of console-setup)",
+    "used_by": "console-setup TerminusBold 16x32"
+   },
+   "tier": "ambiguous",
+   "ambiguous_with": "font:linux-ter16x32 (108 of 110 repertoire bitmaps identical; only ` and ~ differ)"
+  },
+  {
+   "atlas_font": "font:fixed-8x13",
+   "kind": "psf",
+   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Uni3-Fixed13.psf.gz",
+   "sha256": "74b917d61759843a3df65be96a0fe4aa6978840dca437d90a044dbc7b17a68a7",
+   "origin": {
+    "package": "console-setup-linux",
+    "version": "1.242~deb13u1",
+    "url": "http://deb.debian.org/debian trixie/main amd64 (all)",
+    "path": "/usr/share/consolefonts/Uni3-Fixed13.psf.gz",
+    "licence": "public domain per console-setup copyright.fonts (misc-fixed 8x13/7x14/9x15/9x18 BDF sources; the 8x16 source carries the Sony Corp./BIZNET Poland/Bolkhovityanov permissive notice); BDF-to-size mapping inferred from the names",
+    "used_by": "console-setup FONTFACE=Fixed (the console-setup default face)"
+   }
+  },
+  {
+   "atlas_font": "font:fixed-8x14",
+   "kind": "psf",
+   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Uni3-Fixed14.psf.gz",
+   "sha256": "df034303323f2e6c396120f28571386c63fe789b7286523d3faba5eb030123ba",
+   "origin": {
+    "package": "console-setup-linux",
+    "version": "1.242~deb13u1",
+    "url": "http://deb.debian.org/debian trixie/main amd64 (all)",
+    "path": "/usr/share/consolefonts/Uni3-Fixed14.psf.gz",
+    "licence": "public domain per console-setup copyright.fonts (misc-fixed 8x13/7x14/9x15/9x18 BDF sources; the 8x16 source carries the Sony Corp./BIZNET Poland/Bolkhovityanov permissive notice); BDF-to-size mapping inferred from the names",
+    "used_by": "console-setup FONTFACE=Fixed (the console-setup default face)"
+   }
+  },
+  {
+   "atlas_font": "font:fixed-8x15",
+   "kind": "psf",
+   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Uni3-Fixed15.psf.gz",
+   "sha256": "707d0fb26c2240241b7af22ace56013812e59ce3ba4d68637af90694748232e2",
+   "origin": {
+    "package": "console-setup-linux",
+    "version": "1.242~deb13u1",
+    "url": "http://deb.debian.org/debian trixie/main amd64 (all)",
+    "path": "/usr/share/consolefonts/Uni3-Fixed15.psf.gz",
+    "licence": "public domain per console-setup copyright.fonts (misc-fixed 8x13/7x14/9x15/9x18 BDF sources; the 8x16 source carries the Sony Corp./BIZNET Poland/Bolkhovityanov permissive notice); BDF-to-size mapping inferred from the names",
+    "used_by": "console-setup FONTFACE=Fixed (the console-setup default face)"
+   }
+  },
+  {
+   "atlas_font": "font:fixed-8x16",
+   "kind": "psf",
+   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Uni3-Fixed16.psf.gz",
+   "sha256": "4e5d96fa087381e04c66c98df1411d629736ad040a957534377a93d860a4696a",
+   "origin": {
+    "package": "console-setup-linux",
+    "version": "1.242~deb13u1",
+    "url": "http://deb.debian.org/debian trixie/main amd64 (all)",
+    "path": "/usr/share/consolefonts/Uni3-Fixed16.psf.gz",
+    "licence": "public domain per console-setup copyright.fonts (misc-fixed 8x13/7x14/9x15/9x18 BDF sources; the 8x16 source carries the Sony Corp./BIZNET Poland/Bolkhovityanov permissive notice); BDF-to-size mapping inferred from the names",
+    "used_by": "console-setup FONTFACE=Fixed (the console-setup default face)"
+   },
+   "tier": "ambiguous",
+   "ambiguous_with": "font:unifont-16 (all 110 repertoire bitmaps identical; 16 of them with a different character)"
+  },
+  {
+   "atlas_font": "font:fixed-8x18",
+   "kind": "psf",
+   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Uni3-Fixed18.psf.gz",
+   "sha256": "bd1d6b7d2864c273ef3cb3cc7f26f288829eb42176672359122cb0b123ca36a1",
+   "origin": {
+    "package": "console-setup-linux",
+    "version": "1.242~deb13u1",
+    "url": "http://deb.debian.org/debian trixie/main amd64 (all)",
+    "path": "/usr/share/consolefonts/Uni3-Fixed18.psf.gz",
+    "licence": "public domain per console-setup copyright.fonts (misc-fixed 8x13/7x14/9x15/9x18 BDF sources; the 8x16 source carries the Sony Corp./BIZNET Poland/Bolkhovityanov permissive notice); BDF-to-size mapping inferred from the names",
+    "used_by": "console-setup FONTFACE=Fixed (the console-setup default face)"
+   }
+  },
+  {
+   "atlas_font": "font:csvga-8x8",
+   "kind": "psf",
+   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Lat15-VGA8.psf.gz",
+   "sha256": "6c5cf355632e12e8b91682957dc5a5ae55d7ec9247f70123c75d31c36696641d",
+   "origin": {
+    "package": "console-setup-linux",
+    "version": "1.242~deb13u1",
+    "url": "http://deb.debian.org/debian trixie/main amd64 (all)",
+    "path": "/usr/share/consolefonts/Lat15-VGA8.psf.gz",
+    "licence": "MIT/X11-style (u_vga16.bdf, (c) 2000-2001 Dmitry Bolkhovityanov; copyright.fonts of console-setup); the u_vga16 -> VGA8/14/28x16/32x16 derivation is not stated per size",
+    "used_by": "console-setup FONTFACE=VGA"
+   }
+  },
+  {
+   "atlas_font": "font:csvga-8x14",
+   "kind": "psf",
+   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Lat15-VGA14.psf.gz",
+   "sha256": "fe3e804ea8e0fbd37b2ed6b462958bf2887fa7f91fa130f9d61340923613e08a",
+   "origin": {
+    "package": "console-setup-linux",
+    "version": "1.242~deb13u1",
+    "url": "http://deb.debian.org/debian trixie/main amd64 (all)",
+    "path": "/usr/share/consolefonts/Lat15-VGA14.psf.gz",
+    "licence": "MIT/X11-style (u_vga16.bdf, (c) 2000-2001 Dmitry Bolkhovityanov; copyright.fonts of console-setup); the u_vga16 -> VGA8/14/28x16/32x16 derivation is not stated per size",
+    "used_by": "console-setup FONTFACE=VGA"
+   }
+  },
+  {
+   "atlas_font": "font:csvga-8x16",
+   "kind": "psf",
+   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Lat15-VGA16.psf.gz",
+   "sha256": "3818f6f8a805515ed24283b8fa050278af877813782b980509d22cad969634c8",
+   "origin": {
+    "package": "console-setup-linux",
+    "version": "1.242~deb13u1",
+    "url": "http://deb.debian.org/debian trixie/main amd64 (all)",
+    "path": "/usr/share/consolefonts/Lat15-VGA16.psf.gz",
+    "licence": "MIT/X11-style (u_vga16.bdf, (c) 2000-2001 Dmitry Bolkhovityanov; copyright.fonts of console-setup); the u_vga16 -> VGA8/14/28x16/32x16 derivation is not stated per size",
+    "used_by": "console-setup FONTFACE=VGA"
+   },
+   "tier": "ambiguous",
+   "ambiguous_with": "font:vga-8x16 (105 of 110 repertoire bitmaps identical)"
+  },
+  {
+   "atlas_font": "font:csvga-16x28",
+   "kind": "psf",
+   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Lat15-VGA28x16.psf.gz",
+   "sha256": "c4a73dbbe3c37a934a598500a1288f601ffa4d1343ab38a4e019969cd5ed0991",
+   "origin": {
+    "package": "console-setup-linux",
+    "version": "1.242~deb13u1",
+    "url": "http://deb.debian.org/debian trixie/main amd64 (all)",
+    "path": "/usr/share/consolefonts/Lat15-VGA28x16.psf.gz",
+    "licence": "MIT/X11-style (u_vga16.bdf, (c) 2000-2001 Dmitry Bolkhovityanov; copyright.fonts of console-setup); the u_vga16 -> VGA8/14/28x16/32x16 derivation is not stated per size",
+    "used_by": "console-setup FONTFACE=VGA"
+   }
+  },
+  {
+   "atlas_font": "font:csvga-16x32",
+   "kind": "psf",
+   "file": "console-setup-linux_1.242~deb13u1/usr/share/consolefonts/Lat15-VGA32x16.psf.gz",
+   "sha256": "1765a808e05c9b1ca88b39aef1777b5a330e83576ff6b9dadc54b0df44d0f61a",
+   "origin": {
+    "package": "console-setup-linux",
+    "version": "1.242~deb13u1",
+    "url": "http://deb.debian.org/debian trixie/main amd64 (all)",
+    "path": "/usr/share/consolefonts/Lat15-VGA32x16.psf.gz",
+    "licence": "MIT/X11-style (u_vga16.bdf, (c) 2000-2001 Dmitry Bolkhovityanov; copyright.fonts of console-setup); the u_vga16 -> VGA8/14/28x16/32x16 derivation is not stated per size",
+    "used_by": "console-setup FONTFACE=VGA"
+   }
+  },
+  {
+   "atlas_font": "font:terminus-8x16",
+   "kind": "psf",
+   "file": "grml-full-2026.09-amd64/squashfs/etc/console-setup/cached_Uni3-Terminus16.psf.gz",
+   "sha256": "2bc51a16e2bbd3aee7463d8318935f819684579127defff2ef23f092f98c9420",
+   "origin": {
+    "path": "/etc/console-setup/cached_Uni3-Terminus16.psf.gz",
+    "image": "grml-full-2026.09-amd64.iso /live/grml-full-amd64/grml-full-amd64.squashfs",
+    "note": "setupcon cache of /etc/default/console-setup FONTFACE=Terminus FONTSIZE=8x16 CODESET=Uni3; cached_setup_font.sh runs setfont on it for every vt",
+    "licence": "OFL-1.1 (Terminus Font, (c) 2010 Dimitar Toshkov Zhekov, Reserved Font Name \"Terminus Font\"; copyright.fonts of console-setup)"
+   }
+  },
+  {
+   "atlas_font": "font:vga-8x16",
+   "kind": "kernel-vga-8x16",
+   "file": "debian-13.7.0-amd64-netinst/vmlinuz",
+   "sha256": "2b2358b37674d2505350528875bb17afae2a36522a9e8a9417eaca65a7da0e08",
+   "origin": {
+    "image": "debian-13.7.0-amd64-netinst.iso",
+    "path_in_image": "/install.amd/vmlinuz",
+    "kernel": "6.12.107+deb13-amd64"
+   },
+   "same_as": "font:vga-8x16"
+  },
+  {
+   "atlas_font": "font:vga-8x16",
+   "kind": "kernel-vga-8x16",
+   "file": "grml-full-2026.09-amd64/iso/kern/vmlinuz",
+   "sha256": "5e2698f8628f2dbabd7ae6a377a925feee4dae4d62ca314cd92ec8eb88fd49a9",
+   "origin": {
+    "image": "grml-full-2026.09-amd64.iso",
+    "path_in_image": "/boot/grmlfullamd64/vmlinuz"
+   },
+   "same_as": "font:vga-8x16"
+  },
+  {
+   "atlas_font": "font:grub-unifont-16-subset",
+   "kind": "pf2",
+   "file": "debian-13.7.0-amd64-netinst/font.pf2",
+   "sha256": "556e49a42fc9c8b18a31472d2ca74c17f6159040147d2433025692617f39848c",
+   "origin": {
+    "image": "debian-13.7.0-amd64-netinst.iso",
+    "path_in_image": "/boot/grub/font.pf2"
+   },
+   "same_as": "font:unifont-16"
+  },
+  {
+   "atlas_font": "font:unifont-16",
+   "kind": "pf2",
+   "file": "grml-full-2026.09-amd64/iso/unicode.pf2",
+   "sha256": "dc6d6a18148cef2a1e2fcba91feed2642f47f85ca9eb0509485265544982d804",
+   "origin": {
+    "image": "grml-full-2026.09-amd64.iso",
+    "path_in_image": "/boot/grub/fonts/unicode.pf2"
+   },
+   "same_as": "font:unifont-16"
+  }
+ ]
+}

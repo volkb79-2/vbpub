@@ -33,6 +33,13 @@ corpus). The details below describe the learned-atlas rules (class 2) and the co
   nearest-neighbour upscales. Crisp non-integer scaling, integer scaling with an odd offset/letterbox, or a canvas of another size than the guest
   framebuffer pass it; only the evidence floor (no atlas font matches) contains those, which is a property of the atlas, not a guarantee.
   The capture path must deliver the intrinsic bitmap and the consumer must verify canvas width/height against the guest framebuffer size independently.
+* **Undone integer upscales are NOT actionable unless guarded.** The probe undoes the largest crisp k; a k-fold enlargement of a cell may be the native screen of a
+  font of cell d*cell (d | k, d >= 2) at zoom k/d (a real 16x32 Lat15-VGA screen is exactly the 2x enlargement of an 8x16 one, and its 2x browser zoom is 4x). `prepare` carries
+  k in `grid["unscaled"]` and `decode` reads it from the Extraction (no caller can forget it). For k > 1: `res["scale_unverified"] = k`, `res["scale_guard_fonts"]` lists the larger
+  fonts checked; a bitmap that any loaded font of cell d*cell draws as another character is an alias set `a`; and unless a loaded font exists for EVERY divisor d, all remaining F/H
+  cells are capped to class **`z`** (character shown, not actionable; `find_phrase`/`region`/`strict_match` refuse it; `res["scale_capped"]`). The atlas cannot establish that no larger
+  font exists, so browser-zoomed 8x16 captures are non-actionable BY DESIGN; the explicit opt-in is `strict_match(res, phrase, trust_scale=True)` (or `glyphgrid.trust_scale(res)`), which records
+  `trust_scale` and `scale_unverified` in the result.
 * An atlas bitmap labelled with two different characters is a **conflict** (ground-truth error or two glyphs that look equal): never resolved
   by majority, the cell reads UNKNOWN.
 * **Numbers are same-ISO, same-screens**: see GLYPHGRID-FINDINGS.md (leave-one-frame-out is optimistic; leave-screen-group-out is the honest figure).
@@ -68,7 +75,7 @@ gg.region(res, row0, row1, col0, col1)   # -> (text, n_bad)
 # that the screen is Latin text: accepts Cyrillic/Greek lookalikes it cannot tell apart by bitmap).
 ```
 
-Lower level: `load_image`, `probe_scale`, `detect_grid`, `extract`, `decode`, `choose_extraction`.
+Lower level: `load_image`, `probe_scale`, `detect_grid`, `extract`, `decode`, `choose_extraction`; `GlyphReader(atlas).read(frame)` for a frame sequence (see Performance).
 `detect_grid(im, hints=[(8, 16)])` restricts the search for a consumer that knows its console geometry.
 Pass `return_cells=True` for the full per-cell record (bitmap hex, fg/bg colours, evidence).
 
@@ -78,10 +85,61 @@ cells; refuses photographs/logos and anti-aliased content) -> `extract` (two-col
 minority colour, so light-on-dark, dark-on-grey and reverse video give the same bitmap; 3+ colour cells are
 `multicolor`, uniform cells are blank) -> `decode` (exact dictionary lookup).
 
+## Performance (measured 2026-10-27, 242-frame TrueNAS series, 1280x800, one core, nice 10)
+
+Per frame, `read_image`, same atlas, output BIT-IDENTICAL to the pre-optimisation code on all 242 frames (and `reference_mode()` is
+asserted identical on the 20 committed frames and on synthetic screens by `tests/test_glyphgrid_perf.py`):
+
+| | before | now (fast paths) | `GlyphReader`, few cells changed |
+|---|---|---|---|
+| median / p95 / max | 987 / 1220 / 3643 ms | 197 / 270 / 920 ms | about 20 ms (PIL image), about 30 ms from PNG; 37 ms median over the 98 incremental frames of the real series |
+| load + PNG decode | 11 | 11 | 11 (PNG input only) |
+| probe_scale | 113 | 25 | updated from the changed band only |
+| detect_grid (hinted by atlas sizes) | 530 | 89 | cached; one tiling check |
+| choose_extraction (candidate origins + cells) | 506 | 59 | changed cells only |
+| decode | 12 | 12 | 12 |
+| peak RSS | 114 MB | 87 MB | similar |
+
+What made it fast, all exact: shared transition masks between probe and grid detector; the blend test of the probe only inside the bounding box
+of candidate pixels; run removal in log steps with memcpy rolls instead of `ImageChops.offset`; banded pre-check of the integer-upscale test;
+cells extracted from ONE transposed strip per text row (cell bytes are contiguous slices, deduplicated before any per-cell Pillow call) and shared
+between the candidate origins of one frame; bit packing by translate; candidate origins scored on shared value rows (Cell objects only for the
+winner). `GLYPHGRID_REFERENCE=1` (or `with glyphgrid.reference_mode():`) selects the original code.
+
+`GlyphReader(atlas, ...)` is the canvas-change-watcher path: `read(frame)` returns the `read_image` dict plus `res["session"]`
+(`full` | `identical` | `incremental`). It reuses the grid geometry and origin of the previous frame, updates the probe numbers and colour census from the
+changed bands only (they are local), re-extracts only changed cells (and unchanged exact-tie cells, whose bg/fg depends on the frame-wide colour ranking)
+and decodes the whole screen. It falls back to the full pipeline when: first frame / other size, more than `max_dirty` (0.25) of the text rows changed,
+pixels outside the grid rows changed, the frame is an integer upscale or `resampled`, the cached tiling no longer compresses the screen (>= 12 non-blank
+cells and description length <= 0.5, the same gates as a fresh search), the new decode is not `ok`, or a changed ink cell is unknown to the atlas (stale
+phase / foreign content). Contract: the whole result dict equals a fresh `read_image` of the same frame, except `session` and `grid_report` (the latter is the
+length/contrast/candidates report of the search that established the cached geometry; an incremental frame runs no search, so it differs by design). Verified
+on all 242 frames (98 incremental, 144 full fallbacks) and on synthetic edits. Geometry is an assumption re-verified by the gates above, not a proof that a
+fresh search would pick the same tiling. The safety argument (an argument, not a proof) is that every cell is still an exact lookup, the evidence floor and
+font share are recomputed over the whole new screen, and an ink cell in a changed area that the atlas does not know sends the frame to the full pipeline, so
+a stale tiling shows up as UNKNOWN cells or the full path instead of silently producing exact cells. The "pixels outside the grid" check covers only the
+full-width bands above the first grid row and below the last one; left/right sub-cell strips inside the grid rows are not checked separately: such a change
+marks its text row as changed (the row test is full width), so the probe numbers are updated from it, and no cell contains those pixels, so no cell
+value can depend on them. `GlyphReader` instances and `reference_mode()` are not thread-safe (mutable per-sequence state / a module global).
+
+Rejected (measured on the same frames): **numpy** - the vectorised MDL step is 3x faster per call (0.25 -> 0.08 ms) but the whole frame gains about
+15-20% (detect_grid 89 -> ~60 ms), numpy is in neither the OCR image (`python3-pil` only) nor the `pwmcp-client` test extra, and an optional second path
+doubles the identity tests; on the incremental path the search does not run at all. **Hints** (`detect_grid(hints=[(8,16)])`): already applied
+automatically from the atlas font sizes (free search 643 ms -> 94 ms); a single size saves another 13 ms only, the cost is the origin refinement.
+**Pillow-native getdata/point batching** for packing: no gain over translate. **Compiled rewrite** (not built): the remaining 197 ms are (profile estimate) about 60% Pillow C
+calls (masks, crops, getcolors) that a rewrite would not speed up and about 40% pure-Python loops (MDL, extraction, decode, ~80 ms) that a C/Rust extension
+could cut to a few ms, i.e. at best 197 -> ~110 ms per cold frame, and nothing on the incremental path (already ~20 ms, bounded by PNG decode and decode()); it
+would add a wheel per platform to the sidecar and tester images and a release step. Not worth it before frames/s becomes a real requirement.
+
+`python3 bench_glyphgrid.py --series DIR [--reference | --check | --reader | --typing]` reproduces every number above.
+
 ## Font-file atlases
 
 ```
 python3 build_font_atlas.py --kernel-bzimage vmlinuz-... --pf2 unicode.pf2 --ovmf OVMF_CODE_4M.fd --out fonts.atlas.json   # also --psf/--hex/--bdf
+# installer/rescue console fonts (Debian console-setup Terminus/Fixed/VGA, kernel TER16x32, grml, Debian netinst): sha256-pinned manifest, tiers extra|ambiguous
+python3 build_font_atlas.py --manifest fonts-console-extra.manifest.json --src-root DIR --base-atlas fonts.atlas.json --report report.json --out fonts.console-extra.atlas.json
+# merge at load time: gg.Atlas.merge(base, extra); fonts.console-ambiguous.atlas.json only for targets known to show those fonts (see NOTICE.md)
 python3 verify_fonts.py --atlas fonts.atlas.json --bzimage ... --pf2 ... --ovmf ... --corpus CORPUS --series SERIES --out font-verify.json
 atlas = gg.Atlas.merge(gg.Atlas.load("fonts.atlas.json"), learned_atlas)      # font entries first, learned ones for other consoles
 ```
