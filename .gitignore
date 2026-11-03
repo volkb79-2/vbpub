@@ -49,6 +49,10 @@ scripts/debian-install/mem_mixed_bench
 # ISOs, qcow2 overlays) lives in <project>/artifacts/vm-lab, already covered by
 # the artifacts/ rule; shared downloads live in the root downloads/ rule.
 scripts/debian-install-v2/testing/.cache/
+# LEGACY (pre-artifacts/vm-lab location of credential-bearing private seed ISOs):
+# kept as a safety net against an accidental `git add -A` of leftovers; delete
+# this line once no checkout still has a testing/vm/.vm/ directory.
+scripts/debian-install-v2/testing/vm/.vm/
 
 # Distribution / packaging
 .Python

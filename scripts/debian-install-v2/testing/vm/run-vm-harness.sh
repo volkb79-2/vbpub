@@ -23,24 +23,20 @@
 # leave exited QEMU children as zombies after every disposable run.
 set -euo pipefail
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TESTING_DIR="$(cd "$HERE/.." && pwd)"
-# A fixed runner name would silently reuse whichever worktree first created
-# it. That can make a gate execute another worktree's source. Derive both
-# names from this worktree's path so concurrent gates cannot share a mounted
-# runner or image tag.
-# Include an optional alternate source in the identity.  Two projects may
-# deliberately reuse this generic VM harness from one worktree, but their
-# read-only guest input must never be silently exchanged.
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+TESTING_DIR="$(cd "$HERE/.." && pwd -P)"
 SOURCE_NAMESPACE_DIR="${MDT_VM_SOURCE_DIR:-}"
-RUNNER_FINGERPRINT="$(printf '%s\0%s' "$TESTING_DIR" "$SOURCE_NAMESPACE_DIR" | sha256sum | cut -c1-12)"
-IMAGE="debian-install-vm:$RUNNER_FINGERPRINT"
-NAME="debian-install-vm-harness-$RUNNER_FINGERPRINT"
 # In-runner mount points. The host side is derived below: the project's
-# artifacts/vm-lab (base images, runs, ssh keys) and the repo-root downloads/
-# (shared ISO/cloud-image downloads). Both are gitignored.
+# artifacts/vm-lab (or MDT_VM_STATE_DIR), the shared downloads/ folder of the
+# MAIN checkout (or MDT_DOWNLOADS_DIR), and the main checkout's staged base
+# images (read-only, only when this is a worktree).
 VM_STATE_DIR="/vm-lab"
 VM_DOWNLOADS_DIR="/downloads"
+VM_MAIN_IMAGES_DIR="/main-vm-images"
+# Layout generation: bump when the runner's mounts/env/user contract changes,
+# so a runner started by older code is refused instead of silently reused.
+RUNNER_LAYOUT="vm-lab-2"
+RUNNER_HOME="/tmp/vmlab-home"
 DOCKERFILE_SHA="$(sha256sum "$HERE/Dockerfile" | awk '{print $1}')"
 
 # A VM still consumes host CPU and host-side qcow2 I/O.  It is therefore a
@@ -69,12 +65,54 @@ die() {
 HOST_TESTING_DIR="$TESTING_DIR"
 HOST_PROJECT_DIR="${HOST_TESTING_DIR%/testing}"
 HOST_SOURCE_DIR="$HOST_PROJECT_DIR"
-# Namespace-local project and repo root (derived from this script's location);
+# Namespace-local project and repo root, derived from this script's location by
+# fixed depth (<repo>/scripts/debian-install-v2/testing/vm), physical paths.
 # vm-lab and downloads are created here so Docker never creates them root-owned.
-PROJECT_DIR="$HOST_PROJECT_DIR"
-REPO_ROOT="$(git -C "$TESTING_DIR" rev-parse --show-toplevel)" || die \
-    "cannot derive the repo root from $TESTING_DIR"
-HOST_REPO_ROOT="$REPO_ROOT"
+PROJECT_DIR="$(cd "$TESTING_DIR/.." && pwd -P)"
+REPO_ROOT="$(cd "$TESTING_DIR/../../.." && pwd -P)"
+[ "$PROJECT_DIR" = "$REPO_ROOT/scripts/debian-install-v2" ] || die \
+    "unexpected layout: $TESTING_DIR is not <repo>/scripts/debian-install-v2/testing"
+MOUNT_TABLE=""
+# Translate a cockpit-namespace path to the Docker daemon's host path through
+# the cockpit's mount table (longest prefix). From a real host shell the path
+# is already in the daemon's namespace. Fails closed when no mount contains it.
+host_path_for() {
+    local path="$1" what="$2" best_dest="" best_src="" d s prefix probe
+    if [ "$inside_container" = "0" ]; then
+        printf '%s\n' "$path"
+        return 0
+    fi
+    while IFS=$'\t' read -r d s; do
+        [ -n "$d" ] || continue
+        # Prefix match on a path-component boundary; ${d%/} is empty for the
+        # root mount, which then matches every path.
+        prefix="${d%/}"
+        probe="$path/"
+        if [ "${probe:0:$((${#prefix} + 1))}" = "$prefix/" ] \
+            && [ "${#d}" -gt "${#best_dest}" ]; then
+            best_dest="$d"
+            best_src="$s"
+        fi
+    done <<EOF
+$MOUNT_TABLE
+EOF
+    [ -n "$best_dest" ] && [ -n "$best_src" ] || {
+        echo "run-vm-harness: no Docker mount contains $what $path; refusing a namespace-wrong bind mount" >&2
+        return 1
+    }
+    case "$best_src" in
+        /*) ;;
+        *)
+            echo "run-vm-harness: Docker mount for $what $best_dest is not a physical host path ('$best_src'); refusing a namespace-wrong bind mount" >&2
+            return 1
+            ;;
+    esac
+    if [ "$best_dest" = "/" ]; then
+        printf '%s%s\n' "$best_src" "$path"
+    else
+        printf '%s%s\n' "$best_src" "${path#"$best_dest"}"
+    fi
+}
 SELF_HOSTNAME="$(cat /etc/hostname 2>/dev/null || true)"
 SELF_CONTAINER_ID=""
 inside_container=0
@@ -108,77 +146,21 @@ EOF
     [ -n "$SELF_CONTAINER_ID" ] || die \
         "cannot map cockpit hostname '$SELF_HOSTNAME' to a live Docker container; refusing a namespace-wrong bind mount"
 
-    # Find the longest Docker bind/volume mount prefix containing this
-    # namespace path.  This removes the repo-layout assumption that the
-    # cockpit mount must be exactly /workspaces/vbpub while still deriving the
-    # physical host path from Docker's authoritative mount table.
-    host_mount_src=""
-    mount_dest=""
-    while IFS=$'\t' read -r candidate_dest candidate_src; do
-        [ -n "$candidate_dest" ] || continue
-        case "$TESTING_DIR/" in
-            "$candidate_dest"/*|"$candidate_dest")
-                if [ "${#candidate_dest}" -gt "${#mount_dest}" ]; then
-                    mount_dest="$candidate_dest"
-                    host_mount_src="$candidate_src"
-                fi
-                ;;
-        esac
-    done < <(docker inspect "$SELF_CONTAINER_ID" --format \
-        '{{range .Mounts}}{{printf "%s\t%s\n" .Destination .Source}}{{end}}' 2>/dev/null) || die \
+    # Docker's authoritative mount table of this cockpit; host_path_for()
+    # resolves every namespace path (testing dir, source, vm-lab, downloads,
+    # main-checkout images) through it by longest prefix.
+    MOUNT_TABLE="$(docker inspect "$SELF_CONTAINER_ID" --format \
+        '{{range .Mounts}}{{printf "%s\t%s\n" .Destination .Source}}{{end}}' 2>/dev/null)" || die \
         "cannot inspect Docker mounts for cockpit '$SELF_CONTAINER_ID'; refusing a namespace-wrong bind mount"
-    [ -n "$mount_dest" ] && [ -n "$host_mount_src" ] || die \
-        "no Docker mount contains $TESTING_DIR; refusing a namespace-wrong bind mount"
-    case "$host_mount_src" in
-        /*) ;;
-        *) die "Docker mount for $mount_dest is not a physical host path ('$host_mount_src'); refusing a namespace-wrong bind mount" ;;
-    esac
-    if [ "$mount_dest" = "/" ]; then
-        host_suffix="$TESTING_DIR"
-    else
-        host_suffix="${TESTING_DIR#"$mount_dest"}"
-    fi
-    HOST_TESTING_DIR="$host_mount_src$host_suffix"
-    HOST_PROJECT_DIR="${HOST_TESTING_DIR%/testing}"
-    # Keep the default source bind in the same mapped host namespace. This
-    # value was initialized from the container path before the translation.
-    HOST_SOURCE_DIR="$HOST_PROJECT_DIR"
-    # Host-namespace repo root: strip the project's repo-relative path.
-    HOST_REPO_ROOT="${HOST_PROJECT_DIR%"/${PROJECT_DIR#"$REPO_ROOT"/}"}"
 
-    # MDT and future consumers can provide a project source below any of the
-    # cockpit's authoritative Docker bind mounts.  Resolve it using the same
-    # longest-prefix namespace mapping as the harness itself; never hand a
-    # container path to the daemon and never invent a host path when no mount
-    # contains it.
+    HOST_TESTING_DIR="$(host_path_for "$TESTING_DIR" "testing dir")" || exit 1
+    HOST_PROJECT_DIR="${HOST_TESTING_DIR%/testing}"
+    [ "$HOST_PROJECT_DIR" != "$HOST_TESTING_DIR" ] || die \
+        "host testing dir '$HOST_TESTING_DIR' does not end in /testing; refusing a namespace-wrong bind mount"
+    # Keep the default source bind in the same mapped host namespace.
+    HOST_SOURCE_DIR="$HOST_PROJECT_DIR"
     if [ -n "$SOURCE_NAMESPACE_DIR" ]; then
-        source_mount_src=""
-        source_mount_dest=""
-        while IFS=$'\t' read -r candidate_dest candidate_src; do
-            [ -n "$candidate_dest" ] || continue
-            case "$SOURCE_NAMESPACE_DIR/" in
-                "$candidate_dest"/*|"$candidate_dest")
-                    if [ "${#candidate_dest}" -gt "${#source_mount_dest}" ]; then
-                        source_mount_dest="$candidate_dest"
-                        source_mount_src="$candidate_src"
-                    fi
-                    ;;
-            esac
-        done < <(docker inspect "$SELF_CONTAINER_ID" --format \
-            '{{range .Mounts}}{{printf "%s\t%s\n" .Destination .Source}}{{end}}' 2>/dev/null) || die \
-            "cannot inspect Docker mounts for source '$SOURCE_NAMESPACE_DIR'; refusing a namespace-wrong bind mount"
-        [ -n "$source_mount_dest" ] && [ -n "$source_mount_src" ] || die \
-            "no Docker mount contains requested VM source $SOURCE_NAMESPACE_DIR; refusing a namespace-wrong bind mount"
-        case "$source_mount_src" in
-            /*) ;;
-            *) die "Docker mount for source $source_mount_dest is not a physical host path ('$source_mount_src'); refusing a namespace-wrong bind mount" ;;
-        esac
-        if [ "$source_mount_dest" = "/" ]; then
-            source_suffix="$SOURCE_NAMESPACE_DIR"
-        else
-            source_suffix="${SOURCE_NAMESPACE_DIR#"$source_mount_dest"}"
-        fi
-        HOST_SOURCE_DIR="$source_mount_src$source_suffix"
+        HOST_SOURCE_DIR="$(host_path_for "$SOURCE_NAMESPACE_DIR" "requested VM source")" || exit 1
     fi
 fi
 
@@ -188,8 +170,63 @@ fi
 if [ "$inside_container" = "0" ] && [ -n "$SOURCE_NAMESPACE_DIR" ]; then
     HOST_SOURCE_DIR="$SOURCE_NAMESPACE_DIR"
 fi
-HOST_VM_LAB_DIR="$HOST_PROJECT_DIR/artifacts/vm-lab"
-HOST_DOWNLOADS_DIR="$HOST_REPO_ROOT/downloads"
+
+# --- state / downloads / main-checkout images: namespace paths, then host paths
+# vm-lab stays per checkout (<project>/artifacts/vm-lab). Overrides are honoured
+# (translated through the same mount table) or refused, never silently ignored.
+require_absolute() {
+    case "$2" in
+        /*) ;;
+        *) die "$1 must be an absolute path (got '$2')" ;;
+    esac
+}
+if [ -n "${MDT_VM_STATE_DIR:-}" ]; then
+    require_absolute MDT_VM_STATE_DIR "$MDT_VM_STATE_DIR"
+    VM_LAB_NS="$MDT_VM_STATE_DIR"
+    HOST_VM_LAB_DIR="$(host_path_for "$VM_LAB_NS" "MDT_VM_STATE_DIR")" || exit 1
+else
+    VM_LAB_NS="$PROJECT_DIR/artifacts/vm-lab"
+    HOST_VM_LAB_DIR="$HOST_PROJECT_DIR/artifacts/vm-lab"
+fi
+
+# Main checkout root: parent of git's common dir when that is named .git.
+MAIN_ROOT=""
+git_common="$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+if [ -n "$git_common" ] && [ "$(basename "$git_common")" = ".git" ]; then
+    MAIN_ROOT="$(cd "$(dirname "$git_common")" && pwd -P)"
+fi
+
+if [ -n "${MDT_DOWNLOADS_DIR:-}" ]; then
+    require_absolute MDT_DOWNLOADS_DIR "$MDT_DOWNLOADS_DIR"
+    DOWNLOADS_NS="$MDT_DOWNLOADS_DIR"
+elif [ -n "$MAIN_ROOT" ]; then
+    DOWNLOADS_NS="$MAIN_ROOT/downloads"
+else
+    echo "INFO: no usable git common dir for $REPO_ROOT; downloads go to $REPO_ROOT/downloads (set MDT_DOWNLOADS_DIR to override)" >&2
+    DOWNLOADS_NS="$REPO_ROOT/downloads"
+fi
+HOST_DOWNLOADS_DIR="$(host_path_for "$DOWNLOADS_NS" "downloads dir")" || exit 1
+
+# Main checkout's staged base images: read-only fallback for a worktree.
+MAIN_IMAGES_NS=""
+HOST_MAIN_IMAGES_DIR=""
+if [ -n "$MAIN_ROOT" ] && [ "$MAIN_ROOT" != "$REPO_ROOT" ]; then
+    candidate_images="$MAIN_ROOT/${PROJECT_DIR#"$REPO_ROOT"/}/artifacts/vm-lab/images"
+    if [ -d "$candidate_images" ]; then
+        MAIN_IMAGES_NS="$candidate_images"
+        HOST_MAIN_IMAGES_DIR="$(host_path_for "$MAIN_IMAGES_NS" "main-checkout images dir")" || exit 1
+    fi
+fi
+
+# A fixed runner name would silently reuse whichever worktree first created
+# it. That can make a gate execute another worktree's source. Derive both
+# names from this worktree's path (plus the source, state and downloads
+# identity: two projects may reuse this harness from one worktree, and their
+# inputs and state must never be silently exchanged).
+RUNNER_FINGERPRINT="$(printf '%s\0%s\0%s\0%s\0%s' "$TESTING_DIR" "$SOURCE_NAMESPACE_DIR" \
+    "$VM_LAB_NS" "$DOWNLOADS_NS" "$MAIN_IMAGES_NS" | sha256sum | cut -c1-12)"
+IMAGE="debian-install-vm:$RUNNER_FINGERPRINT"
+NAME="debian-install-vm-harness-$RUNNER_FINGERPRINT"
 
 # Outside a Docker cockpit, this path is already in the daemon's namespace and
 # a local check is authoritative. Inside a cockpit, HOST_SOURCE_DIR has been
@@ -270,7 +307,53 @@ ensure_runner() {
     verify_build_environment
     verify_cgroup_parent
 
+    # Create the bind sources here, in the caller's namespace and as the caller,
+    # so Docker never creates them root-owned. This also runs before the reuse
+    # check: a deleted-and-recreated folder is then caught by the inode compare.
+    mkdir -p "$VM_LAB_NS" "$DOWNLOADS_NS"
+    [ -z "$MAIN_IMAGES_NS" ] || [ -d "$MAIN_IMAGES_NS" ] || die \
+        "main-checkout images dir $MAIN_IMAGES_NS disappeared"
+    RUNNER_OWNER="$(stat -c '%u:%g' "$VM_LAB_NS")"
+    downloads_owner="$(stat -c '%u:%g' "$DOWNLOADS_NS")"
+    [ "$RUNNER_OWNER" = "$downloads_owner" ] || die \
+        "vm-lab ($VM_LAB_NS) is owned by $RUNNER_OWNER but downloads ($DOWNLOADS_NS) by $downloads_owner; the runner executes as one owner, fix the ownership"
+    if [ "${RUNNER_OWNER%%:*}" = "0" ] && [ "$(id -u)" != "0" ]; then
+        die "vm-lab $VM_LAB_NS is root-owned; refusing to run the VM tooling as root against the worktree (chown it to $(id -u):$(id -g) first)"
+    fi
+
     if docker ps --format '{{.Names}}' | grep -qx "$NAME"; then
+        stale_runner() {
+            echo "runner $NAME: $1" >&2
+            echo "refusing to reuse a stale runner; run '$0 --stop-daemon' before retrying" >&2
+            return 1
+        }
+        runner_label() {
+            docker inspect "$NAME" --format "{{index .Config.Labels \"$1\"}}" 2>/dev/null || true
+        }
+        runner_mount_src() {
+            docker inspect "$NAME" --format \
+                "{{range .Mounts}}{{if eq .Destination \"$1\"}}{{.Source}}{{end}}{{end}}" 2>/dev/null || true
+        }
+        [ "$(runner_label mdt.vm.layout)" = "$RUNNER_LAYOUT" ] || stale_runner \
+            "was started by older code (layout '$(runner_label mdt.vm.layout)', expected '$RUNNER_LAYOUT')" || return 1
+        [ "$(runner_label mdt.vm.owner)" = "$RUNNER_OWNER" ] || stale_runner \
+            "runs as '$(runner_label mdt.vm.owner)' but the vm-lab owner is '$RUNNER_OWNER'" || return 1
+        for pair in "$VM_STATE_DIR|$HOST_VM_LAB_DIR" "$VM_DOWNLOADS_DIR|$HOST_DOWNLOADS_DIR" \
+                    "$VM_MAIN_IMAGES_DIR|$HOST_MAIN_IMAGES_DIR"; do
+            dst="${pair%%|*}"; want="${pair#*|}"
+            have="$(runner_mount_src "$dst")"
+            [ "$have" = "$want" ] || stale_runner \
+                "mount $dst is '${have:-<none>}', expected '${want:-<none>}'" || return 1
+        done
+        # Same folder, not a deleted/replaced or later-mounted-over one:
+        # compare device:inode of the caller's view and the runner's view.
+        for pair in "$VM_STATE_DIR|$VM_LAB_NS" "$VM_DOWNLOADS_DIR|$DOWNLOADS_NS"; do
+            dst="${pair%%|*}"; ns="${pair#*|}"
+            here_id="$(stat -c '%d:%i' "$ns" 2>/dev/null || true)"
+            runner_id="$(docker exec "$NAME" stat -c '%d:%i' "$dst" 2>/dev/null || true)"
+            { [ -n "$here_id" ] && [ "$here_id" = "$runner_id" ]; } || stale_runner \
+                "folder $dst is ${runner_id:-<unreadable>} in the runner but $ns is ${here_id:-<missing>} here (deleted, replaced or mounted over after the runner started)" || return 1
+        done
         mounted_testing="$(docker inspect "$NAME" --format \
             '{{range .Mounts}}{{if eq .Destination "/work"}}{{.Source}}{{end}}{{end}}' \
             2>/dev/null || true)"
@@ -292,7 +375,6 @@ ensure_runner() {
         return 1
     fi
 
-    mkdir -p "$PROJECT_DIR/artifacts/vm-lab" "$REPO_ROOT/downloads"
     docker buildx build \
         --builder="$BUILD_BUILDER" \
         --load \
@@ -308,18 +390,35 @@ ensure_runner() {
     # live one (review finding, 2026-09-09).
     docker rm -f "$NAME" >/dev/null 2>&1 || true
     echo "+ starting persistent VM-harness runner ($NAME)" >&2
+    main_images_mount=()
+    if [ -n "$HOST_MAIN_IMAGES_DIR" ]; then
+        main_images_mount=(--mount "type=bind,src=$HOST_MAIN_IMAGES_DIR,dst=$VM_MAIN_IMAGES_DIR,readonly")
+    fi
+    # The entry command runs as root: it creates a passwd/group entry for the
+    # vm-lab owner (so ssh/ssh-keygen work for that uid), starts apt-cacher-ng,
+    # and then idles. All vmctl work runs via `docker exec --user <owner>`, so
+    # nothing written under the bind mounts is root-owned.
     docker run -d --name "$NAME" \
         --init \
         --cgroup-parent="$VM_CGROUP_PARENT" \
         --label "mdt.vm.testing-dir=$HOST_TESTING_DIR" \
-        -e "MDT_VM_STATE_DIR=$VM_STATE_DIR" \
-        -e "MDT_DOWNLOADS_DIR=$VM_DOWNLOADS_DIR" \
+        --label "mdt.vm.layout=$RUNNER_LAYOUT" \
+        --label "mdt.vm.owner=$RUNNER_OWNER" \
         --mount "type=bind,src=$HOST_VM_LAB_DIR,dst=$VM_STATE_DIR" \
         --mount "type=bind,src=$HOST_DOWNLOADS_DIR,dst=$VM_DOWNLOADS_DIR" \
+        "${main_images_mount[@]}" \
         --mount "type=bind,src=$HOST_TESTING_DIR,dst=/work,readonly" \
         --mount "type=bind,src=$HOST_SOURCE_DIR,dst=/source,readonly" \
         -w /work/vm \
-        "$IMAGE" sleep infinity >/dev/null
+        "$IMAGE" sh -c '
+            set -eu
+            uid="${1%%:*}"; gid="${1##*:}"; home="$2"
+            getent group "$gid" >/dev/null || groupadd -g "$gid" vmlab
+            getent passwd "$uid" >/dev/null || useradd -u "$uid" -g "$gid" -M -d "$home" -s /bin/bash vmlab
+            mkdir -p "$home"; chown "$uid:$gid" "$home"
+            apt-cacher-ng -c /etc/apt-cacher-ng ForeGround=0 >/tmp/apt-cacher-ng.startup.log 2>&1 || true
+            exec sleep infinity
+        ' _ "$RUNNER_OWNER" "$RUNNER_HOME" >/dev/null
 }
 
 case "${1:-}" in
@@ -330,13 +429,16 @@ case "${1:-}" in
         ;;
     --daemon)
         ensure_runner
-        echo "runner ready: docker exec -it $NAME bash"
+        echo "runner ready: docker exec -it --user $RUNNER_OWNER -e HOME=$RUNNER_HOME $NAME bash"
         exit 0
         ;;
 esac
 
 ensure_runner
-exec docker exec -i \
-    -e "MDT_VM_STATE_DIR=$VM_STATE_DIR" \
-    -e "MDT_DOWNLOADS_DIR=$VM_DOWNLOADS_DIR" \
-    "$NAME" ./vmctl "$@"
+# Always as the vm-lab owner (never root): files written under the bind mounts
+# must stay deletable by the cockpit user.
+exec_env=(-e "MDT_VM_STATE_DIR=$VM_STATE_DIR" -e "MDT_DOWNLOADS_DIR=$VM_DOWNLOADS_DIR" -e "HOME=$RUNNER_HOME")
+if [ -n "$MAIN_IMAGES_NS" ]; then
+    exec_env+=(-e "MDT_VM_MAIN_IMAGES_DIR=$VM_MAIN_IMAGES_DIR")
+fi
+exec docker exec -i --user "$RUNNER_OWNER" "${exec_env[@]}" "$NAME" ./vmctl "$@"

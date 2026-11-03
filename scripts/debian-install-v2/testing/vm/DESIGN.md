@@ -349,6 +349,30 @@ This is genuinely the only case-shape-specific customization step in the
 whole design — Case B needs zero base-image customization because the
 stock image already matches it.
 
+## 3b. State layout, worktrees and ownership
+
+- **vm-lab** (`<project>/artifacts/vm-lab`, or `MDT_VM_STATE_DIR`): per
+  checkout/worktree: `images/`, `runs/<name>/`, `ssh/`. Disposable state is tied
+  to the source under test and is cleaned with the worktree.
+- **downloads** (main checkout `downloads/`, resolved via git's common dir;
+  `MDT_DOWNLOADS_DIR` overrides; outside git the script-relative root plus an
+  INFO line): shared, immutable, checksum-verified, `flock`ed.
+- **Main-checkout bases**: a worktree looks up `<name>-base.qcow2` locally, then
+  in the main checkout's `vm-lab/images` (read-only mount `/main-vm-images`).
+  Runs always get an overlay in their own checkout, backed by the main base by
+  absolute path. Safety of that backing file rests on bases being write-once:
+  the tooling never replaces a base (`prepare-base` returns early, `snapshot`
+  refuses to overwrite). Content-addressed base names were considered and not
+  built; a refresh needs a new case name or destroying dependent runs first.
+- **Ownership**: the runner entry command runs as root only to add the owner's
+  passwd entry and start apt-cacher-ng; all `vmctl` runs use `docker exec --user`
+  with the vm-lab owner's uid:gid, so no root-owned files appear in worktrees.
+- **Reuse**: layout/owner labels, mount sources and device:inode of the bind
+  folders must match the current caller; otherwise the wrapper refuses a stale
+  runner (older code, deleted/replaced/mounted-over folder).
+- **CoW subvolume** over vm-lab is invisible to the scripts; its provisioning is
+  a separate host-side helper (see README, "CoW").
+
 ## 4. Detailed walkthrough (what was actually run, live, 2026-09-09)
 
 This is the real transcript of the harness's first end-to-end proof,
