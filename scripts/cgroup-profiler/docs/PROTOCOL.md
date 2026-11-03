@@ -201,8 +201,12 @@ exit code 2 over the exec carrier (§1.3). Codes: `bad-argument`,
 `report-unavailable`, `report-failed`, `stop-incomplete` (a `stop` whose
 sampling worker did not exit within 10 s: the session is NOT finalized, keeps
 its placement and DAMON resources, and `stop` may be retried; the third
-consecutive incomplete attempt finalizes anyway with `stop_forced`), and from §8.8 `peer-refused`,
-`place-refused:*`, `bad-policy`, `not-streaming`.
+consecutive incomplete attempt finalizes anyway with `stop_forced`; also
+answered when finalization itself failed, naming the error, in which case the
+session is reopened and a retry is safe), `busy` (additive, contract stays 1:
+the daemon is at an admission bound, 32 connections reading a request line, 16
+verbs running or 32 `watch` streams, or is shutting down; retry shortly), and
+from §8.8 `peer-refused`, `place-refused:*`, `bad-policy`, `not-streaming`.
 
 Additive optional Summary keys (cgprofile 1.1.0; the contract number stays 1
 and the Summary schema stays v1.1; full definitions in

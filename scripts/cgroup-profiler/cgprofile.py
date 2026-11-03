@@ -1116,8 +1116,13 @@ def cmd_serve(args: argparse.Namespace) -> int:
         gates_slice_name=args.gates_slice,
         allow_uids=allow_uids,
     )
-    server.serve_forever()
-    return 0
+    try:
+        # 0, or 3 when the control socket was lost and could not be rebound
+        # (CP-31): non-zero so `restart: unless-stopped` recreates the daemon.
+        return server.serve_forever() or 0
+    except serve_mod.ControlSocketError as exc:
+        # CP-34: a non-socket node or a live peer at the socket path.
+        _err(f"serve refuses to start: {exc.strerror}")
 
 
 def _ctl_wire(verb: str, **wire_args: Any) -> Dict[str, Any]:
@@ -1414,6 +1419,43 @@ def _validate_ctl_response(verb: str, resp: Any) -> None:
             raise ValueError("invalid response: gc.kept must be a non-negative integer")
 
 
+def _ctl_unreachable_cause(socket_path: str, exc: BaseException) -> str:
+    """CP-31: name WHICH way the daemon is unreachable, using only what this
+    process can see, so a missing socket is never reported like a refusing
+    daemon. Empty when the failure is not one of the classified connect
+    errors (a timeout or a malformed answer keeps its own text)."""
+    if isinstance(exc, FileNotFoundError):
+        if not os.path.isdir(os.path.dirname(socket_path) or "."):
+            return (
+                "cause: socket-not-mounted: the socket directory does not exist in "
+                "this environment (bind-mount /run/cgprofile into the lane, or the "
+                "host has no daemon runtime directory)"
+            )
+        return (
+            "cause: socket-missing: the directory exists but the socket node is gone "
+            "(the daemon container is not running, or the node was removed; check "
+            "`docker ps` and the daemon logs)"
+        )
+    if isinstance(exc, ConnectionRefusedError):
+        return (
+            "cause: daemon-refusing: a socket node exists but nothing is listening "
+            "(the daemon exited or is restarting; a daemon that refuses to start, for "
+            "example on its cgprofile.slice guard, leaves exactly this)"
+        )
+    if isinstance(exc, PermissionError):
+        return (
+            "cause: socket-permission: the socket exists but this user may not connect "
+            "(it is root:<dir gid> 0660; join the group or use `docker exec`)"
+        )
+    return ""
+
+
+def _ctl_unreachable_note(verb: str, socket_path: str, exc: BaseException) -> str:
+    cause = _ctl_unreachable_cause(socket_path, exc)
+    suffix = f" [{cause}]" if cause else ""
+    return f"ctl {verb} could not reach the daemon at {socket_path}: {exc}{suffix}"
+
+
 def cmd_ctl(args: argparse.Namespace) -> int:
     """Thin socket client. Always prints exactly one JSON document to
     stdout on success (RG55-INTERFACE-CONTRACT.md §1.2); a connection
@@ -1426,12 +1468,12 @@ def cmd_ctl(args: argparse.Namespace) -> int:
         try:
             return _ctl_stream(args.socket, req)
         except OSError as exc:
-            _note(f"ctl watch could not reach the daemon at {args.socket}: {exc}")
+            _note(_ctl_unreachable_note("watch", args.socket, exc))
             return 3
     try:
         resp = _ctl_roundtrip(args.socket, req)
     except (OSError, ValueError) as exc:
-        _note(f"ctl {args.verb} could not reach the daemon at {args.socket}: {exc}")
+        _note(_ctl_unreachable_note(args.verb, args.socket, exc))
         return 3
     try:
         _validate_ctl_response(args.verb, resp)
