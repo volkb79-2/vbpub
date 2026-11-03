@@ -204,8 +204,11 @@ with sqlfluff in a command lane if the project wants it.
 - **No xdist on a shared host.** `-n` on 8 cores shared with a production
   workload is how the load reached 85 on 2026-09-02; serial under
   `nice -n 19 ionice -c 3` is the standing rule (`AGENTS.md`). Where xdist
-  is needed for a dedicated host, keep coverage xdist-safe and declare it
-  in the lane's description.
+  is needed, declare `workers`, `workers_max` and `xdist_safe = true` with
+  the `{workers}` token (README "xdist workers for command lanes"): run-gate
+  then requires enforced caps, sizes `auto` from measured per-worker numbers,
+  re-runs an N>1-only failure serially (`XDIST_ISOLATION`), and
+  `--xdist-parity`/`--scaling` produce the evidence. Never hard-code `-n`.
 
 **Exit-code truth.** The command fails on the failure it exists for.
 

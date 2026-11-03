@@ -2790,6 +2790,41 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     explicit counts above one refuse. `--dry-run` may perform the capacity and
     Cowtree probes for an auto request, but does not start the judged lane.
 
+- `R-54` **xdist workers for command lanes (RG-146, RG-147).** A command
+  lane may declare `workers = N|"auto"`, `workers_max` (default 8) and
+  `xdist_safe`. Load refuses `workers` without the `{workers}` argv token (and
+  the token without `workers`), `workers != 1` without `xdist_safe = true`, a
+  count above `workers_max`, and any of the keys on a non-command lane.
+  - Run-time refusals: `workers != 1` on an ephemeral lane without enforced
+    `resources.memory` and `cpus`, and on a bare-host or exec lane without
+    `resource_observer = "cgprofile"`. `{workers}` is substituted in the
+    declared argv only; `RUN_GATE_WORKERS` is exported; `--workers N|auto`
+    overrides the lane.
+  - `auto` is `max(1, min(workers_max, cpu term, memory term, io term, tests
+    term))` over the clean per-worker basis of the latest scaling run or the
+    last two or more clean passing runs, with `cpu = floor(cpus / max(0.25,
+    p50 cpu_seconds / wall))`, `memory = floor((memory x 0.75 - controller RSS
+    p95) / worker RSS p95)` (declared `resources.worker_ram` or 1 GiB when no
+    p95 exists), `io = floor(io write cap / worker write rate p95)` only with
+    an io write cap, `tests = floor(tests_collected / 20)`. No clean profile or
+    no caps selects 1 with the reason. An explicit count is honoured and the
+    terms it exceeds are listed. The selection and basis are stored as
+    `workers`; per-worker distributions as `per_worker`, `controller` and
+    `tests_collected`. One history entry is kept per commit, io_sync and worker
+    count.
+  - A command lane run at N > 1 that exits 1 is re-run once with `{workers}` =
+    1 and `PYTEST_ADDOPTS=--lf` (no recheck during measurement steps). If the
+    serial run passes, the result is verdict `FAIL`, reason `XDIST_ISOLATION`
+    (printed `INCONCLUSIVE/XDIST_ISOLATION`), history outcome `inconclusive`,
+    excluded from history; otherwise the original FAIL stands.
+  - `--xdist-parity [--workers k]` and `--scaling N,N,.. [--repeat N:R,*:R]`
+    re-dispatch the invocation per worker count with a junit report in
+    `PYTEST_ADDOPTS`. Parity stores `.run-gate/xdist-parity/<lane>.json` (config
+    digest, k, test count) only when outcomes are identical to N=1; a mismatch
+    or missing junit evidence is a `FAIL` with reason `XDIST_ISOLATION` or
+    `no-parity-evidence`. Scaling repeats a contaminated step once, then ends
+    `FAIL`/`scaling-contaminated`.
+
 ## 6. Non-goals (unchanged from CONSUMERS)
 
 No second parser of run-gate documents (`run-gate.toml` and

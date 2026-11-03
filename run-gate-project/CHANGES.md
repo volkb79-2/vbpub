@@ -9,6 +9,52 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+### Added
+- RG-144: "time stalled on memory" is a contamination flag. One run-gate rule
+  separates `self_limited` (the lane's own limit; printed as `memory limit
+  reached N times`) from `contaminated` (ancestor reclaim, MDT PSI-guard
+  overlap, or a stall of at least max(2 s, 0.5% of wall) the lane's own limit
+  does not explain). Contaminated runs and subjects are stored with
+  `contamination: {flagged, reasons}`, printed as `measurement contaminated
+  (...); excluded from sizing`, and excluded from the history medians,
+  `candidate_ram_from_history` and the R2 `jobs=auto` input. The R2 closeout
+  lists contaminated `budget_exceeded` candidates with exact serial rejudge
+  lines; new `--rejudge-contaminated` runs them.
+- RG-145: per-lane resource profiles. `resource-profile/1` ingestion from assay
+  12 progress `profile` objects and, in the compatibility window, assay <= 11
+  numeric keys (`NO_MEASUREMENT` when neither exists); a bounded
+  `.run-gate/profiles/<lane>.jsonl` sidecar of `lane-profile/1` records (200
+  runs / 20,000 subjects, oldest-first, atomic); an optional `profile_summary`
+  on history entries (history stays schema 2 and older versions still read
+  it); cross-run percentiles recomputed from raw subjects; `run-gate history`
+  prints the distributions and the status and contamination counts.
+
+### Changed
+- `r2_candidate_ram_p95_bytes` / `r2_candidate_ram_samples` and the history
+  duration and resource medians are computed from clean profiles only.
+
+- RG-146: lane keys `workers` (int or `"auto"`), `workers_max` and
+  `xdist_safe` for pytest-xdist command lanes, with the `{workers}` argv token
+  and `RUN_GATE_WORKERS`; enforced cpu and memory caps (or cgprofile placement)
+  required for `workers != 1`; `auto` sized from clean per-worker history
+  (latest scaling run or the last two or more runs) with a declared
+  `resources.worker_ram` or 1 GiB fallback; per-worker numbers and the
+  selection stored in history entries; a serial recheck that reports a failure
+  that only occurs at N > 1 as `XDIST_ISOLATION` (verdict FAIL, history outcome
+  `inconclusive`); `--workers N|auto`; `--xdist-parity` with a stored proof;
+  the `run_gate_profile` pytest plugin shipped in the wheel (pytest11 entry
+  point).
+- RG-147: `--scaling N,N,.. [--repeat N:R,*:R]` measurement mode that runs
+  the baseline first, repeats a contaminated step once, and prints the
+  speedup/efficiency/per-worker-memory table.
+
+### Changed
+- History keeps one entry per commit, io_sync and xdist worker count (was per
+  commit and io_sync), so scaling steps do not overwrite each other.
+- Seams for RG-144/RG-145: `workers_entry_is_clean` and `record_contaminated`
+  read a `contamination` object on history entries; profile ingestion beyond
+  the plugin's own files is RG-145's.
+
 <!-- cmru: release history -->
 
 ## [24.3.0] - 2026-11-02
