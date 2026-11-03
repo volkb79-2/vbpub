@@ -7005,3 +7005,249 @@ current worker selection remains bounded by existing lane caps.
 **Expected.** Define and test an explicit relationship between selected
 workers and container CPU quota, then record repeated RAM-target overshoot as
 history/footprint evidence without changing mutation verdicts.
+
+
+## RG-144 — "time stalled on memory" is a contamination flag: exclude contaminated samples from every sizing basis
+
+**Status:** OPEN. Severity: enhancement (measurement correctness). Filed 2026-11-03 from the operator's resource-profile
+decisions. Design: `docs/design/RESOURCE-PROFILES.md` §6.1. (RG-143 is taken by
+the R2 CPU-cap and overshoot item. This entry feeds its overshoot half.)
+
+**Problem.** The footprint line prints "N s stalled on memory (full)" next to peak, p90 and cores, as if it were a lane
+property. A lane cgroup's `memory.pressure full` counts stall time from two causes:
+
+- the lane's own `memory.high` or `memory.max`;
+- reclaim driven by ancestors or global reclaim, that is, parallel load and host pressure.
+
+The second cause is not a property of the lane. Samples taken under it also inflate RSS, through refaults, and
+durations. Today they enter `candidate_ram_from_history` and the duration medians unfiltered.
+
+**Decision record (operator, 2026-11-03).**
+
+- Stalled-on-memory is a contamination flag.
+- It flags the measurement and excludes it from the p95 basis.
+- It is never presented as a capacity number.
+
+**Design.**
+
+- **One rule, owned by run-gate**, applied to every lane run and every subject profile. The two flags are
+  independent; a run can be both.
+  - **`self_limited`:** the lane leaf's `memory.events.local` high + max + oom delta is > 0. This is a capacity signal,
+    printed as "memory limit reached N times", and it is not contamination.
+  - **`contaminated`:** any of the following holds:
+    - an ancestor up to and including `dev.slice` recorded a `memory.events.local` high or max delta during the window
+      (reclaim driven from above the lane; needs cgprofile CP-40);
+    - an MDT PSI-guard action overlaps the window (`/run/mdt/psi-guard/events.jsonl`, read if mounted);
+    - the lane's memory full stall is ≥ max(2 s, 0.5% of wall) **and** the run is not `self_limited`.
+  - Host-wide `/proc/pressure` figures are recorded and printed as context, never as a criterion. On the shared host,
+    host-wide memory `full` is often well above 1% from the production service's own swapping. A host-wide criterion
+    would flag every run there and leave no sizing basis.
+  The thresholds are the named constants `CONTAMINATION_*`, calibrated by design §9 M5.
+- **Effect.**
+  - Contaminated runs and subjects are stored with `contamination: {flagged: true, reasons: [...]}`.
+  - They are excluded from `candidate_ram_from_history`, the R2 `jobs=auto` inputs, lane `workers=auto` (RG-146) and
+    the duration medians.
+  - The footprint prints `measurement contaminated (<reasons>); excluded from sizing`.
+  - If the clean samples fall below the minimum, the basis is the declared or default value. It is never the
+    contaminated data.
+- **R2 closeout.** It lists `budget_exceeded` candidates whose profile is contaminated, with the exact
+  `run-gate r2 --jobs 1 --rejudge <id>` lines. `--rejudge-contaminated` runs them serially (the 2026-09-14
+  contention-agnostic rule: a pressure-affected result is inconclusive and retried).
+
+**Acceptance.**
+
+- **One fixture per reason** (a lane stall, host stall, guard overlap, avg60), each giving `flagged` with that reason.
+- **Self-limit:** an own `memory.events` high delta with a stall gives `self_limited` and not `contaminated`.
+- **Exclusion:** a history holding one contaminated run with a huge p95 and two clean runs gives the clean basis. All
+  contaminated gives the declared or default basis.
+- **Footprint text** golden lines.
+- **Closeout:** it lists exactly the contaminated `budget_exceeded` ids.
+
+**Test plan.**
+
+- Unit tests over the Summary and profile fixtures (cgprofile golden summaries plus synthetic context).
+- Live: design §9 M5 (controlled memory hog against none; false-positive target 0 over the M2/M3 runs).
+
+**Order.** Can ship first in 24.4.0. It uses the Summary fields that exist today, and profile context once
+RG-145 lands.
+
+## RG-145 — per-lane resource profiles: `resource-profile/1` ingestion, distributions, bounded sidecar, history summary
+
+**Status:** OPEN. Severity: enhancement. Filed 2026-11-03. Design §2, §6.4.
+
+**Problem.** History keeps per-run summaries only: peak, p90, average cores, and the R2 per-run candidate RSS p95. The
+existing code says that p95s cannot be recombined, and it takes the maximum of recent p95s. There are no per-worker or
+per-candidate distributions of CPU, IO or wall time, and nothing records where a number came from or why it is
+missing.
+
+**Design.**
+
+- **Ingestion.** Read assay 12 progress `profile` objects (B206) and the xdist worker profiles (RG-146). During the
+  compatibility window, also read assay ≤ 11 progress numeric keys (RG-148).
+- **Per run.** Append one `lane-profile/1` record (design §6.4) to `.run-gate/profiles/<lane>.jsonl`.
+  - `per_worker` or `per_candidate` distributions (p50/p95/max/n) of `rss_peak_bytes`, `cpu_seconds`,
+    `io_read_bytes`, `io_write_bytes` and `wall_seconds`.
+  - Plus the controller's numbers, the lane cgroup numbers, the status counts, contamination (RG-144) and the raw
+    subject profiles.
+  - Append-only, bounded to the last 200 runs or 20,000 subjects, rotated oldest-first, written atomically.
+- **History.** `history.json` **stays schema 2**. The entry gains an optional `profile_summary`: the distributions
+  without the subjects, plus contamination. `r2_candidate_ram_p95_bytes` and `r2_candidate_ram_samples` are now
+  computed from clean profiles.
+- **Percentiles across runs** are recomputed from the raw subjects in the sidecar, not from stored p95s.
+- **`run-gate history <lane>`** prints the distributions and the status and contamination counts.
+
+**Acceptance.**
+
+- **Ingestion:** golden assay 12 progress and old progress both produce the same distribution for equal numbers.
+- **`NO_MEASUREMENT`:** such profiles count in `status_counts` and never in the distributions.
+- **Rotation bound** is enforced (a test with 25,000 subjects).
+- **Compatibility:** a history v2 store written by this version is read without error by the released 24.3.0 wheel
+  (a compatibility test installs it in a temporary venv).
+- **Percentiles:** cross-run percentiles over raw subjects match a reference computation.
+
+**Test plan.** Unit tests on fixtures, plus the released-wheel compatibility test. Live: every design §9 run writes
+these records, and the tables T2/T3 are produced from them.
+
+**Order.** In 24.4.0, with RG-148.
+
+## RG-146 — `workers` for non-R2 (pytest-xdist) lanes: auto from clean per-worker profiles, enforced caps, isolation checks, cgprofile worker plugin
+
+**Status:** OPEN. Severity: feature. Filed 2026-11-03. Design §6.2, §6.3.
+
+**Problem.** Plain pytest lanes run serially. Neither the lane config nor the history knows how many xdist workers a
+lane could run inside its caps, and suites are not checked for xdist isolation. The lane footprints (pwmcp r1 peak
+722 MiB / 0.54 cores, worktree 512 MiB / 0.91 cores, ciu 1,143 MiB / 0.93 cores) show that per-lane parallel headroom
+exists but is unmeasured.
+
+**Decision record (operator, 2026-11-03).**
+
+- Per-worker numbers come from a scaling run (1 worker as the baseline, then `-n N`) and are recorded as profiles.
+- `workers`/`jobs` for non-R2 lanes is auto from p95 RSS, CPU and IO, with enforced caps required as for R2.
+- The cgprofile observer is the only number source.
+
+**Design.**
+
+- **Lane keys:**
+  - `workers = <int ≥ 1> | "auto"` (absent = 1, unchanged);
+  - `workers_max`;
+  - `xdist_safe = true` (required for workers ≠ 1).
+- **Arguments.**
+  - The argv must contain the declared token `{workers}`. Run-gate never rewrites argv, and a lane with `workers` but
+    no token is refused. `RUN_GATE_WORKERS` is exported.
+  - `workers = 1` substitutes `1` (one xdist worker plus the controller), which is the baseline shape.
+- **The auto formula** uses clean samples from at least 2 runs or the latest scaling run:
+
+  ```
+  max(1, min(workers_max,
+             floor(cpu_cap / max(0.25, p50 per-worker cpu_seconds / wall)),
+             floor((memory_cap × 0.75 − controller rss p95) / per-worker rss p95),
+             floor(io_write_cap_bps / per-worker write bps p95)   (only with an io write cap),
+             floor(tests_collected / 20)))
+  ```
+
+  With no clean profile, the result is 1, and the line says why.
+- **Caps.** `workers ≠ 1` requires `[resources] memory` and `cpus` on ephemeral lanes. Bare-host and exec lanes also
+  require cgprofile placement; otherwise the lane is refused.
+- **Isolation** (`xdist_safe` contract, design §6.2 table):
+  - Docker object names carry `PYTEST_XDIST_WORKER` and the run id;
+  - port 0 or per-worker port ranges;
+  - `tmp_path` only, with `HOME` and `XDG_*` per worker;
+  - per-worker or file-locked session services;
+  - no process-global mutation;
+  - passes under `-p randomly` and `--dist loadfile`.
+- **Run-time check.** When a test fails at N > 1, run-gate re-runs once with `-n 1 --lf`. A failure that passes
+  serially makes the lane `INCONCLUSIVE/XDIST_ISOLATION`, naming the tests; it is never a PASS.
+- **First enablement.** `run-gate <lane> --xdist-parity` runs N=1 against N=k, compares per-test outcomes (junit), and
+  stores the proof keyed by the lane config digest.
+- **Worker numbers.** A pytest plugin `run_gate_profile`, an entry point in the run-gate wheel installed in
+  tester-unified, opens a cgprofile `process-tree` window (CP-39) per worker and for the controller. It writes the
+  profiles to `$RUN_GATE_PROFILE_DIR`, and run-gate collects them.
+  - The observer directory is mounted read-only under the existing §9.3 rules, extended to command lanes with
+    `workers`.
+  - Without an observer the profiles are `NO_MEASUREMENT`, and auto stays at 1.
+
+**Acceptance.**
+
+- **Config:** token enforcement; the caps-required refusal; the `xdist_safe`-required refusal.
+- **Auto:** picks 1 without clean profiles. The formula is tested with each limiting term (cpu, mem, io, tests).
+- **Isolation check:** a fixture suite with a fixed `/tmp` file fails at N=2, passes serially, and gives
+  `INCONCLUSIVE/XDIST_ISOLATION`.
+- **Plugin:** writes one profile per worker plus the controller, against a fake observer.
+- **Parity:** `--xdist-parity` stores and reads the proof.
+
+**Test plan.**
+
+- Unit tests with fake pytest runs.
+- An integration lane over a tiny real xdist suite in tester-unified.
+- Live: design §9 M3 (cli-extended, iobench r0-r1 unit part, libraries/worktree tests, and the docker-using ciu suite
+  as the isolation negative).
+
+**Order.** After CP-39 for live numbers (it ships without it, staying at 1 worker); with or after RG-145.
+`pytest-xdist` must be in tester-unified (checked in the rebuild).
+
+## RG-147 — `--scaling` measurement mode (1 worker baseline, then N) producing the scaling tables
+
+**Status:** OPEN. Severity: feature. Filed 2026-11-03. Design §6.5, §9.
+
+**Design.**
+
+- **Command.** `run-gate <lane> --scaling 1,2,3,4 [--repeat 1:3,*:2]` runs the lane at each worker count in order,
+  baseline first. It runs one gate container at a time, with enforced caps at every step.
+- **Records.** It writes the RG-145 records and prints:
+  - **T2/T3:** N | reps | wall p50 | speedup T1/TN | efficiency | lane memory peak | per-worker RSS p50/p95/max |
+    per-worker CPU p50 | per-worker IO write p95 | stall | contaminated | identical outcomes to N=1.
+  - **T3b:** the auto pick and its limiting term, and the measured peak against the cap.
+- **Native R2:** `--scaling` with `--candidates <file|N>` runs a stratified candidate subset (by file, plus the
+  longest), comparing buckets against N=1.
+- **Stopping.** Any N whose run is contaminated is repeated once. If it stays contaminated, it is reported as
+  inconclusive, never as a scaling result.
+
+**Acceptance.**
+
+- On a fixture lane, the printed tables equal the reference computed from the stored records.
+- A contaminated step is repeated and then labelled.
+- An outcome mismatch with N=1 is reported per test or per candidate.
+
+**Test plan.** Unit tests with a fake lane runner. Live: design §9 M2/M3 produce T2/T3.
+
+**Order.** After RG-145 and RG-146.
+
+## RG-148 — compatibility window for assay 12: dual v17/v18 verdict reader, dual progress reader, admission budget passed to assay, two-ended R2 `jobs=auto`
+
+**Status:** OPEN. Severity: release prerequisite. Filed 2026-11-03. Design §4.2, §6.2b, §8.
+
+**Problem.**
+
+- Assay 12.0.0 cuts the verdict to v18 (B208) and removes the numeric progress keys (B206: no aliases).
+- Run-gate reads both artifacts, and `assay_progress_candidate_ram` reads `peak_rss_bytes`.
+- The R2 `jobs=auto` formula divides the budget by the all-candidate RSS p95, so rare high candidates lower N for
+  everyone. With two-ended matching (B207) the highs are handled by admission instead.
+
+**Design.**
+
+- **Readers.**
+  - Read v17 and v18 verdicts.
+  - Read progress candidate RSS from `profile.metrics.rss_peak_bytes` (assay 12, clean and present only), or from
+    `peak_rss_bytes` (assay ≤ 11).
+- **R2 `jobs=auto`:**
+  - B = memory_cap × ram_target;
+  - r_norm = the clean normal-class p95 (design §5.3 thresholds);
+  - jobs = max(1, min(jobs_max, floor(cpu_cap / c_core), floor(B / r_norm), remaining)).
+- **What run-gate passes to assay:** `--memory-budget-bytes B`, or `ASSAY_R2_MEMORY_BUDGET_BYTES` for assays that
+  accept it. It is detected through `assay lanes --json` capabilities, never by version string.
+- **Reporting.** The INFO line and the run record report B as the "predictable RAM need", together with r_norm, the
+  class counts and the last run's admission-overshoot count.
+- **Release order.** Ships in 24.4.0, released and baked into tester-unified **before** assay 12.0.0. Run-gate 25.0
+  removes the v17 verdict reader and the old progress-key reader.
+
+**Acceptance.**
+
+- The golden v17 and v18 verdicts both read.
+- Old and new progress give the same candidate RSS basis.
+- A history with 3 high candidates among 1,200 gives N = floor(B / r_norm), not floor(B / overall p95).
+- B is passed only to an assay advertising the capability.
+- The tester-unified image check confirms the released wheel (KI-111 lesson).
+
+**Test plan.** Unit tests with the cross-repo golden fixtures from assay B208. Image check in the tester rebuild.
+
+**Order.** First of the run-gate items to ship (24.4.0), together with RG-144 and RG-145.
