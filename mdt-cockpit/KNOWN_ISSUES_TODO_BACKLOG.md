@@ -665,43 +665,181 @@ root filesystem is above the fill threshold (observed at 74% used) the finding a
 nothing in the change under test is related. **Fix:** make the test hermetic by injecting the fill collector (as the sibling test
 already does with `c["fill"]`), so verdicts do not depend on the machine's disk usage.
 
-## MDT-033 - host-setup wizard: a RAM reserve (`DEV_MEMORY_RESERVE`) should drive the memory sizing (2026-11-03)
+## MDT-033 - host-setup: the capacity unavailable to MDT (RAM, disk swap, CPU cores) drives sizing, protection and PSI control (2026-11-03)
 
-**Status:** OPEN. CPU already has reserve keys (`DEV_CPU_RESERVE_CORES`, `DEV_SUBSLICE_CPU_RESERVE_CORES`); memory sizing uses fixed fractions of total RAM
-(`propose_memory_tiers`, `mdt-host-setup-wizard.py` ~455) and the shipped README table is sized for about 16 GB (dev.slice 12G/16G exceeds an 8 GB host).
-Found while sizing a 4-core / 7.9 GB scratch VM with no other load (wizard values 1.5G/2G + 100% CPU were chosen conservatively; 100% CPU per tier came from
-`DEV_SUBSLICE_CPU_RESERVE_CORES=3` on 4 cores; a pre-existing gates slice outside dev.slice added 6 GiB on top).
+**Status:** OPEN. Final operator decisions of 2026-11-03 supersede every earlier wording of this entry, including the
+"reserve" and "budget = RAM minus reserve" variants. Cross-tool design:
+`docs/design/RESOURCE-PROFILES.md` §7.
 
-**Design (Opus review 2026-11-03).**
-1. New key `DEV_MEMORY_RESERVE` = `auto` | `0` | size, in `host-setup.env.example` section 2.4: RAM kept outside dev.slice for the rest of the host (OS, other
-   services, page cache headroom, slices outside dev.slice). `auto` = max(1G, 10% of MemTotal) rounded to 256M. A config without the key keeps today's behaviour.
-2. Budget B = MemTotal - reserve. dev.slice MemoryMax = B, MemoryHigh = 90% of B. Children keep the current fractions applied to B (interactive 20%/32%, background
-   32%/50%, gates 5%/10%, buildkitd 10%/12% as High/Max); floors MemoryMax >= 512M, MemoryHigh >= 384M; round to 128M. Decision for the operator: raise gates and buildkitd
-   to 15%/25% (5%/10% gates is unusable below 16 GB).
-3. Explicit pairs in the config always win and are the prompt defaults; MemoryLow and the guaranteed ceiling must fit in B (hard), their sum above 50% of B is advisory;
-   zswap needs no adjustment (compressed pages are charged to the owning cgroup; swap caps derive from SwapTotal).
-4. Wizard prompt: "RAM to keep outside dev.slice for the rest of this host (OS, production services, slices outside dev.slice). auto = the larger of 1G and 10% of RAM ...",
-   then show the dev.slice budget and base every memory suggestion on it.
-5. Validation (wizard and `validate_host_setup_values`): reserve must be a size and leave B >= 1G; `DEV_MEMORY_MAX` <= B when a reserve is set (re-prompt like the existing
-   child-vs-parent rule ~667-689); advisory warning when a known slice outside dev.slice has a MemoryMax above the reserve. Also document: on a 4-core host with no other
-   load set `DEV_SUBSLICE_CPU_RESERVE_CORES=1` (300% per tier instead of 100%).
+**Problem.**
 
-**Revision 2026-11-03 (operator direction, supersedes the "budget = RAM minus reserve as a hard ceiling" reading above).** Overcommit is intended: zswap exists
-because the hot working set of a test or load is far below its peak, so the dev tiers' summed `MemoryMax` may exceed physical RAM (for example 10-12 GB of declared
-need on a 7.75 GB host, served by zswap and paging). Protection of the rest of the host comes from (1) cgroup WEIGHTS (`CPUWeight`/`IOWeight`, and `MemoryLow` on
-host services) so host services always win contention, (2) `memory.min` on the production/host service cgroups (as already done for `wings.slice` on the shared
-host), which is what the "reserve" becomes: the reserved RAM is mirrored as `memory.min` on those cgroups instead of being subtracted from the dev budget, (3) PSI as
-the control signal (the watchers/kernel parameter changes keep the host responsive; memory/cpu/io pressure thresholds throttle or pause the dev tiers before the host
-suffers). So `DEV_MEMORY_RESERVE` should (a) mirror into `memory.min` for named host cgroups, (b) only bound `MemoryHigh`-style soft limits, and (c) never turn the dev
-`MemoryMax` sum into a hard physical-RAM budget. CPU: a "very safe" gates setting on a 4-core scratch host is 3.5 cores (`DEV_SUBSLICE_CPU_RESERVE_CORES=0.5`
-equivalent), with weights keeping host services first. Per-lane worker counts must be sized from MEASURED per-worker RAM (see run-gate footprint numbers) so the
-overcommit stays inside what zswap can absorb.
+- Memory sizing uses fixed fractions of total RAM (`propose_memory_tiers`, `mdt-host-setup-wizard.py:456`). The
+  shipped README table is sized for about 16 GB: dev.slice at 12G/16G exceeds an 8 GB host.
+- CPU uses two integer-only `*_RESERVE_CORES` keys, whose word "reserve" reads as "reserved for MDT".
+- Swap takes 80% of the host total, regardless of what production services already occupy.
+- Nothing verifies that the production services are actually protected.
+- Nothing reacts to pressure.
 
-**Revision 2 (operator, 2026-11-03): the boundary and the two numbers.** The operator configures the production services and their protection (on the shared host:
-`wings.slice` `memory.min=6500M`, `memory.high=15000M`, zswap writeback on, two game-server scopes at `memory.min` 4000M + 3000M, 13.8 GB of swap in use on average;
-the soulmask monitor output is the reference). MDT only asks what to assume UNUSABLE for itself and treats everything else as its own: the wizard asks for (1) the
-RAM set aside for host/production services (mirrored as `memory.min` on their cgroups, optionally read from the live cgroup tree: sum of `memory.min` of the named
-slices) and (2) the expected disk swap use of those services (not zswap), and assumes MDT may use the remaining RAM plus the remaining swap (swap total minus the
-production expectation minus a small host swap reserve, about 500 MB). RAM is overcommitted by design; CPU may be overcommitted too (a job that waits on IO frees its core
-for another), kept safe by cgroup weights and PSI; on a host with no production services (the scratch VM) both numbers are 0 and the host reserve alone applies.
-Parallelism (lane workers, R2 jobs) is sized from the measured p95 per-worker RSS, not from the limits.
+**Decision record (operator, 2026-11-03, binding).**
+
+1. **Three numbers.** The operator gives three numbers naming capacity that is **unavailable to MDT** because other
+   services on the host use it:
+   - RAM;
+   - disk swap only (swap space on the swap device);
+   - CPU cores (fractions allowed; `0` on a host without other load).
+
+   Everything else is MDT's.
+2. **Overcommit and protection.** RAM and CPU are overcommitted by design. About 500 MB of disk swap is kept for the
+   host. Protection comes from:
+   - weights (`CPUWeight`, `IOWeight`);
+   - `memory.min` on the named host or production cgroups, mirroring the RAM unavailable to MDT. The shared host's
+     reference: `wings.slice` `memory.min=6500M`, `memory.high=15000M`, two scopes at 4000M + 3000M, about 13.8 GB
+     of swap in use on average;
+   - PSI as the control signal.
+3. **Terminology.** No key name or prompt uses "reserve" or "reserved". The wording is "excluded from MDT",
+   "withheld from MDT", or "unavailable to MDT".
+4. **No backwards alias (operator update 2026-11-03).**
+   - `DEV_CPU_RESERVE_CORES`, `DEV_SUBSLICE_CPU_RESERVE_CORES` and every other `*_RESERVE_*` key are renamed
+     outright, with no mapping layer.
+   - The installer and the wizard refuse the old names with a message naming the new key.
+   - The migration is a one-time documented rename.
+5. **Live probe.** An optional probe suggests the numbers from `memory.min` and the current swap use of the named
+   services.
+
+**Design** (sub-items; they ship together in one mdt-cockpit release unless noted).
+
+- **MDT-033.a Keys and outright rename.**
+  - New keys:
+
+    | Key | Meaning | Default |
+    |---|---|---|
+    | `MDT_EXCLUDED_RAM` | size | `0` |
+    | `MDT_EXCLUDED_SWAP` | size | `0` |
+    | `MDT_EXCLUDED_CPU_CORES` | decimal, one decimal place | `0` |
+    | `DEV_TIER_EXCLUDED_CPU_CORES` | decimal; cores no single tier may use on top of the above | `0` |
+    | `MDT_PROTECTED_UNITS` | space-separated unit names | empty |
+    | `MDT_HOST_SWAP_MARGIN` | size; disk swap kept for the host | `512M` |
+
+  - Refused old keys. The rename table goes into the host-setup README section "Renamed keys (2026-11)":
+    - `DEV_CPU_RESERVE_CORES=c` → `MDT_EXCLUDED_CPU_CORES=c`;
+    - `DEV_SUBSLICE_CPU_RESERVE_CORES=k` → `DEV_TIER_EXCLUDED_CPU_CORES=max(0, k−c)`, which keeps today's tier quota (the parent's quota already caps a tier when k < c); `0`
+      is recommended.
+  - The refusal message text: `<OLD> is no longer read: rename it to <NEW> (<semantics>; your value <v> → <NEW>=<v'>).
+    See host-setup/README.md "Renamed keys (2026-11)".`
+  - Files to change:
+    - `host-setup.env.example` §2.1 and §3;
+    - the wizard validators `:829-830`, the CPU table `:2485-2512`, the help texts `:2566` and `:2603-2606`, and the
+      docstrings `:1299-1317`;
+    - `install.sh`, `units/dev-buildkitd.slice.in`, `check.sh`;
+    - `README.md`, `cgroup-cpu-swap-redesign-HANDOFF.md`;
+    - `tests/test_hs02.py`, `tests/test_buildkit_governance.py`.
+  - Not changed: the deprecated `modern-debian-tools-python-debug/` tree.
+  - The operator renames the live `/etc/mdt/host-setup.env` with the table before the next install.
+- **MDT-033.b Derived sizing (overcommit by design).**
+
+  ```
+  RAM_MDT  = MemTotal − MDT_EXCLUDED_RAM                           (refuse < 1G)
+  SWAP_MDT = SwapTotal − MDT_EXCLUDED_SWAP − MDT_HOST_SWAP_MARGIN  (≤ 0: warn and require confirmation:
+                                                                    MDT gets no disk swap)
+  CPU_MDT  = nproc − MDT_EXCLUDED_CPU_CORES                        (refuse < 0.5)
+  ```
+
+  - **`dev.slice`:** MemoryMax = `RAM_MDT`, MemoryHigh = 92% of that, MemorySwapMax = `SWAP_MDT`, CPUQuota =
+    `CPU_MDT` × 100%.
+  - **Tiers:** MemoryMax/MemoryHigh as fractions of `RAM_MDT` (interactive 60/45%, background 70/50%, gates 70/50%,
+    buildkitd 35/25%). Their sum exceeds `RAM_MDT` on purpose, and zswap and swap absorb the cold part.
+    - Interactive MemoryLow is 15%.
+    - Tier swap = `DEV_SWAP_CASCADE_PCT`% of `SWAP_MDT` (unchanged rule).
+    - Tier CPUQuota = (`CPU_MDT` − `DEV_TIER_EXCLUDED_CPU_CORES`) × 100%.
+  - **Explicit values always win** and are the prompt defaults. The fractions are initial values, validated by design
+    §9 M6.
+  - **Disk swap only.** The excluded swap is the swap space the other services use on the swap device, read as their
+    `memory.swap.current`.
+  - **Worked examples (README):**
+
+    | Host | Inputs | Result |
+    |---|---|---|
+    | Shared host | 16 GiB RAM, 69 GiB swap, 6500M / 14G excluded | `RAM_MDT` ≈ 9.2 GiB, `SWAP_MDT` ≈ 54.5 GiB |
+    | r1002 | 4 cores, 7.75 GB, all 0 | 7.75 GB, SwapTotal − 512M, 400% |
+
+- **MDT-033.c Protection verification.** The production units are operator-owned, so this is verify-only by default.
+  `check.sh` and the wizard summary WARN when:
+  - the effective `memory.min` summed over `MDT_PROTECTED_UNITS` is below `MDT_EXCLUDED_RAM`;
+  - the children's `memory.min` sum exceeds the parent's (shared host: 7000M of scopes under a 6500M slice, so the
+    kernel scales the scopes down);
+  - a protected unit's `CPUWeight` or `IOWeight` is below 4× that of `dev.slice`.
+
+  `install.sh --apply-protection` (opt-in, interactive confirmation) writes `50-mdt-protection.conf` drop-ins with
+  `MemoryMin=`, `CPUWeight=` and `IOWeight=` for the named units.
+- **MDT-033.d Live probe.** `mdt-host-setup-wizard.py --probe-excluded [--units ...] [--seconds 600]`, read-only.
+  - **It reads, per named unit and child cgroup:**
+    - `memory.min/low/high/max/current`, `memory.swap.current`;
+    - `memory.stat` (`anon`, `file`);
+    - the `cpu.stat` usage delta;
+    - `cpu.weight`, `io.weight`.
+  - **It suggests:**
+    - RAM = the effective `memory.min` sum, rounded up to 256M. If no `memory.min` is set, the p95 of
+      `memory.current`, flagged "unprotected".
+    - Swap = the maximum of `memory.swap.current` over the window, rounded up to 512M.
+    - CPU = the p95 usage rate, rounded up to 0.5.
+  - **It prints** the table and the §c warnings, and writes nothing unless accepted.
+  - **Why it reads the files directly.** It is a one-shot configuration hint, not a resource profile, so the
+    cgprofile single-source rule does not apply. It must also run before cgprofile is installed.
+- **MDT-033.e PSI guard (`mdt-psi-guard`).** A stdlib service outside `dev.slice` that watches kernel PSI triggers:
+  - the protected units' `memory.pressure` `some` (10%);
+  - host `memory` `full` (5%);
+  - the protected units' `cpu.pressure` `some` (25%);
+  - with 10 s hold and 60 s release at half the threshold.
+
+  Actions in `enforce`, each reverted on release, on stop and at boot:
+  1. `CPUWeight` and `IOWeight` of `dev-gates`, `dev-background` and `dev-buildkitd` set to 1;
+  2. after 30 s still above, `memory.high` of `dev-gates` and `dev-background` lowered to max(floor,
+     0.9 × `memory.current`).
+
+  - It never freezes or kills: wall-clock budgets would expire and change results.
+  - `MDT_PSI_GUARD = off|report|enforce`, shipped as `report`. It switches to `enforce` after M6.
+  - Events go to `/run/mdt/psi-guard/events.jsonl`, which run-gate RG-144 reads as a contamination source. The
+    devcontainer template mounts that directory read-only.
+  - `mdt-dev-governance-reconcile` skips the keys the guard currently owns; the guard state file lists them.
+- **MDT-033.f Wizard prompt texts** (no "reserve"):
+  - `RAM unavailable to MDT — used by other services on this host (0 if none) [suggested: …]:`
+  - `Disk swap unavailable to MDT — swap space other services on this host occupy (0 if none) [suggested: …]:`
+    Help line: "Swap space on the swap device that these services use."
+  - `CPU cores unavailable to MDT — used by other services on this host, fractions allowed (0 on a host without other load) [suggested: …]:`
+  - `Host/production units to verify and probe (space-separated, empty if none) [...]:`
+  - The summary: `MDT may use: RAM <x> (overcommitted across tiers), swap <y>, CPU <z> cores. Everything else is
+    unavailable to MDT.`
+- **MDT-033.g Parallelism note (docs).** Lane workers and R2 jobs are sized by run-gate from measured per-worker
+  profiles (run-gate RG-146 and RG-148), not from these limits. The tier `MemoryMax` is the safety cap, and the
+  run-gate admission budget is the predictable need.
+
+**Acceptance criteria.**
+
+- **Keys:** every new key validates, including fractional cores (`0.5`, `1.5`; `1.55` refused).
+- **Old keys:** each is refused by the installer, the wizard and `check.sh` with the exact rename message.
+- **Wording:** a repository test finds no `\breserve` in any host-setup key name, prompt or help text, apart from the
+  refusal message and the README rename table.
+- **Sizing:** derived values equal the worked examples on fake `/proc/meminfo` and `nproc`.
+- **Swap:** `SWAP_MDT ≤ 0` gives the no-disk-swap warning and requires confirmation.
+- **Protection:** the §c warnings on a fake cgroup tree, including children-exceed-parent. `--apply-protection` writes
+  only after confirmation and only for named units.
+- **Probe:** suggestions on a fake tree (with and without `memory.min`); it writes nothing.
+- **PSI guard:** staged actions and their revert on a fake cgroupfs with injected pressure; restore on stop and at
+  boot; reconcile skips guard-owned keys; `report` mode writes events and changes nothing.
+- **Docs:** README, `host-setup.env.example` and CONSUMERS agree (docs-in-sync test).
+
+**Test plan.**
+
+- The host-setup unit tests (`tests/test_hs02.py`, new `tests/test_excluded_capacity.py`,
+  `tests/test_psi_guard.py`), plus `host-setup/tests/test-render.sh` with the new keys.
+- **Live on r1002** (design §9 M6): the probe with all values 0 and with a simulated profile (2G / 1G / 1 core).
+  - The guard in `report` during the M5 memory-hog run, then `enforce` for one repeat.
+  - Lane verdicts and buckets must stay identical under `enforce`.
+- **Afterwards:** a shared-host dry run of the probe (read-only) for the operator's numbers.
+
+**Dependencies and order.**
+
+- Independent of the other tools' releases.
+- M6 needs r1002 host setup completed (the 2026-11-02 run stopped at the Docker restart).
+- RG-144 consumes the guard events, but optionally.
+- Flip the guard to `enforce`, and adjust the tier fractions, after M6.
