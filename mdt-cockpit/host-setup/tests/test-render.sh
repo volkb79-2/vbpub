@@ -314,8 +314,7 @@ for tmpl in "$HERE"/units/*.in; do
     || fail "install.sh never renders units/$(basename "$tmpl")"
   case "$base" in
     *.slice)
-      printf '%s\n' "$JOINED_INSTALL" \
-        | grep -qE "systemctl start\b.*\b${base//./\\.}\b" \
+      grep -qE "systemctl start\b.*\b${base//./\\.}\b" <<<"$JOINED_INSTALL" \
         || fail "install.sh never starts $base (not in any systemctl start ... line, incl. continuations)" ;;
   esac
 done
