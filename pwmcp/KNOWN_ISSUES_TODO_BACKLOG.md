@@ -526,3 +526,11 @@ transparency color, composite it onto white before encoding the engine input,
 and document the supported transparency behavior in the README, design guide,
 and consumer guide. Do not add an oracle that preserves the current narrower
 behavior.
+
+## PWMCP-19 — screenshot fixtures: keep only public, agnostic ones, and prefer generated per-font alphabets
+
+**Status:** OPEN (filed 2026-11-03; operator rule 2026-11-03). Screenshots from public, agnostic, anonymous sources (vanilla Debian or TrueNAS
+installs) may be committed; the 242-frame local series stays out of git. The 24 vanilla-TrueNAS PNGs under
+`tests/corpus/console/truenas-27-vanilla/` stay as the published curated set. Test inputs should prefer the imagegen generator (alphabet
+screenshots per font, deterministic, no capture) over captured frames: move `tests/test_glyphgrid_perf.py` (~154-155, 20 captured frames) to
+generated per-font alphabets where the measurement allows, and keep the captured frames only for what only real console output can show.
