@@ -24,8 +24,19 @@ argv budget) and `nyxloom/nyxloom-trove/STANDING.md` (the current wave's frozen
 files). A hand-started CLI agent gets only this file — a nyxloomd-dispatched one
 gets the set injected — so check `ls nyxloom/nyxloom-trove/*.md` yourself.
 
-## VM files and downloads (estate-wide)
+## Directory conventions and VM files (estate-wide)
 
+| Path | Holds | Notes |
+|---|---|---|
+| `<project>/artifacts/` | build and run outputs | gitignored (`**/artifacts/`); may be a CoW subvolume |
+| `<project>/artifacts/vm-lab/` | VM images, runs, ssh | per project, per checkout |
+| `<repo root>/downloads/` | large immutable inputs (ISOs and the like) | gitignored; `.sha256` next to each file |
+| `.worktrees/` | git worktrees | inside the checkout; gitignored |
+| `logs/`, `evidence/` | run logs, gate and test evidence | gitignored (`**/logs/`, `**/evidence/`); unclassified, removed with the worktree |
+| `.assay/`, `vol-*` | assay resume state; docker bind-mount host dirs | gitignored; protected state: `ciu worktree rm` and branch pruning need an exact-branch consent flag to discard them |
+| `.run-gate/`, `.cmru/` | tool state (lane history, gate handoff) | gitignored; regenerable |
+
+- Placeholder rule: a conventional directory that holds only ignored content is a committed placeholder: a `README.md` (what it holds, owner, regenerable) plus a `.gitignore` (`*`, `!.gitignore`, `!README.md`), added with `git add -f` because `**/artifacts/` ignores it.
 - Repo conventions, no per-user settings: each project keeps its VM files (installed disks, per-run disks, OVMF vars, serial logs) in `<project dir>/artifacts/vm-lab/` (per-VM `<vm-name>/` directories and/or shared `images/`, `runs/<run>/`, `ssh/` beside them), and large shared downloads (ISOs with their `.sha256`) in `<repo root>/downloads/`. Both are gitignored contents inside committed placeholder directories (a `README.md` plus a `.gitignore`, force-added), so the folders exist after a fresh clone.
 - Scripts use these paths relative to their own location only, and take no environment variable to relocate them. An explicit path argument is fine; a wrapper that forwards or bind-mounts these folders must honour or refuse it, never silently ignore it.
 - Worktrees: `ciu worktree` will clone the declared paths from main on CoW hosts (declared per project in the shared `libraries/cowtree` schema; planned, not yet built). On plain hosts a worktree gets empty folders and scripts print one INFO line. Anything a worktree should keep must be copied to main. For CoW to work, the checkout (including `.worktrees/`) belongs on the CoW filesystem.
