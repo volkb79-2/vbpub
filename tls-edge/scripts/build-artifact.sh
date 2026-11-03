@@ -191,4 +191,7 @@ done
 # version input beside the tarballs so artifact-only publication never reads a
 # mutable source-tree file after the build worktree has been removed.
 cp -p "$VERSION_FILE" "$DIST_DIR/VERSION"
+# The standalone installer is a release asset beside the bundles (`tarball-publish
+# --extra-asset dist/get.py`); the retained record carries it for the same reason.
+cp -p "$TLS_EDGE_ROOT/get.py" "$DIST_DIR/get.py"
 echo "  Next: cmru release tls-edge --config ../cmru.toml"

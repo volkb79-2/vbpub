@@ -389,6 +389,8 @@ def _registry_problem(argv: list[str], built) -> str | None:
     if not rest:
         return "no verb"
     verb, arguments = rest[0], rest[1:]
+    if verb in ("help", "version"):
+        return None  # cli-extended built-ins (SPEC: `help [VERB]`, `version`), not registry verbs
     parser = (
         built.delegates[verb].parser if verb in built.delegates
         else built.command_parsers.get(verb)

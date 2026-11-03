@@ -547,6 +547,16 @@ class TestTlsEdgeBundle:
         src = render_from_config("tls-edge", self.CENTRAL)
         ns: dict = {}
         exec(compile(src, "<tls-edge/get.py>", "exec"), ns)
+        # tls-edge is now an instance installer (wizard, stable stack folder, per-interpreter
+        # wheels, adapter). This class pins the generic bundle mechanism against a bundle the
+        # real manifest builder produced, so those instance features are switched off here
+        # (they are exercised by tls-edge's own tests/test_installer_offline.py) and the
+        # operator-edited file is preserved by an explicit PRESERVE_PATHS entry.
+        ns.update(
+            QUESTIONS=[], ENTRYPOINT="", STABLE_DIR="", STUB_LAUNCHERS=[], LAUNCHERS=[],
+            WHEEL_SPECS=[], VARIANTS=[], REQUIRED_COMMANDS=["python3"],
+            PRESERVE_PATHS=["ciu-stack/ciu.toml.j2"],
+        )
         ns["INSTALL_DIR_SYSTEM"] = str(tmp_path / "opt-tls-edge")
         use_bundles(ns, bundles)
         return ns
@@ -643,9 +653,12 @@ class TestTlsEdgeBundle:
         if not (REPO / "tls-edge" / "scripts" / "build-artifact.sh").exists():
             pytest.skip("tls-edge not present")
         script = (REPO / "tls-edge" / "scripts" / "build-artifact.sh").read_text()
-        assert "handler bundle-manifest" in script
-        call = script.index("cmru handler bundle-manifest --name")
+        # The per-variant script writes the manifest through its own helper (which builds
+        # it with cmru's builder); it must run after the mtime clamp and before the pack.
+        call = script.index("write-bundle-manifest.py")
         assert script.rindex("touch -t", 0, call) < call < script.index("tar -C")
+        helper = (REPO / "tls-edge" / "scripts" / "write-bundle-manifest.py").read_text()
+        assert "build_bundle_manifest" in helper or "bundle-manifest" in helper
 
 
 def args_ns(**kw):

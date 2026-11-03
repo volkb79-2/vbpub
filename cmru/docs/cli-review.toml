@@ -1341,8 +1341,8 @@ test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[handler/tarball-
 id = "case:route:entrypoint:cmru/handler/tarball-publish/minimum"
 state = "active"
 decision = "accept"
-reviewed_signature = "sha256:4d11053914c6cebb18ee0ad9b27325799d6b0d06a4a4b9b99e6ba7d1d7e4c9d5"
-rationale = "--prefix, --cwd, --glob and one version source are required."
+reviewed_signature = "sha256:be5a8af7980a8444b9e3ec4fffffd85fde2d4006f0a2fb1c8fa7249a2baded08"
+rationale = "--prefix, --cwd, --glob and one version source are required; --variant, --asset-suffix and --extra-asset are optional."
 invocation = ["handler", "tarball-publish", "--prefix", "demo-v", "--cwd", "missing-dir", "--glob", "*.whl", "--version-file", "VERSION"]
 expected_exit_status = 1
 expected_stdout_contains = ""
@@ -1394,13 +1394,52 @@ id = "case:route:entrypoint:cmru/handler/tarball-publish/option-spelling/option:
 state = "active"
 decision = "accept"
 reviewed_signature = "sha256:cced8256dbf3ee658052065260024116230abf877fc5040b0db4b5cc0c42d87f"
-rationale = "--glob GLOB selects the one source artifact (required for tarballs)."
+rationale = "--glob GLOB selects the one source artifact (required for tarballs); with --variant it selects the pool of per-variant candidates."
 invocation = ["handler", "tarball-publish", "--prefix", "demo-v", "--cwd", "missing-dir", "--glob", "*.whl", "--version-file", "VERSION"]
 expected_exit_status = 1
 expected_stdout_contains = ""
 expected_stderr_contains = "GITHUB_PUSH_PAT is required"
 effects = ["Refuses on the missing credential (exit 1) before any glob is evaluated."]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[handler/tarball-publish/option-spelling/--glob/--glob]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/handler/tarball-publish/option-spelling/option:route:entrypoint:cmru/handler/tarball-publish/--variant/--variant"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:1ad0d013787ecafc0a26626bdc61933d56faebebbfaf7a80d6716101fe73d124"
+rationale = "Repeatable --variant NAME[=LABEL] declares one per-interpreter variant asset; --glob then selects the pool of candidate tarballs and the publish is all declared variants or nothing. Variant semantics (partial refusals, retained records) are pinned by tests/test_tarball_variants_publish.py."
+invocation = ["handler", "tarball-publish", "--prefix", "demo-v", "--cwd", "missing-dir", "--glob", "*.tar.xz", "--version-file", "VERSION", "--variant", "py313=CPython 3.13"]
+expected_exit_status = 1
+expected_stdout_contains = ""
+expected_stderr_contains = "GITHUB_PUSH_PAT is required"
+effects = ["Refuses on the missing credential (exit 1); no variant is resolved and nothing is uploaded."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[handler/tarball-publish/option-spelling/--variant/--variant]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/handler/tarball-publish/option-spelling/option:route:entrypoint:cmru/handler/tarball-publish/--asset-suffix/--asset-suffix"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:4e38a31bedf3aa0d9bf077163f8cc0063d1bc03ee655e64515f8e009945530a0"
+rationale = "--asset-suffix SUFFIX is the variant asset extension (default .tar.xz) used to name <prefix>-v<version>-<variant><suffix>; it has no effect without --variant."
+invocation = ["handler", "tarball-publish", "--prefix", "demo-v", "--cwd", "missing-dir", "--glob", "*.tgz", "--version-file", "VERSION", "--variant", "py313", "--asset-suffix", ".tgz"]
+expected_exit_status = 1
+expected_stdout_contains = ""
+expected_stderr_contains = "GITHUB_PUSH_PAT is required"
+effects = ["Refuses on the missing credential (exit 1); no asset name is derived."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[handler/tarball-publish/option-spelling/--asset-suffix/--asset-suffix]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/handler/tarball-publish/option-spelling/option:route:entrypoint:cmru/handler/tarball-publish/--extra-asset/--extra-asset"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:d3562ae0696a849c20a121ada61fd21baa3d729c115559ea51f88b5d6699ba5c"
+rationale = "Repeatable --extra-asset PATH adds a release-level companion (a project's get.py) beside the variant assets; valid only with --variant, a pattern matching nothing is refused."
+invocation = ["handler", "tarball-publish", "--prefix", "demo-v", "--cwd", "missing-dir", "--glob", "*.tar.xz", "--version-file", "VERSION", "--variant", "py313", "--extra-asset", "get.py"]
+expected_exit_status = 1
+expected_stdout_contains = ""
+expected_stderr_contains = "GITHUB_PUSH_PAT is required"
+effects = ["Refuses on the missing credential (exit 1); the companion file is not read."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[handler/tarball-publish/option-spelling/--extra-asset/--extra-asset]"]
 
 [[cases]]
 id = "case:route:entrypoint:cmru/handler/tarball-publish/option-spelling/option:route:entrypoint:cmru/handler/tarball-publish/--log-prefix-time-short/--log-prefix-time-short"

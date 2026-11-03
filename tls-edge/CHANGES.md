@@ -13,6 +13,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - docs: release intent is explicit: this release is **3.0.0** (two breaking changes above, committed without a `!` marker): `cmru release tls-edge --set-version 3.0.0` (docs/INSTALL.md, "Releasing tls-edge"). Releases are unsigned (SHA-256 + in-bundle manifest only); the trust model and the get.py pinning advice are documented there.
 - test: the installer test fails (not skips) when cmru is not importable (`TLS_EDGE_ALLOW_INSTALLER_SKIP=1` opts out); new tamper cases (bad sidecar, modified/unlisted file, replaced wheel) and the `--overwrite-local` case.
 - feat: `run-gate.toml` with lane `tests` (tester-unified) and `requirements-test.txt`; `scripts/stage-wheels.py --ciu-version` / `TLS_EDGE_CIU_VERSION` pins the bundled ciu.
+- fix(release): the per-interpreter bundles publish through `cmru handler tarball-publish --variant` (all variants under one tag, or none) instead of the project script `scripts/publish-variants.py`, which refused every retained build-output release; the standalone `get.py` is now a release asset beside the bundles (cmru KI-115).
 - Consumer examples reduced to A (web), D (guarded) and E (media TCP+UDP) with `consumer-examples/README.md`; tests render and lint every example offline.
 
 <!-- cmru: release history -->

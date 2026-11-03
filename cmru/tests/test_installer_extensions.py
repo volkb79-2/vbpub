@@ -510,8 +510,9 @@ class TestRealProjects:
             pytest.skip("tls-edge not present")
         out = render_from_config("tls-edge", self.CENTRAL)
         assert "enroll" not in out and "authorized_keys" not in out
-        assert 'REQUIRED_COMMANDS: List[str] = ["python3", "docker"]' in out
-        assert '"ciu-stack/ciu.toml.j2"' in out and '"edge-proxy/.env"' in out
+        assert 'REQUIRED_COMMANDS: List[str] = ["python3", "docker", "git"]' in out
+        # The instance model (stable stack folder, wizard answers) replaced preserved paths.
+        assert "PRESERVE_PATHS: List[str]    = []" in out and 'STABLE_DIR = "stack"' in out
         assert out == (REPO / "tls-edge" / "get.py").read_text(encoding="utf-8")
 
     def test_ciu_inlines_its_own_enroll_fragment_and_matches_the_committed_file(self):

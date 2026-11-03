@@ -2728,7 +2728,17 @@ by `stat` of the mounted socket.
 
 ## KI-115 — `tarball-publish` cannot publish a multi-variant release; `publish_versioned_variants` has no handler
 
-**Status:** OPEN. Filed 2026-11-04 (found packaging tls-edge with per-interpreter wheels).
+**Status:** FIXED 2026-11-04 on branch `fix-cmruki115-20261104c` (pending merge and cmru 7.2.0). Filed 2026-11-04 (found packaging tls-edge with per-interpreter wheels).
+
+**Implemented.** `cmru handler tarball-publish --variant NAME[=LABEL]` (repeatable; `--asset-suffix`, default `.tar.xz`; release-level `--extra-asset`).
+`--glob` selects the candidate pool (retained record or `<cwd>/dist`); every declared variant must be exactly one file named
+`<prefix>-v<version>-<NAME><suffix>` and no other match is allowed, so a missing, stale (another version), undeclared or duplicate file refuses the
+whole publish before any upload. `publish_versioned_variants` gained `extra_assets`, the retained-record guards of `publish_versioned`
+(`require_existing_targets`, `latest_pointer_recreate`, `expected_tag_commit`), up-front refusal of duplicate/missing/colliding inputs, and
+`verify_assets` (the versioned release's assets are re-read before `<prefix>-latest` moves). GitHub cannot write a release atomically; a failed
+upload leaves an incomplete versioned release but never a moved pointer, and the idempotent re-run completes it. tls-edge now publishes through
+the handler (`scripts/publish-variants.py` removed; `dist/get.py` is a release asset). Tests: `tests/test_tarball_variants_publish.py` (handler with
+a fake GitHub client, keystone guards, and a real-git `cmru release` end to end), tls-edge `tests/test_release_config.py`.
 
 **Problem.** `[[project.variants]]` (S-REL.6) and `publish_versioned_variants` exist, `get.py --variant` selects an asset, but
 `cmd_tarball_publish` accepts exactly one retained tarball and no handler calls the variants keystone. A project with platform wheels in its
