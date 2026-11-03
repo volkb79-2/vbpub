@@ -16,7 +16,7 @@ below is *this repo's* delta on top of that doctrine.
 
 ## Conventions
 
-A project's general/default Python dependency set is `requirements.txt`. Name every specialized set `requirements-<use-case>.txt` in lowercase kebab-case (for example `requirements-test.txt`, `requirements-docs.txt`, `requirements-wizard.txt`); never the suffix form `<use-case>-requirements.txt`. Update every consumer when a manifest is renamed. Existing tools migrate in separate, tool-scoped changes; the `assay/` manifests change with assay's next release.
+Every Python dependency manifest carries a use-case suffix; there is no bare `requirements.txt`. Name each set `requirements-<use-case>.txt` in lowercase kebab-case (for example `requirements-runtime.txt` for a project's general runtime set, `requirements-test.txt`, `requirements-docs.txt`, `requirements-wizard.txt`); never the suffix form `<use-case>-requirements.txt`. Update every consumer when a manifest is renamed. Existing tools migrate in separate, tool-scoped changes; the `assay/` manifests change with assay's next release.
 
 **Working on nyxloom itself?** Also read **`nyxloom/nyxloom-trove/DOCTRINE.md`**
 (its project delta: structlog reserved-key traps, and `build_dispatch`'s hard

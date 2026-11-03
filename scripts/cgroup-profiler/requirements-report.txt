@@ -1,3 +1,5 @@
+# Report-environment lock. Frozen from ".[test]" (see setup.sh --relock), so it
+# also includes the test tools (pytest, pluggy, iniconfig).
 contourpy==1.3.3
 cycler==0.12.1
 fonttools==4.63.0
