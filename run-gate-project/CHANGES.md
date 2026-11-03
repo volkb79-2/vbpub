@@ -59,6 +59,19 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   the plugin's own files is RG-145's.
 
 ### Fixed
+- Fix (RG-139): the R2 campaign closeout forwards the lane's declared coverage
+  artifact (`--coverage`, from the Assay inventory; only when the verdict and
+  the artifact exist and the judge's `analyze campaign` knows the flag), retains
+  it as `<run-id>.coverage.json` evidence when the analysis re-verified it, and
+  names the analysis's `coverage.artifact_status` in the closeout line.
+- Fix (RG-115): a follower (disowned record) no longer collects the Assay
+  closeout; it prints `assay closeout: the owning client records it` and keeps
+  no second evidence copy or spurious `unavailable` WARNING.
+- Fix (RG-136): footprint display, `doctor` drift and `footprint --write` no
+  longer mix strict and relaxed I/O-mode statistics. Manifest lane entries
+  carry `io_sync`; the live footprint line and `doctor` compare against the
+  same mode's history; a manifest without a mode is treated as strict and
+  `doctor` names the migration (re-run `footprint --write`).
 - Fix (RG-116 item 3, `tools/coverage_gate.py`): `--source` is repeatable and
   the selftest lane passes `run_gate.py` and `run_gate_admission.py`, so the
   admission module shipped in the wheel is diff-judged too.
@@ -71,6 +84,28 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   96.97% total fails `--cov-fail-under=97` instead of exiting 0;
   `tests/test_coverage_precision.py` pins it against real pytest-cov and
   CONSUMERS.md tells command-lane consumers to do the same.
+- Fix (RG-114): the exec lane's cleanup `finally` runs under `deferred_sigterm()`, so a second SIGTERM
+  during the profiling stop no longer skips the in-flight record clear.
+- Fix (RG-117a): forwarded secret values (`forward_env`, the profile token) travel in the docker client's
+  environment as `-e KEY`; `docker run`/`docker exec` argv, `/proc/<pid>/cmdline` and the printed argv
+  carry names only. Resource facts (`RUN_GATE_IO_SYNC`, `COWTREE_MODE`, workers) stay `-e KEY=value`
+  (printed redacted).
+- Fix (RG-117b): `save_container_logs` creates the file mode 0600 at creation (`O_NOFOLLOW`, no
+  chmod-after-write window), creates its directory 0700 and refuses a planted symlink or a foreign-owned
+  file or directory.
+- Fix (RG-117c): `slice_cgroupfs_dir` nests `a-b-c.slice` under `a.slice/a-b.slice/`, so `memory.max` of a
+  three-part slice is read instead of admitting with a warning; the test that pinned the wrong value is
+  corrected.
+- Fix (RG-117d): an exception escaping `main()` prints its traceback and ends as ERROR (exit 2), not as
+  Python's status 1 (a lane FAIL).
+- Fix (RG-117e): `DockerAdmission.resume` binds the ticket to the owner JSON the lane persisted (a ticket
+  name alone could be another gate's after an allocator reset); an exited ticket with malformed labels is
+  a tombstone, not a live slot; only Docker's name-collision wording is a collision; `pid_ns` must be a
+  canonical ASCII decimal; an empty or garbled `memory.max` means "no ceiling" instead of ValueError;
+  `effective_image` is recorded after the `RUN_GATE_HOST_IMAGE` override; the host-PSI stall pause credits
+  at most `PRESSURE_PAUSE_MAX_SECONDS` (30 min).
+- Fix (RG-118): a lane that runs as an explicit `user` first checks `getent passwd "$(id -u)"` and refuses
+  with exit 2 and a named line when the image has no entry for that uid.
 
 <!-- cmru: release history -->
 

@@ -528,6 +528,34 @@ class TestCreateRemoveList:
         worktree.remove(tmp_repo, "wt1", force=True)
         assert capsys.readouterr().out == ""
 
+    @pytest.mark.parametrize("force", [False, True])
+    def test_remove_refuses_mount_under_checkout_before_any_cleanup(
+        self, tmp_repo, fake_generate_env, monkeypatch, force
+    ):
+        """WT-OW-01 through ciu's own surface: a mount under the checkout
+        (e.g. a CoW subvolume holding VM disks) refuses removal, even with
+        force, before `ciu clean` or any deletion runs."""
+        target = create_path(tmp_repo, "wt1", base="main")
+        mount = target / "artifacts" / "vm-lab"
+        mount.mkdir(parents=True)
+        (mount / "disk.img").write_text("precious", encoding="utf-8")
+        shared_core = worktree._shared_worktree().core
+        table = (
+            "22 1 8:1 / / rw - ext4 /dev/sda1 rw\n"
+            f"101 22 0:50 / {mount} rw - btrfs /dev/vda1 rw,subvol=/vm-lab\n"
+        )
+        monkeypatch.setattr(shared_core, "_read_mountinfo", lambda: table)
+        calls: list[str] = []
+        monkeypatch.setattr(
+            worktree, "_clean_in", lambda wt, *, yes: calls.append("clean") or 0
+        )
+        with pytest.raises(worktree.WorktreeError, match="detach it first") as caught:
+            worktree.remove(tmp_repo, "wt1", force=force)
+        assert str(mount) in str(caught.value)
+        assert calls == []
+        assert (mount / "disk.img").read_text(encoding="utf-8") == "precious"
+        assert target.exists()
+
     def test_remove_surfaces_git_remove_failure_after_clean(
         self, tmp_repo, fake_generate_env, monkeypatch
     ):

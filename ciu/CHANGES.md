@@ -92,6 +92,7 @@ the technical detail below it.
 ## [Unreleased]
 
 ### Fixed
+- WT-OW-01: `ciu worktree rm` refuses, before `ciu clean` or any deletion, when a mount (CoW subvolume, bind mount) sits at or under the checkout; each mount is named ("detach it first"), nothing is unmounted, and `--force` does not override it. The check lives in the shared `libraries/worktree` (identical copy embedded in cmru).
 - CIU-144: the CIU-117 worktree image-scoping notice now goes to stderr, so `ciu resolve --json` and `ciu check --json` keep stdout to one JSON document in a linked worktree whose stack declares `build:`.
 - CIU-86: `ciu graph --format json` (every format) writes its own notices and validation errors to stderr; stdout carries only the graph (S13.5).
 - CIU-139: `ciu resolve` and `ciu exec` seed identity and machine facts from the selected root's instance record (as `ciu up`/`check` do), so they work in an unprimed shell and from any cwd with `--root-folder`; a root with no record refuses naming `ciu env generate`.
@@ -99,6 +100,8 @@ the technical detail below it.
 - CIU-150: the governance slice preflight also checks a literal `cgroup_parent: <name>.slice` authored in a stack's compose file. A slice systemd definitely reports absent refuses (exit 2); an inconclusive probe (cockpit, no systemd PID 1) now WARNs and continues.
 - CIU-148: SPEC S15.20 and DESIGN-NOTES D8 cite dstdns `docs/RESOURCE-GOVERNANCE.md` (sections 4 and 6) instead of the merged-away `KSM-OPTIN-MEASUREMENTS.md`.
 - CIU-101: the engine `--help` module-guard test no longer fails when an unrelated finalizer warning lands in its recording window.
+- CIU-146: `ciu down --profile`/`--phases` stops only the containers (running or exited) of the selected stacks, enumerated by each stack's exact compose-project label; an empty selection refuses instead of widening, and bare `ciu down` stays project-wide (S7.8).
+- CIU-147: the generated overlay stamps each service that mounts rendered configfiles with a `ciu.configfile.sha256` label (content hash of the mounted staging directories), so a changed rendered config recreates exactly that service on `ciu up` and an unchanged render recreates nothing (S8.3 step 15/16).
 ### Added
 - feat(ciu): `ciu worktree refork LOGICAL [--onto TRUNK] [--json]` re-records `fork_point_sha` after a legitimate rebase so run-gate's derived base (R-35a) works again without a hand-passed `--base` (CIU-142). It refuses a dirty tree and a trunk that is not an ancestor of HEAD, is idempotent, and leaves record schema 6 unchanged (the previous value and timestamp are reported in its JSON document, operation `refork`). `ciu worktree inspect` now reports a `fork_point` status (`current`/`stale`/`unrecorded`/`unknown`) and names the verb for a stale record.
 

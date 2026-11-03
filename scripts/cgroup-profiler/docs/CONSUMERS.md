@@ -534,6 +534,36 @@ left `running` as an orphan.
 bounded top-level `cgprofile.slice` (see `infra/README.md`); a non-container or
 development `serve` run is refused too. Pre-creation proof is CIU-150.
 
+**When `ctl` cannot reach the daemon** (CP-31), the `could not reach the daemon`
+line on stderr (exit 3) ends in a `[cause: ...]` that names which of three
+situations applies, using only what the calling process can see:
+
+- `socket-not-mounted`: the socket's directory does not exist in this
+  environment (a nested or sandboxed lane without the `/run/cgprofile` bind).
+- `socket-missing`: the directory exists but the socket node is gone (the
+  daemon container is not running, or the node was removed).
+- `daemon-refusing`: the node exists and nothing listens (the daemon exited or is
+  restarting; a daemon that refuses to start, for example on the
+  `cgprofile.slice` guard above, restarts forever and leaves exactly this).
+  `socket-permission` is the fourth, separate case: the node exists but this
+  user may not connect.
+
+A running daemon also checks every few seconds that its socket path still holds
+its own listener. It rebinds when the node was removed or replaced, and exits 3
+(so `restart: unless-stopped` recreates it) when it cannot. At start it never
+deletes a non-socket node and never replaces a socket another daemon still
+answers on: `serve` exits 2 and names the path (CP-34).
+
+**Concurrency and `busy`** (CP-33). Every connection is served on its own
+thread, so a client that sends its request line slowly, or a long verb (`report`,
+a `stop` against a wedged worker), no longer delays other verbs. Admission is
+bounded: 32 connections reading a request line, 16 verbs running, 32 open
+`watch` streams. A request over a bound is answered
+`{"ok": false, "error": {"code": "busy", ...}}`; the code is additive (contract
+stays 1) and the right reaction is to retry shortly. `version`, `host`,
+`status` and `gc` are read-only snapshots; `start`, `stop` and `report` are
+guarded by the registry and session locks.
+
 A stopped session whose DAMON owner was closed carries
 `summary.damon_cleanup: {"confirmed": <bool>, "slot": <int|null>,
 "quarantined": <bool>}` (also in `manifest.json`). `confirmed: false` means the

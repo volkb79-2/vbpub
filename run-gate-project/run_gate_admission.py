@@ -64,11 +64,15 @@ class AdmissionTicket:
     admitted_at: float
     admitted_monotonic: float
     run_deadline: int
+    owner: str | None = None   # compact owner JSON; `resume` binds on it
 
     def result(self) -> dict:
-        return {"tier": "gates", "ticket": self.name,
-                "waited_s": round(self.waited_s, 3),
-                "override": self.override}
+        result = {"tier": "gates", "ticket": self.name,
+                  "waited_s": round(self.waited_s, 3),
+                  "override": self.override}
+        if self.owner is not None:
+            result["owner"] = self.owner
+        return result
 
 
 def compact_json(value: dict) -> str:
@@ -133,7 +137,10 @@ def validate_owner(value: object) -> dict | None:
             or not isinstance(owner["start_ticks"], int)
             or owner["start_ticks"] < 0):
         return None
-    if str(owner["pid_ns"]).isdecimal() is False:
+    # RG-117e: `pid_ns` is the canonical decimal inode string (S21.4.8).
+    # `str.isdecimal()` also accepts non-ASCII digits and leading zeros,
+    # spellings no writer produces that would never equal a live inode.
+    if not re.fullmatch(r"0|[1-9][0-9]*", owner["pid_ns"]):
         return None
     # Enforce the wire spelling as well as its JSON meaning.
     if compact_json(owner) != value:
@@ -411,8 +418,11 @@ class DockerAdmission:
         if proc.returncode == 0:
             return True
         detail = (proc.stderr or proc.stdout or "").lower()
-        if "already in use" in detail or "conflict" in detail \
-                or "name" in detail and "exists" in detail:
+        # RG-117e: only Docker's name-collision wording is a collision; a
+        # bare "conflict" also appears in unrelated refusals ("conflicting
+        # options", "conflict between ...") that must surface as errors.
+        if "is already in use" in detail \
+                or ("name" in detail and "exists" in detail):
             return False
         lines = (proc.stderr or proc.stdout or "").strip().splitlines()
         message = lines[-1] if lines else "no detail"
@@ -770,6 +780,17 @@ class DockerAdmission:
             self.notice(f"run-gate: admission WARNING: cannot resume "
                         f"malformed ticket {name!r}")
             return None
+        # RG-117e: a ticket NAME alone is not an identity — after a prune
+        # that resets the number allocator another gate can own the same
+        # name. Bind on the owner tuple the lane's own acquisition persisted;
+        # a record without one (written before this check) is not adoptable,
+        # and the lane acquires a fresh ticket instead.
+        persisted_owner = prior_result.get("owner")
+        if not isinstance(persisted_owner, str) or persisted_owner != \
+                self._labels(tickets[0]).get("ciu.reservation.owner"):
+            self.notice(f"run-gate: admission: ticket {name!r} does not "
+                        "belong to this lane's persisted owner; not resumed")
+            return None
         marker_name = f"{RUN_PREFIX}{name}"
         markers = [obj for obj in self._group_objects(name)
                    if self._name(obj) == marker_name]
@@ -787,7 +808,7 @@ class DockerAdmission:
                       else 0.0),
             override=parsed["override"], admitted_at=self.clock(),
             admitted_monotonic=self.monotonic(),
-            run_deadline=marker["deadline"])
+            run_deadline=marker["deadline"], owner=persisted_owner)
 
     def _owner_is_provably_dead(self, owner: dict) -> bool:
         """Only judge liveness inside the exact same host/boot/PID namespace."""
@@ -1022,6 +1043,11 @@ class DockerAdmission:
                     state = self._status(obj)
                     labels = self._labels(obj)
                     parsed = parse_reservation_labels(labels)
+                    if state in ("exited", "dead", "removing"):
+                        # RG-117e: a tombstone holds no slot, readable labels
+                        # or not (status_snapshot agrees: tombstone is never
+                        # counted live).
+                        continue
                     if parsed is None:
                         self.notice(f"run-gate: admission WARNING: malformed "
                                     f"ticket labels on {other_name!r}; counting "
@@ -1058,7 +1084,7 @@ class DockerAdmission:
                 raise AdmissionError(f"run marker {marker_name!r} already exists")
             return AdmissionTicket(ticket_name, number, marker_name, waited,
                                    override, admitted_at, admitted_monotonic,
-                                   true_deadline)
+                                   true_deadline, compact_json(owner))
         except BaseException:
             try:
                 self.release_name(ticket_name, number)

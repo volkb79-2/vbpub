@@ -30,6 +30,6 @@ wheel="$(find "$wheel_dir" -maxdepth 1 -type f -name 'run_gate-*.whl' -print -qu
 test -n "$wheel"
 test "$(sha256sum "$wheel" | awk '{print $1}')" = "$RUN_GATE_WHEEL_SHA256"
 "$uv" pip install --python "$python" "$wheel"
-"$RUNNER_HOME/venvs/tools/bin/cmru" --version
+"$RUNNER_HOME/venvs/tools/bin/cmru" version
 "$RUNNER_HOME/venvs/tools/bin/run-gate" --version
 sha256sum "$wheel"

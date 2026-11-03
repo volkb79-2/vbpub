@@ -4466,17 +4466,46 @@ def _refuse_if_protected(config: dict, args: argparse.Namespace, action_label: s
     return 1
 
 
-def action_stop(config: dict) -> int:
-    """--stop: stop all project containers (volumes preserved) — S7.8 / B4.
+def action_stop(
+    config: dict,
+    *,
+    repo_root: Optional[Path] = None,
+    selection: Optional[list[dict]] = None,
+) -> int:
+    """--stop: stop project containers (volumes preserved) — S7.8 / B4.
 
-    Anchored prefix match via ``docker ps --filter name=`` + a Python regex
-    re-filter, then ONE batched ``docker stop c1 c2 ...``. No infra_containers
-    NameError (the v1 B4 path is gone).
+    Bare (``selection`` None): anchored prefix match via ``docker ps --filter
+    name=`` + a Python regex re-filter, then ONE batched ``docker stop c1 c2
+    ...``. No infra_containers NameError (the v1 B4 path is gone).
+
+    Restricted (CIU-146; ``selection`` given because ``--profile`` or
+    ``--phases`` was passed): stops ONLY the containers, running or exited,
+    of the selected stacks, enumerated by the exact
+    ``com.docker.compose.project`` label of each stack's resolved compose
+    project. An empty selection refuses (returns 1) rather than falling back
+    to the whole project: a narrowed teardown never silently widens.
     """
     info("=" * 60)
     info("STOP: stopping project containers (volumes preserved)")
     info("=" * 60)
-    containers = _matching_containers(config)
+    if selection is not None:
+        if repo_root is None:
+            error("[CIU-146] restricted --stop needs the repo root; refusing to widen to the whole project")
+            return 1
+        if not selection:
+            error(
+                "[CIU-146] --profile/--phases selected no stacks; refusing to "
+                "stop anything (a restricted --stop never widens to the whole project)"
+            )
+            return 1
+        try:
+            projects = _stack_compose_projects(repo_root, config, selection)
+            containers = _stack_project_containers(projects)
+        except ValueError as exc:
+            error(f"[CIU-146] cannot resolve the selected stacks' containers: {exc}")
+            return 1
+    else:
+        containers = _matching_containers(config)
     if not containers:
         info("No matching containers running")
         return 0
@@ -5974,7 +6003,13 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
             ac = action_list_profiles(profile.config)
         elif action == "stop":
             refusal = _refuse_if_protected(profile.config, args, "stop")
-            ac = refusal if refusal is not None else action_stop(profile.config)
+            if refusal is not None:
+                ac = refusal
+            elif cli_profiles or cli_phases:
+                # CIU-146: a narrowed down stops only the selected stacks.
+                ac = action_stop(profile.config, repo_root=repo_root, selection=selection)
+            else:
+                ac = action_stop(profile.config)
         elif action == "clean":
             refusal = _refuse_if_protected(profile.config, args, "clean")
             ac = refusal if refusal is not None else action_clean(

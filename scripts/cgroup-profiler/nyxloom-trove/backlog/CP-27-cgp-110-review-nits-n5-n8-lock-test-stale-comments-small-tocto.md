@@ -3,7 +3,7 @@ kind: backlog-entry
 schema_version: 1
 id: CP-27
 title: "CGP-110 review NITs N5-N8: held-lock test does not pin S9, stale comments, small TOCTOU, misleading stop message"
-status: open
+status: fixed
 type: "bugfix"
 severity: "low"
 component: "daemon"
@@ -72,3 +72,8 @@ they be filed. The branch was merged into the 1.1.0 wave branch on 2026-10-27; t
 - N7 ACCEPTED (reviewer's disposition: a failed `cgroup.kill` write on a removed leaf is harmless; revisit only if it shows in the daemon log).
 - N8 FIXED: `stop` reports "the session lock was busy" when the worker exited (`_Session.finalize_refusal`), tests `test_stop_with_a_busy_session_lock_does_not_blame_the_worker` and its wedged-worker counter-case.
 - N9, N10, N11 remain open (`serve.py` package fix-cgp-1); N12 was closed on 2026-10-27. The entry stays `open` until N9-N11 land.
+
+FIXED 2026-11-04 (05ea66bda), N9-N11 (with N5-N8 above at 51d42dad3, N12 on 2026-10-27; the entry is now closed):
+- N9: `_finalize_session_locked` runs the section under `_RestoreClosedOnError`; on an exception `closed` and a forced mark are restored under the session lock, the failure is logged, `finalize_refusal = "error"`, the call returns False and `stop` answers `stop-incomplete` naming the error. Tests `test_n9_a_raising_finalize_reopens_the_session_and_a_retry_succeeds`, `test_n9_a_failed_forced_finalize_clears_the_forced_mark`.
+- N10: `_disable_damon_for_session` closes DAMON while holding the session lock. Test `test_n10_damon_runtime_close_is_done_under_the_session_lock` (a forced finalization started during the close completes after it and the Summary carries `damon_cleanup`; it fails on the old code).
+- N11: `_stop_all_sessions` sets every stop event and joins the workers outside the daemon lock on one shared 10 s budget, then finalizes with `prejoined=True`. Test `test_n11_shutdown_waits_for_workers_outside_the_daemon_lock`.

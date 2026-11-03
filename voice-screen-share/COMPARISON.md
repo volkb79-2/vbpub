@@ -37,6 +37,45 @@ Terms: **RC** = remote control of another person's screen (mouse and keyboard), 
 Finding that drives everything: **no single product covers R1-R6.** Chat+voice products give no remote control;
 remote-control products give no chat or voice. Only Jitsi Meet Electron puts RC inside a call.
 
+### 1b. Operator requirements (stated 2026-11-04) and coverage
+
+The operator's own list, made explicit. Each item maps to the numbered requirements above and adds the acceptance wording
+used by the voice analysis (`reports/MATTERMORE-VOICE-ANALYSIS-2026-11-04.md`, kept with the release-program reports).
+
+| ID | Requirement | Maps to | Status of knowledge |
+|---|---|---|---|
+| O1 | Markdown chat (channels, threads, code blocks) | R1 | needed |
+| O2 | **Persistent voice channels**: standing rooms, join/leave in one click, visible occupants, TeamSpeak/Discord feel | R6 (raised from soft to operator-stated) | needed |
+| O3 | **Voice activation that reacts to speech only**: volume threshold plus content detection, not music or keyboard noise | new | needed |
+| O4 | **Noise cancellation**, including in the **Windows desktop app** | R3 plus Windows client | needed |
+| O5 | **Echo cancellation with speakers** (no headphones) | new | operator believes it already works: **to verify** (tests in the voice analysis, section 4.4) |
+| O6 | Screen sharing to a group | R4 | needed |
+| O7 | Remote control of a shared screen, with consent | R5 | needed |
+| O8 | Self-hosted, deployed via ciu | R7, R8 | needed |
+
+Coverage by solution. Flags: **V** verified (source or vendor docs read), **R** recall, **?** not established, **T** needs a test on our stack.
+Cells say what the solution does today without custom code unless "plugin" or "patch" is named.
+
+| Solution | O1 md chat | O2 persistent rooms | O3 speech-only activation | O4 noise cancel (Windows desktop client) | O5 echo cancel, speakers | O6 screen share | O7 remote control | O8 self-host/ciu |
+|---|---|---|---|---|---|---|---|---|
+| Mattermost TE + Calls | ✓ [V] | ✗ per-call, ring only DM/GM, small active-call icon [V source] | ✗ mute and PTT (PTT only in popout, no global key) [V]; server-side speaking indicator only [V] | partial: browser NS only [V]; Desktop runs plugin bundle in its own widget window [V] | partial: `echoCancellation:true` + playout via `<audio>` [V code]; effect **T**; share-audio loopback may echo on Windows [V code, R effect] | ✓ one sharer per call [V] | ✗ [V] | ✓ exists; 3+ participants need the env var `MM_CALLS_GROUP_CALLS_ALLOWED=true` or a paid licence [V source] |
+| Mattermore (fork) | ✓ [V] | ✗ same as above; plugin route M (design in the analysis) | ✗; RNNoise-VAD gate patch M [design R] | partial; RNNoise AudioWorklet patch M, works in the Desktop widget without a Desktop fork [V mechanism] | as Mattermost; keep `echoCancellation` on, worklet strictly after capture [design] | ✓ [V] | ✗; RustDesk handoff S, agent M-L [design] | ✓ AGPL; own plugin bundle needs a higher plugin version [V] |
+| Mumble | ✗ | ✓ best fit [V] | ✓ amplitude/SNR VAD and PTT, global hotkeys on the desktop client [R] | ✓ client RNNoise [V] | partial: client echo cancellation option [R], **T** | ✗ | ✗ | ✓ S |
+| Jitsi + Electron | partial in-meeting chat | partial: fixed room names, no presence [V] | ✗ no gate; talk-while-muted hint only [R] | ✓ RNNoise toggle [R], Electron on Windows [V] | ✓ browser AEC [R], **T** | ✓ | ✓ Electron both ends [V] | ✓ M |
+| RustDesk OSS | partial 1:1 | ✗ | ✗ | ✗ | ✗ | ✓ view | ✓ [V] | ✓ S |
+| Matrix + LiveKit (Cinny/Element) | ✓ | partial: voice/video rooms [C] | ✗ [?] | partial: browser NS only [S] | browser AEC [R], **T** | ✓ | ✗ | ✓ L |
+| Fluxer | ✓ | ✓ Discord model [V docs] | ? | partial: RNNoise proposed [C] | browser AEC [R], **T** | ✓ | ? | ✓ L |
+| Stoat | ✓ | ✓ Discord model [V] | ? | partial | browser AEC [R], **T** | ✓ | ✗ | ✓ L |
+| **Scenario A** (Mattermost + Mumble + RustDesk + Jitsi) | ✓ | ✓ Mumble | ✓ Mumble VAD/PTT [R] | ✓ Mumble client | partial **T** | ✓ Jitsi | ✓ RustDesk or Jitsi Electron | ✓ |
+| **Mattermore + custom plugins** (voice dock, audio pipeline, control relay) | ✓ | M plugin, no mobile presence, no global PTT [design] | M-L [design] | M [design] | partial **T** | ✓ | S prototype, M-L real [design] | ✓ AGPL, patch repo |
+
+Reading the table: no single product meets O2, O3, O4 (Windows) and O7 together. Mumble covers O2-O4 without customisation; RustDesk or Jitsi Electron
+covers O7; Mattermost covers O1, O6. O5 is untested everywhere and is checked first (a one-day test), because the same pipeline decisions
+(noise suppression after the browser's echo canceller, never instead of it) depend on it.
+Correction to the matrix in section 2: the "3+ participants need a paid plan" question is settled in source: the Calls server accepts non-DM calls
+when `MM_CALLS_GROUP_CALLS_ALLOWED=true` (present at tag v1.12.6); `server/enterprise/` carries the Source Available licence, so the licence position
+is a separate operator decision.
+
 ## 2. Capability matrix, part A: functions
 
 Rows are candidates that can be part of the answer. `RC` column states consent model and client requirement.

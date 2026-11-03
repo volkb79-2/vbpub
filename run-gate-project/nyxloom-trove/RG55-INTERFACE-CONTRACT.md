@@ -701,7 +701,8 @@ verification), `bad-policy` (an unparsable policy
 option, or a requested kill that cannot be safely enforced — exit 2, the
 session is NOT started), `not-streaming` (`watch`
 requested over a carrier state that cannot stream — never expected, kept
-for completeness).
+for completeness), `busy` (additive, cgprofile 1.2.0: the daemon is at a
+bounded-admission limit or shutting down; retry shortly).
 
 ### 8.9 Consumer obligations added by v1.1 (run-gate, P5)
 

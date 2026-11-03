@@ -826,17 +826,19 @@ def _with_process_tree_contract(document):
     return document
 
 
-def _run_in_subreaper_process(argv, *, cwd, timeout_seconds, output_dir):
+def _run_in_subreaper_process(argv, *, cwd, timeout_seconds, output_dir, full_log=None):
     helper = '''
 import json, subprocess, sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 sys.path.insert(0, sys.argv[2])
 import mutation_campaign
+log = open(sys.argv[7], "w+b") if len(sys.argv) > 7 else None
 try:
     result = mutation_campaign._run(
         json.loads(sys.argv[3]), cwd=Path(sys.argv[4]),
         timeout_seconds=float(sys.argv[5]), output_dir=Path(sys.argv[6]),
+        full_output_log=log,
     )
     payload = {
         "returncode": result.returncode,
@@ -861,6 +863,7 @@ print(json.dumps(payload))
             str(Path(mutation_campaign.__file__).parent),
             str(REPO_ROOT / "assay" / "src"), json.dumps(list(argv)),
             str(cwd), str(timeout_seconds), str(output_dir),
+            *([str(full_log)] if full_log is not None else []),
         ],
         cwd=cwd, capture_output=True, text=True, timeout=20, check=False,
     )
@@ -934,6 +937,50 @@ def test_mutation_output_is_bounded_to_the_last_mebibyte(tmp_path):
     )
     assert len(result["stdout"].encode("utf-8")) == \
         mutation_campaign._CANDIDATE_OUTPUT_TAIL_BYTES
+
+
+def test_full_output_log_keeps_everything_the_bounded_tail_drops(tmp_path):
+    """KI-87: the control's FAILURES section may sit before the last 1 MiB."""
+    log = tmp_path / "full.log"
+    result = _run_in_subreaper_process(
+        [sys.executable, "-c",
+         "print('FIRST-LINE'); print('x' * ((1 << 20) + 100)); print('LAST-LINE')"],
+        cwd=tmp_path, timeout_seconds=10, output_dir=tmp_path, full_log=log,
+    )
+    assert "FIRST-LINE" not in result["stdout"]  # the in-memory tail is bounded
+    complete = log.read_text(encoding="utf-8")
+    assert complete.startswith("FIRST-LINE\n") and complete.endswith("LAST-LINE\n")
+    assert len(complete) > mutation_campaign._CANDIDATE_OUTPUT_TAIL_BYTES
+
+
+def test_full_output_log_is_also_kept_when_the_command_times_out(tmp_path):
+    log = tmp_path / "full.log"
+    result = _run_in_subreaper_process(
+        [sys.executable, "-c", "print('before-hang', flush=True); import time; time.sleep(30)"],
+        cwd=tmp_path, timeout_seconds=2.0, output_dir=tmp_path, full_log=log,
+    )
+    assert result["timed_out"] is True
+    assert log.read_text(encoding="utf-8") == "before-hang\n"
+
+
+def test_stream_control_output_writes_the_complete_log_to_stderr(tmp_path, capfd):
+    import tempfile
+    with tempfile.TemporaryFile(mode="w+b") as log:
+        log.write(b"complete control output\n")
+        mutation_campaign._stream_control_output(log)
+    err = capfd.readouterr().err
+    assert "complete control output\n" in err
+    assert "known-good mutation control" in err
+
+
+@pytest.mark.parametrize(
+    ("configured", "control", "expected"),
+    [(600, 100, 600), (600, 300, 600), (600, 439, 878), (600, 1000, 2000), (60, 0, 60)],
+)
+def test_candidate_timeout_scales_from_the_measured_control_and_never_drops_below_the_floor(
+    configured, control, expected,
+):
+    assert mutation_campaign.candidate_timeout_seconds(configured, control) == expected
 
 
 def test_timeout_is_inconclusive_and_cannot_count_as_a_kill():

@@ -738,6 +738,15 @@ Never use a build or publish step to make an unreviewed source commit.
 See [the release-transaction guide](docs/RELEASE-TRANSACTIONS.md) for recovery,
 project-author requirements, and the current gate-adoption audit.
 
+## Nested wheel projects
+
+`cmru dependencies` holds a project's root `pyproject.toml` to its declared
+`depends_on` list: a first-party requirement without the matching edge fails the
+preflight. When the wheel lives below the project root, list that file in
+`cmru.toml` so it is held to the same rule, for example
+`wheel_pyprojects = ["client/pyproject.toml"]` under `[project]`. The refusal names the
+consumer, the provider and the nested file.
+
 ## Tool dependencies
 
 A project's OWN tests/tooling may consume a first-party artifact released by ANOTHER
