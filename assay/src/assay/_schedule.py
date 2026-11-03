@@ -28,8 +28,9 @@ import heapq
 import json
 import statistics
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
 from typing import Any
+
+from .records import positional_record
 
 HIGH = "high"
 NORMAL = "normal"
@@ -73,14 +74,14 @@ SCHEDULE_FILE_NAME = "schedule-summary.v1"
 HISTORY_LIMIT_BYTES = 64 * 2**20
 
 
-@dataclass(frozen=True)
+@positional_record
 class Prediction:
     wall_seconds: float | None
     rss_peak_bytes: int | None
     source: str
 
 
-@dataclass(frozen=True)
+@positional_record
 class Thresholds:
     high_bytes: float
     low_bytes: float
@@ -88,7 +89,7 @@ class Thresholds:
     mode_p95_bytes: float
 
 
-@dataclass(frozen=True)
+@positional_record
 class HistoryEntry:
     path: str
     wall_seconds: float | None
@@ -591,7 +592,7 @@ def plan_dispatch_order(
     return scheduler.dispatch_order, scheduler
 
 
-@dataclass(frozen=True)
+@positional_record
 class ScheduleOptions:
     """Runtime scheduling inputs for one native R2 sweep (B207)."""
 
