@@ -10,6 +10,9 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 ## [Unreleased]
 
 ### Added
+- RG-150: documented the runner-uid recipe (CONSUMERS.md "Runner uid: one owner for checkout, cockpit and lane") and filed the
+  open preflight: checkout, cockpit user and lane user must share uid 1003, otherwise the `worktree` lane fails as
+  `editable assay install failed` / `dubious ownership` / `MDT_COW_ROOT must be owned by ...`.
 - RG-144: "time stalled on memory" is a contamination flag. One run-gate rule
   separates `self_limited` (the lane's own limit; printed as `memory limit
   reached N times`) from `contaminated` (ancestor reclaim, MDT PSI-guard

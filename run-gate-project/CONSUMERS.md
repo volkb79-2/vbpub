@@ -2206,6 +2206,25 @@ noticing — that boundary is the point.
   (mutation, fuzz) via the identical entrypoint; `--list` output is the
   pipeline generator's input. Design note lives in assay B009.
 
+## Runner uid: one owner for checkout, cockpit and lane
+
+`tester-unified` runs lanes as uid/gid 1003 (its venv and home belong to that uid) and Assay refuses a tree whose Git
+owner differs from the process uid (`dubious ownership`; Assay replaces Git's configuration, so `safe.directory` cannot
+be granted). Run-Gate's own host-side Git is hardened the same way and ignores global `safe.directory`. The only layout
+that works without ACLs or world-writable directories is therefore **one uid for everything that touches a checkout**:
+
+- the account that owns `/workspaces` checkouts and the CoW root (`MDT_COW_ROOT` must be owned by the lane uid),
+- the user that invokes `run-gate` (cockpit `vscode`), and
+- the lane user, uid 1003.
+
+On a developer host that is the normal case (the devcontainer maps `vscode` onto the workspace owner). On a runner host
+provisioned by hand (for example the netcup runner scripts) create the runner account as uid/gid 1003 and remap the
+cockpit's `vscode` user to it (`usermod -u 1003`); do not chown a checkout to a second uid per run. A different uid is
+only possible with `[environments.<name>] user = "invoker"` and an image whose venv that uid can write; `tester-unified`
+is not such an image. Symptoms of a mismatch: `run-gate: editable assay install failed` with `dubious ownership` in the
+build log, `Permission denied` on `<project>/.run-gate/...`, or `MDT_COW_ROOT must be owned by the non-root caller uid`.
+See RG-150.
+
 ## Distribution — installed wheel and SemVer
 
 Run-Gate is distributed as a wheel and invoked through its installed
