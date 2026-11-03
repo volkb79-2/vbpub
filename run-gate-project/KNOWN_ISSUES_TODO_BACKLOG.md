@@ -131,11 +131,11 @@ SPEC §9.
 | RG-111 | the 24.1.0 release gate runs with the R2 mutation campaign waived (operator) | Medium | OPEN (the waiver is the item) |
 | RG-112 | `git gc` inside a narrow lane container fails: reflog expiry locks sibling worktrees' read-only admin dirs | Low | BY DESIGN, DOCUMENTED 2026-10-27 |
 | RG-113 | the B108 closeout cap was half of the remaining budget per call, and there are two calls | Medium | FIXED IN CANDIDATE 2026-10-27 (`81a7d3ee5`) |
-| RG-114 | the exec-lane cleanup has no SIGTERM deferral | Low | OPEN 2026-10-27 |
+| RG-114 | the exec-lane cleanup has no SIGTERM deferral | Low | FIXED 2026-11-04 (4568a5340) |
 | RG-115 | a follower still collects the Assay closeout (duplicate evidence, spurious `unavailable` WARNING) | Low | FIXED 2026-11-04 (1b5ecf768) |
 | RG-116 | diff-coverage gate candidates from the 2026-10-27 audit (no-newline marker, `--allow-first-release` in the lane, single `--source`, `+++` content line, git colour/ext-diff, continuation lines) | High | FIXED 2026-11-04 (3fea77a5b; items 1, 2 and 5 earlier, in 24.3.0) |
-| RG-117 | admission / runtime candidates from the 2026-10-27 audit (inspect race, secret values on argv, `save_container_logs` symlink window, slice nesting, uncaught exceptions exit 1, ticket resume by name) | Medium | OPEN, unverified candidates |
-| RG-118 | RG-106 oracle 5: refuse an image with no passwd entry for the resolved `user` uid | Low | OPEN 2026-10-27 (design in entry) |
+| RG-117 | admission / runtime candidates from the 2026-10-27 audit (inspect race, secret values on argv, `save_container_logs` symlink window, slice nesting, uncaught exceptions exit 1, ticket resume by name) | Medium | FIXED 2026-11-04 (4568a5340, bdc80a4d2); relative `RUN_GATE_EXTRA_MOUNTS` hypothesis closed as not reproducible |
+| RG-118 | RG-106 oracle 5: refuse an image with no passwd entry for the resolved `user` uid | Low | FIXED 2026-11-04 (4568a5340) |
 | RG-119 | docs-vs-code drift remainder from the 2026-10-28 audit (anchors, LANE-AUTHORING TODO table, history example, host paths, versions, `--lock-wait`, `exit_map`, `members`, `load_config`) | Low | OPEN 2026-10-28 |
 | RG-120 | the a245908 R2 follow-up remains nonqualifying: one current-source candidate crashed during process-tree cleanup; two survivors have new oracles but no post-oracle mutation verdict | Medium | OPEN 2026-10-29; current-source pilot and candidate IDs in `docs/R2-MUTATION-TRIAGE-2026-10-29.md` |
 | RG-121 | one a245908 R2 candidate exceeded the configured 900 s per-candidate budget without a final judgment | Medium | CLOSED 2026-10-29; current-source equivalent `377c0f5a5777` was killed with a clean process tree; see `docs/R2-MUTATION-TRIAGE-2026-10-29.md` |
@@ -6521,7 +6521,7 @@ command names it).
 
 ## RG-114 — the exec-lane cleanup has no SIGTERM deferral
 
-**Status:** OPEN 2026-10-27 (remainder of RG-109). Severity Low. (First filed as "an interrupted run leaves no history entry" — wrong: `_dispatch`'s own `except BaseException` calls `flush_run_record(record, error=exc)` before re-raising, so an interrupted run IS recorded as `aborted` once its record exists (SPEC R-36e); only `finish` prints nothing for the lane-less result, which RG-109's `interrupted before a closed result` line now covers. Corrected 2026-10-28 after the docs audit.)
+**Status:** FIXED 2026-11-04 (4568a5340): the exec `finally` in `run_exec_lane` runs under `deferred_sigterm()`; oracle `tests/test_run_gate_rg2.py::TestSecondSigtermDuringExecCleanup` (a SIGTERM raised inside the profiling stop does not skip `clear_inflight_record`; the deferred signal is re-raised afterwards, exit 2). Earlier status: OPEN 2026-10-27 (remainder of RG-109). Severity Low. (First filed as "an interrupted run leaves no history entry" — wrong: `_dispatch`'s own `except BaseException` calls `flush_run_record(record, error=exc)` before re-raising, so an interrupted run IS recorded as `aborted` once its record exists (SPEC R-36e); only `finish` prints nothing for the lane-less result, which RG-109's `interrupted before a closed result` line now covers. Corrected 2026-10-28 after the docs audit.)
 
 **Observed.** `run_exec_lane`'s `finally` (profiling stop, up to 30 s) runs without `deferred_sigterm()`; a second SIGTERM there skips the profiling stop. No container of run-gate's own can be orphaned on that path (the in-container process is bounded by its `timeout` wrapper), so the stakes are lower than the ephemeral path's.
 
@@ -6548,7 +6548,7 @@ command names it).
 
 ## RG-117 — admission / runtime candidates from the 2026-10-27 read-only audit
 
-**Status:** the `_containers` inspect race FIXED IN CANDIDATE 2026-10-28 (`check=False`; survivors kept when stderr says only `No such object`/`No such container`; tests in `tests/test_run_gate_admission.py`). The rest OPEN for 24.1.1, audit findings (same audit as RG-116; PROBE = auditor-reproduced, not re-verified by the wave).
+**Status:** FIXED 2026-11-04 (4568a5340, bdc80a4d2), every item verified against the code first. (a) secret values off argv: `forward_env` and the profile token are `-e KEY` with the value in the docker client env (`env_flags_by_name`); resource facts stay `-e K=V` (not secrets). (b) `save_container_logs`: `O_NOFOLLOW`, mode 0600 at creation, dir 0700, foreign owner refused. (c) `slice_cgroupfs_dir` cumulative prefixes, test corrected. (d) `main()` catches `Exception` into ERROR exit 2. (e) hypotheses: ticket resume by name CONFIRMED and fixed (owner JSON persisted in the admission result and compared on resume; a record without one re-acquires); malformed EXITED ticket counted live CONFIRMED and fixed (tombstone, as `status_snapshot`); bare "conflict" as name collision CONFIRMED and fixed; bare `int()` on empty `memory.max` CONFIRMED and fixed; `effective_image` before the `RUN_GATE_HOST_IMAGE` override CONFIRMED and fixed; unbounded pressure pause CONFIRMED and fixed (`PRESSURE_PAUSE_MAX_SECONDS` = 1800); `isdecimal()` accepting non-ASCII digits and leading zeros CONFIRMED for `pid_ns`, fixed (deadline stays lenient on leading zeros: the shared grammar says only "decimal integer"); relative `RUN_GATE_EXTRA_MOUNTS` source NOT REPRODUCED: the lane uses `--mount type=bind`, and docker answers `invalid mount path: 'data' mount path must be absolute` (checked with `docker create`). Earlier status: the `_containers` inspect race FIXED IN CANDIDATE 2026-10-28 (`check=False`; survivors kept when stderr says only `No such object`/`No such container`; tests in `tests/test_run_gate_admission.py`). The rest was OPEN for 24.1.1, audit findings (same audit as RG-116; PROBE = auditor-reproduced, not re-verified by the wave).
 
 - (PROBE, Medium, FIXED) `run_gate_admission.py` `_containers`: `docker ps -aq` then `inspect <ids>` with `check=True`; a concurrent gate removing a tombstone in between made `inspect` exit 1 ("No such object") and the healthy lane ended ERROR.
 - (Medium) `run_gate.py` `docker run`/`docker exec` argv carry forwarded secret VALUES (`-e KEY=value`), readable in `/proc/<pid>/cmdline` for the life of `docker exec`; only the printed copy is redacted. Fix: `-e KEY` and pass the value through the subprocess `env`.
@@ -6562,7 +6562,7 @@ command names it).
 
 ## RG-118 — RG-106 oracle 5: refuse an image with no passwd entry for the resolved `user` uid (design)
 
-**Status:** OPEN 2026-10-27 (RG-106 remainder). Severity Low.
+**Status:** FIXED 2026-11-04 (4568a5340): `passwd_entry_guard()` prefixes the lane's inner script when the environment has a `user`; skipped when the image has no `getent`; oracles `tests/test_run_gate_rg2.py::TestPasswdEntryGuard` (real bash run against a failing/succeeding/absent `getent`). RG-151's overlay (open) supersedes it for `user = "owner"`. Earlier status: OPEN 2026-10-27 (RG-106 remainder). Severity Low.
 
 **Design.** No extra container start: only when `env["user"]` is set, prefix the inner script with `getent passwd "$(id -u)" >/dev/null || { echo "run-gate: uid $(id -u) has no passwd entry in the image; git and pip fail obscurely without one" >&2; exit 2; }`. The lane then fails with a named line instead of `fatal: unable to look up current user in the passwd file`. Oracle: a fake image whose `getent` stub fails for the uid; the lane log carries the line and the verdict is FAIL with exit 2.
 

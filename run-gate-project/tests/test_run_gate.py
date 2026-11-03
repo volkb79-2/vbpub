@@ -2898,8 +2898,10 @@ class TestCentralDefaults:
                             lambda p, **k: Path("/phys"))
         proc = run_tool(proj, "suite")
         assert proc.returncode == 0, proc.stderr
-        assert "CGROUP_PARENT_DEV_BACKGROUND=dev-background.slice" in \
-            docker_runs(log)[0]
+        lane_run = docker_runs(log)[0]       # RG-117a: name only on argv
+        assert lane_run[lane_run.index("CGROUP_PARENT_DEV_BACKGROUND") - 1] \
+            == "-e"
+        assert "dev-background.slice" not in "\n".join(lane_run)
 
     def test_project_shadows_central_by_name(self, tmp_path, monkeypatch):
         repo = make_repo(tmp_path)
@@ -5003,7 +5005,8 @@ class TestExecDisclosure:
         assert ("slice dev-gates.slice "
                 "($CGROUP_PARENT_DEV_GATES, naming-only)") in proc.stdout
         assert "docker argv:" in proc.stdout
-        assert "SECRET_TOKEN=<redacted>" in proc.stdout
+        # RG-117a: the argv names the key only; the value is never on it.
+        assert "-e SECRET_TOKEN " in proc.stdout
         assert "hunter2" not in proc.stdout + proc.stderr
 
     def test_dry_run_prints_same_argv_and_execs_nothing(
@@ -5018,7 +5021,7 @@ class TestExecDisclosure:
         proc = run_tool(proj, "suite", "--worktree", str(repo), "--dry-run")
         assert proc.returncode == 0, proc.stderr
         assert "docker argv:" in proc.stdout
-        assert "SECRET_TOKEN=<redacted>" in proc.stdout
+        assert "-e SECRET_TOKEN " in proc.stdout
         assert "hunter2" not in proc.stdout + proc.stderr
         assert "DRY RUN — the argv above is what a live run would exec" \
             in proc.stdout
@@ -6464,8 +6467,10 @@ def test_exec_lane_forwards_declared_environment_values(tmp_path, monkeypatch):
     proc = run_tool(proj, "suite", "--worktree", str(repo))
     assert proc.returncode == 0, proc.stderr
     call = docker_execs(log)[0]
-    assert "SCHEMA_GATE_DSN=postgresql://example/db" in call
-    assert "MOCK_MODE=true" in call
+    # RG-117a: names on argv, values in the docker client's environment.
+    assert call[call.index("SCHEMA_GATE_DSN") - 1] == "-e"
+    assert call[call.index("MOCK_MODE") - 1] == "-e"
+    assert "postgresql://example/db" not in "\n".join(call)
 
 
 def test_environment_rejects_invalid_forward_env_name(tmp_path):
@@ -8069,8 +8074,9 @@ class TestExecModeMutex:
             raise RuntimeError("evidence collection exploded")
         monkeypatch.setattr(run_gate, "print_lane_artifacts", _boom)
 
-        with pytest.raises(RuntimeError):
-            run_gate.main(["suite"])
+        # RG-117d: the escaped exception is an ERROR (exit 2), not a traceback
+        # exit 1; the lock is released all the same.
+        assert run_gate.main(["suite"]) == 2
 
         probe = os.open(self._lock_path(), os.O_CREAT | os.O_RDWR, 0o666)
         try:
@@ -27714,7 +27720,8 @@ class TestProfilerClientDegradesOnMalformedResponses:
         assert reason is not None
 
 
-PROFILE_TOKEN_ENV_NEEDLE = run_gate.PROFILE_TOKEN_ENV + "="
+# RG-117a: the token's VALUE is no longer on argv; `-e NAME` is what shows.
+PROFILE_TOKEN_ENV_NEEDLE = run_gate.PROFILE_TOKEN_ENV
 RG55_PLACEMENT_TOKEN = "profile-token"
 RG55_PLACEMENT_HOST = {"host": {"gates_slice": {
     "present": True, "cgroup": "/dev.slice/dev-gates.slice"}}}
@@ -35364,7 +35371,7 @@ class TestRunGateR1DirectCoverage:
         argv = next(line for line in output.splitlines()
                     if "run-gate: docker argv:" in line)
         assert "--user 1000:1000" in argv
-        assert "FORWARDED=<redacted>" in argv and "secret-value" not in argv
+        assert "-e FORWARDED " in argv and "secret-value" not in argv
         assert "EMPTY_FORWARD" not in argv and "ABSENT_FORWARD" not in argv
         assert "--memory-swap 2g" in argv
         assert ("type=bind,source=/mnt/cow/fixture,target=/mnt/cow/fixture"
@@ -37248,7 +37255,9 @@ argv = ["true"]
         assert run_gate.slice_cgroupfs_dir("dev-gates.slice") == Path(
             "dev.slice/dev-gates.slice")
         assert run_gate.slice_cgroupfs_dir("dev-test-gates.slice") == Path(
-            "dev.slice/test.slice/dev-test-gates.slice")
+            "dev.slice/dev-test.slice/dev-test-gates.slice")
+        assert run_gate.slice_cgroupfs_dir("a-b-c-d.slice") == Path(
+            "a.slice/a-b.slice/a-b-c.slice/a-b-c-d.slice")
         assert run_gate.slice_cgroupfs_dir("gates.slice") == Path("gates.slice")
 
     def test_slice_memory_admission_warns_refuses_and_admits_from_cgroup_files(
