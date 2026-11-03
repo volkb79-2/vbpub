@@ -251,7 +251,7 @@ class DerivedSizingTests(unittest.TestCase):
         }.items():
             self.assertEqual(sizes[f"{prefix}_MEMORY_HIGH"], ram * high // 100)
             self.assertEqual(sizes[f"{prefix}_MEMORY_MAX"], ram * maximum // 100)
-        self.assertEqual(sizes["DEV_INTERACTIVE_MEMORY_LOW"], ram * 15 // 100)
+        self.assertFalse([k for k in sizes if k.endswith("_MEMORY_LOW")])
         tier_max_sum = sum(sizes[f"{p}_MEMORY_MAX"] for p in ("DEV_INTERACTIVE", "DEV_BACKGROUND", "DEV_GATES", "DEV_BUILDKITD"))
         self.assertGreater(tier_max_sum, ram)
 
@@ -388,6 +388,76 @@ class ProtectionTests(unittest.TestCase):
         )
         self.assertIn("== protected units (MDT_PROTECTED_UNITS; verify only) ==", result.stdout)
         self.assertRegex(result.stdout, r"WARN .*is 6500M, below MDT_EXCLUDED_RAM 9000M")
+
+
+class CheckConfigWarningTests(unittest.TestCase):
+    """F4/F8: dev.slice MemoryMax vs RAM_MDT, and the no-disk-swap warning, both WARN only."""
+
+    def _run(self, env_text: str, swap_kib: int = 8 * 1024 * 1024) -> tuple[int, str, str]:
+        d = _tmp(self)
+        env = d / "env"
+        env.write_text(env_text)
+        meminfo = d / "meminfo"
+        meminfo.write_text(f"MemTotal: {16 * 1024 * 1024} kB\nSwapTotal: {swap_kib} kB\n")
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = MC.main(["check-config", str(env), "--meminfo", str(meminfo), "--nproc", "4"])
+        return rc, out.getvalue(), err.getvalue()
+
+    def test_a_dev_memory_max_above_ram_mdt_warns(self) -> None:
+        rc, out, _ = self._run("MDT_EXCLUDED_RAM=6G\nDEV_MEMORY_MAX=14G\n")
+        self.assertEqual(rc, 0)
+        self.assertRegex(out, r"WARN dev\.slice MemoryMax exceeds the RAM MDT may use: DEV_MEMORY_MAX=14G is above RAM_MDT 10G")
+
+    def test_an_empty_dev_memory_max_with_excluded_ram_warns(self) -> None:
+        rc, out, _ = self._run("MDT_EXCLUDED_RAM=6G\nDEV_MEMORY_MAX=\n")
+        self.assertEqual(rc, 0)
+        self.assertIn("WARN dev.slice has no MemoryMax", out)
+        self.assertIn("at most 10G", out)
+
+    def test_no_warning_when_it_fits_or_nothing_is_excluded(self) -> None:
+        self.assertEqual(self._run("MDT_EXCLUDED_RAM=6G\nDEV_MEMORY_MAX=10G\n")[1], "")
+        self.assertEqual(self._run("MDT_EXCLUDED_RAM=0\nDEV_MEMORY_MAX=\n")[1], "")
+
+    def test_the_no_disk_swap_warning_is_reported(self) -> None:
+        _, out, _ = self._run("MDT_EXCLUDED_SWAP=8G\nMDT_EXCLUDED_RAM=0\nDEV_MEMORY_MAX=16G\n")
+        self.assertIn("MDT gets no disk swap", out)
+
+    def test_install_derive_prints_the_memory_warning_without_refusing(self) -> None:
+        d = _tmp(self)
+        env = d / "env"
+        env.write_text("MDT_EXCLUDED_RAM=6G\nDEV_MEMORY_MAX=14G\n")
+        meminfo = d / "meminfo"
+        meminfo.write_text(f"MemTotal: {16 * 1024 * 1024} kB\nSwapTotal: {8 * 1024 * 1024} kB\n")
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            rc = MC.main(["derive", str(env), "--meminfo", str(meminfo), "--nproc", "4"])
+        self.assertEqual(rc, 0)
+        self.assertIn("WARN: dev.slice MemoryMax exceeds the RAM MDT may use", err.getvalue())
+
+    def test_check_sh_has_the_section_and_warns_when_the_helper_is_missing(self) -> None:
+        text = CHECK.read_text()
+        self.assertIn("check-config", text)
+        d = _tmp(self)
+        conf = d / "host-setup.env"
+        conf.write_text("MDT_EXCLUDED_RAM=0\n")
+        result = subprocess.run(
+            ["bash", str(CHECK)], capture_output=True, text=True, check=False,
+            env={"PATH": "/usr/bin:/bin", "CONF": str(conf), "CG": str(d / "cg"),
+                 "CAPACITY_PY": str(d / "missing.py")},
+        )
+        self.assertRegex(result.stdout, r"WARN .*mdt_capacity\.py|WARN .*missing\.py missing")
+
+
+class VmUpgradeAcceptanceTests(unittest.TestCase):
+    def test_the_vm_upgrade_test_has_an_old_key_refusal_step(self) -> None:
+        text = (ROOT / "tests" / "vm-upgrade-acceptance.sh").read_text()
+        self.assertIn("DEV_CPU_RESERVE_CORES=1", text)
+        self.assertIn("expected 2", text)
+        self.assertIn("rename it to MDT_EXCLUDED_CPU_CORES", text)
+        msg = MC.renamed_key_errors({"DEV_CPU_RESERVE_CORES": "1"})[0]
+        self.assertIn("DEV_CPU_RESERVE_CORES is no longer read: rename it to MDT_EXCLUDED_CPU_CORES", msg)
+        subprocess.run(["bash", "-n", str(ROOT / "tests" / "vm-upgrade-acceptance.sh")], check=True)
 
 
 class ProbeTests(unittest.TestCase):

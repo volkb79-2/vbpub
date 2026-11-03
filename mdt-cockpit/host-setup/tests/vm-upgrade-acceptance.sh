@@ -119,4 +119,23 @@ else
     ok "DAMON_STAT rule installed by default (live state not applicable in this guest)"
 fi
 
+# ---- 5. an existing env file with a RETIRED key is refused, nothing changed ----------
+# (MDT-033: DEV_CPU_RESERVE_CORES was renamed outright, with no alias.)
+cp /tmp/host-setup.env.before-upgrade "$CONF"
+printf 'DEV_CPU_RESERVE_CORES=1\n' >> "$CONF"
+snapshot > /tmp/snapshot.before
+set +e
+out=$(bash "$HS/install.sh" 2>&1); rc=$?
+set -e
+[ "$rc" = 2 ] || { printf '%s\n' "$out" | tail -n 20; fail "an env file with DEV_CPU_RESERVE_CORES exited $rc, expected 2"; }
+printf '%s\n' "$out" | grep -q "DEV_CPU_RESERVE_CORES is no longer read: rename it to MDT_EXCLUDED_CPU_CORES" \
+    || fail "the refusal does not name the new key"
+snapshot > /tmp/snapshot.after
+# the env file itself was edited by this step, before the snapshot, so it is part of both
+diff -u /tmp/snapshot.before /tmp/snapshot.after > /tmp/snapshot.diff \
+    || { head -n 40 /tmp/snapshot.diff; fail "the old-key refusal modified the host (it must refuse before touching anything)"; }
+compgen -G '/etc/mdt/*.bak-*' >/dev/null && fail "the old-key refusal left a config backup behind"
+cp /tmp/host-setup.env.before-upgrade "$CONF"
+ok "an existing env file with a retired *_RESERVE_* key is refused (rc 2) with the rename message, nothing changed"
+
 echo "VM UPGRADE ACCEPTANCE PASSED"

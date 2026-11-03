@@ -141,8 +141,8 @@ CPU_MDT  = nproc     - MDT_EXCLUDED_CPU_CORES                    (refused below 
 - `dev.slice`: `MemoryMax` = `RAM_MDT`, `MemoryHigh` = 92% of it,
   `MemorySwapMax` = `SWAP_MDT`, `CPUQuota` = `CPU_MDT` x 100%.
 - Tiers (wizard proposals; an explicit value always wins): `MemoryMax` /
-  `MemoryHigh` as percent of `RAM_MDT` - interactive 60/45 (`MemoryLow` 15%,
-  mirrored on `dev.slice` so it can take effect), background 70/50, gates 70/50,
+  `MemoryHigh` as percent of `RAM_MDT` - interactive 60/45 (no `MemoryLow`
+  is proposed: soft protection is an open design question), background 70/50, gates 70/50,
   buildkitd 35/25. They sum to more than `RAM_MDT` on purpose: RAM and CPU are
   overcommitted by design and zswap and disk swap absorb the cold part. A tier's
   swap is `DEV_SWAP_CASCADE_PCT`% of `SWAP_MDT`; its `CPUQuota` is

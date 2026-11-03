@@ -282,6 +282,29 @@ def derive_from_config(
     )
 
 
+def memory_sizing_warnings(values: dict[str, str], cap: Capacity) -> list[str]:
+    """WARN (never refuse) when dev.slice's MemoryMax does not bound MDT to RAM_MDT.
+
+    An explicit value wins over the derived proposal, so an existing config can keep a
+    DEV_MEMORY_MAX larger than what MDT may use, or none at all while RAM is excluded.
+    """
+    raw = (values.get("DEV_MEMORY_MAX", "") or "").strip()
+    excluded = parse_size_bytes(values.get("MDT_EXCLUDED_RAM", "0") or "0") or 0
+    ceiling = parse_size_bytes(raw) if raw not in ("", "-") else None
+    if ceiling is not None and ceiling > cap.ram_mdt:
+        return [
+            f"dev.slice MemoryMax exceeds the RAM MDT may use: DEV_MEMORY_MAX={raw} is above "
+            f"RAM_MDT {format_size(cap.ram_mdt)} (MemTotal minus MDT_EXCLUDED_RAM)"
+        ]
+    if ceiling is None and excluded > 0:
+        return [
+            f"dev.slice has no MemoryMax (DEV_MEMORY_MAX is empty) while MDT_EXCLUDED_RAM is "
+            f"{format_size(excluded)}: the RAM MDT may not use is not bounded on dev.slice; "
+            f"set DEV_MEMORY_MAX to at most {format_size(cap.ram_mdt)}"
+        ]
+    return []
+
+
 # Tier sizing as percent of RAM_MDT: (MemoryHigh, MemoryMax). The tiers sum to more than
 # RAM_MDT on purpose (overcommit); zswap and disk swap absorb the cold part.
 DEV_HIGH_PCT = 92
@@ -291,16 +314,17 @@ TIER_PCT = {
     "DEV_GATES": (50, 70),
     "DEV_BUILDKITD": (25, 35),
 }
-INTERACTIVE_LOW_PCT = 15
 
 
 def tier_memory_bytes(ram_mdt: int) -> dict[str, int]:
-    """Starting MemoryLow/High/Max values (bytes) for dev.slice and the tiers."""
+    """Starting MemoryHigh/Max values (bytes) for dev.slice and the tiers.
+
+    No MemoryLow is proposed anywhere: a child Low below an unset parent Low is ineffective,
+    and a dev.slice Low would take reclaim priority over every unprotected host service.
+    Soft protection is an open design question (backlog MDT-033)."""
     sizes = {
         "DEV_MEMORY_HIGH": ram_mdt * DEV_HIGH_PCT // 100,
         "DEV_MEMORY_MAX": ram_mdt,
-        "DEV_MEMORY_LOW": ram_mdt * INTERACTIVE_LOW_PCT // 100,
-        "DEV_INTERACTIVE_MEMORY_LOW": ram_mdt * INTERACTIVE_LOW_PCT // 100,
     }
     for prefix, (high, maximum) in TIER_PCT.items():
         sizes[f"{prefix}_MEMORY_HIGH"] = ram_mdt * high // 100
@@ -783,6 +807,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     a.add_argument("--systemd-dir", type=Path, default=Path("/etc/systemd/system"))
     a.add_argument("--cgroup-root", type=Path, default=Path("/sys/fs/cgroup"))
     a.add_argument("--yes", action="store_true", help="skip the confirmation prompt (tests)")
+    c = sub.add_parser("check-config", help="print WARN lines: no disk swap for MDT, DEV_MEMORY_MAX vs RAM_MDT")
+    c.add_argument("env", type=Path)
+    c.add_argument("--meminfo", type=Path, default=Path("/proc/meminfo"))
+    c.add_argument("--nproc", type=int, required=True)
     d = sub.add_parser("derive", help="print the derived MDT capacity as KEY=VALUE lines")
     d.add_argument("env", type=Path)
     d.add_argument("--meminfo", type=Path, default=Path("/proc/meminfo"))
@@ -847,12 +875,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     except CapacityError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
+    if args.cmd == "check-config":
+        for w in cap.warnings + tuple(memory_sizing_warnings(values, cap)):
+            print(f"WARN {w}")
+        return 0
     print(f"MDT_RAM_BYTES={cap.ram_mdt}")
     print(f"MDT_SWAP_BYTES={cap.swap_mdt_bytes}")
     print(f"MDT_NO_DISK_SWAP={1 if cap.no_disk_swap else 0}")
     print(f"MDT_DEV_CPU_QUOTA={cap.dev_cpu_quota_pct}%")
     print(f"MDT_TIER_CPU_QUOTA={cap.tier_cpu_quota_pct}%")
-    for w in cap.warnings:
+    for w in cap.warnings + tuple(memory_sizing_warnings(values, cap)):
         print(f"WARN: {w}", file=sys.stderr)
     return 0
 

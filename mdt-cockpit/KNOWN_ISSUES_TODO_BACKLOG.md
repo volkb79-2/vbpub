@@ -822,6 +822,12 @@ after M6. Final operator decisions of 2026-11-03 supersede every earlier wording
   profiles (run-gate RG-146 and RG-148), not from these limits. The tier `MemoryMax` is the safety cap, and the
   run-gate admission budget is the predictable need.
 
+**Open design question: soft protection via `MemoryLow` on `dev.slice`.** The wizard proposes no `MemoryLow`
+(neither on `dev.slice` nor on a tier). A `dev.slice` `memory.low` gives MDT reclaim priority over every unprotected
+host service (system.slice, the docker daemon, the game's page cache beyond its `memory.min`), about 1.4 GB on the
+shared host, so it needs an explicit operator decision before any proposal returns. A tier `MemoryLow` is ineffective
+while the parent's is unset. Until decided, an operator may still set them by hand.
+
 **Acceptance criteria.**
 
 - **Keys:** every new key validates, including fractional cores (`0.5`, `1.5`; `1.55` refused).
