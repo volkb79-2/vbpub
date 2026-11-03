@@ -100,6 +100,49 @@ weak oracles):
 | ceilings.py | 33 | 8 | 24% | compare-swap 5 | 128–139 (4) |
 | devio, stages, sweep, ladder, proposals, plan, extents | 209 | 40 | 19% | mixed | small clusters |
 
+**Triage status, group A (calibrate.py, cache.py, dryrun.py; fan-iob-a-20261103).** Every kill was checked by applying
+the mutant by hand to a scratch copy of the package (AST rewrite at the survivor's line and operator) and running only
+the new `tests/test_r2_*.py` files against it. The survivor rows are the R2 verdict CSV; where one CSV row maps to
+several nodes on a line, the row is counted open if any node survived.
+
+| File | Survivors | Killed | Equivalent / dead | Open | New tests |
+|---|---:|---:|---:|---:|---|
+| dryrun.py | 14 | 13 | 1 | 0 | `test_r2_dryrun.py` |
+| cache.py | 44 | 37 | 4 | 3 | `test_r2_cache.py` |
+| calibrate.py | 59 | 49 | 2 | 8 | `test_r2_calibrate.py`, `test_r2_calibrate_ladder.py` |
+
+Equivalent or dead, with the evidence:
+
+- dryrun.py:54 `run.target.disk_name or ""`. `Calibrator.disk_name` is read only by `Runner.supervise` and `execute`
+  (stages.py 150, 233, 239), never by `make_plan`, `job` or anything `calibrate_plan` calls, so the assignment is dead
+  in the plan path. Candidate for removal in a code step (not done here: tests only).
+- cache.py:101 `len(peaks) > 1` to `>= 1`. With one peak, `masses[0]` is `sum(counts) / total` where
+  `total = float(sum(counts))`, exactly 1.0, never below `MASS_MIN`; `weak` is empty, so the guard is redundant.
+- cache.py:229 `a <= 0` to `a < 0`. `a = mean(1/y) - b * mean(x)` is strictly positive whenever `b < 0` (all rates
+  positive), and `a <= 0` can only hold with `b > 0`, which the `b >= 0` operand already catches.
+- cache.py:236 `0 < c_bytes` to `<=`, and cache.py:237 `c_bytes > 0` to `>=`. `c_bytes == 0` needs `b == 0`, which
+  line 229 has already returned on; `nan` is false for both.
+- calibrate.py:92 `budget_limited = False` initial value: unconditionally overwritten by `make_plan` (line 177)
+  before any read.
+- calibrate.py:534 `pla_18(..., False, ...)` to `True`: `pla_18` returns not-applicable on a `None` cell before it
+  reads `moved`, and this branch is only taken when a cell is `None`.
+
+Open (no deterministic oracle written; all are exact-float or exact-clock boundaries, or need a scripted ladder):
+
+- cache.py:236, three comparisons: `r <= min(ys)`, `r2 >= 0.97`, `loo <= 0.15` at equality. Measure-zero on
+  continuous quantities; an exhaustive dyadic search for `r == min(ys)` with a good fit found none.
+- calibrate.py:190 (`now() < deadline`) and :198 (`runtime_s < runtime - 1`): fake-clock equality. The other `<` on
+  each line is killed.
+- calibrate.py:204 median of the fill tail exactly `0.5 * r_est`; :316 and :319 `CLIFF_RATIO * ref` equality;
+  :416 `iops < 0.9 * offered` equality.
+- calibrate.py:287: the ladder-cut `budget_limited = True` is observable only when `make_plan` did not already set it,
+  which needs a slow stage with a full-size plan (time injection into the fake host).
+- calibrate.py:314 `len(self.reads) > MIN_RUNGS` to `>=`: needs a ladder whose third rung falls below the cliff ratio;
+  the fake cache models cannot produce that shape, so it wants a scripted `rung()`.
+- Not verified one operator at a time: the two-line boolean chains at calibrate.py:556-557 and 610-611 are one `BoolOp`
+  each in the AST (the CSV lists their operators on both lines). The tests give every rule its own failing decoy cell,
+  so each single-operator flip is covered by reasoning, while the hand mutation flipped the whole chain.
+
 **Triage plan**, in this order. Each step is a separate reviewed branch; tests only, unless a survivor shows dead code.
 
 1. **Cluster first, not candidate by candidate.** The six largest clusters hold 74 survivors:
