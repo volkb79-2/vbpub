@@ -79,3 +79,14 @@ INFO line. Clients (run-gate, assay) derive gids by `stat` of the socket directo
 ## Dependencies and order
 
 Docs and the daemon test can land with CP-42. host-setup changes ride MDT-053. Unblocks RG-152 and B212.
+
+## 2.0 plan amendment (2026-11-04, operator-accepted defaults)
+
+- The exec-carrier fallback in decision point 4 does not survive 2.0: callers outside the ctl group have no fallback by design. `cgpctl doctor`
+  reports `socket-permission` and prints the remedy (socket group by `stat`, caller groups, the `allow_uids` key); see `docs/CGPCTL-SPEC.md`
+  sections 1 and 2.4.
+- A second, daemon-side gate is added on top of the directory group: session ownership by `SO_PEERCRED` uid (`stop` / `export` of another uid's
+  session is root-only, `docs/PROTOCOL.md` section 10.5). It is hygiene, not a boundary, because the ctl group is root-equivalent on mdt hosts;
+  the documents say so.
+- `CGPROFILE_ALLOW_UIDS` becomes the `allow_uids` key of `/etc/cgprofile/cgpd.toml`, reloadable by SIGHUP.
+- The client can point at any socket (`--socket`, `CGPCTL_SOCKET`), so a non-default directory or group works with no code assumption.

@@ -807,3 +807,62 @@ has no completed full-source R2 verdict**; a release does not claim one. Run
 Run-gate can derive a different base when `--base` is omitted, so an omitted
 flag is not the P1 acceptance command. The rationale is in the
 [design guide](DESIGN-GUIDE.md#mutation-comparison-base).
+
+## cgprofile 2.0: consumer impact and docs sweep
+
+Specification for cgprofile 2.0.0 (the contract is [CGPCTL-SPEC.md](CGPCTL-SPEC.md), the wire is
+[PROTOCOL.md](PROTOCOL.md) section 10, packaging is [NATIVE-DEPLOYMENT.md](NATIVE-DEPLOYMENT.md)). Everything
+above this section describes 1.x and stays accurate for a 1.x daemon. 2.0.0 is one breaking release: the
+`cgprofile` command disappears in favour of `cgpctl` (client) and `cgpd` (daemon), the daemon becomes a native
+systemd service installed by mdt host-setup, and the control socket moves to ctl contract 2. There is no alias
+and no 1.3.0.
+
+### Consumer impact
+
+| Consumer | Impact | Works against 1.x? | Owner |
+|---|---|---|---|
+| run-gate | Drops the `docker exec cgprofile-host-daemon cgprofile ctl ...` fallback carrier, the `exec` / `auto` transport values and the `RUN_GATE_PROFILE_TRANSPORT` setting, and goes socket-only on `/run/cgprofile/ctl.sock`. It stops using the daemon's `report` op: it calls `cgpctl report` client-side or skips the report. It keeps speaking contract 1, which a 2.x daemon serves unchanged for `version`, `host`, `status`, `start`, `stop`, `watch` and `gc` | Yes. The change needs only the socket carrier, which every 1.x daemon already has, so it can ship in any run-gate release before the daemon migrates | run-gate package (plan package 4, `rg-cgp-socket-20261104`) |
+| assay | None. It uses only the observer socket (contracts 2 and 3), whose paths, framing and answers do not change | Yes, unchanged | none |
+| mdt-cockpit image | Gains the `cgprofile` wheel (core only, no `report` extra) in `pip/wheels.list` and the first-party sets, and `cgpctl` in the skills table, so the finalize step runs `cgpctl skills check` and `install` | Not applicable (image content) | MDT-048 |
+| mdt host-setup | Installs and pins the native service from a released wheel, renders `/etc/cgprofile/cgpd.toml` and the units, drains before restart, and runs `cgpctl doctor --json` in `check.sh`. Tmpfiles, sysusers and the socket paths are unchanged | Not applicable | MDT-055 |
+| Devcontainers and runners that bind `/run/cgprofile` | No change to the mount. They gain the ability to run `cgpctl --socket PATH` (or `CGPCTL_SOCKET`) from the image | Yes | none |
+| Operators and agents | Replace `docker exec cgprofile-host-daemon cgprofile ctl <verb>` with `cgpctl <verb>`; `attach`, `targets` and helper mode are gone (use `cgpctl start`, `start --dry-run`, `run`) | Mixed: contract-1 verbs work against a 1.x daemon, `report` and `config show` need 2.x | each user |
+
+What a 1.x consumer sees from a 2.x daemon: `version` answers as before with extra fields; a contract-1
+`report` request is answered with the error code `report-removed` and a message naming `cgpctl report`;
+ownership rules apply to `stop` and `gc` (run-gate starts and stops as one uid, so it is unaffected).
+
+Access summary for everyone: the ctl group opens `ctl.sock`; callers outside it keep `--version`, `run`, `mark`,
+local report rendering and a `doctor` that names the fix; stopping or exporting another uid's session is
+root-only. The ctl group is root-equivalent on mdt hosts, so ownership is hygiene and not a security boundary.
+
+### DOCS SWEEP checklist
+
+Produced with `git grep` at `3d7e34cc6`; re-run before the sweep because the lines will have moved:
+
+```bash
+git grep -nE "cgprofile ctl|docker exec cgprofile-host-daemon|cgprofile-host-daemon cgprofile"
+git grep -lE "cgprofile (run|attach|mark|report|targets|doctor|serve)\b|\./cgprofile |CGPROFILE_(HELPER_IMAGE|PLACEMENT_PROBE_IMAGE|PID_NAMESPACE_MODE|ALLOW_UIDS)"
+```
+
+Package 0 edits none of these outside cgprofile. The sweep itself is backlog CP-49 (plan package 5); rows
+outside cgprofile land with the owning tool's package or in one docs commit per repo area. Historical files are
+not edited: dated `nyxloom-trove/reports/*`, run logs, `CHANGES.md` entries, fixtures that freeze 1.x bytes.
+
+| Area | Files (hits of the first grep in parentheses) | Action | Owner |
+|---|---|---|---|
+| cgprofile docs | `README.md` (6), `ATTACH-GUIDE.md` (1), `DESIGN.md` (1), `docs/DESIGN-GUIDE.md` (1), `docs/CONSUMERS.md` (5), `docs/PROTOCOL.md` (1) | Rewrite for `cgpctl` and contract 2; delete the exec-carrier text; CP-45 overview and docs-sync test | CP-49 |
+| cgprofile code and packaging | `cgprofile`, `cgprofile.py` (1), `lib/serve.py`, `setup.sh`, `Dockerfile`, `docker-bake.hcl`, `ciu.compose.yml.j2`, `ciu.defaults.toml.j2`, `ciu.global.defaults.toml.j2`, `.claude/skills/cgprofile/SKILL.md` | Replaced by the package and wheel (CP-46, CP-47, CP-48); ciu files deleted by CP-44 | CP-46 to CP-48, CP-44 |
+| cgprofile mirrored contract | `docs/RG55-INTERFACE-CONTRACT.md` (11), mirrored byte for byte from `run-gate-project/nyxloom-trove/RG55-INTERFACE-CONTRACT.md` | Edit the canonical file first, then copy; `test_docs.py` enforces equality | run-gate package |
+| run-gate | `run_gate.py` (19), `README.md` (1), `CONSUMERS.md`, `SPEC.md`, `KNOWN_ISSUES_TODO_BACKLOG.md` (3), `tests/test_run_gate.py` (174 cgprofile hits), `tests/fixtures/rg55/*` and `nyxloom-trove/fixtures/rg55/*` (frozen 1.x bytes: keep), `tests/fixtures/rg55-p5-placement-live/*` | Remove the exec carrier, the transport setting and the `report` op; refuse the removed env var by name | run-gate package |
+| mdt-cockpit | `host-setup/README.md`, `host-setup/CGROUP-NOTES.md`, `host-setup/install.sh`, `host-setup/scripts/check.sh`, `host-setup/units/mdt-cgprofile*.{conf,sysusers}`, `pip/wheels.list`, `docs/CONSUMERS.md`, `docs/DESIGN-GUIDE.md`, `docs/DEVCONTAINER-MECHANISMS.md`, `templates/devcontainer.json` and `templates/host-folder/devcontainer.json` (comments), `KNOWN_ISSUES_TODO_BACKLOG.md` | Native install, group, wheel set, skills entry; remove "out of scope" and ciu-stack statements | MDT-048, MDT-055 |
+| mdt legacy mirror | `modern-debian-tools-python-debug/host-setup/{README.md,CGROUP-NOTES.md,install.sh}`, `templates/devcontainer.json`, `docs/*` | Same text as mdt-cockpit while that tree is kept | MDT-055 |
+| Workspace | `.devcontainer/devcontainer.json` (comments naming the host daemon) | Comment update only | CP-49 |
+| Estate docs | `docs/design/RESOURCE-PROFILES.md`, `docs/BOOTSTRAP-FROM-ZERO.md`, `scripts/LANE-MATRIX-PROGRESS.md` | Rename commands; bootstrap sequence installs the wheel instead of building the image | CP-49 |
+| debian-install-v2 | `testing/vm/USAGE-TESTING.md` (3), `docs/DESIGN-GUIDE.md` | `docker exec ... ctl` becomes `cgpctl`; netcup RUNBOOK and backlog entries named in the plan are in the netcup tree (grep there) | CP-49 |
+| cmru | `run-gate.toml` lines 66 and 219 (`resource_observer = "cgprofile"`, a lane setting: keep), the bootstrap-sequence names in `docs/BOOTSTRAP-FROM-ZERO.md` and its test `test_bootstrap_from_zero_sequence.py` | Update the names in the bootstrap sequence only | cmru |
+| ciu | `docs/SPEC-V8.md` (1), `docs/CIU-V8-TESTING-GATE-PROPOSAL.md` (1) | Replace the command in the two examples | ciu docs |
+| Historical (leave) | `assay/nyxloom-trove/reports/*`, `run-gate-project/nyxloom-trove/reports/*`, `run-gate-project/nyxloom-trove/{DESIGN,WAVE-PLAN}-*`, `run-gate-project/CHANGES.md`, `scripts/cgroup-profiler/nyxloom-trove/reports/*`, backlog entries CP-1, CP-2, CP-28, CP-31 | Dated records; a successor note at most | none |
+
+Repositories outside this checkout (for example dstdns and its netcup runbook) are not covered by this grep and
+need their own pass when they adopt 2.0.
