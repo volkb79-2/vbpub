@@ -1,0 +1,26 @@
+# =============================================================================
+# tls-edge project gate lanes — parsed ONLY by the installed Run-Gate CLI (one parser, D-110).
+# Environment facts come from the CENTRAL vbpub-root run-gate.root.toml (nearest ancestor).
+#
+# The lane runs tls-edge's whole test suite in tester-unified. That image already ships
+# everything the tests need in /opt/tester-venv (pytest, Jinja2, PyYAML, tomli_w, cmru) plus
+# git and the docker CLI; the declared contract is requirements-test.txt. No coverage or
+# mutation judgment yet (no assay lane): this is a plain pass/fail gate.
+#
+# TLS_EDGE_REQUIRE_TOOLS=1 is the loud-failure switch: tests/conftest.py turns a missing
+# jinja2 / cmru into a FAILURE under the lane instead of a green skip, and -rs prints every
+# skip reason. The opt-in docker traefik validation (TLS_EDGE_VALIDATE_TRAEFIK=1) is not part
+# of this lane (it starts a container).
+# See run-gate-project/SPEC.md.
+# =============================================================================
+schema_version = 1
+
+[lanes.tests]
+kind = "command"
+environment = "tester-unified"
+argv = ["bash", "-c", "cd {worktree}/tls-edge && exec env TLS_EDGE_REQUIRE_TOOLS=1 PYTHONDONTWRITEBYTECODE=1 /opt/tester-venv/bin/python -m pytest tests -q -rs -p no:cacheprovider"]
+budget = "15m"
+
+[lanes.tests.resources]
+cpus = "1"
+memory = "1g"

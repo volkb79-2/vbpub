@@ -42,12 +42,13 @@ Mattermost Calls media pair; there is no alternate HTTPS port).
 
 ```bash
 install -d -m 0755 /srv/tls-edge-instance
-curl -fsSLO https://raw.githubusercontent.com/volkb79-2/vbpub/main/tls-edge/get.py
+# Fetch get.py from the RELEASE TAG, not the moving `main` branch (it runs as root):
+curl -fsSLO https://raw.githubusercontent.com/volkb79-2/vbpub/tls-edge-v3.0.0/tls-edge/get.py
 sudo python3 get.py install --variant py313          # asks the wizard questions
 cd /srv/tls-edge-instance/stack && sudo ./ciu up
 ```
 
-Pin a release with `--version tls-edge-v2.1.0`. The wizard asks: `domain` (required), `acme_email` (optional),
+Pin a release with `--version tls-edge-v3.0.0`. The wizard asks: `domain` (required), `acme_email` (optional),
 `tls_mode` (default `acme-tls`), `dns_provider` (only for `acme-dns`), `calls` (default yes). For automation:
 
 ```bash
@@ -204,4 +205,36 @@ tls-edge's own scripts refers to `edge-traefik` by name (`scripts/verify.sh` dis
   from a devcontainer you care about.
 - The release publishes one bundle per interpreter; publishing goes through a project script until cmru has a
   variants handler (cmru KI-115).
+
+### Releasing tls-edge (maintainers)
+
+- **The version is set explicitly: `cmru release tls-edge --set-version 3.0.0`.** The project uses
+  `bump = "conventional"`, but the two breaking changes of this release (alternate HTTPS port removed, container
+  names `tls-edge-<id>-traefik`) were committed without a `!` / `BREAKING CHANGE:` footer, so the automatic bump
+  would produce 2.1.0. The history is merged and is not rewritten; `--set-version 3.0.0` is the intent. From the
+  next release on, mark breaking commits with `!` and drop the explicit version.
+- Stage the bundled ciu reproducibly: `TLS_EDGE_CIU_VERSION=<x.y.z>` (or `scripts/stage-wheels.py --ciu-version`)
+  refuses any other ciu release; without it the newest stable ciu is bundled. The staged ciu version and sha256 are
+  printed: copy them into the release notes. `--allow-fresh` waives the 14-day rule and must be justified there.
+- Tests: `run-gate tls-edge tests` (lane `tests` in `run-gate.toml`, tester-unified). A missing cmru/jinja2/docker
+  fails the lane; only `TLS_EDGE_ALLOW_INSTALLER_SKIP=1` skips the installer test, deliberately, outside the lane.
+
+### Trust and signing
+
+Releases are currently **unsigned**: `get.py` ships with an empty `MANIFEST_PUBKEY`, so no minisign signature is
+checked (as for pwmcp). What is verified: the bundle SHA-256 sidecar, then the in-bundle `manifest.json` (every
+file and every wheel), then `pip --require-hashes`. The sidecar and manifest come from the same GitHub release as the
+bundle, so they detect corruption and partial tampering but are **not an independent trust anchor**: whoever can
+replace the release assets can replace all three. Likewise the first `curl` of `get.py` is trust-on-first-use
+(HTTPS to GitHub; pinned to the release tag above, not to a hash). Because `get.py` then runs as root and starts
+Docker, read it before running it (it is one file). Decision: a minisign
+key (cmru signature policy) is wanted before tls-edge is used beyond the operator's own hosts; until it exists,
+treat the release page as the trust boundary.
+
+### Resource governance
+
+The ciu default is `[tls_edge.runtime] cgroup_parent = ""` so an install works on hosts without the slice. On a host
+that runs under the shared governance rule, set `cgroup_parent = "edge.slice"` in the override
+(`ciu-stack/ciu.toml.j2`) at install time; this is mandatory migration step 2 in section 8, and the plain-compose
+fallback (`edge-proxy/`) has no cgroup parent at all: add it by hand if you use that path.
 - An update never changes the instance path, so the ciu identity, container names and volumes stay the same.

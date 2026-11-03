@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import os
 import shutil
 import subprocess
 import sys
@@ -28,9 +29,15 @@ try:
 except SystemExit:  # jinja2 missing in this interpreter
     RENDER = None
 
-needs_jinja = pytest.mark.skipif(RENDER is None, reason="jinja2 is not installed")
+# Under the gate lane (run-gate.toml sets TLS_EDGE_REQUIRE_TOOLS=1) a missing tool is a FAILURE,
+# never a green skip: the tests then run and fail on the missing jinja2 / docker.
+REQUIRE_TOOLS = os.environ.get("TLS_EDGE_REQUIRE_TOOLS") == "1"
+
+needs_jinja = pytest.mark.skipif(
+    RENDER is None and not REQUIRE_TOOLS, reason="jinja2 is not installed"
+)
 needs_docker = pytest.mark.skipif(
-    shutil.which("docker") is None, reason="docker CLI is not installed"
+    shutil.which("docker") is None and not REQUIRE_TOOLS, reason="docker CLI is not installed"
 )
 
 
