@@ -279,7 +279,11 @@ type Record struct {
 	// DirtyCapable records that this generation has been exposed writable,
 	// so its content may no longer match the release it was published from.
 	//
-	// It is set when the exposure is made, not when a write happens: srdm
+	// This build never writes it (D-035 replaced in-place unsealing with an
+	// overlay; the writer was removed). It is read-only here: a record from
+	// an older srdm, or a future non-overlay driver, may still carry it, and
+	// doctor, expose and gc act on it. When it was set, it was set when the
+	// exposure was made, not when a write happened: srdm
 	// cannot see writes through a bind it does not mediate, so the only
 	// honest moment is the one where writing became possible. A dirty
 	// generation is not shared with a second consumer and is not used as a
@@ -660,26 +664,6 @@ func LoadRecordAt(cfg config.Config, profileID, generation string) (*Record, err
 			profileID, generation, rec.SchemaVersion, RecordSchemaVersion)
 	}
 	return &rec, nil
-}
-
-// MarkDirtyCapable records that a generation has been exposed writable.
-//
-// Durable, and fsync'd, because the whole value of the flag is that it
-// survives the crash during which somebody wrote through the exposure. A
-// flag that only lived in memory would be cleared by exactly the event that
-// makes it matter.
-func (p *Publisher) MarkDirtyCapable(opID, profileID, generation string) error {
-	rec, err := p.LoadRecord(profileID, generation)
-	if err != nil {
-		return fmt.Errorf("publish: marking %s/%s dirty-capable: %w", profileID, generation, err)
-	}
-	if rec.DirtyCapable {
-		return nil
-	}
-	rec.DirtyCapable = true
-	return p.phase(opID, KindPublish, PhaseRecord, recFields(rec), func() error {
-		return p.writeRecord(rec)
-	})
 }
 
 func recFields(rec *Record) map[string]string {

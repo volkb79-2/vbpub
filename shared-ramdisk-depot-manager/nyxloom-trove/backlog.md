@@ -173,19 +173,25 @@ tree already has is worse than an empty one.
   `srdm-hold-*.service` units against every op directory that still exists,
   which is closer to a systemd unit-listing capability `internal/hold` does
   not have yet than to a bug fix.
-- **`publish.MarkDirtyCapable` is unreachable code** (P10). D-035 replaced
-  in-place unsealing with an overlay, and no `rw` exposure this project
-  builds anymore marks a generation dirty-capable — the `Marker` interface,
-  `expose.WithMarker` and the `cmd/srdm` wiring that called it are all gone.
-  Nothing calls `MarkDirtyCapable` now. It is intentionally left in
-  `internal/publish/publish.go` rather than deleted: that file was out of
-  P10's scope (another package was concurrently working in it), and the
-  READ side of `Record.DirtyCapable` stays genuinely load-bearing — a
-  record written by an older srdm, or a future non-overlay driver, can
-  still carry the flag, and `doctor`'s drift check earns its keep on those.
-  Only the writer is dead. Remove `MarkDirtyCapable` (and reconsider whether
-  `Marker` should even be a package-level export anymore) once nothing
-  plausibly still calls it.
+- **`publish.MarkDirtyCapable` was unreachable code** (P10) — **FIXED
+  2026-11-04 (fix-misc-1-20261104)**: the writer is removed from
+  `internal/publish/publish.go`; no caller existed anywhere (`Marker` and
+  `expose.WithMarker` were already gone). The READ side of
+  `Record.DirtyCapable` stays (older records, `doctor`, `expose`, `gc`).
+- **`tools/gate.sh` cannot build `srdm-gate` on the governed builder**
+  (found 2026-11-04 by finish-srdm-1). `go-base.sh` builds
+  `tester-unified-go:local` into dockerd's store; the second build
+  (`gate/Dockerfile`, `FROM ${BASE_IMAGE}`) is routed to the remote BuildKit
+  builder `mdt-managed` by the buildx shim, which cannot see dockerd's local
+  images (pull access denied). Infrastructure, not a product result. The fix
+  is the platform decision, not an srdm workaround: export the Go base as an
+  OCI layout and pass it to the derived builds as
+  `--build-context <ref>=oci-layout://<dir>@sha256:<digest>` (mdt-cockpit
+  MDT-056, tester-chain pilot tester-base TB-14, platform memo option A).
+  srdm is that decision's package 4 (`go-base.sh`, `gate.sh`, `canary-run.sh`):
+  do it after TB-14 lands so the layout/digest convention is shared. Until
+  then gate runs that rebuild `srdm-gate:*` need `srdm-gate:unit` to already
+  exist locally, or a docker-driver build (`--builder default`).
 - **Build identity is not recorded** (P07). The master plan's harvest step 4
   is "run the profile's probes; record build identity where discoverable" —
   the probes run, and there is nowhere to record a build identity, because no
