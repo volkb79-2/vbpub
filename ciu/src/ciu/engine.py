@@ -1939,6 +1939,11 @@ def main_execution(
                     if s.kind == "GEN_LOCAL":
                         return secret_materialize.project_store(repo_root) / s.locator
                     return secret_materialize.stack_store(working_dir) / s.name
+            # CIU-102: a hook-persisted secret (S9.4a) has no directive, so it
+            # is found through the stack's provenance sidecar. A name never
+            # persisted still raises.
+            if name in secret_materialize.read_hook_manifest(working_dir):
+                return secret_materialize.hook_secret_store(working_dir, name)
             raise KeyError(name)
 
         # S3.12 / CIU-44: identity + selection facts on the hook context, so
