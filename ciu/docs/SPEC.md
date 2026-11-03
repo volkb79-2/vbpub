@@ -1361,7 +1361,7 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   `starting` on its one and only probe; vault reported healthy moments
   later, unobserved.
 
-  `ciu health --preflight` parses `CMD`/`CMD-SHELL` healthchecks and
+  `ciu status --preflight` parses `CMD`/`CMD-SHELL` healthchecks and
   probes only external executables in the declared image. Shell builtins,
   control-flow tokens, numeric arguments, and quoted `python -c`/`node -e`
   source MUST NOT be treated as executable names; `--strict` exits 1 only for
@@ -2692,7 +2692,7 @@ the host option:
 ciu up   --host core1 --profile infra
 ciu up   --host core1 --dir infra/db-core
 ciu down --host core1 --profile apps
-ciu health --host core1
+ciu status --gate --host core1
 ciu render --host core1
 ```
 
@@ -2838,7 +2838,7 @@ CLI-to-verb mapping:
   runs `bootstrap` before `apply` (first-time host setup). `--rollback` runs
   `rollback` only (revert to previous release; **no** fresh push).
   `--bootstrap`/`--rollback` are mutually exclusive and require `--thin`.
-- **S14.6e** `ciu health --host X --thin` runs the `health` verb (no push).
+- **S14.6e** `ciu status --gate --host X --thin` runs the `health` verb (no push).
 - Trailing selection flags (e.g. `--profile apps`) are appended to the `apply`
   and `health` verbs so the activation script can act on them.
 

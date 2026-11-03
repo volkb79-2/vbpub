@@ -66,8 +66,8 @@ ciu down [--profile NAME]                  # stop stack, PRESERVE volumes
 ciu clean [--clean-only-{config,containers,images,volumes,secrets}]
 ciu status [--profile NAME] [--json]       # per-stack compose project, containers, health (read-only)
 ciu diagnose [--project NAME] [--logs N] [--json]   # explain common failures (read-only)
-ciu health [--profile NAME]                # health gate check
-ciu health --preflight [--strict]          # probe images for missing healthcheck tools
+ciu status --gate [--profile NAME]         # health gate check (exit status is the verdict)
+ciu status --preflight [--strict]          # probe images for missing healthcheck tools
 ```
 
 ## Authoring / discovery (no deploy)

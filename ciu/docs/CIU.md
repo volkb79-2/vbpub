@@ -53,7 +53,7 @@ common verbs are:
 | `ciu down [--profile NAME]` | stop selected project containers (volumes preserved) |
 | `ciu down --dir PATH` | stop only one stack's running Compose project |
 | `ciu clean` | complete teardown (S6.4 invariant) |
-| `ciu health [--preflight]` | health gate / image tool probe |
+| `ciu status [--gate \| --preflight [--strict]]` | per-stack report (default) / health gate verdict / image tool probe |
 | `ciu diagnose` | read-only OOM/exit/health/log diagnosis (S10.5) |
 | `ciu bake` · `ciu dev <stack>` | build prod image · run the dev loop (S5a) |
 | `ciu secrets list\|reset` | inspect / delete secret store files |
@@ -114,7 +114,7 @@ The command intentionally distinguishes evidence from inference; for example,
 exit 137 is reported as a probable OOM only when Docker did not retain a
 definitive `OOMKilled=true` flag.
 
-`ciu health --preflight --strict` is the complementary static runtime check:
+`ciu status --preflight --strict` is the complementary static runtime check:
 it shell-parses rendered `CMD`/`CMD-SHELL` healthchecks and verifies that each
 external executable exists in its image. Quoted inline programs and shell
 builtins such as `exit` are not probes. This catches a real `wget`-in-a-distroless

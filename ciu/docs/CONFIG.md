@@ -1470,7 +1470,7 @@ Usage:
 ciu up     --host web --thin              # push, then run the 'apply' verb
 ciu up     --host web --thin --bootstrap  # push, then 'bootstrap' then 'apply'
 ciu up     --host web --thin --rollback   # 'rollback' verb only (no fresh push)
-ciu health --host web --thin              # run the 'health' verb (no push)
+ciu status --gate --host web --thin       # run the 'health' verb (no push)
 ```
 
 **`known_host` format.** For the default port (22) use the bare hostname form

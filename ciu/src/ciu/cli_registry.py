@@ -870,24 +870,6 @@ def build_cli() -> Any:
                      "--expected-checkout qualifies an --identity clean"),
         ),
     ))
-    health_options = (
-        PROFILE, PHASES, ROOT,
-        flag("--preflight", "probe rendered compose images for missing healthcheck tools",
-             group="MODE"),
-        flag("--strict", "(with --preflight) treat missing tools as an error", group="MODE"),
-        value("--host", "run the health gate on a remote host (SPEC S14)", "NAME", group="REMOTE"),
-        flag("--thin", "(with --host) run the docker-optional 'health' activation verb",
-             group="REMOTE"),
-    )
-    register(VerbSpec(
-        "health", description="Run the health gate (S7.7) over the selection, or probe images (--preflight).",
-        group=VerbGroup.EXPLORATION.value, include_json=False, include_progress=False,
-        options=health_options, handler=adapter(["health"], health_options),
-        constraints=(
-            Requires("--strict", ("--preflight",), "--strict qualifies --preflight"),
-            Requires("--thin", ("--host",), "--thin applies to the --host path"),
-        ),
-    ))
     diagnose = (
         value("--project", "restrict to one Compose/CIU project label", "NAME"),
         value("--logs", "recent log lines per container to scan (0-10000; default 100)", "N",
@@ -903,17 +885,55 @@ def build_cli() -> Any:
         group=VerbGroup.EXPLORATION.value, include_progress=False, options=diagnose,
         handler=adapter(["diagnose"], diagnose, json_tokens=["--json"]),
     ))
-    status_options = (PROFILE, ROOT)
+    # `status` absorbs the former `health` verb (v8 S18, decision C5): the report is the
+    # default, --gate turns the verdict into the exit status (S7.7), --preflight probes the
+    # rendered images for missing healthcheck tools.
+    strict_opt = flag("--strict", "(with --preflight) treat missing tools as an error",
+                      group="MODE")
+    host_opt = value("--host", "(with --gate) run the health gate on a remote host (SPEC S14)",
+                     "NAME", group="REMOTE")
+    thin_opt = flag("--thin", "(with --gate --host) run the docker-optional 'health' activation "
+                              "verb (S14.6)", group="REMOTE")
+    status_options = (
+        PROFILE, ROOT,
+        flag("--gate", "run the S7.7 health gate over the selection: the exit status is the "
+                       "verdict (0 healthy, 1 not)", group="MODE", xgroup="status-mode"),
+        flag("--preflight", "probe the rendered compose images for missing healthcheck tools",
+             group="MODE", xgroup="status-mode"),
+        strict_opt, PHASES, host_opt, thin_opt,
+    )
+    report_handler = adapter(["status"], (PROFILE, ROOT), json_tokens=["--json"])
+    gate_handler = adapter(["health"], (PROFILE, ROOT, PHASES, host_opt, thin_opt))
+    preflight_handler = adapter(["health", "--preflight"], (ROOT, strict_opt))
+
+    def status_handler(args: argparse.Namespace, runtime: Any) -> int | None:
+        if args.preflight:
+            return preflight_handler(args, runtime)
+        if args.gate:
+            return gate_handler(args, runtime)
+        return report_handler(args, runtime)
+
     register(VerbSpec(
         "status",
         description=(
             "Read-only per-stack report: the resolved Compose project, running containers, each "
             "container's health and image reference. A stack not yet deployed has an empty "
             "container list; an unreachable Docker daemon is a clean error, never a healthy-looking "
-            "result."
+            "result. --gate runs the S7.7 health gate instead and exits non-zero unless healthy; "
+            "--preflight probes images for missing healthcheck tools."
         ),
         group=VerbGroup.EXPLORATION.value, include_progress=False, options=status_options,
-        handler=adapter(["status"], status_options, json_tokens=["--json"]),
+        handler=status_handler,
+        examples=("ciu status --json", "ciu status --gate --profile core",
+                  "ciu status --preflight --strict"),
+        constraints=(
+            Requires("--strict", ("--preflight",), "--strict qualifies --preflight"),
+            Requires("--thin", ("--host",), "--thin applies to the --host path"),
+            Requires("--host", ("--gate",), "a remote verdict is the --gate form"),
+            Requires("--phases", ("--gate",), "phases restrict the health gate"),
+            Conflicts(("--json", "--gate"), "the gate's verdict is its exit status"),
+            Conflicts(("--json", "--preflight"), "the preflight report is text"),
+        ),
     ))
 
     # ---- PROVISIONING / MIGRATION ---------------------------------------------------

@@ -2637,7 +2637,7 @@ def _print_health_summary(summary: dict) -> None:
             "(e.g. references a tool the image lacks). "
             f"Inspect with: docker logs {pending[0]}"
         )
-        warn("  Run 'ciu health --preflight' to probe image/tool availability.")
+        warn("  Run 'ciu status --preflight' to probe image/tool availability.")
 
 
 # ===========================================================================
@@ -5684,7 +5684,7 @@ Examples:
     actions.add_argument("--stop", action="store_true", help="Stop project containers (preserve volumes)")
     actions.add_argument("--clean", action="store_true", help="Remove containers, volumes, rendered artifacts")
     actions.add_argument("--preflight", action="store_true",
-                         help="Probe healthcheck tool availability in service images (ciu health --preflight)")
+                         help="Probe healthcheck tool availability in service images (ciu status --preflight)")
     actions.add_argument("--check", action="store_true",
                          help="Validate the requires/provides dependency graph (no deploy)")
     actions.add_argument("--graph", action="store_true",

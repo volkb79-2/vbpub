@@ -70,8 +70,8 @@ failure · `2` config/validation error · `3` environment/bootstrap error (S10.3
 | `ciu up` | Render + materialise secrets + `compose up` | `--profile NAME` \| `--dir PATH`, `--phases N,M`, `--dry-run`, `-y`, `--ignore-errors`, `--no-preflight`; `--host NAME` push-deploys to a remote host (S14.2); `--thin` docker-optional push→activate (S14.6), `--bootstrap`/`--rollback` select activation verbs |
 | `ciu down` | Stop selected containers and preserve volumes | `--profile NAME`, `--host NAME`; `--dir PATH` stops one stack |
 | `ciu clean` | **Complete** teardown: containers (any state) + volumes + `vol-*` + rendered; enforces post-clean invariant (exit 1 on survivors) | `--profile NAME`, `-y`, `--ignore-errors` |
-| `ciu health` | Health gate over the selection | `--profile NAME`, `--host NAME` |
-| `ciu health --preflight` | Probe images for missing healthcheck tools | `--strict` |
+| `ciu status --gate` | Health gate over the selection; the exit status is the verdict | `--profile NAME`, `--phases N,M`, `--host NAME [--thin]` |
+| `ciu status --preflight` | Probe images for missing healthcheck tools | `--strict` |
 | `ciu diagnose` | Explain common container failures without changing state | `--project NAME`, `--logs N`, `--json` |
 | `ciu status` | Per-stack compose project, containers, and health (read-only) | `--profile NAME`, `--json` |
 | `ciu bake` | `docker buildx bake --load`; linked worktree tags are scoped unless shared tags are explicitly enabled | `[targets …]` \| `--profile NAME`, `--no-cache`, `--allow-shared-tag` |
@@ -128,7 +128,7 @@ ciu dev applications/webapp-ui  # fetch:openapi → gen:api → vite dev, HMR on
 
 # Inspect secrets and health
 ciu secrets list -d infra/vault
-ciu health --preflight --strict
+ciu status --preflight --strict
 ciu diagnose --project myproject
 
 # Tear everything down to a clean slate (disposable greenfield)
@@ -315,5 +315,5 @@ ciu up --host core1 --dir infra/vault    # second run: TOFU env unset, key now p
   without rsync) and runs the project's shell activation contract
   (`bootstrap|apply|health|rollback`) — no Docker or general-purpose Python needed on
   the target (fits a Passenger webhoster). `--bootstrap`/`--rollback` select the other
-  verbs; `ciu health --host <name> --thin` runs the `health` verb. The render-on-target
+  verbs; `ciu status --gate --host <name> --thin` runs the `health` verb. The render-on-target
   path (default, no `--thin`) is unchanged and needs Docker on the target.

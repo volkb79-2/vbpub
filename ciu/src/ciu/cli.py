@@ -2085,7 +2085,7 @@ def _legacy_dispatch(raw: list[str]) -> None:
                     raise SystemExit(2)
                 raise SystemExit(rc)
             from .transport_ssh import ssh_exec
-            remote_cmd = shlex.join(["ciu", "health", *remaining])
+            remote_cmd = shlex.join(["ciu", "status", "--gate", *remaining])
             # Pass the whole command as ONE argv element: ssh space-joins remote
             # args into a single string for the remote login shell to re-parse, so
             # an "sh -c" wrapper here would be re-split and break "&&"/cd. The login
