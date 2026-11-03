@@ -7009,7 +7009,8 @@ history/footprint evidence without changing mutation verdicts.
 
 ## RG-144 — "time stalled on memory" is a contamination flag: exclude contaminated samples from every sizing basis
 
-**Status:** OPEN. Severity: enhancement (measurement correctness). Filed 2026-11-03 from the operator's resource-profile
+**Status:** IMPLEMENTED IN CANDIDATE 2026-11-03 (unreleased; branch fan-rg-profile-20261103; live M5 calibration and the
+cgprofile CP-40 ancestor field still pending, see CHANGES.md Unreleased). Severity: enhancement (measurement correctness). Filed 2026-11-03 from the operator's resource-profile
 decisions. Design: `docs/design/RESOURCE-PROFILES.md` §6.1. (RG-143 is taken by
 the R2 CPU-cap and overshoot item. This entry feeds its overshoot half.)
 
@@ -7073,7 +7074,9 @@ RG-145 lands.
 
 ## RG-145 — per-lane resource profiles: `resource-profile/1` ingestion, distributions, bounded sidecar, history summary
 
-**Status:** OPEN. Severity: enhancement. Filed 2026-11-03. Design §2, §6.4.
+**Status:** IMPLEMENTED IN CANDIDATE 2026-11-03 (unreleased; branch fan-rg-profile-20261103; the released-24.3.0-wheel
+compatibility test and the live design §9 tables T2/T3 are still pending; xdist worker profiles arrive with RG-146).
+Severity: enhancement. Filed 2026-11-03. Design §2, §6.4.
 
 **Problem.** History keeps per-run summaries only: peak, p90, average cores, and the R2 per-run candidate RSS p95. The
 existing code says that p95s cannot be recombined, and it takes the maximum of recent p95s. There are no per-worker or

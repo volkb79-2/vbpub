@@ -10708,6 +10708,49 @@ class TestRG66SelectiveAssayRequests:
         assert "require an R2 lane" in capsys.readouterr().err
         assert not [call for call in docker_runs(log) if "-d" in call]
 
+    def _profile_record(self, proj, ids):
+        path = run_gate.profile_sidecar_path(
+            run_gate.history_dir(proj), "ui-unit")
+        run_gate.append_profile_record(path, {
+            "schema": "lane-profile/1", "lane": "ui-unit", "run_id": "r",
+            "contamination": {"flagged": False, "reasons": []},
+            "contaminated_budget_exceeded_ids": ids, "subjects": []})
+
+    def test_rejudge_contaminated_selects_the_latest_runs_ids_serially(
+            self, tmp_path, monkeypatch, capsys):
+        _repo, proj, log = self._project(
+            tmp_path, monkeypatch, rigors=["R0", "R2"])
+        self._profile_record(proj, ["hot-1", "hot-2"])
+        code = run_gate.main(["ui-unit", "--dry-run",
+                              "--rejudge-contaminated"])
+        captured = capsys.readouterr()
+        assert "rejudging 2 candidate(s) serially (--jobs 1)" in captured.out
+        # this fixture lane is an ingested (non-native) R2 lane, so the
+        # forced --jobs 1 is refused by the existing native-R2 check: proof
+        # that the serial request really reaches jobs selection.
+        assert code == 2
+        assert "requires a native R2 mutation lane" in captured.err
+
+    def test_rejudge_contaminated_without_candidates_refuses(
+            self, tmp_path, monkeypatch, capsys):
+        _repo, proj, log = self._project(
+            tmp_path, monkeypatch, rigors=["R0", "R2"])
+        self._profile_record(proj, [])
+        assert run_gate.main(["ui-unit", "--rejudge-contaminated"]) == 2
+        assert "no contaminated budget_exceeded candidate" in \
+            capsys.readouterr().err
+
+    def test_rejudge_contaminated_refuses_combinations_and_verbs(
+            self, tmp_path, monkeypatch, capsys):
+        _repo, proj, log = self._project(
+            tmp_path, monkeypatch, rigors=["R0", "R2"])
+        for argv in (["--rejudge-contaminated"],
+                     ["history", "--rejudge-contaminated"],
+                     ["ui-unit", "--rejudge-contaminated", "--rejudge", "x"],
+                     ["ui-unit", "--rejudge-contaminated", "--jobs", "2"]):
+            assert run_gate.main(argv) == 2, argv
+            assert "rejudge-contaminated" in capsys.readouterr().err
+
     def test_command_lane_rejects_assay_flags_by_name(self, tmp_path,
                                                        monkeypatch, capsys):
         repo = make_repo(tmp_path)
@@ -10716,6 +10759,8 @@ class TestRG66SelectiveAssayRequests:
         monkeypatch.setattr(sys, "argv", ['run-gate'])
         assert run_gate.main(["suite", "--reuse-from", "prior.json"]) == 2
         assert "assay-only flags" in capsys.readouterr().err
+        assert run_gate.main(["suite", "--rejudge-contaminated"]) == 2
+        assert "applies only to an assay R2 lane" in capsys.readouterr().err
 
     def test_reuse_path_outside_the_mounted_worktree_refuses(self, tmp_path,
                                                               monkeypatch,
@@ -37251,3 +37296,721 @@ argv = ["true"]
                 "docker", "tester:local", tmp_path)
 
         assert list((tmp_path / ".run-gate").iterdir()) == []
+
+
+# ---------------------------------------------------------------------------
+# RG-144 / RG-145 -- contamination and resource profiles
+# ---------------------------------------------------------------------------
+
+def _prof_summary(*, stall=0.0, high=0, oom=0, ancestors=None, wall=100.0,
+                  start="2026-11-03T10:00:00Z", end="2026-11-03T10:01:40Z"):
+    summary = {"schema": 1, "started_at": start, "ended_at": end,
+               "duration_seconds": wall,
+               "memory": {"peak_bytes": 300 * MIB},
+               "cpu": {"seconds": 50.0, "cores_avg": 0.5},
+               "pressure": {"memory_full_stall_seconds": stall},
+               "events": {"oom_kill": oom, "limit_drift": 0,
+                          "memory_high_breach": high},
+               "host": {"memory_full_stall_seconds": 0.0}}
+    if ancestors is not None:
+        summary["ancestors_memory_events_local"] = ancestors
+    return summary
+
+
+def _prof_event(cid, rss=None, *, bucket="killed", legacy=True, elapsed=2.0,
+                context=None, status="MEASURED"):
+    event = {"event": "candidate", "candidate_id": cid,
+             "outcome_bucket": bucket, "elapsed_seconds": elapsed,
+             "worker_index": 0}
+    if legacy:
+        if rss is not None:
+            event["resources"] = {"peak_rss_bytes": rss, "cpu_seconds": 1.5,
+                                  "write_bytes": 10}
+        return event
+    metrics = {"rss_peak_bytes": rss, "cpu_seconds": 1.5,
+               "io_write_bytes": 10}
+    profile = {"schema": "resource-profile/1", "status": status,
+               "reason": None, "wall_seconds": elapsed, "metrics": metrics}
+    if context is not None:
+        profile["context"] = context
+    event["profile"] = profile
+    return event
+
+
+def _ignored_progress(proj):
+    """A progress path inside the git-ignored .run-gate/ (a progress file in
+    the tree would make it dirty and the run history-ineligible)."""
+    (proj / ".run-gate").mkdir(exist_ok=True)
+    return proj / ".run-gate" / "progress.jsonl"
+
+
+def _write_progress(path, segments):
+    lines = []
+    for commit, events in segments:
+        lines.append({"event": "run", "commit": commit})
+        lines.extend(events)
+    path.write_text("".join(json.dumps(e) + "\n" for e in lines))
+
+
+class TestContaminationRule:
+    GUARD_WINDOW = ("2026-11-03T10:00:00Z", "2026-11-03T10:01:40Z")
+
+    def classify(self, summary, guard=None, tmp_path=None):
+        return run_gate.classify_summary(
+            summary, guard_path=guard or Path("/nonexistent/guard.jsonl"))
+
+    def test_no_summary_is_not_classified(self):
+        assert run_gate.classify_summary(None) is None
+
+    def test_lane_stall_flags(self):
+        verdict = self.classify(_prof_summary(stall=2.5))
+        assert verdict["flagged"] is True
+        assert "2.5 s memory stall" in verdict["reasons"][0]
+        assert verdict["self_limited"]["flagged"] is False
+
+    def test_stall_below_threshold_is_clean(self):
+        verdict = self.classify(_prof_summary(stall=1.9))
+        assert verdict["flagged"] is False and verdict["reasons"] == []
+
+    def test_threshold_scales_with_wall_time(self):
+        # 0.5% of 1000 s = 5 s dominates the 2 s floor.
+        assert self.classify(_prof_summary(stall=4.9, wall=1000.0))[
+            "flagged"] is False
+        assert self.classify(_prof_summary(stall=5.0, wall=1000.0))[
+            "flagged"] is True
+
+    def test_ancestor_reclaim_flags(self):
+        verdict = self.classify(_prof_summary(ancestors=[
+            {"path": "/dev.slice/dev-gates.slice", "high": 1, "max": 0},
+            None]))
+        assert verdict["flagged"] is True
+        assert "dev-gates.slice" in verdict["reasons"][0]
+        assert verdict["ancestor_events"] == "known"
+
+    def test_ancestors_without_events_are_clean_and_known(self):
+        verdict = self.classify(_prof_summary(ancestors=[
+            {"path": "/dev.slice", "high": 0, "max": 0}, "garbage"]))
+        assert verdict["flagged"] is False
+        assert verdict["ancestor_events"] == "known"
+
+    def test_missing_ancestor_data_neither_flags_nor_clears(self):
+        verdict = self.classify(_prof_summary())
+        assert verdict["flagged"] is False
+        assert verdict["ancestor_events"] == "unknown"
+
+    def test_guard_overlap_flags_and_outside_does_not(self, tmp_path):
+        guard = tmp_path / "events.jsonl"
+        guard.write_text("\n".join([
+            "not json", "[]",
+            json.dumps({"ts": "2026-11-03T10:00:30Z", "action": "cpu-weight"}),
+            json.dumps({"ts": 1, "action": "ancient"}),
+            json.dumps({"action": "no-ts"})]) + "\n")
+        verdict = self.classify(_prof_summary(), guard)
+        assert verdict["flagged"] is True
+        assert "PSI guard acted 1 time" in verdict["reasons"][0]
+        guard.write_text(json.dumps(
+            {"ts": 1792000000.0, "action": "later"}) + "\n")
+        assert self.classify(_prof_summary(), guard)["flagged"] is False
+        epoch = run_gate._iso_epoch("2026-11-03T10:00:30Z")
+        guard.write_text(json.dumps({"ts": epoch}) + "\n")
+        assert self.classify(_prof_summary(), guard)["flagged"] is True
+
+    def test_guard_without_known_window_is_ignored(self, tmp_path):
+        guard = tmp_path / "events.jsonl"
+        guard.write_text(json.dumps({"ts": 5}) + "\n")
+        summary = _prof_summary()
+        summary["started_at"] = None
+        assert self.classify(summary, guard)["flagged"] is False
+        assert run_gate._iso_epoch(123) is None
+        assert run_gate._iso_epoch("yesterday") is None
+
+    def test_self_limit_with_stall_is_not_contamination(self):
+        verdict = self.classify(_prof_summary(stall=10.0, high=3))
+        assert verdict["flagged"] is False
+        assert verdict["self_limited"] == {"flagged": True,
+                                           "memory_limit_events": 3}
+
+    def test_flags_are_independent(self):
+        verdict = self.classify(_prof_summary(
+            stall=10.0, oom=1,
+            ancestors=[{"path": "/dev.slice", "high": 0, "max": 2}]))
+        assert verdict["flagged"] is True
+        assert verdict["self_limited"]["flagged"] is True
+
+    def test_malformed_summary_sections_are_tolerated(self):
+        verdict = run_gate.classify_summary(
+            {"events": 7, "pressure": "x", "ancestors_memory_events_local": 4},
+            guard_path=Path("/nonexistent"))
+        assert verdict["flagged"] is False
+
+    def test_subject_inherits_run_flag_and_has_its_own_context(self):
+        run = {"flagged": True, "reasons": ["host reclaim"]}
+        clean = {"context": {}}
+        assert run_gate.classify_subject(clean, run) == {
+            "flagged": True, "reasons": ["host reclaim"]}
+        own = {"wall_seconds": 10.0, "context": {
+            "container_psi_memory_full_seconds": 3.0,
+            "container_memory_events_local": {"high": 0, "max": 0}}}
+        verdict = run_gate.classify_subject(own, None)
+        assert verdict["flagged"] is True
+        limited = {"context": {
+            "container_psi_memory_full_seconds": 3.0,
+            "container_memory_events_local": {"high": 1}}}
+        assert run_gate.classify_subject(limited, None)["flagged"] is False
+        anc = {"context": {"ancestors_memory_events_local": [
+            {"path": "/dev.slice", "high": 2}]}}
+        assert run_gate.classify_subject(anc, None)["flagged"] is True
+        # the same reason arriving from run and subject is not duplicated
+        reason = run_gate.classify_subject(anc, None)["reasons"][0]
+        both = run_gate.classify_subject(
+            anc, {"flagged": True, "reasons": [reason]})
+        assert both["reasons"] == [reason]
+
+    def test_entry_contamination_predicate(self):
+        assert run_gate.entry_is_contaminated(
+            {"contamination": {"flagged": True}})
+        assert not run_gate.entry_is_contaminated(
+            {"contamination": {"flagged": False}})
+        assert not run_gate.entry_is_contaminated({})
+        assert not run_gate.entry_is_contaminated("x")
+
+
+class TestFootprintContaminationText:
+    def resources(self, **kw):
+        res = _prof_summary(**kw)
+        res["memory"] = {"peak_bytes": 100 * MIB, "p90_bytes": 90 * MIB}
+        res["cpu"] = {"cores_avg": 0.5}
+        res["host"] = {"memory_full_stall_seconds": 7.0}
+        return res
+
+    def test_contaminated_line_is_golden(self, tmp_path, capsys):
+        run_gate.print_footprint_line(
+            "suite", tmp_path, self.resources(stall=2.2))
+        assert ("run-gate: footprint suite: peak 100 MiB, p90 90 MiB, "
+                "0.50 cores avg, measurement contaminated (2.2 s memory "
+                "stall not explained by the lane's own limit); excluded "
+                "from sizing; history median peak - (0 runs)"
+                in capsys.readouterr().out)
+
+    def test_self_limited_line_names_the_count_not_a_contamination(
+            self, tmp_path, capsys):
+        run_gate.print_footprint_line(
+            "suite", tmp_path, self.resources(stall=9.0, high=4))
+        out = capsys.readouterr().out
+        assert "7.0 s stalled on memory (full) | memory limit reached 4 " \
+               "times" in out
+        assert "contaminated" not in out
+
+    def test_clean_line_keeps_the_context_figure(self, tmp_path, capsys):
+        run_gate.print_footprint_line(
+            "suite", tmp_path, self.resources(stall=0.1))
+        out = capsys.readouterr().out
+        assert "7.0 s stalled on memory (full); history" in out
+        assert "contaminated" not in out and "limit reached" not in out
+
+
+class TestProfileIngestion:
+    def test_assay12_and_legacy_progress_give_the_same_distribution(self):
+        sizes = [100, 200, 300, 400]
+        new = [run_gate.profile_from_progress_event(
+            _prof_event(f"c{i}", s, legacy=False), lane="r2")
+            for i, s in enumerate(sizes)]
+        old = [run_gate.profile_from_progress_event(
+            _prof_event(f"c{i}", s), lane="r2")
+            for i, s in enumerate(sizes)]
+        assert run_gate.profile_distributions(new) == \
+            run_gate.profile_distributions(old)
+        dist = run_gate.profile_distributions(old)["rss_peak_bytes"]
+        assert dist == {"p50": 200, "p95": 400, "max": 400, "n": 4}
+        assert run_gate.profile_distributions(old)["wall_seconds"]["n"] == 4
+        assert old[0]["status"] == "MEASURED"
+        assert new[0]["subject"]["id"] == "c0"
+
+    def test_no_measurement_counts_but_never_enters_distributions(self):
+        subjects = [
+            run_gate.profile_from_progress_event(_prof_event("a", 100)),
+            run_gate.profile_from_progress_event(_prof_event("b")),
+            run_gate.profile_from_progress_event(
+                {"event": "candidate", "candidate_index": 3}),
+            run_gate.profile_from_progress_event(
+                _prof_event("c", 5, legacy=False, status="BOGUS")),
+        ]
+        assert [s["status"] for s in subjects] == [
+            "MEASURED", "NO_MEASUREMENT", "NO_MEASUREMENT",
+            "NO_MEASUREMENT"]
+        assert subjects[1]["reason"] == "OBSERVER_UNAVAILABLE"
+        assert subjects[2]["subject"]["id"] == "3"
+        assert subjects[3]["reason"] == "OBSERVER_ERROR"
+        assert run_gate.profile_status_counts(subjects) == {
+            "MEASURED": 1, "PARTIAL": 0, "NO_MEASUREMENT": 3}
+        assert run_gate.profile_distributions(subjects)[
+            "rss_peak_bytes"]["n"] == 1
+        assert run_gate.profile_distributions(subjects[1:])[
+            "wall_seconds"]["n"] == 0
+
+    def test_legacy_without_rss_is_partial(self):
+        event = {"event": "candidate", "candidate_id": "x",
+                 "peak_rss_bytes": True, "cpu_seconds": 2.0}
+        profile = run_gate.profile_from_progress_event(event)
+        assert profile["status"] == "PARTIAL"
+        assert profile["metrics"]["rss_peak_bytes"] is None
+        assert profile["missing"]["rss_peak_bytes"] == "OBSERVER_UNAVAILABLE"
+        assert run_gate.profile_distributions([profile])[
+            "rss_peak_bytes"]["n"] == 0
+
+    def test_assay12_profile_keeps_its_own_subject_and_wall(self):
+        event = _prof_event("c9", 7, legacy=False)
+        event["profile"]["subject"] = {"kind": "r2-candidate", "id": "c9",
+                                       "workers": 3, "commit": None}
+        del event["profile"]["wall_seconds"]
+        profile = run_gate.profile_from_progress_event(event, commit="abc")
+        assert profile["subject"]["workers"] == 3
+        assert profile["subject"]["commit"] == "abc"
+        assert profile["wall_seconds"] == 2.0
+
+    def test_number_filter_rejects_bool_nonfinite_negative_and_text(self):
+        for bad in (True, float("nan"), float("inf"), -1, "5", None):
+            assert run_gate._profile_number(bad) is None
+        assert run_gate._profile_number(0) == 0
+        assert run_gate._profile_number(2.5) == 2.5
+
+    def test_head_tree_is_none_when_git_cannot_run(self, tmp_path,
+                                                   monkeypatch):
+        def boom(*a, **k):
+            raise OSError("no git")
+        monkeypatch.setattr(run_gate.subprocess, "run", boom)
+        assert run_gate.head_tree(tmp_path) is None
+
+    def test_distribution_edges(self):
+        assert run_gate.distribution([]) == {
+            "p50": None, "p95": None, "max": None, "n": 0}
+        assert run_gate.distribution([5]) == {
+            "p50": 5, "p95": 5, "max": 5, "n": 1}
+        assert run_gate.clean_rss_p95([]) == (None, 0)
+
+    def test_lane_status_mix(self):
+        measured = {"status": "MEASURED"}
+        none = {"status": "NO_MEASUREMENT"}
+        assert run_gate._lane_profile_status([], True) == "MEASURED"
+        assert run_gate._lane_profile_status([], False) == "NO_MEASUREMENT"
+        assert run_gate._lane_profile_status([measured], False) == "MEASURED"
+        assert run_gate._lane_profile_status([none], False) == \
+            "NO_MEASUREMENT"
+        assert run_gate._lane_profile_status([none], True) == "PARTIAL"
+        assert run_gate._lane_profile_status([measured, none], False) == \
+            "PARTIAL"
+
+
+class TestProfileSidecar:
+    def record(self, run_id, n=1, *, flagged=False, rss=100):
+        subjects = [{"subject": {"id": f"{run_id}-{i}"}, "status": "MEASURED",
+                     "wall_seconds": 1.0, "metrics": {"rss_peak_bytes": rss},
+                     "contamination": {"flagged": False, "reasons": []}}
+                    for i in range(n)]
+        return {"schema": "lane-profile/1", "lane": "suite",
+                "run_id": run_id,
+                "contamination": {"flagged": flagged, "reasons": []},
+                "status_counts": {"MEASURED": n},
+                "contaminated_subjects": 0, "subjects": subjects}
+
+    def test_path_is_sanitised(self, tmp_path):
+        assert run_gate.profile_sidecar_path(tmp_path, "a/b c") == \
+            tmp_path / "profiles" / "a_b_c.jsonl"
+
+    def test_rotation_bounds_subjects_with_25000_subjects(self, tmp_path):
+        path = tmp_path / "profiles" / "suite.jsonl"
+        run_gate.append_profile_record(path, self.record("old", 10))
+        run_gate.append_profile_record(path, self.record("big", 25_000))
+        records = run_gate.read_profile_records(path)
+        assert [r["run_id"] for r in records] == ["big"]
+        assert len(records[0]["subjects"]) == run_gate.PROFILE_MAX_SUBJECTS
+        assert records[0]["subjects_truncated"] == 5_000
+        # the newest subjects survive (oldest-first rotation)
+        assert records[0]["subjects"][-1]["subject"]["id"] == "big-24999"
+        assert not list(path.parent.glob("*.tmp.*"))
+
+    def test_rotation_bounds_runs_oldest_first(self, tmp_path):
+        path = tmp_path / "suite.jsonl"
+        for i in range(205):
+            run_gate.append_profile_record(path, self.record(f"r{i}"))
+        records = run_gate.read_profile_records(path)
+        assert len(records) == run_gate.PROFILE_MAX_RUNS == 200
+        assert records[0]["run_id"] == "r5"
+        assert records[-1]["run_id"] == "r204"
+
+    def test_subject_total_drops_oldest_records(self, tmp_path):
+        path = tmp_path / "suite.jsonl"
+        for i in range(3):
+            run_gate.append_profile_record(
+                path, self.record(f"r{i}", 6), max_subjects=15)
+        assert [r["run_id"] for r in run_gate.read_profile_records(path)] \
+            == ["r1", "r2"]
+
+    def test_reader_skips_torn_and_foreign_lines(self, tmp_path):
+        path = tmp_path / "suite.jsonl"
+        path.write_text(json.dumps(self.record("ok")) + "\n{torn\n"
+                        + json.dumps({"schema": "other"}) + "\n[1]\n")
+        assert [r["run_id"] for r in run_gate.read_profile_records(path)] \
+            == ["ok"]
+        assert run_gate.read_profile_records(tmp_path / "missing") == []
+
+    def test_cross_run_percentiles_match_a_reference_computation(
+            self, tmp_path):
+        import random
+        rng = random.Random(7)
+        records, pool = [], []
+        for i in range(8):
+            rec = self.record(f"r{i}", 0)
+            for j in range(rng.randint(3, 40)):
+                value = rng.randint(1, 10**9)
+                rec["subjects"].append(
+                    {"subject": {"id": f"{i}-{j}"}, "status": "MEASURED",
+                     "wall_seconds": float(value % 97),
+                     "metrics": {"rss_peak_bytes": value},
+                     "contamination": {"flagged": False, "reasons": []}})
+                pool.append(value)
+            records.append(rec)
+        records.append(self.record("dirty", 3, flagged=True, rss=10**12))
+        view = run_gate.profile_history_view(records)
+        ordered = sorted(pool)
+        n = len(ordered)
+        dist = view["distributions"]["rss_peak_bytes"]
+        assert dist["n"] == n
+        assert dist["p95"] == ordered[-(-95 * n // 100) - 1]
+        assert dist["p50"] == ordered[-(-50 * n // 100) - 1]
+        assert dist["max"] == ordered[-1] != 10**12
+        assert view["runs"] == 9 and view["runs_contaminated"] == 1
+        assert view["status_counts"]["MEASURED"] == 3
+
+    def test_history_view_counts_self_limited_and_contaminated_subjects(self):
+        rec = self.record("a", 2)
+        rec["self_limited"] = {"flagged": True}
+        rec["contaminated_subjects"] = 2
+        rec["status_counts"] = {"MEASURED": 1, "BOGUS": 4, "PARTIAL": "x"}
+        view = run_gate.profile_history_view([rec])
+        assert view["runs_self_limited"] == 1
+        assert view["subjects_contaminated"] == 2
+        assert view["status_counts"] == {"MEASURED": 1, "PARTIAL": 0,
+                                         "NO_MEASUREMENT": 0}
+
+    def test_history_written_paths_name_the_sidecar_for_the_ignore_check(
+            self, tmp_path):
+        paths = run_gate.history_written_paths(tmp_path, "suite")
+        assert tmp_path / ".run-gate" / "profiles" / "suite.jsonl" in paths
+        assert len(paths) == 5
+        assert len(run_gate.history_written_paths(tmp_path)) == 3
+
+    def test_sidecar_write_failure_keeps_the_history_entry(
+            self, tmp_path, capsys, monkeypatch):
+        repo, proj = make_history_repo(tmp_path)
+        commit = new_commit(repo, "a")
+        progress = _ignored_progress(proj)
+        _write_progress(progress, [(commit, [_prof_event("a", 100)])])
+        def boom(*a, **k):
+            raise OSError("disk full")
+        monkeypatch.setattr(run_gate, "append_profile_record", boom)
+        self.run(proj, repo, progress, _prof_summary())
+        assert "lane profile not recorded: disk full" in \
+            capsys.readouterr().err
+        assert lane_slot(proj)["history"][0]["commit"] == commit
+
+    @staticmethod
+    def run(proj, repo, progress, summary, *, lane="suite", seconds=3.0):
+        rec = run_gate.start_run_record(lane, repo, repo)
+        rec["_duration_seconds"] = seconds
+        rec["r2_jobs"] = {"jobs": 1}
+        rec["_r2_progress_path"] = str(progress)
+        rec["resources"] = summary
+        run_gate.finish_run_record(rec, exit_code=0)
+        run_gate.record_invocation(proj, repo, rec, 10)
+        return rec
+
+
+class TestProfilesInHistoryAndSizing:
+    """End to end through the real recorder, real git repo, real files."""
+
+    run = staticmethod(TestProfileSidecar.run)
+
+    def three_runs(self, tmp_path, *, dirty_first=True):
+        repo, proj = make_history_repo(tmp_path)
+        (proj / ".run-gate").mkdir()
+        progress = proj / ".run-gate" / "progress.jsonl"
+        commits = [new_commit(repo, t) for t in "abc"]
+        _write_progress(progress, [
+            (commits[0], [_prof_event("a1", 9 * 1024**3),
+                          _prof_event("a2", 9 * 1024**3)]),
+            (commits[1], [_prof_event("b1", 100 * MIB),
+                          _prof_event("b2", 120 * MIB)]),
+            (commits[2], [_prof_event("c1", 110 * MIB, legacy=False),
+                          _prof_event("c2", 130 * MIB, legacy=False)])])
+        # a run records its candidates of the CURRENT commit only, so move
+        # HEAD through the three commits to record each segment in turn.
+        outcomes = []
+        for index, commit in enumerate(commits):
+            subprocess.run(["git", "-C", str(repo), "checkout", "-q", commit],
+                           check=True)
+            summary = _prof_summary(
+                ancestors=[{"path": "/dev.slice", "high": 5, "max": 0}]
+                if index == 0 and dirty_first else None)
+            outcomes.append(self.run(proj, repo, progress, summary))
+        subprocess.run(["git", "-C", str(repo), "checkout", "-q", "-"],
+                       check=True)
+        return repo, proj, progress, outcomes
+
+    def test_history_entry_gains_flags_summary_and_clean_p95_only(
+            self, tmp_path):
+        repo, proj, progress, outcomes = self.three_runs(tmp_path)
+        entries = lane_slot(proj)["history"]
+        assert entries[0]["contamination"]["flagged"] is True
+        assert "r2_candidate_ram_p95_bytes" not in entries[0]
+        assert entries[0]["profile_summary"]["contamination"]["flagged"]
+        assert "subjects" not in entries[0]["profile_summary"]
+        assert entries[1]["r2_candidate_ram_p95_bytes"] == 120 * MIB
+        assert entries[1]["r2_candidate_ram_samples"] == 2
+        assert entries[2]["r2_candidate_ram_p95_bytes"] == 130 * MIB
+        assert entries[1]["profile_summary"]["per_candidate"][
+            "rss_peak_bytes"]["n"] == 2
+        sidecar = proj / ".run-gate" / "profiles" / "suite.jsonl"
+        records = run_gate.read_profile_records(sidecar)
+        assert [r["run_id"] for r in records] == [
+            o["run_id"] for o in outcomes]
+        assert len(records[0]["subjects"]) == 2
+        assert records[0]["tree"] and len(records[0]["tree"]) == 40
+        assert store_schema(proj) == 2
+
+    def test_clean_runs_win_the_sizing_basis(self, tmp_path):
+        repo, proj, progress, _ = self.three_runs(tmp_path)
+        ram, samples, source = run_gate.candidate_ram_from_history(
+            proj, "suite", progress)
+        # pooled clean subjects: 100,120,110,130 MiB -> nearest-rank p95
+        assert (ram, samples, source) == (130 * MIB, 4, "measured p95")
+
+    def test_all_contaminated_falls_back_to_declared_or_default(
+            self, tmp_path):
+        repo, proj = make_history_repo(tmp_path)
+        progress = _ignored_progress(proj)
+        commit = new_commit(repo, "a")
+        _write_progress(progress, [(commit, [_prof_event("a", 9 * 1024**3)])])
+        self.run(proj, repo, progress, _prof_summary(
+            ancestors=[{"path": "/dev.slice", "high": 1, "max": 1}]))
+        assert run_gate.candidate_ram_from_history(
+            proj, "suite", progress) == (
+                run_gate.R2_CONSERVATIVE_CANDIDATE_RAM_BYTES, 0, "default")
+        assert run_gate.candidate_ram_from_history(
+            proj, "suite", progress, declared_candidate_ram_bytes=777) == (
+                777, 0, "declared")
+
+    def test_progress_file_is_used_only_before_any_profile_record(
+            self, tmp_path):
+        _, proj = make_history_repo(tmp_path)
+        progress = _ignored_progress(proj)
+        _write_progress(progress, [("x", [_prof_event("a", 500)])])
+        assert run_gate.candidate_ram_from_history(
+            proj, "suite", progress) == (500, 1, "measured p95")
+
+    def test_legacy_history_entries_keep_the_max_of_p95_rule(self, tmp_path):
+        repo, proj = make_history_repo(tmp_path)
+        commit = new_commit(repo, "a")
+        rec = run_gate.start_run_record("suite", repo, repo)
+        rec["_duration_seconds"] = 1.0
+        rec["r2_candidate_ram_p95_bytes"] = 4096
+        rec["r2_candidate_ram_samples"] = 3
+        run_gate.finish_run_record(rec, exit_code=0)
+        run_gate.record_invocation(proj, repo, rec, 10)
+        flagged = run_gate.start_run_record("suite", repo, repo)
+        flagged["_duration_seconds"] = 1.0
+        flagged["r2_candidate_ram_p95_bytes"] = 10**12
+        flagged["r2_candidate_ram_samples"] = 3
+        flagged["contamination"] = {"flagged": True, "reasons": ["x"]}
+        run_gate.finish_run_record(flagged, exit_code=0)
+        flagged["commit"] = commit + "-other"
+        run_gate.record_invocation(proj, repo, flagged, 10)
+        assert run_gate.candidate_ram_from_history(
+            proj, "suite", proj / "none.jsonl") == (4096, 3, "measured p95")
+
+    def test_contaminated_runs_are_not_in_duration_or_resource_medians(
+            self, tmp_path):
+        repo, proj, progress, _ = self.three_runs(tmp_path)
+        store = read_store(proj)
+        report = run_gate.lane_history_report(store, "suite")
+        assert len(report["history"]) == 3
+        assert report["stats"]["passes"]["count"] == 2
+        assert report["stats"]["completed"]["count"] == 2
+
+    def test_runs_without_summary_or_candidates_add_nothing(self, tmp_path):
+        repo, proj = make_history_repo(tmp_path)
+        new_commit(repo, "a")
+        record_run(proj, repo)
+        entry = lane_slot(proj)["latest"]
+        assert "profile_summary" not in entry
+        assert "contamination" not in entry
+        assert not (proj / ".run-gate" / "profiles").exists()
+
+    def test_non_r2_run_with_a_summary_stores_the_lane_numbers(
+            self, tmp_path):
+        repo, proj = make_history_repo(tmp_path)
+        new_commit(repo, "a")
+        rec = run_gate.start_run_record("suite", repo, repo)
+        rec["_duration_seconds"] = 5.0
+        rec["resources"] = _prof_summary()
+        run_gate.finish_run_record(rec, exit_code=0)
+        run_gate.record_invocation(proj, repo, rec, 10)
+        stored = run_gate.read_profile_records(
+            proj / ".run-gate" / "profiles" / "suite.jsonl")[0]
+        assert stored["lane_cgroup"]["memory_peak_bytes"] == 300 * MIB
+        assert stored["lane_cgroup"]["cpu_seconds"] == 50.0
+        assert stored["status"] == "MEASURED" and "per_worker" in stored
+        assert stored["subjects"] == []
+
+    def test_history_command_prints_distributions_and_counts(
+            self, tmp_path, capsys):
+        repo, proj, progress, _ = self.three_runs(tmp_path)
+        run_gate.cmd_history({"suite": {}}, proj, {"lanes": {}},
+                             proj / "run-gate.toml", {}, None, "suite", False)
+        out = capsys.readouterr().out
+        assert "profiles: 3 run(s) (1 contaminated, 0 self-limited)" in out
+        assert "MEASURED 6, PARTIAL 0, NO_MEASUREMENT 0, 2 contaminated" in out
+        assert "rss_peak_bytes  p50 110 MiB  p95 130 MiB  max 130 MiB  n=4" \
+            in out
+        assert "io_write_bytes  p50 0 KiB" in out
+        run_gate.cmd_history({"suite": {}}, proj, {"lanes": {}},
+                             proj / "run-gate.toml", {}, None, "suite", True)
+        data = json.loads(capsys.readouterr().out)
+        view = data["lanes"]["suite"]["profiles"]
+        assert view["distributions"]["rss_peak_bytes"]["p95"] == 130 * MIB
+        assert view["runs_contaminated"] == 1
+
+    def test_profile_view_formatting_edges(self):
+        assert run_gate._fmt_profile_view(None) == []
+        assert run_gate._fmt_profile_view({"runs": 0}) == []
+        assert run_gate._fmt_bytes_short(None) == "-"
+        assert run_gate._fmt_bytes_short(True) == "-"
+        assert run_gate._fmt_bytes_short(3 * MIB) == "3 MiB"
+        view = run_gate.profile_history_view([TestProfileSidecar().record(
+            "a", 0)])
+        lines = run_gate._fmt_profile_view(view)
+        assert lines[1].split() == ["rss_peak_bytes", "none"]
+
+
+def store_schema(proj):
+    return read_store(proj)["schema"]
+
+
+class TestContaminatedCloseout:
+    def build(self, tmp_path):
+        repo, proj = make_history_repo(tmp_path)
+        commit = new_commit(repo, "a")
+        progress = _ignored_progress(proj)
+        stalled = {"container_psi_memory_full_seconds": 6.0,
+                   "container_memory_events_local": {"high": 0, "max": 0}}
+        _write_progress(progress, [(commit, [
+            _prof_event("hot", 1, bucket="budget_exceeded", legacy=False,
+                        context=stalled),
+            _prof_event("fine", 1, bucket="budget_exceeded", legacy=False,
+                        context={}),
+            _prof_event("killed-hot", 1, bucket="killed", legacy=False,
+                        context=stalled),
+            _prof_event("legacy-timeout", 1, bucket="budget_exceeded"),
+        ])])
+        rec = TestProfileSidecar.run(proj, repo, progress, None)
+        return repo, proj, rec
+
+    def test_lists_exactly_the_contaminated_budget_exceeded_ids(
+            self, tmp_path, capsys):
+        repo, proj, rec = self.build(tmp_path)
+        assert lane_slot(proj)["latest"]["rejudge_contaminated"] == ["hot"]
+        assert run_gate.latest_contaminated_budget_exceeded(
+            proj, "suite") == ["hot"]
+        run_gate.report_contaminated_budget_exceeded(rec)
+        out = capsys.readouterr().out
+        assert "1 budget_exceeded candidate(s)" in out
+        assert "  run-gate suite --jobs 1 --rejudge hot" in out
+        assert "killed-hot" not in out and "fine" not in out
+
+    def test_nothing_is_printed_without_contaminated_candidates(
+            self, tmp_path, capsys):
+        run_gate.report_contaminated_budget_exceeded({"lane": "x"})
+        assert capsys.readouterr().out == ""
+        assert run_gate.latest_contaminated_budget_exceeded(
+            tmp_path, "suite") == []
+
+    def test_flush_prints_the_closeout_lines(self, tmp_path, capsys):
+        repo, proj = make_history_repo(tmp_path)
+        commit = new_commit(repo, "a")
+        progress = _ignored_progress(proj)
+        _write_progress(progress, [(commit, [
+            _prof_event("hot", 1, bucket="budget_exceeded", legacy=False,
+                        context={"container_psi_memory_full_seconds": 9.0})])])
+        rec = run_gate.start_run_record("suite", repo, repo)
+        rec["_project_dir"] = proj
+        rec["_keep"] = 10
+        rec["r2_jobs"] = {"jobs": 1}
+        rec["_r2_progress_path"] = str(progress)
+        run_gate.flush_run_record(rec, exit_code=0)
+        assert "--rejudge hot" in capsys.readouterr().out
+
+    def test_cli_flag_validation(self, tmp_path):
+        _, proj = make_history_repo(tmp_path)
+        for argv in (["--rejudge-contaminated"],
+                     ["history", "--rejudge-contaminated"],
+                     ["suite", "--rejudge-contaminated", "--rejudge", "x"],
+                     ["suite", "--rejudge-contaminated", "--jobs", "2"]):
+            out = run_tool(proj, *argv)
+            assert out.returncode != 0, argv
+            assert "rejudge-contaminated" in out.stderr, argv
+
+    def test_flag_requires_an_assay_lane_with_a_contaminated_candidate(
+            self, tmp_path):
+        repo, proj = make_history_repo(tmp_path)
+        out = run_tool(proj, "suite", "--rejudge-contaminated")
+        assert out.returncode != 0
+        assert "applies only to an assay R2 lane" in out.stderr
+
+
+class TestHistoryStoreReadableByTheReleasedReader:
+    """RG-145: `history.json` stays schema 2; a store written by this
+    version (with `profile_summary` and `contamination`) must be read without
+    error by the released 24.3.0 code. The released source is taken from the
+    `run-gate-v24.3.0` tag, the exact tree the wheel was built from."""
+
+    def released_module(self, tmp_path):
+        src = tmp_path / "released"
+        src.mkdir()
+        for name in ("run_gate.py", "run_gate_admission.py"):
+            shown = subprocess.run(
+                ["git", "-C", str(RUN_GATE_DIR), "show",
+                 f"run-gate-v24.3.0:run-gate-project/{name}"],
+                capture_output=True, text=True)
+            assert shown.returncode == 0, (
+                "the run-gate-v24.3.0 tag is required for the compatibility "
+                f"test: {shown.stderr}")
+            (src / name).write_text(shown.stdout)
+        spec = importlib.util.spec_from_file_location(
+            "run_gate_released", src / "run_gate.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_released_reader_reads_the_new_store(self, tmp_path, capsys):
+        sized = TestProfilesInHistoryAndSizing()
+        repo, proj, progress, _ = sized.three_runs(tmp_path)
+        assert "profile_summary" in lane_slot(proj)["history"][0]
+        released = self.released_module(tmp_path)
+        store = released.load_history_store(
+            released.history_store_path(proj))
+        report = released.lane_history_report(store, "suite")
+        assert len(report["history"]) == 3
+        assert store["schema"] == 2
+        released.cmd_history({"suite": {}}, proj, {"lanes": {}},
+                             proj / "run-gate.toml", {}, None, "suite", False)
+        assert "history: 3 of at most" in capsys.readouterr().out
+        released.cmd_history({"suite": {}}, proj, {"lanes": {}},
+                             proj / "run-gate.toml", {}, None, "suite", True)
+        data = json.loads(capsys.readouterr().out)
+        assert data["schema"] == 2
+        # the released reader must also be able to WRITE over the new store
+        entry = released.start_run_record("suite", repo, repo)
+        entry["_duration_seconds"] = 1.0
+        released.finish_run_record(entry, exit_code=0)
+        assert released.record_invocation(proj, repo, entry, 10)
+        assert len(read_store(proj)["lanes"]["suite"]["history"]) >= 3

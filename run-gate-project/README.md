@@ -740,6 +740,44 @@ the tool's reason to exist and MUST be implemented + tested:
   budgets other projects and `doctor` can compare against, not just this
   invocation's own number (SPEC `R-44`).
 
+- **A memory stall is a contamination flag, not a capacity number (RG-144):**
+  a lane cgroup's memory-full stall counts the lane's own `memory.high`/`max`
+  AND reclaim driven from above (parallel load, host pressure). run-gate
+  owns one rule. `self_limited` means the lane leaf's own high/max/oom events
+  are above zero: a capacity signal, printed as `memory limit reached N
+  times`. `contaminated` means any of: an ancestor up to `dev.slice` recorded
+  a `memory.events.local` high or max delta (needs cgprofile CP-40; when the
+  observer does not report it, the criterion is skipped and recorded as
+  `ancestor_events: unknown`, neither flagging nor clearing the run); an MDT
+  PSI-guard action in `/run/mdt/psi-guard/events.jsonl` overlaps the window;
+  or the lane's memory-full stall is at least `max(2 s, 0.5% of wall)` and the
+  run is not `self_limited`. Host-wide `/proc/pressure` is context only. A
+  contaminated run is stored with `contamination: {flagged, reasons}`,
+  printed as `measurement contaminated (...); excluded from sizing`, and is
+  excluded from the history medians, `candidate_ram_from_history`, and
+  `jobs = "auto"`; with too few clean samples the basis is the declared or
+  default value, never contaminated data. After an R2 run, the closeout lists
+  contaminated `budget_exceeded` candidates with exact `run-gate <lane> --jobs 1
+  --rejudge <id>` lines; `run-gate <lane> --rejudge-contaminated` runs them
+  serially.
+- **Per-lane resource profiles (RG-145):** each run appends one
+  `lane-profile/1` record to `.run-gate/profiles/<lane>.jsonl` (append-only,
+  bounded to the last 200 runs or 20,000 subject profiles, rotated
+  oldest-first, written atomically). R2 candidates are ingested from assay
+  progress: the assay 12 `profile` object (`resource-profile/1`), or, during
+  the compatibility window, the assay <= 11 numeric keys. A candidate with
+  neither is `NO_MEASUREMENT` (counted in `status_counts`, never in the
+  distributions); there is no fallback reader. The record carries
+  `per_candidate` p50/p95/max/n distributions of `rss_peak_bytes`,
+  `cpu_seconds`, `io_read_bytes`, `io_write_bytes` and `wall_seconds`, the
+  lane cgroup numbers, status counts, contamination, and the raw subject
+  profiles. `history.json` stays schema 2; its entries gain an optional
+  `profile_summary` (distributions without subjects, plus contamination), and
+  older run-gate versions read the store unchanged. Cross-run percentiles are
+  recomputed from the sidecar's raw subjects, never from stored p95s.
+  `run-gate history <lane>` prints those pooled distributions plus the status
+  and contamination counts.
+
   The v1.1 client opens one daemon watch per session. A daemon `killed`
   liveness verdict follows the existing stall exit path; `reported` is one
   warning and never changes the test verdict. The stopped session summary
