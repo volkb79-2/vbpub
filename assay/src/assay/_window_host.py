@@ -20,6 +20,7 @@ import tempfile
 import time
 from typing import Any, BinaryIO, Mapping, Sequence
 
+from . import observer_windows
 from . import runner as _runner
 from .errors import AssayError, Outcome, ReasonCode
 from .process_tree import ProcessTreeDescendant, ProcessTreeError, ProcessTreeEvidence
@@ -279,7 +280,6 @@ def _worker_runner(spec: Mapping[str, object], plan: Any) -> Any:
             events_dir=Path(spec["events_dir"]),
             expect_next_event_within_s=spec["expect_next_event_within_s"],
             pre_first_event_within_s=spec["pre_first_event_within_s"],
-            sampler=liveness.tree_sample,
             cpu_window_s=spec["cpu_window_s"],
         )
     if kind == "factory":
@@ -297,8 +297,13 @@ def _worker_runner(spec: Mapping[str, object], plan: Any) -> Any:
 
 
 def _execute_request(request: Mapping[str, object]) -> dict[str, object]:
-    if set(request) != {"protocol", "plan", "cwd", "timeout", "runner"}:
+    keys = set(request) - {"profile"}
+    if keys != {"protocol", "plan", "cwd", "timeout", "runner"}:
         raise ValueError("window-host request has an unexpected shape")
+    raw_profile = request.get("profile")
+    profile_config = (
+        None if raw_profile is None else observer_windows.WindowConfig.from_wire(raw_profile)
+    )
     if request["protocol"] != _PROTOCOL:
         raise ValueError("window-host request protocol is unsupported")
     raw_plan = request["plan"]
@@ -312,17 +317,21 @@ def _execute_request(request: Mapping[str, object]) -> dict[str, object]:
         from .mutation_witness import WITNESS_FD_ENV
 
         plan.env_effective[WITNESS_FD_ENV] = witness_fd
-    result = _runner.execute_plan(
-        plan,
-        cwd=Path(request["cwd"]),
-        timeout=_timeout_from_payload(request["timeout"]),
-        process_runner=runner,
-        clock=_runner._utc_now,
-    )
+    with observer_windows.activate(profile_config) as slot:
+        result = _runner.execute_plan(
+            plan,
+            cwd=Path(request["cwd"]),
+            timeout=_timeout_from_payload(request["timeout"]),
+            process_runner=runner,
+            clock=_runner._utc_now,
+        )
     return {
         "protocol": _PROTOCOL,
         "kind": "result",
         "result": _command_result_to_payload(result),
+        "profile": (
+            None if slot is None or slot.result is None else slot.result.to_wire()
+        ),
     }
 
 
@@ -630,8 +639,14 @@ def run_window(
     timeout: float,
     process_runner: Any,
     clock: Any,
+    profile: "observer_windows.WindowSlot | None" = None,
 ) -> Any:
-    """Run one command in a disposable worker and return the normal result."""
+    """Run one command in a disposable worker and return the normal result.
+
+    *profile* is the candidate's observer window slot (B206): when it is
+    active the worker opens and closes the window around the candidate root and
+    the exchange's result is stored back into ``profile.result``.
+    """
     spec = _runner_spec(process_runner)
     if spec is None or clock is not _runner._utc_now:
         raise ValueError("window host requires a serializable runner and the standard clock")
@@ -643,6 +658,8 @@ def run_window(
         "timeout": _timeout_payload(timeout),
         "runner": dict(spec),
     }
+    if profile is not None and profile.active:
+        request["profile"] = profile.config.to_wire()
     request_bytes = json.dumps(request, ensure_ascii=False, allow_nan=False).encode("utf-8")
     if len(request_bytes) > _REQUEST_LIMIT_BYTES:
         raise ValueError("window-host request exceeds its size limit")
@@ -714,6 +731,24 @@ def run_window(
             result = _command_result_from_payload(plan, raw_result)
         except (KeyError, TypeError, ValueError):
             return crashed("window host returned an invalid command result")
+        if profile is not None and profile.active:
+            try:
+                raw_profile = response.get("profile")
+                profile.result = (
+                    None
+                    if raw_profile is None
+                    else observer_windows.WindowResult.from_wire(raw_profile)
+                )
+            except (KeyError, TypeError, ValueError):
+                # A malformed measurement record never changes the command's
+                # result; the candidate's profile is a NO_MEASUREMENT.
+                profile.result = observer_windows.WindowResult(
+                    reason=observer_windows.OBSERVER_ERROR,
+                    detail="window host returned a malformed profile record",
+                    mode=profile.config.mode,
+                    interval_ms=profile.config.interval_ms,
+                    asked=True,
+                )
         if _runner.termination_requested():
             raise _runner._lane_timeout(
                 "Assay termination interrupted the native R2 command window"

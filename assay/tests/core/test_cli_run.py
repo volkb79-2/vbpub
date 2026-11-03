@@ -529,6 +529,9 @@ operators = ["python:compare-swap"]
         "execution",
         "resource_limit_evidence",
         "process_tree_evidence",
+        # B205/schema v18: every native killed entry states its failing test
+        # (this lane's command has no pytest plugin events: null).
+        "first_failing_test",
     }
     assert len(killed["candidate_id"]) == 64
     assert len(killed["source_sha256"]) == 64
@@ -548,6 +551,15 @@ operators = ["python:compare-swap"]
         "producer": "native",
         "jobs": 1,
         "attribution": "serial",
+        # B203/B206/B207 (schema v18): one candidate ran at one worker; what
+        # the cgprofile observer answered depends on the host, so the summary
+        # is checked structurally just below rather than pinned here.
+        "worker_counts": {"1": 1},
+        "profile": r2_judgment["profile"],
+        "schedule": {
+            "policy": "canonical", "thresholds": None, "memory_budget_bytes": None,
+            "jobs": 1, "prediction_sources": {}, "error": None,
+        },
         "max_mutants": 50,
         "operators": ["python:compare-swap"],
         # P33/V5-4: DERIVED from `kill_signal_artifact`'s absence (A-223b),
@@ -586,6 +598,8 @@ operators = ["python:compare-swap"]
         "equivalence_ledger": None,
     }
     assert r2_judgment["budget_per_candidate_derived_s"] > 0
+    assert sum(r2_judgment["profile"]["status_counts"].values()) == 1
+    assert r2_judgment["profile"]["observer"]["name"] == "cgprofile"
     # P33/V5-1: the hoisted group. An R0,R2 lane records what it judged --
     # exactly the hole v4 had, since `judgment.r1` is absent here and there
     # was nowhere else for a language, source roots or a comparison commit

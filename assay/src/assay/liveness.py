@@ -89,6 +89,7 @@ from typing import (
     TextIO,
 )
 
+from . import observer_windows
 from .errors import AssayError, Outcome, ReasonCode
 from .guards import is_int_at_least, is_real
 from .liveness_resources import compare_resource_snapshots, read_liveness_resources
@@ -678,12 +679,10 @@ _LIVENESS_RESOURCE_TRACE_MAX_SAMPLES = 1024
 
 class _PidStat(NamedTuple):
     """One ``/proc/<pid>/stat`` read: the process's own CPU ticks
-    (utime+stime), its reaped children's ticks (cutime+cstime) and its
-    resident pages."""
+    (utime+stime). This is the hang-detection control input; it is never
+    recorded as a measurement (B206)."""
 
     ticks: int
-    child_ticks: int
-    rss_pages: int
 
 
 def _pid_stat(pid: int) -> _PidStat:
@@ -700,54 +699,13 @@ def _pid_stat(pid: int) -> _PidStat:
     close_paren = raw.rfind(")")
     fields = raw[close_paren + 2 :].split()
     # `fields[0]` is field 3 (state); `fields[i]` is field i + 3: utime (14)
-    # is fields[11], stime fields[12], cutime fields[13], cstime fields[14]
-    # and rss (24) fields[21].
-    return _PidStat(
-        int(fields[11]) + int(fields[12]),
-        int(fields[13]) + int(fields[14]),
-        int(fields[21]),
-    )
+    # is fields[11] and stime fields[12].
+    return _PidStat(int(fields[11]) + int(fields[12]))
 
 
 def _pid_cpu_ticks(pid: int) -> int:
     """utime+stime (fields 14+15 of ``/proc/<pid>/stat``), in clock ticks."""
     return _pid_stat(pid).ticks
-
-
-def _pid_io_write_bytes(pid: int, *, proc_root: Path = Path("/proc")) -> int | None:
-    """Return ``write_bytes`` from ``/proc/<pid>/io``, or ``None`` if absent."""
-    try:
-        raw = (proc_root / str(pid) / "io").read_text(
-            encoding="ascii", errors="replace"
-        )
-    except OSError:
-        return None
-    for line in raw.splitlines():
-        key, _, value = line.partition(":")
-        if key == "write_bytes":
-            try:
-                write_bytes = int(value.strip())
-            except ValueError:
-                return None
-            return write_bytes if write_bytes >= 0 else None
-    return None
-
-
-def process_rss_bytes(pid: int, *, proc_root: Path = Path("/proc")) -> int | None:
-    """Read one process's resident bytes from ``/proc/<pid>/statm``.
-
-    This is diagnostic-only; a missing or malformed procfs record is unknown,
-    never a candidate failure.
-    """
-    try:
-        statm = proc_root / str(pid) / "statm"
-        fields = statm.read_text(encoding="ascii", errors="replace").split()
-        resident_pages = int(fields[1])
-    except (OSError, IndexError, ValueError):
-        return None
-    if resident_pages < 0:
-        return None
-    return resident_pages * os.sysconf("SC_PAGE_SIZE")
 
 
 def _pid_children_via_task(pid: int) -> list[int]:
@@ -840,48 +798,6 @@ def tree_cpu_seconds(root_pid: int) -> float:
     the root's own measurement).
     """
     return sum(_walk_tree(root_pid, _pid_cpu_ticks)) / os.sysconf("SC_CLK_TCK")
-
-
-class TreeSample(NamedTuple):
-    """One diagnostic sample of a process tree (never a classification input).
-
-    ``cpu_seconds`` is a LOWER BOUND on the tree's cumulative CPU at the
-    sample: the sum of utime+stime+cutime+cstime over every live process, so
-    a reaped child still counts through its live ancestor. The series is not
-    monotone (a mid-walk reap, reparenting out of the tree and children
-    auto-reaped under ``SIGCHLD=SIG_IGN`` all make it dip), and CPU spent
-    after the last sample is missing. ``rss_bytes`` is the sum of resident
-    set sizes, which overcounts shared and copy-on-write pages. ``write_bytes``
-    is the sum of readable ``/proc/<pid>/io`` counters across the live tree, or
-    ``None`` if any process in that sample lacks a readable counter.
-    """
-
-    cpu_seconds: float
-    rss_bytes: int
-    write_bytes: int | None = None
-
-
-def tree_sample(root_pid: int) -> TreeSample:
-    """A :class:`TreeSample` of *root_pid* and its live descendants.
-
-    Same walk and same raise contract as :func:`tree_cpu_seconds`.
-    """
-    samples = _walk_tree(
-        root_pid,
-        lambda pid: (_pid_stat(pid), _pid_io_write_bytes(pid)),
-    )
-    stats = [sample[0] for sample in samples]
-    write_counters = [sample[1] for sample in samples]
-    write_bytes = (
-        sum(value for value in write_counters if value is not None)
-        if all(value is not None for value in write_counters)
-        else None
-    )
-    return TreeSample(
-        sum(stat.ticks + stat.child_ticks for stat in stats) / os.sysconf("SC_CLK_TCK"),
-        sum(stat.rss_pages for stat in stats) * os.sysconf("SC_PAGE_SIZE"),
-        write_bytes,
-    )
 
 
 #: (B091 round-1 B2) The plugin's three event names, spelled once here so a
@@ -1176,6 +1092,22 @@ def count_test_events(events_path: "Path | None") -> int:
     :func:`_iter_test_events`.
     """
     return sum(1 for _ in _iter_test_events(events_path))
+
+
+def first_failing_test(events_path: "Path | None") -> str | None:
+    """B205: the node id of the first `test` event the plugin recorded with a
+    ``failed`` outcome, in the owner stream's order, or ``None`` when the file
+    is absent or no failed test was reported (a collection error, a crash
+    before any test, a lane without the plugin).
+
+    It is the first failure the suite REPORTED, which is what a kill is
+    attributed to; with ``-x`` it is also the failure that stopped the run.
+    """
+    for record in _selected_test_events(events_path):
+        nodeid = record.get("nodeid")
+        if record.get("outcome") == "failed" and isinstance(nodeid, str) and nodeid:
+            return nodeid
+    return None
 
 
 class BaselineEventGaps(NamedTuple):
@@ -1612,29 +1544,6 @@ def candidate_events_path(events_dir: Path, cwd: Path) -> Path:
     return events_dir / f"{digest}.ndjson"
 
 
-class _ResourceTally:
-    """The running maxima of a monitor's diagnostic :class:`TreeSample` s."""
-
-    def __init__(self) -> None:
-        self.samples = 0
-        self.cpu_seconds: float | None = None
-        self.peak_rss_bytes: int | None = None
-        self.write_bytes: int | None = None
-
-    def add(self, sample: TreeSample) -> None:
-        cpu, rss = sample.cpu_seconds, sample.rss_bytes
-        cpu = cpu if self.cpu_seconds is None else max(self.cpu_seconds, cpu)
-        rss = rss if self.peak_rss_bytes is None else max(self.peak_rss_bytes, rss)
-        if sample.write_bytes is not None:
-            self.write_bytes = (
-                sample.write_bytes
-                if self.write_bytes is None
-                else max(self.write_bytes, sample.write_bytes)
-            )
-        self.samples += 1
-        self.cpu_seconds, self.peak_rss_bytes = cpu, rss
-
-
 class LivenessRunner:
     """A :class:`~assay.runner.ProcessRunner` used for R2 CANDIDATE execution
     ONLY (never the R0 baseline, never any other lane or language -- "other
@@ -1725,7 +1634,6 @@ class LivenessRunner:
         poll_interval_s: float = _LIVENESS_POLL_INTERVAL_S,
         cpu_reader: Callable[[int], float] = tree_cpu_seconds,
         resource_reader: Callable[[int], Mapping[str, Any]] = read_liveness_resources,
-        sampler: Callable[[int], TreeSample] | None = None,
         popen: Callable[..., Any] = subprocess.Popen,
         process_group_killer: Callable[[int, int], None] | None = None,
         cpu_window_s: float | None = None,
@@ -1745,7 +1653,6 @@ class LivenessRunner:
         self._poll_interval_s = poll_interval_s
         self._cpu_reader = cpu_reader
         self._resource_reader = resource_reader
-        self._sampler = sampler
         self._popen = popen
         # Injectable so tests using synthetic PIDs cannot signal an unrelated
         # real process group on the host. Resolve the default at call time, so
@@ -1755,7 +1662,7 @@ class LivenessRunner:
     def assay_window_host_spec(self) -> Mapping[str, object] | None:
         """Describe a production-configured runner for an isolated host.
 
-        Injected clock, process, sampler, or signal seams cannot be serialized
+        Injected clock, process, or signal seams cannot be serialized
         faithfully. Such runners stay on the in-process path unless they
         provide their own explicit host protocol.
         """
@@ -1765,7 +1672,6 @@ class LivenessRunner:
             or self._popen is not subprocess.Popen
             or self._cpu_reader is not tree_cpu_seconds
             or self._resource_reader is not read_liveness_resources
-            or self._sampler not in (None, tree_sample)
             or self._process_group_killer is not None
         ):
             return None
@@ -1823,6 +1729,14 @@ class LivenessRunner:
                         descriptor_options = (
                             {} if receipt_fd is None else {"pass_fds": (int(receipt_fd),)}
                         )
+                        # B206: with an observer window requested the root is
+                        # a child subreaper, so orphaned grandchildren stay in
+                        # its tree.
+                        descriptor_options.update(
+                            observer_windows.subreaper_preexec(
+                                observer_windows.current_slot()
+                            )
+                        )
                         try:
                             proc = self._popen(
                                 list(argv),
@@ -1841,6 +1755,7 @@ class LivenessRunner:
                         process_tree.attach(proc)
                         register_live_group(proc.pid)
                         _report_window_host_candidate_pid(proc.pid)
+                    window = observer_windows.open_for_root(proc.pid)
                     try:
                         result = self._monitor(
                             proc,
@@ -1851,6 +1766,7 @@ class LivenessRunner:
                             stderr_path=stderr_path,
                             start=start,
                             spawned_at=spawned_at,
+                            window=window,
                         )
                     except BaseException as exc:
                         evidence = process_tree.finish(
@@ -1931,8 +1847,8 @@ class LivenessRunner:
         stderr_path: Path,
         start: float,
         spawned_at: float,
+        window: "observer_windows.OpenWindow | None" = None,
     ) -> "subprocess.CompletedProcess[str]":
-        tally = _ResourceTally()
         try:
             return self._poll(
                 proc,
@@ -1942,24 +1858,21 @@ class LivenessRunner:
                 stdout_path=stdout_path,
                 stderr_path=stderr_path,
                 start=start,
-                tally=tally,
+                window=window,
             )
         finally:
+            # An open window is always closed (the daemon limits open windows
+            # per process); close is idempotent.
+            if window is not None:
+                window.close()
+            # The sidecar keeps only the spawn time (Assay's own clock): every
+            # resource number now comes from the cgprofile observer (B206).
             # Diagnostics never fail a candidate: every exit path (normal,
             # hung, timeout, any raise) leaves the sidecar, and a write
             # failure is swallowed.
             sidecar = events_path.with_suffix(RESOURCE_SIDECAR_SUFFIX)
             try:
-                payload = json.dumps(
-                    {
-                        "format": 1,
-                        "samples": tally.samples,
-                        "cpu_seconds": tally.cpu_seconds,
-                        "peak_rss_bytes": tally.peak_rss_bytes,
-                        "write_bytes": tally.write_bytes,
-                        "spawned_at": spawned_at,
-                    }
-                )
+                payload = json.dumps({"format": 1, "spawned_at": spawned_at})
                 temporary = sidecar.with_name(sidecar.name + ".tmp")
                 temporary.write_text(payload, encoding="utf-8")
                 os.replace(temporary, sidecar)
@@ -1976,7 +1889,7 @@ class LivenessRunner:
         stdout_path: Path,
         stderr_path: Path,
         start: float,
-        tally: "_ResourceTally",
+        window: "observer_windows.OpenWindow | None" = None,
     ) -> "subprocess.CompletedProcess[str]":
         previous_poll_at = start
         liveness_clock = 0.0
@@ -2016,6 +1929,10 @@ class LivenessRunner:
 
         while True:
             now = self._monotonic()
+            if window is not None and observer_windows.exited_unreaped(proc.pid):
+                # Close BEFORE the root is reaped so the daemon reads exact
+                # CPU (design 4.1); `poll()` below then reaps it.
+                window.close()
             if proc.poll() is not None:
                 stdout_text = _read_bytes(stdout_path).decode("utf-8", errors="replace")
                 stderr_text = _read_bytes(stderr_path).decode("utf-8", errors="replace")
@@ -2163,6 +2080,8 @@ class LivenessRunner:
             hung = resource_trace_complete and (idle_hang or finish_hang)
             if hung:
                 required_idle_s = bound if idle_hang else _HUNG_SESSION_FINISH_GRACE_S
+                if window is not None:
+                    window.close()
                 self._kill(proc)
                 raise LivenessHungExpired(
                     cmd=list(argv),
@@ -2176,6 +2095,8 @@ class LivenessRunner:
                 )
 
             if timeout is not None and (now - start) >= timeout:
+                if window is not None:
+                    window.close()
                 self._kill(proc)
                 exc = subprocess.TimeoutExpired(
                     cmd=list(argv),
@@ -2188,15 +2109,6 @@ class LivenessRunner:
                 )
                 raise exc
 
-            # Diagnostic sample (never a classification input): it runs after
-            # the hung and timeout decisions and never touches
-            # `resource_trace`, `previous_resources` or `cpu_samples`. A
-            # sampler that raises leaves the tick unsampled.
-            if self._sampler is not None:
-                try:
-                    tally.add(self._sampler(proc.pid))
-                except Exception:
-                    pass
             self._sleep(self._poll_interval_s)
 
 

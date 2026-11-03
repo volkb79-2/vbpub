@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
-from conftest import fixed_clock, make_lane, native_mutation, native_outcome
+from conftest import R2_TELEMETRY, fixed_clock, make_lane, native_mutation, native_outcome
 
 from assay import runner
 from assay.errors import Outcome, ReasonCode
@@ -106,6 +106,7 @@ def test_a_passing_mutation_claim_alongside_a_passing_r0_claim_is_an_overall_pas
                 operators=("python:compare-swap",),
                 kill_attribution="unattributed",
                 cold_witness_kills=False,
+                **R2_TELEMETRY,
             ),
         ),
     )
@@ -144,6 +145,7 @@ def test_a_failing_mutation_claim_makes_the_whole_verdict_fail_mutants_survived(
                 operators=("python:compare-swap",),
                 kill_attribution="unattributed",
                 cold_witness_kills=False,
+                **R2_TELEMETRY,
             ),
         ),
     )

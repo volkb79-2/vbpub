@@ -386,6 +386,28 @@ def native_outcome(**fields):
     )
 
 
+#: (B203/B206/B207, schema v18) The three native `judgment.r2` fields a run
+#: that executed and resumed no candidate carries: no worker counts, an empty
+#: profile summary and the canonical (serial) schedule. Spread into any
+#: hand-built native `JudgmentR2`.
+R2_TELEMETRY = dict(
+    worker_counts={},
+    profile={
+        "status_counts": {"MEASURED": 0, "PARTIAL": 0, "NO_MEASUREMENT": 0},
+        "reason_counts": {},
+        "observer": {"name": "cgprofile", "version": None, "contracts": [3], "modes": []},
+    },
+    schedule={
+        "policy": "canonical",
+        "thresholds": None,
+        "memory_budget_bytes": None,
+        "jobs": 1,
+        "prediction_sources": {},
+        "error": None,
+    },
+)
+
+
 def zero_resource_limit_evidence_dict() -> dict:
     """Return a fresh raw-wire sample for a native candidate with no event."""
     from assay.resource_limits import CounterDelta, ResourceLimitEvidence

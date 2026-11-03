@@ -58,6 +58,7 @@ oracle for its own claim.
 
 from __future__ import annotations
 
+import copy
 import io
 import hashlib
 import json
@@ -66,6 +67,7 @@ from pathlib import Path
 import pytest
 from conftest import (
     PROJECT_ROOT,
+    R2_TELEMETRY,
     process_tree_evidence_dict,
     why_invalid,
     zero_resource_limit_evidence_dict,
@@ -1059,6 +1061,10 @@ def test_verify_accepts_reconstructed_judgment_r2_and_r3():
             "equivalence_ledger": None,
             "jobs": 1,
             "attribution": "serial",
+            # (B203/B206/B207, schema v18) the three telemetry summaries.
+            "worker_counts": {},
+            "profile": copy.deepcopy(R2_TELEMETRY["profile"]),
+            "schedule": copy.deepcopy(R2_TELEMETRY["schedule"]),
             "max_mutants": 50,
             "operators": ["python:compare-swap", "python:boolop-swap"],
             "kill_attribution": "unattributed",
@@ -1111,14 +1117,22 @@ def test_the_matrix_carries_the_r2_judgment_shape_its_producer_now_emits():
             "cold_witness_kills": False,
             "r2_command": None,
             "equivalence_ledger": None,
-            "jobs": 1,
-            "attribution": "serial",
+            # B203/schema v18: the campaign MAXIMUM, with the candidates per
+            # worker count beside it; this fixture resumed a serial run in a
+            # three-worker invocation.
+            "jobs": 3,
+            "attribution": "overlap-conservative",
+            "worker_counts": {"1": 1, "3": 1},
+            "profile": document["judgment"]["r2"]["profile"],
+            "schedule": document["judgment"]["r2"]["schedule"],
             "max_mutants": 50,
             "operators": ["python:compare-swap", "python:bool-const-flip"],
             "kill_attribution": "unattributed",
             "mode": "changed_lines",
         },
     }
+    assert document["judgment"]["r2"]["profile"]["observer"]["name"] == "cgprofile"
+    assert document["judgment"]["r2"]["schedule"]["policy"] == "tem-lpt"
     assert r2_claim["mutation"]["total"] == 2
 
     # The correspondence `assay verify` NOW enforces (P19/A-148), restated
@@ -1409,16 +1423,29 @@ def test_v16_verdict_is_refused_with_exactly_one_diagnostic():
     document["schema_version"] = 16
 
     assert verify_document(document) == [
-        "schema_version 16 is not this verifier's version 17: a verdict artifact "
+        "schema_version 16 is not this verifier's version 18: a verdict artifact "
         "is rejected, never upgraded in place -- re-produce it with an assay "
-        "whose VERDICT_SCHEMA_VERSION is 17"
+        "whose VERDICT_SCHEMA_VERSION is 18"
+    ]
+
+
+def test_v17_verdict_is_refused_with_exactly_one_diagnostic():
+    document = _load("r1_pass.json")
+    document["schema_version"] = 17
+
+    assert verify_document(document) == [
+        "schema_version 17 is not this verifier's version 18: a verdict artifact "
+        "is rejected, never upgraded in place -- re-produce it with an assay "
+        "whose VERDICT_SCHEMA_VERSION is 18"
     ]
 
 
 #: A-477: pin the exact current verdict schema bytes. Operator decision D2
-#: freezes the v17 wire contract so producer and verifier cannot drift.
+#: freezes the wire contract of the current version so producer and verifier
+#: cannot drift. v18 (B208) replaces the v17 entry: only the current version's
+#: schema ships.
 _VERDICT_SCHEMA_SHA256 = {
-    17: "9086fbbae1cb981dbe7b9c8a9e72644fd33369a914a46cf888efa3242b90bb6a",
+    18: "b0b5814ce39e9d9ae17fff995db82eff748969f81379f62d18a3c8c0d8851379",
 }
 
 
@@ -1608,6 +1635,10 @@ def _as_ingested_at_floor(document: dict, fail_under: float) -> dict:
         "equivalence_ledger",
         "liveness",
         "attribution",
+        # (B203/B206/B207, schema v18) native-only telemetry summaries.
+        "worker_counts",
+        "profile",
+        "schedule",
     ):
         judgment_r2.pop(assay_own_policy, None)
     judgment_r2["producer"] = "ingested"
@@ -1636,6 +1667,7 @@ def _as_ingested_at_floor(document: dict, fail_under: float) -> dict:
                 "execution",
                 "resource_limit_evidence",
                 "process_tree_evidence",
+                "first_failing_test",
             ):
                 mutant.pop(field, None)
     return document
