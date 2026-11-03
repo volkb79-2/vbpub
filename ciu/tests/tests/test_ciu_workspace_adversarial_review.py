@@ -1138,6 +1138,9 @@ def _removal_fixture(monkeypatch, tmp_path):
     monkeypatch.setattr(worktree, "find_worktree", lambda *_args: wt)
     monkeypatch.setattr(worktree, "_ciu_root_offset", lambda _root: Path("."))
     monkeypatch.setattr(worktree, "_clean_in", lambda *_args, **_kwargs: 0)
+    # The synthetic checkout is not a Git repository; CIU-138 discovery of
+    # sibling committed roots has its own real-Git tests.
+    monkeypatch.setattr(worktree, "_sibling_committed_roots", lambda *_args: [])
     monkeypatch.setattr(worktree, "release_own_lease", lambda *_args: None)
     monkeypatch.setattr(worktree, "_ignored_state_summary", lambda _path: [])
     monkeypatch.setattr(worktree, "_worktree_change_paths", lambda *_args: [])

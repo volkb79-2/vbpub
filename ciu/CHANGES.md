@@ -99,6 +99,11 @@ the technical detail below it.
 - CIU-150: the governance slice preflight also checks a literal `cgroup_parent: <name>.slice` authored in a stack's compose file. A slice systemd definitely reports absent refuses (exit 2); an inconclusive probe (cockpit, no systemd PID 1) now WARNs and continues.
 - CIU-148: SPEC S15.20 and DESIGN-NOTES D8 cite dstdns `docs/RESOURCE-GOVERNANCE.md` (sections 4 and 6) instead of the merged-away `KSM-OPTIN-MEASUREMENTS.md`.
 - CIU-101: the engine `--help` module-guard test no longer fails when an unrelated finalizer warning lands in its recording window.
+### Added
+- feat(ciu): `ciu worktree refork LOGICAL [--onto TRUNK] [--json]` re-records `fork_point_sha` after a legitimate rebase so run-gate's derived base (R-35a) works again without a hand-passed `--base` (CIU-142). It refuses a dirty tree and a trunk that is not an ancestor of HEAD, is idempotent, and leaves record schema 6 unchanged (the previous value and timestamp are reported in its JSON document, operation `refork`). `ciu worktree inspect` now reports a `fork_point` status (`current`/`stale`/`unrecorded`/`unknown`) and names the verb for a stale record.
+
+### Fixed
+- fix(ciu): `ciu worktree rm` cleans every committed CIU root of the checkout (discovered at the target's own HEAD), each under its own identity, before deleting it; any discovery, identity or clean failure preserves the checkout and records and reports the roots already cleaned (CIU-138).
 
 ## [7.18.0] - 2026-10-28
 <!-- cmru: generated -->

@@ -666,6 +666,14 @@ ciu worktree lease bench-rig  --perpetual     # long-lived ON PURPOSE
 ciu worktree lease scratch    --release       # claims nothing (still never reaped)
 ```
 
+After you legitimately rebase a managed worktree onto a newer trunk, its
+recorded `fork_point_sha` is spent and run-gate (R-35a) refuses `NOT_RUN
+no-base`. `ciu worktree inspect NAME` reports `fork_point: stale` and names the
+remedy; `ciu worktree refork NAME [--onto TRUNK]` re-records it as
+`merge-base(trunk, HEAD)` (it refuses a dirty tree and a branch that diverged
+rather than rebased). `ciu worktree rm` cleans every committed CIU root of the
+checkout, not only the selected one, and keeps the checkout if any root fails.
+
 
 ## 5c. Declare a cross-profile secret producer (`produced_by`, S13.6)
 

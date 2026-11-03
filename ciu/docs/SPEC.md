@@ -4271,6 +4271,15 @@ adopted checkout during resume.
   identity values are null, there is no CIU state to clean, so CIU skips clean
   and removes the Git worktree through the shared lifecycle adapter. A CIU-root
   record with missing identity remains a refusal.
+  **Every committed CIU root is cleaned (CIU-138).** The roots are discovered
+  from the target checkout's own HEAD (`git ls-tree`, never the primary's and
+  never an ignored overlay). Each sibling root is verified (marker present,
+  generated identity readable) and cleaned under its own identity BEFORE the
+  selected root and before any checkout deletion; a sibling's lease is released
+  only after that sibling's clean succeeded. A discovery, identity or clean
+  failure refuses (unless `--force` for a failed clean), preserves the checkout
+  and the lifecycle record, and names the roots already cleaned. A checkout with
+  no committed root invokes no guessed cleanup.
   **The order is normative.** `ciu down` preserves
   volumes, so it strands `vol-*` dirs owned by image UIDs that an unprivileged
   `rm -rf` cannot delete; and removing the checkout first destroys the rendered
@@ -5097,6 +5106,20 @@ policy, not something one shell can quietly shorten.
   runs NO Docker query, so it works identically on a stopped instance —
   extending or dropping a claim is independent of whether containers happen to
   be running. `--json` emits one S16.4 document with operation `lease`.
+- **`ciu worktree refork LOGICAL [--onto TRUNK_REF] [--json]`** (CIU-142) —
+  re-records `fork_point_sha` after a legitimate rebase. Run-gate's R-35a
+  derives a worktree's base only while the recorded fork point equals
+  `merge-base(trunk, HEAD)`; a rebase spends it and the gate refuses
+  `NOT_RUN no-base`. `refork` refuses an unknown or not-`ready` instance, a
+  dirty tree, and a trunk (`--onto`, else the record's `base_branch_ref`, else
+  the repository default branch, else `main`) that is not an ancestor of HEAD
+  (a branch that diverged was not rebased). It then records
+  `merge-base(trunk, HEAD)`; the value is never HEAD. It is idempotent: an
+  already-current record is not rewritten. Record schema 6 is unchanged, so
+  the previous value and a UTC timestamp appear only in the `--json` document
+  (operation `refork`, key `refork`), not in the record. `inspect` adds a
+  `fork_point` object (`status` `current|stale|unrecorded|unknown`, the
+  `recorded` and `merge_base` SHAs, and for `stale` the `remedy` command).
 
 #### Ownership labels
 
