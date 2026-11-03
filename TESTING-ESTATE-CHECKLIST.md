@@ -73,6 +73,18 @@ Rigor levels have these meanings:
 - **R3** — a canary proves that the complete gate rejects a deliberately broken
   change for the intended reason.
 
+Every release-facing source lane also needs a mechanical syntax/build
+preflight in its declared environment. For Go this is `gofmt -l .` followed by
+`go build ./...` (and the lane's `go vet ./...` and `go test ./...`); the Go
+compiler is the authoritative parser and catches malformed raw strings,
+unterminated literals, and similar source damage before tests run. For Python,
+`python -m py_compile` over the tracked source files, or an equivalent
+`python -m compileall` command, is the authoritative parse check. Ruff can add
+AST/lint findings and mypy or Pyright can add type findings, but neither is a
+substitute for the language build/test command. These checks are R0 evidence;
+Assay may orchestrate and retain their result, while the language toolchain
+still owns the conclusion.
+
 For Python and JavaScript coverage formats that carry branch arcs, a lane that
 claims full branch coverage must set `require_branch = true` and enforce its
 declared floor. Go's `go-cover` format is statement-only; Go branch coverage is
