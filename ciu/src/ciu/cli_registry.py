@@ -312,6 +312,31 @@ def _env_cli() -> Any:
     return registry.build()
 
 
+def _show_cli() -> Any:
+    """``ciu show profiles|layouts``: read-only listings of declared configuration.
+
+    Absorbs the former top-level ``profiles`` and ``layouts`` verbs (v8 S18, decision C6);
+    both gain ``--json``. They never write generated config (CIU-109 stays fixed).
+    """
+    registry = ciu_registry("ciu show", "List what the configuration declares (read-only).")
+    registry.register(VerbSpec(
+        "profiles",
+        description="List the declared host profiles with their phases, stacks and compose profiles.",
+        group=VerbGroup.EXPLORATION.value, include_progress=False, options=(ROOT,),
+        handler=adapter(["profiles"], (ROOT,), json_tokens=["--json"]),
+    ))
+    registry.register(VerbSpec(
+        "layouts",
+        description=(
+            "List the declared deploy layouts ([deploy.layouts.<name>]) with their environment and "
+            "ordered host list (S7.5c). Shows what is DECLARED; `ciu up --layout` validates."
+        ),
+        group=VerbGroup.EXPLORATION.value, include_progress=False, options=(ROOT,),
+        handler=adapter(["layouts"], (ROOT,), json_tokens=["--json"]),
+    ))
+    return registry.build()
+
+
 def _ksm_cli() -> Any:
     registry = ciu_registry("ciu ksm", "Kernel Same-page Merging shim.")
     options = (ROOT, flag("--force", "rebuild even when the shim is current", group="BEHAVIOUR"))
@@ -701,20 +726,9 @@ def build_cli() -> Any:
         include_json=False, include_progress=False, options=render_options,
         handler=adapter(["render"], render_options),
     ))
-    register(VerbSpec(
-        "profiles", description="List the available host profiles.",
-        group=VerbGroup.EXPLORATION.value, include_json=False, include_progress=False,
-        options=(ROOT,), handler=adapter(["profiles"], (ROOT,)),
-    ))
-    register(VerbSpec(
-        "layouts",
-        description=(
-            "List the declared deploy layouts ([deploy.layouts.<name>]) with their environment and "
-            "ordered host list (S7.5c). Shows what is DECLARED; `ciu up --layout` validates."
-        ),
-        group=VerbGroup.EXPLORATION.value, include_json=False, include_progress=False,
-        options=(ROOT,), handler=adapter(["layouts"], (ROOT,)),
-    ))
+    register(VerbSpec("show", description="List what the configuration declares (read-only).",
+                      group=VerbGroup.EXPLORATION.value, delegate=_show_cli(),
+                      include_progress=False))
 
     # ---- WORKTREE / MACHINE INTERFACES ---------------------------------------------
     register(VerbSpec("worktree", description="Managed worktree instances (S16).",

@@ -5580,9 +5580,30 @@ def action_list_phases(config: dict) -> int:
     return 0
 
 
-def action_list_profiles(config: dict) -> int:
-    """--list-profiles: print profiles with phases/stacks/compose_profiles/topology (S7.4)."""
+def action_list_profiles(config: dict, *, json_output: bool = False) -> int:
+    """--list-profiles: print profiles with phases/stacks/compose_profiles/topology (S7.4).
+
+    With *json_output* the same facts are written as ONE versioned JSON document
+    (``ciu show profiles --json``); nothing else reaches stdout.
+    """
     profiles_table = config.get("deploy", {}).get("profiles", {})
+    if json_output:
+        document = {
+            "schema_version": 1,
+            "profiles": {
+                name: {
+                    "phases": (profiles_table[name] or {}).get("phases", []),
+                    "stacks": (profiles_table[name] or {}).get("stacks", []),
+                    "compose_profiles": (profiles_table[name] or {}).get("compose_profiles", []),
+                    "topology_overrides": sorted(
+                        ((profiles_table[name] or {}).get("topology_overrides") or {}).keys()
+                    ),
+                }
+                for name in sorted(profiles_table)
+            },
+        }
+        print(json.dumps(document, sort_keys=True))
+        return 0
     info("Host profiles (S7.4):")
     if not profiles_table:
         info("  (none defined — the default profile deploys all phases)")
@@ -6000,7 +6021,7 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
         elif action == "list_phases":
             ac = action_list_phases(profile.config)
         elif action == "list_profiles":
-            ac = action_list_profiles(profile.config)
+            ac = action_list_profiles(profile.config, json_output=args.json_output)
         elif action == "stop":
             refusal = _refuse_if_protected(profile.config, args, "stop")
             if refusal is not None:

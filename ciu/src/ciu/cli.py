@@ -1829,6 +1829,15 @@ def _legacy_dispatch(raw: list[str]) -> None:
         config = _load_remote_config(repo_root)
         from .deploy_pkg.layouts import list_layouts
         rows = list_layouts(config)
+        if "--json" in rest:
+            print(json.dumps({
+                "schema_version": 1,
+                "layouts": {
+                    name: {"environment": environment, "hosts": list(hosts)}
+                    for name, environment, hosts in rows
+                },
+            }, sort_keys=True))
+            raise SystemExit(0)
         if not rows:
             print("(no layouts declared)")
             raise SystemExit(0)

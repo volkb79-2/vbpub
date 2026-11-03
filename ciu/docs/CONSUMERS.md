@@ -1437,7 +1437,7 @@ def run(ctx):
 ```
 
 The declaration must be a literal `True`; computed values and function-local
-assignments do not opt in. `ciu profiles` is a read-only listing too: it renders
+assignments do not opt in. `ciu show profiles` is a read-only listing too: it renders
 in memory and does not create or update `ciu.global.toml`.
 
 Exit codes are S13.4's: `0` clean, `2` any static configuration error

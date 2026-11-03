@@ -1209,7 +1209,7 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   `--flag=value` form, is the same flag and MUST be refused identically**
   (`--prof=core` is `--profile`). A refusal names the resolved flag, exits 2,
   and MUST happen before any host is resolved from the inventory, so no
-  transport is opened. `ciu layouts` lists declared layouts (name,
+  transport is opened. `ciu show layouts` lists declared layouts (name,
   environment, ordered hosts) without validating them — `ciu up --layout` is
   the validating consumer.
 - **S7.5d** *Unified `instances` fan-out (V8-PREP-6, ciu-P24).* A service MAY
@@ -1990,7 +1990,7 @@ only the selected stack's rendered services declare container names.
   `"ERROR"`. An explicit config declaration ALWAYS wins over the env variable.
   Invalid values are a configuration error naming the key and vocabulary.
 
-- **S10.7 (CIU-118)** `ciu profiles` is a read-only listing: it MUST render
+- **S10.7 (CIU-118)** `ciu show profiles` is a read-only listing: it MUST render
   configuration in memory and MUST NOT write `ciu.global.toml` or other
   generated files. `ciu resolve [--root-folder P] [--profile NAME ...]
   [--stack S] [--service X] [--live] --json` reports resolved service identities grouped by exact

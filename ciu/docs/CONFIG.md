@@ -477,7 +477,7 @@ bundles = ["db", "worker-io"]
 ```
 
 ```bash
-ciu layouts          # prod-edge: environment=prod hosts=[edge-a, edge-b, backend]
+ciu show layouts     # prod-edge: environment=prod hosts=[edge-a, edge-b, backend]
 ciu up --layout prod-edge
 ```
 

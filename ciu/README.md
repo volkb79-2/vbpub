@@ -263,7 +263,7 @@ eval "$(ciu env print)"                          # export them into THIS shell (
 ciu up --dir <repo>/<stack>                      # render + run one stack
 ciu up --profile <host-profile>                  # orchestrate many
 ciu up --layout <name>                           # push a named host→bundles plan (S7.5c)
-ciu layouts                                      # list declared [deploy.layouts.<name>]
+ciu show layouts                                 # list declared [deploy.layouts.<name>] (--json too)
 ciu host-secrets <host> --materialize            # pre-Vault local secrets per host (S14.3a)
 ```
 

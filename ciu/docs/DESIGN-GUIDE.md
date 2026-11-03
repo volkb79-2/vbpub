@@ -832,7 +832,7 @@ pipeline; `--check` remains a profile-mode action.
 
 ## Why reporting and dry-run paths do not run live hooks
 
-`ciu profiles` reports the declared profiles, so it renders the shared config
+`ciu show profiles` reports the declared profiles, so it renders the shared config
 in memory and never writes `ciu.global.toml`. `--dry-run` is not a general
 read-only mode: it still runs the pre-deploy preparation steps and pre-hooks.
 The live `post_compose` hook is different because it can provision accounts or

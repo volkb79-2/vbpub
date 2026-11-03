@@ -65,8 +65,8 @@ failure · `2` config/validation error · `3` environment/bootstrap error (S10.3
 | `ciu env` | Show `ciu.env` key=value pairs (read-only) | — |
 | `ciu env generate` | (Re)generate `ciu.env` from system state | `--root-folder PATH` |
 | `ciu render` | Render `ciu.global.toml` + per-stack `ciu.toml` | `--profile NAME`, `--root-folder PATH`, `--host NAME` (remote) |
-| `ciu profiles` | List host profiles | — |
-| `ciu layouts` | List declared deploy layouts (S7.5c) — shows what is DECLARED; `up --layout` validates | — |
+| `ciu show profiles` | List host profiles | `--json` |
+| `ciu show layouts` | List declared deploy layouts (S7.5c) — shows what is DECLARED; `up --layout` validates | `--json` |
 | `ciu up` | Render + materialise secrets + `compose up` | `--profile NAME` \| `--dir PATH`, `--phases N,M`, `--dry-run`, `-y`, `--ignore-errors`, `--no-preflight`; `--host NAME` push-deploys to a remote host (S14.2); `--thin` docker-optional push→activate (S14.6), `--bootstrap`/`--rollback` select activation verbs |
 | `ciu down` | Stop selected containers and preserve volumes | `--profile NAME`, `--host NAME`; `--dir PATH` stops one stack |
 | `ciu clean` | **Complete** teardown: containers (any state) + volumes + `vol-*` + rendered; enforces post-clean invariant (exit 1 on survivors) | `--profile NAME`, `-y`, `--ignore-errors` |
