@@ -35,7 +35,7 @@ pointing at the release assets (or the GitHub release URL) that carry both wheel
 already carry every fact needs no terminal and no extra.
 
 A `get.py` bundle that declares `[[project.installer.wheels]]` for cli-extended installs
-it first, hash-locked, with `--no-index --find-links` (`cmru get-py`; the order is enforced
+it first, hash-locked, with `--no-index --find-links` (`cmru installer render`; the order is enforced
 by the generated installer, not by the declaration order). The `tester-unified` image
 installs the released wheel by sha256 before cmru, and gate lanes use that installed
 wheel, never a `libraries/cli-extended/src` source root.
@@ -214,7 +214,8 @@ cmru cleanup ciu --delete-build-output <commit-date>_<commit> --dry-run
 cmru abandon /absolute/path/reported/by/cmru --yes   # discard a retained failed build worktree
 cmru version                      # print the CMRU version
 cmru --version                    # estate-wide top-level compatibility spelling
-cmru get-py ciu --config cmru.orchestration.toml --output ciu-get.py  # render from installed wheel
+cmru installer render ciu --config cmru.orchestration.toml --output ciu-get.py  # render from installed wheel
+cmru installer check ciu --config cmru.orchestration.toml --installer ciu-get.py  # exit 1 if the committed file drifted
 cmru --help                       # generated verb catalog; use `cmru help <verb>` for options
 ```
 
@@ -860,6 +861,7 @@ fits the work:
 | Release, inspect, or maintain a product | `cmru` and its registered verbs | Canonical operator workflow |
 | Register/build/publish an artifact handler from a project step | `cmru handler <verb> …` | Project-step adapter (bound launcher inside a release transaction); `python -m cmru.handlers` is bootstrap-only, used by the fresh-checkout wheel bootstrap |
 | Preview or reproduce one declared step | `cmru run --step NAME …` | Direct single-step diagnostic using the project's normal `cmru.toml` |
+| Render a project's standalone `get.py`, or check the committed one for drift | `cmru installer render` / `cmru installer check` | Installer generator; `cmru get-py` is a deprecated alias of `render` (removal in a later major release) |
 | Prepare project settings or compose step/bundle behavior in Python | `cmru.runner.prepare_project_environment`, `cmru.runner.run_step`, or `cmru.bundle.run_bundle` | Supported library entrypoints; see the [design rationale](docs/DESIGN-GUIDE.md#consumer-side-environment-preparation) and [worked example](docs/CONSUMERS.md#python-entrypoints) |
 | Manage generic Git worktree lifecycles | `worktree` package in the CMRU wheel | Stable shared API, versioned with the CMRU wheel; see the [worktree consumer guide](../libraries/worktree/CONSUMERS.md) |
 
@@ -881,12 +883,18 @@ release's single bundle asset ([why](docs/DESIGN-GUIDE.md#the-bundle-asset-name-
 (SPEC S6.3-S6.17, and the
 [authoring guide](docs/CONSUMERS.md#authoring-an-installer-for-your-project) in CONSUMERS).
 A project adds its own commands with `[project.installer] extensions =
-["<relpath>.py"]` fragments that `cmru get-py` inlines verbatim (sha256-banner wrapped, one file,
+["<relpath>.py"]` fragments that `cmru installer render` inlines verbatim (sha256-banner wrapped, one file,
 deterministic) after render-time checks. The names a fragment may use are the rendered file's
 `EXTENSION_API` tuple, a stability contract: changing or removing a name requires updating every
 in-repo fragment in the same change (see "Installer extensions" in
 [docs/CONSUMERS.md](docs/CONSUMERS.md#installer-extensions-project-owned-getpy-commands) and
-SPEC S6.14). Host enrollment (`get.py enroll`) is ciu's fragment, not cmru's. The
+SPEC S6.14). Four more installer features (SPEC S6.18-S6.21; CONSUMERS "Stable stack folder,
+stubs, self-copy and wizard questions"): `stable_dir` keeps `<root>/<dir>/` in step with the
+active release (for tools whose identity derives from their physical path), `stub_launchers`
+puts `exec <root>/current/venv/bin/<cmd>` stubs in it, the installer keeps a copy of itself at
+`<root>/bin/<project>-installer`, and `[[project.installer.questions]]` adds an
+install/update wizard whose answers land in `<root>/shared/answers.toml`. Host enrollment
+(`get.py enroll`) is ciu's fragment, not cmru's. The
 [consumer guide](docs/CONSUMERS.md#using-the-wheel-and-component-interfaces)
 shows installation and invocation examples.
 
@@ -1038,7 +1046,7 @@ cannot change which source the controller or a candidate executes.
 The checker verifies every local CMRU release tag at HEAD against its exact
 origin commit, including older tag names that point to the same commit.
 Host enrollment (`get.py enroll`) and its real-system container lane belong to ciu now;
-cmru's gate has no enrollment lane (see "Installer extensions" under `cmru get-py`).
+cmru's gate has no enrollment lane (see "Installer extensions" under `cmru installer render`).
 Before tester-unified starts, the aggregate gate creates a dedicated attached
 Git worktree at the caller's exact commit and runs each lane there. The caller's
 checkout is never mounted; files created there after snapshot creation,

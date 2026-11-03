@@ -2863,7 +2863,7 @@ no callback, no listener; the private key never leaves the control host.
   mechanism since cmru's program 2026-10 (decision O4; before that it was a cmru
   template subcommand, cmru KI-24); ciu ships its rendered `get.py` at
   `ciu/get.py` and as a release asset; re-render after editing the fragment with
-  `cmru get-py ciu --config cmru.orchestration.toml --output ciu/get.py`, and the
+  `cmru installer render ciu --config cmru.orchestration.toml --output ciu/get.py`, and the
   byte-identity test in `test_ciu_host_enroll.py` guards drift; hardening of the
   fragment is CIU-122/CIU-123; the example that used to sit in `get.py`'s own
   `--help` epilog and docstring now lives only here:

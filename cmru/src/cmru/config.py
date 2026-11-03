@@ -142,6 +142,87 @@ class InstallerConfig:
     manifest_pubkey: str = ""
     # Commands exposed as <root>/bin/<cmd> -> ../current/venv/bin/<cmd> (R8).
     launchers: List[str] = field(default_factory=list)
+    # <root>/<stable_dir>/ mirrors the ACTIVE release's file set after every install/update/
+    # rollback (a stack whose identity derives from its physical path needs one stable
+    # folder). "" = none.
+    stable_dir: str = ""
+    # Commands written as shell stubs into <stable_dir> that exec the pinned
+    # <root>/current/venv/bin/<cmd>. Needs ``stable_dir``.
+    stub_launchers: List[str] = field(default_factory=list)
+    # Wizard questions asked on install/update; answers land in <root>/shared/answers.toml.
+    questions: List["InstallerQuestion"] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class InstallerQuestion:
+    """One ``[[project.installer.questions]]`` entry (the install/update wizard)."""
+    id: str
+    prompt: str
+    type: str                                  # string | bool | choice | int
+    default: Optional[object] = None
+    choices: List[str] = field(default_factory=list)
+    required: bool = True
+
+
+_QUESTION_KEYS = ("id", "prompt", "type", "default", "choices", "required")
+_QUESTION_TYPES = ("string", "bool", "choice", "int")
+_QUESTION_ID = re.compile(r"[a-z][a-z0-9_]*")
+# Names under <root> that the installer owns; a stable dir may not shadow them.
+_STABLE_DIR_RESERVED = frozenset({"releases", "shared", "bin", "current", "state.json", "venv"})
+
+
+def question_problems(questions: List[dict]) -> List[str]:
+    """Grammar of ``[[project.installer.questions]]`` (plain dicts); [] when valid."""
+    problems: List[str] = []
+    seen: set = set()
+    for index, q in enumerate(questions):
+        where = f"questions[{index}]"
+        unknown = sorted(set(q) - set(_QUESTION_KEYS))
+        if unknown:
+            problems.append(f"{where}: unknown keys {unknown}")
+            continue
+        qid = q.get("id")
+        if not isinstance(qid, str) or not _QUESTION_ID.fullmatch(qid):
+            problems.append(f"{where}.id must match {_QUESTION_ID.pattern}: {qid!r}")
+            continue
+        where = f"questions[{index}] ({qid})"
+        if qid in seen:
+            problems.append(f"{where}: duplicate id")
+        seen.add(qid)
+        prompt = q.get("prompt")
+        if (not isinstance(prompt, str) or not prompt.strip()
+                or any(ch in prompt for ch in "\0\n\r")):
+            problems.append(f"{where}.prompt must be a non-empty single line")
+        kind = q.get("type")
+        if kind not in _QUESTION_TYPES:
+            problems.append(f"{where}.type must be one of {list(_QUESTION_TYPES)}: {kind!r}")
+            continue
+        choices = q.get("choices") or []
+        if kind == "choice":
+            if (not isinstance(choices, list) or not choices
+                    or not all(isinstance(c, str) and c and not any(ch in c for ch in "\0\n\r")
+                               for c in choices) or len(set(choices)) != len(choices)):
+                problems.append(f"{where}.choices must be a non-empty list of distinct "
+                                "single-line strings for a choice question")
+                continue
+        elif choices:
+            problems.append(f"{where}.choices is only valid for a choice question")
+        required = q.get("required", True)
+        if not isinstance(required, bool):
+            problems.append(f"{where}.required must be true or false")
+        default = q.get("default")
+        if default is None:
+            continue
+        good = {
+            "string": isinstance(default, str),
+            "bool": isinstance(default, bool),
+            "int": isinstance(default, int) and not isinstance(default, bool),
+            "choice": isinstance(default, str) and default in choices,
+        }[kind]
+        if not good:
+            problems.append(f"{where}.default does not fit type {kind!r}"
+                            + (f" (one of {choices})" if kind == "choice" else ""))
+    return problems
 
 
 _INSTALLER_SAFE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
@@ -167,6 +248,35 @@ def _normalises_to_root(value: str) -> bool:
     return posixpath.normpath(value) == "."
 
 
+def _stable_dir_problems(
+    stable_dir: str, stub_launchers: List[str], launchers: List[str], has_wheels: bool,
+) -> List[str]:
+    """Grammar of ``stable_dir`` / ``stub_launchers``. Whether a stub names a console script
+    of a configured wheel is only knowable at build time (the installer checks the release
+    venv then); here it must be a declared launcher, or a wheel must be configured."""
+    problems: List[str] = []
+    if stable_dir:
+        if not _INSTALLER_SAFE_NAME.fullmatch(stable_dir):
+            problems.append("stable_dir must be one relative path component (letters, digits, "
+                            f"'.', '_', '-'; no '/'): {stable_dir!r}")
+        elif stable_dir in _STABLE_DIR_RESERVED:
+            problems.append(f"stable_dir {stable_dir!r} is a name the installer owns under "
+                            f"the install root ({sorted(_STABLE_DIR_RESERVED)})")
+    elif stub_launchers:
+        problems.append("stub_launchers need stable_dir (the stubs live in it)")
+    seen: set = set()
+    for command in stub_launchers:
+        if not _INSTALLER_COMMAND.fullmatch(command):
+            problems.append(f"stub_launchers entry is not a plain command name: {command!r}")
+        elif command in seen:
+            problems.append(f"stub_launchers entry listed twice: {command!r}")
+        elif command not in launchers and not has_wheels:
+            problems.append(f"stub_launchers entry {command!r} is neither in launchers nor "
+                            "a console script of a configured wheel (no wheels configured)")
+        seen.add(command)
+    return problems
+
+
 def installer_problems(
     *,
     install_dir_system: str,
@@ -180,9 +290,15 @@ def installer_problems(
     wheels: List[tuple],
     launchers: List[str],
     manifest_pubkey: str,
+    stable_dir: str = "",
+    stub_launchers: Optional[List[str]] = None,
+    questions: Optional[List[dict]] = None,
 ) -> List[str]:
     """Grammar of the values that get.py bakes into code (INS-13 / R11); [] when valid."""
     problems: List[str] = []
+    problems.extend(_stable_dir_problems(
+        stable_dir, list(stub_launchers or []), launchers, bool(wheels)))
+    problems.extend(question_problems(list(questions or [])))
     if (not install_dir_system.startswith("/") or ".." in install_dir_system.split("/")
             or any(ch in install_dir_system for ch in "\0\n\r")):
         problems.append(f"install_dir_system must be an absolute path without '..': "
@@ -540,7 +656,8 @@ def _parse_installer(name: str, raw: dict) -> InstallerConfig:
     _KNOWN_INSTALLER_KEYS = {
         "install_dir_system", "install_dir_user", "asset_suffix", "entrypoint",
         "required_commands", "preserve", "manifest_name", "signature_name", "wheels",
-        "extensions", "manifest_pubkey", "launchers",
+        "extensions", "manifest_pubkey", "launchers", "stable_dir", "stub_launchers",
+        "questions",
     }
     unknown = [k for k in raw if k not in _KNOWN_INSTALLER_KEYS]
     if unknown:
@@ -598,6 +715,18 @@ def _parse_installer(name: str, raw: dict) -> InstallerConfig:
         _error(f"project.{name}.installer.launchers must be a list of command names")
     launchers = [str(c) for c in launchers_raw]
 
+    stable_dir = raw.get("stable_dir", "")
+    if not isinstance(stable_dir, str):
+        _error(f"project.{name}.installer.stable_dir must be a string")
+    stub_raw = raw.get("stub_launchers") or []
+    if not isinstance(stub_raw, list) or not all(isinstance(c, str) for c in stub_raw):
+        _error(f"project.{name}.installer.stub_launchers must be a list of command names")
+    stub_launchers = [str(c) for c in stub_raw]
+    questions_raw = raw.get("questions") or []
+    if not isinstance(questions_raw, list) or not all(isinstance(q, dict) for q in questions_raw):
+        _error(f"project.{name}.installer.questions must be an array of tables")
+    question_dicts = [dict(q) for q in questions_raw]
+
     problems = installer_problems(
         install_dir_system=install_dir_system, install_dir_user=install_dir_user,
         asset_suffix=asset_suffix, entrypoint=entrypoint or "",
@@ -605,9 +734,17 @@ def _parse_installer(name: str, raw: dict) -> InstallerConfig:
         required_commands=required_commands, preserve=preserve,
         wheels=[(w.path, w.distribution) for w in wheels],
         launchers=launchers, manifest_pubkey=manifest_pubkey,
+        stable_dir=stable_dir, stub_launchers=stub_launchers, questions=question_dicts,
     )
     if problems:
         _error(f"project.{name}.installer: {problems[0]}")
+    questions = [
+        InstallerQuestion(
+            id=q["id"], prompt=q["prompt"], type=q["type"], default=q.get("default"),
+            choices=list(q.get("choices") or []), required=q.get("required", True),
+        )
+        for q in question_dicts
+    ]
 
     return InstallerConfig(
         install_dir_system=install_dir_system,
@@ -622,6 +759,9 @@ def _parse_installer(name: str, raw: dict) -> InstallerConfig:
         extensions=extensions,
         manifest_pubkey=manifest_pubkey,
         launchers=launchers,
+        stable_dir=stable_dir,
+        stub_launchers=stub_launchers,
+        questions=questions,
     )
 
 

@@ -35,7 +35,7 @@ git_tag = true
 build_step = "build"
 artifact_dirs = ["dist"]
 
-# S14.7a / CIU-93 — inputs for `cmru get-py ciu`, whose rendered
+# S14.7a / CIU-93 — inputs for `cmru installer render ciu`, whose rendered
 # output is committed at `ciu/get.py` and published as a release asset (see
 # [steps.push]'s --extra-asset below). `ciu host enroll` prints
 #   https://github.com/<owner>/<repo>/releases/download/ciu-v<version>/get.py

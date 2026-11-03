@@ -8703,7 +8703,7 @@ def _build_cli():
     from cmru.handlers import handlers_cli
     from cmru.tester_gate import tester_gate_cli
     from cmru.resolve import resolve_cli
-    from cmru.getpy import getpy_cli
+    from cmru.getpy import getpy_cli, installer_cli
     from cmru.standards import standards_cli
     from cmru.tool_deps import tool_deps_cli
     delegated.extend((
@@ -8712,7 +8712,8 @@ def _build_cli():
         VerbSpec("handler", description="Run a concrete project-step handler.", group=VerbGroup.MODIFICATION.value, mutating=True, delegate=handlers_cli(), include_json=False, include_progress=False),
         VerbSpec("tester-gate", description="Run one command inside tester-unified.", group=VerbGroup.MODIFICATION.value, mutating=True, delegate=tester_gate_cli(), include_json=False, include_progress=False),
         VerbSpec("resolve", description="Resolve a project's latest published artifact.", group=VerbGroup.EXPLORATION.value, delegate=resolve_cli(), include_json=False, include_progress=False),
-        VerbSpec("get-py", description="Emit the standalone Python installer.", group=VerbGroup.MODIFICATION.value, mutating=True, delegate=getpy_cli(), include_json=False, include_progress=False),
+        VerbSpec("installer", description="Render or check a project's generated standalone installer (get.py).", group=VerbGroup.MODIFICATION.value, mutating=True, delegate=installer_cli(), include_json=False, include_progress=False),
+        VerbSpec("get-py", description="DEPRECATED alias of 'installer render' (removal in a later major release).", group=VerbGroup.MODIFICATION.value, mutating=True, delegate=getpy_cli(), include_json=False, include_progress=False),
         VerbSpec("standards", description="Check or update CMRU framework markers.", group=VerbGroup.MIXED.value, mutating=True, delegate=standards_cli(), include_json=False, include_progress=False),
         VerbSpec("tool-deps", description="Verify declared tool dependency integrity, authenticity, and freshness.", group=VerbGroup.MIXED.value, mutating=True, delegate=tool_deps_cli(), include_json=False, include_progress=False),
     ))
