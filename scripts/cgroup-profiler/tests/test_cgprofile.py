@@ -2838,6 +2838,84 @@ class TestCmdServe:
         cg.cmd_serve(args)
         assert captured["observe_slices"] == ()
 
+    def _serve_with(self, monkeypatch, serve_forever):
+        monkeypatch.setattr(access, "have_host_cgroup_view", lambda root: True)
+        monkeypatch.setenv(access.PID_NAMESPACE_MODE_ENV, "host")
+        monkeypatch.setattr(access, "have_host_proc_view", lambda proc: True)
+        monkeypatch.setattr(serve_lib, "daemon_slice_bounded", lambda *_a: True)
+
+        class FakeServer:
+            def __init__(self, **kwargs):
+                pass
+
+        FakeServer.serve_forever = serve_forever
+        monkeypatch.setattr(serve_lib, "SessionServer", FakeServer)
+        return cg.build_parser().parse_args(["serve"])
+
+    def test_a_lost_control_socket_exits_with_the_servers_non_zero_status(self, monkeypatch):
+        # CP-31: `restart: unless-stopped` must see a non-zero exit.
+        args = self._serve_with(monkeypatch, lambda self: serve_lib.EXIT_SOCKET_LOST)
+        assert cg.cmd_serve(args) == 3
+
+    def test_a_socket_path_the_daemon_may_not_bind_refuses_to_start_with_exit_2(
+        self, monkeypatch, capsys,
+    ):
+        # CP-34: a non-socket node or a live peer at the path.
+        def refuse(self):
+            raise serve_lib.ControlSocketError(
+                17, "another daemon answers at /run/cgprofile/ctl.sock; refusing to replace it",
+                "/run/cgprofile/ctl.sock",
+            )
+
+        args = self._serve_with(monkeypatch, refuse)
+        with pytest.raises(SystemExit) as exc_info:
+            cg.cmd_serve(args)
+        assert exc_info.value.code == 2
+        assert "serve refuses to start: another daemon answers" in capsys.readouterr().err
+
+
+class TestCtlUnreachableCause:
+    """CP-31: a missing socket is never reported like a refusing daemon."""
+
+    def _ctl(self, capsys, path):
+        assert cg.main(["ctl", "version", "--socket", str(path)]) == 3
+        return capsys.readouterr().err
+
+    def test_a_missing_socket_directory_means_not_mounted(self, tmp_path, capsys):
+        err = self._ctl(capsys, tmp_path / "absent" / "ctl.sock")
+        assert "could not reach the daemon" in err
+        assert "cause: socket-not-mounted" in err
+
+    def test_a_missing_node_in_an_existing_directory_means_socket_missing(
+        self, tmp_path, capsys,
+    ):
+        err = self._ctl(capsys, tmp_path / "ctl.sock")
+        assert "cause: socket-missing" in err
+        assert "socket-not-mounted" not in err
+
+    def test_a_node_nobody_listens_on_means_daemon_refusing(self, tmp_path, capsys):
+        import socket as socket_mod
+
+        node = tmp_path / "ctl.sock"
+        dead = socket_mod.socket(socket_mod.AF_UNIX, socket_mod.SOCK_STREAM)
+        dead.bind(str(node))
+        dead.close()
+        err = self._ctl(capsys, node)
+        assert "cause: daemon-refusing" in err
+        assert "socket-missing" not in err
+
+    def test_watch_names_the_cause_too(self, tmp_path, capsys):
+        assert cg.main(["ctl", "watch", "s-20260912T101500Z-9f01", "--socket",
+                        str(tmp_path / "ctl.sock")]) == 3
+        assert "ctl watch could not reach the daemon" in capsys.readouterr().err
+
+    def test_permission_and_unclassified_failures(self, tmp_path):
+        path = str(tmp_path / "ctl.sock")
+        assert "cause: socket-permission" in cg._ctl_unreachable_cause(
+            path, PermissionError(13, "denied"))
+        assert cg._ctl_unreachable_cause(path, TimeoutError("slow")) == ""
+        assert cg._ctl_unreachable_note("host", path, ValueError("empty")).endswith("empty")
+
 
 class TestCtlRequest:
     def _args(self, **overrides):
