@@ -260,7 +260,9 @@
         },
         "gate_verify_interval_days": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "deprecated": true,
+          "description": "Retired with GA4 (nyxloom-P98): accepted so existing nyxloom.toml files still load, ignored, and a nonzero value logs a warning."
         },
         "gap_audit_after_changed_lines": {
           "type": "integer",

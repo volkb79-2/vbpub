@@ -365,6 +365,38 @@ def _refuse_launch(spec: WrapperSpec, *, blocked_reason: str,
     return exit_code
 
 
+def _terminate_unsupervised_child(child: "subprocess.Popen", grace_seconds: float,
+                                  container: str) -> None:
+    """TERM the child's process group, KILL after ``grace_seconds``, reap it.
+
+    Used when the wrapper cannot publish ``child.pid`` and so cannot
+    supervise the child any further (NL-53).
+    """
+    try:
+        pgid = os.getpgid(child.pid)
+    except OSError:
+        pgid = None
+    sig = signal.SIGTERM
+    deadline = time.monotonic() + max(grace_seconds, 0)
+    while True:
+        if pgid is not None:
+            try:
+                os.killpg(pgid, sig)
+            except OSError:
+                pass
+        try:
+            done, _ = os.waitpid(child.pid, os.WNOHANG)
+        except OSError:
+            break
+        if done != 0:
+            break
+        if sig == signal.SIGTERM and time.monotonic() > deadline:
+            sig = signal.SIGKILL
+        time.sleep(0.05)
+    if container:
+        containment.force_remove(container)
+
+
 def contained_launch(spec: WrapperSpec, route: RouteDef,
                      env_overrides: dict[str, str]) -> tuple[list[str], str]:
     """``(argv, container_name)`` for this leg. Raises rather than downgrades.
@@ -527,8 +559,29 @@ def wrapper_main(spec_path: str) -> int:
                 # observed empty between create and write.
                 child_pid_path = Path(spec.attempt_dir, "child.pid")
                 child_pid_tmp = child_pid_path.with_name("child.pid.tmp")
-                child_pid_tmp.write_text(str(child.pid), encoding="utf-8")
-                os.replace(child_pid_tmp, child_pid_path)
+                try:
+                    child_pid_tmp.write_text(str(child.pid), encoding="utf-8")
+                    os.replace(child_pid_tmp, child_pid_path)
+                except OSError as exc:
+                    # NL-53: an unpublishable child.pid (ENOSPC, read-only fs)
+                    # must not leave the child running with nothing
+                    # supervising it. Terminate its process group (TERM, then
+                    # KILL after the grace period), reap it, drop the temp
+                    # file, release the leases and record a refusal.
+                    log.error("child-pid-publish-failed", project=spec.project,
+                              task=spec.task_id, attempt=spec.attempt_id,
+                              error=str(exc))
+                    _terminate_unsupervised_child(
+                        child, spec.term_grace_seconds, container)
+                    try:
+                        child_pid_tmp.unlink()
+                    except OSError:
+                        pass
+                    for held in held_leases:
+                        held.release()
+                    return _refuse_launch(
+                        spec, blocked_reason="child-pid-publish-failed",
+                        exit_code=75)
 
                 # Update attempt with pid/pgid and log_path
                 attempt.pid = child.pid

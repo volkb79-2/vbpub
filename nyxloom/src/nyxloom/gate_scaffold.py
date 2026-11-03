@@ -85,9 +85,9 @@ def render_gate_dockerfile() -> str:
     return f'''\
 # Scaffolded by `nyxloom onboard --scaffold-gate` (docs/plan-gate-adoption.md
 # §GA3 v2). This is a REVIEW SKELETON -- read every "{ADJUST_MARKER}" line
-# below before building or trusting it. Once adjusted, verify it actually
-# rejects broken code with `nyxloom gate verify <project>` (GA1) -- this
-# scaffold does not prove itself correct.
+# below before building or trusting it. Once adjusted, adopt it under
+# run-gate + Assay, whose own checks show that it rejects broken code --
+# this scaffold does not prove itself correct.
 FROM python:3.12-slim
 
 WORKDIR /gate
