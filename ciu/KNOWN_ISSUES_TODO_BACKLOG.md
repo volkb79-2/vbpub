@@ -5867,3 +5867,32 @@ shows up in later cleanup, and a name collision across checkouts is the class be
 **Test plan.** FakeBackend call-recording tests; one live check that `docker network ls` is unchanged after a dry run (filter to the project's own network name only, no all-container inventories).
 
 **Dependencies and order.** Independent of CIU-160/161; can land in any order.
+
+## CIU-163 — a standalone CIU root that is not a git repository cannot run `ciu env generate` or `ciu up`
+
+**Status: OPEN (filed 2026-11-04, found while packaging tls-edge as a get.py instance).**
+
+**Observed.** A standalone root (`[ciu] standalone_root = true`) installed by a CMRU installer lives in `<root>/stack/`, which is not a
+git repository. `ciu env generate` stops with `[S16.3] git rev-parse --git-common-dir failed ... not a git repository`; with a repository
+but no commit, `git rev-parse HEAD` fails; `ciu up` then stops with `[S1.7] .ciu is not gitignored` unless a `.gitignore` covers `.ciu/`.
+The same flow as documented for other installed stacks (for example `ciu env generate` in a `/srv/<name>-instance` root with no `.git`;
+pwmcp is the candidate to verify) hits the same refusals.
+
+**Workaround in use.** The tls-edge installer adapter runs `git init` plus one empty commit in `<root>/stack` and ships an instance
+`.gitignore`. That makes an installed stack depend on git being present and on a repository nobody reviews.
+
+**Design.**
+
+- A standalone root without `.git` is a supported shape: identity (INSTANCE_ID) comes from the physical path only; the git-derived fields
+  (common dir, HEAD) are recorded as absent, not fatal.
+- `.ciu/` ignore handling: when there is no repository the S1.7 check is skipped (nothing to commit by accident); inside a repository it stays.
+- The check that rejects a dirty or uncommitted tree does not apply to a root without a repository.
+
+**Acceptance criteria.**
+
+- Test with a temporary standalone root that has no `.git`: `env generate`, `check` and `up --dry-run` succeed; a root with `.git` and no ignore for `.ciu/` still fails S1.7.
+- Docs (`docs/CIU.md`) state the standalone-root shape and that git is optional.
+- Once released, the tls-edge adapter drops its `git init` (tls-edge backlog item).
+- **Non-mdt path.** The test needs no devcontainer, no Docker socket and no mdt paths (uses the pure derivation of CIU-162).
+
+**Dependencies and order.** After CIU-162 (shares the env-step split).
