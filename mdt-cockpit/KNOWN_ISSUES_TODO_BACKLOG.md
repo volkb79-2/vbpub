@@ -670,7 +670,11 @@ fill collection using the fixture's controlled filesystem.
 
 ## MDT-033 - host-setup: the capacity unavailable to MDT (RAM, disk swap, CPU cores) drives sizing, protection and PSI control (2026-11-03)
 
-**Status:** OPEN. Final operator decisions of 2026-11-03 supersede every earlier wording of this entry, including the
+**Status:** IMPLEMENTED in the worktree (unreleased), live validation OPEN: a through e are built and tested on
+fake trees (`host-setup/mdt_capacity.py`, `scripts/mdt-psi-guard.py`, `tests/test_excluded_capacity.py`,
+`tests/test_psi_guard.py`). Still open: the live runs on r1002 (design §9 M6), the devcontainer template's
+read-only mount of `/run/mdt/psi-guard`, the run-gate RG-144 reader, and switching `MDT_PSI_GUARD` to `enforce`
+after M6. Final operator decisions of 2026-11-03 supersede every earlier wording of this entry, including the
 "reserve" and "budget = RAM minus reserve" variants. Cross-tool design:
 `docs/design/RESOURCE-PROFILES.md` §7.
 

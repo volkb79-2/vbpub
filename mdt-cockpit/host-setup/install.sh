@@ -962,6 +962,7 @@ fi
 # as mdt-container-memory-inotify-watcher.py above.
 install -m 0644 "$HERE/units/mdt-container-io-events-watcher.service" /etc/systemd/system/mdt-container-io-events-watcher.service
 install -m 0644 "$HERE/units/mdt-buildkit-guard.service" /etc/systemd/system/mdt-buildkit-guard.service
+install -m 0644 "$HERE/units/mdt-psi-guard.service" /etc/systemd/system/mdt-psi-guard.service
 
 mkdir -p /etc/systemd/system/docker-.scope.d
 render "$HERE/units/docker-scope-default-limits.conf.in" \
@@ -1108,6 +1109,7 @@ install -m 0644 "$HERE/../../scripts/debian-install-v2/tools/iocost_plausibility
   /usr/local/lib/mdt/iocost_plausibility.py
 install -m 0755 "$HERE/scripts/mdt-slice-memory-min-low-audit.py"     /usr/local/sbin/mdt-slice-memory-min-low-audit.py
 install -m 0755 "$HERE/scripts/mdt-buildkit-guard.py"  /usr/local/sbin/mdt-buildkit-guard.py
+install -m 0755 "$HERE/scripts/mdt-psi-guard.py"       /usr/local/sbin/mdt-psi-guard.py
 install -m 0755 "$HERE/../scripts/mdt_buildkit_builder.py" /usr/local/sbin/mdt-buildkit-builder.py
 install -m 0755 "$HERE/scripts/check.sh"               /usr/local/sbin/mdt-host-check.sh
 install -m 0644 "$HERE/mdt_capacity.py"                 /usr/local/sbin/mdt_capacity.py
@@ -1188,6 +1190,13 @@ systemctl start dev.slice dev-interactive.slice dev-background.slice dev-memory_
   dev-gates.slice dev-buildkitd.slice
 systemctl enable mdt-dev-governance-reconcile.service          # boot-time apply
 systemctl enable --now mdt-dev-governance-reconcile.timer      # periodic sweep
+# PSI guard (MDT_PSI_GUARD): `off` stops it (it reverts anything it owns on stop); `report`
+# and `enforce` run it, and a restart makes it re-read the mode.
+case "${MDT_PSI_GUARD:-report}" in
+  off) systemctl disable --now mdt-psi-guard.service 2>/dev/null || true ;;
+  *)   systemctl enable mdt-psi-guard.service
+       systemctl restart mdt-psi-guard.service ;;
+esac
 BUILDKITD_RESTART_PENDING=0
 _bk_active=0; systemctl is-active --quiet mdt-buildkitd.service && _bk_active=1
 _bk_pending=0; _bk_why=""

@@ -197,6 +197,32 @@ rounded up to 0.5 core. Nothing is written unless `--accept-probe` is also given
 which updates the three numbers (and `MDT_PROTECTED_UNITS` when `--units` was
 given) in the file named by `--output`.
 
+### The PSI guard (`mdt-psi-guard`)
+
+A small stdlib service in `system.slice` (outside `dev.slice`, so it keeps
+running while the dev tiers are starved) that uses pressure (PSI) as the control
+signal. It watches the protected units' `memory.pressure` `some` (10%), the host's
+`/proc/pressure/memory` `full` (5%) and the protected units' `cpu.pressure`
+`some` (25%); a signal fires after 10 s above its threshold and is released after
+60 s below half of it. The stall share is the growth of the cumulative `total=`
+counter, which is what a kernel PSI trigger measures (the guard polls the counters
+instead of waiting on a trigger fd, so its logic is deterministic).
+
+`MDT_PSI_GUARD` selects the mode: `off` (service disabled), `report` (shipped:
+events only, nothing changed) or `enforce`. In `enforce`:
+
+1. `CPUWeight` and `IOWeight` of `dev-gates`, `dev-background` and
+   `dev-buildkitd` go to 1;
+2. after 30 s still above, `MemoryHigh` of `dev-gates` and `dev-background` is
+   lowered to `max(256M, 0.9 x memory.current)`.
+
+Every change is reverted on release, on stop and at the next start (the
+originals are kept in `/run/mdt/psi-guard/state.json`, which also lists the keys
+the guard owns; the reconcile sweep consults it before writing any of them). It
+never freezes or kills anything: a wall-clock budget that expired while frozen
+would change a result. Events are appended to `/run/mdt/psi-guard/events.jsonl`
+for run-gate to read as a contamination source.
+
 ## Renamed keys (2026-11)
 
 The `*_RESERVE_*` keys were renamed outright; there is no alias. The installer,
@@ -210,8 +236,8 @@ the new key. Rename them in `/etc/mdt/host-setup.env` before the next install:
 | `DEV_MEMORY_RESERVE` | `MDT_EXCLUDED_RAM` | unchanged |
 
 Add the other new keys from `host-setup.env.example` (`MDT_EXCLUDED_SWAP`,
-`MDT_PROTECTED_UNITS`, `MDT_HOST_SWAP_MARGIN`); an absent key is refused as
-missing.
+`MDT_PROTECTED_UNITS`, `MDT_HOST_SWAP_MARGIN`, `MDT_PSI_GUARD`); an absent key is
+refused as missing.
 
 ## Wizard's top-down example
 

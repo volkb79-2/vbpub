@@ -823,6 +823,7 @@ def _config_value_validators() -> dict[str, Validator]:
         "MDT_EXCLUDED_CPU_CORES": mdt_capacity.validate_cores,
         "DEV_TIER_EXCLUDED_CPU_CORES": mdt_capacity.validate_cores,
         "MDT_PROTECTED_UNITS": mdt_capacity.validate_units,
+        "MDT_PSI_GUARD": validate_psi_guard_mode,
         "DEV_CPU_QUOTA": validate_cpu_quota,
         "DEV_SWAP_CASCADE_PCT": validate_pct_1_100,
         "DEV_SWAP_MAX": validate_size_or_auto,
@@ -1337,6 +1338,13 @@ def validate_nonneg_int(value: str) -> str | None:
     if n < 0:
         return "a negative core count makes no sense here"
     return None
+
+
+def validate_psi_guard_mode(value: str) -> str | None:
+    """MDT_PSI_GUARD: ``off`` (disabled), ``report`` (events only) or ``enforce``."""
+    if value in ("off", "report", "enforce"):
+        return None
+    return f"{value!r} is not valid: use off, report or enforce"
 
 
 def validate_positive_int(value: str) -> str | None:
@@ -2538,6 +2546,11 @@ def _step_capacity_unavailable_to_mdt(
         break
     else:
         raise ValueError("the capacity unavailable to MDT was not accepted after 64 attempts; the candidate was not written")
+    values["MDT_PSI_GUARD"] = walk_key(
+        "  Pressure guard (off = disabled, report = events only, enforce = throttle the dev tiers while the protected units are under pressure)",
+        "MDT_PSI_GUARD", cfg_current, example_defaults,
+        validate=validate_psi_guard_mode,
+    )
     units = values["MDT_PROTECTED_UNITS"].split()
     excluded_ram = mdt_capacity.parse_size_bytes(values["MDT_EXCLUDED_RAM"]) or 0
     for warning in mdt_capacity.verify_protection(DEFAULT_CGROUP_ROOT, units, excluded_ram):

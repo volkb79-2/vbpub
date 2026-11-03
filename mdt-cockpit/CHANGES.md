@@ -24,6 +24,11 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   their weights are below 4x `dev.slice`; `install.sh --apply-protection` (opt-in, confirmed) writes
   `50-mdt-protection.conf` drop-ins for exactly those units. The new `mdt_capacity.py` module holds the
   one implementation.
+- host-setup ships `mdt-psi-guard` (MDT-033.e): a stdlib service outside `dev.slice` that watches the
+  protected units' memory and CPU pressure and the host's memory `full` pressure. `MDT_PSI_GUARD=report`
+  (shipped) only writes `/run/mdt/psi-guard/events.jsonl`; `enforce` sets the tier weights to 1 and then
+  lowers `MemoryHigh` of the gates and background tiers, reverting on release, stop and the next start;
+  `off` disables the service. `mdt-dev-governance-reconcile.sh` skips keys listed in the guard's state file.
 - host-setup keys renamed outright, with no alias: `DEV_CPU_RESERVE_CORES` is `MDT_EXCLUDED_CPU_CORES`,
   `DEV_SUBSLICE_CPU_RESERVE_CORES` is `DEV_TIER_EXCLUDED_CPU_CORES` (`max(0, k - c)`), `DEV_MEMORY_RESERVE` is
   `MDT_EXCLUDED_RAM`. The installer, the wizard and `mdt-host-check.sh` refuse the old names with a message
