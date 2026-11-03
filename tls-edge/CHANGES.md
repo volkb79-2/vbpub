@@ -5,8 +5,11 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 
 ### Changed
-- fix(calls): `[tls_edge.calls]` now defaults to `enabled = true, public_port = 8443` (was off / 8444), agreeing with the Mattermost project's default media port; `[tls_edge.ports] https_alt` default moves 8443 -> 9443 so public TCP 8443 belongs to Calls (matches the live host); `scripts/install.sh --ports` alt default follows. New test `tests/test_calls_defaults_agree.py`.
-- `get.py` re-rendered from the current cmru installer template; download behaviour unchanged (it requests only `<tag><asset_suffix>`).
+- fix(calls): `[tls_edge.calls]` now defaults to `enabled = true, public_port = 8443` (was off / 8444), agreeing with the Mattermost project's default media port. New test `tests/test_calls_defaults_agree.py`.
+- BREAKING: the alternate HTTPS port (9443, entrypoint `websecure-alt`, `https_alt`) is removed. Routing is by host name only; the public ports are exactly 80/tcp, 443/tcp and 8443 tcp+udp (Calls TCP and UDP both on 8443). Port 80 now defaults ON (`--disable-port-80`).
+- feat: the release is an offline installer instance: `get.py install --variant py313|py314` builds a hash-locked venv from the bundled ciu and dependency wheels and creates `/srv/tls-edge-instance/stack` (stable ciu root, `./ciu` stub, `consumer.env`, seeded `ciu-stack/ciu.toml.j2` from the wizard answers). One bundle per interpreter (`tls-edge-v<ver>-py313.tar.xz`, `-py314`). See `docs/INSTALL.md`.
+- BREAKING (ciu deployments): container names are `tls-edge-<id>-traefik` and `tls-edge-<id>-dockerproxy` (alias `traefik` kept); the plain-compose render keeps `edge-traefik`. New site switches `ingress_external` and `tls_edge.acme.volume_name` adopt an existing network and ACME volume (migration without re-issuance).
+- Consumer examples reduced to A (web), D (guarded) and E (media TCP+UDP) with `consumer-examples/README.md`; tests render and lint every example offline.
 
 <!-- cmru: release history -->
 

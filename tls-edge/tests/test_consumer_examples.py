@@ -13,8 +13,7 @@ from conftest import ROOT, defaults_config, needs_docker, needs_jinja, render_to
 EXAMPLES = sorted(p.parent for p in (ROOT / "consumer-examples").glob("*/docker-compose.yml"))
 ENV = {"TLS_EDGE_DOMAIN": "example.test",
        "GUARD_HASH": "user:$2y$12$abcdefghijklmnopqrstuuABCDEFGHIJKLMNOPQRSTUVWXYZ0123456"}
-EXPECTED = {"pattern-a-public-only", "pattern-b-public-and-private",
-            "pattern-c-public-and-ops-sidecar", "pattern-d-guarded", "pattern-e-media-udp"}
+EXPECTED = {"pattern-a-public-only", "pattern-d-guarded", "pattern-e-media-udp"}
 
 
 def _config(example) -> dict:

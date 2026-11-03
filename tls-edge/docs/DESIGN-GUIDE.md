@@ -13,15 +13,13 @@ and exposes its own Calls listener, while Traefik's TCP and UDP routers
 forward the two transports on the shared ingress network.
 
 UDP 8443 is the preferred media transport; TCP 8443 is the fallback. Both
-protocols use the same public port. On this host, alternate HTTPS already
-uses the Traefik container's TCP port 8443 but is published externally on
-9443. The Calls TCP entrypoint therefore listens on container TCP 8444 and
-the host publishes 8443/TCP to it. Calls UDP 8443 is published to the
-Traefik container's 8443/UDP socket. There is no TCP/UDP port collision.
+protocols use the same public port and the same container port: the Calls TCP
+entrypoint listens on container TCP 8443 and the Calls UDP entrypoint on
+container UDP 8443. There is no alternate HTTPS port, so nothing else uses 8443
+and there is no TCP/UDP collision.
 
 The listener is on in tls-edge defaults (`[tls_edge.calls] enabled = true,
-public_port = 8443`), matching the Mattermost project's default media port;
-alternate HTTPS defaults to public 9443 so TCP 8443 is free for Calls. An
+public_port = 8443`), matching the Mattermost project's default media port. An
 edge that must not open a media port sets `enabled = false`. The agreement
 between the two defaults is pinned by `tests/test_calls_defaults_agree.py`.
 
