@@ -31,6 +31,29 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
      volume); it skips it with a stderr WARN. The release-notes generator picks this up from
      the `fix(cmru): ...` commit subject. -->
 
+<!-- cmru: release history -->
+
+## [7.1.3] - 2026-11-03
+<!-- cmru: generated -->
+<!-- cmru: source-end=83c8e6f5f0a9af222b247ee53e2e4b4c2ae4f53a -->
+
+### Added
+- feat(tester-unified): install tmux for real-terminal UX checks (a2fdae2b0)
+
+### Fixed
+- fix(cmru): retain canary control output in lane logs (2dd0d8da5)
+- fix(cmru): close coverage canary fixture (0bf796a97)
+- fix(cmru): bound the mutation control and candidates at 600 s so the full-suite control can finish (09053cfde)
+- fix(patchseries): close patch stack review findings (f88ad3844)
+
+### Changed
+- test tester-unified Go and eatmydata labels (f0fdc2acb)
+
+### Testing
+- test(cmru): pin the mutation lane timeout in the regular gate; file KI-106 (c3e759231)
+- test(cmru): kill diff-scoped R2 survivors (b8d442c6a)
+
+<!-- cmru: pending release notes begin -->
 ### Testing
 - Add focused process-tree, origin-preflight, and nested release-log tests for
   the 16 non-equivalent survivors from the 7.1.0-era to 7.1.2 diff-scoped R2
@@ -39,8 +62,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - Keep the coverage-canary control fixture complete for module-import reads,
   including tests skipped after import; retain failed-control output in the lane
   log so a disposable run leaves one actionable error.
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [7.1.2] - 2026-10-28
 <!-- cmru: generated -->
