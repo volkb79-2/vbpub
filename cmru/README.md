@@ -179,7 +179,7 @@ and the complete config pair is in [CONSUMERS.md](docs/CONSUMERS.md#1-the-two-fi
 ```bash
 cmru status                       # preview changed projects + next versions (read-only)
 cmru release                      # isolated: prepare → gate → tag → build → publish → promote
-cmru release --dry-run            # preview tags and external-version discovery
+cmru release --dry-run            # preview release plan and known gate preconditions
 cmru release ciu                  # one project
 cmru changelog assay --backfill-tag assay-v0.1.0  # catalog a pre-history release
 cmru standards                    # strict config + project-framework conformance
@@ -925,6 +925,8 @@ before your first release — is covered step by step in **[`docs/CONSUMERS.md`]
 The installed `run-gate` wheel is the canonical test entrypoint. From the
 `cmru/` directory, `run-gate --list` discovers the declared lanes and
 `run-gate gate` runs the aggregate; definitions live in `run-gate.toml`. The
+focused `run-gate release-preconditions` lane covers the dry-run's waiver,
+image-identity, and bootstrap-version checks. The
 aggregate requires a stable Run-Gate wheel at SemVer `24.0.0` or later;
 development and local build suffixes are rejected. Its preflight
 checks that `run-gate --version` agrees with the installed wheel's SemVer,
@@ -943,15 +945,21 @@ changed-source mutation campaign based on the highest-version published
 The cause-sensitive canary's known-good control uses a tracked fixture that
 includes test inputs read during module import, even when the test module will
 later be skipped. See the [fixture design](docs/DESIGN-GUIDE.md#canary-control-fixture-includes-import-time-inputs).
+For a CMRU release, `cmru release --dry-run` checks the planned version against
+the KI-79 postponement window, checks the selected tester image's Run-Gate
+version and wheel digest, and compares the zero-release guide with the latest
+Run-Gate release before creating a candidate worktree. A failure exits 4 with
+the remedy; if Docker is unavailable, image identity is reported as `SKIPPED`.
+See the [dry-run precondition design](docs/DESIGN-GUIDE.md#release-dry-run-checks-gate-preconditions).
 The native-R2 `mutation` lane requests contract-2 `cgprofile` resource-event
 observation. Other tester lanes declare memory and PID ceilings but do not yet
 collect event evidence; [KI-77](KNOWN_ISSUES_TODO_BACKLOG.md#ki-77--the-release-gate-lacks-container-resource-event-evidence-on-non-mutation-lanes-and-cannot-confine-every-shared-git-ref)
-tracks that gap. The 6.2.x release candidates select
+tracks that gap. The CMRU release step currently selects
 `gate-provisional`: it runs the ref, installed-wheel, Assay R0/R1/R3, coverage,
 and canary checks, then records the operator-approved R2 deferral under KI-79.
 That deferral is bound to three windows, the 6.2 patch line (`>= 6.2.0`, `< 6.3.0`), the 7.0 patch line
 (`>= 7.0.0`, `< 7.1.0`) and the 7.1 patch line (`>= 7.1.0`, `< 7.2.0`; operator decisions 2026-10-14, 2026-10-21, 2026-10-23 and 2026-10-27): the gate refuses any other
-prepared version (6.3.x through 6.9.x, 7.2.0 and later) after the candidate is prepared. It therefore records no mutation event evidence. Every release deferred this way is without an R2 pass; one full R2 run is owed before 6.3.0 or 7.2.0, whichever is first (KI-79). The full `gate` lane remains
+prepared version (6.3.x through 6.9.x, 7.2.0 and later) when the gate runs. The dry-run checks this same version rule before it allocates a candidate worktree. A provisional release records no mutation event evidence. Every release deferred this way is without an R2 pass; one full R2 run is owed before 6.3.0 or 7.2.0, whichever is first (KI-79). The full `gate` lane remains
 available for the post-release mutation campaign.
 Both are `bare-host` lanes (the controller starts lane containers itself), so they need
 the estate Python environment that holds the installed `cmru` wheel and its declared

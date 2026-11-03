@@ -85,35 +85,14 @@ def run(argv: Sequence[str] | None = None) -> int:
         )
         control = _run(test_argv, cwd=copied)
         if control.returncode != 0:
-            # Keep a temporary copy, and stream the full output so disposable lane logs
-            # retain it after their container's temporary directory disappears.
-            log: Path | None = None
-            try:
-                with tempfile.NamedTemporaryFile(
-                    mode="w", encoding="utf-8", prefix="cmru-coverage-canary-",
-                    suffix=".control.log", delete=False,
-                ) as stream:
-                    log = Path(stream.name)
-                    stream.write(control.stdout)
-                where = "full output is above in the lane log"
-            except OSError as exc:
-                cleanup_detail = ""
-                if log is not None:
-                    try:
-                        log.unlink(missing_ok=True)
-                    except OSError as cleanup_exc:
-                        cleanup_detail = f"; partial temporary log cleanup failed: {cleanup_exc}"
-                where = (
-                    "full output is above in the lane log; a temporary copy could not be "
-                    f"written: {exc}{cleanup_detail}"
-                )
             sys.stderr.write("known-good canary control output follows:\n")
             sys.stderr.write(control.stdout)
             sys.stderr.write("\n")
             sys.stderr.flush()
             raise RuntimeError(
                 f"known-good canary control failed with exit {control.returncode} "
-                f"({where}): {failure_excerpt(control.stdout, 2000)}"
+                "(full output is above in the lane log): "
+                f"{failure_excerpt(control.stdout, 2000)}"
             )
         target_copy = copied / target
         target_copy.write_text(
