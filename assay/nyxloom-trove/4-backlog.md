@@ -14009,3 +14009,13 @@ Operator direction: mutation campaigns run without fsync by default.
 **Dependencies and order.** After RG-149 lands in run-gate (so the default exists), and with or after B207 (scheduling
 consumes the same profiles). Independent of the v18 verdict cut (B208), except that the mode recording lands in
 `judgment.r2.profile` if B208 is still open.
+
+## B210 — rename the assay dependency manifests to the `requirements-<use-case>.txt` convention
+
+The estate rule (root `AGENTS.md` Conventions: every dependency manifest carries a use-case suffix; never `<use-case>-requirements.txt`) says the `assay/` manifests change with assay's next release. Still suffix-form: `gate/distribution/build-requirements.txt`, `gate/distribution/lint-requirements.txt`, `nyxloom-trove/carve-assets/P24/build-requirements.txt`.
+
+**Scope (mechanical).** `git mv` the three to `requirements-build.txt`, `requirements-lint.txt` and `requirements-build.txt`; update every consumer: `gate/distribution/build_release.py`, `tools/tester-unified-gate.sh` (`-r "$distribution/..."` at the two install phases and the comment above the lint one), `tools/self-qualification-gate.sh`, `gate/tests/test_distribution_build_release.py`, `test_distribution_gate.py`, `test_self_lane.py`, the P24/P25 carve assets (README, `fixture-manifest.json`, `test_acceptance.py`, `build_release_fixture.py`), `docs/DESIGN-GUIDE.md`, and the path mentions in this file. `tester-unified/Dockerfile`'s `/tmp/internal-build-requirements.txt` is a scratch file in the image, not an assay manifest, and stays. The wheelhouse manifests (`*-wheelhouse-manifest.json`) are not renamed.
+
+**Acceptance.** A repo-wide grep for the three old paths is empty outside historical reports and handoffs; the distribution and self-lane tests plus the registered assay gate pass; the release build still reproduces the same `.pyz` bytes (B003).
+
+**Prior art.** Commit `1019655cc` on the former branch `requirements-prefix-20261014-fc11d47` did exactly this rename at an older base (its migration gate was blocked by an unrelated tester-unified socket check on 2026-10-14, never re-run); its debian-install-v2 part already landed on main as `fb071df80`. The patch is archived at `artifacts/worktree-archive-20261104/requirements-prefix-20261014/0001-refactor-prefix-specialized-requirements-files.patch` (gitignored artifacts folder of the main checkout).
