@@ -79,6 +79,9 @@ image_date = "2026-11-02"
 # Media port, published on the HOST (UDP). Owned by this project in the
 # voice-screen-share port plan; it must stay equal to the README port row.
 port = 10000
+# JVB Colibri REST stats (COLIBRI_REST_ENABLED). Reachable only from inside the
+# stack's internal network (the 8080 server is not published); see README.
+rest_stats = true
 # No TCP media fallback: the stable-11248-3 jvb image's config template has no
 # TCP harvester settings (checked 2026-11-04), and the edge has no raw-TCP
 # entrypoint for one. Clients that cannot use UDP 10000 cannot get media.
@@ -141,6 +144,62 @@ user_dummy1 = { directive = "GEN_LOCAL:jitsi/user_dummy1", mode = "0600", consum
 user_dummy2 = { directive = "GEN_LOCAL:jitsi/user_dummy2", mode = "0600", consumed_by = "hook" }
 user_dummy3 = { directive = "GEN_LOCAL:jitsi/user_dummy3", mode = "0600", consumed_by = "hook" }
 
+# ── Dark theme (templates/theme-dark.css.j2) ────────────────────────────────
+# Served as /static/theme/theme-dark.css and linked on every page by the
+# `custom-config.js` below, so it needs no image rebuild and survives upgrades.
+# Look: Dark Reader "dark" (near-black grey surfaces, off-white text, one muted
+# accent). Everything else (borders, hover, muted text) is derived from these
+# four colours in CSS (color-mix). `enabled = false` renders an empty stylesheet
+# and no <link> is injected (the mounts stay: ciu configfile sections are static).
+[jitsi.theme]
+enabled = true
+background = "#181a1b"
+surface = "#202324"
+text = "#e8e6e3"
+accent = "#3b6ea8"
+
+# ── Client features (templates/custom-config.js.j2 -> /config/custom-config.js) ──
+# Appended by the image to the generated config.js, so each key overrides the
+# image default. Documented in README.md ("Client features"). Defaults leave
+# the audio processing as upstream ships it; only visibility is raised.
+[jitsi.client]
+enabled = true
+# Audio processing: false = upstream default (browser AGC/AEC/NS on).
+disable_agc = false
+disable_aec = false
+disable_ns = false
+# Stereo (music/screen audio): true = audioQuality.stereo; disables mono downmix
+# and, in the browser, echo cancellation for that stream (upstream caveat).
+stereo = false
+# Opus max average bitrate in bit/s; 0 = leave the image default (~20k mono).
+opus_max_average_bitrate = 0
+# Connection indicator on every tile: always visible, details dialog allowed.
+connection_indicators_disabled = false
+connection_indicators_auto_hide = false
+disable_show_more_stats = false
+# "Participants stats" (speaker stats) dialog: search box + sort order.
+speaker_stats_search = true
+speaker_stats_order = ["role", "name", "hasLeft"]
+# Name used in analytics/stats records (empty = not set). Does NOT add UI.
+statistics_display_name = ""
+# Screen sharing frame rate (fps). 0 = leave the image default (auto).
+desktop_sharing_framerate_min = 5
+desktop_sharing_framerate_max = 15
+
+# ciu configfile mounts. ciu mounts the rendered file's parent DIRECTORY
+# read-only (SPEC S5.3a), so each target dir is owned by this project:
+# /config (only custom-config.js lives there) and a new /static/theme dir.
+# mode 0444: the images run as uid 1000, the rendered files belong to the operator.
+[jitsi."jitsi-web".configfile.custom_config]
+template = "templates/custom-config.js.j2"
+target = "/config/custom-config.js"
+mode = "0444"
+
+[jitsi."jitsi-web".configfile.theme_dark]
+template = "templates/theme-dark.css.j2"
+target = "/usr/share/jitsi-meet/static/theme/theme-dark.css"
+mode = "0444"
+
 [jitsi.hooks]
 post_compose = ["hooks/post_compose_users.py"]
 
@@ -151,8 +210,10 @@ post_compose = ["hooks/post_compose_users.py"]
 # dirs hold account records and rendered component/auth secrets). Stable-11031
 # images started as root and used 100/999/998 here; on an upgrade re-own the
 # existing vol-* dirs to 1000:1000 first.
-[jitsi.web.hostdir]
-config = { path = "", uid = 1000, gid = 1000, mode = "0750" }
+# web has NO config hostdir: its /config holds only operator customisation files
+# (custom-config.js), which ciu renders from templates/ and mounts read-only
+# (configfile sections below). The image copies /config into /run/web/config at
+# start and writes nothing back (measured stable-11248-3), so nothing needs to persist.
 
 [jitsi.prosody.hostdir]
 config = { path = "", uid = 1000, gid = 1000, mode = "0750" }

@@ -1,0 +1,222 @@
+{#- Dark theme for the Jitsi Meet frontend, rendered by ciu from [jitsi.theme]
+    (ciu.defaults.toml.j2) and served as /static/theme/theme-dark.css. Loaded by
+    /config/custom-config.js (a <link> appended to <head>), so no image rebuild
+    and it survives upgrades. Palette idea: Dark Reader "dark" (near-black grey
+    surfaces, off-white text, one muted accent). Everything derives from four
+    colours via color-mix(); change them in [jitsi.theme] / ciu.toml.j2. -#}
+{% if jitsi.theme.enabled -%}
+/* jitsi-server dark theme (rendered). Disable: [jitsi.theme] enabled = false. */
+:root {
+  --vt-bg: {{ jitsi.theme.background }};
+  --vt-surface: {{ jitsi.theme.surface }};
+  --vt-text: {{ jitsi.theme.text }};
+  --vt-accent: {{ jitsi.theme.accent }};
+  --vt-surface2: color-mix(in srgb, var(--vt-surface), var(--vt-text) 9%);
+  --vt-surface3: color-mix(in srgb, var(--vt-surface), var(--vt-text) 17%);
+  --vt-border: color-mix(in srgb, var(--vt-surface), var(--vt-text) 20%);
+  --vt-muted: color-mix(in srgb, var(--vt-text), var(--vt-bg) 38%);
+  --vt-accent-hover: color-mix(in srgb, var(--vt-accent), #ffffff 16%);
+  --vt-accent-text: color-mix(in srgb, var(--vt-accent), #ffffff 52%);
+  color-scheme: dark;
+  /* Variables Jitsi itself reads (all.css) */
+  --toolbox-background-color: var(--vt-surface);
+  --toolbar-badge-background: var(--vt-accent);
+  --prejoin-preview-background: var(--vt-bg);
+  --reactions-menu-background: var(--vt-surface);
+  --reactions-menu-button-toggled: var(--vt-surface3);
+}
+
+html, body, #react, #videoconference_page, #largeVideoContainer, #largeVideoBackground {
+  background-color: var(--vt-bg) !important;
+  color: var(--vt-text);
+}
+body { scrollbar-color: var(--vt-surface3) transparent; }
+* { scrollbar-color: var(--vt-surface3) transparent !important; }
+::selection { background: color-mix(in srgb, var(--vt-accent), transparent 35%); color: #fff; }
+::placeholder { color: var(--vt-muted) !important; opacity: 1; }
+a, .as-link { color: var(--vt-accent-text); }
+h1, h2, h3, h5 { color: var(--vt-text); }
+h6, small { color: var(--vt-muted); }
+
+/* ── Landing page ──────────────────────────────────────────────── */
+.welcome { background-color: var(--vt-bg) !important; color: var(--vt-text); }
+.welcome .header { background-color: var(--vt-surface); }
+.welcome .header-image { filter: brightness(.6) saturate(.75); }
+.welcome .header .header-text-title,
+.welcome .header .header-text-subtitle { color: var(--vt-text); text-shadow: 0 1px 6px rgba(0, 0, 0, .6); }
+.welcome .header #enter_room .join-meeting-container {
+  background-color: var(--vt-surface) !important;
+  box-shadow: 0 0 0 1px var(--vt-border), 0 6px 24px rgba(0, 0, 0, .45);
+  color: var(--vt-text);
+}
+.welcome .header #enter_room .enter-room-input-container { color: var(--vt-text) !important; }
+.welcome .header #enter_room .enter-room-input-container .enter-room-input {
+  background: var(--vt-bg) !important;
+  color: var(--vt-text) !important;
+  border: 1px solid var(--vt-border);
+}
+.welcome .header ::placeholder { color: var(--vt-muted) !important; }
+.welcome .header .not-allow-title-character-div { background-color: var(--vt-surface3); }
+.welcome .welcome-page-button,
+.welcome .welcome-page-button:focus { background: var(--vt-accent) !important; color: #fff !important; }
+.welcome .welcome-page-button:hover { background: var(--vt-accent-hover) !important; }
+.welcome .welcome-page-settings { background: color-mix(in srgb, var(--vt-surface3), transparent 25%); }
+.welcome .welcome-cards-container { color: var(--vt-text); }
+.welcome .welcome-card,
+.welcome .welcome-card--blue,
+.welcome .welcome-card--grey,
+.welcome .welcome-card--dark {
+  background: var(--vt-surface) !important;
+  color: var(--vt-text) !important;
+  box-shadow: 0 0 0 1px var(--vt-border);
+}
+.welcome .tab-container .tab-buttons { background-color: var(--vt-surface2); color: var(--vt-accent-text); }
+.welcome .tab-container .tab-buttons [role=tab] { background-color: transparent; color: var(--vt-muted); }
+.welcome .tab-container .tab-buttons [role=tab][aria-selected=true] { background-color: var(--vt-surface3); color: var(--vt-text); }
+.welcome .tab-container,
+.welcome .tab-content,
+.meetings-list,
+.meetings-list .meetings-list-empty { color: var(--vt-text); }
+.meetings-list .meetings-list-empty .description { color: var(--vt-muted); }
+.meetings-list .meetings-list-empty-button { color: var(--vt-accent-text); }
+.meetings-list .button { background: var(--vt-accent); color: #fff; }
+.meetings-list .item { background: var(--vt-surface2); color: var(--vt-text); }
+.meetings-list .item .title { color: var(--vt-text); }
+.meetings-list .item .subtitle { color: var(--vt-muted); }
+.meetings-list .item.with-click-handler:focus,
+.meetings-list .item.with-click-handler:hover { background-color: var(--vt-surface3); }
+.meetings-list .delete-meeting > svg { fill: var(--vt-accent-text); }
+.navigate-section-list-tile { background-color: var(--vt-surface2); }
+.navigate-section-list-tile.with-click-handler:hover { background-color: var(--vt-surface3); }
+.welcome .welcome-footer { background: var(--vt-surface); color: var(--vt-text); }
+.welcome .welcome-footer-row-block { border-bottom-color: var(--vt-border); }
+.welcome-badge { color: var(--vt-accent-text); }
+.google-sign-in, .microsoft-sign-in { filter: brightness(.85); }
+
+/* ── Pre-join / waiting screens ────────────────────────────────── */
+.premeeting-screen, .premeeting-screen .content, .prejoin-preview, .preview-container,
+.deep-linking-desktop, .deep-linking-mobile, .deep-linking-desktop .header, .deep-linking-mobile .header {
+  background-color: var(--vt-bg) !important;
+  color: var(--vt-text);
+}
+.premeeting-screen .content { background-color: var(--vt-surface) !important; }
+div:has(> .premeeting-screen-avatar), div:has(> .premeeting-screen-avatar) ~ div { background-color: var(--vt-bg) !important; }
+[class*="-actionButton"].primary { background-color: var(--vt-accent) !important; color: #fff !important; }
+[class*="-actionButton"].primary:hover { background-color: var(--vt-accent-hover) !important; }
+[class*="-actionButton"].secondary { background-color: var(--vt-surface3) !important; color: var(--vt-text) !important; }
+[class*="-deviceStatus"].device-status-error, [class*="-deviceStatus"] {
+  background-color: color-mix(in srgb, #f8ae1a, var(--vt-bg) 72%) !important;
+  color: #f3d58f !important;
+  border: 1px solid color-mix(in srgb, #f8ae1a, var(--vt-bg) 55%);
+}
+[class*="-deviceStatus"] * { color: inherit !important; }
+.deep-linking-desktop .content .rightColumn .rightColumnContent .title { color: var(--vt-text); }
+.deep-linking-desktop .content .rightColumn .rightColumnContent .description,
+.deep-linking-mobile__body { color: var(--vt-muted); }
+.chrome-extension-banner { background: var(--vt-surface); box-shadow: 0 0 0 1px var(--vt-border), 0 8px 32px rgba(0, 0, 0, .5); }
+.chrome-extension-banner__checkbox-label, .chrome-extension-banner__text-container { color: var(--vt-text); }
+
+/* ── Generic controls (Jitsi emotion classes carry a stable label suffix) ── */
+input, textarea, select {
+  background-color: var(--vt-surface3) !important;
+  color: var(--vt-text) !important;
+  border-color: var(--vt-border);
+}
+input:focus-visible, textarea:focus-visible, select:focus-visible {
+  outline-color: var(--vt-accent-text) !important;
+  box-shadow: 0 0 0 2px var(--vt-accent) !important;
+}
+[class*="-button-primary"]:not([class*="-disabled"]),
+.modal-dialog-form .btn-primary { background: var(--vt-accent) !important; color: #fff !important; }
+[class*="-button-primary"]:not([class*="-disabled"]):hover { background: var(--vt-accent-hover) !important; }
+[class*="-button-primary-disabled"], [class*="-button-secondary-disabled"] {
+  background: var(--vt-surface3) !important;
+  color: var(--vt-muted) !important;
+}
+[class*="-button-secondary"]:not([class*="-disabled"]), [class*="-button-tertiary"]:not([class*="-disabled"]) {
+  background: var(--vt-surface3) !important;
+  color: var(--vt-text) !important;
+}
+[class*="-button-secondary"]:not([class*="-disabled"]):hover,
+[class*="-button-tertiary"]:not([class*="-disabled"]):hover { background: var(--vt-border) !important; }
+[class*="-button-destructive"]:not([class*="-disabled"]) { color: #fff !important; }
+.modal-dialog-form .input-control { background: var(--vt-surface3); color: var(--vt-text); border-color: var(--vt-border); }
+input[type=range]::-webkit-slider-runnable-track { background: var(--vt-surface3); }
+input[type=range]::-webkit-slider-thumb { background: var(--vt-text); border-color: var(--vt-accent); }
+.popupmenu__contents .popupmenu__volume-slider::-webkit-slider-runnable-track { background-color: var(--vt-accent); }
+
+/* ── In-call: toolbar, panels, menus, dialogs ──────────────────── */
+.toolbox-content-items { background-color: var(--vt-surface) !important; box-shadow: 0 0 0 1px var(--vt-border); }
+.toolbox-icon { color: var(--vt-text); }
+.toolbox-icon.toggled { background: var(--vt-surface3) !important; }
+.toolbox-icon.toggled.disabled { background: var(--vt-surface2) !important; }
+.toolbox-icon:hover:not(.disabled) { background: var(--vt-border); }
+.settings-button-small-icon { background: var(--vt-surface3); }
+.settings-button-small-icon:hover { background: var(--vt-border); }
+.overflow-menu-hr { border-top-color: var(--vt-border); }
+.audio-preview .toolbox-icon.toggled:hover, .video-preview .toolbox-icon.toggled:hover { background: var(--vt-border) !important; }
+#sideToolbarContainer, #sideToolbarContainer > div,
+.participants_pane, .chat-panel, [class*="-chatPanel"] {
+  background-color: var(--vt-surface) !important;
+  color: var(--vt-text);
+}
+#sideToolbarContainer { border-color: var(--vt-border); }
+[class*="-tab"][class*="selected"] { box-shadow: inset 0 -2px 0 var(--vt-accent); }
+.chat-header, .chat-dialog-header { color: var(--vt-text); }
+.chatmessage-wrapper, .chatmessage, [class*="-chatMessage"] { color: var(--vt-text); }
+.chatmessage.localuser .messagecontent, [class*="-localMessage"] { background-color: color-mix(in srgb, var(--vt-accent), var(--vt-bg) 50%) !important; }
+.chatmessage .messagecontent, [class*="-remoteMessage"] { background-color: var(--vt-surface3) !important; }
+.display-name, .timestamp, .chatmessage .timestamp { color: var(--vt-muted); }
+#chatconversation a:link, #chatconversation a:visited { color: var(--vt-accent-text); }
+/* Dialogs (emotion class "<hash>-modal"; legacy .modal-dialog-form) */
+[class*="-modal"]:not([class*="-modal-"]), .modal-dialog-form { color: var(--vt-text); }
+div[class*="-modal "], div[class$="-modal"], div[class*="-modal-dialog"] {
+  background-color: var(--vt-surface) !important;
+  border-color: var(--vt-border) !important;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, .6);
+}
+[class*="-backdrop"] { background-color: color-mix(in srgb, var(--vt-bg), transparent 30%) !important; }
+[class*="-textSelector"] { background-color: var(--vt-surface3) !important; color: var(--vt-text) !important; border-color: var(--vt-border) !important; }
+[class*="-contextMenuItem-selected"] { background-color: var(--vt-surface3) !important; }
+[class*="-participantsPane"] { background-color: var(--vt-surface) !important; }
+[class*="-containerBackground"] { background-color: var(--vt-surface2) !important; }
+[class*="-tintBackground"] { background-color: var(--vt-surface) !important; }
+.settings-dialog [class*="-tab"], .settings-dialog [role=tab] { color: var(--vt-text); }
+div[class*="-modal "] .header, div[class$="-modal"] .header { background-color: var(--vt-surface) !important; }
+div[class*="-modal "] .separator, div[class$="-modal"] .separator, .separator { background-color: var(--vt-border) !important; }
+/* Menus: Jitsi's context menu container carries "-contextMenu-contextMenu" */
+[class*="-contextMenu-contextMenu"], [class*="-contextMenu-contextMenuHidden-contextMenu"] {
+  background-color: var(--vt-surface) !important;
+  color: var(--vt-text);
+  box-shadow: 0 0 0 1px var(--vt-border), 0 12px 32px rgba(0, 0, 0, .55);
+}
+[class*="-contextMenuItem"]:hover, [class*="-listItem"]:hover { background-color: var(--vt-surface3) !important; }
+[class*="-contextMenuItemGroup"] { border-color: var(--vt-border) !important; }
+
+/* ── Meeting chrome: subject, connection indicator, stats popups ── */
+.subject-info-container, [class*="-subject"], [class*="-conferenceTimer"], .details-container {
+  color: var(--vt-text);
+}
+.subject-text { background: color-mix(in srgb, var(--vt-surface), transparent 8%) !important; color: var(--vt-text); }
+.subject-text--content, .subject-text--content * { background: transparent !important; color: var(--vt-text); }
+.subject-info-container [class*="-timer"] { background: color-mix(in srgb, var(--vt-surface2), transparent 8%) !important; color: var(--vt-text); }
+.subject-info-container button, .subject-info-container [class*="-label"] { background: var(--vt-surface3) !important; color: var(--vt-text) !important; }
+.subject-info-container button svg, .subject-info-container [class*="-label"] svg { fill: var(--vt-text); }
+.connection-indicator, [class*="-connectionIndicator"] { color: var(--vt-text); }
+.connection-info, .connection-info__container, [class*="-connectionInfo"], [class*="-statsPanel"], [class*="-speakerStats"], .speaker-stats {
+  background-color: var(--vt-surface) !important;
+  color: var(--vt-text) !important;
+  box-shadow: 0 0 0 1px var(--vt-border);
+}
+.connection-info td, .connection-info th, .speaker-stats td, .speaker-stats th, [class*="-speakerStats"] * { color: var(--vt-text); }
+.connection-info .connection-info__title, .connection-info__title { color: var(--vt-text); }
+.videocontainer, .tile-view .videocontainer, .filmstrip__videos .videocontainer, [class*="-thumbnail"] {
+  background-color: var(--vt-surface);
+}
+.presence-label, .remotevideomenu { color: var(--vt-text); }
+
+/* ── Video, avatars and media are never recoloured ─────────────── */
+video, canvas, img, .avatar, [class*="-avatar"] { filter: none !important; }
+{%- else -%}
+/* jitsi-server dark theme: disabled ([jitsi.theme] enabled = false). */
+{%- endif %}

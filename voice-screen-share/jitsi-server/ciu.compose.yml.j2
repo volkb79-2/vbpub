@@ -135,6 +135,10 @@ services:
       JVB_AUTH_PASSWORD: "${JITSI_JVB_AUTH_PASSWORD}"
       JVB_PORT: "{{ jitsi.jvb.port }}"
       JVB_ADVERTISE_IPS: "{{ jitsi.public_ip }}"
+      # Colibri REST (/colibri/stats, /colibri/v2/conferences) on the private
+      # http server :8080. `expose`d on the internal network only; never published
+      # (README "Client features" has the curl command).
+      COLIBRI_REST_ENABLED: "{{ 'true' if jitsi.jvb.rest_stats else 'false' }}"
     secrets:
       - jvb_auth_password
     volumes:
@@ -190,8 +194,8 @@ services:
       AUTH_TYPE: "{{ jitsi.auth.type }}"
       ENABLE_XMPP_WEBSOCKET: "1"
       ENABLE_COLIBRI_WEBSOCKET: "1"
-    volumes:
-      - {{ jitsi.web.hostdir.config }}:/config
+    # /config (custom-config.js) and /static/theme (theme-dark.css) are mounted
+    # read-only by ciu from the `configfile` sections in ciu.defaults.toml.j2.
     expose:
       - "{{ jitsi.web.port }}"
     networks:
