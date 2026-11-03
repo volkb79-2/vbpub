@@ -408,7 +408,7 @@ class TestOracle3StandaloneExecutes:
             return [{"Id": FULL_ID, "Name": "/" + NAME,
                      "Config": {"Labels": dict(COMPOSE_LABELS)}}]
 
-        monkeypatch.setattr("topos.collect.dockerjoin.default_docker_inspect", production_inspect)
+        monkeypatch.setattr("topos.actions.owner_safety.default_owner_inspect", production_inspect)
         runner, calls = _runner_spy()
         result = execute_plan(
             "docker-start", NAME,
@@ -421,7 +421,7 @@ class TestOracle3StandaloneExecutes:
         assert calls == []
 
     def test_omitted_inspect_failure_fails_closed(self, tmp_path: Path, monkeypatch) -> None:
-        monkeypatch.setattr("topos.collect.dockerjoin.default_docker_inspect", lambda ref: None)
+        monkeypatch.setattr("topos.actions.owner_safety.default_owner_inspect", lambda ref: None)
         runner, calls = _runner_spy()
         result = execute_plan(
             "docker-stop", NAME,

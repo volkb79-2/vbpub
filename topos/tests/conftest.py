@@ -25,13 +25,22 @@ def fixture_frame():
     return frame_from_jsonable(payload)
 
 
+@pytest.fixture
+def real_docker_inspect():
+    """Request this fixture to opt out of ``_standalone_docker_inspect``."""
+
+
 @pytest.fixture(autouse=True)
-def _standalone_docker_inspect(monkeypatch):
+def _standalone_docker_inspect(monkeypatch, request):
     """B-039: the Docker owner gate is always on, so tests that exercise executor
     mechanics must supply the resolver explicitly. Default to a standalone,
     unlabelled container whose canonical ID is derived from the target; the gate
-    and its argv binding stay real."""
+    and its argv binding stay real. Tests of the production resolver itself
+    request ``real_docker_inspect``."""
     import hashlib
+
+    if "real_docker_inspect" in request.fixturenames:
+        return
 
     def _inspect(target: str):
         return [
@@ -42,7 +51,7 @@ def _standalone_docker_inspect(monkeypatch):
             }
         ]
 
-    monkeypatch.setattr("topos.collect.dockerjoin.default_docker_inspect", _inspect)
+    monkeypatch.setattr("topos.actions.owner_safety.default_owner_inspect", _inspect)
 
 
 def systemctl_fixture_runner(name: str):
