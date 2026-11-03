@@ -843,3 +843,93 @@ already does with `c["fill"]`), so verdicts do not depend on the machine's disk 
 - M6 needs r1002 host setup completed (the 2026-11-02 run stopped at the Docker restart).
 - RG-144 consumes the guard events, but optionally.
 - Flip the guard to `enforce`, and adjust the tier fractions, after M6.
+
+## MDT-044 - host-setup: provision the CoW area and the checkout location, in a fresh-host order (2026-11-03)
+
+**Status:** OPEN. Depends on `libraries/cowtree` COW-BL-01/-02 for the per-project declarations; this entry is the host half.
+
+**Decision (operator, 2026-11-03, binding).**
+
+- The checkout, with `.worktrees/`, lives on the CoW filesystem. Worktrees still come from git. Only the paths a project
+  declares in the cowtree schema become writable snapshots of main's. There is no mount-over of a folder in the checkout and no
+  `MDT_*` path override.
+- `mdt host-setup` creates and mounts the btrfs CoW area (default `/srv/mdt-cockpit-cow/<user>/`), with the
+  `user_subvol_rm_allowed` option and an fstab entry, and the per-user root inside it.
+- Both must exist **before the devcontainer starts**: Docker refuses a missing bind source, and a source it creates itself is
+  root-owned. The checkout is cloned inside the per-user root, and the devcontainer binds that path.
+- `docs/BTRFS-COW.md` §6.3 still prescribes ISOs in `<user>/shared/upstream-iso` and golden disks in `shared/vm-disks/base`.
+  Rewrite it to the project layout: VM files in `<project>/artifacts/vm-lab/`, ISOs in the repo-level `downloads/` (AGENTS.md
+  "Directory conventions and VM files"), CoW through the declared paths.
+
+**Fresh-host order (to document and to make `check.sh` verify).**
+
+1. Host-setup: CoW area (mkfs or an existing btrfs, mount, `user_subvol_rm_allowed`, fstab), then the per-user root owned by
+   the checkout user.
+2. Clone the repository inside the per-user root.
+3. Provision the declared paths in main (cowtree provision; subvolume per declared path, placeholders moved aside and back).
+4. Start the devcontainer with the per-user root as the workspace bind.
+5. Worktrees: `ciu worktree create` snapshots the declared paths (CIU-159).
+
+**Open points.** What `check.sh` reports on a host with no btrfs (one INFO line, not a failure); whether the wizard offers to
+create a loop-backed btrfs for a test host (no: a real device or an existing btrfs only, see the loop-device incident rule).
+
+**Acceptance.** The installer and `check.sh` cover steps 1-2 with fake-filesystem tests; the README gives the order; BTRFS-COW
+§6.3 matches the layout; no document names a user, host or fixed home path.
+
+## MDT-045 - Python variants: only 3.14 builds today (2026-11-03)
+
+**Status:** OPEN. `LATEST_KNOWN_PYTHON` is a release input (CHANGES, `[Unreleased]`), but only the default variant builds.
+
+**Measured.**
+
+- **3.14:** builds.
+- **3.15:** fails at the pwmcp instance install (`greenlet==3.5.6` has no matching distribution for 3.15) and at `aider-chat`
+  (requires Python below 3.15). `INSTALL_AIDER=false` skips the second; the first remains.
+- **3.11:** fails at the same `greenlet` pin.
+
+**Decision.** A Python variant needs per-Python pins; one global pin set cannot serve every variant. The pwmcp instance install
+is the consumer of the `greenlet` pin (the contract in `pwmcp/pwmcp.contract.json` owns it), so the pin must come from a
+per-interpreter constraint there, not from an mdt-cockpit override.
+
+**Next steps.**
+
+1. Per-Python constraint files (or markers) for the pwmcp instance install; file the greenlet finding in the pwmcp backlog.
+2. Decide `aider-chat` for 3.15: skip with a build-log line when `INSTALL_AIDER` is false, or pin to the last release that
+   supports it.
+3. A smoke build per supported variant in the release checklist; an unsupported variant fails early with the reason, before the
+   long layers.
+
+**Acceptance.** `LATEST_KNOWN_PYTHON=<v> cmru release mdt-cockpit` either builds each variant in the supported list or stops at
+the first step with a one-line reason. The supported list is in the README.
+
+## MDT-046 - release docs omit the `LATEST_KNOWN_PYTHON` and `DEVCONTAINERS_IGNORE_NEW_RELEASES` environment inputs (2026-11-03)
+
+**Status:** OPEN (docs). CHANGES (`[Unreleased]`) records both: `LATEST_KNOWN_PYTHON=3.15 cmru release mdt-cockpit` publishes a
+second Python variant next to the default, and `DEVCONTAINERS_IGNORE_NEW_RELEASES=true` skips the newer-base stop. The README
+mentions the bake default and `--ignore-new-releases`, but not the environment form.
+
+**Fix.** Add a "Release inputs" subsection to `docs/BUILD-ARCHITECTURE.md` under "Canonical release path" (that file owns
+the release flow): the two variables, that the environment wins over the `docker-bake.hcl` default, the published tag shape
+(`trixie-py<ver>-php<ver>-<date>` and its `-latest`), and that a variant other than the default must be listed as supported
+(MDT-045). Link it from the README sentence about `LATEST_KNOWN_*`. A docs-in-sync test asserts both variable names appear in
+`docs/BUILD-ARCHITECTURE.md`.
+
+## MDT-047 - host-setup `install.sh` restarts Docker and a running container was lost (2026-11-03)
+
+**Status:** OPEN. Found on a scratch host: after `install.sh` restarted Docker, a running container did not come back, although
+`live-restore` was configured.
+
+**Next steps.**
+
+1. Reproduce on a scratch host with one named container and `live-restore` on; record whether `docker.socket` and
+   `docker.service` restart together, and what the daemon logged.
+2. The installer must not restart Docker unless `--restart-docker` is passed (the flag exists); verify that no other path
+   restarts it (units, drop-ins, the wizard's apply step).
+3. Before any restart, list the running containers by name and require confirmation (never an all-container inventory beyond
+   the names), and print the restart-free alternative (`systemctl reload` or a reboot window) when the changed keys allow it.
+4. Document the chicken-and-egg rule: a folder inside the checkout is never mounted over by host-setup (the vm-lab mount-over
+   was dropped); CoW paths are subvolumes of the checkout filesystem declared per project (MDT-044), so no container needs a
+   restart to see them.
+
+**Acceptance.** A test on fake `systemctl` shows `install.sh` without `--restart-docker` issues no Docker restart on any path;
+the scratch-host reproduction is recorded with its cause (or "not reproducible with live-restore, restart was explicit").
