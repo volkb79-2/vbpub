@@ -50,6 +50,8 @@ MAX_WINDOWS_PER_PEER = 64
 MAX_WINDOWS_PER_DAEMON = 4096
 WINDOW_TTL_SECONDS = 6 * 3600
 _TOMBSTONES = 4096
+#: Longest parent chain `_descends_from` follows (also ends a ppid cycle).
+_MAX_CHAIN_DEPTH = 64
 
 METRIC_KEYS = (
     "rss_peak_bytes", "memory_peak_bytes", "swap_peak_bytes",
@@ -645,8 +647,34 @@ class WindowRegistry:
             members = _read_foreign_candidates(window.leaf_dir)
             if members is not None:
                 allowed = set(tree) | {window.peer_pid} | table.ancestors(window.peer_pid)
-                window.foreign_max = max(window.foreign_max, len(members - allowed))
+                unknown = members - allowed
+                if unknown:
+                    # A child forked after the shared table was scanned is
+                    # not in `tree` yet; it is the tree's own when its live
+                    # parent chain reaches a tree member.
+                    unknown = {
+                        pid for pid in unknown
+                        if not self._descends_from(pid, set(tree))
+                    }
+                window.foreign_max = max(window.foreign_max, len(unknown))
         window.samples += 1
+
+    def _descends_from(self, pid: int, tree: Set[int]) -> bool:
+        """True when ``pid``'s live parent chain reaches a member of ``tree``.
+
+        Re-reads ``/proc`` (bounded depth); a pid that has already exited, or
+        whose chain cannot be read, is NOT proven to descend, so it stays
+        foreign (the fail-safe direction: null metrics, never a wrong number).
+        """
+        current = pid
+        for _ in range(_MAX_CHAIN_DEPTH):
+            row = read_proc_row(self.proc_root, current)
+            if row is None:
+                return False
+            if row.ppid in tree:
+                return True
+            current = row.ppid
+        return False
 
     def _read_context_start(self, window: _Window) -> None:
         window.start_container_psi = _read_psi(window.container_dir)
@@ -807,4 +835,3 @@ class WindowRegistry:
             ancestor_events.read_ancestors(self.cgroup_root, list(window.start_ancestors)),
         )
         return context
-

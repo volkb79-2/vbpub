@@ -217,11 +217,21 @@ STOP_FORCED_REASON = "sampler-still-running"
 MAX_REQUEST_READERS = 32
 MAX_CONTROL_HANDLERS = 16
 MAX_WATCH_STREAMS = 32
+#: `report` runs a matplotlib/pandas subprocess on a load-sensitive host: it
+#: has its own cap, separate from MAX_CONTROL_HANDLERS.
+MAX_REPORT_JOBS = 2
 #: How long the accept thread waits to deliver a `busy` line to a peer it is
 #: refusing (it must never block the accept loop on a peer that never reads).
 BUSY_SEND_TIMEOUT_SECONDS = 0.2
-#: How long daemon shutdown waits for in-flight verbs before finalizing.
-SHUTDOWN_DRAIN_SECONDS = 12.0
+#: Daemon shutdown budget. docker's default stop grace is 10 s, so the sum of
+#: the in-flight drain, the worker join and one forced finalize must stay
+#: under it on the normal path (4 + 4 + 1 = 9 s); the ciu project also sets
+#: `stop_grace_period: 30s` so a wedged session still finalizes before SIGKILL.
+#: In-flight verbs, then the sampling workers, each get a bounded wait.
+SHUTDOWN_DRAIN_SECONDS = 4.0
+SHUTDOWN_JOIN_SECONDS = 4.0
+#: Session-lock wait for a forced finalize at shutdown (the process is exiting).
+SHUTDOWN_LOCK_SECONDS = 1.0
 
 #: CP-31: how often the accept loop verifies that the control socket path
 #: still holds THIS daemon's listener (same inode). 0 disables the check.
@@ -484,6 +494,7 @@ class SessionServer:
         max_request_readers: int = MAX_REQUEST_READERS,
         max_control_handlers: int = MAX_CONTROL_HANDLERS,
         max_watch_streams: int = MAX_WATCH_STREAMS,
+        max_report_jobs: int = MAX_REPORT_JOBS,
         socket_check_interval: float = SOCKET_CHECK_INTERVAL_SECONDS,
         report_python: Optional[str] = None,
         report_script: Optional[str] = None,
@@ -593,6 +604,10 @@ class SessionServer:
         self._reader_slots = threading.BoundedSemaphore(max_request_readers)
         self._handler_slots = threading.BoundedSemaphore(max_control_handlers)
         self._watch_slots = threading.BoundedSemaphore(max_watch_streams)
+        # `report` is a heavy subprocess (matplotlib/pandas): its own small
+        # class, so a slow report can neither run 16 at once nor make the
+        # cheap verbs (`status`, `stop`) answer `busy`.
+        self._report_slots = threading.BoundedSemaphore(max_report_jobs)
         self._inflight = 0
         self._inflight_cond = threading.Condition()
 
@@ -2418,11 +2433,12 @@ class SessionServer:
         # lock while a worker wedged inside a locked action never lets go.
         # On timeout nothing has changed; the caller falls back to the
         # documented orphan recovery.
-        if not sess.lock.acquire(timeout=STOP_JOIN_SECONDS):
+        lock_wait = SHUTDOWN_LOCK_SECONDS if force else STOP_JOIN_SECONDS
+        if not sess.lock.acquire(timeout=lock_wait):
             self._log(
                 f"session {sess.session_id}: the session lock is held "
                 f"(a worker is wedged inside a locked action) for "
-                f"{STOP_JOIN_SECONDS:g}s; cannot finalize, the session keeps "
+                f"{lock_wait:g}s; cannot finalize, the session keeps "
                 f"its resources and a restart recovers it as an orphan"
             )
             sess.finalize_refusal = "lock"
@@ -3263,9 +3279,19 @@ class SessionServer:
         """`_dispatch` under the bounded-handler admission (CP-33). Verbs run
         concurrently across connections; the registry/session locks already
         guard every piece of shared state (`version`, `host`, `status` and
-        `gc` are read-only snapshots), and the cap answers `busy`."""
-        if not self._handler_slots.acquire(blocking=False):
-            return self._error_response("busy", "too many verbs are running; retry shortly")
+        `gc` are read-only snapshots), and the cap answers `busy`. `report`
+        draws from its own small pool (`MAX_REPORT_JOBS`), never from the
+        shared handler pool."""
+        # A non-object request is refused by `_dispatch`, inside a slot.
+        verb = req.get("verb") if isinstance(req, dict) else None
+        slots = self._report_slots if verb == "report" else self._handler_slots
+        if not slots.acquire(blocking=False):
+            return self._error_response(
+                "busy",
+                "too many reports are running; retry shortly"
+                if slots is self._report_slots
+                else "too many verbs are running; retry shortly",
+            )
         try:
             if not self._begin_inflight():
                 return self._error_response("busy", "the daemon is shutting down")
@@ -3274,7 +3300,7 @@ class SessionServer:
             finally:
                 self._end_inflight()
         finally:
-            self._handler_slots.release()
+            slots.release()
 
     def _handle_connection(self, conn: socket.socket, *, reader_slot: bool = False) -> None:
         handed_off = False
@@ -3535,7 +3561,7 @@ class SessionServer:
             ]
         for sess, _thread in pending:
             sess.stop_event.set()
-        deadline = time.monotonic() + STOP_JOIN_SECONDS
+        deadline = time.monotonic() + SHUTDOWN_JOIN_SECONDS
         for _sess, thread in pending:
             if thread is not None and thread is not threading.current_thread():
                 thread.join(timeout=max(0.0, deadline - time.monotonic()))

@@ -4993,6 +4993,43 @@ def test_cp33_verbs_over_the_handler_cap_are_busy_and_the_slot_is_returned(tmp_p
         _stop_running(server, thread)
 
 
+def test_cp33_report_has_its_own_cap_and_never_starves_other_verbs(tmp_path):
+    server, thread = _running(tmp_path, max_control_handlers=1, max_report_jobs=1)
+    entered, release = threading.Event(), threading.Event()
+    real = server._dispatch
+
+    def dispatch(req):
+        if req.get("verb") == "report":
+            entered.set()
+            release.wait(timeout=30.0)
+            return {"ok": True, "contract": 1}
+        return real(req)
+
+    server._dispatch = dispatch
+    slow: List[Dict[str, Any]] = []
+    worker = threading.Thread(
+        target=lambda: slow.append(_ask(server.socket_path, "report", session="s")),
+        daemon=True,
+    )
+    try:
+        worker.start()
+        assert entered.wait(timeout=10.0)
+        # The one report slot is taken: a second report is busy ...
+        second = _ask(server.socket_path, "report", session="s")
+        assert second["ok"] is False and second["error"]["code"] == "busy"
+        assert "reports" in second["error"]["message"]
+        # ... but the shared handler pool (cap 1) is untouched.
+        assert _ask(server.socket_path)["ok"] is True
+        release.set()
+        worker.join(timeout=10.0)
+        assert slow[0]["ok"] is True
+        third = _ask(server.socket_path, "report", session="s")
+        assert third["ok"] is True                       # the report slot came back
+    finally:
+        release.set()
+        _stop_running(server, thread)
+
+
 def test_cp33_a_failing_handler_returns_its_slot(tmp_path):
     server, thread = _running(tmp_path, max_control_handlers=1)
 
