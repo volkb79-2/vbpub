@@ -25,6 +25,9 @@ with open(os.environ["FAKE_LOG"], "a") as log:
     log.write(" ".join(sys.argv[1:]) + "\\n")
 a = sys.argv[1:]
 if a[0] == "ps":
+    if world.get("ps_rc", 0):
+        sys.stderr.write("Cannot connect to the Docker daemon\\n")
+        sys.exit(world["ps_rc"])
     print("\\n".join(world.get("ps", [])))
 elif a[0] == "inspect":
     nets = world["containers"].get(a[-1])
@@ -56,6 +59,9 @@ def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("FAKE_WORLD", str(world_file))
     monkeypatch.setenv("FAKE_LOG", str(log))
     monkeypatch.setenv("HOSTNAME", ME)
+    monkeypatch.setenv("INSTANCE_ID", "abc")
+    monkeypatch.delenv("PWMCP_STACK_CONTAINER", raising=False)
+    monkeypatch.chdir(tmp_path)
 
     def set_world(**kw) -> None:
         world_file.write_text(json.dumps(kw), encoding="utf-8")
@@ -136,9 +142,83 @@ def test_the_queries_are_filtered_and_by_exact_name(world) -> None:
     finalize.join_pwmcp_network()
     ps = [c for c in calls() if c.startswith("ps")]
     assert len(ps) == 1 and "name=^pwmcp-" in ps[0] and "compose.service=pwmcp" in ps[0]
-    assert all(c.split()[-1] in ("pwmcp-abc-pwmcp", ME) for c in calls() if c.startswith("inspect"))
+    inspects = [c for c in calls() if c.startswith("inspect")]
+    assert inspects and all(c.split()[-1] in ("pwmcp-abc-pwmcp", ME) for c in inspects)
+    assert all(c.startswith("inspect --type container ") for c in inspects)
 
 
 def test_no_docker_cli_is_a_silent_noop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PATH", str(tmp_path))
     finalize.join_pwmcp_network()
+
+
+def _two_stacks(set_world, **kw) -> None:
+    set_world(
+        ps=["pwmcp-abc-pwmcp", "pwmcp-zzz-pwmcp"],
+        containers={
+            "pwmcp-abc-pwmcp": {"net-abc": ["pwmcp"]},
+            "pwmcp-zzz-pwmcp": {"net-zzz": ["pwmcp"]},
+            ME: {"bridge": []},
+        },
+        **kw,
+    )
+
+
+def test_several_stacks_the_one_of_this_instance_is_chosen(world) -> None:
+    set_world, calls = world
+    _two_stacks(set_world)
+    finalize.join_pwmcp_network()
+    connects = [c for c in calls() if c.startswith("network connect")]
+    assert connects == [f"network connect net-abc {ME}"]
+
+
+def test_several_stacks_none_of_this_instance_joins_nothing_and_names_the_override(
+    world, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    set_world, calls = world
+    monkeypatch.setenv("INSTANCE_ID", "other")
+    _two_stacks(set_world)
+    finalize.join_pwmcp_network()
+    assert not any(c.startswith("network connect") for c in calls())
+    out = capsys.readouterr().out
+    assert "PWMCP_STACK_CONTAINER" in out and "pwmcp-abc-pwmcp" in out and "pwmcp-zzz-pwmcp" in out
+
+
+def test_unknown_identity_joins_nothing_even_with_one_stack(
+    world, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    set_world, calls = world
+    monkeypatch.delenv("INSTANCE_ID")
+    _two_stacks(set_world)
+    finalize.join_pwmcp_network()
+    assert not any(c.startswith("network connect") for c in calls())
+    assert "PWMCP_STACK_CONTAINER" in capsys.readouterr().out
+
+
+def test_explicit_override_chooses_the_stack(world, monkeypatch: pytest.MonkeyPatch) -> None:
+    set_world, calls = world
+    monkeypatch.setenv("PWMCP_STACK_CONTAINER", "pwmcp-zzz-pwmcp")
+    _two_stacks(set_world)
+    finalize.join_pwmcp_network()
+    assert [c for c in calls() if c.startswith("network connect")] == [f"network connect net-zzz {ME}"]
+
+
+def test_identity_is_read_from_the_workspace_ciu_env(
+    world, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    set_world, calls = world
+    monkeypatch.delenv("INSTANCE_ID")
+    (tmp_path / "ciu.env").write_text('export REPO_NAME="x"\nexport INSTANCE_ID="zzz"\n', encoding="utf-8")
+    _two_stacks(set_world)
+    finalize.join_pwmcp_network()
+    assert [c for c in calls() if c.startswith("network connect")] == [f"network connect net-zzz {ME}"]
+
+
+def test_a_failing_docker_ps_warns_with_the_error_not_no_stack(world, capsys) -> None:
+    set_world, calls = world
+    set_world(ps_rc=1, containers={ME: {"bridge": []}})
+    finalize.join_pwmcp_network()
+    cap = capsys.readouterr()
+    assert "docker ps failed" in cap.err and "Cannot connect to the Docker daemon" in cap.err
+    assert "ciu up" not in cap.out + cap.err
+    assert not any(c.startswith("network connect") for c in calls())
