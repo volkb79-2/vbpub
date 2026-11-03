@@ -17,6 +17,8 @@ info(){ printf '  INFO %s\n' "$*"; }   # neither pass nor fail -- disclosure onl
 _CAPACITY_PY="${CAPACITY_PY:-$(dirname "$0")/mdt_capacity.py}"
 if [ -f "$CONF" ] && [ -f "$_CAPACITY_PY" ]; then
   python3 "$_CAPACITY_PY" refuse-renamed "$CONF" || { echo "result: 1 failure(s): $CONF holds retired keys"; exit 1; }
+elif [ -f "$CONF" ]; then
+  warn "$_CAPACITY_PY missing — the retired-key refusal and the capacity checks were skipped; re-run install.sh"
 fi
 # shellcheck disable=SC1090
 [ -f "$CONF" ] && . "$CONF"
@@ -891,6 +893,21 @@ else
   warn "$_inotify_installed missing — the value will not survive a reboot; re-run install.sh"
 fi
 # END inotify-budget
+
+echo "== capacity unavailable to MDT (disk swap, dev.slice MemoryMax vs RAM_MDT) =="
+if [ ! -f "$CONF" ] || [ ! -f "$_CAPACITY_PY" ]; then
+  info "capacity checks skipped ($CONF or $_CAPACITY_PY missing)"
+else
+  _cap_nproc=$(nproc 2>/dev/null || echo 1)
+  _cap_out=$(python3 "$_CAPACITY_PY" check-config "$CONF" --nproc "$_cap_nproc" 2>&1) || _cap_out="WARN capacity check failed to run: $_cap_out"
+  if printf '%s' "$_cap_out" | grep -q '^WARN'; then
+    while IFS= read -r _line; do
+      case "$_line" in WARN\ *) warn "${_line#WARN }" ;; esac
+    done <<<"$_cap_out"
+  else
+    ok "MDT has disk swap and dev.slice MemoryMax is within RAM_MDT"
+  fi
+fi
 
 echo "== protected units (MDT_PROTECTED_UNITS; verify only) =="
 if [ -z "${MDT_PROTECTED_UNITS:-}" ]; then

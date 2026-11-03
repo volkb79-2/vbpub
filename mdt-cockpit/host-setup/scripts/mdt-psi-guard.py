@@ -25,8 +25,15 @@ Staged actions (every one reverted on release, on stop and on the next start):
    ``dev-background`` lowered to ``max(floor, 0.9 x memory.current)``.
 
 It never freezes or kills anything: a wall-clock budget that expired while frozen would change a
-gate's result. Events go to ``<state-dir>/events.jsonl`` (``/run/mdt/psi-guard``); the keys the guard
-currently owns are listed in ``<state-dir>/state.json`` so the reconcile sweep can skip them.
+gate's result. Events go to ``<state-dir>/events.jsonl`` (``/run/mdt/psi-guard``), rotated at 1 MiB to
+``events.jsonl.1`` because ``/run`` is RAM. The keys the guard currently owns and their originals are
+listed in ``<state-dir>/state.json``.
+
+Known limit: systemd re-applies a unit's ``CPUWeight``/``IOWeight``/``MemoryHigh`` on ``daemon-reload``
+(including ``install.sh --apply-protection``) and on ``systemctl set-property``. That silently undoes
+an active throttle, and the later revert then writes the original the guard captured. The
+reconcile sweep writes none of these keys, so it is not an overwriter. Do not reload systemd
+during a pressure episode.
 """
 from __future__ import annotations
 
@@ -48,6 +55,9 @@ RELEASE_FACTOR = 0.5
 ESCALATE_SECONDS = 30
 MEMORY_HIGH_FLOOR = 256 * MIB
 MEMORY_HIGH_FRACTION = 0.9
+# events.jsonl lives on tmpfs (RAM): rotated to events.jsonl.1 at this size, so the two files
+# together stay below twice this value. run-gate's reader consumes both.
+MAX_EVENT_BYTES = 1024 * 1024
 
 # signal name -> (kind, threshold as a stall fraction of wall time)
 SIGNALS = {
@@ -122,6 +132,7 @@ class Guard:
         mode: str = "report",
         proc_pressure: Path = Path("/proc/pressure"),
         memory_high_floor: int = MEMORY_HIGH_FLOOR,
+        max_event_bytes: int = MAX_EVENT_BYTES,
     ) -> None:
         self.cg_root = cg_root
         self.units = units
@@ -134,6 +145,8 @@ class Guard:
         self.above_since: dict[str, float | None] = {s: None for s in SIGNALS}
         self.below_since: dict[str, float | None] = {s: None for s in SIGNALS}
         self.active: set[str] = set()
+        self.unreadable_reported: set[str] = set()
+        self.max_event_bytes = max_event_bytes
         self.stage = 0
         self.stage1_at: float | None = None
         self.owned: dict[str, dict[str, str]] = {}  # "<tier>/<file>" -> {"path", "original"}
@@ -143,7 +156,13 @@ class Guard:
     def event(self, name: str, now: float, **fields) -> None:
         record = {"ts": round(now, 3), "event": name, "mode": self.mode, **fields}
         self.state_dir.mkdir(parents=True, exist_ok=True)
-        with (self.state_dir / "events.jsonl").open("a") as handle:
+        log = self.state_dir / "events.jsonl"
+        try:
+            if log.stat().st_size >= self.max_event_bytes:
+                os.replace(log, self.state_dir / "events.jsonl.1")  # /run is RAM: keep at most two files
+        except OSError:
+            pass
+        with log.open("a") as handle:
             handle.write(json.dumps(record, sort_keys=True) + "\n")
 
     def _save_state(self) -> None:
@@ -166,15 +185,25 @@ class Guard:
             "unit_cpu_some": [(p / "cpu.pressure", "some") for p in unit_paths],
         }
 
-    def _sample(self, now: float) -> None:
-        """Update ``self.rate`` (worst stall share over the sources) for every signal."""
+    def _sample(self, now: float) -> set[str]:
+        """Update ``self.rate`` (worst stall share over the sources) for every signal.
+
+        Counters are keyed by the source's path, never by list position: a unit whose cgroup
+        disappears or appears must not have its counter compared with another unit's. Returns
+        the signals with NO readable source this tick; their rate is dropped (never kept stale).
+        """
+        unreadable: set[str] = set()
+        seen: set[str] = set()
         for name, sources in self._sources().items():
             worst = None
-            for index, (path, kind) in enumerate(sources):
+            readable = False
+            for path, kind in sources:
                 total = read_psi_total(path, kind)
                 if total is None:
                     continue
-                key = f"{name}:{index}"
+                readable = True
+                key = f"{name}:{path}"
+                seen.add(key)
                 if key in self.last:
                     t0, total0 = self.last[key]
                     if now > t0:
@@ -183,13 +212,30 @@ class Guard:
                 self.last[key] = (now, total)
             if worst is not None:
                 self.rate[name] = worst
+            elif not readable:
+                self.rate.pop(name, None)
+                unreadable.add(name)
+        for key in [k for k in self.last if k not in seen]:
+            del self.last[key]  # a vanished source must not leave a baseline for its return
+        return unreadable
 
     # ---------------------------------------------------------------- the machine
 
     def tick(self, now: float) -> None:
         if self.mode == "off":
             return
-        self._sample(now)
+        unreadable = self._sample(now)
+        for name in sorted(unreadable):
+            # No readable source: unknown pressure must never keep the tiers throttled.
+            self.above_since[name] = None
+            self.below_since[name] = None
+            if name in self.active:
+                self.active.discard(name)
+                self.event("unreadable", now, signal=name, was_active=True)
+                self.event("released", now, signal=name, share=0.0, reason="unreadable")
+            elif name not in self.unreadable_reported:
+                self.event("unreadable", now, signal=name, was_active=False)
+        self.unreadable_reported = set(unreadable)
         for name, (_, threshold) in SIGNALS.items():
             rate = self.rate.get(name)
             if rate is None:

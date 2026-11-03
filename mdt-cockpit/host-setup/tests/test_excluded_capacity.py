@@ -251,7 +251,7 @@ class DerivedSizingTests(unittest.TestCase):
         }.items():
             self.assertEqual(sizes[f"{prefix}_MEMORY_HIGH"], ram * high // 100)
             self.assertEqual(sizes[f"{prefix}_MEMORY_MAX"], ram * maximum // 100)
-        self.assertEqual(sizes["DEV_INTERACTIVE_MEMORY_LOW"], ram * 15 // 100)
+        self.assertFalse([k for k in sizes if k.endswith("_MEMORY_LOW")])
         tier_max_sum = sum(sizes[f"{p}_MEMORY_MAX"] for p in ("DEV_INTERACTIVE", "DEV_BACKGROUND", "DEV_GATES", "DEV_BUILDKITD"))
         self.assertGreater(tier_max_sum, ram)
 
@@ -390,6 +390,76 @@ class ProtectionTests(unittest.TestCase):
         self.assertRegex(result.stdout, r"WARN .*is 6500M, below MDT_EXCLUDED_RAM 9000M")
 
 
+class CheckConfigWarningTests(unittest.TestCase):
+    """F4/F8: dev.slice MemoryMax vs RAM_MDT, and the no-disk-swap warning, both WARN only."""
+
+    def _run(self, env_text: str, swap_kib: int = 8 * 1024 * 1024) -> tuple[int, str, str]:
+        d = _tmp(self)
+        env = d / "env"
+        env.write_text(env_text)
+        meminfo = d / "meminfo"
+        meminfo.write_text(f"MemTotal: {16 * 1024 * 1024} kB\nSwapTotal: {swap_kib} kB\n")
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = MC.main(["check-config", str(env), "--meminfo", str(meminfo), "--nproc", "4"])
+        return rc, out.getvalue(), err.getvalue()
+
+    def test_a_dev_memory_max_above_ram_mdt_warns(self) -> None:
+        rc, out, _ = self._run("MDT_EXCLUDED_RAM=6G\nDEV_MEMORY_MAX=14G\n")
+        self.assertEqual(rc, 0)
+        self.assertRegex(out, r"WARN dev\.slice MemoryMax exceeds the RAM MDT may use: DEV_MEMORY_MAX=14G is above RAM_MDT 10G")
+
+    def test_an_empty_dev_memory_max_with_excluded_ram_warns(self) -> None:
+        rc, out, _ = self._run("MDT_EXCLUDED_RAM=6G\nDEV_MEMORY_MAX=\n")
+        self.assertEqual(rc, 0)
+        self.assertIn("WARN dev.slice has no MemoryMax", out)
+        self.assertIn("at most 10G", out)
+
+    def test_no_warning_when_it_fits_or_nothing_is_excluded(self) -> None:
+        self.assertEqual(self._run("MDT_EXCLUDED_RAM=6G\nDEV_MEMORY_MAX=10G\n")[1], "")
+        self.assertEqual(self._run("MDT_EXCLUDED_RAM=0\nDEV_MEMORY_MAX=\n")[1], "")
+
+    def test_the_no_disk_swap_warning_is_reported(self) -> None:
+        _, out, _ = self._run("MDT_EXCLUDED_SWAP=8G\nMDT_EXCLUDED_RAM=0\nDEV_MEMORY_MAX=16G\n")
+        self.assertIn("MDT gets no disk swap", out)
+
+    def test_install_derive_prints_the_memory_warning_without_refusing(self) -> None:
+        d = _tmp(self)
+        env = d / "env"
+        env.write_text("MDT_EXCLUDED_RAM=6G\nDEV_MEMORY_MAX=14G\n")
+        meminfo = d / "meminfo"
+        meminfo.write_text(f"MemTotal: {16 * 1024 * 1024} kB\nSwapTotal: {8 * 1024 * 1024} kB\n")
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            rc = MC.main(["derive", str(env), "--meminfo", str(meminfo), "--nproc", "4"])
+        self.assertEqual(rc, 0)
+        self.assertIn("WARN: dev.slice MemoryMax exceeds the RAM MDT may use", err.getvalue())
+
+    def test_check_sh_has_the_section_and_warns_when_the_helper_is_missing(self) -> None:
+        text = CHECK.read_text()
+        self.assertIn("check-config", text)
+        d = _tmp(self)
+        conf = d / "host-setup.env"
+        conf.write_text("MDT_EXCLUDED_RAM=0\n")
+        result = subprocess.run(
+            ["bash", str(CHECK)], capture_output=True, text=True, check=False,
+            env={"PATH": "/usr/bin:/bin", "CONF": str(conf), "CG": str(d / "cg"),
+                 "CAPACITY_PY": str(d / "missing.py")},
+        )
+        self.assertRegex(result.stdout, r"WARN .*mdt_capacity\.py|WARN .*missing\.py missing")
+
+
+class VmUpgradeAcceptanceTests(unittest.TestCase):
+    def test_the_vm_upgrade_test_has_an_old_key_refusal_step(self) -> None:
+        text = (ROOT / "tests" / "vm-upgrade-acceptance.sh").read_text()
+        self.assertIn("DEV_CPU_RESERVE_CORES=1", text)
+        self.assertIn("expected 2", text)
+        self.assertIn("rename it to MDT_EXCLUDED_CPU_CORES", text)
+        msg = MC.renamed_key_errors({"DEV_CPU_RESERVE_CORES": "1"})[0]
+        self.assertIn("DEV_CPU_RESERVE_CORES is no longer read: rename it to MDT_EXCLUDED_CPU_CORES", msg)
+        subprocess.run(["bash", "-n", str(ROOT / "tests" / "vm-upgrade-acceptance.sh")], check=True)
+
+
 class ProbeTests(unittest.TestCase):
     """The probe reads fake cgroups only and suggests; it never writes."""
 
@@ -502,25 +572,118 @@ class ProbeTests(unittest.TestCase):
             self.assertEqual(wizard.run_probe_excluded(args), 2)
 
 
+def _weak_wings(cg: Path, *, memory_min: int = 0, cpu_weight: int = 100, io_weight: int = 100) -> None:
+    """Lower wings.slice's own protection so a plan has something to raise."""
+    w = cg / "wings.slice"
+    (w / "memory.min").write_text(f"{memory_min}\n")
+    (w / "cpu.weight").write_text(f"{cpu_weight}\n")
+    (w / "io.weight").write_text(f"default {io_weight}\n")
+
+
 class ApplyProtectionTests(unittest.TestCase):
     def test_the_plan_mirrors_the_excluded_ram_and_uses_four_times_the_dev_weights(self) -> None:
         cg = _fake_cgroups(_tmp(self))
+        _weak_wings(cg)
         plan = MC.plan_protection(cg, ["wings.slice"], 6500 * MIB)
-        self.assertEqual(plan, {"wings.slice": {"MemoryMin": "6500M", "CPUWeight": "400", "IOWeight": "400"}})
+        self.assertEqual(plan, {"wings.slice": {
+            "MemoryMin": ("0", "6500M"), "CPUWeight": ("100", "400"), "IOWeight": ("100", "400")}})
 
     def test_the_ram_is_split_by_current_use_across_several_units(self) -> None:
         d = _tmp(self)
         cg = _fake_cgroups(d)
+        _weak_wings(cg)
         svc = cg / "system.slice" / "game.service"
         svc.mkdir(parents=True)
         (svc / "memory.current").write_text(str(1000 * MIB) + "\n")
+        (svc / "memory.min").write_text("0\n")
+        (svc / "cpu.weight").write_text("100\n")
         plan = MC.plan_protection(cg, ["wings.slice", "game.service"], 8000 * MIB)
-        self.assertEqual(plan["wings.slice"]["MemoryMin"], "7000M")
-        self.assertEqual(plan["game.service"]["MemoryMin"], "1000M")
+        self.assertEqual(plan["wings.slice"]["MemoryMin"], ("0", "7000M"))
+        self.assertEqual(plan["game.service"]["MemoryMin"], ("0", "1000M"))
+
+    def test_it_never_lowers_an_existing_memory_min_or_weight(self) -> None:
+        cg = _fake_cgroups(_tmp(self))
+        # wings.slice already has MemoryMin 6500M, CPU/IO weight 800: a smaller figure and the
+        # 4x-dev weights (400) must not replace them.
+        notes: list[str] = []
+        plan = MC.plan_protection(cg, ["wings.slice"], 2000 * MIB, notes=notes)
+        self.assertEqual(plan, {})
+        self.assertTrue(any("nothing would increase" in n for n in notes), notes)
+
+    def test_a_partial_increase_lists_only_the_properties_that_rise(self) -> None:
+        cg = _fake_cgroups(_tmp(self))
+        _weak_wings(cg, memory_min=8000 * MIB, cpu_weight=1000, io_weight=100)
+        plan = MC.plan_protection(cg, ["wings.slice"], 6500 * MIB)
+        self.assertEqual(plan, {"wings.slice": {"IOWeight": ("100", "400")}})
+
+    def test_a_proportional_share_never_lowers_a_larger_current_min(self) -> None:
+        d = _tmp(self)
+        cg = _fake_cgroups(d)  # wings.slice: min 6500M, current 7000M
+        svc = cg / "system.slice" / "docker.service"
+        svc.mkdir(parents=True)
+        (svc / "memory.current").write_text(str(7000 * MIB) + "\n")
+        (svc / "memory.min").write_text("0\n")
+        plan = MC.plan_protection(cg, ["wings.slice", "docker.service"], 8000 * MIB)
+        self.assertNotIn("wings.slice", plan)  # its share (4000M) is below its 6500M
+        self.assertEqual(plan["docker.service"]["MemoryMin"], ("0", "4000M"))
+
+    def test_zero_or_unparsable_excluded_ram_is_refused_and_writes_nothing(self) -> None:
+        d = _tmp(self)
+        cg = _fake_cgroups(d)
+        _weak_wings(cg)
+        with self.assertRaises(MC.ProtectionRefused):
+            MC.plan_protection(cg, ["wings.slice"], 0)
+        sysd = d / "systemd"
+        for ram_line in ("MDT_EXCLUDED_RAM=0\n", "", "MDT_EXCLUDED_RAM=lots\n"):
+            env = d / "env"
+            env.write_text("MDT_PROTECTED_UNITS=wings.slice\n" + ram_line)
+            with contextlib.redirect_stderr(io.StringIO()):
+                rc = MC.main(["apply-protection", str(env), "--yes", "--systemd-dir", str(sysd),
+                              "--cgroup-root", str(cg)])
+            self.assertEqual(rc, 2, ram_line)
+            self.assertFalse(sysd.exists(), ram_line)
+
+    def test_nothing_to_raise_writes_nothing_even_with_yes(self) -> None:
+        d = _tmp(self)
+        cg = _fake_cgroups(d)
+        env = d / "env"
+        env.write_text("MDT_PROTECTED_UNITS=wings.slice\nMDT_EXCLUDED_RAM=2000M\n")
+        sysd = d / "systemd"
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = MC.main(["apply-protection", str(env), "--yes", "--systemd-dir", str(sysd), "--cgroup-root", str(cg)])
+        self.assertEqual(rc, 0)
+        self.assertFalse(sysd.exists())
+        self.assertIn("Nothing would increase", out.getvalue())
+
+    def test_the_confirmation_shows_current_and_new_values(self) -> None:
+        d = _tmp(self)
+        cg = _fake_cgroups(d)
+        _weak_wings(cg, memory_min=1000 * MIB)
+        env = d / "env"
+        env.write_text("MDT_PROTECTED_UNITS=wings.slice\nMDT_EXCLUDED_RAM=6500M\n")
+        out = io.StringIO()
+        with mock.patch("builtins.input", return_value="n"), contextlib.redirect_stdout(out):
+            MC.main(["apply-protection", str(env), "--systemd-dir", str(d / "s"), "--cgroup-root", str(cg)])
+        self.assertIn("MemoryMin: 1000M -> 6500M", out.getvalue())
+        self.assertIn("CPUWeight: 100 -> 400", out.getvalue())
+
+    def test_a_missing_cgroup_is_skipped_with_a_note_not_written(self) -> None:
+        cg = _fake_cgroups(_tmp(self))
+        notes: list[str] = []
+        self.assertEqual(MC.plan_protection(cg, ["ghost.service"], 1000 * MIB, notes=notes), {})
+        self.assertTrue(any("ghost.service" in n and "skipped" in n for n in notes), notes)
+
+    def test_only_slice_service_and_scope_units_are_accepted(self) -> None:
+        for good in ("wings.slice", "docker.service", "docker-a.scope"):
+            self.assertIsNone(MC.validate_units(good))
+        for bad in ("docker.socket", "data.mount", "multi-user.target"):
+            self.assertIsNotNone(MC.validate_units(bad), bad)
 
     def test_it_writes_only_after_confirmation_and_only_for_named_units(self) -> None:
         d = _tmp(self)
         cg = _fake_cgroups(d)
+        _weak_wings(cg)
         env = d / "env"
         env.write_text("MDT_PROTECTED_UNITS=wings.slice\nMDT_EXCLUDED_RAM=6500M\n")
         sysd = d / "systemd"

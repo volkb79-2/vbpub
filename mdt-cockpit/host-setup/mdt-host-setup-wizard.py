@@ -465,8 +465,9 @@ def propose_memory_tiers(total_kib: int, avail_kib: int, excluded_ram_kib: int =
     policy every minute. The fractions live in ``mdt_capacity`` (dev.slice MemoryMax =
     RAM_MDT and MemoryHigh 92% of it; per tier High/Max 45/60, 50/70, 50/70, 25/35
     percent). Their sum exceeds RAM_MDT on purpose: RAM is overcommitted and zswap and
-    disk swap absorb the cold part. Interactive MemoryLow is 15%, mirrored on dev.slice so
-    it is effective (a Low below an unset parent Low would be ineffective). Each child
+    disk swap absorb the cold part. No ``MemoryLow`` is proposed (a child Low below an
+    unset parent Low is ineffective, and a dev.slice Low would outrank unprotected host
+    services in reclaim; soft protection is an open design question). Each child
     control is independent; ordering within one slice is a hard relationship, and a single
     child High/Max above its configured parent is also refused, while sibling totals and
     Min/Low effectiveness remain review information.
@@ -2648,13 +2649,12 @@ def step_slice_first_resources(
     out("  * The table shows this host's derived starting values. `auto` CPU/swap values are derived at install time; IO percentages are applied only after current benchmark results exist.")
     out("Starting proposals (review before accepting); percentages are of the RAM MDT may use:")
     for line in (
-        "dev.slice: MemoryLow=15% / MemoryHigh=92% / MemoryMax=100%",
-        "dev-interactive.slice: MemoryLow=15% / High=45% / Max=60%",
+        "dev.slice: MemoryLow=unset / MemoryHigh=92% / MemoryMax=100%",
+        "dev-interactive.slice: MemoryLow=unset / High=45% / Max=60%",
         "dev-background.slice: MemoryLow=unset / High=50% / Max=70%",
         "dev-gates.slice: MemoryLow=unset / High=50% / Max=70%",
         "dev-buildkitd.slice: MemoryLow=unset / High=25% / Max=35%",
         "The tier limits sum to more than the RAM MDT may use on purpose (overcommit); zswap and swap absorb the cold part.",
-        "dev.slice MemoryLow mirrors the interactive MemoryLow so the soft protection can reach the tier.",
     ):
         out(f"- {line}", hang="  ")
     _, suggested_min_kib, suggestion_formula = propose_memory_min_guaranteed_suggestion(

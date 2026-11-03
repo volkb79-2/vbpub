@@ -141,8 +141,8 @@ CPU_MDT  = nproc     - MDT_EXCLUDED_CPU_CORES                    (refused below 
 - `dev.slice`: `MemoryMax` = `RAM_MDT`, `MemoryHigh` = 92% of it,
   `MemorySwapMax` = `SWAP_MDT`, `CPUQuota` = `CPU_MDT` x 100%.
 - Tiers (wizard proposals; an explicit value always wins): `MemoryMax` /
-  `MemoryHigh` as percent of `RAM_MDT` - interactive 60/45 (`MemoryLow` 15%,
-  mirrored on `dev.slice` so it can take effect), background 70/50, gates 70/50,
+  `MemoryHigh` as percent of `RAM_MDT` - interactive 60/45 (no `MemoryLow`
+  is proposed: soft protection is an open design question), background 70/50, gates 70/50,
   buildkitd 35/25. They sum to more than `RAM_MDT` on purpose: RAM and CPU are
   overcommitted by design and zswap and disk swap absorb the cold part. A tier's
   swap is `DEV_SWAP_CASCADE_PCT`% of `SWAP_MDT`; its `CPUQuota` is
@@ -218,7 +218,11 @@ events only, nothing changed) or `enforce`. In `enforce`:
 
 Every change is reverted on release, on stop and at the next start (the
 originals are kept in `/run/mdt/psi-guard/state.json`, which also lists the keys
-the guard owns; the reconcile sweep consults it before writing any of them). It
+the guard owns; the reconcile sweep writes none of them and only logs them).
+`events.jsonl` is rotated at 1 MiB to `events.jsonl.1` (it is on tmpfs), so
+readers consume both files. A `systemctl daemon-reload` or `set-property` during
+an active episode re-applies the units' own values and undoes the throttle
+(systemd is the overwriter, not the sweep), so do not reload during one. It
 never freezes or kills anything: a wall-clock budget that expired while frozen
 would change a result. Events are appended to `/run/mdt/psi-guard/events.jsonl`
 for run-gate to read as a contamination source.

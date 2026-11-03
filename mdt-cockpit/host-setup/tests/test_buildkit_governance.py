@@ -874,12 +874,10 @@ esac
                     WIZARD.parse_size_to_kib(proposals[f"{prefix}_MEMORY_MAX"]),
                 )
 
-    def test_fresh_memory_proposals_offer_a_child_low_only_with_a_matching_parent_low(self) -> None:
+    def test_fresh_memory_proposals_do_not_offer_ineffective_child_low(self) -> None:
         proposals = WIZARD.propose_memory_tiers(16 * 1024 * 1024, 8 * 1024 * 1024)
-        # Only the interactive tier gets a MemoryLow, and dev.slice mirrors it so the
-        # protection can reach the tier (a child Low below an unset parent Low is ineffective).
-        self.assertEqual(proposals["DEV_MEMORY_LOW"], proposals["DEV_INTERACTIVE_MEMORY_LOW"])
-        for prefix in ("DEV_BACKGROUND", "DEV_GATES", "DEV_BUILDKITD"):
+        self.assertNotIn("DEV_MEMORY_LOW", proposals)
+        for prefix in ("DEV_INTERACTIVE", "DEV_BACKGROUND", "DEV_GATES", "DEV_BUILDKITD"):
             self.assertNotIn(f"{prefix}_MEMORY_LOW", proposals)
 
     def test_standalone_candidate_validates_preserved_unprompted_values(self) -> None:
