@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import subprocess
 import tomllib
 from contextlib import nullcontext
 from pathlib import Path
@@ -217,8 +219,26 @@ def test_prepared_version_reader_returns_none_for_an_authorized_version():
     assert error is None
 
 
-def test_prepared_version_reader_matches_the_release_gate_policy_at_head():
-    source_root = Path(__file__).resolve().parents[2]
+def test_prepared_version_reader_matches_the_release_gate_policy_at_head(tmp_path):
+    # Hermetic: the test tree may be an extracted source copy without .git, so
+    # commit the real gate driver into a throwaway repository and load it from
+    # that repository's HEAD.
+    gate_source = Path(__file__).resolve().parents[1] / "tools" / "run_release_gate.py"
+    source_root = tmp_path / "source"
+    (source_root / "cmru" / "tools").mkdir(parents=True)
+    (source_root / "cmru" / "tools" / "run_release_gate.py").write_text(
+        gate_source.read_text("utf-8"), encoding="utf-8",
+    )
+    identity = ["-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                "-c", "commit.gpgsign=false"]
+    env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
+    for args in (
+        ["init", "-q"],
+        ["add", "cmru/tools/run_release_gate.py"],
+        [*identity, "commit", "-q", "-m", "gate"],
+    ):
+        subprocess.run(["git", *args], cwd=source_root, env=env, check=True,
+                       capture_output=True)
     gate = release_preconditions._load_release_gate(source_root, "HEAD")
 
     assert release_preconditions._prepared_version_error(gate, "7.1.4") is None
