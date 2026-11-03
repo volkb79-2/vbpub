@@ -14,7 +14,8 @@ is just:
 
 Design tenets
 -------------
-- **stdlib-only, idempotent, best-effort.** The generic mdt steps below never
+- **stdlib-only, idempotent, best-effort.** (Agent skills of the first-party CLIs are
+  installed by `install_agent_skills`; see docs/DESIGN-GUIDE.md.) The generic mdt steps below never
   hard-fail finalize (they warn and continue) — a fresh container always comes up.
 - **ciu-AGNOSTIC — no hard ciu dependency.** mdt *ships and encourages* ciu, but
   this script NEVER imports, calls, or assumes ciu (or any ciu-rendered stack).
@@ -251,6 +252,58 @@ def verify_base_tools() -> None:
         ok(f"base-image tools verified ({len(expected)})")
 
 
+# First-party CLIs that package agent skills behind a `<cli> skills` verb
+# (check / install, cli-extended's skills plugin). One constant: add a CLI here and
+# nowhere else. A CLI that is absent from PATH, or whose installed version has no
+# `skills` verb yet, is skipped quietly.
+SKILLS_CLIS = ("cmru", "ciu", "pwmcp", "topos")
+SKILLS_TIMEOUT_SECONDS = 120
+
+
+def _run_skills(argv: list[str]) -> subprocess.CompletedProcess | None:
+    try:
+        return subprocess.run(
+            argv, capture_output=True, text=True, timeout=SKILLS_TIMEOUT_SECONDS, check=False
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        warn(f"{' '.join(argv)}: {e}")
+        return None
+
+
+def install_agent_skills() -> None:
+    """Install the agent skills packaged with the first-party CLIs into the user home.
+
+    A fresh home has none of them, so `cmru doctor` would report "skills not current".
+    For each CLI of SKILLS_CLIS on PATH: `<cli> skills check` (exit 0 = current, exit 1 =
+    not current, anything else = the CLI has no `skills` verb) and, only when not current,
+    `<cli> skills install`. `install` writes only the skill directories the tool owns
+    (`~/.claude/skills/<skill>`, `~/.agents/skills/<skill>`, each stamped), so it never
+    replaces or extends a user file, and a second run on a current home changes nothing.
+    Every failure is a warning: the container start never depends on this step.
+    """
+    for cli in SKILLS_CLIS:
+        path = shutil.which(cli)
+        if path is None:
+            continue
+        checked = _run_skills([path, "skills", "check"])
+        if checked is None:
+            continue
+        if checked.returncode == 0:
+            info(f"{cli}: agent skills current")
+            continue
+        if checked.returncode != 1:
+            info(f"{cli}: no `skills` verb in this version; skipped")
+            continue
+        installed = _run_skills([path, "skills", "install"])
+        if installed is None:
+            continue
+        if installed.returncode == 0:
+            ok(f"{cli}: installed agent skills")
+        else:
+            detail = (installed.stderr or installed.stdout or "").strip().splitlines()
+            warn(f"{cli} skills install failed (exit {installed.returncode}): {detail[-1] if detail else 'no output'}")
+
+
 # ── docker socket relay repair ──────────────────────────────────────────────
 # WHY THIS EXISTS (diagnosed 2026-07-27)
 #
@@ -408,6 +461,7 @@ def run_generic_steps(envd: dict) -> bool:
     repair_docker_socket_relay()
     buildkit_ok = setup_buildkit_builder(required=envd["env_type"] == "devcontainer")
     verify_base_tools()
+    install_agent_skills()
     return buildkit_ok
 
 

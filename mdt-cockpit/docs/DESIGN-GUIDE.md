@@ -97,7 +97,8 @@ clean up". Because nothing the image ships needs to reach the home, **the
 finalizer has almost nothing to do**: a new home stays empty, a second run
 changes nothing, and the one stub it may write (a comment-only `~/.zshrc`,
 because zsh's new-user wizard cannot be disabled system-wide) is only ever
-created, never edited.
+created, never edited. The other thing it may write is the first-party CLIs'
+own agent skills ([below](#agent-skills-of-the-first-party-clis)).
 
 **Why a fresh home and no migration.** mdt-cockpit is an opt-in fork, not an
 upgrade of the original image. A migrator has to decide, file by file, which of
@@ -112,6 +113,25 @@ Named volumes were not chosen as the default because operators need to see and
 back up the complete user home as an ordinary host directory. Individual
 mounts were not retained because each new tool would require another persistence
 decision and could again leave user state behind.
+
+### Agent skills of the first-party CLIs
+
+The first-party CLIs that package agent skills (`cmru`, `ciu`, `pwmcp`, `topos`;
+the constant `SKILLS_CLIS` in `finalize_container_environment.py`) install them
+with `<cli> skills install` into `~/.claude/skills` and `~/.agents/skills`, which
+are user state, so the image cannot ship them. A fresh home has none, and
+`cmru doctor` then reports "skills not current". The finalizer therefore has one
+more generic step: for each of those CLIs found on `PATH` it runs
+`<cli> skills check` (exit 0 = current, exit 1 = not current, any other exit = this
+version has no `skills` verb, skipped) and, only when not current, `<cli> skills
+install`. `install` writes only the stamped skill directories the tool owns
+(`<root>/skills/<skill>/`) and removes only orphans of the same tool; it never
+replaces or extends any other user file, so the idempotence rule holds: a second
+run finds every skill current, runs no `install`, and leaves the home
+byte-identical. A failure of either command is a warning, never a failed
+container start. Tests: `scripts/test_finalize_agent_skills.py` (fake CLIs on a
+temporary `PATH`) and the home assertions in `tests/runtime/test_fresh_home.py`,
+which allow exactly these trees.
 
 ## The `mdt` group
 
