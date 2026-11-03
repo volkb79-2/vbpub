@@ -59,6 +59,11 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   the plugin's own files is RG-145's.
 
 ### Fixed
+- Fix (RG-136): footprint display, `doctor` drift and `footprint --write` no
+  longer mix strict and relaxed I/O-mode statistics. Manifest lane entries
+  carry `io_sync`; the live footprint line and `doctor` compare against the
+  same mode's history; a manifest without a mode is treated as strict and
+  `doctor` names the migration (re-run `footprint --write`).
 - Fix (RG-116 item 3, `tools/coverage_gate.py`): `--source` is repeatable and
   the selftest lane passes `run_gate.py` and `run_gate_admission.py`, so the
   admission module shipped in the wheel is diff-judged too.
