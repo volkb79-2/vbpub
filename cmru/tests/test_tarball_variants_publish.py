@@ -613,6 +613,13 @@ def test_keystone_rechecks_for_a_newer_release_right_before_the_pointer_moves(
     assert "Keeping demo-latest on newer" in capsys.readouterr().out
 
 
+def test_keystone_existing_only_without_a_latest_pointer_touches_only_the_release(tmp_path):
+    gh = FakeGH(existing=("demo-v2.0.0",), tags={"demo-v2.0.0": SOURCE_COMMIT})
+    _keystone(gh, _artifacts(tmp_path), latest_pointer=False, require_existing_targets=True,
+              expected_tag_commit=SOURCE_COMMIT)
+    assert [c["tag"] for c in gh.calls] == ["demo-v2.0.0"]
+
+
 def test_keystone_without_a_latest_pointer_publishes_only_the_release(tmp_path):
     gh = FakeGH()
     _keystone(gh, _artifacts(tmp_path), latest_pointer=False)

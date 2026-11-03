@@ -169,6 +169,26 @@ def test_tee_flush_broken_pipe_still_restores_descriptors_and_keeps_the_inflight
     assert tee.wait(timeout=5) == 0
 
 
+def test_tee_flush_with_both_streams_broken_reports_the_first_failure_only(
+    monkeypatch, tmp_path,
+):
+    original = _open_tee_scope(monkeypatch, tmp_path)
+
+    class _Closed:
+        def flush(self):
+            raise ValueError("stderr closed")
+
+    with pytest.raises(BrokenPipeError, match="closed pipe"):
+        with cli._native_release_logging_scope():
+            cli._configure_native_release_logging(tmp_path, append=False)
+            tee = cli._ACTIVE_NATIVE_RELEASE_LOGGING.process
+            monkeypatch.setattr(sys, "stdout", _BrokenStream())
+            monkeypatch.setattr(sys, "stderr", _Closed())
+
+    assert os.fstat(1).st_ino == original.st_ino
+    assert tee.wait(timeout=5) == 0
+
+
 def test_tee_flush_broken_pipe_without_an_inflight_exception_is_raised_after_the_restore(
     monkeypatch, tmp_path,
 ):
