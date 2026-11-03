@@ -5,10 +5,10 @@ here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=lib.sh
 source "$here/lib.sh"
 identity_check
-: "${COCKPIT_NAME:?}" "${COCKPIT_CONFIG_DIR:?}" "${COCKPIT_IMAGE:?}" "${INTERACTIVE_SLICE:?}" "${BACKGROUND_SLICE:?}"
+: "${COCKPIT_NAME:?}" "${COCKPIT_CONFIG_DIR:?}" "${COCKPIT_HOME_DIR:?}" "${COCKPIT_TMP_DIR:?}" "${COCKPIT_IMAGE:?}" "${INTERACTIVE_SLICE:?}" "${BACKGROUND_SLICE:?}"
 cfg=$COCKPIT_CONFIG_DIR
-home=$COCKPIT_CONFIG_DIR-home
-tmpd=$COCKPIT_CONFIG_DIR-tmp
+home=$COCKPIT_HOME_DIR
+tmpd=$COCKPIT_TMP_DIR
 docker rm -f "$COCKPIT_NAME" >/dev/null 2>&1 || true
 docker run -d --init --user 0:0 --name "$COCKPIT_NAME" --hostname "$COCKPIT_NAME" \
   --group-add "$(getent group docker | cut -d: -f3)" --cap-add SYS_ADMIN --device /dev/fuse \
