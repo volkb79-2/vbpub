@@ -1,0 +1,86 @@
+# ==========================================================================
+# mattermore — tryout of Mattermore (github.com/dennisklappe/mattermore)
+# ==========================================================================
+# A Mattermost fork (AGPL-3.0-only) that turns paywalled features back on:
+# group calls (3+ participants), recording, transcription, OIDC SSO, guests,
+# no user cap. Researched 2026-11-04; details in README.md.
+#
+# ISOLATION CONTRACT (pinned by tests/test_isolation.py):
+#   - OWN names: project_name "mattermore", container_prefix
+#     "mattermore-<instance id>", own bridge network `internal`, own named
+#     volumes (compose-project prefixed). The id is path-derived, so it differs
+#     from voice-screen-share/mattermost-server's.
+#   - NO host ports published, NO ingress_public/tls-edge membership, NO
+#     tls-edge Calls routers by default. The live edge owns public 8443
+#     TCP+UDP for the live Mattermost; this tryout must never take it.
+#   - The Calls media listener (8443 in the container) is unpublished. For a
+#     LAN-only experiment `tryout.media_host_port` publishes it on ANOTHER host
+#     port (never 8443): off by default, and starting it that way needs the
+#     operator's explicit go.
+[mattermore]
+name = "mattermore"
+container_prefix = "{% if deploy is defined %}{{ deploy.project_name }}-{{ deploy.environment_tag }}{% else %}mattermore{% endif %}"
+# Default: reachable only inside the stack network (docker exec / a throwaway
+# client container on `internal`). expose_public = true would join the shared
+# ingress network with router names distinct from the live Mattermost's; it
+# never adds Calls routers.
+expose_public = false
+public_host = "mattermore.{{ env.PUBLIC_FQDN }}"
+ingress_network = "ingress_public"
+
+[mattermore.app]
+name = "mattermore"
+# Pinned tag + manifest digest. v1.6.1 = 2026-10-17 (17 days old on 2026-11-04).
+# v1.6.2 (2026-10-23, 12 days) is newer but inside the 14-day vetting window;
+# re-pin to the newest release >= 14 days old when this is revisited.
+# Single-arch (linux/amd64) image, built from upstream Mattermost server v12.0.x
+# + Calls plugin v1.12.6 (Mattermore plugin version 1000.12.6).
+image = "ghcr.io/dennisklappe/mattermore"
+image_tag = "v1.6.1@sha256:0021adfc29d331266ff2089c6b31fc86c65ca6d9254d0373e79f511b24293abd"
+port = 8065
+
+[mattermore.calls]
+enabled = true
+# In-container Calls media listener (TCP+UDP). Never published by default.
+port = 8443
+group_calls_allowed = true
+allow_screen_sharing = true
+
+[mattermore.tryout]
+# 0 = publish nothing (default). A non-zero value publishes the media pair on
+# that HOST port (TCP+UDP) and nothing else; must not be 8443 or 9443/443/80
+# (live edge) - the isolation test rejects those.
+media_host_port = 0
+
+[mattermore.postgres]
+name = "postgres"
+# Rolling 17-alpine was rebuilt 2026-10-26 (<14 days): pin the older tag by
+# digest. 17.10-alpine, last updated 2026-07-08.
+image = "postgres"
+image_tag = "17.10-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193"
+port = 5432
+db = "mattermost"
+user = "mmuser"
+mem_limit = "512m"
+mem_swap_limit = "4g"
+cpus = "0.5"
+
+[mattermore.secrets]
+# Same S4.19 expose_env reasoning as voice-screen-share/mattermost-server: the
+# Mattermost DSN has no *_FILE form and the image has no shell.
+postgres_password = { directive = "GEN_LOCAL:mattermore/postgres_password", mode = "0444", expose_env = "MMORE_DB_PASSWORD" }
+
+[mattermore.health]
+interval = "20s"
+timeout = "10s"
+retries = 6
+start_period = "120s"
+
+[mattermore.logging]
+max_size = "10m"
+max_file = "3"
+
+[mattermore.governance]
+mem_limit = "2g"
+mem_swap_limit = "4g"
+cpus = "1.5"

@@ -1,0 +1,147 @@
+# ─── Mattermore tryout: Mattermost fork + dedicated Postgres ─────────────────
+# Rendered by ciu. Own network, own volumes, no published host ports by
+# default (see ciu.defaults.toml.j2 isolation contract and tests/).
+# The app service sets NO cgroup_parent / mem / cpu keys: ciu's governance
+# overlay injects them (S15.3); only postgres narrows its own.
+
+services:
+  postgres:
+    image: {{ mattermore.postgres.image }}:{{ mattermore.postgres.image_tag }}
+    container_name: {{ mattermore.container_prefix }}-postgres
+    hostname: {{ mattermore.container_prefix }}-postgres
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      TZ: "UTC"
+      POSTGRES_DB: "{{ mattermore.postgres.db }}"
+      POSTGRES_USER: "{{ mattermore.postgres.user }}"
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --lc-collate=C --lc-ctype=C"
+    secrets:
+      - postgres_password
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    expose:
+      - "{{ mattermore.postgres.port }}"
+    networks:
+      - internal
+    mem_limit: {{ mattermore.postgres.mem_limit }}
+    memswap_limit: {{ mattermore.postgres.mem_swap_limit }}
+    cpus: {{ mattermore.postgres.cpus }}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U {{ mattermore.postgres.user }} -d {{ mattermore.postgres.db }}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "{{ mattermore.logging.max_size }}"
+        max-file: "{{ mattermore.logging.max_file }}"
+
+  mattermore:
+    image: {{ mattermore.app.image }}:{{ mattermore.app.image_tag }}
+    container_name: {{ mattermore.container_prefix }}-mattermore
+    hostname: {{ mattermore.container_prefix }}-mattermore
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      TZ: "UTC"
+      MM_SQLSETTINGS_DRIVERNAME: "postgres"
+      MM_SQLSETTINGS_DATASOURCE: "postgres://{{ mattermore.postgres.user }}:${MMORE_DB_PASSWORD}@{{ mattermore.container_prefix }}-postgres:{{ mattermore.postgres.port }}/{{ mattermore.postgres.db }}?sslmode=disable&connect_timeout=10"
+      MM_SERVICESETTINGS_LISTENADDRESS: ":{{ mattermore.app.port }}"
+{% if mattermore.expose_public %}
+      MM_SERVICESETTINGS_SITEURL: "https://{{ mattermore.public_host }}"
+{% else %}
+      MM_SERVICESETTINGS_SITEURL: "http://{{ mattermore.container_prefix }}-mattermore:{{ mattermore.app.port }}"
+{% endif %}
+      MM_SERVICESETTINGS_ENABLELOCALMODE: "true"
+      # Tryout posture: closed server, admin-created accounts only.
+      MM_TEAMSETTINGS_ENABLEOPENSERVER: "false"
+      MM_TEAMSETTINGS_ENABLEUSERCREATION: "false"
+      MM_SERVICESETTINGS_ENABLEEMAILINVITATIONS: "false"
+      MM_EMAILSETTINGS_SENDEMAILNOTIFICATIONS: "false"
+      MM_SERVICESETTINGS_ENABLEOUTGOINGWEBHOOKS: "false"
+      MM_SERVICESETTINGS_ENABLECOMMANDS: "false"
+      MM_SERVICESETTINGS_ENABLEDEVELOPER: "false"
+      MM_PLUGINSETTINGS_ENABLEMARKETPLACE: "false"
+      MM_PLUGINSETTINGS_ENABLEREMOTEMARKETPLACE: "false"
+      MM_LOGSETTINGS_ENABLEDIAGNOSTICS: "false"
+      MM_LOGSETTINGS_CONSOLELEVEL: "INFO"
+{% if mattermore.calls.enabled %}
+      MM_PLUGINSETTINGS_ENABLE: "true"
+      MM_CALLS_DEFAULT_ENABLED: "true"
+      MM_CALLS_GROUP_CALLS_ALLOWED: "{{ 'true' if mattermore.calls.group_calls_allowed else 'false' }}"
+      MM_CALLS_ALLOW_SCREEN_SHARING: "{{ 'true' if mattermore.calls.allow_screen_sharing else 'false' }}"
+      MM_CALLS_UDP_SERVER_PORT: "{{ mattermore.calls.port }}"
+      MM_CALLS_TCP_SERVER_PORT: "{{ mattermore.calls.port }}"
+{% if mattermore.tryout.media_host_port %}
+      MM_CALLS_ICE_HOST_PORT_OVERRIDE: "{{ mattermore.tryout.media_host_port }}"
+{% endif %}
+{% endif %}
+    volumes:
+      - mattermore-data:/mattermost/data
+      - mattermore-config:/mattermost/config
+      - mattermore-logs:/mattermost/logs
+      - mattermore-plugins:/mattermost/plugins
+      - mattermore-client-plugins:/mattermost/client/plugins
+    expose:
+      - "{{ mattermore.app.port }}"
+{% if mattermore.calls.enabled %}
+      - "{{ mattermore.calls.port }}/tcp"
+      - "{{ mattermore.calls.port }}/udp"
+{% endif %}
+{% if mattermore.tryout.media_host_port %}
+    ports:
+      - "{{ mattermore.tryout.media_host_port }}:{{ mattermore.calls.port }}/tcp"
+      - "{{ mattermore.tryout.media_host_port }}:{{ mattermore.calls.port }}/udp"
+{% endif %}
+    networks:
+      - internal
+{% if mattermore.expose_public %}
+      - ingress
+{% endif %}
+    healthcheck:
+      test: ["CMD", "/mattermost/bin/mmctl", "system", "status", "--local"]
+      interval: {{ mattermore.health.interval }}
+      timeout: {{ mattermore.health.timeout }}
+      retries: {{ mattermore.health.retries }}
+      start_period: {{ mattermore.health.start_period }}
+{% if mattermore.expose_public %}
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: "{{ mattermore.ingress_network }}"
+      traefik.http.routers.mattermore-tryout.rule: "Host(`{{ mattermore.public_host }}`)"
+      traefik.http.routers.mattermore-tryout.entrypoints: "websecure"
+      traefik.http.services.mattermore-tryout.loadbalancer.server.port: "{{ mattermore.app.port }}"
+{% endif %}
+    logging:
+      driver: json-file
+      options:
+        max-size: "{{ mattermore.logging.max_size }}"
+        max-file: "{{ mattermore.logging.max_file }}"
+
+networks:
+  internal:
+    driver: bridge
+{% if mattermore.expose_public %}
+  ingress:
+    external: true
+    name: {{ mattermore.ingress_network }}
+{% endif %}
+
+volumes:
+  postgres-data:
+  mattermore-data:
+  mattermore-config:
+  mattermore-logs:
+  mattermore-plugins:
+  mattermore-client-plugins:
