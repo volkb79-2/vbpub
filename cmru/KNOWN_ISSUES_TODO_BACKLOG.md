@@ -2746,7 +2746,7 @@ variant file against the retained build-output record exactly as the single-asse
 
 **Dependencies and order.** After RG-151 and TB-13; parallel with assay B211. Then run-gate RG-153.
 
-## KI-115 - the release log tee scope's unguarded `sys.stdout.flush()` could skip the descriptor restore and mask the in-flight exception
+## KI-116 - the release log tee scope's unguarded `sys.stdout.flush()` could skip the descriptor restore and mask the in-flight exception
 
 **Status:** FIXED 2026-11-04 (3e8b4712f); severity: minor. (The bug-fix program called this "KI-112"; that id is the installer-features entry, so it is filed as KI-115.)
 `_native_release_logging_scope` flushed `sys.stdout`/`sys.stderr` before `os.dup2` restored fd 1/2. A `BrokenPipeError` from the flush skipped the
