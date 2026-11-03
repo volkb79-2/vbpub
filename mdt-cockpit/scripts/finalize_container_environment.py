@@ -64,6 +64,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, "/usr/local/lib")
@@ -257,51 +258,89 @@ def verify_base_tools() -> None:
 # nowhere else. A CLI that is absent from PATH, or whose installed version has no
 # `skills` verb yet, is skipped quietly.
 SKILLS_CLIS = ("cmru", "ciu", "pwmcp", "topos")
-SKILLS_TIMEOUT_SECONDS = 120
+SKILLS_TIMEOUT_SECONDS = 20  # per call
+SKILLS_TOTAL_BUDGET_SECONDS = 60  # whole step; a hung CLI never holds the container start longer
+# Warn-once markers (one file per CLI and kind, in the container's writable layer): a
+# user-modified skill is refused by `install` on every start, by design, and says so once.
+SKILLS_MARKER_DIR = Path("/var/devcontainer")
 
 
-def _run_skills(argv: list[str]) -> subprocess.CompletedProcess | None:
+def _run_skills(argv: list[str], deadline: float) -> subprocess.CompletedProcess | None:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        warn(f"{' '.join(argv)}: skipped, the agent-skills time budget ({SKILLS_TOTAL_BUDGET_SECONDS}s) is spent")
+        return None
     try:
         return subprocess.run(
-            argv, capture_output=True, text=True, timeout=SKILLS_TIMEOUT_SECONDS, check=False
+            argv, capture_output=True, text=True, timeout=min(SKILLS_TIMEOUT_SECONDS, remaining), check=False
         )
     except (OSError, subprocess.SubprocessError) as e:
         warn(f"{' '.join(argv)}: {e}")
         return None
 
 
+def _warn_once(cli: str, kind: str, message: str) -> None:
+    """Warn the first time per container for (cli, kind); afterwards log at INFO."""
+    marker = SKILLS_MARKER_DIR / f"agent-skills-{cli}-{kind}.warned"
+    if marker.exists():
+        info(message)
+        return
+    warn(message)
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.touch()
+    except OSError:
+        pass  # no marker, no harm: the warning may repeat
+
+
+def _crashed(proc: subprocess.CompletedProcess) -> bool:
+    return "Traceback (most recent call last)" in (proc.stderr or "")
+
+
 def install_agent_skills() -> None:
     """Install the agent skills packaged with the first-party CLIs into the user home.
 
     A fresh home has none of them, so `cmru doctor` would report "skills not current".
-    For each CLI of SKILLS_CLIS on PATH: `<cli> skills check` (exit 0 = current, exit 1 =
-    not current, anything else = the CLI has no `skills` verb) and, only when not current,
-    `<cli> skills install`. `install` writes only the skill directories the tool owns
+    For each CLI of SKILLS_CLIS on PATH: `<cli> skills check` (exit 0 = current, exit 1
+    with no traceback = not current, exit 2 = the CLI has no `skills` verb; a traceback or
+    any other code = a broken CLI, skipped with a warning) and, only when not current,
+    `<cli> skills install`. A failing install (a modified skill is refused) warns once per
+    container per CLI, then logs at INFO. The whole step is bounded by
+    SKILLS_TOTAL_BUDGET_SECONDS. `install` writes only the skill directories the tool owns
     (`~/.claude/skills/<skill>`, `~/.agents/skills/<skill>`, each stamped), so it never
     replaces or extends a user file, and a second run on a current home changes nothing.
     Every failure is a warning: the container start never depends on this step.
     """
+    deadline = time.monotonic() + SKILLS_TOTAL_BUDGET_SECONDS
     for cli in SKILLS_CLIS:
         path = shutil.which(cli)
         if path is None:
             continue
-        checked = _run_skills([path, "skills", "check"])
+        checked = _run_skills([path, "skills", "check"], deadline)
         if checked is None:
             continue
         if checked.returncode == 0:
             info(f"{cli}: agent skills current")
             continue
-        if checked.returncode != 1:
+        if checked.returncode == 2:
             info(f"{cli}: no `skills` verb in this version; skipped")
             continue
-        installed = _run_skills([path, "skills", "install"])
+        if checked.returncode != 1 or _crashed(checked):
+            _warn_once(cli, "check", f"{cli} skills check is broken (exit {checked.returncode}); skills step skipped")
+            continue
+        installed = _run_skills([path, "skills", "install"], deadline)
         if installed is None:
             continue
         if installed.returncode == 0:
             ok(f"{cli}: installed agent skills")
         else:
             detail = (installed.stderr or installed.stdout or "").strip().splitlines()
-            warn(f"{cli} skills install failed (exit {installed.returncode}): {detail[-1] if detail else 'no output'}")
+            _warn_once(
+                cli,
+                "install",
+                f"{cli} skills install failed (exit {installed.returncode}): {detail[-1] if detail else 'no output'}"
+                f" (a locally modified skill is refused; `{cli} skills install --overwrite-modified` is the operator's choice)",
+            )
 
 
 # ── docker socket relay repair ──────────────────────────────────────────────

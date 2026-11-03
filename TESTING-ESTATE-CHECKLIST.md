@@ -27,7 +27,7 @@ This release-wave update is also being recorded against integration commit
 `90a37794` (CIU instance `80e9c8`, created 2026-09-19 UTC). The released
 first-party wheels `cmru 5.4.1`, `ciu 7.15.0`, `assay 6.5.0`, `nyxloom 0.8.0`,
 and `topos 0.4.0` were checksum-verified and installed into
-`/home/vscode/.venv`. The final estate transaction is still pending; this
+`/opt/mdt/venv`. The final estate transaction is still pending; this
 paragraph records installation evidence and must not be read as a green final
 gate.
 The author-side review is by Codex. Plato performed the independent

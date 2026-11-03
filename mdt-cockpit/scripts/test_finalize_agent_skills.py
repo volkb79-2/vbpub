@@ -60,6 +60,7 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
     bin_dir.mkdir()
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("PATH", str(bin_dir))
+    monkeypatch.setattr(finalize, "SKILLS_MARKER_DIR", tmp_path / "markers")
     return home, bin_dir
 
 
@@ -101,6 +102,77 @@ def test_a_cli_without_a_skills_verb_is_skipped_without_a_warning(
 
     assert _calls(home) == ["ciu skills check"]
     assert "WARN" not in capsys.readouterr().err
+
+
+def test_a_crashing_check_is_a_warning_and_no_install_is_attempted(
+    env: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    home, bin_dir = env
+    crash = bin_dir / "cmru"
+    crash.write_text(
+        f"#!{sys.executable}\nimport sys\nsys.stderr.write('Traceback (most recent call last):\\nImportError: x\\n')\n"
+        "sys.exit(1)\n",
+        encoding="utf-8",
+    )
+    crash.chmod(0o755)
+
+    finalize.install_agent_skills()
+
+    assert "cmru skills check is broken (exit 1)" in capsys.readouterr().err
+    assert not (home / ".claude").exists()
+
+
+def test_an_unexpected_check_code_is_a_warning_not_a_no_verb_skip(
+    env: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    home, bin_dir = env
+    _fake_cli(bin_dir, "cmru", check_rc=7)
+
+    finalize.install_agent_skills()
+
+    assert _calls(home) == ["cmru skills check"]
+    assert "cmru skills check is broken (exit 7)" in capsys.readouterr().err
+
+
+def test_a_refused_install_warns_once_per_container_then_logs_info(
+    env: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    _, bin_dir = env
+    _fake_cli(bin_dir, "cmru", install_rc=1)
+
+    finalize.install_agent_skills()
+    first = capsys.readouterr()
+    finalize.install_agent_skills()
+    second = capsys.readouterr()
+
+    assert "WARN" in first.err and "--overwrite-modified" in first.err
+    assert "WARN" not in second.err
+    assert "cmru skills install failed" in second.out
+
+
+def test_the_step_is_bounded_by_a_per_call_timeout_and_a_total_budget(
+    env: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import subprocess
+
+    home, bin_dir = env
+    for name in ("cmru", "ciu", "pwmcp"):
+        _fake_cli(bin_dir, name)
+    timeouts: list[float] = []
+
+    def hung(argv, **kw):
+        timeouts.append(kw["timeout"])
+        raise subprocess.TimeoutExpired(argv, kw["timeout"])
+
+    monkeypatch.setattr(finalize.subprocess, "run", hung)
+    clock = iter([0.0, 0.0, 30.0, 61.0, 61.0, 61.0])
+    monkeypatch.setattr(finalize.time, "monotonic", lambda: next(clock))
+
+    finalize.install_agent_skills()
+
+    assert finalize.SKILLS_TIMEOUT_SECONDS == 20 and finalize.SKILLS_TOTAL_BUDGET_SECONDS == 60
+    assert timeouts == [20, 20]  # min(20, 60) and min(20, 30)
+    assert "time budget" in capsys.readouterr().err
 
 
 def test_absent_clis_are_ignored(env: tuple[Path, Path]) -> None:
