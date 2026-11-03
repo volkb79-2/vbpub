@@ -132,3 +132,76 @@ digest with the one the fetcher verified against pointer and sidecar; the 0700 `
 between the two steps. Cheap tightening: the fetcher writes `<wheel>.sha256` beside the wheel and the builder asserts
 equality; cap reads at 64 MiB. Low: same-uid write access to the staging directory is the precondition.
 
+## TB-13 - tester-unified becomes uid-agnostic: read-only `/opt/tester-venv`, no baked uid 1003 (lane-uid phase 2) (2026-11-04)
+
+**Problem.** `tester-unified/Dockerfile:405-423` creates `tester:1003:1003`, sets `HOME=/home/tester`, `USER 1003` and makes `/opt/tester-venv`
+owned by 1003. The reasons are `pwd.getpwuid` (topos `daemon/deploy.py:311,329`, `procs/sampler.py:316`, `actions/execute.py:122`),
+`getpass.getuser` (nyxloom `control_auth.py:218`), a writable HOME and doctrine (`nyxloom/reference/DOCTRINE.md:28-37`). The uid is asserted in
+`tester-unified/run:259,305` and `assay/tools/self-qualification-container.sh:601`. Every host must use uid 1003 or lanes fail (RG-150, NC-04,
+MDT-052).
+
+**Decision record (operator, 2026-11-04, binding).** Lanes run as the checkout owner with a generated read-only passwd/group overlay
+(run-gate RG-151), a per-lane HOME and a read-only tester venv; the baked uid 1003 rule retires. This entry is phase 2 of four.
+
+**Design.**
+
+- The image no longer requires uid 1003. It keeps a `tester` entry only as a default for plain `docker run` use, and nothing in the image
+  assumes that uid; `/opt/tester-venv` is root-owned and read-only by contract (mode 0755/0644, no group write).
+- Audit and move every write into the venv: each `pip install` or `--editable` in gate scripts (assay editable install, run-gate wheel,
+  cmru, topos, nyxloom gate scripts) goes to a per-lane prefix: `PIP_PREFIX`/`PYTHONUSERBASE` under `$HOME` (the per-lane HOME), or a lane
+  venv created with `--system-site-packages`. The audit result (a list of every writer) is recorded in `tester-unified/docs/DESIGN-GUIDE.md`.
+- `tester-unified/run` and the self-qualification script assert `== owner` (the lane's resolved uid) instead of `== 1003`.
+- Lanes that use Docker derive the socket gid by `stat` of the socket they mount (`tester-unified/run:125-233` already does; keep it as the
+  reference pattern and add the explicit non-mdt case below).
+- One CONSUMERS statement of the lane contract: user is the checkout owner, `HOME` is per-lane and writable, `/opt/tester-venv` is read-only,
+  installs go to the lane prefix.
+
+**Acceptance criteria.**
+
+- A lane run with `--user <arbitrary uid>` plus the overlay passes the contract lanes of tester-unified; a write to `/opt/tester-venv`
+  fails (read-only) and no gate script attempts one.
+- The image history shows no `chown 1003` and `USER 1003` any more; a test greps the Dockerfile and scripts.
+- `run` and the self-qualification script pass on a host where the owner uid is not 1003.
+- **Non-mdt path (operator criterion, 2026-11-04).** `tester-unified/run` on a plain Debian host or another devcontainer: the docker gid comes from
+  `stat` of the socket actually mounted (`DOCKER_HOST` or `/var/run/docker.sock`), the user needs only that environment's normal docker access,
+  and no test or script mentions `mdt-docker`/`mdt` groups as a precondition. Add a test with a fake socket of an arbitrary gid.
+
+**Test plan.** Dockerfile static tests; a tester-lane contract run under a foreign uid; the pip-writer audit as a test that runs the
+gate scripts' install commands with a read-only venv.
+
+**Dependencies and order.** After run-gate RG-151 (the overlay exists). Phase 3 (assay B211, cmru KI-114) runs in parallel afterwards, then
+RG-153. Folds into the single image change with TB-14's base digest if both land in the same wave.
+
+## TB-14 - tester-base exports an OCI layout; tester-unified and wheel-builder consume it by digest (closes TB-04 and TB-11 in design) (2026-11-04)
+
+**Problem.** Local tester bases are identified by a mutable tag (`tester-base:local`, TB-11) and the derived builds bypass the governed
+builder (docker driver) because the remote `mdt-managed` builder cannot see dockerd's store: `cmru/build-initial-standalone.sh:312,320`,
+`tester-unified/build-image.sh` with a local base (`docs/CONSUMERS.md:13,23`), `wheel-builder/Dockerfile:35`. Bypass loses the slice, cache and GC
+and the base is never part of the derived image's source hash (TB-04).
+
+**Decision record (operator, 2026-11-04).** `mdt-managed` stays the only builder; local bases travel as OCI layouts and named build contexts
+pinned by digest: `--build-context <ref>=oci-layout://<dir>@sha256:<digest>`. The bypass remains only for the fresh-host bootstrap
+(`--builder default`, never by environment). Platform memo section 1 (option A). Owner mdt-cockpit entry: MDT-056.
+
+**Design.**
+
+- tester-base build exports `--output type=oci,dest=<project>/artifacts/oci/tester-base,tar=false` (gitignored under `artifacts/`), plus `--load`
+  only when the image is `docker run`; the layout's index digest is printed and written next to it.
+- `build-image.sh` and wheel-builder take `--base-oci <dir>` and map `tester-base:local` to `oci-layout://<dir>@sha256:<digest>`; the base
+  digest enters the derived image's source hash and its labels (closing TB-04) and replaces inheritance of the base's identity labels (TB-11:
+  reset `org.vbpub.tester-base.*` in the derived image).
+- tester-unified itself keeps `--load`, because lanes `docker run` it.
+- Pilot check first: a context key with a tag (`tester-base:local`) must map a tagged `FROM tester-base:local`.
+- srdm (`go-base.sh`, gate, canary) and cmru (`build_contexts`, KI-113) follow the same pattern in their own entries.
+
+**Acceptance criteria.**
+
+- The tester chain builds with no docker-driver bypass; the BuildKit slice accounts the work; second build hits the cache.
+- Changing the base changes the derived source hash; a retagged wrong image cannot masquerade as the base (digest mismatch refuses).
+- **Non-mdt path.** The same scripts build on a plain host with its ordinary builder (any buildx builder accepting named contexts) or classic
+  docker; a test checks argument construction without mdt.
+
+**Test plan.** Script argument tests, label tests, one live pilot comparing wall time and slice accounting against the bypass.
+
+**Dependencies and order.** Package 1 of MDT-056 (tester-chain pilot), then wheel-builder, then srdm and cmru.
+

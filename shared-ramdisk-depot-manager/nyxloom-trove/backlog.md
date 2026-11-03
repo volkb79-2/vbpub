@@ -230,3 +230,13 @@ tree already has is worse than an empty one.
   LOWER than covergate's for the reason in the entry above (fewer
   non-statement lines counted). Decide on the merits after the wave's
   F008-A5 transcript exists; nothing here is committed to.
+
+- **Go gate builds leave the governed builder (operator decision 2026-11-04: `mdt-managed` is the only builder; local bases via OCI-layout
+  contexts pinned by digest).** `tools/go-base.sh` builds the shared Go gate base image with the docker driver (about `:39`); `gate.sh:82` and
+  `canary-run.sh:34` then use a plain `docker build ... FROM <that base>`. Through the host buildx shim a plain `docker build` reaches `mdt-managed`
+  and cannot see the local tag, so it needs a live check (mdt-cockpit MDT-057). Work: `go-base.sh` exports an OCI layout
+  (`--output type=oci,dest=<project artifacts dir>/oci/go-base,tar=false`; location derived from the script's own path, no environment
+  override) and prints its digest; `gate.sh` and `canary-run.sh` build with `docker buildx build --build-context <ref>=oci-layout://<dir>@sha256:<digest>`;
+  the base digest enters the images' identity. Acceptance: the gate and canary images build without the docker-driver bypass; changing the base
+  changes the derived identity; a plain-host build (any buildx builder) works with no mdt tooling (test of argument construction). Order: package 3
+  of mdt-cockpit MDT-056 (after the tester-chain pilot TB-14 and wheel-builder).

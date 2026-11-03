@@ -590,3 +590,28 @@ entries). The branch was deleted; the commits are preserved as a git bundle at
 
 **Close by:** decide against the PWMCP-11 phase 2 watcher design whether the in-page bitmap read and the xterm reader belong in the watcher or as
 standalone verbs, then port the wanted pieces from the bundle onto current main (the CLI surface files conflict) or drop them with a reason here.
+<!-- Id note (2026-11-04): PWMCP-22 exists on branch finish-pwmcp-1-20261104 (not on main). The id below is PWMCP-23. -->
+
+## PWMCP-23 — find the local base image behind the release's `BUILDX_BUILDER=default` bypass, or drop the bypass
+
+**Status:** OPEN (investigation). Filed 2026-11-04.
+
+**Problem.** The pwmcp release is documented to need `BUILDX_BUILDER=default BUILDKIT_HOST=` (environment only; `build-push.py:127` requires both variables
+when building through the configured endpoint, and `docs/ARCHITECTURE.md:130` says `BUILDX_BUILDER = "mdt-managed"`). `build-push.py:115-195` supports both
+paths and no committed text says why the default builder is needed. A bypass loses governance (`dev-buildkitd.slice`), the btrfs cache and the
+fail-closed shim (mdt-cockpit MDT-056); on the host the shim may even remap `BUILDX_BUILDER=default` back to `mdt-managed` (MDT-057).
+
+**Decision record (operator, 2026-11-04).** `mdt-managed` is the only builder; local bases come in as OCI-layout build contexts pinned by digest
+(`--build-context <ref>=oci-layout://...@sha256:...`); a bypass is allowed only for the fresh-host bootstrap and is never selected by environment.
+
+**Design / steps.**
+
+1. Identify what the build needs from the local store: a `FROM <local-tag>` (a base image built by another project), a `--load` consumer, or a
+   registry-auth reason. Record the finding in this entry.
+2. If a local base exists: build it as an OCI layout and consume it with `--build-context`, following the tester-chain pilot (TB-14).
+3. If none exists: drop the bypass from the release instructions and from the script, and run the release through `mdt-managed`.
+
+**Acceptance.** The release procedure names no environment-selected bypass; a test (or the release dry-run) shows the build runs on
+`mdt-managed`; docs updated. **Non-mdt path:** the build still works with any buildx builder (document the plain-host form).
+
+**Dependencies and order.** Package 5 of MDT-056, after TB-14 and the cmru `build_contexts` option (KI-113).

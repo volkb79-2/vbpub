@@ -18,7 +18,7 @@ Users. The TUI and scriptable CLI share one query/action layer. Every write uses
 plan/apply, displays the exact API calls, re-reads state before apply, and uses typed confirmation for destructive work.
 
 Non-goals: boot-pool management, pool creation, a REST client, a daemon, and compatibility
-with releases other than v27. tnt targets vanilla TrueNAS; it does not rely on any relaxation patch.
+with releases other than v27. tnt works on vanilla v27; patch-only features are detected at runtime (the TNT-35 capability-probe pattern) and hidden with a clear message where absent.
 
 ## 2. Architecture
 
