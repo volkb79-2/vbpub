@@ -13948,3 +13948,64 @@ each addition is a schema change for every validator.
 
 **Dependencies and order.** Run-gate 24.4.0 (RG-148) first, then assay 12.0.0 with B206 and B208 (and B207 if
 ready). Closes B203 and B205 when merged.
+
+## B209 — assay under the relaxed `io_sync` default: what stays durable, and the fsync cost at high `--jobs`
+
+**Status: OPEN (filed 2026-11-03).** Pairs with run-gate RG-149 (relaxed becomes the default for ephemeral lanes).
+Operator direction: mutation campaigns run without fsync by default.
+
+**Problem.**
+
+- Under `relaxed`, the whole process tree, assay included, runs with unsynced writes. The coordinator writes about four
+  fsyncs per candidate (state record, progress, and the atomic-rename pairs). At very high `--jobs` with short
+  candidates, fsync cost was identified as the likely bottleneck (RESOURCE-PROFILES).
+- Page cache survives a process or container kill, so resume after a kill is unaffected. Only a host crash or power
+  loss loses unsynced data, and that case needs an explicit decision per file instead of an accident of the preload.
+
+**Per-file decision (to confirm in design).**
+
+| File | Loss on host crash | Decision |
+|---|---|---|
+| state record | resume re-runs unfinished candidates; a torn or absent record must be detected, never trusted | keep the existing atomic rename and a trailing integrity check; fsync optional |
+| verdict artifact | the verdict is the product; a lost verdict is regenerated from state | write once at the end; fsync it (see option A) |
+| progress stream | observability only | no fsync |
+| workspace clones | regenerable by construction | no fsync |
+
+**Design options.**
+
+- **A. Coordinator durable, workers relaxed.** Run the coordinator without the preload (or with a documented
+  `ASSAY_FSYNC=1` escape that calls fsync itself on the state and verdict writes) while candidate workers run under it.
+  Costs one fsync set per candidate in the coordinator only.
+- **B. Accept loss on host crash.** The whole run under the preload. Resume re-runs unfinished candidates; the
+  state reader must reject a torn record and never credit a candidate it cannot verify (reuse the B204 confirmation
+  stance). Cheapest, and the default if the measurement shows A costs more than a small fraction of wall time.
+- Choose by the measurement below. Whichever wins is documented in the assay design and run-gate README.
+
+**Interaction with worker counts.**
+
+- B207's scheduling and RG-146's auto worker counts were sized from strict-mode profiles. Profiles are same-mode
+  only (RG-149): the relaxed bucket is re-measured before sizing reads it.
+- If relaxed removes the fsync bottleneck, the CPU-bound optimum N moves up; the formulas in RG-148 stay unchanged and
+  consume the new numbers.
+
+**Acceptance criteria.**
+
+- The per-file table is final, with a test per row: a kill of the process (page cache intact) resumes to the same
+  verdict; a simulated torn or truncated state record is rejected and the candidate re-run.
+- The chosen option is implemented behind a documented switch and recorded in the verdict or profile summary
+  (so an analysis can tell which mode produced it).
+- A campaign under the default relaxed mode produces the same candidate outcomes as strict on the same suite
+  (outcome equivalence, excluding timing).
+
+**Measurement plan.**
+
+- Short-candidate suite (many candidates, sub-second tests), same commit, same host state.
+- Jobs N in {1, 4, 8, 16, auto} x {relaxed, strict}, three repetitions, `cgprofile` samples per RG-145.
+- Report per cell: candidates per second, coordinator CPU share, fsync count and fsync wall time (from the observer
+  or `strace -c -e fsync,fdatasync` on a sample), and p95 candidate wall.
+- Decision rule: option B unless option A's added wall time at the largest N is above a stated fraction (set in the
+  measurement report before the run); otherwise A.
+
+**Dependencies and order.** After RG-149 lands in run-gate (so the default exists), and with or after B207 (scheduling
+consumes the same profiles). Independent of the v18 verdict cut (B208), except that the mode recording lands in
+`judgment.r2.profile` if B208 is still open.
