@@ -150,8 +150,8 @@ def test_contract_2_structural_errors_echo_valid_contract(tmp_path):
 @pytest.mark.parametrize(
     ("payload", "message"),
     [
-        (_request(thread_id=42, contract=1), "supports contract 2 only"),
-        (_request(thread_id=42, contract=3), "supports contract 2 only"),
+        (_request(thread_id=42, contract=1), "supports contracts 2 and 3 only"),
+        (_request(thread_id=42, contract=4), "supports contracts 2 and 3 only"),
         (
             json.dumps({"verb": None, "args": {}, "contract": 2}).encode(),
             "request 'verb' must be a string",

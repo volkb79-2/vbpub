@@ -55,8 +55,10 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 from . import access, damon as damon_mod, events as events_mod, metrics, sampler as sampler_mod
 from . import store, subtree, summary, targets as targets_mod, util
 from . import (
+    ancestor_events as ancestor_events_mod,
     limits as limits_mod,
     liveness as liveness_mod,
+    observer_windows as observer_windows_mod,
     placement as placement_mod,
     resource_observer as resource_observer_mod,
 )
@@ -66,6 +68,10 @@ CONTRACT_VERSION = 1
 RESOURCE_OBSERVER_CONTRACT_VERSION = (
     resource_observer_mod.RESOURCE_OBSERVER_CONTRACT_VERSION
 )
+# Contract 3 adds the measurement-window verbs next to contract 2's
+# `resource-limits`; `RESOURCE_OBSERVER_CONTRACT_VERSION` stays 2 for 1.x so a
+# contract-2 client sees no difference.
+RESOURCE_OBSERVER_CONTRACTS = (2, 3)
 CGPROFILE_VERSION = runtime_version("0.0.0-dev")
 
 DEFAULT_SOCKET_PATH = "/run/cgprofile/ctl.sock"
@@ -320,6 +326,10 @@ class _Session:
     live_memory_peak_bytes: Optional[int] = None
     live_cpu_cores_recent: Optional[float] = None
     live_damon_hot_bytes_recent: Optional[int] = None
+    # CP-40: the ancestors' local memory.events at session start; the delta
+    # to the read at finalization is the Summary's
+    # `ancestors_memory_events_local`.
+    ancestor_events_start: Optional[Dict[str, Any]] = None
     last_mono: Optional[float] = None
     last_discovery_mono: Optional[float] = None
     sampler_origin_mono: Optional[float] = None
@@ -450,6 +460,13 @@ class SessionServer:
         # use the REAL `/proc` for pid/subtree resolution but wants a
         # controlled host-pressure reading overrides this separately.
         self.host_proc_root = host_proc_root if host_proc_root is not None else proc_root
+        self.windows = observer_windows_mod.WindowRegistry(
+            proc_root=self.proc_root,
+            host_proc_root=self.host_proc_root,
+            cgroup_root=self.cgroup_root,
+            mountinfo_path=os.path.join(self.proc_root, "self", "mountinfo"),
+            gates_slice_name=self.gates_slice_name,
+        )
         self.daemon_name = daemon_name
         self.clock = clock
         self.sampler_clock = sampler_clock
@@ -866,6 +883,7 @@ class SessionServer:
             # that supports the contract-2 R2 observer from an older daemon.
             "resource_observer": {
                 "contract": RESOURCE_OBSERVER_CONTRACT_VERSION,
+                "contracts": list(RESOURCE_OBSERVER_CONTRACTS),
                 "path": self.observer_socket_path,
                 "listening": observer_listening,
             },
@@ -1276,6 +1294,9 @@ class SessionServer:
                 ),
                 placement=placement_obj,
                 sampler_origin_mono=sampler_origin_mono,
+                ancestor_events_start=ancestor_events_mod.read_ancestors(
+                    self.cgroup_root, ancestor_events_mod.ancestor_paths(cgroup),
+                ),
             )
             # Sample zero is the liveness baseline as well as the summary's
             # initial sample, so status and later deltas share one observation.
@@ -2348,6 +2369,13 @@ class SessionServer:
             if sess.placement is not None:
                 sess.placement.release()
                 summary_doc["placement"] = sess.placement.block()
+            if sess.ancestor_events_start is not None:
+                summary_doc["ancestors_memory_events_local"] = ancestor_events_mod.deltas(
+                    sess.ancestor_events_start,
+                    ancestor_events_mod.read_ancestors(
+                        self.cgroup_root, list(sess.ancestor_events_start),
+                    ),
+                )
         if sess.damon_session is not None:
             # Sol B3: an unverified (possibly still active) kdamond must not
             # look like "DAMON off" to the consumer. The disposition travels
@@ -2613,7 +2641,7 @@ class SessionServer:
 
     @staticmethod
     def _requested_observer_contract(payload: bytes) -> int:
-        """Use the only supported observer contract for error envelopes."""
+        """The contract an error envelope uses: the requested one when supported."""
         try:
             request = json.loads(payload.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError):
@@ -2621,7 +2649,7 @@ class SessionServer:
         if not isinstance(request, dict):
             return RESOURCE_OBSERVER_CONTRACT_VERSION
         contract = request.get("contract")
-        if type(contract) is int and contract == RESOURCE_OBSERVER_CONTRACT_VERSION:
+        if type(contract) is int and contract in RESOURCE_OBSERVER_CONTRACTS:
             return contract
         return RESOURCE_OBSERVER_CONTRACT_VERSION
 
@@ -3219,6 +3247,7 @@ class SessionServer:
                                 "resource observer accept thread did not stop within 6 seconds"
                             )
                         self._observer_thread = None
+                    self.windows.shutdown()
                     try:
                         pool_closed = self.damon_pool.close()
                     except Exception as exc:  # noqa: BLE001 - shutdown remains best-effort
@@ -3340,10 +3369,12 @@ class SessionServer:
     def _observer_dispatch(
         self, payload: bytes, peer: Optional[Tuple[int, int, int]]
     ) -> Dict[str, Any]:
+        envelope_contract = self._requested_observer_contract(payload)
+
         def error(code: str, message: str) -> Dict[str, Any]:
             return {
                 "ok": False,
-                "contract": RESOURCE_OBSERVER_CONTRACT_VERSION,
+                "contract": envelope_contract,
                 "error": {"code": code, "message": message},
             }
 
@@ -3354,8 +3385,8 @@ class SessionServer:
         if not isinstance(req, dict) or any(not isinstance(key, str) for key in req):
             return error("bad-argument", "request must be a JSON object")
         contract = req.get("contract")
-        if type(contract) is not int or contract != RESOURCE_OBSERVER_CONTRACT_VERSION:
-            return error("bad-argument", "resource observer supports contract 2 only")
+        if type(contract) is not int or contract not in RESOURCE_OBSERVER_CONTRACTS:
+            return error("bad-argument", "resource observer supports contracts 2 and 3 only")
 
         if set(req) != {"verb", "args", "contract"}:
             return error(
@@ -3368,6 +3399,8 @@ class SessionServer:
             return error("bad-argument", "request 'verb' must be a string")
         if not isinstance(args, dict):
             return error("bad-argument", "request 'args' must be a JSON object")
+        if contract == 3:
+            return self._observer_window_verb(verb, args, peer, error)
         if verb != "resource-limits":
             return error(
                 "bad-argument", "resource observer socket accepts only 'resource-limits'"
@@ -3398,6 +3431,64 @@ class SessionServer:
         except resource_observer_mod.ResourceObserverError as exc:
             return error("observer-refused", str(exc))
         return {"ok": True, "contract": contract, **body}
+
+    def _observer_window_verb(
+        self,
+        verb: str,
+        args: Dict[str, Any],
+        peer: Optional[Tuple[int, int, int]],
+        error: Callable[[str, str], Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Contract 3: ``window-open`` and ``window-close``.
+
+        The bind, sampling and result live in :mod:`lib.observer_windows`; this
+        method validates the wire shape and maps refusals to error codes.
+        """
+        def is_int(value: object) -> bool:
+            return type(value) is int and value > 0
+
+        if verb == "window-open":
+            allowed = {"thread_id", "root_pid", "mode", "interval_ms"}
+            required = {"thread_id", "root_pid", "mode"}
+            if not required <= set(args) <= allowed:
+                return error(
+                    "bad-argument",
+                    "window-open takes thread_id, root_pid, mode and optional interval_ms",
+                )
+            interval = args.get("interval_ms", observer_windows_mod.DEFAULT_INTERVAL_MS)
+            if not is_int(args["thread_id"]) or not is_int(args["root_pid"]):
+                return error("bad-argument", "thread_id and root_pid must be positive integers")
+            if type(interval) is not int or not isinstance(args["mode"], str):
+                return error("bad-argument", "mode must be a string and interval_ms an integer")
+            call = lambda: self.windows.open(  # noqa: E731 - one call, two verbs
+                peer_pid=None if peer is None else peer[0],
+                peer_uid=None if peer is None else peer[1],
+                thread_id=args["thread_id"], root_pid=args["root_pid"],
+                mode=args["mode"], interval_ms=interval,
+            )
+        elif verb == "window-close":
+            if set(args) != {"thread_id", "window"}:
+                return error("bad-argument", "window-close takes exactly thread_id and window")
+            if not is_int(args["thread_id"]) or not isinstance(args["window"], str):
+                return error("bad-argument", "thread_id must be a positive integer, window a string")
+            call = lambda: self.windows.close(  # noqa: E731
+                peer_pid=None if peer is None else peer[0],
+                peer_uid=None if peer is None else peer[1],
+                thread_id=args["thread_id"], window_id=args["window"],
+            )
+        else:
+            return error(
+                "bad-argument",
+                "contract 3 accepts only 'window-open' and 'window-close'",
+            )
+        try:
+            body = call()
+        except observer_windows_mod.WindowError as exc:
+            response = error(exc.code, str(exc))
+            if exc.reason is not None:
+                response["error"]["reason"] = exc.reason
+            return response
+        return {"ok": True, "contract": 3, **body}
 
     def serve_forever(self) -> None:
         """Blocks until :meth:`request_shutdown` is called or a signal

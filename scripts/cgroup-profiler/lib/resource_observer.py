@@ -558,3 +558,69 @@ def _mode_grants_write(
     if owner_gid in {fsgid, *groups}:
         return bool(mode & stat.S_IWGRP)
     return bool(mode & stat.S_IWOTH)
+
+
+def resolve_window_peer(
+    *,
+    peer_pid: int | None,
+    peer_uid: int | None,
+    thread_id: object,
+    proc_root: str,
+    cgroup_root: str,
+    mountinfo_path: str,
+    gates_slice_name: str,
+) -> dict[str, Any]:
+    """Authenticate the peer of a contract-3 window verb.
+
+    The identity proof is the one contract 2 uses: SO_PEERCRED PID and UID, the
+    native TID inside the peer's live thread set, one shared cgroup, UID and
+    credential state, and membership beneath the gates slice. The result names
+    the peer's start time and its host cgroup path; it selects nothing a
+    request could influence.
+    """
+    if peer_pid is None or type(peer_pid) is not int or peer_pid <= 0:
+        raise ResourceObserverError("SO_PEERCRED did not provide a host-visible peer PID")
+    if type(thread_id) is not int or thread_id <= 0:
+        raise ResourceObserverError("thread_id must be a positive native TID")
+    if peer_uid is None or type(peer_uid) is not int or peer_uid < 0:
+        raise ResourceObserverError("SO_PEERCRED did not provide a valid peer UID")
+    peer = _resolve_peer(peer_pid, peer_uid, thread_id, proc_root)
+    gates_path = PurePosixPath(targets.slice_to_path(gates_slice_name))
+    root = Path(os.path.normpath(cgroup_root))
+    if not root.is_absolute():
+        raise ResourceObserverError("configured cgroup root is not absolute")
+    _mount_id, parent_levels, _pids_local, _memory_local = _cgroup_mount(
+        root, Path(mountinfo_path)
+    )
+    leaf_path = _host_cgroup_path(peer["cgroup"], parent_levels)
+    if leaf_path == gates_path or not leaf_path.is_relative_to(gates_path):
+        raise ResourceObserverError("peer cgroup is not a descendant of the configured gates slice")
+    status = _read_status(Path(proc_root) / str(peer_pid) / "status")
+    return {
+        "pid": peer_pid,
+        "uid": peer_uid,
+        "start_ticks": peer["start_ticks"],
+        "nspid": status["NSpid"],
+        "leaf_path": leaf_path,
+        "parent_levels": parent_levels,
+    }
+
+
+def process_cgroup_path(proc_root: str, pid: int, parent_levels: int) -> PurePosixPath:
+    """The host cgroup path of one process, mapped like the peer's own."""
+    try:
+        text = (Path(proc_root) / str(pid) / "cgroup").read_text(encoding="ascii")
+    except (OSError, UnicodeError) as exc:
+        raise ResourceObserverError("cannot read the window root's cgroup") from exc
+    cgroup = targets._unified_cgroup_path(text)
+    if not isinstance(cgroup, str) or not cgroup.startswith("/"):
+        raise ResourceObserverError("window root has no absolute unified cgroup path")
+    return _host_cgroup_path(cgroup, parent_levels)
+
+
+def process_nspid(proc_root: str, pid: int) -> tuple[int, ...] | None:
+    """The NSpid chain of one process, or None when it is gone or unreadable."""
+    try:
+        return _read_status(Path(proc_root) / str(pid) / "status")["NSpid"]
+    except ResourceObserverError:
+        return None

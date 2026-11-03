@@ -1616,8 +1616,12 @@ def _strip_v1_1_summary_keys(summary_doc: Dict[str, Any]) -> Dict[str, Any]:
     # `damon_cleanup` (Sol B3) is the same kind of additive v1.1 key: present
     # whenever a DAMON owner was closed, so the v1 goldens are compared
     # without it and its own tests pin it.
+    # `ancestors_memory_events_local` (CP-40) is likewise additive; the fake
+    # lifecycle tree has no ancestor event files, and tests/test_ancestor_events
+    # plus the daemon test below pin the key itself.
     return {k: v for k, v in summary_doc.items()
-            if k not in ("liveness", "watch", "damon_cleanup")}
+            if k not in ("liveness", "watch", "damon_cleanup",
+                         "ancestors_memory_events_local")}
 
 
 class TestFullLifecycleGoldenReproduction:
@@ -4210,6 +4214,7 @@ def test_cli_golden_round_trip_version_start_status_stop(monkeypatch, tmp_path, 
         }
         assert version_out["resource_observer"] == {
             "contract": 2,
+            "contracts": [2, 3],
             "path": str(tmp_path / "resource-observer.sock"),
             "listening": True,
         }

@@ -21,6 +21,10 @@
   },
   "resource_observer": {
     "contract": 2,
+    "contracts": [
+      2,
+      3
+    ],
     "path": "/run/cgprofile/observer/resource-observer.sock",
     "listening": true
   }
