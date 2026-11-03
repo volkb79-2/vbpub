@@ -225,14 +225,16 @@ Other changes that came out of this group:
 
 - **The five `budget_exceeded` candidates were non-terminating loops created by the mutant, not slow tests** (testing.py 585 `_resolve`, 596 and 653 the `while d and d not in dirs`
   parent walks, stages.py 141 `supervise` spinning on a finished handle, sweep.py 61 `quiet_gap_ended` never true). There is no `pytest-timeout` in tester-unified,
-  and a bound inside the fake or the code under test would hide the loop, so `tests/conftest.py` now carries an autouse per-test wall-clock limit (30 s, the slowest real test takes
-  about 3 s; `SIGALRM`, re-armed every second, raising a `BaseException` so a broad `except` cannot swallow it; `@pytest.mark.time_limit(n)` overrides, marker registered in `pytest.ini`).
-  Replayed by hand against the whole suite: the five end as killed (testing.py 585 in 18 s, 596 and 653 in 34 s, stages.py 141 in 7 s, sweep.py 61 in 128 s, the
-  last because its first failing test is test number 678 of 760, after about 95 s of passing tests plus the 30 s limit: it does not meet the 60 s acceptance by itself). A smaller
+  and a bound inside the fake or the code under test would hide the loop, so `tests/conftest.py` now carries an autouse per-test CPU-time limit (delta review I1: it was a 30 s wall-clock alarm, which host load could turn into a test failure; it is now `ITIMER_PROF`/`SIGPROF`, so only CPU
+  seconds of the test process count, 100 s = 10x the slowest measured test, 9.78 CPU s in a 946-test run; re-armed every second, raising a `BaseException` so a broad `except` cannot swallow it; `@pytest.mark.time_limit(cpu_seconds)` overrides, marker registered in `pytest.ini`).
+  A sleeping or subprocess-waiting hang is deliberately not bounded by it (no CPU burns). The first replay under the old wall-clock limit: the five ended as killed (testing.py 585 in 18 s, 596 and 653 in 34 s, stages.py 141 in 7 s, sweep.py 61 in 128 s, the
+  Replay with the CPU limit (2026-11-04, `-x`, host PSI some avg10 37-48, so wall includes contention): testing.py 585 23 s (RecursionError), 596 123 s, 653 154 s, stages.py 141 7 s,
+  sweep.py 61 303 s (870 tests passed first, about 200 s under load, then the 100 s CPU limit); all five killed. The 100 s CPU limit costs a looping mutant 100 CPU s, so sweep.py 61 sits at the 300 s candidate budget under load: lower
+  `time_limit` for the slowest legitimate test or reorder tests if it is again `budget_exceeded`. Old note: sweep.py 61's first failing test is test number 678 of 760, after about 95 s of passing tests plus the 30 s limit: it does not meet the 60 s acceptance by itself). A smaller
   limit would shave 15 s, not reach 60; the real lever is test selection or running the candidate's changed-file tests first (see "The bigger lever" below).
 - `FakeDevice` no longer carries the unused `o_direct` attribute; `FakeHost._mount_for`, `_meminfo`, the fresh-penalty guard in `FakeFio.simulate`, `mode_profile` and series.py `downsample` lost the
   comparison that made an equivalent mutant (behaviour unchanged, covered by the old and the new tests). `restore.recover_previous` lost a `finally` that reset a local that is never read again.
-- `test_bl06_n_r3_2_a_survivor_holding_the_pipe_cannot_hang_the_run` failed once in a long single-container run (passed alone and in the gate run): a wall-clock test, not touched here; watch it in the rerun.
+- `test_bl06_n_r3_2_a_survivor_holding_the_pipe_cannot_hang_the_run` failed once in a long single-container run (passed alone and in the gate run): a wall-clock test; the delta rewrote it (two phases, a `setsid` script, the subreaper, `waitpid` of the detached child) and it still uses real `sleep 28/29`, so its <10 s asserts rely on no host stall; watch it in the rerun.
 
 **Scheduling and profile hooks this lane will use** (cross-tool design `docs/design/RESOURCE-PROFILES.md`):
 
