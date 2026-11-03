@@ -59,13 +59,120 @@ Items the IOB-03 P3 review wave and the later review waves deliberately did not 
   4. Plausibility review of the acceptance-run numbers.
   5. The iogov bridge (division of labour, item 1), then IOB-BL-12.
 
-## IOB-R2-01 — native R2 on r1002 (2026-11-03): 318 survivors, 5 budget-exceeded; the campaign is incomplete
+## IOB-R2-01 — native R2 on r1002 (2026-11-02/03): 318 survivors, 5 budget-exceeded; triage plan
 
-The first full native R2 for `libraries/iobench` (Run-Gate 24.3.0, `jobs = "auto"` → 3 workers, 1,220 candidates, 17 h) ended with 897 killed,
-**318 survived**, 0 equivalent, 0 crashed, 0 hung and **5 `budget_exceeded`** (all five reproduce under `--jobs 1 --rejudge` at ~289–308 s, no OOM:
-real candidate timeouts, not parallel flakes). Evidence: `evidence/iobench-r2-r1002/` of the release-program directory (survivor list
-`survivors-from-verdict.csv`, replay status, archive) and the report `IOBENCH-R2-R1002-2026-11-02.md`.
-Survivors by file: calibrate.py 59, cache.py 44, testing.py 31, shape.py 25, cli.py 16, guard.py 16, series.py 15, dryrun.py 14, restore.py 13,
-matrix.py 10, derive.py 9, plausibility.py 9 (rest smaller). **Next:** (1) triage per file (killer test, equivalent argued by simplifying the code,
-or oracle weakness); (2) decide the five timeouts (per-candidate budget vs a faster test slice, reviewed separately); (3) rerun the R2 with the
-resume state; the rerun is cheap for decided candidates. Not release-blocking for the already-released tools.
+**Status:** OPEN (triage not started). The campaign is incomplete: planned 1,220, terminal 1,215, pending 5.
+
+**Facts.**
+
+- **Run.** First full native R2 for `libraries/iobench` (Run-Gate 24.3.0, assay 11, `jobs = "auto"`: 1 worker on the
+  cold start, then 3).
+  - Outcome: 897 killed, **318 survived**, 0 equivalent, 0 crashed, 0 hung, **5 `budget_exceeded`**.
+  - Campaign wall time 15 h 02 min, including one Docker-restart interruption and the resume attempts.
+- **Evidence:**
+  - `evidence/iobench-r2-r1002/` of the release-program directory: `survivors-from-verdict.csv`,
+    `budget-exceeded-from-verdict.csv`, `progress-iobench.jsonl`, the replay results;
+  - the report `reports/IOBENCH-R2-R1002-2026-11-02.md`.
+- **Candidate profile** (the scheduling data):
+  - every candidate runs essentially the whole suite: elapsed p50 97 s, CPU p50 89 s, CPU-bound;
+  - peak RSS p50 372 MiB, 84% within 350–400 MiB;
+  - 116 candidates below 186 MiB, median 35 s: they fail fast;
+  - 3 above 561 MiB, maximum 878 MiB.
+
+**Survivors by file** (the operator mix and the largest line clusters, within 15 lines of each other, locate the
+weak oracles):
+
+| File | Candidates | Survived | Rate | Operators (survivors) | Largest clusters (lines, count) |
+|---|---:|---:|---:|---|---|
+| calibrate.py | 170 | 59 | 35% | compare-swap 31, boolop 18, bool-const 10 | 190–224 (8), 556–557 (8), 610–611 (8) |
+| cache.py | 112 | 44 | 39% | compare-swap 32, bool-const 8, boolop 4 | 225–265 (19), 80–135 (14) |
+| testing.py | 176 | 31 | 18% | compare-swap 16, bool-const 11, boolop 4 | 624–640 (8), 221–234 (5) |
+| shape.py | 59 | 25 | 42% | compare-swap 18, bool-const 5, boolop 2 | 118–152 (17), 75–96 (6) |
+| cli.py | 53 | 16 | 30% | falsy-swap 10, bool-const 4 | 234–268 (6), 319–350 (5) |
+| guard.py | 110 | 16 | 15% | bool-const 7, boolop 5, compare-swap 4 | 213–241 (6) |
+| series.py | 31 | 15 | 48% | compare-swap 13 | 112–132 (6), 151–162 (4) |
+| dryrun.py | 20 | 14 | 70% | bool-const 6, compare-swap 6, boolop 2 | 71–89 (9) |
+| restore.py | 75 | 13 | 17% | bool-const 6, compare-swap 4, boolop 3 | scattered |
+| matrix.py | 53 | 10 | 19% | compare-swap 5, boolop 3, bool-const 2 | scattered |
+| derive.py | 28 | 9 | 32% | compare-swap 9 | 69–87 (5) |
+| plausibility.py | 31 | 9 | 29% | compare-swap 7, bool-const 2 | scattered |
+| result.py | 60 | 9 | 15% | boolop 7, compare-swap 2 | 167–169 (4) |
+| ceilings.py | 33 | 8 | 24% | compare-swap 5 | 128–139 (4) |
+| devio, stages, sweep, ladder, proposals, plan, extents | 209 | 40 | 19% | mixed | small clusters |
+
+**Triage plan**, in this order. Each step is a separate reviewed branch; tests only, unless a survivor shows dead code.
+
+1. **Cluster first, not candidate by candidate.** The six largest clusters hold 74 survivors:
+   - cache.py 225–265 and 80–135;
+   - shape.py 118–152;
+   - calibrate.py 190–224, 556–557 and 610–611.
+
+   For each cluster, read the code block and its tests, then decide one of:
+   - **(a) missing oracle:** add a boundary test that fails for the mutant;
+   - **(b) equivalent:** prove equivalence by *simplifying the code* until the mutation point disappears. This is
+     preferred to a waiver. It is reviewed;
+   - **(c) dead or unreachable branch:** remove it.
+
+   `compare-swap` dominates (170 of 318). Boundary tests (`<` against `<=` at exactly the threshold) are the expected
+   fix for most of them.
+2. **High-rate small files next:**
+   - dryrun.py (70%, lines 71–89): plan-only output, likely unasserted fields;
+   - series.py (48%);
+   - shape.py (42%, the rest of it).
+3. **cli.py `falsy-swap` (10):** an empty against a missing argument. Add CLI tests with empty-string values.
+4. **The rest by file, by rate.**
+5. **Rerun.** Use `run-gate r2` with the resume state, so only changed files' candidates and the 5 pending run. The
+   rerun is cheap for unchanged files, because candidate ids stay stable while the file is unchanged.
+
+**The five budget-exceeded candidates.** All are reproduced serially at 289–308 s, with no OOM. CPU almost equals wall
+(295 s of 300 s), so they are **non-terminating loops created by the mutant**, not slow tests.
+
+| Candidate | Location | Mutation | Tests completed before the budget |
+|---|---|---|---:|
+| `43207706…` | testing.py:596 | boolop And→Or | 3 |
+| `6abf2348…` | testing.py:653 | boolop And→Or | 3 |
+| `f3add887…` | testing.py:585 | compare-swap Eq→NotEq | 46 |
+| `59336549…` | stages.py:141 | compare-swap Is→IsNot | 276 |
+| `f83da146…` | sweep.py:61 | bool-const True→False | 678 |
+
+- **Decision:** bound the loops in the fake host or test helpers rather than raise the candidate budget.
+  - testing.py:585–653 is the fake host's wait or poll loops. Give them an iteration or fake-clock deadline that raises
+    a test failure, so a non-terminating mutant becomes a fast kill.
+  - For stages.py:141 and sweep.py:61, add a per-test timeout:
+    - `pytest-timeout` if it is in the tester image, with a suite timeout of about 30 s, which is far above the
+      longest real test;
+    - otherwise the same bounded-loop rule in the code under test.
+- **Acceptance:** each of the five, replayed with `--rejudge`, ends as `killed` within 60 s.
+
+**Scheduling and profile hooks this lane will use** (cross-tool design `docs/design/RESOURCE-PROFILES.md`):
+
+- **Profiles (assay B206).** The rerun records cgprofile profiles per candidate: exact numbers in cgroup mode at
+  jobs=1, process-tree mode at jobs>1. Ids unchanged since the last campaign get per-candidate predictions (source 1).
+- **Two-ended matching (assay B207, run-gate RG-148).**
+  - The 3 high candidates run one at a time and early; the 116 short lows fill around them and at the tail.
+  - `jobs=auto` is sized from the normal-class p95, 374 MiB, against B = 0.75 × the lane cap, which still gives N = 3
+    on the 1,536 MiB cap.
+  - The replay simulation shows that the running-RSS maximum at N=6 falls from 2,741 to 2,286 MiB, at the same
+    makespan, within 0.05% of the lower bound.
+  - For a full IOBench campaign the makespan gain is negligible, because durations are homogeneous. Rerun batches gain
+    most.
+- **Contamination (run-gate RG-144).** `budget_exceeded` candidates with contaminated profiles are listed for a serial
+  `--rejudge` automatically. That is the manual procedure used for the five above.
+- **Scaling run (RG-147).** IOBench is the M2 lane of the measurement plan: a 150-candidate stratified subset at
+  N = 1, 2, 3 and 4 on r1002.
+- **The bigger lever is outside scheduling.** Each candidate runs the whole suite (about 95 s). If the assay lane
+  supports per-file test selection or coverage-guided selection, enabling it for iobench cuts the campaign far more
+  than any ordering can. Check this before the rerun.
+
+**Acceptance (of this item).**
+
+- Every survivor cluster has a recorded decision (oracle added, equivalence proven by simplification, or code removed).
+- The five timeouts end as fast kills.
+- A resumed R2 completes the campaign: pending 0.
+- The final survivor count, and every remaining survivor with its argued reason, are listed in this entry.
+
+**Dependencies.**
+
+- None for the triage itself.
+- The rerun benefits from assay 12 (B206/B207) and run-gate 24.4 (RG-144, RG-148), but does not wait for them.
+- r1002 is the runner (host-setup completion is not required for running R2).
