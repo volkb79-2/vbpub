@@ -1,0 +1,22 @@
+{
+  "request": {
+    "verb": "window-open",
+    "args": {
+      "thread_id": 50,
+      "root_pid": 100,
+      "mode": "cgroup",
+      "interval_ms": 250
+    },
+    "contract": 3
+  },
+  "response": {
+    "ok": true,
+    "contract": 3,
+    "window": "w-0123456789abcdef0123456789abcdef",
+    "mode": "cgroup",
+    "started_at": "2026-11-03T10:00:00Z",
+    "kernel": {
+      "peak_reset": true
+    }
+  }
+}
