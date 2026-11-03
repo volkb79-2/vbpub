@@ -238,6 +238,64 @@ the moving-profile contract and the documented bootstrap handoff race.
 For a local QEMU first-boot acceptance test and non-secret guest checks, see
 the [VM usage/testing guide](../testing/vm/USAGE-TESTING.md).
 
+For a native-versus-TCG Geekbench 6 comparison, run the VM harness from a
+root host shell in a physical checkout (not from the devcontainer) and
+explicitly select the built-in `system.slice` parent:
+
+```bash
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT/scripts/debian-install-v2/testing/vm"
+export CGROUP_PARENT_DEV_GATES=system.slice
+export BUILDX_BUILDER=mdt-managed  # use the host's configured Buildx builder
+export MDT_VM_SOURCE_DIR="$REPO_ROOT/scripts/debian-install"
+./run-vm-harness.sh start geekbench-tcg --case case-b \
+  --ssh-port 2230 --mem 4096 --smp 4 --disk-gb 20 --no-apt-cache
+```
+
+The wrapper checks that `system.slice` is loaded and the slice itself has no
+CPU/memory limits or CPU-set restriction. A host-wide Docker transient-scope
+backstop may still constrain the runner; inspect its live cgroup as described
+in the [benchmark procedure](../testing/vm/USAGE-TESTING.md#geekbench-6-tcg-guest-versus-native-host).
+`MDT_VM_SOURCE_DIR` mounts the sibling repository script read-only into the
+runner so it can be copied into the guest. This bypasses the gate slice only
+for that explicit manual benchmark and can compete with production workloads;
+wait for a quiet host and follow the
+[network-lockdown Geekbench steps](../testing/vm/USAGE-TESTING.md#geekbench-6-tcg-guest-versus-native-host)
+to block guest egress after downloading, with an optional narrow Browser
+allowlist if you want to publish the result.
+The documented run uses the cloud-init `case-b` image; NoCloud needs a
+different first-boot credential path, described in the guide's
+[image-choice notes](../testing/vm/USAGE-TESTING.md#image-choice).
+Geekbench identifies the virtual CPU as `QEMU TCG CPU`; the native comparison
+uses four-CPU affinity on the EPYC host. Geekbench may still report the host's
+full CPU topology; record both the affinity and reported topology. The free
+Geekbench binary automatically uploads results and returned exit 255 without
+scores in our offline attempt, so allow host egress only if publication is
+acceptable (or use a license with offline support). The successful run scored
+1,667 single-core / 4,596 multi-core and is public at
+[Geekbench Browser result 19341831](https://browser.geekbench.com/v6/cpu/19341831);
+its claim URL is private under `artifacts/vm-lab/`.
+Geekbench's single- and multi-core sequences run sequentially and can exceed
+the repository runner's 15-minute convenience timeout; invoke the downloaded
+binary directly with the three-hour bound in the
+[benchmark procedure](../testing/vm/USAGE-TESTING.md#geekbench-6-tcg-guest-versus-native-host).
+The same procedure shows host cgprofile sampling at five-second intervals.
+Correlate its whole-runner memory series with host-timestamped Geekbench
+workload output and an idle-VM baseline for approximate per-phase elapsed time
+and host-charged memory; this is not guest process RSS. Keep any claim URL in
+the ignored `artifacts/vm-lab/` folder; do not commit it. The guide links
+Geekbench's published per-workload working-set figures, clearly distinguished
+from measured peak RSS. The reviewed Geekbench 6 materials do not document a
+control for per-workload runtime. Do not substitute another benchmark or invent
+flags. No fast mode is planned unless Geekbench officially documents such a
+control. Any officially supported shortened run would be diagnostic, not an
+official comparable score unless Geekbench says otherwise, because the
+published composite aggregates the full suite's workload scores.
+The guide also explains that the
+documented five-second workload gaps add at most about 2 minutes 35 seconds to
+the full CPU suite; the TCG runtime is actual workload execution. Do not
+shorten it by using undocumented switches or modifying the binary.
+
 To inspect a real target host’s partition plan, run `plan` on that host. It
 reads the host’s root disk and does not write to it:
 

@@ -97,6 +97,16 @@ requires `BUILDX_BUILDER` and invokes `docker buildx build --builder
 instead of Docker's default daemon path. The configured builder must already
 be available in the caller's Buildx configuration.
 
+For a manual CPU benchmark only, a host-shell invocation may explicitly set
+`CGROUP_PARENT_DEV_GATES=system.slice`. The wrapper verifies with host
+`systemctl` and cgroupfs that this built-in slice is loaded, has no CPU or
+memory ceilings, and exposes the host's full CPU set. This checks the slice;
+host-wide Docker transient-scope backstops may still impose limits on the
+runner, so inspect its live cgroup too. This exception is unavailable from
+inside a devcontainer; registered tests continue to use the governed gate
+slice. A TCG benchmark can contend with production work, so schedule it for a
+quiet window. See the [Geekbench procedure](USAGE-TESTING.md#geekbench-6-tcg-guest-versus-native-host).
+
 ## `vmctl` directly (inside the runner container)
 
 `run-vm-harness.sh <args>` is exactly `docker exec <runner> ./vmctl <args>`

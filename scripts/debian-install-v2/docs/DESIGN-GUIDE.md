@@ -282,6 +282,68 @@ postflight warning is an observation, not attribution of the remounting
 process. For the operational QEMU workflow and the 2026-10-14 incident
 evidence, see the [VM usage/testing guide](../testing/vm/USAGE-TESTING.md#host-checks-when-cgroup2-flags-disappear).
 
+The ordinary VM test lane belongs in the admission-controlled
+`dev-gates.slice`; a CPU benchmark there can measure the slice quota as much as
+TCG overhead. The manual Geekbench comparison therefore has one narrow
+exception: a host-shell launch can explicitly select the built-in
+`system.slice`, after verifying through host `systemctl` and cgroupfs that it
+has no CPU/memory ceilings and exposes every host CPU. That verifies the slice,
+not every ancestor or the Docker transient scope: host-wide Docker backstops
+may still apply, so inspect the runner's live cgroup. The harness refuses this
+exception from a container and refuses it if the slice's live properties
+change. This is not the default for tests: a TCG workload can contend with
+production, so use it only for a controlled, quiet-window benchmark. The
+guest's outbound network defaults to locked after the benchmark binary is
+downloaded. If publication is desired, a narrow allowlist for the current
+Geekbench Browser HTTPS address can be added; all other guest egress remains
+blocked. Geekbench itself reports the VM CPU as `QEMU TCG CPU`, so the result
+does not impersonate the physical host processor. Its single- and multi-core
+sequences are sequential and may exceed the runner helper's fixed 15-minute
+timeout, so the manual procedure executes the binary directly with a
+three-hour outer bound. Host cgprofile samples the entire runner cgroup, but
+that is enough for approximate per-phase timing and host-charged memory:
+timestamp Geekbench's workload-boundary output and correlate it with
+five-second samples against an idle-VM baseline. This includes QEMU overhead
+and is not guest process RSS; guest pages may remain resident or be reused
+after a workload, so label phase memory estimates accordingly. Geekbench's
+published working-set figures are a useful reference, but represent
+touched-page working set rather than peak RSS or a RAM requirement; the guide
+records that distinction and links the source. The reviewed Geekbench 6
+materials do not document a per-workload runtime control. The full CPU suite's
+32 single-/multi-core workload phases have at most 31 five-second
+gaps (about 2 minutes 35 seconds), so a multi-hour TCG runtime is actual work,
+not repeated sampling; removing the pauses saves little and weakens the
+thermal-isolation rationale. Do not add a fast mode unless Geekbench officially
+documents a way to configure per-workload runtime. Any shortened run must be
+labelled diagnostic unless Geekbench explicitly documents its score as
+comparable: changing workload duration can change the measured metric.
+
+Preserve cgprofile's Markdown report beside its `charts/` directory and raw
+samples. In this host setup, HTML rendering was killed with exit 137 under
+the profiler container's 1 GiB memory limit, while `cgprofile report --md-only`
+succeeded; the daemon-backed `ctl report` also timed out after stopping the
+session. The usage guide gives the offline render/copy sequence.
+
+The free Linux binary automatically uploads to Geekbench Browser and, in our
+offline native attempt, returned exit 255 without printing scores after DNS
+resolution failed. The successful native comparison therefore ran with host
+network access, after publication was explicitly accepted; users who need
+offline scoring require a Geekbench license that supports it. `taskset` limits
+execution CPUs but does not necessarily change the topology reported by
+Geekbench: our four-CPU-affinity run still reported eight processors, while
+TBB confirmed the worker pool was capped to three workers plus the caller.
+Record both the reported topology and effective affinity, and do not describe
+the resulting score ratio as pure virtualization overhead.
+
+The current manual benchmark starts from `case-b`'s generic-cloud image because
+the harness uses cloud-init to provision its SSH tester account and to decide
+when first boot has completed. Debian's NoCloud image is a plausible leaner
+base for a later CPU-only run, but it needs a separate credential/setup path;
+its Trixie first boot also asks for a root password on the serial console.
+Cloud-init is not expected to affect an idle CPU benchmark materially, so the
+main benefit would be a simpler, more explicit guest setup rather than a
+guaranteed score improvement. See the [image-choice notes](../testing/vm/USAGE-TESTING.md#image-choice).
+
 ## Prompt library boundary
 
 The prompt package is an optional dependency and is imported only by the
