@@ -130,6 +130,30 @@ files, atlases, and reports belong under the ignored `scratch/` directory. See t
 [consumer examples](CONSUMERS.md#glyphgrid-development-tooling) for a working
 invocation.
 
+Prefer these deterministic per-font alphabets for general reader tests; use
+real console output only where behavior depends on an actual install screen.
+
+## Local console corpus
+
+The repository may keep curated screenshots from public, anonymous, agnostic
+sources such as vanilla Debian and TrueNAS installs. The larger 242-frame
+TrueNAS series stays in a local directory and is never published. This keeps
+the public fixtures useful for review while preventing the full capture from
+becoming a release or download dependency.
+
+The committed series manifest pins each frame's name, SHA256, and dimensions.
+`CORPUS-ASSETS.json` also pins a deterministic tar digest and size, so the local
+copy can be checked without downloading it. `PWMCP_CONSOLE_CORPUS_DIR` is the
+only source: it must name an absolute directory containing `frames/`. There is
+no cache, tester-image copy, release URL, or fallback path. An unset variable
+means the optional full-corpus checks are unavailable; a bad explicit path is
+an error. The two real-corpus tests use the shared
+`tests/_testdeps.py::optional_local_data` helper: an unselected corpus skips
+with its reason unless `PWMCP_REQUIRE_CONSOLE_CORPUS=1` makes that absence a
+failure, while invalid selected data stays an error. Registered gate lanes
+remain corpus-free. See the [local verification example](CONSUMERS.md#local-console-corpus)
+and the [OCR phase design](DESIGN-OCR-PHASE2-3.md#1-local-console-corpus).
+
 ## Upstream version age window
 
 Until CMRU owns upstream selection, an explicit resolver refresh applies a

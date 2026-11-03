@@ -474,8 +474,11 @@ bare `pytest.importorskip` / `skipif(... is None)`. On a developer machine witho
 skip. The one deliberate exception is the real-Tesseract test: `tesseract` legitimately exists only in the
 sidecar image, so it skips with an explicit reason, and fails instead when `PWMCP_REQUIRE_TESSERACT=1` (set it
 only in a lane that runs inside the OCR image; none exists today, the gate runs in the tester image).
-Until the tester image is rebuilt the lanes are RED by design. The judged Python targets are the client
-package (`__init__`, `cli`, `contract`, `diagnostics`, `ocr`, `session`, `user_agent`), `build-push.py`,
+The same module's `optional_local_data` helper handles optional local fixtures: it skips only when the
+loader reports that no data was selected, while invalid selected data remains an error. The console
+corpus tests use this helper with `PWMCP_REQUIRE_CONSOLE_CORPUS=1` to make an absent local corpus fail.
+The gate image carries this declared test dependency set. The judged Python targets are the client package
+(`__init__`, `cli`, `contract`, `diagnostics`, `ocr`, `session`, `user_agent`), `build-push.py`,
 `scripts/resolve-playwright-version.py` and `containers/ocr/ocr_service.py`. The Node code
 (`containers/pwmcp/ua-override/index.js`, the run-server and MCP gateways, the admin server) is outside the
 Python judge entirely and is exercised only by the subprocess tests.
@@ -697,6 +700,18 @@ with branch coverage recorded in `coverage.json`. The slower mutation lane is
 `run-gate r2`; it is resumable and may be run separately before a release.
 PWMCP has no HTTP/OpenAPI contract, so Hypothesis is used for the pure upstream
 version-intersection invariant and Schemathesis is not applicable.
+
+### Local console corpus
+
+The repository keeps selected public, anonymous console screenshots as curated
+fixtures. The full 242-frame TrueNAS capture stays in a local directory and is
+never published. Set `PWMCP_CONSOLE_CORPUS_DIR` to an absolute path containing
+`frames/` to let the two full-corpus checks verify each frame and the pinned,
+deterministic tar digest. With no path, those checks skip with an explicit
+reason; `PWMCP_REQUIRE_CONSOLE_CORPUS=1` makes a missing corpus fail during a
+focused run. The registered gate lanes do not include or require the full
+capture. See the [design rationale](docs/DESIGN-GUIDE.md#local-console-corpus)
+and [local verification example](docs/CONSUMERS.md#local-console-corpus).
 
 ### CLI diagnostics
 

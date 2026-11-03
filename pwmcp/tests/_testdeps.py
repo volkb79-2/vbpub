@@ -18,11 +18,17 @@ from __future__ import annotations
 import importlib
 import os
 import shutil
+from collections.abc import Callable
+from typing import TypeVar
 
 import pytest
 
 ALLOW_VAR = "PWMCP_ALLOW_MISSING_TEST_DEPS"
 REQUIRE_TESSERACT_VAR = "PWMCP_REQUIRE_TESSERACT"
+REQUIRE_CONSOLE_CORPUS_VAR = "PWMCP_REQUIRE_CONSOLE_CORPUS"
+
+T = TypeVar("T")
+E = TypeVar("E", bound=Exception)
 
 
 def allow_missing() -> bool:
@@ -63,3 +69,25 @@ def require_binary(name: str, reason: str) -> str:
     if path is None:
         missing(f"the `{name}` binary", reason)
     return path
+
+
+def optional_local_data(
+    load: Callable[[], T],
+    missing_exception: type[E],
+    *,
+    description: str,
+    require_env: str,
+) -> T:
+    """Load selected local test data; skip absence unless ``require_env`` is exactly ``1``.
+
+    Only the caller's explicit missing-data exception is optional. Invalid selected data and all
+    other failures propagate as errors, so a typo or corrupt corpus cannot turn a test into a skip.
+    """
+
+    try:
+        return load()
+    except missing_exception as exc:
+        reason = f"{description} is unavailable: {exc}"
+        if os.environ.get(require_env) == "1":
+            pytest.fail(reason, pytrace=False)
+        pytest.skip(reason)

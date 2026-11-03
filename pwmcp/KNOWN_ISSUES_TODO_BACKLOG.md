@@ -3,7 +3,7 @@
 This file records consumer-facing product gaps for later triage. Normative
 behavior remains in the product specification and consumer documentation.
 
-Last updated: 2026-11-03 (GlyphGrid tooling integration; PWMCP-18 transparency gap identified during R2 survivor triage).
+Last updated: 2026-11-03 (local console-corpus verification; R2 follow-up; GlyphGrid tooling integration; PWMCP-18 transparency gap identified during R2 survivor triage).
 
 ## PWMCP-01 — Provide a rendered-page inspection command
 
@@ -328,6 +328,10 @@ reader fast path and frame-sequence reader, and deterministic synthetic image ge
 measurement and regression testing only. Phase 2 remains OPEN: the service engine is still registered as unavailable (HTTP 501), the watcher is
 not implemented, and the larger 242-frame console series used for performance measurements remains local.
 
+**Local corpus verification (2026-11-03).** The 242-frame console corpus is local-only and is never published. Its copy is verified from an
+absolute `PWMCP_CONSOLE_CORPUS_DIR` against the committed frame index and deterministic tar SHA256. The full-corpus tests skip when the variable is
+unset; an explicitly invalid path fails. Registered gate lanes remain corpus-free.
+
 **Release wiring: FIXED-ON-BRANCH (operator decision 2026-10-27: extend the existing release so ONE pwmcp
 release builds, publishes and records BOTH images under one contract).** The image is first published in `1.64.0-r4`; this stays
 UNVERIFIED until the post-release smoke has run.
@@ -539,3 +543,13 @@ installs) may be committed; the 242-frame local series stays out of git. The 24 
 `tests/corpus/console/truenas-27-vanilla/` stay as the published curated set. Test inputs should prefer the imagegen generator (alphabet
 screenshots per font, deterministic, no capture) over captured frames: move `tests/test_glyphgrid_perf.py` (~154-155, 20 captured frames) to
 generated per-font alphabets where the measurement allows, and keep the captured frames only for what only real console output can show.
+
+## PWMCP-20 — complete the R2 campaign waived for the r4 release
+
+**Status: OPEN (R2 was waived for 1.64.0-r4; follow-up is pending on the btrfs runner).** The registered r2 lane covers 384 mutation candidates
+on the changed targets. The latest campaign judged 56 candidates and retained resumable state; five hardening rows remain marked Pending R2, and
+PWMCP-18 (`containers/ocr/ocr_service.py:387`) remains an open survivor. The r4 release already shipped after its R1 gate, so this item tracks the
+separate mutation-evidence follow-up.
+
+**Close by:** resume the r2 campaign on the btrfs runner with the supported lane and parallelism, account for all candidates, triage the five pending
+rows and remaining survivors, then record the final verdict and any accepted survivors here or in the linked R2 report.
