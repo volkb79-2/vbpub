@@ -272,8 +272,8 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   (`run-gate: config: <path>`), revision, lane name, environment source,
   resolved slice + its source (on exec lanes this is naming-only disclosure
   — `docker exec` can neither place nor cap work), and (container AND exec
-  lanes) the fully assembled docker argv with forwarded values redacted
-  (RG-19). Mechanics are visible, never buried.
+  lanes) the fully assembled docker argv; forwarded values are never on it
+  (`-e KEY`, the value rides in the docker client's environment, RG-117a). Mechanics are visible, never buried.
 
 ## 3. Config schema (both files; `schema_version` must equal 1)
 

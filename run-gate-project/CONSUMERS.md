@@ -752,7 +752,7 @@ Lanes that NEED a variable declare `required_env = ["SCHEMA_GATE_PW"]`: the
 gate refuses to start unless each name is present and non-empty, verifies
 container lanes can actually receive it (it must be on `forward_env`), and
 prints which forwarding keys were present at start — names only, never
-values (the docker-argv print redacts them too). Run
+values (the docker argv carries `-e NAME` only; the value rides in the docker client's environment). Run
 `run-gate --check-env` for an advisory sweep of env references in the
 project's Python sources that no lane forwards or requires.
 

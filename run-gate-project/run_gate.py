@@ -654,6 +654,11 @@ INFLIGHT_SCHEMA = 2
 OWNER_RACE_REPOLLS = 3            # total reads of the record, first included
 OWNER_RACE_PAUSE_SECONDS = 0.5    # -> ~1.0 s across the two extra reads
 
+# RG-117e: the host-PSI pause of an auto-bounded stall clock credits at most
+# this much silence in total, so a budgetless lane under sustained pressure
+# still stalls out instead of waiting forever.
+PRESSURE_PAUSE_MAX_SECONDS = 1800.0
+
 # RG-36: how often the container loop looks at the lane's progress file.
 # 30 s judges a 15-minute stall_timeout to within 3%. What one poll COSTS is
 # a stat(), a full read_text() and a json.loads() of every line — the file is
@@ -2441,6 +2446,11 @@ def resolve_environment(lane: dict, lane_name: str, project: dict, central: dict
         if name == HOST_ENV and os.environ.get(HOST_IMAGE_ENV_VAR):
             resolved["image"] = os.environ[HOST_IMAGE_ENV_VAR]
             resolved.setdefault("user", f"{os.getuid()}:{os.getgid()}")
+            if "_image_selection" in resolved:
+                # RG-117e: the recorded effective image must be the one the
+                # lane runs, after this override too.
+                resolved["_image_selection"]["effective_image"] = \
+                    resolved["image"]
         return resolved, source
     # Review fix: name the file ACTUALLY searched, never a generic claim —
     # when no root config exists at all, say which root-specific filename the
@@ -4808,7 +4818,10 @@ def slice_cgroupfs_dir(slice_name: str) -> Path:
     parts = stem.split("-")
     if len(parts) == 1:
         return Path(f"{stem}.slice")
-    return Path("/".join(p + ".slice" for p in parts[:-1])) / slice_name
+    # RG-117c: every ancestor is the cumulative dash prefix (the parent of
+    # `a-b-c.slice` is `a-b.slice`, not `b.slice`).
+    ancestors = ["-".join(parts[:n]) + ".slice" for n in range(1, len(parts))]
+    return Path("/".join(ancestors)) / slice_name
 
 
 def check_slice_memory_admission(lane: dict, lane_name: str,
@@ -4840,7 +4853,9 @@ def check_slice_memory_admission(lane: dict, lane_name: str,
 
     max_raw = _read("memory.max")
     cur_raw = _read("memory.current")
-    if max_raw is None or max_raw == "max":
+    # RG-117e: anything but ASCII digits (`max`, an empty or garbled file) is
+    # "no derivable ceiling"; a bare int() on it raised ValueError.
+    if max_raw is None or not (max_raw.isascii() and max_raw.isdigit()):
         # RG-55/C7: name WHY when the reason is a private cgroup namespace
         # (this devcontainer's own default) rather than leave a reader to
         # guess between "wrong path" and "structurally unreachable from
@@ -4855,11 +4870,11 @@ def check_slice_memory_admission(lane: dict, lane_name: str,
                    f"doctor's own 'profiler' check, RG-55/C7)")
         print(f"run-gate: admission WARNING: no derivable memory ceiling for "
               f"slice {slice_name} ({sl_dir}/memory.max "
-              f"{'absent' if max_raw is None else '= max'}; export "
+              f"{'absent' if max_raw is None else '= ' + (max_raw or 'empty')}; export "
               f"${CGROUPFS_ROOT_ENV_VAR} if the host cgroupfs hides here)"
               f"{why} — admission by shared-infra rules only", flush=True)
         return
-    if cur_raw is None or not cur_raw.isdigit():
+    if cur_raw is None or not (cur_raw.isascii() and cur_raw.isdigit()):
         print(f"run-gate: admission WARNING: slice {slice_name} current usage "
               f"unreadable ({sl_dir}/memory.current) — admission by shared-infra "
               f"rules only", flush=True)
@@ -7610,6 +7625,16 @@ def lane_command_argv(lane: dict, worktree: Path,
     return [*declared, *lane.get("_request_args", [])]
 
 
+def env_flags_by_name(values: dict[str, str],
+                      carrier: dict[str, str]) -> list[str]:
+    """RG-117a: `-e KEY` flags whose VALUES travel in the docker client's own
+    environment, never on its argv (`/proc/<pid>/cmdline` is world-readable
+    for the life of `docker run`/`docker exec`). The values are recorded in
+    `carrier`; callers hand `{**os.environ, **carrier}` to the subprocess."""
+    carrier.update(values)
+    return [arg for key in values for arg in ("-e", key)]
+
+
 def redact_forwarded_values(argv: list[str], keys: list[str]) -> list[str]:
     """RG-19 companion to log_forwarded_env: the printed docker argv shows
     mechanics (R-05) but must NOT echo forwarded credential VALUES — mask
@@ -8094,11 +8119,25 @@ def save_container_logs(docker: str, name: str,
         if grabbed.returncode != 0 and not combined.strip():
             return None
         target = target or evidence_dir() / f"{name}.log"
-        target.parent.mkdir(parents=True, exist_ok=True)
+        target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         # Review fix: container logs may echo credential material the suite
-        # exercised — owner-only, never world-readable.
-        target.write_text(combined)
-        target.chmod(0o600)
+        # exercised — owner-only, never world-readable. RG-117b: the mode is
+        # set AT creation (no world-readable window), a symlink planted at the
+        # predictable leaf is refused (O_NOFOLLOW), and a file or directory
+        # owned by someone else is refused rather than written into.
+        if target.parent.stat().st_uid != os.geteuid():
+            return None
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        try:
+            if os.fstat(fd).st_uid != os.geteuid():
+                return None
+            os.ftruncate(fd, 0)
+            os.fchmod(fd, 0o600)
+            view = memoryview(combined.encode("utf-8", errors="replace"))
+            while view:  # os.write may be partial on a large log
+                view = view[os.write(fd, view):]
+        finally:
+            os.close(fd)
         return target
     except OSError:
         return None
@@ -13638,6 +13677,17 @@ def assay_closeout_group(lane: dict, run_text: str, command: str,
         'exit "$rc"; }')
 
 
+def passwd_entry_guard() -> str:
+    """RG-118 (RG-106 oracle 5): the shell prefix of a lane that runs as an
+    explicit `user`. A uid with no passwd entry makes git and pip fail with
+    `unable to look up current user`; name the real cause and refuse with exit
+    2 instead. Skipped (not failed) when the image has no `getent` at all."""
+    return ('{ command -v getent >/dev/null 2>&1 && ! getent passwd '
+            '"$(id -u)" >/dev/null && { echo "run-gate: uid $(id -u) has no '
+            'passwd entry in the image; git and pip fail obscurely without '
+            'one" >&2; exit 2; }; true; }')
+
+
 def build_command_inner(lane: dict, worktree: Path,
                         base: str | None = None) -> str:
     return " && ".join(["set -euo pipefail",
@@ -14254,6 +14304,7 @@ class ProgressWatch:
         paused = self._paused_total
         if self._pause_started is not None:
             paused += max(0.0, now - self._pause_started)
+        paused = min(paused, PRESSURE_PAUSE_MAX_SECONDS)
         return max(0.0, now - self._token_at - paused)
 
     def _update_pressure_pause(self, now: float) -> None:
@@ -15661,6 +15712,8 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                               closeout_commit=head_commit(worktree)) \
         if lane["kind"] == "assay" \
         else build_command_inner(lane, worktree, request_base)
+    if env.get("user"):
+        inner = passwd_entry_guard() + " && " + inner
     name = f"run-gate-{repo.name}-{lane_name}-{os.getpid()}-{int(time.time())}"
     argv = [docker, "run", "-d", "--name", name, "--init",
             "--cgroup-parent", slice_name,
@@ -15679,18 +15732,20 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         # container writes into a bind-mounted, already-host-owned path
         # (__pycache__, coverage.json, ...) a permission-denied write.
         argv += ["--user", env["user"]]
-    for key in env.get("forward_env", []):
-        value = os.environ.get(key)
-        if value:  # empty string counts as ABSENT — matches log_forwarded_env
-            argv += ["-e", f"{key}={value}"]
-    for key, value in resource_env.items():
+    # RG-117a: values ride in the docker client's environment, not its argv.
+    docker_env_values: dict[str, str] = {}
+    forwarded_values = {key: os.environ[key] for key in env.get("forward_env", [])
+                        if os.environ.get(key)}  # empty counts as ABSENT
+    argv += env_flags_by_name(forwarded_values, docker_env_values)
+    for key, value in resource_env.items():   # run-gate facts, not secrets
         argv += ["-e", f"{key}={value}"]
     # RG-55/contract Sec 4.1: the token is appended in the SAME position as
     # `forward_env` values, immediately after that loop — `enabled = false`
     # (or the test-only kill switch) means no token at all, not an empty one.
     profiling = bool(profile_plan and profile_plan["enabled"])
     if profiling:
-        argv += ["-e", f"{PROFILE_TOKEN_ENV}={profile_plan['token']}"]
+        argv += env_flags_by_name(
+            {PROFILE_TOKEN_ENV: profile_plan["token"]}, docker_env_values)
     mem_cap = lane.get("resources", {}).get("memory") or lane.get("memory")
     if mem_cap:
         argv += ["--memory", mem_cap]
@@ -15757,7 +15812,8 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         lane, lane_name, project_dir, worktree, docker, profile_plan,
         "container") if profiling else None)
     try:
-        started = subprocess.run(argv, capture_output=True, text=True)
+        started = subprocess.run(argv, capture_output=True, text=True,
+                                 env={**os.environ, **docker_env_values})
     finally:
         if preload_file is not None:
             preload_file.close()
@@ -16033,18 +16089,22 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
     argv = [docker, "exec", "--workdir", str(repo)]
     # Infrastructure variables are implicit; project data inputs must be
     # declared on the environment so every consumer gets the same contract.
-    for key in (CGROUP_ENV_VAR, *env.get("forward_env", [])):
-        value = os.environ.get(key)
-        if value:
-            argv += ["-e", f"{key}={value}"]
+    # RG-117a: values ride in the docker client's environment, not its argv.
+    docker_env_values: dict[str, str] = {}
+    if os.environ.get(CGROUP_ENV_VAR):
+        argv += ["-e", f"{CGROUP_ENV_VAR}={os.environ[CGROUP_ENV_VAR]}"]
+    argv += env_flags_by_name(
+        {key: os.environ[key] for key in env.get("forward_env", [])
+         if os.environ.get(key)}, docker_env_values)
     resource_env = {**resource_forwarded_env(resource_settings or {}, "exec"),
                     **lane_workers_env(lane)}
-    for key, value in resource_env.items():
+    for key, value in resource_env.items():   # run-gate facts, not secrets
         argv += ["-e", f"{key}={value}"]
     # RG-55/contract Sec 4.1: same position, same rule as the ephemeral path.
     profiling = bool(profile_plan and profile_plan["enabled"])
     if profiling:
-        argv += ["-e", f"{PROFILE_TOKEN_ENV}={profile_plan['token']}"]
+        argv += env_flags_by_name(
+            {PROFILE_TOKEN_ENV: profile_plan["token"]}, docker_env_values)
     if lane.get("budget"):
         # `docker exec` disconnecting does not reliably stop the in-container
         # child, so the bound must be enforced inside the persistent runner.
@@ -16159,7 +16219,9 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
                 placement_barrier_shell_argv(
                     argv[exec_command_index:], barrier_nonce))
             barrier_argv.insert(2, "-i")
-            proc = spawn_placement_barrier(barrier_argv, barrier_nonce)
+            proc = spawn_placement_barrier(
+                barrier_argv, barrier_nonce,
+                env={**os.environ, **docker_env_values})
         try:
             profiler_state = start_lane_profiling(
                 lane, lane_name, project_dir, worktree, docker, profile_plan,
@@ -16316,7 +16378,8 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
                 fallback_watch is not None else None)
         if proc is None:
             proc = subprocess.Popen(argv, stdout=subprocess.PIPE,
-                                    stderr=subprocess.STDOUT, bufsize=0)
+                                    stderr=subprocess.STDOUT, bufsize=0,
+                                    env={**os.environ, **docker_env_values})
         else:
             # This process exists only when the placement path already set
             # its nonce and held the wrapper at the ready barrier.
@@ -16430,6 +16493,9 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
                         f"profiling tick failed unexpectedly: {exc}"
         output_tee.join()
     finally:
+      # RG-114: like await_container's finally (RG-109), a second SIGTERM
+      # while the profiling stop runs is deferred until the record is cleared.
+      with deferred_sigterm():
         if stdin_forwarder is not None:
             stdin_forwarder.close()
         if daemon_watch is not None:
@@ -18819,6 +18885,17 @@ def main(argv: list[str] | None = None) -> int:
                   file=sys.stderr, flush=True)
             result = LaneResult(
                 "ERROR", reason="interrupted-before-a-closed-result")
+        except Exception as exc:
+            # RG-117d: an uncaught bug is an infrastructure ERROR (exit 2),
+            # never Python's traceback status 1, which is the lane FAIL code.
+            import traceback
+            traceback.print_exc()
+            print(f"{PROG}: unexpected {type(exc).__name__}: {exc}; "
+                  "verdict ERROR, exit 2", file=sys.stderr, flush=True)
+            result = LaneResult(
+                "ERROR",
+                reason=f"unexpected-exception: {type(exc).__name__}: {exc}",
+                _json="--json" in option_argv)
         return finish(result)
     finally:
         if previous_sigterm is not None:
