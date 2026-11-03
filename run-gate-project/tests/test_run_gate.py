@@ -10322,6 +10322,9 @@ class TestResourceObserverLane:
     @pytest.mark.parametrize("kind", ["assay", "command"])
     def test_container_argv_wires_the_opted_in_observer(
             self, tmp_path, monkeypatch, kind):
+        # An ambient MDT_COW_ROOT (set inside the selftest container) adds a
+        # CoW --mount ahead of the observer mount; this test pins the latter.
+        monkeypatch.delenv("MDT_COW_ROOT", raising=False)
         socket_path = tmp_path / "resource-observer.sock"
         monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
                             str(socket_path))

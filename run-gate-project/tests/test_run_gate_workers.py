@@ -162,11 +162,11 @@ class TestWorkersCli:
 
 class TestStatistics:
     def test_nearest_rank_and_distribution(self):
-        assert run_gate.nearest_rank([5, 1, 3], 0.5) == 3
-        assert run_gate.nearest_rank([1, 2, 3, 4], 0.95) == 4
-        assert run_gate.distribution([]) is None
-        assert run_gate.distribution([True, None]) is None
-        assert run_gate.distribution([1, 3, None, 2]) == {
+        assert run_gate.worker_nearest_rank([5, 1, 3], 0.5) == 3
+        assert run_gate.worker_nearest_rank([1, 2, 3, 4], 0.95) == 4
+        assert run_gate.worker_distribution([]) is None
+        assert run_gate.worker_distribution([True, None]) is None
+        assert run_gate.worker_distribution([1, 3, None, 2]) == {
             "p50": 2, "p95": 3, "max": 3, "n": 3}
 
     def test_aggregate_folds_workers_and_controller(self):

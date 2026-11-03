@@ -11651,19 +11651,20 @@ def parse_repeat_cli(value: str | None, counts: list[int]) -> dict[int, int]:
     return {count: explicit.get(count, default) for count in counts}
 
 
-def nearest_rank(values: list[float], quantile: float) -> float:
-    """Nearest-rank percentile of a non-empty list."""
+def worker_nearest_rank(values: list[float], quantile: float) -> float:
+    """Nearest-rank percentile (quantile 0..1) of a non-empty list."""
     ordered = sorted(values)
     return ordered[max(0, math.ceil(quantile * len(ordered)) - 1)]
 
 
-def distribution(values: list[float]) -> dict | None:
+def worker_distribution(values: list[float]) -> dict | None:
     """p50 / p95 / max / n of the numeric values, None when there are none."""
     numbers = [value for value in values
                if isinstance(value, (int, float)) and not isinstance(value, bool)]
     if not numbers:
         return None
-    return {"p50": nearest_rank(numbers, 0.5), "p95": nearest_rank(numbers, 0.95),
+    return {"p50": worker_nearest_rank(numbers, 0.5),
+            "p95": worker_nearest_rank(numbers, 0.95),
             "max": max(numbers), "n": len(numbers)}
 
 
@@ -11691,7 +11692,7 @@ def aggregate_worker_profiles(profiles: list[dict]) -> dict | None:
     per_worker = {}
     for key in ("rss_peak_bytes", "cpu_seconds", "io_read_bytes",
                 "io_write_bytes", "wall_seconds"):
-        dist = distribution([metric.get(key) for metric in workers])
+        dist = worker_distribution([metric.get(key) for metric in workers])
         if dist is not None:
             per_worker[key] = dist
     return {
@@ -11786,7 +11787,7 @@ def workers_basis_from_history(entries: list[dict]) -> dict | None:
         "runs": len(chosen),
         "worker_rss_p95_bytes": max(rss),
         "controller_rss_p95_bytes": max(controller) if controller else 0,
-        "worker_core_fraction_p50": (nearest_rank(cores, 0.5)
+        "worker_core_fraction_p50": (worker_nearest_rank(cores, 0.5)
                                      if cores else None),
         "worker_write_bps_p95": max(writes) if writes else None,
         "tests_collected": tests,
@@ -12124,7 +12125,7 @@ def scaling_row(count: int, steps: list[dict], baseline_wall: float | None,
     `outcomes`, `contaminated`)."""
     walls = [step["record"].get("duration_seconds") for step in steps]
     walls = [wall for wall in walls if isinstance(wall, (int, float))]
-    wall = nearest_rank(walls, 0.5) if walls else None
+    wall = worker_nearest_rank(walls, 0.5) if walls else None
     per_worker = [step["record"].get("per_worker") or {} for step in steps]
 
     def merged(key: str, field: str):
@@ -12132,7 +12133,7 @@ def scaling_row(count: int, steps: list[dict], baseline_wall: float | None,
         values = [value for value in values if value is not None]
         if not values:
             return None
-        return nearest_rank(values, 0.5) if field == "p50" else max(values)
+        return worker_nearest_rank(values, 0.5) if field == "p50" else max(values)
 
     def lane_value(step: dict, *path: str):
         node = step["record"].get("resources") or {}
