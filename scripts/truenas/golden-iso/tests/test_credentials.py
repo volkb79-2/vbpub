@@ -161,6 +161,8 @@ def _looks_like_secret(token: str) -> bool:
         return False  # urls, key type prefixes, git/sha digests
     if re.search(r"\.(toml|py|md|raw|txt|json|qcow2|iso)$", token):
         return False  # file names
+    if token.endswith("-"):
+        return False  # file-name prefix in front of a shell/placeholder ID (`golden-$ID.raw`)
     classes = sum(bool(re.search(p, token)) for p in ("[a-z]", "[A-Z]", "[0-9]"))
     return classes == 3 and _entropy(token) > 4.2 and not re.fullmatch(r"[A-Za-z]+(?:[_.-][A-Za-z]+)*", token)
 
@@ -200,3 +202,102 @@ def test_tracked_truenas_files_hold_no_webhook_tokens() -> None:
 def test_scanner_detects_a_planted_credential() -> None:
     assert _looks_like_secret("Zx9kQ4mT7vB2nL8pR5wY3cH6")
     assert not _looks_like_secret("truenas_admin_password_file")
+
+
+# --- capture ID: naming, pairing, mismatch refusal ---------------------------
+
+def test_capture_ids_are_8_lowercase_hex_and_random() -> None:
+    ids = {credentials.new_capture_id() for _ in range(200)}
+    assert len(ids) > 190
+    assert all(credentials.CAPTURE_ID_RE.match(i) for i in ids)
+    for bad in ("", "abc", "0A1B2C3D", "0a1b2c3", "0a1b2c3d0", "0a1b2c3g", None):
+        with pytest.raises(credentials.CredentialError):
+            credentials.validate_capture_id(bad)
+
+
+def test_capture_naming_scheme_for_image_and_sidecar() -> None:
+    template = Path("/x/truenas-27-20GiB-golden.raw")
+    assert credentials.image_name_for(template, "0a1b2c3d") == "truenas-27-20GiB-golden-0a1b2c3d.raw"
+    assert credentials.sidecar_name_for(template, "0a1b2c3d") == "truenas-27-20GiB-golden-0a1b2c3d.secrets.toml"
+    # an ID-bearing name used as template is re-stemmed, never doubled
+    assert credentials.image_name_for(Path("/x/g-20GiB-0a1b2c3d.raw"), "ffffffff") == "g-20GiB-ffffffff.raw"
+    assert credentials.split_capture_stem(Path("a-golden-0a1b2c3d.secrets.toml")) == ("a-golden", "0a1b2c3d")
+    assert credentials.split_capture_stem(Path("a-golden.secrets.toml")) == ("a-golden", None)
+
+
+def test_step1_plan_capture_new_id_for_finished_reuse_for_unfinished(tmp_path: Path) -> None:
+    template = tmp_path / "g-golden.raw"
+    # seed without ID -> fresh ID, names carry it
+    cid, image, sidecar = STEP1.plan_capture({}, template)
+    assert credentials.CAPTURE_ID_RE.match(cid)
+    assert image.name == f"g-golden-{cid}.raw" and sidecar.name == f"g-golden-{cid}.secrets.toml"
+    # unfinished capture (no image, no finished marker) keeps its ID on retry
+    assert STEP1.plan_capture({"capture_id": "0a1b2c3d"}, template)[0] == "0a1b2c3d"
+    # finished by image on disk -> new ID
+    (tmp_path / "g-golden-0a1b2c3d.raw").write_bytes(b"x")
+    assert STEP1.plan_capture({"capture_id": "0a1b2c3d"}, template)[0] != "0a1b2c3d"
+    # finished by marker -> new ID
+    done = {"capture_id": "11111111", "truenas_api": {"captured_image_sha256": "ab" * 32}}
+    assert STEP1.plan_capture(done, template)[0] != "11111111"
+    with pytest.raises(STEP1.StepError):
+        STEP1.plan_capture({"capture_id": "nothex"}, template)
+
+
+def test_step1_sidecar_round_trips_capture_id(tmp_path: Path) -> None:
+    doc = _document("p" * 32)
+    doc["capture_id"] = "0a1b2c3d"
+    doc["image_file"] = "g-0a1b2c3d.raw"
+    path = tmp_path / "g-0a1b2c3d.secrets.toml"
+    path.write_text(STEP1.serialize_secret_document(doc))
+    path.chmod(0o600)
+    assert tomllib.loads(path.read_text())["capture_id"] == "0a1b2c3d"
+    loaded = STEP1.load_secret_document(path, tmp_path / "g-0a1b2c3d.raw")
+    assert loaded["capture_id"] == "0a1b2c3d"
+    # the template name is accepted when the sidecar records the ID'd file name
+    assert STEP1.load_secret_document(path, tmp_path / "g.raw")["image_file"] == "g-0a1b2c3d.raw"
+
+
+def test_require_matching_pair_refuses_every_mismatch(tmp_path: Path) -> None:
+    img = tmp_path / "g-0a1b2c3d.raw"
+    side = tmp_path / "g-0a1b2c3d.secrets.toml"
+    assert credentials.require_matching_pair(img, side, "0a1b2c3d") == "0a1b2c3d"
+    for image, sidecar, recorded in (
+        (img, tmp_path / "g-ffffffff.secrets.toml", "0a1b2c3d"),   # file-name mismatch
+        (img, side, "ffffffff"),                                   # content mismatch
+        (img, side, None),                                         # sidecar without ID
+        (tmp_path / "g.raw", side, "0a1b2c3d"),                    # image without ID
+        (img, tmp_path / "g.secrets.toml", "0a1b2c3d"),            # sidecar name without ID
+    ):
+        with pytest.raises(credentials.CredentialError):
+            credentials.require_matching_pair(image, sidecar, recorded)
+
+
+STEP2 = _load("golden_step2_creds", GOLDEN_ROOT / "step2-build-unattended-restore-iso.py")
+
+
+def _write_step2_sidecar(path: Path, image_name: str, capture_id: str | None) -> None:
+    doc = _document("p" * 32)
+    doc["image_file"] = image_name
+    if capture_id:
+        doc["capture_id"] = capture_id
+    path.write_text(STEP1.serialize_secret_document(doc))
+    path.chmod(0o600)
+
+
+def test_step2_build_refuses_sidecar_with_different_capture_id(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(STEP2, "validate_webhook", lambda _v: None)
+    monkeypatch.setattr(STEP2, "public_key_from_private", lambda _p: "ssh-ed25519 AAAA t")
+    image = tmp_path / "g-0a1b2c3d.raw"
+    # sidecar content records another ID while both file names agree
+    side = tmp_path / "g-0a1b2c3d.secrets.toml"
+    _write_step2_sidecar(side, image.name, "ffffffff")
+    with pytest.raises(STEP2.BuildError, match="mismatch"):
+        STEP2.load_secrets(side, image)
+    # sidecar file name carries another ID
+    other = tmp_path / "g-ffffffff.secrets.toml"
+    _write_step2_sidecar(other, image.name, "0a1b2c3d")
+    with pytest.raises(STEP2.BuildError, match="mismatch"):
+        STEP2.load_secrets(other, image)
+    # a matching pair is accepted and reports its ID
+    _write_step2_sidecar(side, image.name, "0a1b2c3d")
+    assert STEP2.load_secrets(side, image)["capture_id"] == "0a1b2c3d"

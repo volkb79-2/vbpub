@@ -306,3 +306,60 @@ def test_generic_install_detaches_before_powering_the_installed_disk(tmp_path, m
         {"state": "ON"},
     ]
     assert ready_checks == ([("http://v1001.vxxu.de/", "TrueNAS")] if ready_url else [])
+
+
+def test_capture_id_is_read_from_iso_names():
+    read = install_restore_iso._capture_id_from_name
+    assert read("truenas-27-20GiB-unattended-restore-0a1b2c3d") == "0a1b2c3d"
+    assert read("truenas-27-20GiB-unattended-restore-0a1b2c3d.iso") == "0a1b2c3d"
+    assert read("truenas-restore-0123456789abcdef-20261104T000000Z") is None
+    assert read("restore-v5") is None
+    assert read("restore-0A1B2C3D") is None  # uppercase is not a capture ID
+
+
+def test_finish_prints_secrets_checklist_pointer_and_capture_id(tmp_path, monkeypatch):
+    client = _Client()
+    server_id = 804027
+    state_path = tmp_path / "restore.json"
+    install_restore_iso._write_state(state_path, {
+        "schema_version": 1,
+        "server_id": server_id,
+        "server_name": "v2202511209318406253",
+        "phase": "awaiting_restore_completion",
+        "user_iso_name": "restore-0a1b2c3d.iso",
+        "capture_id": "0a1b2c3d",
+        "iso_size_bytes": 1024,
+        "original_boot_order": ["HDD", "NETWORK", "CDROM"],
+        "tasks": {},
+    })
+    details = {
+        "id": server_id,
+        "name": "v2202511209318406253",
+        "serverLiveInfo": {"state": "RUNNING", "configChanged": False, "bootorder": client.bootorder},
+    }
+    monkeypatch.setattr(install_restore_iso, "_create_client", lambda _runtime: client)
+    monkeypatch.setattr(install_restore_iso, "_guard_mutation", lambda *_args: details)
+    monkeypatch.setattr(install_restore_iso, "_check_no_active_tasks", lambda *_args: None)
+    monkeypatch.setattr(install_restore_iso, "_server_details", lambda *_args: details)
+    monkeypatch.setattr(
+        install_restore_iso, "_attached_iso",
+        lambda *_args: {"isoAttached": not client.detached, "iso": {"key": "restore-0a1b2c3d.iso"}},
+    )
+    monkeypatch.setattr(install_restore_iso, "_wait_task", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        install_restore_iso, "_ssh_verify",
+        lambda *_args: "0\n  state: ONLINE\nerrors: No known data errors\n",
+    )
+    monkeypatch.setattr(install_restore_iso.time, "sleep", lambda _seconds: None)
+    args = SimpleNamespace(
+        state_file=state_path, server_id=server_id, ssh_host="v1001.vxxu.de",
+        ssh_identity_file=Path("/tmp/root_ed25519"), ssh_known_hosts=Path("/tmp/known_hosts"),
+        ssh_timeout_seconds=1, ssh_host_key_alias=None, task_timeout_seconds=1,
+        server_ready_timeout_seconds=1,
+    )
+    runtime = _Runtime()
+    assert install_restore_iso._finish(args, runtime) == 0
+    output = "\n".join(runtime.output.lines)
+    assert "Secrets baked into a golden ISO / what to change after a restore" in output
+    assert "scripts/truenas/golden-iso/README.md" in output
+    assert "0a1b2c3d" in output

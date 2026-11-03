@@ -156,6 +156,14 @@ waits for `RUNNING` with `configChanged=false`, and checks that root SSH
 returns UID 0 and `boot-pool` is `ONLINE` without known data errors. It never
 grows the restored ZFS partition or pool.
 
+The restore is unattended and rotates nothing: the host keeps the golden image's
+baked-in secrets (admin password hash, API key, root key, SSH host keys,
+identity, TLS certificate). Name the ISO `...-<8-hex capture ID>.iso`; `start`
+and `finish` then print the ID of the matching `...-<id>.secrets.toml` sidecar,
+and `finish` ends with a pointer to the rotation checklist in
+[golden-iso/README.md](../truenas/golden-iso/README.md#secrets-baked-into-a-golden-iso--what-to-change-after-a-restore).
+Rotate before the host is exposed.
+
 If the ISO did not send its completion notification, do not use `finish` to
 assert that it did. After inspecting the checkpoint and provider state, use
 `recover` to detach the attached ISO and try booting the restored disk. This

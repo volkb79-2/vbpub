@@ -6,7 +6,10 @@ serial/VNC procedure in README.md, then this script configures the administrator
 password (a fresh random value per capture, stored only in the 0600 sidecar)
 and root SSH key, creates a dynamic API key (an interrupted run's key is
 reused, any earlier capture's key is replaced), validates it through the
-shared WebSocket client, and captures the powered-off QCOW2 as raw.
+shared WebSocket client, and captures the powered-off QCOW2 as raw. Every
+capture gets an 8-hex-digit capture ID that appears in both the image and the
+sidecar file name (`<stem>-<id>.raw`, `<stem>-<id>.secrets.toml`) and inside the
+sidecar.
 """
 
 from __future__ import annotations
@@ -118,7 +121,14 @@ def load_secret_document(path: Path, image: Path) -> dict[str, Any]:
         document = tomllib.loads(path.read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise StepError(f"cannot read secret sidecar: {type(exc).__name__}") from None
-    if document.get("schema_version") != 1 or document.get("image_file") != image.name:
+    accepted = {image.name}
+    recorded_id = document.get("capture_id")
+    if recorded_id is not None:
+        try:
+            accepted.add(credentials.image_name_for(image, credentials.validate_capture_id(recorded_id)))
+        except credentials.CredentialError as exc:
+            raise StepError(f"secret sidecar: {exc}") from None
+    if document.get("schema_version") != 1 or document.get("image_file") not in accepted:
         raise StepError("secret sidecar does not identify the requested golden image")
     admin = document.get("truenas_admin", {})
     root_ssh = document.get("root_ssh", {})
@@ -167,6 +177,7 @@ def serialize_secret_document(document: dict[str, Any]) -> str:
     lines = [
         "schema_version = 1",
         f"image_file = {toml_string(document['image_file'])}",
+        *([f"capture_id = {toml_string(document['capture_id'])}"] if document.get("capture_id") else []),
         "",
         "[truenas_admin]",
         'username = "truenas_admin"',
@@ -608,6 +619,28 @@ def api_uri() -> str:
     return f"wss://{SSH_HOST}:{API_PORT}/api/current"
 
 
+def plan_capture(document: dict[str, Any], template: Path) -> tuple[str, Path, Path]:
+    """Return (capture_id, image path, sidecar path) for the capture about to run."""
+    recorded = document.get("capture_id")
+    api = document.get("truenas_api") or {}
+    reuse = False
+    if recorded is not None:
+        try:
+            credentials.validate_capture_id(recorded)
+        except credentials.CredentialError as exc:
+            raise StepError(f"secret sidecar: {exc}") from None
+        finished = (template.parent / credentials.image_name_for(template, recorded)).exists() or bool(
+            api.get("captured_image_sha256")
+        )
+        reuse = not finished
+    capture_id = recorded if reuse else credentials.new_capture_id()
+    return (
+        capture_id,
+        template.parent / credentials.image_name_for(template, capture_id),
+        template.parent / credentials.sidecar_name_for(template, capture_id),
+    )
+
+
 def api_block_is_valid(document: dict[str, Any]) -> bool:
     return isinstance(document.get("truenas_api"), dict)
 
@@ -704,23 +737,31 @@ def exclusive_lock(path: Path) -> Iterator[None]:
 def run_step(args: argparse.Namespace) -> None:
     require_tools(["qemu-img", "qemu-system-x86_64", "ssh", "fuser", "sgdisk", "mdir", "ssh-keygen"])
     disk = args.vm_disk.resolve()
-    image = args.image.resolve()
-    secrets_path = args.secrets.resolve()
+    template = args.image.resolve()
+    seed_path = args.secrets.resolve()
     key_path = args.ssh_private_key.resolve()
     known_hosts = args.known_hosts.resolve()
     args.vm_vars = args.vm_vars.resolve()
     args.qemu_log = args.qemu_log.resolve()
-    if image.parent != secrets_path.parent:
+    if template.parent != seed_path.parent:
         raise StepError("the secret sidecar must remain beside the golden raw image")
-    if image == disk or image == secrets_path or secrets_path == disk:
-        raise StepError("VM disk, raw image, and secret sidecar must be distinct files")
     if not disk.is_file():
         raise StepError(f"source VM disk not found: {disk}")
     if not key_path.is_file() or stat.S_IMODE(key_path.stat().st_mode) & 0o077:
         raise StepError("root SSH private key must exist and have mode 0600 or stricter")
     if not known_hosts.is_file():
         raise StepError(f"pinned SSH known_hosts file not found: {known_hosts}")
-    document = load_secret_document(secrets_path, image)
+    document = load_secret_document(seed_path, template)
+    # Capture ID: a fresh 8-hex ID per capture names BOTH the image and its
+    # sidecar. Only an unfinished capture (sidecar of an interrupted run: no
+    # image yet, no finished-capture marker) keeps its ID on retry.
+    capture_id, image, secrets_path = plan_capture(document, template)
+    if image == disk or image == secrets_path or secrets_path == disk:
+        raise StepError("VM disk, raw image, and secret sidecar must be distinct files")
+    document["capture_id"] = capture_id
+    document["image_file"] = image.name
+    log(f"Golden capture ID: {capture_id}")
+    log(f"Image: {image.name}; secrets sidecar: {secrets_path.name}")
     if image.exists() and not args.force:
         raise StepError(f"refusing to replace existing raw image without --force: {image}")
 
@@ -747,7 +788,7 @@ def run_step(args: argparse.Namespace) -> None:
         del document["truenas_api"]
         stale_dropped = True
     current_key = document.get("truenas_api", {}).get("api_key") if api_block_is_valid(document) else None
-    old_sidecar = secrets_path.read_bytes()
+    old_sidecar = seed_path.read_bytes()
     created_id: int | None = None
     sidecar_changed = False
     qemu: subprocess.Popen[bytes] | None = None
@@ -877,8 +918,15 @@ def make_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ssh-private-key", type=Path, default=DEFAULT_VM_KEY)
     parser.add_argument("--known-hosts", type=Path, default=DEFAULT_KNOWN_HOSTS)
     parser.add_argument("--qemu-log", type=Path, default=DEFAULT_QEMU_LOG)
-    parser.add_argument("--image", type=Path, default=DEFAULT_IMAGE)
-    parser.add_argument("--secrets", type=Path, default=DEFAULT_SECRETS)
+    parser.add_argument(
+        "--image", type=Path, default=DEFAULT_IMAGE,
+        help="image name template; the capture writes <stem>-<8-hex capture ID><suffix> beside it",
+    )
+    parser.add_argument(
+        "--secrets", type=Path, default=DEFAULT_SECRETS,
+        help="seed sidecar from init-secrets (or an interrupted capture); the capture writes "
+        "<stem>-<8-hex capture ID>.secrets.toml beside the image",
+    )
     parser.add_argument(
         "--api-key-expiry-days",
         type=positive_days,
