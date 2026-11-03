@@ -41,6 +41,56 @@ Like every ciu root, run `ciu up` from the main checkout path (S16.3 refuses to 
 worktree whose project does not yet exist in the primary checkout). A bare `ciu up` selects
 nothing: always pass `--dir`.
 
+## Dark theme
+
+`ciu up` renders `templates/theme-dark.css.j2` into a stylesheet served as `/static/theme/theme-dark.css`
+and a `custom-config.js` that links it on every page (landing, pre-join, in-call): no image rebuild, survives
+upgrades. Look: Dark Reader "dark" (near-black grey, off-white text, one muted blue accent), derived from
+four colours. Configure in `[jitsi.theme]` (override in a sparse `ciu.toml.j2`):
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `true` | `false`: empty stylesheet, no `<link>`/meta injected (the two mounts stay, ciu mounts are static) |
+| `background` | `#181a1b` | page / video-area background |
+| `surface` | `#202324` | panels, dialogs, menus, toolbar |
+| `text` | `#e8e6e3` | main text |
+| `accent` | `#3b6ea8` | primary buttons, active tab, selection |
+
+How it hooks in (verified in `ghcr.io/jitsi/web:stable-11248-3`): the image appends `/config/custom-config.js` to
+the generated `config.js`, which nginx SSI inlines into `<head>`; that file paints `<html>` dark at once and appends the
+`<link>`. Jitsi's own emotion classes are hashed, so the CSS targets their stable label suffixes
+(`[class*="-button-primary"]`, `-modal`, `-contextMenu-contextMenu`, ...) plus the plain classes in `all.css`
+(`.welcome`, `.meetings-list`, `.toolbox-content-items`). After an image upgrade look at the pages once: a renamed
+class shows up as a bright patch, fix it in the template.
+
+## Client features
+
+`[jitsi.client]` in `ciu.defaults.toml.j2` renders `templates/custom-config.js.j2` to `/config/custom-config.js`
+(read-only mount; web has no `/config` hostdir any more). Every key is optional and documented next to its default
+there; the defaults keep upstream audio processing and raise visibility:
+
+| Key | Default | `config.*` | Effect / caveat |
+|---|---|---|---|
+| `disable_agc` / `disable_aec` / `disable_ns` | `false` | `disableAGC` / `disableAEC` / `disableNS` | `true` turns the browser's automatic gain control / echo cancellation / noise suppression off for everyone (users can still toggle in Settings > Audio). Without headphones, `disable_aec = true` causes echo. |
+| `stereo` | `false` | `audioQuality.stereo` | Stereo Opus for music/screen audio; browsers drop echo cancellation for it. Users can also tick "Stereo" in Settings > Audio. |
+| `opus_max_average_bitrate` | `0` (not set) | `audioQuality.opusMaxAverageBitrate` | bit/s, e.g. `128000` for music. |
+| `connection_indicators_disabled` / `_auto_hide` | `false` / `false` | `connectionIndicators.disabled/autoHide` | the signal-bars icon on every tile stays visible; clicking it opens the stats dialog. |
+| `disable_show_more_stats` | `false` | `disableShowMoreStats` | `false`: the dialog has the "Show more" per-stream table. |
+| `speaker_stats_search`, `speaker_stats_order` | `true`, `role,name,hasLeft` | `speakerStats.disableSearch/order` | the "Participants stats" dialog (menu: More actions). |
+| `statistics_display_name` | `""` (not set) | `statisticsDisplayName` | label in analytics/stats records only; adds nothing to the UI. |
+| `desktop_sharing_framerate_min/max` | `5` / `15` | `desktopSharingFrameRate` | screen share fps; `max = 0` keeps the image default (auto). More fps = more upload and CPU. |
+| `[jitsi.jvb] rest_stats` | `true` | `COLIBRI_REST_ENABLED` (jvb env) | JVB Colibri REST on the private port 8080, `expose`d on the internal network only, never published. |
+
+Query JVB stats from inside the stack (conference/participant counts, bitrates, packet loss, RTT):
+
+```bash
+docker exec <prefix>-web curl -s http://jvb:8080/colibri/stats | head -c 2000   # <prefix> = `docker ps --format '{{.Names}}' | grep -- -web$`
+docker exec <prefix>-jvb curl -s http://localhost:8080/colibri/v2/conferences    # per-conference detail
+```
+
+Other env-var driven switches of this image (no file needed) are listed in the controller report
+(`JITSI-THEME-REPORT.md`); add them to the `jitsi-web` environment in `ciu.compose.yml.j2` if wanted.
+
 ## Images (freshness rule, with a recorded exception)
 
 `ghcr.io/jitsi/{web,prosody,jicofo,jvb}:stable-11248-3`, pinned `tag@sha256` manifest-list digests
@@ -78,5 +128,12 @@ container, then `ciu up` accepts them (S6.3). Filed in the ciu backlog.
 `tests/` (offline, stdlib + jinja2 + pytest; gate lane in `run-gate.toml`): render with a
 dummy domain, `docker compose config` validation, no credentials/operator domain in tracked
 files, secrets 0600 + gitignored, port plan equals `../README.md`, edge-consumer shape
-(only `jitsi-web` on the edge network, one published port), digest pins + 14-day rule, and the
-user hook against a fake docker (password only on stdin, never argv/stdout).
+(only `jitsi-web` on the edge network, one published port), digest pins + 14-day rule, the
+user hook against a fake docker (password only on stdin, never argv/stdout), and
+`tests/test_theme_client.py`: theme + `custom-config.js` render with defaults and overrides, the enable flags
+render nothing, no unrendered placeholders, the JS passes `node --check` (and runs against a stub `config`), the
+JVB REST stats are never published.
+
+Known limit: ciu `configfile` sections are declared statically, so `[jitsi.theme] enabled = false` cannot drop the
+mounts, only their content. The `/config` mount replaces the former web hostdir (`vol-web-config`, now unused: remove
+it by hand, it held no state).

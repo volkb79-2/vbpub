@@ -41,7 +41,7 @@ def _cfg() -> dict:
 def _compose_text() -> str:
     cfg = _cfg()
     # hostdir values are injected by ciu at render time; stand-ins here.
-    for svc in ("web", "prosody", "jicofo", "jvb"):
+    for svc in ("prosody", "jicofo", "jvb"):
         cfg[svc]["hostdir"] = {"config": f"/tmp/vol-{svc}-config"}
         if svc == "prosody":
             cfg[svc]["hostdir"]["data"] = "/tmp/vol-prosody-data"
@@ -229,8 +229,8 @@ def test_dummy_users_are_opt_in_and_hostdirs_are_not_group_writable() -> None:
     cfg = _cfg()
     assert cfg["auth"]["dummy_users"] is False
     assert [u["name"] for u in cfg["users"] if not u.get("dummy")] == ["admin"]
-    for svc in ("web", "prosody", "jicofo", "jvb"):
+    # web has no hostdir: its /config is the rendered, read-only custom-config.js mount
+    assert "hostdir" not in cfg["web"]
+    for svc in ("prosody", "jicofo", "jvb"):
         mode = int(cfg[svc]["hostdir"]["config"]["mode"], 8)
-        assert mode & 0o022 == 0, svc
-        if svc != "web":
-            assert mode & 0o007 == 0, svc
+        assert mode & 0o027 == 0, svc
