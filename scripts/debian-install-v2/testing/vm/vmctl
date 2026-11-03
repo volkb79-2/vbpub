@@ -16,11 +16,14 @@
 # that class of test belongs instead: the guest's /dev/vda and its swap
 # are the GUEST kernel's own, entirely separate from the host's.
 #
+# <vm-lab> = <project>/artifacts/vm-lab (a tracked placeholder folder; contents
+# are gitignored). Global options before the subcommand: --state-dir DIR,
+# --downloads-dir DIR (used by the in-runner wrapper for its mount points).
 # Design (credited: this repo's own operator ran the same question past a
 # separate research session, cross-checked against this implementation --
 # see the 2026-09-09 KVM-setup discussion in project memory):
-#   - immutable base images (.vm/images/*.qcow2), never written to directly
-#   - a disposable qcow2 CoW overlay per run (.vm/runs/<name>/disk.qcow2)
+#   - immutable base images (<vm-lab>/images/*.qcow2), never written to directly
+#   - a disposable qcow2 CoW overlay per run (<vm-lab>/runs/<name>/disk.qcow2)
 #   - QMP (unix socket) for VM lifecycle (start/stop/reset/status)
 #   - SSH for everything inside the guest -- two separate control planes
 #   - QEMU user-mode networking (slirp) + hostfwd -- no TAP, no
@@ -29,7 +32,7 @@
 #     userspace, so no host loop device is involved in booting one.
 #
 # Usage:
-#   vmctl prepare-base <case>          # download + stage .vm/images/<case>-base.qcow2
+#   vmctl prepare-base <case>          # download + stage <vm-lab>/images/<case>-base.qcow2
 #   vmctl prepare-ready-base <case>    # prepare-base, then boot+wait for cloud-init to
 #                                       # finish, disable it, flatten -> <case>-ready-base.qcow2
 #   vmctl start <run>  [--case <case>] [--ssh-port N] [--mem MB] [--smp N] [--disk-gb N] [--no-apt-cache] [--seed-iso PATH]
@@ -42,7 +45,7 @@
 #   vmctl stop <run>                   # graceful: QMP system_powerdown, then SIGTERM
 #   vmctl destroy <run>                # stop (if running) + rm -rf the run dir
 #
-# <case> selects which base image (.vm/images/<case>-base.qcow2); for now
+# <case> selects which base image (<vm-lab>/images/<case>-base.qcow2); for now
 # "case-b" (a plain, unmodified genericcloud image -- root already fills
 # the disk, exactly Case B's real-world starting shape) is implemented.
 # "case-a" (small root + large free trailing space, needing cloud-init's
@@ -52,22 +55,27 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LEGACY_STATE_DIR="$HERE/.vm"
-STATE_DIR="${MDT_VM_STATE_DIR:-$LEGACY_STATE_DIR}"
+# State lives in <project>/artifacts/vm-lab (gitignored). It may be a plain
+# directory or a CoW subvolume mounted over it; this script does not care.
+# HERE is <project>/testing/vm.
+PROJECT_DIR="$(cd "$HERE/../.." && pwd -P)"
+# Fixed-depth defaults (<repo>/scripts/debian-install-v2/testing/vm). No env
+# overrides: the layout is a repo decision. The in-runner wrapper cannot derive
+# them (its /work is only the testing dir), so it passes the global options
+# --state-dir /vm-lab --downloads-dir /downloads before the subcommand.
+STATE_DIR="$PROJECT_DIR/artifacts/vm-lab"
+DOWNLOADS_DIR="$(cd "$PROJECT_DIR/../.." && pwd -P)/downloads"
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --state-dir) STATE_DIR="${2:?--state-dir requires a path}"; shift 2 ;;
+        --downloads-dir) DOWNLOADS_DIR="${2:?--downloads-dir requires a path}"; shift 2 ;;
+        *) break ;;
+    esac
+done
 IMAGES_DIR="$STATE_DIR/images"
 RUNS_DIR="$STATE_DIR/runs"
-LEGACY_RUNS_DIR="$LEGACY_STATE_DIR/runs"
 SSH_DIR="$STATE_DIR/ssh"
 SSH_KEY="$SSH_DIR/id_ed25519"
-# Preserve access to a runner created before state moved out of the worktree.
-# Once its legacy key is used for that in-flight run, later new runs can keep
-# using it until the operator removes the generated legacy directory.
-if [ "$STATE_DIR" != "$LEGACY_STATE_DIR" ] \
-    && [ ! -f "$SSH_KEY" ] \
-    && [ -f "$LEGACY_STATE_DIR/ssh/id_ed25519" ]; then
-    SSH_DIR="$LEGACY_STATE_DIR/ssh"
-    SSH_KEY="$SSH_DIR/id_ed25519"
-fi
 
 DEFAULT_SSH_PORT=2222
 DEFAULT_MEM_MB=2048
@@ -91,6 +99,13 @@ ensure_apt_cache() {
     # those re-fetch for real each time a run reaches docker_install.
     command -v apt-cacher-ng >/dev/null 2>&1 || return 1
     pgrep -x apt-cacher-ng >/dev/null 2>&1 && return 0
+    if [ "$(id -u)" != "0" ]; then
+        # The harness runner starts apt-cacher-ng as root from its entry
+        # command so vmctl itself can run as the vm-lab owner (no root-owned
+        # files on the host). Without it, guests fetch directly.
+        log "apt-cacher-ng is not running and vmctl is not root (the runner entry command starts it) -- guests will fetch packages directly, not fatal"
+        return 1
+    fi
     log "starting apt-cacher-ng on 127.0.0.1:$APT_CACHE_PORT (guest-visible as 10.0.2.2:$APT_CACHE_PORT)"
     # Bare command name, not a hardcoded path: the real binary's install
     # path has moved across Debian releases before (it is NOT
@@ -108,10 +123,14 @@ ensure_apt_cache() {
 
 ensure_ssh_key() {
     mkdir -p "$SSH_DIR"
-    if [ ! -f "$SSH_KEY" ]; then
-        log "generating VM fixture SSH key ($SSH_KEY)"
-        ssh-keygen -q -t ed25519 -N '' -f "$SSH_KEY"
-    fi
+    # Serialize first-run key generation (two concurrent first runs raced).
+    (
+        flock 8
+        if [ ! -f "$SSH_KEY" ]; then
+            log "generating VM fixture SSH key ($SSH_KEY)"
+            ssh-keygen -q -t ed25519 -N '' -f "$SSH_KEY"
+        fi
+    ) 8>"$SSH_DIR/.lock"
 }
 
 cmd_prepare_base() {
@@ -122,9 +141,12 @@ cmd_prepare_base() {
         case-b)
             [ -f "$dest" ] && { log "already staged: $dest"; return 0; }
             local downloaded
-            downloaded="$("$HERE/../download-base-image.sh")"
+            downloaded="$("$HERE/../download-base-image.sh" "$DOWNLOADS_DIR")"
+            if [ "$(stat -f -c %T "$IMAGES_DIR" 2>/dev/null)" != "btrfs" ]; then
+                log "INFO: vm-lab is not on btrfs; base staging is a full copy"
+            fi
             log "staging $downloaded -> $dest (copy, not symlink: base images are never written to, but a copy means the original download cache can be independently re-verified/refreshed without disturbing an in-use base)"
-            cp "$downloaded" "$dest.tmp"
+            cp --reflink=auto "$downloaded" "$dest.tmp"
             mv "$dest.tmp" "$dest"
             log "case-b base ready: $dest (the unmodified cloud image models a root partition that fills its disk, the Case-B starting shape)"
             ;;
@@ -205,16 +227,7 @@ EOF
 }
 
 run_dir_for() {
-    # The wrapper keeps state outside the mounted worktree. If a runner was
-    # upgraded while a VM was active under the former .vm location, continue
-    # to address that specific legacy run so wait/ssh/destroy can clean it up.
-    if [ "$STATE_DIR" != "$LEGACY_STATE_DIR" ] \
-        && [ -d "$LEGACY_RUNS_DIR/$1" ] \
-        && [ ! -d "$RUNS_DIR/$1" ]; then
-        echo "$LEGACY_RUNS_DIR/$1"
-    else
-        echo "$RUNS_DIR/$1"
-    fi
+    echo "$RUNS_DIR/$1"
 }
 
 cmd_start() {
@@ -264,6 +277,9 @@ cmd_start() {
     ensure_ssh_key
 
     local run_dir; run_dir="$(run_dir_for "$run")"
+    # QEMU refuses a UNIX socket path over 108 bytes (long worktree paths when
+    # vmctl is run directly on the host).
+    [ "${#run_dir}" -le 98 ] || die "run directory path is too long for the QMP socket (${#run_dir} bytes; sun_path limit is 107): $run_dir -- use a checkout under a shorter path"
     [ -e "$run_dir/qemu.pid" ] && kill -0 "$(cat "$run_dir/qemu.pid")" 2>/dev/null \
         && die "run '$run' already has a live QEMU process (pid $(cat "$run_dir/qemu.pid")) -- vmctl destroy $run first"
     rm -rf "$run_dir"

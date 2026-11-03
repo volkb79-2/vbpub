@@ -4,30 +4,32 @@
 # like Netcup deploys, which is exactly the point: this is a REAL boot
 # (bootloader, initramfs, kernel), not something built from scratch with
 # debootstrap, and it's the same kind of image the real Case B live-test
-# hosts are provisioned from. The wrapper puts the cache in its persistent
-# runner; direct invocations default to an external user cache, never the
-# source tree. A second run of
+# hosts are provisioned from. The image is a shared download: it lives in
+# the repo's gitignored downloads/ folder (<repo root>/downloads, derived by
+# fixed depth from this script; a tracked placeholder keeps the folder in every
+# checkout). The in-runner VM wrapper passes its mount point as the optional
+# argument. Concurrent runs are serialized with flock. A second run of
 # testing/vm/vmctl prepare-base doesn't re-download; it only refetches if
 # the file is missing or its checksum doesn't match what's currently
 # published (Debian repoints
 # "latest" at a new build periodically).
 #
-# Usage: testing/download-base-image.sh
+# Usage: testing/download-base-image.sh [downloads-dir]
 # Prints the path to the verified local qcow2 on success.
 set -euo pipefail
 
-if [ -n "${MDT_VM_CACHE_DIR:-}" ]; then
-    CACHE_DIR="$MDT_VM_CACHE_DIR"
-else
-    CACHE_ROOT="${XDG_CACHE_HOME:-${TMPDIR:-/tmp}}"
-    CACHE_DIR="$CACHE_ROOT/mdt-debian-install-vm"
-fi
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+# HERE is <repo>/scripts/debian-install-v2/testing: fixed depth, no git needed.
+DOWNLOADS_DIR="${1:-$(cd "$HERE/../../.." && pwd -P)/downloads}"
 IMAGE_NAME="debian-13-genericcloud-amd64.qcow2"
 BASE_URL="https://cloud.debian.org/images/cloud/trixie/latest"
-LOCAL_PATH="$CACHE_DIR/$IMAGE_NAME"
-SUMS_PATH="$CACHE_DIR/SHA512SUMS"
+LOCAL_PATH="$DOWNLOADS_DIR/$IMAGE_NAME"
+SUMS_PATH="$DOWNLOADS_DIR/SHA512SUMS"
 
-mkdir -p "$CACHE_DIR"
+[ -d "$DOWNLOADS_DIR" ] || { echo "downloads dir $DOWNLOADS_DIR is missing (a checkout contains the tracked downloads/ placeholder)" >&2; exit 1; }
+# One shared downloads folder: serialize fetch/verify/rename across processes.
+exec 9>"$DOWNLOADS_DIR/.download.lock"
+flock 9
 
 echo "+ fetching current SHA512SUMS" >&2
 wget -q -O "$SUMS_PATH.new" "$BASE_URL/SHA512SUMS"

@@ -349,32 +349,61 @@ This is genuinely the only case-shape-specific customization step in the
 whole design — Case B needs zero base-image customization because the
 stock image already matches it.
 
+## 3b. State layout, worktrees and ownership
+
+- **vm-lab** (`<project>/artifacts/vm-lab`): per checkout/worktree, derived by
+  fixed depth from the script location; no env overrides. `images/`,
+  `runs/<name>/`, `ssh/`. Disposable state is tied to the source under test and
+  is cleaned with the worktree.
+- **downloads** (`<repo root>/downloads`, of the checkout that runs): shared by
+  all projects, immutable, checksum-verified, `flock`ed.
+- **Placeholders**: both top folders are tracked (README + a `*` `.gitignore`),
+  so a fresh clone has them; scripts only `mkdir -p` the subfolders.
+- **Worktrees** (plan, owned by `ciu worktree` + `libraries/cowtree`): a new
+  worktree gets CoW clones of the main checkout's declared gitignored paths, so
+  it already holds main's downloads and staged bases; scripts just use the
+  project-relative paths. Without CoW a worktree starts empty and fetches/stages
+  again. The harness has no main-checkout lookup of its own.
+- **Base safety**: bases are write-once (`prepare-base` returns early, `snapshot`
+  refuses to overwrite) because overlays reference them by path. Content-
+  addressed names were considered and not built; a refresh needs a new case name
+  or destroying dependent runs first.
+- **Ownership**: the runner entry command runs as root only to add the owner's
+  passwd entry and start apt-cacher-ng; all `vmctl` runs use `docker exec --user`
+  with the vm-lab owner's uid:gid, so no root-owned files appear in worktrees.
+- **Reuse**: layout/owner labels, mount sources and device:inode of the bind
+  folders must match the current caller; otherwise the wrapper refuses a stale
+  runner (older code, deleted/replaced/mounted-over folder).
+- **CoW subvolume** over vm-lab is invisible to the scripts; its provisioning is
+  a separate host-side helper (see README, "CoW").
+
 ## 4. Detailed walkthrough (what was actually run, live, 2026-09-09)
 
 This is the real transcript of the harness's first end-to-end proof,
-not an idealized example. It predates the later state move out of the
-worktree; current wrapper runs use the runner-local paths described above.
+not an idealized example. It predates the move of VM state to
+`artifacts/vm-lab/`; current wrapper runs use `/vm-lab` and `/downloads` inside
+the runner.
 
 ```
 $ ./run-vm-harness.sh prepare-base case-b
 + starting persistent VM-harness runner (worktree-specific name)
 + fetching current SHA512SUMS
-+ staging /work/.cache/debian-13-genericcloud-amd64.qcow2 -> /work/vm/.vm/images/case-b-base.qcow2 (copy, not symlink: ...)
-+ case-b base ready: /work/vm/.vm/images/case-b-base.qcow2 (root fills the disk -- ...)
++ staging /downloads/debian-13-genericcloud-amd64.qcow2 -> /vm-lab/images/case-b-base.qcow2 (copy, not symlink: ...)
++ case-b base ready: /vm-lab/images/case-b-base.qcow2 (root fills the disk -- ...)
 ```
 
 `download-base-image.sh` fetched and SHA512-verified the current Debian
-13 `genericcloud` qcow2 (~339MB) and staged a copy under `.vm/images/`.
-The copy (not a symlink) is deliberate: `.vm/images/case-b-base.qcow2` is
+13 `genericcloud` qcow2 (~339MB) and staged a copy under `artifacts/vm-lab/images/`.
+The copy (not a symlink) is deliberate: `images/case-b-base.qcow2` in the vm-lab folder is
 the thing every overlay is backed by and must never move or change out
-from under a running test; the original download cache under
-the wrapper's external cache can be independently re-verified or refreshed later
+from under a running test; the original download under
+the shared `downloads/` folder can be independently re-verified or refreshed later
 without touching an in-use base.
 
 ```
 $ ./run-vm-harness.sh start smoke1 --case case-b --mem 1024 --smp 1
-+ generating VM fixture SSH key (/work/vm/.vm/ssh/id_ed25519)
-+ creating CoW overlay over /work/vm/.vm/images/case-b-base.qcow2
++ generating VM fixture SSH key (/vm-lab/ssh/id_ed25519)
++ creating CoW overlay over /vm-lab/images/case-b-base.qcow2
 + starting qemu-system-x86_64 (TCG, no KVM) -- ssh on 127.0.0.1:2222
 + started (pid 64); vmctl wait smoke1 to block until SSH is reachable
 

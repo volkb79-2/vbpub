@@ -42,8 +42,21 @@ def test_vm_runner_is_governed_and_has_no_host_device_passthrough():
     assert 'VM_CGROUP_PARENT="${CGROUP_PARENT_DEV_GATES:-}"' in runner
     assert 'VM_PROBE_CGROUP_PARENT="${CGROUP_PARENT_DEV_INTERACTIVE:-}"' in runner
     assert 'BUILD_BUILDER="${BUILDX_BUILDER:-}"' in runner
-    assert 'VM_STATE_DIR="/var/lib/mdt-debian-install-vm/$RUNNER_FINGERPRINT"' in runner
-    assert 'MDT_VM_CACHE_DIR=$VM_CACHE_DIR' in runner
+    assert 'VM_STATE_DIR="/vm-lab"' in runner
+    assert 'VM_DOWNLOADS_DIR="/downloads"' in runner
+    assert 'HOST_VM_LAB_DIR="$HOST_PROJECT_DIR/artifacts/vm-lab"' in runner
+    assert 'HOST_DOWNLOADS_DIR="$HOST_REPO_ROOT/downloads"' in runner
+    # No env overrides and no main-checkout/git resolution: the layout is fixed.
+    for forbidden in ("MDT_VM_STATE_DIR", "MDT_DOWNLOADS_DIR", "MDT_VM_MAIN_IMAGES_DIR",
+                      "git-common-dir", "main-vm-images", 'mkdir -p "$VM_LAB_NS"'):
+        assert forbidden not in runner
+    assert '--state-dir "$VM_STATE_DIR" --downloads-dir "$VM_DOWNLOADS_DIR"' in runner
+    assert '--mount "type=bind,src=$HOST_VM_LAB_DIR,dst=$VM_STATE_DIR"' in runner
+    assert 'docker exec -i --user "$RUNNER_OWNER"' in runner
+    assert '--label "mdt.vm.layout=$RUNNER_LAYOUT"' in runner
+    assert "show-toplevel" not in runner
+    assert '--mount "type=bind,src=$HOST_DOWNLOADS_DIR,dst=$VM_DOWNLOADS_DIR"' in runner
+    assert "MDT_VM_CACHE_DIR" not in runner
     assert '--cgroup-parent="$VM_CGROUP_PARENT"' in runner
     assert "        --init \\\n" in runner
     assert '--mount "type=bind,src=$HOST_TESTING_DIR,dst=/work,readonly"' in runner
@@ -140,6 +153,19 @@ def test_vm_shell_entrypoints_parse(path):
     subprocess.run(["bash", "-n", str(path)], check=True)
 
 
+def _layout_copy(tmp_path):
+    """Copy the scripts into a tmp repo layout with the tracked placeholder
+    folders, so wrapper tests never touch this checkout's vm-lab/downloads."""
+    import shutil
+
+    repo = (tmp_path / "repo").resolve()
+    project = repo / "scripts" / "debian-install-v2"
+    shutil.copytree(TESTING, project / "testing", ignore=shutil.ignore_patterns("__pycache__"))
+    (project / "artifacts" / "vm-lab").mkdir(parents=True)
+    (repo / "downloads").mkdir()
+    return repo, project, project / "testing" / "vm"
+
+
 def test_vm_wrapper_maps_custom_hostname_to_physical_mount(tmp_path):
     """The cockpit hostname need not be its Docker name.
 
@@ -147,12 +173,13 @@ def test_vm_wrapper_maps_custom_hostname_to_physical_mount(tmp_path):
     wrapper's namespace-to-host mapping without starting Docker, QEMU, or a
     real-device operation.
     """
+    repo, project, vm = _layout_copy(tmp_path)
     fake_log = tmp_path / "docker.log"
     fake_docker = tmp_path / "docker"
-    physical = tmp_path / "physical"
+    physical = tmp_path / "physical" / "scripts" / "debian-install-v2"
     (physical / "testing").mkdir(parents=True)
     hostname = Path("/etc/hostname").read_text().strip()
-    mount_command = f"printf '{TESTING}\\t{physical / 'testing'}\\n'"
+    mount_command = f"printf '{project / 'testing'}\\t{physical / 'testing'}\\n'"
     fake_docker.write_text(
         """#!/bin/sh
 set -eu
@@ -202,7 +229,7 @@ esac
         BUILDX_BUILDER="fake-builder",
     )
     result = subprocess.run(
-        [str(VM / "run-vm-harness.sh"), "--daemon"],
+        [str(vm / "run-vm-harness.sh"), "--daemon"],
         env=env,
         capture_output=True,
         text=True,
@@ -216,6 +243,10 @@ esac
     expected_project = str(physical)
     assert f"type=bind,src={expected_testing},dst=/work,readonly" in calls
     assert f"type=bind,src={expected_project},dst=/source,readonly" in calls
+    # vm-lab and downloads follow the same mapping, by fixed depth.
+    assert f"type=bind,src={physical / 'artifacts' / 'vm-lab'},dst=/vm-lab" in calls
+    assert f"type=bind,src={tmp_path / 'physical' / 'downloads'},dst=/downloads" in calls
+    assert "/main-vm-images" not in calls
 
 
 def test_vm_wrapper_maps_an_explicit_project_source_to_the_physical_mount(tmp_path):
@@ -225,13 +256,16 @@ def test_vm_wrapper_maps_an_explicit_project_source_to_the_physical_mount(tmp_pa
     of the worktree-specific runner identity; passing the cockpit path directly
     to the daemon would mount the wrong host path or create an empty source.
     """
+    repo, project, vm = _layout_copy(tmp_path)
     fake_log = tmp_path / "docker.log"
     fake_docker = tmp_path / "docker"
-    physical = tmp_path / "physical"
+    physical = tmp_path / "physical" / "scripts" / "debian-install-v2"
     (physical / "testing").mkdir(parents=True)
     (physical / "modern-debian-tools-python-debug").mkdir()
     hostname = Path("/etc/hostname").read_text().strip()
-    mount_command = f"printf '{TESTING}\\t{physical / 'testing'}\\n/workspaces/vbpub\\t{physical}\\n'"
+    mount_command = (
+        f"printf '{project / 'testing'}\\t{physical / 'testing'}\\n/workspaces/vbpub\\t{physical}\\n'"
+    )
     fake_docker.write_text(
         """#!/bin/sh
 set -eu
@@ -265,7 +299,7 @@ esac
         BUILDX_BUILDER="fake-builder",
     )
     result = subprocess.run(
-        [str(VM / "run-vm-harness.sh"), "--daemon"],
+        [str(vm / "run-vm-harness.sh"), "--daemon"],
         env=env, capture_output=True, text=True, check=False,
     )
     assert result.returncode == 0, result.stderr + "\nDocker calls:\n" + fake_log.read_text()
@@ -290,11 +324,10 @@ for arg in "$@"; do printf '<%s>\\n' "$arg" >> "$FAKE_SSH_LOG"; done
     env = os.environ.copy()
     env.update(
         PATH=f"{tmp_path}:{env['PATH']}",
-        MDT_VM_STATE_DIR=str(state),
         FAKE_SSH_LOG=str(fake_log),
     )
     multiple = subprocess.run(
-        [str(VM / "vmctl"), "ssh", "one", "--", "printf", "%s", "a b"],
+        [str(VM / "vmctl"), "--state-dir", str(state), "ssh", "one", "--", "printf", "%s", "a b"],
         env=env,
         capture_output=True,
         text=True,
@@ -306,7 +339,7 @@ for arg in "$@"; do printf '<%s>\\n' "$arg" >> "$FAKE_SSH_LOG"; done
     fake_log.write_text("")
     script = 'set -eu; printf "%s\\n" "$HOME"'
     single = subprocess.run(
-        [str(VM / "vmctl"), "ssh", "one", "--", script],
+        [str(VM / "vmctl"), "--state-dir", str(state), "ssh", "one", "--", script],
         env=env,
         capture_output=True,
         text=True,
@@ -360,13 +393,12 @@ def test_vmctl_start_uses_a_supplied_seed_iso_without_rewriting_it(tmp_path):
     env = os.environ.copy()
     env.update(
         PATH=f"{fake_bin}:{env['PATH']}",
-        MDT_VM_STATE_DIR=str(state),
         FAKE_QEMU_ARGS=str(qemu_args),
         CLOUD_LOCALDS_CALLED=str(cloud_localds_called),
     )
     result = subprocess.run(
         [
-            str(VM / "vmctl"), "start", "custom-seed",
+            str(VM / "vmctl"), "--state-dir", str(state), "start", "custom-seed",
             "--case", "case-b", "--no-apt-cache",
             "--seed-iso", str(source_iso),
         ],
@@ -393,9 +425,8 @@ def test_vmctl_rejects_a_symlink_custom_seed_before_creating_a_run(tmp_path):
     seed_link.symlink_to(target)
     state = tmp_path / "state"
     env = os.environ.copy()
-    env["MDT_VM_STATE_DIR"] = str(state)
     result = subprocess.run(
-        [str(VM / "vmctl"), "start", "bad-seed", "--seed-iso", str(seed_link)],
+        [str(VM / "vmctl"), "--state-dir", str(state), "start", "bad-seed", "--seed-iso", str(seed_link)],
         env=env,
         capture_output=True,
         text=True,
@@ -449,13 +480,12 @@ def test_vmctl_grows_only_the_per_run_overlay_before_qemu_start(tmp_path):
 
     env = os.environ.copy()
     env.update(
-        MDT_VM_STATE_DIR=str(state),
         PATH=f"{fake_bin}:{env['PATH']}",
         FAKE_VM_LOG=str(log),
     )
     result = subprocess.run(
         [
-            str(VM / "vmctl"), "start", "disk-size-test",
+            str(VM / "vmctl"), "--state-dir", str(state), "start", "disk-size-test",
             "--disk-gb", "20", "--seed-iso", str(seed_iso), "--no-apt-cache",
         ],
         env=env,
@@ -474,7 +504,7 @@ def test_vmctl_grows_only_the_per_run_overlay_before_qemu_start(tmp_path):
     assert (state / "runs/disk-size-test/disk.qcow2").is_file()
 
     invalid = subprocess.run(
-        [str(VM / "vmctl"), "start", "invalid-disk-size", "--disk-gb", "1.5"],
+        [str(VM / "vmctl"), "--state-dir", str(state), "start", "invalid-disk-size", "--disk-gb", "1.5"],
         env=env,
         capture_output=True,
         text=True,
@@ -482,3 +512,257 @@ def test_vmctl_grows_only_the_per_run_overlay_before_qemu_start(tmp_path):
     )
     assert invalid.returncode != 0
     assert "positive whole number of GiB" in invalid.stderr
+
+
+# --- VM layout: ownership, runner reuse, main-checkout downloads and bases ----
+
+_IN_COCKPIT = Path("/.dockerenv").exists() or Path("/run/.containerenv").exists()
+
+_LAYOUT_FAKE_DOCKER = """#!/bin/sh
+set -eu
+printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"
+case "${1:-}" in
+  ps) case " $* " in
+        *' -q '*) printf '%s\\n' physical-id ;;
+        *) [ -z "${FAKE_RUNNING:-}" ] || printf '%s\\n' "$FAKE_RUNNING" ;;
+      esac ;;
+  inspect)
+    if [ -n "${FAKE_RUNNING:-}" ] && [ "${2:-}" = "$FAKE_RUNNING" ]; then
+      case "$*" in
+        *mdt.vm.layout*) printf '%s\\n' "${FAKE_LAYOUT:-}" ;;
+        *mdt.vm.owner*) printf '%s\\n' "${FAKE_OWNER:-}" ;;
+        *'"/vm-lab"'*) printf '%s\\n' "${FAKE_VMLAB_SRC:-}" ;;
+        *'"/downloads"'*) printf '%s\\n' "${FAKE_DL_SRC:-}" ;;
+        *'"/main-vm-images"'*) printf '%s\\n' "${FAKE_MAIN_SRC:-}" ;;
+        *'"/work"'*) printf '%s\\n' "${FAKE_WORK_SRC:-}" ;;
+        *) printf '%s\\n' image-id ;;
+      esac
+      exit 0
+    fi
+    case "$*" in
+      *Config.Hostname*) printf '%s\\n' "$FAKE_HOSTNAME" ;;
+      *HostConfig.CgroupParent*) printf '%s\\n' dev-interactive.slice ;;
+      *Mounts*) printf '/\\t%s\\n' "$FAKE_ROOTFS" ;;
+      *) printf '%s\\n' image-id ;;
+    esac ;;
+  image) case "$*" in
+           *dockerfile-sha*) printf '%s\\n' "${FAKE_DFSHA:-}" ;;
+           *'{{.Id}}'*) printf '%s\\n' image-id ;;
+           *) : ;;
+         esac ;;
+  buildx) exit 0 ;;
+  exec) case "$*" in
+          *' stat '*' /vm-lab') printf '%s\\n' "${FAKE_STAT_VMLAB:-}" ;;
+          *' stat '*' /downloads') printf '%s\\n' "${FAKE_STAT_DL:-}" ;;
+        esac ;;
+  run) case " $* " in *' -d '*) printf '%s\\n' runner-id ;; esac ;;
+  *) : ;;
+esac
+"""
+
+
+def _layout_env(tmp_path, **extra):
+    (tmp_path / "docker").write_text(_LAYOUT_FAKE_DOCKER)
+    (tmp_path / "docker").chmod(0o755)
+    env = os.environ.copy()
+    env.update(
+        PATH=f"{tmp_path}:{env['PATH']}",
+        FAKE_DOCKER_LOG=str(tmp_path / "docker.log"),
+        FAKE_HOSTNAME=Path("/etc/hostname").read_text().strip(),
+        FAKE_ROOTFS=str(tmp_path / "rootfs"),
+        CGROUP_PARENT_DEV_GATES="dev-gates.slice",
+        CGROUP_PARENT_DEV_INTERACTIVE="dev-interactive.slice",
+        BUILDX_BUILDER="fake-builder",
+    )
+    env.update(extra)
+    return env
+
+
+def _host(tmp_path, path):
+    return f"{tmp_path / 'rootfs'}{path}" if _IN_COCKPIT else str(path)
+
+
+def test_vm_wrapper_runs_vmctl_as_the_vm_lab_owner_never_root(tmp_path):
+    repo, project, vm = _layout_copy(tmp_path)
+    # Env overrides do not exist: these are ignored, the fixed layout is used.
+    env = _layout_env(tmp_path, MDT_VM_STATE_DIR="/elsewhere", MDT_DOWNLOADS_DIR="/elsewhere")
+    result = subprocess.run(
+        [str(vm / "run-vm-harness.sh"), "prepare-base", "case-b"],
+        env=env, capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    calls = (tmp_path / "docker.log").read_text()
+    owner = f"{os.getuid()}:{os.getgid()}"
+    assert f"--label mdt.vm.owner={owner}" in calls
+    assert "--label mdt.vm.layout=vm-lab-3" in calls
+    assert f"exec -i --user {owner} " in calls
+    assert "./vmctl --state-dir /vm-lab --downloads-dir /downloads prepare-base case-b" in calls
+    assert f"src={_host(tmp_path, project / 'artifacts/vm-lab')},dst=/vm-lab" in calls
+    assert f"src={_host(tmp_path, repo / 'downloads')},dst=/downloads" in calls
+    assert "elsewhere" not in calls and "/main-vm-images" not in calls
+
+
+def test_vm_wrapper_refuses_a_checkout_missing_its_placeholder_folders(tmp_path):
+    repo, project, vm = _layout_copy(tmp_path)
+    (repo / "downloads").rmdir()
+    result = subprocess.run(
+        [str(vm / "run-vm-harness.sh"), "--daemon"],
+        env=_layout_env(tmp_path), capture_output=True, text=True, check=False,
+    )
+    assert result.returncode != 0
+    assert "tracked placeholder" in result.stderr
+    assert not (repo / "downloads").exists()
+
+
+def _first_runner(tmp_path, vm):
+    env = _layout_env(tmp_path)
+    first = subprocess.run(
+        [str(vm / "run-vm-harness.sh"), "--daemon"],
+        env=env, capture_output=True, text=True, check=False,
+    )
+    assert first.returncode == 0, first.stderr
+    import re
+    calls = (tmp_path / "docker.log").read_text()
+    name = re.search(r"run -d --name (\S+)", calls).group(1)
+    (tmp_path / "docker.log").write_text("")
+    return name
+
+
+def _reuse_env(tmp_path, layout, name, **overrides):
+    import hashlib
+    repo, project, vm = layout
+    vmlab, dl = project / "artifacts" / "vm-lab", repo / "downloads"
+    ids = {k: f"{os.stat(p).st_dev}:{os.stat(p).st_ino}" for k, p in (("vm", vmlab), ("dl", dl))}
+    values = dict(
+        FAKE_RUNNING=name,
+        FAKE_LAYOUT="vm-lab-3",
+        FAKE_OWNER=f"{os.getuid()}:{os.getgid()}",
+        FAKE_VMLAB_SRC=_host(tmp_path, vmlab),
+        FAKE_DL_SRC=_host(tmp_path, dl),
+        FAKE_WORK_SRC=_host(tmp_path, project / "testing"),
+        FAKE_DFSHA=hashlib.sha256((vm / "Dockerfile").read_bytes()).hexdigest(),
+        FAKE_STAT_VMLAB=ids["vm"],
+        FAKE_STAT_DL=ids["dl"],
+    )
+    values.update(overrides)
+    return _layout_env(tmp_path, **values)
+
+
+def test_vm_wrapper_reuses_a_runner_only_when_layout_mounts_and_inodes_match(tmp_path):
+    layout = _layout_copy(tmp_path)
+    vm = layout[2]
+    name = _first_runner(tmp_path, vm)
+    ok = subprocess.run(
+        [str(vm / "run-vm-harness.sh"), "--daemon"],
+        env=_reuse_env(tmp_path, layout, name), capture_output=True, text=True, check=False,
+    )
+    assert ok.returncode == 0, ok.stderr
+    assert "run -d" not in (tmp_path / "docker.log").read_text()
+
+    def refused(**overrides):
+        result = subprocess.run(
+            [str(vm / "run-vm-harness.sh"), "--daemon"],
+            env=_reuse_env(tmp_path, layout, name, **overrides),
+            capture_output=True, text=True, check=False,
+        )
+        assert result.returncode != 0
+        assert "refusing to reuse a stale runner" in result.stderr
+        assert "--stop-daemon" in result.stderr
+        return result.stderr
+
+    # A runner started by older code (no layout label / no new mounts).
+    assert "older code" in refused(FAKE_LAYOUT="")
+    assert "mount /vm-lab" in refused(FAKE_VMLAB_SRC="")
+    assert "mount /downloads" in refused(FAKE_DL_SRC=_host(tmp_path, tmp_path / "elsewhere"))
+    # Folder deleted/replaced/mounted over after the runner started.
+    assert "deleted, replaced" in refused(FAKE_STAT_VMLAB="1:2")
+    assert "runs as" in refused(FAKE_OWNER="0:0")
+
+
+def _stub_download_script(testing_dir, tmp_path):
+    """Replace the network downloader in a COPY with a stub recording its arg."""
+    stub = testing_dir / "download-base-image.sh"
+    stub.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' \"${1:-}\" > \"$STUB_ARG_LOG\"\n"
+        "printf 'cloud image' > \"$1/stub.qcow2\"\n"
+        "printf '%s\\n' \"$1/stub.qcow2\"\n"
+    )
+    stub.chmod(0o755)
+
+
+def test_vmctl_derives_vm_lab_and_downloads_by_fixed_depth_and_stages_bases(tmp_path):
+    repo, project, vm = _layout_copy(tmp_path)
+    _stub_download_script(project / "testing", tmp_path)
+    arg_log = tmp_path / "arg.log"
+    env = os.environ.copy()
+    env.update(STUB_ARG_LOG=str(arg_log), MDT_VM_STATE_DIR="/ignored", MDT_DOWNLOADS_DIR="/ignored")
+    result = subprocess.run(
+        [str(vm / "vmctl"), "prepare-base", "case-b"],
+        env=env, capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    # Defaults: this checkout's <repo>/downloads and <project>/artifacts/vm-lab.
+    assert arg_log.read_text().strip() == str(repo / "downloads")
+    base = project / "artifacts/vm-lab/images/case-b-base.qcow2"
+    assert base.read_bytes() == b"cloud image"
+    assert not Path("/ignored").exists()
+
+    # Explicit global options (what the in-runner wrapper passes).
+    other = tmp_path / "other-state"
+    result = subprocess.run(
+        [str(vm / "vmctl"), "--state-dir", str(other), "--downloads-dir", str(tmp_path / "dl"),
+         "prepare-base", "case-b"],
+        env={**env, "STUB_ARG_LOG": str(arg_log)}, capture_output=True, text=True, check=False,
+    )
+    # The stub cannot write into a missing --downloads-dir; the arg is what matters.
+    assert arg_log.read_text().strip() == str(tmp_path / "dl")
+
+    # Staged bases are write-once: a second prepare-base leaves the base alone.
+    base.write_bytes(b"in use by overlays")
+    again = subprocess.run(
+        [str(vm / "vmctl"), "prepare-base", "case-b"],
+        env=env, capture_output=True, text=True, check=False,
+    )
+    assert again.returncode == 0 and "already staged" in again.stderr
+    assert base.read_bytes() == b"in use by overlays"
+
+    missing = subprocess.run(
+        [str(vm / "vmctl"), "start", "r1", "--case", "nope"],
+        env=env, capture_output=True, text=True, check=False,
+    )
+    assert missing.returncode != 0 and "no base image" in missing.stderr
+
+
+def test_download_script_takes_a_downloads_dir_argument_and_never_creates_it(tmp_path):
+    missing = tmp_path / "no-such-downloads"
+    result = subprocess.run(
+        [str(TESTING / "download-base-image.sh"), str(missing)],
+        capture_output=True, text=True, check=False,
+        env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"},
+    )
+    assert result.returncode != 0
+    assert "placeholder" in result.stderr
+    assert not missing.exists()
+    script = (TESTING / "download-base-image.sh").read_text()
+    assert "flock 9" in script
+    assert "MDT_DOWNLOADS_DIR" not in script and "git-common-dir" not in script
+
+
+def test_vmctl_serializes_key_generation_and_rejects_overlong_socket_paths(tmp_path):
+    script = (VM / "vmctl").read_text()
+    assert "flock 8" in script
+    assert "--reflink=auto" in script
+    state = tmp_path / ("x" * 100)
+    (state / "images").mkdir(parents=True)
+    (state / "images" / "case-b-base.qcow2").write_bytes(b"b")
+    seed = tmp_path / "seed.iso"
+    seed.write_bytes(b"s")
+    result = subprocess.run(
+        [str(VM / "vmctl"), "--state-dir", str(state), "start", "r1", "--no-apt-cache",
+         "--seed-iso", str(seed)],
+        capture_output=True, text=True, check=False,
+        env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"},
+    )
+    assert result.returncode != 0
+    assert "too long for the QMP socket" in result.stderr

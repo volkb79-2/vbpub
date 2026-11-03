@@ -51,7 +51,7 @@ target size. For example, a 20 GiB disk with the default 2 GiB VM RAM gives a
 4 GiB automatic swap target:
 
 ```bash
-./run-vm-harness.sh start iso-test --disk-gb 20 --seed-iso ./.vm/private.iso
+./run-vm-harness.sh start iso-test --disk-gb 20 --seed-iso /vm-lab/private.iso
 ```
 
 Use the raw cloud-image base for this first-boot test: cloud-init can grow its
@@ -118,13 +118,13 @@ lane.
 
 For NoCloud/ISO acceptance tests, `start --seed-iso PATH` attaches the supplied
 seed ISO instead of generating the harness's normal `tester` seed. The path is
-resolved inside the runner container; a file saved under this worktree's
-`testing/vm/.vm/` is visible there as `/work/vm/.vm/<name>.iso`. The supplied
+resolved inside the runner container; a file saved in the project's
+`artifacts/vm-lab/` folder is visible there as `/vm-lab/<name>.iso`. The supplied
 user-data must provision the harness SSH key for a `tester` account with
 passwordless sudo, because `wait` and `ssh` connect as `tester`. `vmctl` copies
 the source ISO into the disposable run directory with mode `0600`; it does not
 modify the source artifact. Keep credential-bearing seed ISOs in the ignored
-`.vm/` directory, not in tracked source.
+`artifacts/vm-lab/` folder, not in tracked source.
 
 `start --disk-gb N` grows the new CoW overlay's virtual capacity to `N` GiB
 before boot. It never resizes the base image and does not request a shrink;
@@ -148,8 +148,9 @@ starting points for repeated installer-parameter test iterations.
 
 ## Caching apt traffic across resets
 
-Every `vmctl start` (unless `--no-apt-cache`) lazily starts `apt-cacher-ng`
-inside the runner container and pushes the guest's `Acquire::http::Proxy`
+The runner's entry command starts `apt-cacher-ng` (as root, inside the runner
+container; `vmctl` itself runs as the vm-lab owner and only starts it when it is
+root). Every `vmctl start` (unless `--no-apt-cache`) pushes the guest's `Acquire::http::Proxy`
 config over SSH once it's reachable (reachable at QEMU user-mode
 networking's synthetic gateway address, `10.0.2.2`, from inside the
 guest) — deliberately over SSH, not via cloud-init's `write_files`: a run
@@ -171,25 +172,71 @@ caching that would require rewriting debian-install-v2's own generated
 `docker.sources` to use apt-cacher-ng's special `/HTTPS/` URL convention,
 which isn't worth coupling the real installer to a test-harness detail for
 a comparatively small, infrequently-hit package set. The cache lives inside the runner
-container's own filesystem (not `.vm/`, not bind-mounted), so it persists
+container's own filesystem (not in `artifacts/vm-lab/`, not bind-mounted), so it persists
 across VM resets within one runner lifetime but is lost on
 `run-vm-harness.sh --stop-daemon`.
 
-When invoked through `run-vm-harness.sh`, state lives in the persistent,
-worktree-specific runner container under `/var/lib/mdt-debian-install-vm/`:
-the base image is immutable and shared across runs, while each run's qcow2
-overlay, cloud-init seed, QMP socket, pidfile, and serial log are disposable.
-The SSH key and download cache are kept there too, so no root-owned generated
-files are written into the judged worktree. Direct `vmctl` use without the
-wrapper falls back to a local `.vm/` directory for interactive debugging.
+### Where files live
+
+All VM files live in `<project>/artifacts/vm-lab/` (gitignored), **per checkout
+and per worktree**: staged base images (`images/`), each run's qcow2 overlay,
+cloud-init seed, QMP socket, pidfile and serial log (`runs/<name>/`), and the
+test-only SSH key (`ssh/`, generated under `flock`). The path is fixed: the
+wrapper and `vmctl` derive `<project>/artifacts/vm-lab` by fixed depth from the
+script location, so a worktree uses its own. There are no environment overrides
+(using `artifacts/vm-lab` and `downloads/` is a repo decision); a test that needs
+another location runs a copy of the scripts, and `vmctl` accepts the global
+options `--state-dir DIR` and `--downloads-dir DIR` before the subcommand (the
+wrapper passes its mount points `/vm-lab` and `/downloads` this way).
+
+Big shared downloads (the cloud image) go to `<repo root>/downloads/` of the
+checkout that runs (also fixed depth); the download script's optional argument
+is the same folder. Concurrent downloads are serialized with `flock`.
+
+Both top folders are **tracked placeholders** (a `README.md` and a `.gitignore`
+that ignores everything else), so every checkout, including a fresh clone,
+contains them; the scripts never create them (they do `mkdir -p` for `images/`,
+`runs/`, `ssh/`) and the wrapper refuses with a clear message if one is missing.
+Plan (owned by `ciu worktree` and `libraries/cowtree`, not built here): a new
+worktree gets a CoW clone of the main checkout's declared gitignored paths, so it
+already contains main's downloads and staged bases. Without CoW a worktree starts
+with empty folders and `prepare-base` / the download fetch again. Bases are
+written once and never replaced by the tooling (`prepare-base` returns early when
+one exists; `snapshot` refuses to overwrite), because overlays use them as
+backing files. Do not replace or edit a base by hand while any run backed by it
+exists: `destroy` those runs first, or stage the new image under a new case name.
+
+Ownership: `run-vm-harness.sh` bind-mounts the folders as `/vm-lab` and
+`/downloads` (read-write) and runs every `vmctl` as `docker exec --user <uid:gid
+of vm-lab>`, so nothing written there is root-owned and `git worktree remove` /
+`rm -rf` keep working. The runner's entry command (as root) only creates the
+passwd entry for that uid and starts `apt-cacher-ng`. A root-owned vm-lab, or
+vm-lab and downloads owned by different users, is refused.
+
+Runner reuse: a running runner is reused only if its layout label
+(`mdt.vm.layout`), owner label, and `/vm-lab` and `/downloads` mount sources
+match, and the folders' device:inode match inside and outside the runner (so a
+folder deleted, replaced or mounted over after the runner started is detected).
+Otherwise the wrapper refuses and says to run `--stop-daemon`.
+
+CoW: a btrfs subvolume mounted over `<project>/artifacts/vm-lab` is invisible to
+these scripts. Provisioning it (creating the mount point as the checkout owner,
+refusing a non-empty plain directory unless migrating, re-attaching it to a
+running devcontainer, reflink staging from a same-filesystem `downloads/`) is a
+separate host-side helper owned by mdt-cockpit, not built here. Rules the helper
+and operators must keep: never mount over a vm-lab with live runs or content
+(the mount hides it; a runner started earlier keeps writing into the hidden
+directory), stop the runner after (un)mounting, and never `rm -rf`/`git clean -x`
+a worktree whose vm-lab is mounted. The reuse check above catches a runner that
+predates a mount. Staging uses `cp --reflink=auto`, and `prepare-base` prints an
+INFO line when vm-lab is not on btrfs (a full copy).
 
 ## Base images
 
 - **`case-b`** (implemented): the plain, unmodified Debian genericcloud
   qcow2 — root fills the disk, exactly Case B's real starting shape on a
   freshly-imaged host. `prepare-base case-b` calls the sibling
-  `../download-base-image.sh` and stages a copy in the runner-local image
-  directory.
+  `../download-base-image.sh` and stages a copy in `artifacts/vm-lab/images/`.
 - **`case-a`** (not yet implemented — `prepare-base case-a` says so and
   exits non-zero): needs a small root with real free trailing space,
   which the stock cloud image doesn't have (cloud-init's `growpart` grows
