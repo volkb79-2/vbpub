@@ -91,6 +91,12 @@ the technical detail below it.
 
 ## [Unreleased]
 
+### Added
+- feat(ciu): `ciu worktree refork LOGICAL [--onto TRUNK] [--json]` re-records `fork_point_sha` after a legitimate rebase so run-gate's derived base (R-35a) works again without a hand-passed `--base` (CIU-142). It refuses a dirty tree and a trunk that is not an ancestor of HEAD, is idempotent, and leaves record schema 6 unchanged (the previous value and timestamp are reported in its JSON document, operation `refork`). `ciu worktree inspect` now reports a `fork_point` status (`current`/`stale`/`unrecorded`/`unknown`) and names the verb for a stale record.
+
+### Fixed
+- fix(ciu): `ciu worktree rm` cleans every committed CIU root of the checkout (discovered at the target's own HEAD), each under its own identity, before deleting it; any discovery, identity or clean failure preserves the checkout and records and reports the roots already cleaned (CIU-138).
+
 ## [7.18.0] - 2026-10-28
 <!-- cmru: generated -->
 <!-- cmru: source-end=2fa170b29ef870cd8e985d5ea895a1b87423ce98 -->

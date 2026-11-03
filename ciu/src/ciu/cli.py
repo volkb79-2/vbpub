@@ -87,6 +87,8 @@ Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
     worktree list [--json]      list linked checkouts
     worktree inspect LOGICAL [--json]   exact record + freshly read Git facts
     worktree lease LOGICAL (--extend D | --perpetual | --release) [--json]
+    worktree refork LOGICAL [--onto TRUNK] [--json]
+                                re-record the fork point after a rebase onto trunk
     worktree branches [--base REF] [-y] [--discard-protected-state BRANCH]
          [--json]                survey branches and ignored state; -y keeps
                                 protected resumable state unless named
@@ -218,6 +220,7 @@ ciu worktree rm LOGICAL [-y] [--force] [--keep-branch | --delete-branch]
 ciu worktree list [--json]
 ciu worktree inspect LOGICAL [--json]
 ciu worktree lease LOGICAL (--extend DURATION | --perpetual | --release) [--json]
+ciu worktree refork LOGICAL [--onto TRUNK_REF] [--json]
 ciu worktree branches [--base REF] [-y] [--discard-protected-state BRANCH] [--json]
 ciu worktree reap [-y] [--category C1,C2] [--dry-run] [--json]
 ciu worktree up LOGICAL [--all]
@@ -1968,6 +1971,12 @@ def _worktree(rest: list[str]) -> int:
     p_lease_mode.add_argument("--release", action="store_true", default=False)
     p_lease.add_argument("--json", action="store_true", default=False)
 
+    # CIU-142 — re-record fork_point_sha after a legitimate rebase.
+    p_refork = sub.add_parser("refork", add_help=False)
+    p_refork.add_argument("logical_name")
+    p_refork.add_argument("--onto", default=None, metavar="TRUNK_REF")
+    p_refork.add_argument("--json", action="store_true", default=False)
+
     p_branches = sub.add_parser("branches", add_help=False)
     p_branches.add_argument("--base", default="main", metavar="REF")
     p_branches.add_argument(
@@ -2009,7 +2018,7 @@ def _worktree(rest: list[str]) -> int:
 
     for parser in (
         p, p_create, p_ensure, p_adopt, p_rm, p_list, p_inspect,
-        p_lease, p_up, p_branches, p_reap,
+        p_lease, p_refork, p_up, p_branches, p_reap,
     ):
         parser.add_argument("--root-folder", dest="define_root", default=None,
                             metavar="PATH")
@@ -2151,6 +2160,29 @@ def _worktree(rest: list[str]) -> int:
                 print(f"  branch: {git['branch']}")
                 print(f"  HEAD: {git['head']}")
                 print(f"  dirty: {git['dirty']}")
+                fork = doc.get("fork_point")
+                if fork is not None:
+                    print(f"  fork point: {fork['status']}")
+                if fork is not None and fork.get("remedy"):
+                    print(
+                        f"  recorded {fork['recorded']} != merge-base "
+                        f"{fork['merge_base']}; run `{fork['remedy']}`"
+                    )
+            return 0
+
+        if opts.action == "refork":
+            doc = wt_mod.refork_instance(
+                lifecycle_root, opts.logical_name, onto=opts.onto
+            )
+            if getattr(opts, "json", False):
+                print(json.dumps(doc, sort_keys=True))
+            else:
+                info = doc["refork"]
+                print(f"worktree refork: {doc['instance']['logical_name']}")
+                print(f"  trunk: {info['trunk']}")
+                print(f"  previous fork point: {info['previous_fork_point_sha']}")
+                print(f"  fork point: {info['fork_point_sha']}")
+                print(f"  changed: {info['changed']}")
             return 0
 
         if opts.action == "lease":
