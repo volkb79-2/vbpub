@@ -60,7 +60,7 @@ domain: `public_host` defaults to `fluxer.<PUBLIC_FQDN>` and is a plain config v
 
 1. Create a DNS A record for `public_host` pointing at the host (the edge issues the certificate for it; if
    the edge uses a wildcard, nothing else is needed).
-2. Set `[fluxer] expose_public = true` (ciu.toml.j2 sparse override, or edit the default). The Caddy `edge`
+2. `[fluxer] expose_public = true` is the default (set to false in a sparse ciu.toml.j2 to keep the stack private). The Caddy `edge`
    service then joins `ingress_public` and carries the Traefik labels (`Host(<public_host>)`, entrypoint
    `websecure`, backend port 8080, router `fluxer-vss`). Caddy runs in the official behind-proxy mode (plain
    HTTP, `X-Forwarded-For` taken from private ranges).
@@ -75,6 +75,22 @@ check on the live Traefik config before relying on it (not edited here): the ups
 timeout or the 180 s idle timeout could cut large uploads or idle sockets; verify with a large upload and a
 long voice session. The edge adds no CSP header (good: Fluxer sets its own) and only `secure-headers`.
 
+## Clients and server URL (links only, checked 2026-11-04)
+
+- Server / web client: `https://fluxer.<PUBLIC_FQDN>/` (the `public_host`; sign-in is username + password,
+  accounts in `USERS.md`; the credentials file is `.ciu/secrets/accounts.json`, never in git).
+  Instance discovery document: `https://fluxer.<PUBLIC_FQDN>/.well-known/fluxer`.
+- Official download page: <https://fluxer.com/download> (verification help: <https://fluxer.com/help/verify-fluxer-download>).
+  Installers are NOT GitHub release assets (the `fluxer-desktop-stable@...` releases carry only update
+  modules and a release manifest); they come from the rolling `latest` URLs of the package host:
+  Windows x64 <https://pkgs.fluxer.com/desktop/stable/win32/x64/latest/setup>, Windows arm64
+  <https://pkgs.fluxer.com/desktop/stable/win32/arm64/latest/setup>, macOS Apple silicon
+  <https://pkgs.fluxer.com/desktop/stable/darwin/arm64/latest/dmg>, macOS Intel
+  <https://pkgs.fluxer.com/desktop/stable/darwin/x64/latest/dmg>, Linux Flatpak
+  <https://flathub.org/apps/app.fluxer.Fluxer> or the apt repository on the download page.
+- How the desktop app is pointed at a self-hosted instance is not verified here: try the web client first
+  (it talks to its own origin); for the desktop app look for an instance/server field on the sign-in screen.
+
 ## Running
 
 ```bash
@@ -87,11 +103,17 @@ ciu up --dir voice-screen-share/fluxer-server -y --root-folder voice-screen-shar
 `post_compose` hook (admin + dummy users, see `USERS.md`). Checks: `docker ps` shows all containers
 `healthy` (`seaweedfs-init` exited 0), `GET /_health` on the edge answers `OK`.
 
-Known tool issues met while building this (filed in the ciu backlog): `ciu env generate` attaches the
-devcontainer to a new network (CIU-162; detach it by exact name afterwards), and a root that exists only in a
-linked worktree cannot `ciu up` (CIU-163; from the main checkout after merge it works). Until then the
-same stack was started with `docker compose -p fluxer-<instance id> -f ciu.compose.yml -f
-.ciu/ciu.compose.overlay.yml up -d` after `ciu up --dry-run` had rendered both files.
+Known tool issues (filed in the ciu backlog): `ciu env generate` attaches the devcontainer to a new network
+(CIU-162; detach it by exact name afterwards), a root that exists only in a linked worktree cannot `ciu up`
+(CIU-163; run it from the main checkout), and the S6.5 root helper refuses to run in a devcontainer
+(see the jitsi-server README; this project uses named volumes and is not affected). `ciu up` from the main
+checkout was verified on 2026-11-04 with `expose_public = true`: 21 containers up, accounts created, the edge
+issued the certificate for `fluxer.<PUBLIC_FQDN>`.
+
+External reachability (from a second host with another public IP, 2026-11-04): HTTPS with a valid Let's
+Encrypt chain and HTTP/2, WebSocket upgrade on `/gateway` (101), TCP 7891 connect. UDP 7892: every probe
+packet reached the host and was forwarded into the livekit container (iptables DNAT/FORWARD counters); LiveKit
+does not answer a bare STUN request, so a real two-client call is still the acceptance test.
 
 ## Secrets
 

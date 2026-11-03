@@ -12,16 +12,15 @@ services:
     container_name: {{ jitsi.container_prefix }}-prosody
     hostname: {{ jitsi.container_prefix }}-prosody
     restart: unless-stopped
+    # stable-11248+: images run as the unprivileged user `s6` (uid 1000), no
+    # capabilities needed; /run and /tmp are tmpfs (upstream compose).
     cap_drop:
       - ALL
-    cap_add:
-      - CHOWN
-      - DAC_OVERRIDE
-      - FOWNER
-      - SETGID
-      - SETUID
     security_opt:
       - no-new-privileges:true
+    tmpfs:
+      - /run:size=16M,mode=1750,uid=1000,gid=1000,exec
+      - /tmp:size=16M,mode=1777,noexec
     environment:
       TZ: "UTC"
       PUBLIC_URL: "https://{{ jitsi.public_host }}"
@@ -41,6 +40,8 @@ services:
       - jicofo_component_secret
     volumes:
       - {{ jitsi.prosody.hostdir.config }}:/config
+      # stable-11248+: accounts live in /var/lib/prosody/data (config is rendered into /run/prosody/config)
+      - {{ jitsi.prosody.hostdir.data }}:/var/lib/prosody
     expose:
       - "5222"
       - "5280"
@@ -53,7 +54,7 @@ services:
     memswap_limit: {{ jitsi.prosody.mem_swap_limit }}
     cpus: {{ jitsi.prosody.cpus }}
     healthcheck:
-      test: ["CMD-SHELL", "prosodyctl --config /config/prosody.cfg.lua status"]
+      test: ["CMD-SHELL", "prosodyctl --config /run/prosody/config/prosody.cfg.lua status"]
       interval: {{ jitsi.health.interval }}
       timeout: {{ jitsi.health.timeout }}
       retries: {{ jitsi.health.retries }}
@@ -74,14 +75,11 @@ services:
         condition: service_healthy
     cap_drop:
       - ALL
-    cap_add:
-      - CHOWN
-      - DAC_OVERRIDE
-      - FOWNER
-      - SETGID
-      - SETUID
     security_opt:
       - no-new-privileges:true
+    tmpfs:
+      - /run:size=32M,mode=1750,uid=1000,gid=1000,exec
+      - /tmp:size=16M,mode=1777,noexec
     environment:
       TZ: "UTC"
       XMPP_DOMAIN: "{{ jitsi.auth.xmpp_domain }}"
@@ -124,14 +122,11 @@ services:
         condition: service_healthy
     cap_drop:
       - ALL
-    cap_add:
-      - CHOWN
-      - DAC_OVERRIDE
-      - FOWNER
-      - SETGID
-      - SETUID
     security_opt:
       - no-new-privileges:true
+    tmpfs:
+      - /run:size=32M,mode=1750,uid=1000,gid=1000,exec
+      - /tmp:size=16M,mode=1777,noexec
     environment:
       TZ: "UTC"
       PUBLIC_URL: "https://{{ jitsi.public_host }}"
@@ -177,15 +172,11 @@ services:
         condition: service_started
     cap_drop:
       - ALL
-    cap_add:
-      - CHOWN
-      - DAC_OVERRIDE
-      - FOWNER
-      - SETGID
-      - SETUID
-      - NET_BIND_SERVICE
     security_opt:
       - no-new-privileges:true
+    tmpfs:
+      - /run:size=16M,mode=1750,uid=1000,gid=1000,exec
+      - /tmp:size=16M,mode=1777,noexec
     environment:
       TZ: "UTC"
       PUBLIC_URL: "https://{{ jitsi.public_host }}"

@@ -12,11 +12,12 @@ but does not delete accounts already created; unregister them (see "Add or remov
 
 ## Hostdir permissions
 
-The `/config` hostdirs are `0750` for prosody (uid 100), jicofo (999:1000) and jvb (998:1000): they
-hold account records and rendered auth secrets, and the owner is the service uid, so no group-write
-or world access is needed. `web` is `0755`: its config holds only nginx/Meet frontend settings (no
-secrets) and its processes run under a different user than the directory owner. After the first start
-check the file modes inside (`ls -l` under `vol-*-config`); files holding secrets should be 0600/0640.
+Since stable-11248 the images run as the unprivileged user `s6` (uid 1000). All hostdirs
+(`vol-*-config`, plus `vol-prosody-data` = `/var/lib/prosody`, the account store) are `1000:1000`,
+`0750`: no group-write or world access. Rendered configs live in tmpfs (`/run/prosody/config`), so
+the account records are under `vol-prosody-data/data/`. On a ciu run in a devcontainer where the
+S6.5 root helper cannot verify its cgroup slice, create the dirs once with a one-shot root
+container and `chown 1000:1000` (ciu then accepts them, S6.3).
 
 ## Where the credentials live
 
@@ -53,14 +54,14 @@ sessions of that user stay valid until they end.
 ## Rotate the service secrets
 
 Delete `jicofo_auth_password`, `jvb_auth_password` and `jicofo_component_secret` together, remove
-`vol-prosody-config/data/auth%2emeet%2ejitsi/accounts/{focus,jvb}.dat`, then `ciu up` (the
+`vol-prosody-data/data/auth%2emeet%2ejitsi/accounts/{focus,jvb}.dat`, then `ciu up` (the
 containers are recreated and re-register).
 
 ## Add or remove a user
 
 Add a `[[jitsi.users]]` entry and a matching `user_<name>` secret (same shape as the others)
 in a sparse override, `ciu up`. Removing the entry does not delete the account; delete it with
-`docker exec <prefix>-prosody prosodyctl --config /config/prosody.cfg.lua unregister <user> meet.jitsi`
+`docker exec <prefix>-prosody prosodyctl --config /run/prosody/config/prosody.cfg.lua unregister <user> meet.jitsi`
 (and the secret file).
 
 ## Allowing guests

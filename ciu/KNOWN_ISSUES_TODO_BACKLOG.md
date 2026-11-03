@@ -5919,3 +5919,55 @@ loud error only when `CIU_MAX_CONCURRENT_WORKTREES` is set (a cap that cannot be
 - **Non-mdt path.** Plain git, no devcontainer.
 
 **Related.** CIU-161 (`ciu worktree create` also fails for this class of root), CIU-162 (dry-run side effects hit the same flow).
+
+## CIU-164 — in a devcontainer the S6.5 root helper preflight always fails, so `ciu up` cannot create a hostdir owned by any uid but the operator's
+
+**Status: OPEN (filed 2026-11-04, ops-vss-20261104; `voice-screen-share/jitsi-server`, ciu 7.19.0).**
+
+**Observed.** `ciu up` stops at step 8 with `[ERROR] S6.5 root helper cgroup parent 'dev-interactive.slice' is not verified loaded: systemctl is
+present but systemd is not PID 1 in this mount namespace (...) — governed cgroup slices cannot be checked from inside this container; skipping
+the slice-existence preflight`. The message says "skipping" but the run exits 1, so the helper that creates/chowns hostdirs for service uids
+(declared `uid`/`gid` in `[x.hostdir]`) is unusable from the devcontainer, which is the standard place where agents run `ciu`. Stacks whose images
+run as another uid (all four Jitsi images, uid 1000) therefore cannot be started with `ciu up` at all.
+
+**Workaround in use.** Create each `vol-*` dir once, `chown`/`chmod` it with a one-shot root container that bind-mounts the HOST path of the project
+(`docker run --rm --user 0 --entrypoint sh -v <host path>:/t <any local image with sh> -c 'chown 1000:1000 /t/vol-x; chmod 0750 /t/vol-x'`); S6.3 then
+reports "Exists with compatible ownership" and `ciu up` completes.
+
+**Design.** When the cgroup slice cannot be verified because systemd is not PID 1, the helper preflight must degrade as its own message says (warn, skip
+the slice check, still run the helper, with the parent slice taken from `[governance]`), not exit. Alternatively run the check on the host through the
+same Docker endpoint (`docker run --pid=host`-free: read `/sys/fs/cgroup/<slice>` via a bind mount of the cgroup2 root, read-only).
+
+**Acceptance criteria.** Test with a fake `systemctl` shim and no `/run/systemd/system`: a hostdir with `uid = 1000` is created and owned by 1000 through the
+helper, with one warning. A host with systemd as PID 1 and a missing slice still refuses.
+
+## CIU-165 — `ciu up --dry-run` creates hostdirs owned by the operator, and the next real run refuses them (S6.3)
+
+**Status: OPEN (filed 2026-11-04, ops-vss-20261104).**
+
+**Observed.** `ciu up --dry-run` (step 8 "Creating volume directories") created `vol-web-config` and `vol-prosody-config` in the project root as
+`1003:1003` while the declared owner for prosody was uid 100 (the dry-run has no root helper). A following `ciu up --dry-run` or real `ciu up` then fails
+`[S6.3] Existing hostdir has incompatible ownership/permissions ... Fix ownership or remove the directory.` A dry run must not leave state that breaks the
+real run.
+
+**Design.** Dry-run creates nothing on disk (renders into a temp area or only reports "would create"), or creates dirs only when it can apply the final owner.
+
+**Acceptance criteria.** After `ciu up --dry-run` the project directory contains no new `vol-*` entries; a second dry-run and then a real run behave the same as a run without the first.
+
+**Related.** CIU-162 (other dry-run side effects).
+
+## CIU-166 — moving a project from a worktree to the primary checkout changes its instance id, project name and named volumes, with no way to keep them
+
+**Status: OPEN (filed 2026-11-04, ops-vss-20261104; observed on `fluxer-server`, instance `bh3dhm` in the worktree, `gfhimt` in the primary).**
+
+**Observed.** `ciu env generate` always derives a new random instance id for a root that has no `ciu.instance.generated.toml` in the new checkout; the file
+is regenerated in full even when a copy of the old one is placed there. Compose project, container names (`fluxer-bh3dhm-*` to `fluxer-gfhimt-*`) and named
+volumes (`fluxer-bh3dhm_postgres-data` to `fluxer-gfhimt_postgres-data`) change, so a stack started from a feature worktree cannot be taken over by the
+primary checkout without losing its data (the old volumes stay behind, unreferenced). Accounts had to be recreated by the user hook.
+
+**Design.** An explicit, documented way to pin an instance id (a key in `ciu.global.instance.toml.j2` or `ciu env generate --instance-id`), honoured when it matches the
+`[a-z0-9]{6}` shape; or a `ciu adopt` step that renames the project's named volumes. At minimum the docs of `ciu.instance.generated.toml` state that identity is not portable.
+
+**Acceptance criteria.** Test: generate with `--instance-id abc123` twice in two checkouts and get identical project/volume names; without the option behaviour is unchanged.
+
+**Note.** The backlog already carries two entries numbered CIU-163 (standalone root without git; new root in a linked worktree): one needs renumbering by the owner of that file.

@@ -18,7 +18,8 @@ meets the vetting buffer), Apache-2.0, <https://github.com/jitsi/jitsi-meet-elec
 
 ## Download and install
 
-Download only from the GitHub release page above. Published sha256 (from the release
+Server URL for the app: `https://jitsi.<PUBLIC_FQDN>` (the `public_host`). Download only from the GitHub release
+page above (asset URLs: `https://github.com/jitsi/jitsi-meet-electron/releases/download/v2026.10.0/<asset>`). Published sha256 (from the release
 assets), check before installing:
 
 | Platform | Asset | sha256 |
@@ -76,7 +77,7 @@ reaches the JVB (UDP 10000 open).
 
 ## Noise suppression
 
-The Jitsi Meet web app shipped by `jitsi/web:stable-11031` includes the RNNoise worklet
+The Jitsi Meet web app shipped by `ghcr.io/jitsi/web:stable-11248-3` includes the RNNoise worklet
 (`noise-suppressor-worklet.min.js`, `rnnoise.wasm`) and the setting **"Extra noise
 suppression"**. Turn it on in **Settings > Audio** (in-meeting: the "..." / more-actions menu).
 It does not work together with stereo audio, and needs a microphone-level input device that is

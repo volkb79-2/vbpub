@@ -35,7 +35,7 @@ _USER_RE = re.compile(r"^[a-z][a-z0-9_.-]{0,31}$")
 # `read` the password from stdin inside the container; $1 = user, $2 = domain.
 _REGISTER_SH = (
     'IFS= read -r pw; '
-    'exec prosodyctl --config /config/prosody.cfg.lua register "$1" "$2" "$pw"'
+    'exec prosodyctl --config /run/prosody/config/prosody.cfg.lua register "$1" "$2" "$pw"'
 )
 
 
