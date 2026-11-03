@@ -12,6 +12,12 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
 - Observer contract 3 (CP-39): `window-open` and `window-close` on the observer socket return per-subject measurement windows (peak RSS, CPU, I/O bytes and operations, memory and swap peaks, PSI) in `process-tree` mode (works in a shared container) or `cgroup` mode (exact while the leaf holds nothing foreign; otherwise `SHARED_CGROUP`). Every null metric carries a reason code. `version.resource_observer` gains `"contracts": [2, 3]` while `"contract"` stays 2; contract 2 and `resource-limits` are unchanged. New error codes `window-refused` (reason `limit`) and `window-lost`. Fixtures: `tests/fixtures/rg55/observer-window-v3-*.json`. Release as 1.2.0 together with CP-40.
 - Summary key `ancestors_memory_events_local` (CP-40): the increase in local `high`, `max`, `oom` and `oom_kill` of each ancestor up to `dev.slice` over the session, and the same list in every window's `context`, so a consumer can tell reclaim driven from above the lane from the lane's own limit. Optional key; the Summary schema stays v1.1. Fixture: `tests/fixtures/rg55/summary-v1.1-ancestors.json`.
 
+### Fixed
+- CP-37 (2d639675d): `read_int`, `read_kv` and `read_flat_keyed` parse the kernel's decimal grammar only (ASCII digits, a leading `-` where signed); `1_000`, `+5` and Unicode digits are skipped, and an `io.stat` line that repeats a key is dropped instead of last-wins.
+- CP-38: an unknown word after `@` is refused early: `slice:` rejects `@` in the unit name at parse time, and a `cgroup:` or bare target that names no cgroup and ends in an option-looking `@word` is refused with the suspect segment named and the trailing-`@` escape mentioned.
+- CP-32: `requirements-report.txt` pins `coverage` (7.16.2, the newest release at least 14 days old), and a deployment-contract test fails when any distribution of the `test` or `report` extra is missing from the lock.
+- CP-27 (N5, N6, N8): a test pins exactly one `sess.lock` acquire per finalize; the own-thread finalize comments now say the return is ignored and the failure is logged; `stop` says "session lock was busy" instead of "worker did not exit" when the worker has exited and the lock stayed busy. N7 is recorded as accepted. N9-N11 remain open for the serve package.
+
 ### Changed
 - Rename the report dependency lock to `requirements-report.txt`; keep the same pinned packages in `setup.sh` and the image build.
 
