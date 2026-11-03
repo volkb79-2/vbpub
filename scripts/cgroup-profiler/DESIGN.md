@@ -787,6 +787,42 @@ admission.md` §A1 (D-27..D-29), §A2 (D-30), A3 (D-31), and A4 (D-32); the wire
   cgroupfs, and DAMON access, is removed. Full tradeoffs are in the RG-55
   design record and `docs/DESIGN-GUIDE.md`.
 
+### 4.16 `observer_windows.py` and `ancestor_events.py` (CP-39, CP-40)
+
+**Measurement windows (observer contract 3).** The daemon is the single source
+of per-subject resource numbers, so consumers carry no fallback reader.
+`WindowRegistry` (one per `SessionServer`) holds open windows, binds each to its
+peer through the same `SO_PEERCRED` and TID proof as contract 2
+(`resource_observer.resolve_window_peer`), and samples them all on ONE daemon
+thread; request handlers only open, read counters and close, so a slow window
+cannot delay another peer's answer. Two modes exist because exact cgroup numbers
+need an exclusive leaf: `process-tree` (sampled RSS, `/proc/<pid>/io` lower
+bound, root CPU at close) works anywhere; `cgroup` (per-fd reset `memory.peak`,
+`cpu.stat`, `io.stat`, PSI deltas) is exact only while `cgroup.procs` holds
+nothing but the root's tree, the peer and the peer's ancestors, and degrades to
+`SHARED_CGROUP` otherwise. A window keeps maxima and sums, never a series, and
+is not persisted: its id carries a per-daemon epoch so a stale id answers
+`window-lost`. The wire is in [`docs/PROTOCOL.md`](docs/PROTOCOL.md#9-observer-contract-3-measurement-windows).
+
+- **Why a single sampler thread.** Threads scale with windows (up to 4096), file
+  descriptors with cgroup-mode windows (two each). One thread plus one shared
+  `/proc` scan per round bounds both; a window whose peer died is dropped so it
+  cannot hold a slot.
+- **Why the sampling gap is accepted.** RSS peaks and foreign PIDs shorter than
+  the interval are missed; `rss_peak_bytes` is documented as a lower bound and a
+  window always takes a first sample at open.
+- **Kernel capability is a reported fact, not a guess.** The per-file
+  `memory.peak` reset is attempted at open; where the kernel refuses, the two
+  peaks are null with `PEAK_RESET_UNSUPPORTED` and `kernel.peak_reset` is false.
+
+**Ancestor memory events.** `ancestor_events.py` reads the local `memory.events`
+of every ancestor from a target's parent up to `dev.slice`. The Summary reports
+the delta between session start and finalization as
+`ancestors_memory_events_local`; a window reports the delta over the window in
+its `context`. An ancestor's local `high` or `max` event is direct evidence that
+reclaim was driven from above the lane; host-wide PSI is not (on the shared host
+the production service keeps it high).
+
 ---
 
 ## 5. Palette (both reports use exactly these)

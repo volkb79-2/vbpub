@@ -401,6 +401,55 @@ Assay's own fail-closed attribution; it is evidence that the live daemon
 reports the distinction at all. Until this has been run against the released
 daemon, CP-20 stays `carved`.
 
+## Measurement windows (observer contract 3)
+
+cgprofile 1.2.0 and later also answer `window-open` and `window-close` on the
+same observer socket (contract 3; contract 2 and `resource-limits` are
+unchanged). A window returns one subject's resource numbers: peak RSS, CPU, I/O
+bytes and operations, memory and swap peaks and PSI stall time. The daemon is
+the single source of these numbers. A consumer that obtains none records an
+explicit `NO_MEASUREMENT` with one reason code and never reads procfs or
+cgroupfs to fill the gap. The wire is in
+[the observer protocol](PROTOCOL.md#9-observer-contract-3-measurement-windows).
+
+Choose the mode by what the subject shares:
+
+- **`process-tree`** works in a shared container (a pytest worker, an Assay
+  candidate at jobs above 1). RSS and I/O bytes are sampled lower bounds and CPU
+  is exact when the window is closed after `waitid(WEXITED|WNOWAIT)` and before
+  the root is reaped. IOPS, PSI and cgroup peaks are `REQUIRES_CGROUP_MODE`.
+- **`cgroup`** is exact but attributable only while nothing else runs in the
+  subject's leaf: use it at jobs=1 in a tester container. A foreign process seen
+  during the window turns every cgroup-sourced number into `SHARED_CGROUP`.
+  Per-file `memory.peak` reset needs Linux 6.12 or later, otherwise the two peak
+  metrics are `PEAK_RESET_UNSUPPORTED`.
+
+What a consumer does when no window is available:
+
+| Situation | Record |
+|---|---|
+| Socket path absent or not mounted | `NO_MEASUREMENT` / `OBSERVER_UNAVAILABLE` |
+| `version.resource_observer.contracts` lacks 3, or the verbs get `bad-argument` | `NO_MEASUREMENT` / `OBSERVER_CONTRACT_UNSUPPORTED`; ask once per run |
+| `peer-refused` or `observer-refused` | `NO_MEASUREMENT` / `OBSERVER_REFUSED` |
+| `window-refused`, `daemon-error`, timeout or a malformed reply | `NO_MEASUREMENT` / `OBSERVER_ERROR`; after 3 consecutive failures stop asking |
+| `window-lost` on close (daemon restart, expiry) | `NO_MEASUREMENT` / `WINDOW_LOST` |
+
+A missing measurement never changes a verdict, a bucket or an exit code. A
+non-null metric with a `missing` entry elsewhere in the same reply makes the
+profile `PARTIAL`, not `NO_MEASUREMENT`.
+
+Windows are not persisted and are released when the daemon stops. Close every
+window; an unclosed one counts against the per-process limit of 64 until it
+expires after 6 hours or its process exits.
+
+The Summary of a lane session also gains an optional
+`ancestors_memory_events_local` key: the increase in the local `high`, `max`,
+`oom` and `oom_kill` counters of each ancestor up to `dev.slice`. A positive
+`high` or `max` there means reclaim was driven from above the lane, which a
+consumer classifies as contamination rather than as the lane's own limit. The
+same list is in a window's `context`. Host-wide `/proc/pressure` figures are
+context only: on a shared host they are high for reasons unrelated to the lane.
+
 ## Resolve a target from a cockpit
 
 In helper mode, `self` means the invoking container. The caller resolves its
@@ -440,6 +489,7 @@ The version response has the current wire shape:
   },
   "resource_observer": {
     "contract": 2,
+    "contracts": [2, 3],
     "path": "/run/cgprofile/observer/resource-observer.sock",
     "listening": true
   }
