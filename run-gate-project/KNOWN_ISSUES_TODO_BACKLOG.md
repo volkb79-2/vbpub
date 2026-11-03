@@ -6906,7 +6906,15 @@ exclusion reason.
 
 ## RG-136 — footprint policy mixes statistics from different I/O modes
 
-**Status:** OPEN. Severity: medium. Filed 2026-10-31 during RG-241 review.
+**Status:** FIXED 2026-11-04 (270a15d83). Severity: medium. Filed 2026-10-31 during RG-241 review.
+
+**Fix.** Manifest lane entries carry `io_sync` (policy mode via `footprint`,
+history-latest for sequences); `build_footprint_manifest`, `print_footprint_line`
+and `doctor` read one mode's statistics through `lane_mode_stats`; a manifest
+without a mode is strict and `doctor` names the migration. Oracles:
+`TestFootprintIoModeSeparation`. Not changed: `footprint_manifest_lane_expected`
+(daemon `--meta`, placement) still reads the entry regardless of mode; the
+combined `stats.passes` stays for `history` output.
 
 **Finding.** `lane_history_report()` now exposes statistics grouped by
 `io_sync`, but it also retains combined `stats.passes` and `stats.completed`.

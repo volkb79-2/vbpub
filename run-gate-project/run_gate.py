@@ -4398,8 +4398,16 @@ def _fmt_stall_seconds(value: object) -> str:
         and not isinstance(value, bool) else "-"
 
 
+def record_io_sync(run_record: dict | None) -> str:
+    """RG-136: the I/O mode this invocation's run record carries (strict
+    for a missing record, as legacy history entries were)."""
+    mode = (run_record or {}).get("io_sync")
+    return mode if isinstance(mode, str) else "strict"
+
+
 def print_footprint_line(lane_name: str, project_dir: Path,
-                         resources: dict | None) -> None:
+                         resources: dict | None,
+                         io_sync: str = "strict") -> None:
     """Contract Sec 4.6, line 3 (RG-55/C5). A no-op when THIS invocation
     recorded no resources at all — disabled, or a profile error the
     WARNING line already named; there is nothing to distill a footprint
@@ -4428,13 +4436,23 @@ def print_footprint_line(lane_name: str, project_dir: Path,
     hot_seg = f", hot-set p90 {_fmt_mib(hot)}" \
         if isinstance(hot, (int, float)) and not isinstance(hot, bool) else ""
     store = load_history_store(history_store_path(project_dir))
-    hist_peak = lane_history_report(store, lane_name)["stats"]["passes"][
-        "memory_peak_bytes"]
-    manifest_peak = footprint_manifest_lane_peak_median(
-        load_footprint_manifest(project_dir), lane_name)
-    manifest_seg = f" | manifest {_fmt_mib(manifest_peak)}" \
-        if isinstance(manifest_peak, (int, float)) \
-        and not isinstance(manifest_peak, bool) else ""
+    # RG-136: compare only against runs measured under THIS run's I/O mode.
+    hist_peak = lane_mode_stats(lane_history_report(store, lane_name),
+                                io_sync)["memory_peak_bytes"]
+    manifest = load_footprint_manifest(project_dir)
+    manifest_peak = footprint_manifest_lane_peak_median(manifest, lane_name)
+    manifest_lane = (manifest or {}).get("lanes", {}).get(lane_name)
+    manifest_mode = footprint_manifest_lane_io_sync(manifest_lane) \
+        if isinstance(manifest_lane, dict) else io_sync
+    if manifest_mode != io_sync:
+        manifest_seg = (f" | manifest not comparable (distilled under "
+                        f"io_sync={manifest_mode})"
+                        if manifest_peak is not None else "")
+    else:
+        manifest_seg = f" | manifest {_fmt_mib(manifest_peak)}" \
+            if isinstance(manifest_peak, (int, float)) \
+            and not isinstance(manifest_peak, bool) else ""
+    mode_seg = f", io_sync={io_sync}" if io_sync != "strict" else ""
     # S1 + RW-46b: the SAME two caveats `_fmt_footprint_row`/`doctor`
     # already print, here on the LIVE per-run line — read far more often
     # than `footprint --write`'s own table (round-1 review S1).
@@ -4460,8 +4478,8 @@ def print_footprint_line(lane_name: str, project_dir: Path,
          f"{over_seg}, p90 {_fmt_mib(mem.get('p90_bytes'))}, "
          f"{_fmt_cores(cpu.get('cores_avg'))} cores avg, "
          f"{stall_seg}{hot_seg}; history median peak "
-         f"{_fmt_mib(hist_peak['median'])} ({hist_peak['count']} runs)"
-         f"{manifest_seg}{source_note}{floor_note}", flush=True)
+         f"{_fmt_mib(hist_peak['median'])} ({hist_peak['count']} runs"
+         f"{mode_seg}){manifest_seg}{source_note}{floor_note}", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -7159,13 +7177,33 @@ def _lane_stats(entries: list[dict]) -> dict:
     return stats
 
 
+def history_io_sync(entry: dict) -> str:
+    """RG-136: the I/O mode a history entry was measured under. Legacy
+    entries without the key were strict; a non-string value is `unknown`."""
+    mode = entry.get("io_sync", "strict")
+    return mode if isinstance(mode, str) else "unknown"
+
+
+def lane_mode_stats(report: dict, io_sync: str,
+                    kind: str = "passes") -> dict:
+    """RG-136: statistics of ONE I/O mode (`passes` or `completed`) from a
+    `lane_history_report`; empty statistics when that mode has no entries.
+    Policy consumers read this, never the combined `stats.passes`."""
+    by_mode = report["stats"].get("by_io_sync", {})
+    return (by_mode.get(io_sync) or {}).get(kind) or _lane_stats([])
+
+
+def footprint_manifest_lane_io_sync(lane_entry: dict) -> str:
+    """RG-136: the mode a manifest lane entry was distilled under. An entry
+    without a mode predates this field and is treated as strict."""
+    mode = lane_entry.get("io_sync")
+    return mode if isinstance(mode, str) else "strict"
+
+
 def lane_history_report(store: dict, lane_name: str) -> dict:
     slot = store.get("lanes", {}).get(lane_name) or {}
     hist = [e for e in slot.get("history", []) if isinstance(e, dict)]
     passes = [e for e in hist if e.get("outcome") == "pass"]
-    def history_io_sync(entry: dict) -> str:
-        mode = entry.get("io_sync", "strict")
-        return mode if isinstance(mode, str) else "unknown"
 
     by_io_sync = {}
     for io_sync in sorted({history_io_sync(e) for e in hist}):
@@ -7386,17 +7424,27 @@ def cmd_history(lanes: dict, project_dir: Path, cfg: dict, cfg_path: Path,
 
 def build_footprint_manifest(store: dict, lanes: dict, keep: int,
                              from_commit: str | None, *,
-                             include_failed: bool = False) -> dict:
+                             include_failed: bool = False,
+                             io_modes: dict | None = None) -> dict:
     """Distill completed profiled runs, with FAIL added only on opt-in.
 
     A failed measurement must have completed, be history-eligible, and carry
     a resource profile. Budget stops, aborts, infrastructure errors, dirty
     runs and unprofiled failures never become measurements.
+
+    RG-136: each lane is distilled from ONE I/O mode only and records it as
+    `io_sync`. `io_modes` maps lane -> the mode its policy selects; a lane
+    not named there uses the mode of its most recent profiled measurement.
     """
     lanes_out: dict = {}
     for name in sorted(lanes):
         slot = store.get("lanes", {}).get(name) or {}
-        hist = [e for e in slot.get("history", []) if isinstance(e, dict)]
+        all_hist = [e for e in slot.get("history", []) if isinstance(e, dict)]
+        mode = (io_modes or {}).get(name)
+        if mode is None:
+            profiled = [e for e in all_hist if e.get("resources") is not None]
+            mode = history_io_sync(profiled[-1]) if profiled else "strict"
+        hist = [e for e in all_hist if history_io_sync(e) == mode]
         eligible = [e for e in hist
                     if e.get("history_eligible", True) is True]
         passes = [e for e in eligible if e.get("outcome") == "pass"]
@@ -7422,6 +7470,7 @@ def build_footprint_manifest(store: dict, lanes: dict, keep: int,
         lane_out = {
             "runs": len(passes) + (len(failures) if include_failed else 0),
             "completed_runs": len(hist),
+            "io_sync": mode,
             "scope": scope,
             "method": method,
             "source": source,
@@ -7542,8 +7591,26 @@ def cmd_footprint(lanes: dict, project_dir: Path, cfg: dict, cfg_path: Path,
     store = load_history_store(store_path)
     selected_names = merge_lanes or ([lane_name] if lane_name else sorted(lanes))
     selected = {name: lanes[name] for name in selected_names}
+    # RG-136: the mode each lane's policy selects (no command-line override
+    # exists on this verb). A sequence aggregate has no policy of its own and
+    # a lane whose settings do not resolve is left to the history fallback.
+    io_modes: dict = {}
+    for name, lane in selected.items():
+        if lane.get("kind") == "sequence" or "environment" not in lane:
+            continue
+        try:
+            env, _src = resolve_environment(
+                lane, name, cfg, central, cfg_path, central_path)
+            env_declaration = declared_environment(lane, cfg, central)
+            settings, _sources = resolve_resource_settings(
+                lane, cfg, central, env_declaration,
+                mode=env.get("mode", env_declaration.get("mode", "host")))
+        except GateError:
+            continue
+        io_modes[name] = settings["io_sync"]
     manifest = build_footprint_manifest(
-        store, selected, keep, from_commit, include_failed=include_failed)
+        store, selected, keep, from_commit, include_failed=include_failed,
+        io_modes=io_modes)
     manifest_path = footprint_manifest_path(project_dir)
     if write and merge_lanes:
         existing = load_footprint_manifest(project_dir)
@@ -10666,8 +10733,12 @@ def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
             man_median = (man_lane.get("memory_peak_bytes") or {}).get("median")
             if not isinstance(man_median, (int, float)) or man_median <= 0:
                 continue
-            live_median = lane_history_report(fp_store, name)["stats"][
-                "passes"]["memory_peak_bytes"]["median"]
+            # RG-136: compare against live history of the MANIFEST ENTRY's
+            # own I/O mode (a legacy entry without one is strict).
+            live_median = lane_mode_stats(
+                lane_history_report(fp_store, name),
+                footprint_manifest_lane_io_sync(man_lane)
+            )["memory_peak_bytes"]["median"]
             if not isinstance(live_median, (int, float)):
                 continue
             drift_pct = abs(live_median - man_median) / man_median * 100
@@ -10678,6 +10749,16 @@ def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
                        f"vs manifest {_fmt_mib(man_median)} "
                        f"({drift_pct:.0f}% > {tol_pct}% tolerance) — re-run "
                        f"'{PROG} footprint --write'")
+        legacy_mode_lanes = [
+            name for name in sorted(manifest.get("lanes", {}))
+            if isinstance(manifest["lanes"][name], dict)
+            and "io_sync" not in manifest["lanes"][name]]
+        if legacy_mode_lanes:
+            record("INFO", "footprint manifest io_sync",
+                   f"{', '.join(legacy_mode_lanes)}: no io_sync recorded "
+                   f"(written before per-mode manifests) — treated as "
+                   f"strict; migrate by re-running '{PROG} footprint "
+                   f"--write'")
         if manifest.get("lanes") and not drifted:
             record("OK", "footprint drift",
                    f"{len(manifest['lanes'])} lane(s) within {tol_pct}% of "
@@ -15134,7 +15215,8 @@ def await_container(docker: str, name: str, lane: dict, lane_name: str,
                     stalled = terminal_daemon_kill(profile_result["resources"])
                 print_profile_warning(profiler)
                 print_footprint_line(lane_name, project_dir,
-                                     profile_result["resources"])
+                                     profile_result["resources"],
+                                     record_io_sync(run_record))
                 if run_record is not None:
                     run_record["resources"] = profile_result["resources"]
                     run_record["profile_error"] = profile_result["profile_error"]
@@ -16521,7 +16603,8 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
             if stalled is None:
                 stalled = terminal_daemon_kill(profile_result["resources"])
             print_profile_warning(profiler_state)
-            print_footprint_line(lane_name, project_dir, profile_result["resources"])
+            print_footprint_line(lane_name, project_dir, profile_result["resources"],
+                                 record_io_sync(run_record))
             if run_record is not None:
                 run_record["resources"] = profile_result["resources"]
                 run_record["profile_error"] = profile_result["profile_error"]
@@ -16991,7 +17074,8 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
             if stalled is None:
                 stalled = terminal_daemon_kill(profile_result["resources"])
             print_profile_warning(profiler_state)
-            print_footprint_line(lane_name, project_dir, profile_result["resources"])
+            print_footprint_line(lane_name, project_dir, profile_result["resources"],
+                                 record_io_sync(run_record))
             if run_record is not None:
                 run_record["resources"] = profile_result["resources"]
                 run_record["profile_error"] = profile_result["profile_error"]
