@@ -1565,7 +1565,7 @@ done
         self.assertIsNone(WIZARD.validate_buildkit_image("registry:5000/team/buildkit@sha256:abc123"))
         self.assertIsNotNone(WIZARD.validate_buildkit_image("$(touch /tmp/pwned)"))
         # the cache source: a Docker volume name or an absolute host path, shell-safe, empty keeps the volume
-        for good in ("", "mdt-buildkitd-cache", "/srv/devcontainers-cow/buildkitd-cache"):
+        for good in ("", "mdt-buildkitd-cache", "/srv/mdt-cockpit-cow/buildkitd-cache"):
             self.assertIsNone(WIZARD.validate_buildkit_cache(good), good)
         for bad in ("relative/dir", "/srv/a b", "$(touch /tmp/pwned)", "/srv/x;rm", "-v"):
             self.assertIsNotNone(WIZARD.validate_buildkit_cache(bad), bad)

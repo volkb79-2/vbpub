@@ -121,7 +121,7 @@ expressed in sampling windows, so a scenario of minutes stands for the real hour
 (for example 60 → 3 MB/s instead of 340 → 15).
 
 **Storage for the VM.**
-- OS image: a qcow2 base on the **btrfs lab subvolume** (`/srv/devcontainers-cow/vm-lab`, zstd), one cheap
+- OS image: a qcow2 base on the **btrfs lab subvolume** (`/srv/mdt-cockpit-cow/vm-lab`, zstd), one cheap
   reflink clone per run. Verified: the subvolume can be bind-mounted into the running devcontainer at
   `mdt-cockpit/artifacts/vm-lab` without recreating it (a helper clones the mount with `open_tree` and
   moves it into the container's mount namespace; it must be repeated after a container restart).

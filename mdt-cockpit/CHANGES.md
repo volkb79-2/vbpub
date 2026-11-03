@@ -12,6 +12,16 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   on an older base.
 
 ### Changed
+- The default CoW root is renamed `/srv/devcontainers-cow/<user>/` to `/srv/mdt-cockpit-cow/<user>/`
+  (templates, `.devcontainer/devcontainer.json`, docs, `MDT_COW_ROOT` examples); there is no alias and no
+  fallback to the old path. Existing hosts must rename the mountpoint: `findmnt /srv/devcontainers-cow`
+  to see the mount, `umount` it, `mv /srv/devcontainers-cow /srv/mdt-cockpit-cow` (the empty mountpoint
+  directory), edit the fstab entry's mountpoint field to `/srv/mdt-cockpit-cow` (the LV and filesystem
+  label may keep their names), `systemctl daemon-reload && mount /srv/mdt-cockpit-cow`, and check that
+  the per-user directory `/srv/mdt-cockpit-cow/<user>/` is still owned by the user
+  (`mdt-cow-init-user.sh`). Already-running devcontainers keep the old bind mount until they are
+  recreated; a `DEV_BUILDKITD_CACHE` host path under the old root needs the same update in
+  `/etc/mdt/host-setup.env`.
 - The devcontainer templates mount one home and one `/tmp` **per checkout**:
   `${localEnv:HOME}/mdt-cockpit-${localWorkspaceFolderBasename}-home/` and `-tmp/` (the vendored
   initializer expands the variable to the checkout's folder name). The shared `~/mdt-cockpit-home/`

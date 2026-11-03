@@ -413,7 +413,7 @@ Also tracked from iobench `BACKLOG.md` (the optional IOGOV item).
 
 ## MDT-024 - move the mdt-buildkitd cache onto a compressed btrfs subvolume in `devcontainers-cow` (2026-10-23)
 
-**Status:** IMPLEMENTED 2026-10-23 as host-setup key `DEV_BUILDKITD_CACHE` (a Docker volume name, the default, or an absolute host path); the cold-cache trial on `/srv/devcontainers-cow/buildkitd-cache` passed the same day and the setting stays in use.
+**Status:** IMPLEMENTED 2026-10-23 as host-setup key `DEV_BUILDKITD_CACHE` (a Docker volume name, the default, or an absolute host path); the cold-cache trial on `/srv/mdt-cockpit-cow/buildkitd-cache` passed the same day and the setting stays in use.
 
 **Trial result (mdt-cockpit image, cold cache, 2026-10-23).**
 * **Works:** rootless BuildKit with the `runc-overlayfs` snapshotter runs on btrfs; the build succeeded in 1152 s, the same as the warm-cache ext4 builds (1082-1090 s). Those earlier builds got little from their cache, so the cold run is not slower.
@@ -424,13 +424,13 @@ Also tracked from iobench `BACKLOG.md` (the optional IOGOV item).
 * **Open:** the pool is shared with the VM harness (194 GB): set `gckeepstorage` in `buildkitd.toml` before the cache grows toward it. Today the cache is the Docker named volume `mdt-buildkitd-cache` (93 GB, snapshotter `runc-overlayfs`,
 owner 1000:1000, no userns remap) on the root ext4, so BuildKit's write bursts share the root journal with everything else
 (HOST-IO-INTERFERENCE: that shared journal is what stalled the game's fsync path). `devcontainers-cow` is a separate btrfs filesystem
-(own transaction stream, 194 GB, nearly empty, mounted `noatime,discard=async` at `/srv/devcontainers-cow`).
+(own transaction stream, 194 GB, nearly empty, mounted `noatime,discard=async` at `/srv/mdt-cockpit-cow`; the name `devcontainers-cow` in this entry is the 2026-10 host's LV/label, kept as host reality, the default mount path was renamed 2026-11-03).
 
 **Steps (host, root).**
-1. `btrfs subvolume create /srv/devcontainers-cow/buildkitd-cache` (the subvolume name is a path below the top level, BTRFS-COW.md 2.1).
-2. `btrfs property set /srv/devcontainers-cow/buildkitd-cache compression zstd` (BTRFS-COW.md policy: no `compress=` mount option; never `chattr +C`, it disables compression).
-3. `chown 1000:1000 /srv/devcontainers-cow/buildkitd-cache && chmod 2755 ...` (the rootless worker is uid 1000).
-4. host-setup: a key `DEV_BUILDKITD_CACHE` in `/etc/mdt/host-setup.env` on the HOST (value `/srv/devcontainers-cow/buildkitd-cache`; empty = the Docker
+1. `btrfs subvolume create /srv/mdt-cockpit-cow/buildkitd-cache` (the subvolume name is a path below the top level, BTRFS-COW.md 2.1).
+2. `btrfs property set /srv/mdt-cockpit-cow/buildkitd-cache compression zstd` (BTRFS-COW.md policy: no `compress=` mount option; never `chattr +C`, it disables compression).
+3. `chown 1000:1000 /srv/mdt-cockpit-cow/buildkitd-cache && chmod 2755 ...` (the rootless worker is uid 1000).
+4. host-setup: a key `DEV_BUILDKITD_CACHE` in `/etc/mdt/host-setup.env` on the HOST (value `/srv/mdt-cockpit-cow/buildkitd-cache`; empty = the Docker
    volume, the current behaviour). It is a host path, not a devcontainer path: `install.sh` renders it into `units/mdt-buildkitd.service.in` as
    `-v <host path>:/home/user/.local/share/buildkit` (the part after the colon is the path inside the buildkitd container). The key exists only so the
    unit does not hardcode a host layout (hosts without btrfs keep the volume), with an `ExecStartPre` that refuses unless a host path exists as a real directory (the mount is `nofail`, and a missing mount must not make Docker create the directory on the root ext4); install.sh also checks the owner is 1000:1000. btrfs is not required: any filesystem path works.

@@ -12,7 +12,10 @@ untested (the self-check script covers most of them; run it on r1002 first).*
 | Filesystem | Mounted at | Holds | Why separate |
 |---|---|---|---|
 | `host-services` (btrfs, own LV) | subvolume `pterodactyl` at `/var/lib/pterodactyl` | Wings state, game volumes, backups; room for further host-service subvolumes (section 6) | Own journal/transaction: dev writeback and snapshot commits no longer ride on the game's fsync ([HOST-IO-INTERFERENCE.md](HOST-IO-INTERFERENCE.md) §7, "separate filesystem for game data"). Every subvolume added later shares that transaction (section 6). |
-| `devcontainers-cow` (btrfs, own LV) | `/srv/devcontainers-cow` (whole filesystem) | ISOs, VM disks, assay snapshots, per-worktree scratch | Reflink/snapshot/compression; snapshot commits stay off the game's filesystem. Design: generic §1 to §8. |
+| `devcontainers-cow` (btrfs, own LV) | `/srv/mdt-cockpit-cow` (whole filesystem) | ISOs, VM disks, assay snapshots, per-worktree scratch | Reflink/snapshot/compression; snapshot commits stay off the game's filesystem. Design: generic §1 to §8. |
+
+Host reality: on this host the LV and btrfs label are still named `devcontainers-cow` (the identifiers below quote
+that); only the mountpoint follows the renamed default CoW root `/srv/mdt-cockpit-cow`.
 
 An LV gives each filesystem its own journal but **not** a separate device queue: all LVs sit on `vda`, so the
 queue bounds in [HOST-IO-INTERFERENCE.md](HOST-IO-INTERFERENCE.md) §5 stay necessary, and swap-in waits (now
@@ -68,7 +71,7 @@ mkfs.btrfs -L devcontainers-cow -m dup -d single /dev/gstammtisch-vg/devcontaine
 
 ```fstab
 LABEL=host-services      /var/lib/pterodactyl    btrfs  subvol=pterodactyl,noatime,discard=async,nofail,x-systemd.device-timeout=30s  0 0
-LABEL=devcontainers-cow  /srv/devcontainers-cow  btrfs  noatime,discard=async,user_subvol_rm_allowed,nofail,x-systemd.device-timeout=30s  0 0
+LABEL=devcontainers-cow  /srv/mdt-cockpit-cow  btrfs  noatime,discard=async,user_subvol_rm_allowed,nofail,x-systemd.device-timeout=30s  0 0
 ```
 
 `discard=async` reaches the virtual disk: `lsblk -D` reports 512 B granularity on `vda` and the LVs [M].
@@ -78,7 +81,7 @@ Then the `chattr +i` guard on **both** mountpoints (generic §3.1; the Wings mou
 because it holds data today), and the user area:
 
 ```bash
-host-setup/scripts/mdt-cow-init-user.sh /srv/devcontainers-cow vb       # uid 1003
+host-setup/scripts/mdt-cow-init-user.sh /srv/mdt-cockpit-cow vb       # uid 1003
 ```
 
 ## 5. Migrate `/var/lib/pterodactyl`
@@ -172,7 +175,7 @@ into that folder's `devcontainer.json`.
 3. Reboot test with the `host-services` LV deactivated: boot completes, `soulmask_tmpfs.service` fails, Wings and
    the game do not start on ext4.
 4. As `vscode` in the rebuilt container: snapshot, `cp --reflink` across subvolumes, delete.
-5. `iostat -x` / PSI during a snapshot loop on `/srv/devcontainers-cow` while the game runs: game
+5. `iostat -x` / PSI during a snapshot loop on `/srv/mdt-cockpit-cow` while the game runs: game
    `io.pressure` stays at the baselines of [HOST-IO-INTERFERENCE.md](HOST-IO-INTERFERENCE.md) §4.
 6. Before any maintenance that needs the CoW device (`lvextend` is online, but `lvremove`, `btrfs check`, a
    partition resize are not): stop the devcontainers. On r1002 a host `umount` succeeded while a container held a
