@@ -5896,3 +5896,26 @@ pwmcp is the candidate to verify) hits the same refusals.
 - **Non-mdt path.** The test needs no devcontainer, no Docker socket and no mdt paths (uses the pure derivation of CIU-162).
 
 **Dependencies and order.** After CIU-162 (shares the env-step split).
+## CIU-163 — `ciu up` of a NEW ciu root inside a linked git worktree always fails S16.3 ("derived primary CIU root ... does not exist")
+
+**Status: OPEN (filed 2026-11-04, observed live the same day on `voice-screen-share/fluxer-server`).**
+
+**Observed.** A ciu root that exists only on a feature branch (a new project, not yet merged) cannot be started from its own worktree: `ciu up` renders
+and writes everything, reaches `docker compose up`, then aborts with
+`[S16.3] derived primary CIU root <primary>/<offset> (primary worktree <primary> + offset <offset>) does not exist`. `worktree.primary_ciu_root`
+raises when the offset directory is absent in the primary checkout, and `worktree_budget_slot` calls it unconditionally, so the failure happens even
+when no `[ciu.worktree]` policy and no `CIU_MAX_CONCURRENT_WORKTREES` exist anywhere. The only in-tool workaround is to create an empty directory in
+the shared primary checkout; the workaround used instead was running the generated `ciu.compose.yml` + `.ciu/ciu.compose.overlay.yml` with
+`docker compose -p <project>` by hand and running the post_compose hook through a small harness (no budget, no lock).
+
+**Design.** A missing derived primary root means "the primary checkout has no policy for this root": treat it exactly like the documented
+"absent `ciu.global.defaults.toml.j2` at the primary root" case (no file policy, no Docker query, no lock) when no ambient override is set; keep the
+loud error only when `CIU_MAX_CONCURRENT_WORKTREES` is set (a cap that cannot be enforced must not be silently dropped).
+
+
+- A test with a linked worktree whose CIU root is absent from the primary worktree: `ciu up` proceeds with no cap and no lock, and fails loudly
+  only when the ambient cap override is present.
+- SPEC S16.3 states the absent-primary-root case next to the absent-template case.
+- **Non-mdt path.** Plain git, no devcontainer.
+
+**Related.** CIU-161 (`ciu worktree create` also fails for this class of root), CIU-162 (dry-run side effects hit the same flow).
