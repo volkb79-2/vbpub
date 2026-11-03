@@ -174,13 +174,33 @@ Behaviour changes a consumer can see:
 
 <!-- cmru: release history -->
 
-## [Unreleased]
+## [0.5.1] - 2026-11-03
+<!-- cmru: generated -->
+<!-- cmru: source-end=bc1e0d5ac3ee3b44531b58bb211faa8437c991c8 -->
 
+### Fixed
+- fix(cli-extended): CLI-EXT-30 filter drops only the colliding flag, keeps aliases; tests and AC-25 window docs (85a54d674)
+- fix(cli-extended): skills verbs tolerate consumer --dry-run/--json; AC-25 catches piecewise paths (CLI-EXT-30, CLI-EXT-32) (add529e68)
+
+### Changed
+- mdt-cockpit: skills step bounded, warn-once, crash-aware; live docs name /opt/mdt/venv (368f57788)
+
+### Documentation
+- docs(cli-extended): backlog CLI-EXT-30/31/32 FIXED, CHANGES unreleased lines (c93454598)
+- docs(cli-extended): name --cli-case-partial in README and adoption checklist (CLI-EXT-31) (1e8d0c8e1)
+
+### Testing
+- test(cli-extended): triage whole-source R2 survivors (fe6930764)
+
+<!-- cmru: pending release notes begin -->
 - fix(skills): `register_skills_verbs` no longer raises when the consumer declares a legacy global `--dry-run` or `--json`; the library-owned flags win (CLI-EXT-30)
 - fix(skills): the CLI-EXT-30 collision filter removes only the colliding `--dry-run`/`--json` flag strings from a consumer global; its other aliases (`-n`, `-j`) and kwargs are kept
 - docs: AC-25 documents the 400-character piecewise window and its near-miss behaviour
 - fix(audit): AC-25 `no-path-hacks` flags a `sys.path` mutation that builds the library path from pieces such as `"libraries" / "cli-extended"` (CLI-EXT-32)
 - docs: the adoption checklist (AC-22) and README audit section name `--cli-case-partial` for focused pytest runs (CLI-EXT-31)
+<!-- cmru: pending release notes end -->
+
+## [Unreleased]
 
 ## [0.5.0] - 2026-10-21
 <!-- cmru: generated -->
