@@ -394,7 +394,9 @@ and every default (bash, zsh, nano, htop, mc, Neovim, `less`, the MDT shell file
 where its tool reads system-wide configuration, so you override a default by creating your
 own file. The in-container finalizer's only home write is a comment-only `~/.zshrc` stub (only
 if you have no zsh startup file) that keeps `zsh-newuser-install` from taking over your first
-terminal. The native host SSH directory remains a separate read-only mount at
+terminal; it also runs `<cli> skills install` for the first-party CLIs (`cmru`, `ciu`, `pwmcp`,
+`topos`) whose agent skills are not current, which writes only their own stamped skill
+directories under `~/.claude/skills` and `~/.agents/skills`. The native host SSH directory remains a separate read-only mount at
 `/run/mdt/host-ssh`.
 
 There is no migration. If you used the previous split-mount template, the host bootstrap prints

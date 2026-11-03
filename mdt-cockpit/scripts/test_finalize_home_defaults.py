@@ -97,6 +97,9 @@ def test_generic_steps_no_longer_seed_copy_or_link_anything_else_into_the_home(
     monkeypatch.setattr(finalize, "repair_docker_socket_relay", lambda: None)
     monkeypatch.setattr(finalize, "setup_buildkit_builder", lambda *, required=False: True)
     monkeypatch.setattr(finalize, "verify_base_tools", lambda: None)
+    # The skills step writes the tools' own stamped skill directories; it has its own tests
+    # (test_finalize_agent_skills.py) and must not run the real CLIs of the test host here.
+    monkeypatch.setattr(finalize, "install_agent_skills", lambda: None)
 
     assert finalize.run_generic_steps({"env_type": "local"}) is True
 

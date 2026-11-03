@@ -44,7 +44,8 @@ Contents below a listed directory inherit that directory's owner and persistence
 | Path or path class | Owner / role | Policy |
 |---|---|---|
 | `/home/vscode` | `vscode` home and mount point | Empty in the image; the whole directory is bind-mounted from `mdt-cockpit-<checkout>-home/`. |
-| `.zshrc` | comment-only stub | The only file the finalizer ever writes (only when none of `.zshenv`, `.zprofile`, `.zshrc`, `.zlogin` exists). Yours from then on. |
+| `.zshrc` | comment-only stub | The only file the finalizer itself writes (only when none of `.zshenv`, `.zprofile`, `.zshrc`, `.zlogin` exists). Yours from then on. |
+| `.claude/skills/<skill>`, `.agents/skills/<skill>` | agent skills of `cmru`, `pwmcp` and any other first-party CLI with a `skills` verb | Written by the CLI's own `skills install`, which the finalizer runs only when `skills check` reports them not current; stamped, owned by that tool, never touching other files in `.claude` or `.agents`. A second finalizer run changes nothing. |
 | `.bashrc`, `.bash_logout`, `.profile`, `.zprofile` | optional user shell startup | **Not created.** bash and zsh load the image defaults from `/etc/bash.bashrc` and `/etc/zsh/zshrc`; create your own file to add to or override them. |
 | `.config/mdt-cockpit/` | **your** MDT overrides: `ai.env`, optional `shell.env`, `aliases.sh` | Not created by the image. Sourced after the image's own files. Examples: `/usr/local/share/mdt-cockpit/*.example`. |
 | `.config/htop/htoprc`, `.config/mc/ini`, `.nanorc` / `.config/nano/nanorc`, `.config/nvim/init.lua` | per-tool user config | **Not created.** The image defaults load from `/etc/htoprc`, `/etc/mc/mc.ini`, `/etc/nanorc`, `/etc/xdg/nvim`; creating your file overrides them (nano: per setting). Tools write these files themselves when you save settings. |
@@ -167,10 +168,12 @@ would shadow it or point at paths that no longer exist:
 - Image runtime (`run-gate image-runtime`, both image families): empty home, group
   membership, the group contract re-checked in a running container, one `PATH` in every shell,
   writes through the group under a re-numbered uid (and `EACCES` without it), a finalizer run
-  that leaves a fresh home with only the stub and is idempotent, silent interactive shells, and
+  that leaves a fresh home with only the stub (plus the CLIs' own skill trees) and is idempotent, silent interactive shells, and
   every system-wide default loading with an empty home.
-- Finalizer (unit): the stub is the only write, a second run is byte-identical, any user zsh
-  startup file suppresses it and is never modified.
+- Finalizer (unit): the stub is the only write of the finalizer itself, a second run is
+  byte-identical, any user zsh startup file suppresses it and is never modified; the skills step
+  (`test_finalize_agent_skills.py`, fake CLIs) installs only for a not-current CLI, skips a CLI
+  without the verb, turns failures into warnings and leaves a second run byte-identical.
 - Host bootstrap (unit): exactly the declared `$HOME` sources are prepared with their modes, the
   note appears only for old state with an empty new home, and the exit status never depends on it.
 - Template (unit): exactly one mount targets `/home/vscode`, host integration mounts stay
