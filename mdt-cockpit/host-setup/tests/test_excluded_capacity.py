@@ -502,25 +502,118 @@ class ProbeTests(unittest.TestCase):
             self.assertEqual(wizard.run_probe_excluded(args), 2)
 
 
+def _weak_wings(cg: Path, *, memory_min: int = 0, cpu_weight: int = 100, io_weight: int = 100) -> None:
+    """Lower wings.slice's own protection so a plan has something to raise."""
+    w = cg / "wings.slice"
+    (w / "memory.min").write_text(f"{memory_min}\n")
+    (w / "cpu.weight").write_text(f"{cpu_weight}\n")
+    (w / "io.weight").write_text(f"default {io_weight}\n")
+
+
 class ApplyProtectionTests(unittest.TestCase):
     def test_the_plan_mirrors_the_excluded_ram_and_uses_four_times_the_dev_weights(self) -> None:
         cg = _fake_cgroups(_tmp(self))
+        _weak_wings(cg)
         plan = MC.plan_protection(cg, ["wings.slice"], 6500 * MIB)
-        self.assertEqual(plan, {"wings.slice": {"MemoryMin": "6500M", "CPUWeight": "400", "IOWeight": "400"}})
+        self.assertEqual(plan, {"wings.slice": {
+            "MemoryMin": ("0", "6500M"), "CPUWeight": ("100", "400"), "IOWeight": ("100", "400")}})
 
     def test_the_ram_is_split_by_current_use_across_several_units(self) -> None:
         d = _tmp(self)
         cg = _fake_cgroups(d)
+        _weak_wings(cg)
         svc = cg / "system.slice" / "game.service"
         svc.mkdir(parents=True)
         (svc / "memory.current").write_text(str(1000 * MIB) + "\n")
+        (svc / "memory.min").write_text("0\n")
+        (svc / "cpu.weight").write_text("100\n")
         plan = MC.plan_protection(cg, ["wings.slice", "game.service"], 8000 * MIB)
-        self.assertEqual(plan["wings.slice"]["MemoryMin"], "7000M")
-        self.assertEqual(plan["game.service"]["MemoryMin"], "1000M")
+        self.assertEqual(plan["wings.slice"]["MemoryMin"], ("0", "7000M"))
+        self.assertEqual(plan["game.service"]["MemoryMin"], ("0", "1000M"))
+
+    def test_it_never_lowers_an_existing_memory_min_or_weight(self) -> None:
+        cg = _fake_cgroups(_tmp(self))
+        # wings.slice already has MemoryMin 6500M, CPU/IO weight 800: a smaller figure and the
+        # 4x-dev weights (400) must not replace them.
+        notes: list[str] = []
+        plan = MC.plan_protection(cg, ["wings.slice"], 2000 * MIB, notes=notes)
+        self.assertEqual(plan, {})
+        self.assertTrue(any("nothing would increase" in n for n in notes), notes)
+
+    def test_a_partial_increase_lists_only_the_properties_that_rise(self) -> None:
+        cg = _fake_cgroups(_tmp(self))
+        _weak_wings(cg, memory_min=8000 * MIB, cpu_weight=1000, io_weight=100)
+        plan = MC.plan_protection(cg, ["wings.slice"], 6500 * MIB)
+        self.assertEqual(plan, {"wings.slice": {"IOWeight": ("100", "400")}})
+
+    def test_a_proportional_share_never_lowers_a_larger_current_min(self) -> None:
+        d = _tmp(self)
+        cg = _fake_cgroups(d)  # wings.slice: min 6500M, current 7000M
+        svc = cg / "system.slice" / "docker.service"
+        svc.mkdir(parents=True)
+        (svc / "memory.current").write_text(str(7000 * MIB) + "\n")
+        (svc / "memory.min").write_text("0\n")
+        plan = MC.plan_protection(cg, ["wings.slice", "docker.service"], 8000 * MIB)
+        self.assertNotIn("wings.slice", plan)  # its share (4000M) is below its 6500M
+        self.assertEqual(plan["docker.service"]["MemoryMin"], ("0", "4000M"))
+
+    def test_zero_or_unparsable_excluded_ram_is_refused_and_writes_nothing(self) -> None:
+        d = _tmp(self)
+        cg = _fake_cgroups(d)
+        _weak_wings(cg)
+        with self.assertRaises(MC.ProtectionRefused):
+            MC.plan_protection(cg, ["wings.slice"], 0)
+        sysd = d / "systemd"
+        for ram_line in ("MDT_EXCLUDED_RAM=0\n", "", "MDT_EXCLUDED_RAM=lots\n"):
+            env = d / "env"
+            env.write_text("MDT_PROTECTED_UNITS=wings.slice\n" + ram_line)
+            with contextlib.redirect_stderr(io.StringIO()):
+                rc = MC.main(["apply-protection", str(env), "--yes", "--systemd-dir", str(sysd),
+                              "--cgroup-root", str(cg)])
+            self.assertEqual(rc, 2, ram_line)
+            self.assertFalse(sysd.exists(), ram_line)
+
+    def test_nothing_to_raise_writes_nothing_even_with_yes(self) -> None:
+        d = _tmp(self)
+        cg = _fake_cgroups(d)
+        env = d / "env"
+        env.write_text("MDT_PROTECTED_UNITS=wings.slice\nMDT_EXCLUDED_RAM=2000M\n")
+        sysd = d / "systemd"
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = MC.main(["apply-protection", str(env), "--yes", "--systemd-dir", str(sysd), "--cgroup-root", str(cg)])
+        self.assertEqual(rc, 0)
+        self.assertFalse(sysd.exists())
+        self.assertIn("Nothing would increase", out.getvalue())
+
+    def test_the_confirmation_shows_current_and_new_values(self) -> None:
+        d = _tmp(self)
+        cg = _fake_cgroups(d)
+        _weak_wings(cg, memory_min=1000 * MIB)
+        env = d / "env"
+        env.write_text("MDT_PROTECTED_UNITS=wings.slice\nMDT_EXCLUDED_RAM=6500M\n")
+        out = io.StringIO()
+        with mock.patch("builtins.input", return_value="n"), contextlib.redirect_stdout(out):
+            MC.main(["apply-protection", str(env), "--systemd-dir", str(d / "s"), "--cgroup-root", str(cg)])
+        self.assertIn("MemoryMin: 1000M -> 6500M", out.getvalue())
+        self.assertIn("CPUWeight: 100 -> 400", out.getvalue())
+
+    def test_a_missing_cgroup_is_skipped_with_a_note_not_written(self) -> None:
+        cg = _fake_cgroups(_tmp(self))
+        notes: list[str] = []
+        self.assertEqual(MC.plan_protection(cg, ["ghost.service"], 1000 * MIB, notes=notes), {})
+        self.assertTrue(any("ghost.service" in n and "skipped" in n for n in notes), notes)
+
+    def test_only_slice_service_and_scope_units_are_accepted(self) -> None:
+        for good in ("wings.slice", "docker.service", "docker-a.scope"):
+            self.assertIsNone(MC.validate_units(good))
+        for bad in ("docker.socket", "data.mount", "multi-user.target"):
+            self.assertIsNotNone(MC.validate_units(bad), bad)
 
     def test_it_writes_only_after_confirmation_and_only_for_named_units(self) -> None:
         d = _tmp(self)
         cg = _fake_cgroups(d)
+        _weak_wings(cg)
         env = d / "env"
         env.write_text("MDT_PROTECTED_UNITS=wings.slice\nMDT_EXCLUDED_RAM=6500M\n")
         sysd = d / "systemd"

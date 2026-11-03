@@ -154,7 +154,7 @@ def parse_cores(value: str) -> Decimal:
     return Decimal(value)
 
 
-_UNIT_RE = re.compile(r"^[A-Za-z0-9:_.@\\-]+\.(slice|service|scope|socket|mount|target)$")
+_UNIT_RE = re.compile(r"^[A-Za-z0-9:_.@\\-]+\.(slice|service|scope)$")
 
 
 def validate_units(value: str) -> str | None:
@@ -661,40 +661,78 @@ def format_probe(result: ProbeResult, excluded_ram: int = 0, cg_root: Path | Non
 DROPIN_NAME = "50-mdt-protection.conf"
 
 
-def plan_protection(
-    cg_root: Path, units: Sequence[str], excluded_ram: int, *, dev_slice: str = "dev.slice"
-) -> dict[str, dict[str, str]]:
-    """Per named unit: MemoryMin, CPUWeight, IOWeight to write. Pure; reads cgroups only.
+class ProtectionRefused(ValueError):
+    """The protection plan cannot be made safely (e.g. no RAM figure to mirror)."""
 
-    MemoryMin mirrors MDT_EXCLUDED_RAM, split across the named units in proportion to
-    their current memory (an even split when none is readable). The weights are 4x the
-    dev.slice weight (default 100), capped at 10000.
+
+# plan: unit -> property -> (current value as shown to the operator, new value written)
+ProtectionPlan = dict[str, dict[str, tuple[str, str]]]
+
+
+def plan_protection(
+    cg_root: Path,
+    units: Sequence[str],
+    excluded_ram: int,
+    *,
+    dev_slice: str = "dev.slice",
+    notes: list[str] | None = None,
+) -> ProtectionPlan:
+    """Per named unit: the MemoryMin, CPUWeight, IOWeight that would INCREASE. Reads cgroups only.
+
+    Protection is only ever raised: the drop-in overrides the operator's own unit file, so a
+    value lower than the unit's current one would silently remove production protection.
+
+    * ``excluded_ram`` must be > 0 (``ProtectionRefused`` otherwise); a MemoryMin of 0 is never planned.
+    * MemoryMin mirrors MDT_EXCLUDED_RAM, split across the named units in proportion to their
+      current memory (an even split when none is readable), then raised to at least the unit's
+      own current memory.min.
+    * The weights are 4x the dev.slice weight (default 100), capped at 10000, never below the
+      unit's own current weight.
+    * A property that would not increase is left out; a unit with nothing to raise is left out.
+    * A unit without a readable cgroup (not running) cannot be compared and is skipped with a note.
     """
-    named = [u for u, _ in _top_level_only(cg_root, units)]
+    if excluded_ram <= 0:
+        raise ProtectionRefused(
+            "MDT_EXCLUDED_RAM is 0 or unreadable: there is no RAM figure to mirror, and writing "
+            "MemoryMin=0 would remove existing protection. Set MDT_EXCLUDED_RAM first."
+        )
+    named = _top_level_only(cg_root, units)
     currents = {}
-    for u in named:
-        path = unit_path(cg_root, u)
+    for u, path in named:
         currents[u] = (_read_size(path / "memory.current") or 0) if path else 0
     total = sum(currents.values())
     dev_path = slice_path(cg_root, dev_slice)
     cpu_ref = _read_weight(dev_path / "cpu.weight") or 100
     io_ref = _read_weight(dev_path / "io.weight") or 100
-    plan: dict[str, dict[str, str]] = {}
-    for u in named:
+    plan: ProtectionPlan = {}
+    for u, path in named:
+        if path is None:
+            if notes is not None:
+                notes.append(f"{u}: no cgroup found (not running?); its current values are unknown, skipped")
+            continue
         share = currents[u] / total if total else 1 / max(1, len(named))
-        mem_min = int(excluded_ram * share)
-        plan[u] = {
-            "MemoryMin": format_size(mem_min) if mem_min else "0",
-            "CPUWeight": str(min(10000, WEIGHT_FACTOR * cpu_ref)),
-            "IOWeight": str(min(10000, WEIGHT_FACTOR * io_ref)),
-        }
+        wanted_min = int(excluded_ram * share)
+        old_min = _own_min(path)
+        props: dict[str, tuple[str, str]] = {}
+        if wanted_min > old_min:
+            props["MemoryMin"] = (format_size(old_min), format_size(wanted_min))
+        for prop, filename, ref in (("CPUWeight", "cpu.weight", cpu_ref), ("IOWeight", "io.weight", io_ref)):
+            old = _read_weight(path / filename)
+            wanted = min(10000, WEIGHT_FACTOR * ref)
+            if old is not None and wanted > old:
+                props[prop] = (str(old), str(wanted))
+        if props:
+            plan[u] = props
+        elif notes is not None:
+            notes.append(f"{u}: nothing would increase; left untouched")
     return plan
 
 
-def write_protection_dropins(plan: dict[str, dict[str, str]], systemd_dir: Path) -> list[Path]:
-    """Write ``<unit>.d/50-mdt-protection.conf`` for exactly the planned units."""
+def write_protection_dropins(plan: ProtectionPlan, systemd_dir: Path) -> list[Path]:
+    """Write ``<unit>.d/50-mdt-protection.conf`` for exactly the planned units (new values only)."""
     written = []
-    for unit, props in sorted(plan.items()):
+    for unit, change in sorted(plan.items()):
+        props = {k: new for k, (_old, new) in change.items()}
         directory = systemd_dir / f"{unit}.d"
         directory.mkdir(parents=True, exist_ok=True)
         target = directory / DROPIN_NAME
@@ -768,11 +806,30 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not units:
             print("ERROR: MDT_PROTECTED_UNITS is empty; there is nothing to protect", file=sys.stderr)
             return 2
-        excl = parse_size_bytes(values.get("MDT_EXCLUDED_RAM", "0") or "0") or 0
-        plan = plan_protection(args.cgroup_root, units, excl)
-        print("Drop-ins to write (only for the named units):")
-        for unit, props in plan.items():
-            print(f"  {args.systemd_dir}/{unit}.d/{DROPIN_NAME}: " + " ".join(f"{k}={v}" for k, v in props.items()))
+        bad = validate_units(" ".join(units))
+        if bad:
+            print(f"ERROR: MDT_PROTECTED_UNITS: {bad}", file=sys.stderr)
+            return 2
+        raw_ram = values.get("MDT_EXCLUDED_RAM", "0") or "0"
+        excl = parse_size_bytes(raw_ram)
+        if excl is None:
+            print(f"ERROR: MDT_EXCLUDED_RAM: {validate_size_or_zero(raw_ram)}", file=sys.stderr)
+            return 2
+        notes: list[str] = []
+        try:
+            plan = plan_protection(args.cgroup_root, units, excl, notes=notes)
+        except ProtectionRefused as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
+        for note in notes:
+            print(f"note: {note}")
+        if not plan:
+            print("Nothing would increase; nothing was written.")
+            return 0
+        print("Drop-ins to write (only for the named units; protection is only raised; current -> new):")
+        for unit, change in plan.items():
+            print(f"  {args.systemd_dir}/{unit}.d/{DROPIN_NAME}: "
+                  + " ".join(f"{k}: {old} -> {new}" for k, (old, new) in change.items()))
         if not args.yes:
             try:
                 answer = input("Write these drop-ins? [y/N] ")
