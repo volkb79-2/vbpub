@@ -48,6 +48,8 @@ Usage
   sudo ./install.sh --restart-docker
   sudo ./install.sh --observer-only
   sudo ./install.sh --require-damon-disable   # make a failed DAMON_STAT write fatal
+  sudo ./install.sh --confirm-no-disk-swap    # accept that MDT gets no disk swap
+  sudo ./install.sh --apply-protection        # write MemoryMin/weights drop-ins for MDT_PROTECTED_UNITS
   sudo ./install.sh --help
 
 Options
@@ -80,6 +82,17 @@ Options
                       unchanged service is left alone, and a needed restart during
                       an active build is NOT done (the install says so and exits
                       non-zero; re-run with this flag at a moment you choose).
+  --confirm-no-disk-swap
+                      SwapTotal minus MDT_EXCLUDED_SWAP minus MDT_HOST_SWAP_MARGIN
+                      is not positive, so MDT gets no disk swap. The installer
+                      asks to confirm on a terminal and refuses without a
+                      terminal unless this flag is given.
+  --apply-protection  Opt-in, stand-alone: after an interactive confirmation,
+                      write 50-mdt-protection.conf drop-ins (MemoryMin,
+                      CPUWeight, IOWeight) for exactly the units named in
+                      MDT_PROTECTED_UNITS, then daemon-reload. Nothing else is
+                      installed or restarted. Without this flag the units are
+                      only verified (mdt-host-check.sh warns).
   --observer-only     Install the cgprofile-observer group and its dedicated
                       /run/cgprofile/observer tmpfiles rule. Requires the
                       existing /run/cgprofile control directory to be a
@@ -204,6 +217,8 @@ RESTART_BUILDKITD=0
 WIZARD=0
 OBSERVER_ONLY=0
 REQUIRE_DAMON=0
+CONFIRM_NO_DISK_SWAP=0
+APPLY_PROTECTION=0
 for arg in "$@"; do
   case "$arg" in
     --wizard) WIZARD=1 ;;
@@ -213,6 +228,8 @@ for arg in "$@"; do
     --restart-docker) AUTO_RESTART_DOCKER=1 ;;
     --restart-buildkitd) RESTART_BUILDKITD=1 ;;
     --require-damon-disable) REQUIRE_DAMON=1 ;;
+    --confirm-no-disk-swap) CONFIRM_NO_DISK_SWAP=1 ;;
+    --apply-protection) APPLY_PROTECTION=1 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $arg (try --help)"; exit 2 ;;
   esac
@@ -381,6 +398,21 @@ _mdt_install_environment_block() {
 HAD_CONFIG=0
 if [ -f "$CONFIG_PATH" ]; then
   HAD_CONFIG=1
+fi
+
+# Stand-alone, opt-in: write the protection drop-ins for the named units. The production
+# units are operator-owned, so this never runs as part of a normal install.
+if [ "$APPLY_PROTECTION" = 1 ]; then
+  if [ "$HAD_CONFIG" = 0 ]; then
+    echo "ERROR: --apply-protection needs an installed $CONFIG_PATH (it names MDT_PROTECTED_UNITS)" >&2
+    exit 2
+  fi
+  python3 "$HERE/mdt_capacity.py" refuse-renamed "$CONFIG_PATH" || exit 2
+  python3 "$HERE/mdt_capacity.py" apply-protection "$CONFIG_PATH" --systemd-dir /etc/systemd/system \
+    --cgroup-root /sys/fs/cgroup || exit $?
+  systemctl daemon-reload
+  echo "protection drop-ins applied; verify with: mdt-host-check.sh"
+  exit 0
 fi
 
 # Keep all candidate work outside /etc/mdt. In particular, do not create the
@@ -651,16 +683,14 @@ if _mdt_io_queue_keys_set; then
   fi
 fi
 
-# CPUQuota, absolute ceilings mirroring the IO one: auto-
-# detected from nproc when left unset in host-setup.env, floored at 1 core —
-# same auto-discovery convention as IO_DEV_PATH above. An explicit value in
-# host-setup.env always wins, per-slice. dev.slice's own ceiling bounds the
-# WHOLE tier combined (DEV_CPU_RESERVE_CORES=1 default: nproc-1, leaving one
-# core for the host/production regardless of how many dev-tier children are
-# busy at once); each child ALSO gets its own tighter ceiling
-# (DEV_SUBSLICE_CPU_RESERVE_CORES=3 default: nproc-3) so no single tier can
-# alone claim the parent's whole budget — multiple tiers combined are still
-# bounded by dev.slice's own quota either way.
+# CPUQuota, absolute ceilings mirroring the IO one: derived from nproc and the
+# capacity unavailable to MDT when left `auto` in host-setup.env (same auto-discovery
+# convention as IO_DEV_PATH above). An explicit value always wins, per slice.
+# dev.slice's own ceiling bounds the WHOLE tier combined: CPU_MDT = nproc -
+# MDT_EXCLUDED_CPU_CORES. Each child ALSO gets its own tighter ceiling,
+# CPU_MDT - DEV_TIER_EXCLUDED_CPU_CORES, so no single tier can alone claim the
+# parent's whole budget. The arithmetic lives in mdt_capacity.py (one implementation,
+# unit-tested); it also refuses RAM_MDT < 1G and CPU_MDT < 0.5.
 _nproc=$(nproc 2>/dev/null) || {
   echo "ERROR: could not determine host CPU count with nproc; refusing to invent a CPU quota" >&2
   exit 2
@@ -668,20 +698,20 @@ _nproc=$(nproc 2>/dev/null) || {
 case "$_nproc" in
   ''|*[!0-9]*) echo "ERROR: nproc returned an invalid CPU count: $_nproc" >&2; exit 2 ;;
 esac
-DEV_CPU_RESERVE_CORES="${DEV_CPU_RESERVE_CORES:-1}"
-DEV_SUBSLICE_CPU_RESERVE_CORES="${DEV_SUBSLICE_CPU_RESERVE_CORES:-3}"
-if [ -z "${DEV_CPU_QUOTA:-}" ] && [ "$_nproc" -le "$DEV_CPU_RESERVE_CORES" ] 2>/dev/null; then
-  echo "WARN: host has $_nproc CPU core(s), so DEV_CPU_RESERVE_CORES=$DEV_CPU_RESERVE_CORES cannot be fully reserved; the dev.slice auto-quota will use its 1-core floor"
+if ! _capacity=$(python3 "$HERE/mdt_capacity.py" derive "$CANDIDATE_PATH" --nproc "$_nproc" --meminfo /proc/meminfo); then
+  echo "ERROR: the capacity unavailable to MDT leaves MDT too little to run; nothing was changed." >&2
+  exit 2
 fi
-if [ "$_nproc" -le "$DEV_SUBSLICE_CPU_RESERVE_CORES" ] 2>/dev/null \
-   && { [ -z "${DEV_INTERACTIVE_CPU_QUOTA:-}" ] || [ -z "${DEV_BACKGROUND_CPU_QUOTA:-}" ] \
-     || [ -z "${DEV_GATES_CPU_QUOTA:-}" ] || [ -z "${DEV_BUILDKITD_CPU_QUOTA:-}" ]; }; then
-  echo "WARN: host has $_nproc CPU core(s), so DEV_SUBSLICE_CPU_RESERVE_CORES=$DEV_SUBSLICE_CPU_RESERVE_CORES cannot be fully reserved; child-slice auto-quotas will use their 1-core floor"
-fi
-_auto_cpu_quota() { # _auto_cpu_quota <reserve-cores> -> "<cores>00%"
-  local reserve="$1" cores
-  cores=$(( _nproc > reserve ? _nproc - reserve : 1 ))
-  echo "${cores}00%"
+MDT_RAM_BYTES="" MDT_SWAP_BYTES="" MDT_NO_DISK_SWAP="" MDT_DEV_CPU_QUOTA="" MDT_TIER_CPU_QUOTA=""
+while IFS='=' read -r _cap_key _cap_value; do
+  case "$_cap_key" in
+    MDT_RAM_BYTES|MDT_SWAP_BYTES|MDT_NO_DISK_SWAP|MDT_DEV_CPU_QUOTA|MDT_TIER_CPU_QUOTA)
+      printf -v "$_cap_key" '%s' "$_cap_value" ;;
+  esac
+done <<<"$_capacity"
+echo "MDT capacity: RAM ${MDT_RAM_BYTES}B (overcommitted across tiers), disk swap ${MDT_SWAP_BYTES}B, dev.slice CPU ${MDT_DEV_CPU_QUOTA}, tier CPU ${MDT_TIER_CPU_QUOTA}; everything else is unavailable to MDT."
+_auto_cpu_quota() { # _auto_cpu_quota dev|tier -> "<N>%"
+  if [ "$1" = dev ]; then echo "$MDT_DEV_CPU_QUOTA"; else echo "$MDT_TIER_CPU_QUOTA"; fi
 }
 # `auto` is the explicit config spelling for install-time derivation. `-`
 # means omit the directive (systemd's unlimited/default behavior); keep a
@@ -696,21 +726,21 @@ for _quota_var in DEV_CPU_QUOTA DEV_INTERACTIVE_CPU_QUOTA DEV_BACKGROUND_CPU_QUO
   esac
 done
 if [ -z "${DEV_CPU_QUOTA:-}" ] && [ "${DEV_CPU_QUOTA_UNSET:-0}" != 1 ]; then
-  DEV_CPU_QUOTA=$(_auto_cpu_quota "$DEV_CPU_RESERVE_CORES")
-  echo "dev.slice CPUQuota: auto-detected (host has $_nproc, reserving $DEV_CPU_RESERVE_CORES) -> $DEV_CPU_QUOTA"
+  DEV_CPU_QUOTA=$(_auto_cpu_quota dev)
+  echo "dev.slice CPUQuota: derived (host has $_nproc cores, MDT_EXCLUDED_CPU_CORES=${MDT_EXCLUDED_CPU_CORES:-0}) -> $DEV_CPU_QUOTA"
 fi
 for _tier_var in DEV_INTERACTIVE_CPU_QUOTA DEV_BACKGROUND_CPU_QUOTA DEV_GATES_CPU_QUOTA DEV_BUILDKITD_CPU_QUOTA; do
   _unset_var="${_tier_var}_UNSET"
   if [ -z "${!_tier_var:-}" ] && [ "${!_unset_var:-0}" != 1 ]; then
-    printf -v "$_tier_var" '%s' "$(_auto_cpu_quota "$DEV_SUBSLICE_CPU_RESERVE_CORES")"
-    echo "$_tier_var: auto-detected (host has $_nproc, reserving $DEV_SUBSLICE_CPU_RESERVE_CORES) -> ${!_tier_var}"
+    printf -v "$_tier_var" '%s' "$(_auto_cpu_quota tier)"
+    echo "$_tier_var: derived (DEV_TIER_EXCLUDED_CPU_CORES=${DEV_TIER_EXCLUDED_CPU_CORES:-0}) -> ${!_tier_var}"
   fi
 done
 
-# Swap cascade: auto-detect total host swap, then apply
-# DEV_SWAP_CASCADE_PCT (default 80%) at each level — host swap -> dev.slice's
-# own MemorySwapMax -> each child's own (same 80%, of the PARENT's derived
-# value, not of the host total again) -> the watcher's per-container
+# Swap cascade: SWAP_MDT (host swap minus the disk swap unavailable to MDT minus
+# MDT_HOST_SWAP_MARGIN) is dev.slice's own MemorySwapMax; each child's own is then
+# DEV_SWAP_CASCADE_PCT (default 80%) of the PARENT's derived
+# value, not of the host total again -> the watcher's per-container
 # MemorySwapMax (mdt-container-memory-inotify-watcher.py reads DEV_SWAP_CASCADE_PCT itself and
 # applies it a third time, of whichever child's derived value matches). Same
 # "absolute ceiling at every level" reasoning as CPU/IO above. Bytes, not a
@@ -791,8 +821,20 @@ if [ -n "${DEV_SWAP_MAX:-}" ]; then
 fi
 if [ -n "${_host_swap_bytes:-}" ] && [ "$_host_swap_bytes" -gt 0 ]; then
   if [ -z "${DEV_SWAP_MAX:-}" ] && [ "${DEV_SWAP_MAX_UNSET:-0}" != 1 ]; then
-    DEV_SWAP_MAX=$(_pct_of "$_host_swap_bytes" "$DEV_SWAP_CASCADE_PCT")
-    echo "dev.slice MemorySwapMax: auto-detected (host swap ${_host_swap_bytes}B, ${DEV_SWAP_CASCADE_PCT}%) -> ${DEV_SWAP_MAX}B"
+    if [ "${MDT_NO_DISK_SWAP:-0}" = 1 ]; then
+      echo "WARN: SwapTotal ${_host_swap_bytes}B minus MDT_EXCLUDED_SWAP minus MDT_HOST_SWAP_MARGIN is not positive: MDT gets no disk swap (dev.slice MemorySwapMax=0)." >&2
+      if [ "$CONFIRM_NO_DISK_SWAP" != 1 ]; then
+        if [ -t 0 ] && [ -t 1 ]; then
+          read -r -p "Continue with no disk swap for MDT? [y/N] " _nds_answer
+          case "$_nds_answer" in y|Y|yes|YES) ;; *) echo "ERROR: not confirmed; nothing was changed." >&2; exit 2 ;; esac
+        else
+          echo "ERROR: no terminal to confirm; re-run with --confirm-no-disk-swap to accept that MDT gets no disk swap. Nothing was changed." >&2
+          exit 2
+        fi
+      fi
+    fi
+    DEV_SWAP_MAX="$MDT_SWAP_BYTES"
+    echo "dev.slice MemorySwapMax: derived (SWAP_MDT) -> ${DEV_SWAP_MAX}B"
   fi
   for _swap_var in DEV_INTERACTIVE_MEMORY_SWAP_MAX DEV_BACKGROUND_MEMORY_SWAP_MAX DEV_GATES_MEMORY_SWAP_MAX DEV_BUILDKITD_MEMORY_SWAP_MAX; do
     _unset_var="${_swap_var}_UNSET"
@@ -1068,6 +1110,7 @@ install -m 0755 "$HERE/scripts/mdt-slice-memory-min-low-audit.py"     /usr/local
 install -m 0755 "$HERE/scripts/mdt-buildkit-guard.py"  /usr/local/sbin/mdt-buildkit-guard.py
 install -m 0755 "$HERE/../scripts/mdt_buildkit_builder.py" /usr/local/sbin/mdt-buildkit-builder.py
 install -m 0755 "$HERE/scripts/check.sh"               /usr/local/sbin/mdt-host-check.sh
+install -m 0644 "$HERE/mdt_capacity.py"                 /usr/local/sbin/mdt_capacity.py
 install -m 0755 "$HERE/scripts/docker-safe-restart.sh" /usr/local/sbin/mdt-docker-safe-restart
 install -D -m 0644 "$HERE/etc/profile.d/mdt-buildkit.sh" /etc/profile.d/mdt-buildkit.sh
 # Every way a build can start: the shim makes mdt-managed the default builder for ANY process
