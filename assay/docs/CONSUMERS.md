@@ -491,7 +491,7 @@ preflight. After it succeeds, a later observer loss or unstable before/after
 window is candidate telemetry: Assay emits one advisory line, records
 `resource_observation.status = "unobserved"` and the reason in progress and
 resume state, omits that candidate's optional `resource_limit_evidence` from
-  the v17 verdict, and continues the campaign. A PASS with an exited leader
+  the v18 verdict, and continues the campaign. A PASS with an exited leader
 remains `survived`; a PASS with a signaled leader is `crashed`. A FAIL
 without resource evidence counts as `killed` only when a current-run pytest
 failed-call witness records a normal exit status of 1 and process-tree evidence
@@ -3909,7 +3909,7 @@ never says `coverage_parsed`.
 | `candidates` | the mutation sweep's sizes are known | `candidate_total`, `selected_total`, `pending_total`, `judge_sha256` (the digest of the judge that runs the sweep; additive, B108) |
 | `shard` / `resume` | a shard was selected / records were resumed **or refused** (`resume` also gains `rejudged_total`, B091 A5 — records dropped by `--rejudge`/`--rejudge-outcome` so they re-execute; `0` on every run that passed neither flag) | `selected_total` / `resumed_total` + `rejected_total` (+ `rejudged_total`) |
 | `baseline` | the sweep's baseline record | `candidate_total` |
-| `candidate` | one candidate completed | `candidate_id`, `candidate_index`, `path`, `operator`, `outcome_bucket` (including `hung`, B091/RW-33 — see below), `elapsed_seconds`, and `tests_completed` (B091 A4/B097 — owner-process `test` count; `None` when liveness never ran, `0` when it ran and saw no owner event). Existing flat `cpu_seconds`, `peak_rss_bytes`, `phase_seconds` (`materialize`/`command`/`integrity`/`teardown`), and `startup_seconds` (`to_session_start`/`to_first_test`) remain. Additive resource fields are diagnostic and never classify a candidate: `resources: {cpu_seconds, peak_rss_bytes, write_bytes}` plus `judge_rss_bytes`. For liveness candidates, `cpu_seconds` is the maximum over 1 Hz samples of utime+stime+cutime+cstime summed over the live process tree, a lower bound; `peak_rss_bytes` is a 1 Hz lower bound on peak Σ RSS, which overcounts shared and copy-on-write pages; `write_bytes` is the maximum sampled sum of `/proc/<pid>/io` counters over the live tree, also a lower bound. If any process lacks a readable I/O counter, that sample is unknown; when no valid sample exists, `write_bytes` is `null`. `judge_rss_bytes` is a point-in-time resident-size sample of the Assay process at candidate completion. All these values are `null` when unavailable. The same measurements are stored in the candidate state's `resources` map. A witness replay that did not kill counts only in `elapsed_seconds`. Liveness lanes also write a `<events>.resources.json` sidecar next to each candidate's events file (`cpu_seconds`, `peak_rss_bytes`, `write_bytes`, `samples`, `spawned_at`, `format`) |
+| `candidate` | one candidate completed | `candidate_id`, `candidate_index`, `path`, `operator`, `outcome_bucket` (including `hung`, B091/RW-33 — see below), `elapsed_seconds`, and `tests_completed` (B091 A4/B097 — owner-process `test` count; `None` when liveness never ran, `0` when it ran and saw no owner event). `phase_seconds` (`materialize`/`command`/`integrity`/`teardown`) and `startup_seconds` (`to_session_start`/`to_first_test`) are Assay's own clock. Assay 12 (B206) removed the sampled `cpu_seconds`, `peak_rss_bytes`, `write_bytes`, `judge_rss_bytes` and the `resources` object: every resource number now comes from the cgprofile observer as `profile` (a `resource-profile/1` object: `status` `MEASURED`/`PARTIAL`/`NO_MEASUREMENT`, one `reason` when there is no measurement, `wall_seconds` from Assay's clock, `metrics`, `missing`, `observer`; see [the v17-to-v18 migration notes](#migration-notes-v17-to-v18)). `worker_count` is the workers of the invocation that ran the candidate (B203), and a `killed` candidate carries `first_failing_test` (B205; null when unknown). Profiles are diagnostic and never classify a candidate; they are also stored in the candidate state record and as one line in `profile-<lane>.jsonl` beside the progress file. A witness replay that did not kill counts only in `elapsed_seconds`. Liveness lanes also write a `<events>.resources.json` sidecar next to each candidate's events file (`format`, `spawned_at`) |
 | `end` | the mutation sweep ended, on every path out | `buckets` (per-bucket counts, now including `hung`), `reason` |
 | `verdict_written` | terminal, for every tier | `outcome`, `reason_code`, `exit_code`, `destination` |
 
@@ -3921,7 +3921,7 @@ is run-relative on every record without exception.
 To collect per-candidate measurements from a progress stream:
 
 ```bash
-jq -c 'select(.event == "candidate") | {candidate_id, resources, judge_rss_bytes}' .assay/progress-r2.jsonl
+jq -c 'select(.event == "candidate") | {candidate_id, profile}' .assay/progress-r2.jsonl
 ```
 
 **Three field names sit close together and mean three different things**, so
@@ -4049,12 +4049,12 @@ assay run <lane> --resume --rejudge-outcome hung,budget_exceeded
 - **The ids `--rejudge` takes are `candidate_id` digests, not
   `MutantOutcome.identity`.** Since verdict schema v13, every native outcome
   carries its digest and `mutation.candidate_ids` lists the complete submitted
-  scope. To rejudge the survivors in a v17 verdict, select the `candidate_id`
+  scope. To rejudge the survivors in a v18 verdict, select the `candidate_id`
   values from its `survived` array. The older tuple-shaped
   `MutantOutcome.identity` (path, span, replacement hash, operator) remains a
   separate identity and cannot be passed as an ID. A v12 verdict has no
   candidate inventory; v12 and v13 verdicts both start cold for `--reuse-from`
-  under the v17 verifier.
+  under the v18 verifier.
 - **`resume`'s own progress event gains `rejudged_total`** (above): the count
   of records dropped by either selection on this run, `0` when neither flag
   is given.
@@ -4064,7 +4064,7 @@ assay run <lane> --resume --rejudge-outcome hung,budget_exceeded
 `--reuse-from` is for a new source or test tree when ordinary `--resume` would
 correctly reject the old judge identity. A first full, native R2 run over a
 direct sequential pytest command records the first call-phase failing node for
-each killed candidate. Keep that v17 verdict. On a later commit, Assay always
+each killed candidate. Keep that v18 verdict. On a later commit, Assay always
 runs the current R0 baseline and rediscovers the current candidates before it
 uses the prior verdict. A prior kill only chooses a point to test: the current
 suite is collected in full and must fail at that same node with pytest and the
@@ -4095,7 +4095,7 @@ assay run worker_lane \
 This option does not carry forward an old outcome. New candidates and prior
 survivors, crashes, hangs, timeouts, equivalents, or kills without a usable
 witness run the full current suite. `--rejudge <id>` also forces a full run for
-that candidate. A v12 through v16 verdict is a cold start under v17:
+that candidate. A v12 through v17 verdict is a cold start under v18:
 `assay plan` marks its evidence unproven and `assay run` runs every candidate
 fully after the baseline; `assay verify` refuses all four versions. Wrapped commands, xdist,
 nonempty `PYTEST_ADDOPTS`, custom test loops, or uncertain pytest hooks also use
@@ -4188,8 +4188,8 @@ that looks like a real finding.
 
 ## Adopting a v2-capable release
 
-The current verdict schema is v17, a hard cut from v16, carried by Assay
-11.0.0. Lane schema v2 was a
+The current verdict schema is v18, a hard cut from v17, carried by Assay
+12.0.0. Lane schema v2 was a
 hard cut from v1 and remains current (no dual-version verifier, no compatibility
 shim, no upgrade-in-place — see
 [the design guide](DESIGN-GUIDE.md#snapshot-selection-an-affirmative-materialisation-boundary-not-a-sandbox-b006a)
@@ -4197,8 +4197,9 @@ for why interpreting an old lane file as if it declared the new grammar would be
 shadowing default this project forbids elsewhere). That cuts both directions at once: a v2-capable
 assay refuses a v1 lane file's now-required `[isolation]` table with
 `BAD_LANE_CONFIG`, and a v1-pinned assay cannot parse a v2 file's `[isolation]`
-table at all — it is simply an unknown key. `assay verify` rejects v16 and
-earlier verdicts on the schema version alone; see the [v16-to-v17 migration
+table at all — it is simply an unknown key. `assay verify` rejects v17 and
+earlier verdicts on the schema version alone; see the [v17-to-v18 migration
+notes](#migration-notes-v17-to-v18), the [v16-to-v17 migration
 notes](#migration-notes-v16-to-v17), the [v15-to-v16 migration
 notes](#migration-notes-v15-to-v16), and the earlier [v14-to-v15 migration
 notes](#migration-notes-v14-to-v15).
@@ -4295,6 +4296,116 @@ deadline against the judged commit. Lane schema remains v2, and cold-witness
 mode is opt-in through `assay run --cold-witness` for its supported native
 Python pytest command shape. See [Cold-witness R2 (B114)](#cold-witness-r2-b114)
 for the command and its limits.
+
+## Migration notes (v17 to v18)
+
+Verdict schema v18 is a **hard cut**, carried by Assay 12.0.0 (B206, B207,
+B208, B203 and B205). `assay verify` rejects v17 and older verdicts by schema
+version; there is no dual-version verifier or in-place upgrade. Run-Gate 24.4.0
+reads both v17 and v18 verdicts and both progress shapes below, so it is
+released first. `assay analyze campaign` still READS an archived v17 verdict
+(shape-checked, read-only evidence) and writes only the new analysis shape.
+
+**Resource numbers come only from the cgprofile observer (B206).** Assay no
+longer samples a candidate itself. Every native R2 candidate gets one
+measurement window on its root process (`window-open` right after spawn,
+`window-close` after the root exits and before it is reaped, so CPU is exact;
+observer contract 3, cgprofile 1.2.0). The reply becomes a `resource-profile/1`
+object:
+
+- progress `candidate` event key `profile`;
+- state record key `profile` (`MUTATION_STATE_SCHEMA_VERSION` stays 1);
+- one line per candidate in `profile-<lane>.jsonl` beside the progress stream
+  (`progress-<lane>.jsonl` becomes `profile-<lane>.jsonl`).
+
+The mode is `cgroup` at `--jobs 1` (exact, attributable while nothing else
+runs in the leaf) and `process-tree` above 1 (RSS and IO bytes are sampled
+lower bounds; IOPS, PSI and the cgroup peaks are `REQUIRES_CGROUP_MODE`).
+The candidate root is a child subreaper so orphaned grandchildren stay in its
+tree. `wall_seconds` is Assay's own monotonic clock and is always present.
+
+Without the observer there is no fallback and no duplicate sampler: the profile
+is `NO_MEASUREMENT`, every metric is null with its `missing` entry filled, and
+the lane runs and judges exactly as before. A missing measurement never changes
+a bucket, a verdict outcome or an exit code. The reason codes:
+
+| Code | Meaning |
+|---|---|
+| `OBSERVER_UNAVAILABLE` | `ASSAY_RESOURCE_OBSERVER_SOCKET` unset, the socket absent or not mounted |
+| `OBSERVER_REFUSED` | `peer-refused` or `observer-refused` for that candidate |
+| `OBSERVER_CONTRACT_UNSUPPORTED` | the daemon does not speak contract 3; asked once per run |
+| `OBSERVER_ERROR` | daemon error, timeout or malformed reply; after three consecutive failures the run stops asking |
+| `WINDOW_LOST` | the window was lost before close (daemon restart, expiry) |
+| `NOT_STARTED` | the candidate never ran |
+
+The daemon's per-metric reasons (`SHARED_CGROUP`, `REQUIRES_CGROUP_MODE`,
+`CONTROLLER_DISABLED`, `PEAK_RESET_UNSUPPORTED`) go in the profile's `missing`.
+A profile is `MEASURED` when every metric the mode can supply is present,
+`PARTIAL` when a metric the mode should supply is missing, and
+`NO_MEASUREMENT` when there is no metric at all. The profile also carries the
+daemon's `attribution` object (`baseline_bytes` replaces the old
+`judge_rss_bytes` in cgroup mode). The observer's version is not reported on
+the observer socket, so `observer.version` is null.
+
+Removed outright, with no alias: the progress, state and analysis keys
+`peak_rss_bytes`, `cpu_seconds`, `write_bytes`, `judge_rss_bytes`, the progress
+`resources` object, the liveness sidecar's numeric keys (it keeps `spawned_at`)
+and the `LivenessRunner` `sampler` argument. `phase_seconds` and
+`startup_seconds` stay: they are Assay's own clock. Liveness keeps only its CPU
+progress read of `/proc/<pid>/stat` for hang detection; it is never recorded.
+A source test pins that no other module reads `/proc/*/io`, `/proc/*/statm`,
+`smaps`, `memory.peak` or `io.stat`.
+
+**Verdict fields.** `judgment.r2` gains, for native R2:
+
+- `worker_counts` (B203): candidates per worker count across resumed and newly
+  executed records, e.g. `{"1": 40, "3": 16}`. `jobs` is now the campaign
+  MAXIMUM, and `attribution` derives from it. Every state record stores its
+  `worker_count`;
+- `profile` (B206): `{status_counts: {MEASURED, PARTIAL, NO_MEASUREMENT},
+  reason_counts: {<code>: n}, observer: {name, version, contracts, modes}}`.
+  `reason_counts` sums to `NO_MEASUREMENT`. No per-candidate number enters the
+  verdict: profiles are telemetry, not judgment;
+- `schedule` (B207): `{policy: canonical|tem-lpt, thresholds: {high_bytes,
+  low_bytes, high_factor, low_factor} | null, memory_budget_bytes, jobs,
+  prediction_sources: {<source>: n}, error: {rss_ratio: {p50, p95},
+  wall_ratio: {p50, p95}, class_confusion, admission_overshoots} | null}`.
+  A serial run reports `canonical`, with null thresholds and error.
+
+Every native `killed` mutant carries `first_failing_test` (B205): the node id of
+the first test the plugin reported as failed, or `null` when unknown (no plugin
+events, a collection error, a reused witness). It is also in the progress event
+and the state record, so a false kill can be attributed afterwards. It is
+forbidden on every other bucket and on ingested entries.
+
+A fragment of a parallel campaign that resumed at a different worker count:
+
+```json
+{
+  "jobs": 3,
+  "attribution": "overlap-conservative",
+  "worker_counts": {"1": 1, "3": 1},
+  "profile": {
+    "status_counts": {"MEASURED": 1, "PARTIAL": 0, "NO_MEASUREMENT": 1},
+    "reason_counts": {"OBSERVER_ERROR": 1},
+    "observer": {"name": "cgprofile", "version": null, "contracts": [3], "modes": ["cgroup", "process-tree"]}
+  }
+}
+```
+
+**Analysis and history.** `analysis-campaign` is schema 3: a candidate carries
+`profile` (null for progress written by assay 11 or earlier) instead of
+`peak_rss_bytes` and `cpu_seconds`. The scheduler's history file is
+`assay-schedule-history/2` (each entry carries a profile digest: status, reason
+and `rss_peak_bytes`); history/1 written by assay 11.x is still READ and never
+written, and full `resource-profile/1` objects are read too.
+
+**Resume.** The judge identity label advanced to `assay-judge-identity/14`: a
+state record must state its worker count, so records written by assay 11 are
+cache misses (counted as rejected on resume), never an error.
+
+`assay lanes --json` advertises the capabilities `r2-resource-profile` and
+`verdict-v18` for callers that detect the change without parsing versions.
 
 ## Migration notes (v16 to v17)
 
@@ -4432,9 +4543,11 @@ own clone, so judgments never depend on the order.
   median of its file in this run (after 5 completions), the last campaign's
   file median, the last campaign's lane median, the lane's
   `judge.mutation.prediction_wall_seconds` and `prediction_rss_bytes`, and
-  finally none (canonical order). The measurements are what assay already
-  records (`elapsed_seconds`, `peak_rss_bytes`), kept in
-  `.schedule-history.v1` in the state directory.
+  finally none (canonical order). The measurements are each candidate's own
+  wall clock and the `rss_peak_bytes` of its cgprofile profile (B206; none when
+  the profile is `NO_MEASUREMENT`, and then only the wall clock predicts), kept
+  in `.schedule-history.v1` in the state directory. History written by assay 11
+  (bare `rss_peak_bytes`) is still read; it is never written.
 - Candidates are classed by predicted RSS against the lane's own distribution:
   high above `schedule_high_factor` (default 1.5) times the p95 of the mode,
   low below `schedule_low_factor` (default 0.5) times its median.
@@ -4450,8 +4563,9 @@ own clone, so judgments never depend on the order.
   scheduled.
 - Progress candidate events carry `dispatch_position`, `prediction`
   (`rss_peak_bytes`, `wall_seconds`, `class`, `source`) and `prediction_error`
-  (`rss_ratio`, `wall_ratio`, `class_actual`, and a `reason` when a value was
-  not measured). `candidate_index` keeps its canonical meaning. State and
+  (`rss_ratio`, `wall_ratio`, `class_actual`, and a `reason`, with the
+  profile's `profile_reason` code, when a value was not measured).
+  `candidate_index` keeps its canonical meaning. State and
   progress drain by `dispatch_position`, so a killed run loses no finished
   candidate whose dispatch prefix had completed. A serial run emits none of
   these keys.
@@ -4474,12 +4588,12 @@ and by fake-executor tests; counts above 3 have not been run live on a real
 suite, so raise `jobs_max` stepwise and compare buckets against a serial replay.
 
 The run event reports this invocation's `jobs` and `attribution` (`serial` or
-`overlap-conservative`); each candidate event reports `worker_index`. Verdict
-schema v17 also stores this invocation's effective `judgment.r2.jobs` and
-`attribution`. A resumed campaign can combine candidate records produced at
-different worker counts, and those judgment fields do not aggregate across
-those records. The one-worker default applies when a native lane has no
-runtime selection.
+`overlap-conservative`); each candidate event reports `worker_index` and
+`worker_count`. Verdict schema v18 stores the campaign maximum as
+`judgment.r2.jobs` with its `attribution`, and `judgment.r2.worker_counts`
+gives the candidates per worker count: a resumed campaign can combine candidate
+records produced at different worker counts, and each record states its own.
+The one-worker default applies when a native lane has no runtime selection.
 
 ## Migration notes (v12 to v13)
 
