@@ -55,17 +55,21 @@ otherwise it is a real change and is kept, and the old frame becomes the second 
 QEMU TCG + OVMF, 2 vCPU, 3 GiB, user-mode networking, same shape as
 `scripts/debian-install-v2/testing/vm/vmctl`.
 
-WORKDIR is optional. Omitted, it is `<pwmcp dir>/artifacts/vm-lab/<vm-name>`, derived from the script's own location;
-`<vm-name>` is `$VM_NAME`, default `truenas-27.0.0-rc1-installed`. With one argument, that argument is the ISO. An ISO
-given as a bare file name (no `/`) is looked up in the downloads directory (`$MDT_DOWNLOADS_DIR`, default
-`<repo root>/downloads`); anything containing `/` is used as given. `none` boots without an ISO. Explicit
-arguments work unchanged. This VM is owned by the console-capture tooling: its installed `disk.qcow2`, `OVMF_VARS.fd`
-and `serial.log` live in the vm-lab folder above (see the repository `AGENTS.md`, "VM files and downloads").
+WORKDIR is optional. Omitted, it is the MAIN checkout's `pwmcp/artifacts/vm-lab/<vm-name>` (resolved through
+`git rev-parse --git-common-dir`, so a `.worktrees/` checkout shares the one installed disk; without git the script's
+own checkout is used, with one INFO line); `<vm-name>` is `$VM_NAME`, default `truenas-27.0.0-rc1-installed`. With one
+argument, that argument is the ISO (a directory is refused). An ISO given as a bare file name (no `/`) is looked up in
+the downloads directory (`$MDT_DOWNLOADS_DIR`, default `<main checkout>/downloads`); anything containing `/` is used
+as given. `none` boots without an ISO. Explicit arguments win. This VM is owned by the console-capture tooling (see
+the repository `AGENTS.md`, "VM files and downloads").
 
-Per run, create in WORKDIR once:
-`qemu-img create -q -f qcow2 WORKDIR/disk.qcow2 20G` and
-`cp /usr/share/OVMF/OVMF_VARS_4M.fd WORKDIR/OVMF_VARS.fd`; the script checks they and the OVMF code file exist and
-says what is missing. `VGA_DEV` defaults to `virtio-vga` (with std `VGA` the TrueNAS kernel console screendump was
+The script creates WORKDIR and copies `OVMF_VARS.fd` when missing, but never creates `disk.qcow2`: without it, it
+refuses with two options (install from scratch with `qemu-img create -q -f qcow2 WORKDIR/disk.qcow2 20G` plus the ISO,
+or reuse the installed VM from the main checkout / an explicit WORKDIR). It refuses to start while `WORKDIR/qemu.pid`
+is alive. To fork the VM, clone its disk with a reflink: `cp --reflink=always <installed>/disk.qcow2 WORKDIR/disk.qcow2`
+and pass that WORKDIR. The QMP socket is `WORKDIR/qmp.sock`; if that path would exceed 107 bytes it is placed in
+`${XDG_RUNTIME_DIR:-/tmp}/pwmcp-vm-<uid>-<key>/qmp.sock` instead; the actual path is printed on start (pass it to
+`console_capture.py --qmp`). Run it as `sh launch-truenas-vm.sh` (the file is not executable). `VGA_DEV` defaults to `virtio-vga` (with std `VGA` the TrueNAS kernel console screendump was
 garbage under QEMU 10.0.13).
 
 Resource limits: only `nice -n 19`, `ionice -c3`, `-smp 2`, `-m 3072` and `timeout 14400`. There is **no cgroup/slice cap**:
