@@ -966,7 +966,8 @@ RESOURCE_CONSUMER_KEYS = {
     "cowtree": {"mode": RESOURCE_COWTREE_MODE_VALUES},
     "vm": {"disk_cache": {"unsafe", "writeback"}},
 }
-RESOURCE_SETTING_KEYS = {"io_sync", "ram_target", "candidate_ram", *RESOURCE_CONSUMER_KEYS}
+RESOURCE_SETTING_KEYS = {"io_sync", "ram_target", "candidate_ram",
+                        "worker_ram", *RESOURCE_CONSUMER_KEYS}
 MDT_COW_ROOT_ENV_VAR = "MDT_COW_ROOT"
 EATMYDATA_LABEL = "org.vbpub.tester.eatmydata-lib"
 
@@ -1014,6 +1015,14 @@ def _validate_resource_table(table: object, where: str, scope: str,
             fail(f"{where}: 'candidate_ram' must be a size like '300m' or '4g'")
         if int(re.match(r"[0-9]+", value).group()) == 0:
             fail(f"{where}: 'candidate_ram' must be positive")
+    if "worker_ram" in table:
+        value = table["worker_ram"]
+        if scope != "lane":
+            fail(f"{where}: 'worker_ram' is lane-only")
+        if not isinstance(value, str) or not _SIZE_RE.fullmatch(value) \
+                or int(re.match(r"[0-9]+", value).group()) == 0:
+            fail(f"{where}: 'worker_ram' must be a positive size like "
+                 "'512m' or '2g'")
     if "ram_target" in table:
         value = table["ram_target"]
         if isinstance(value, str) and re.fullmatch(r"[1-9][0-9]?%|100%", value):
@@ -1138,8 +1147,12 @@ LANE_KEYS = {"kind", "environment", "argv", "assay_lane", "assay_command",
              "pins", "clean_tree", "budget", "stall_timeout", "memory",
              "description", "required_env", "artifacts", "resources",
              "profile", "exit_map", "accepts_args", "lanes", "stop_on",
-             "resource_observer", "jobs"}
+             "resource_observer", "jobs", "workers", "workers_max",
+             "xdist_safe"}
 PIN_KEYS = {"sha256", "version"}
+# RG-146: the declared argv token a lane with `workers` must carry.
+WORKERS_TOKEN = "{workers}"
+WORKERS_DEFAULT_MAX = 8
 R2_CONSERVATIVE_CANDIDATE_RAM_BYTES = 1024 * 1024 * 1024
 
 
@@ -1193,6 +1206,51 @@ def host_mode_stall_timeout_inert_reason(lane_name: str) -> str:
             f"lanes only)")
 
 
+def _validate_workers_keys(name: str, table: dict, where: str,
+                           kind: str) -> None:
+    """RG-146 load-time rules for `workers`, `workers_max`, `xdist_safe`.
+
+    The environment-dependent rules (enforced caps) need the resolved
+    environment and are checked by `configure_workers` at run time."""
+    label = f"{where} [lanes.{name}]"
+    argv = table.get("argv")
+    carries_token = isinstance(argv, list) and any(
+        isinstance(item, str) and WORKERS_TOKEN in item for item in argv)
+    present = [key for key in ("workers", "workers_max", "xdist_safe")
+               if key in table]
+    if not present:
+        if carries_token:
+            fail(f"{label}: argv carries {WORKERS_TOKEN} but the lane "
+                 "declares no 'workers'")
+        return
+    if kind != "command":
+        fail(f"{label}: {', '.join(present)} are supported only for "
+             "command lanes (pytest-xdist)")
+    if "workers" not in table:
+        fail(f"{label}: 'workers_max' and 'xdist_safe' require 'workers'")
+    workers = table["workers"]
+    if not (type(workers) is int and workers > 0) and workers != "auto":
+        fail(f"{label}: 'workers' must be a positive integer or 'auto' "
+             f"(got {workers!r})")
+    if "workers_max" in table and not (
+            type(table["workers_max"]) is int and table["workers_max"] > 0):
+        fail(f"{label}: 'workers_max' must be a positive integer "
+             f"(got {table['workers_max']!r})")
+    if "xdist_safe" in table and type(table["xdist_safe"]) is not bool:
+        fail(f"{label}: 'xdist_safe' must be a boolean")
+    if not carries_token:
+        fail(f"{label}: a lane with 'workers' must carry the declared "
+             f"{WORKERS_TOKEN} token in its argv (run-gate never rewrites "
+             "argv)")
+    if workers != 1 and table.get("xdist_safe") is not True:
+        fail(f"{label}: workers = {workers!r} requires xdist_safe = true "
+             "(the suite's isolation contract, README 'xdist workers')")
+    if type(workers) is int and workers > table.get(
+            "workers_max", WORKERS_DEFAULT_MAX):
+        fail(f"{label}: workers = {workers} exceeds workers_max "
+             f"({table.get('workers_max', WORKERS_DEFAULT_MAX)})")
+
+
 def _validate_lane(name: str, table: dict, where: str) -> None:
     _check_keys(table, LANE_KEYS, f"{where} [lanes.{name}]")
     kind = table.get("kind")
@@ -1242,6 +1300,7 @@ def _validate_lane(name: str, table: dict, where: str) -> None:
         if not (type(jobs) is int and jobs > 0) and jobs != "auto":
             fail(f"{where} [lanes.{name}]: 'jobs' must be a positive "
                  f"integer or 'auto' (got {jobs!r})")
+    _validate_workers_keys(name, table, where, kind)
     if "lanes" in table or "stop_on" in table:
         fail(f"{where} [lanes.{name}]: 'lanes' and 'stop_on' are supported "
              "only for kind = \"sequence\"")
@@ -5165,6 +5224,7 @@ def finish_run_record(record: dict, *, exit_code: int | None = None,
     record.pop("_progress_path", None)
     r2_progress_path = record.pop("_r2_progress_path", None)
     record.pop("_assay_identity_mode", None)
+    attach_workers_profiles(record)
     record.setdefault("history_eligible", False)
     # RG-35 (RW-3): a re-attached or collected run is ONE run, and its
     # duration belongs to the CONTAINER, not to the client that happened to
@@ -5195,7 +5255,12 @@ def finish_run_record(record: dict, *, exit_code: int | None = None,
     else:
         record["exit_code"] = exit_code
         verdict = record.get("verdict")
-        if verdict in ("PASS", "FAIL"):
+        if verdict == "FAIL" and record.get("reason") in WORKERS_INCONCLUSIVE:
+            record["outcome"] = "inconclusive"
+            record["excluded_reason"] = (
+                f"inconclusive ({record['reason']}): the run is not a "
+                "measurement of the commit")
+        elif verdict in ("PASS", "FAIL"):
             record["outcome"] = verdict.lower()
         elif verdict == "BUDGET_EXCEEDED":
             record["outcome"] = "budget_exceeded"
@@ -6110,9 +6175,13 @@ def _apply_record(store: dict, record: dict, keep: int) -> dict:
     # A mode changes the work performed, so one commit can have one distinct
     # measurement per io_sync value. Legacy records used strict behavior.
     io_sync = entry.get("io_sync", "strict")
+    # RG-146: likewise one measurement per xdist worker count (`None` for a
+    # lane without workers, which keeps the old key exactly).
+    workers = (entry.get("workers") or {}).get("workers")
     hist = [e for e in hist if not (
         e.get("commit") == entry["commit"]
-        and e.get("io_sync", "strict") == io_sync)]
+        and e.get("io_sync", "strict") == io_sync
+        and (e.get("workers") or {}).get("workers") == workers)]
     hist.append(entry)
     slot["history"] = hist[-keep:]
     return store
@@ -7534,6 +7603,10 @@ def lane_command_argv(lane: dict, worktree: Path,
                       base: str | None = None) -> list[str]:
     """Substitute declared argv, then append request-scoped argv literally."""
     declared = substitute_worktree(lane["argv"], worktree, base)
+    selection = lane.get("_workers_selection")
+    if selection is not None:
+        declared = [item.replace(WORKERS_TOKEN, str(selection["workers"]))
+                    for item in declared]
     return [*declared, *lane.get("_request_args", [])]
 
 
@@ -11503,6 +11576,722 @@ def record_r2_jobs_selection(record: dict, lane: dict,
         project_dir / assay_progress_rel(lane["assay_lane"]))
 
 
+# ---------------------------------------------------------------------------
+# RG-146 / RG-147 -- pytest-xdist workers for ordinary command lanes
+# ---------------------------------------------------------------------------
+
+WORKERS_DEFAULT_RAM_BYTES = 1024 * 1024 * 1024
+WORKERS_RAM_TARGET = 0.75
+WORKERS_MIN_CORE_FRACTION = 0.25
+WORKERS_TESTS_PER_WORKER = 20
+WORKERS_MIN_RUNS = 2
+WORKERS_HISTORY_WINDOW = 5
+WORKERS_PROFILE_SUBDIR = "workers"
+WORKERS_PARITY_SUBDIR = "xdist-parity"
+WORKERS_PROFILE_SUBJECTS = ("xdist-worker", "controller")
+XDIST_ISOLATION_REASON = "XDIST_ISOLATION"
+# Run-gate's verdict table is closed (PASS/FAIL/ERROR/NOT_RUN/BUDGET_EXCEEDED;
+# Assay's INCONCLUSIVE also maps to FAIL). These reasons mark a FAIL verdict
+# that is inconclusive evidence: never a PASS, never a history measurement.
+WORKERS_INCONCLUSIVE = frozenset({XDIST_ISOLATION_REASON,
+                                  "scaling-contaminated",
+                                  "no-parity-evidence"})
+# Lane keys that describe HOW MANY workers run, not what the suite is: a
+# parity proof must survive tuning them.
+WORKERS_DIGEST_EXCLUDED_KEYS = frozenset({
+    "workers", "workers_max", "budget", "description", "stall_timeout"})
+WORKERS_CLI_FLAGS = {"--workers": 1, "--scaling": 1, "--repeat": 1,
+                     "--xdist-parity": 0}
+
+
+def parse_workers_cli(value: str | None) -> int | str | None:
+    """Parse the public `--workers N|auto` request."""
+    if value is None:
+        return None
+    if value == "auto":
+        return value
+    if not re.fullmatch(r"[1-9][0-9]*", value):
+        fail("--workers must be a positive integer or 'auto' "
+             f"(got {value!r})")
+    return int(value)
+
+
+def parse_scaling_cli(value: str | None) -> list[int] | None:
+    """`--scaling 1,2,3,4`: positive integers, strictly ascending, baseline 1
+    first (every speedup and efficiency figure is relative to N=1)."""
+    if value is None:
+        return None
+    parts = value.split(",")
+    if not all(re.fullmatch(r"[1-9][0-9]*", part) for part in parts):
+        fail("--scaling must be a comma-separated list of positive integers "
+             f"(got {value!r})")
+    counts = [int(part) for part in parts]
+    if counts[0] != 1 or counts != sorted(set(counts)):
+        fail("--scaling must start at the 1-worker baseline and ascend "
+             f"strictly (got {value!r})")
+    return counts
+
+
+def parse_repeat_cli(value: str | None, counts: list[int]) -> dict[int, int]:
+    """`--repeat 1:3,*:2`: repetitions per worker count, `*` is the default
+    for every count not named (1 when absent)."""
+    explicit: dict[int, int] = {}
+    default = 1
+    for part in (value.split(",") if value else []):
+        match = re.fullmatch(r"([1-9][0-9]*|\*):([1-9][0-9]*)", part)
+        if match is None:
+            fail(f"--repeat must look like '1:3,*:2' (got {value!r})")
+        if match.group(1) == "*":
+            default = int(match.group(2))
+        elif int(match.group(1)) not in counts:
+            fail(f"--repeat names worker count {match.group(1)}, which "
+                 "--scaling does not run")
+        else:
+            explicit[int(match.group(1))] = int(match.group(2))
+    return {count: explicit.get(count, default) for count in counts}
+
+
+def nearest_rank(values: list[float], quantile: float) -> float:
+    """Nearest-rank percentile of a non-empty list."""
+    ordered = sorted(values)
+    return ordered[max(0, math.ceil(quantile * len(ordered)) - 1)]
+
+
+def distribution(values: list[float]) -> dict | None:
+    """p50 / p95 / max / n of the numeric values, None when there are none."""
+    numbers = [value for value in values
+               if isinstance(value, (int, float)) and not isinstance(value, bool)]
+    if not numbers:
+        return None
+    return {"p50": nearest_rank(numbers, 0.5), "p95": nearest_rank(numbers, 0.95),
+            "max": max(numbers), "n": len(numbers)}
+
+
+def aggregate_worker_profiles(profiles: list[dict]) -> dict | None:
+    """Fold `resource-profile/1` objects of one lane run into the history
+    fields: per-worker distributions and the controller's own numbers.
+    Profiles that are not MEASURED contribute nothing (a missing number is
+    never a zero)."""
+    workers, controller = [], None
+    tests_collected = None
+    for profile in profiles:
+        subject = profile.get("subject")
+        if (not isinstance(subject, dict) or profile.get("status") != "MEASURED"
+                or not isinstance(profile.get("metrics"), dict)):
+            continue
+        metrics = dict(profile["metrics"], wall_seconds=profile.get("wall_seconds"))
+        if subject.get("kind") == "xdist-worker":
+            workers.append(metrics)
+        elif subject.get("kind") == "controller":
+            controller = metrics
+            if type(subject.get("tests_collected")) is int:
+                tests_collected = subject["tests_collected"]
+    if not workers:
+        return None
+    per_worker = {}
+    for key in ("rss_peak_bytes", "cpu_seconds", "io_read_bytes",
+                "io_write_bytes", "wall_seconds"):
+        dist = distribution([metric.get(key) for metric in workers])
+        if dist is not None:
+            per_worker[key] = dist
+    return {
+        "per_worker": per_worker,
+        "controller": ({key: controller.get(key)
+                        for key in ("rss_peak_bytes", "cpu_seconds")}
+                       if controller else None),
+        "tests_collected": tests_collected,
+    }
+
+
+def read_worker_profiles(directory: Path) -> list[dict]:
+    """Every readable `resource-profile/1` file in the run's profile dir."""
+    profiles = []
+    for path in sorted(directory.glob("*.json")):
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            continue
+        if isinstance(document, dict) \
+                and document.get("schema") == "resource-profile/1" \
+                and (document.get("subject") or {}).get("kind") \
+                in WORKERS_PROFILE_SUBJECTS:
+            profiles.append(document)
+    return profiles
+
+
+def junit_outcomes(path: Path) -> dict[str, str] | None:
+    """`classname::name` -> passed|failed|error|skipped from a junit XML;
+    None when the file is absent or unparsable."""
+    import xml.etree.ElementTree as element_tree
+    try:
+        root = element_tree.parse(path).getroot()
+    except (OSError, element_tree.ParseError):
+        return None
+    outcomes = {}
+    for case in root.iter("testcase"):
+        outcome = "passed"
+        for child in case:
+            if child.tag in ("failure", "error", "skipped"):
+                outcome = {"failure": "failed"}.get(child.tag, child.tag)
+                break
+        outcomes[f"{case.get('classname', '')}::{case.get('name', '')}"] = outcome
+    return outcomes
+
+
+def workers_entry_is_clean(entry: dict) -> bool:
+    """SEAM for RG-144: the contamination rule owns this decision. Until it
+    lands, an entry is clean unless it already carries a flagged
+    `contamination` object. Every workers sizing basis reads entries only
+    through this function."""
+    contamination = entry.get("contamination")
+    return not (isinstance(contamination, dict)
+                and contamination.get("flagged"))
+
+
+def workers_basis_from_history(entries: list[dict]) -> dict | None:
+    """Per-worker sizing basis from clean, passing, history-eligible runs: the
+    latest scaling run alone, else the last `WORKERS_MIN_RUNS`.. runs. Stored
+    p95s cannot be recombined into a new percentile, so the highest recent
+    p95 is used (conservative, like `candidate_ram_from_history`)."""
+    usable = [entry for entry in entries
+              if entry.get("history_eligible") and entry.get("outcome") == "pass"
+              and isinstance(entry.get("per_worker"), dict)
+              and isinstance(entry["per_worker"].get("rss_peak_bytes"), dict)
+              and workers_entry_is_clean(entry)]
+    scaling = [entry for entry in usable
+               if isinstance(entry.get("workers"), dict)
+               and entry["workers"].get("scaling")]
+    chosen = scaling[-1:] if scaling else usable[-WORKERS_HISTORY_WINDOW:]
+    if not scaling and len(chosen) < WORKERS_MIN_RUNS:
+        return None
+    rss, cores, writes, controller, tests = [], [], [], [], None
+    for entry in chosen:
+        per_worker = entry["per_worker"]
+        rss.append(per_worker["rss_peak_bytes"]["p95"])
+        wall = (per_worker.get("wall_seconds") or {}).get("p50")
+        cpu = (per_worker.get("cpu_seconds") or {}).get("p50")
+        if isinstance(wall, (int, float)) and wall > 0:
+            if isinstance(cpu, (int, float)):
+                cores.append(cpu / wall)
+            write = (per_worker.get("io_write_bytes") or {}).get("p95")
+            if isinstance(write, (int, float)):
+                writes.append(write / wall)
+        ctl = (entry.get("controller") or {}).get("rss_peak_bytes")
+        if isinstance(ctl, (int, float)):
+            controller.append(ctl)
+        if type(entry.get("tests_collected")) is int:
+            tests = entry["tests_collected"]
+    return {
+        "source": "scaling" if scaling else "history",
+        "runs": len(chosen),
+        "worker_rss_p95_bytes": max(rss),
+        "controller_rss_p95_bytes": max(controller) if controller else 0,
+        "worker_core_fraction_p50": (nearest_rank(cores, 0.5)
+                                     if cores else None),
+        "worker_write_bps_p95": max(writes) if writes else None,
+        "tests_collected": tests,
+    }
+
+
+def select_workers(request: int | str, *, workers_max: int,
+                   cpu_cap: float | None = None,
+                   memory_cap_bytes: int | None = None,
+                   basis: dict | None = None,
+                   ram_default_bytes: int = WORKERS_DEFAULT_RAM_BYTES,
+                   io_write_cap_bps: float | None = None,
+                   source: str | None = None) -> dict:
+    """Pick the xdist worker count for one lane run (RG-146).
+
+    `auto` is `max(1, min(workers_max, cpu term, memory term, io term, tests
+    term))` over the clean per-worker basis; no basis, or no enforced cap,
+    selects 1 and says why. An explicit integer is honoured as asked (the
+    scaling mode must be able to probe past the formula) and every term it
+    exceeds is listed in `over_capacity`."""
+    if type(workers_max) is not int or workers_max < 1:
+        fail(f"invalid workers_max {workers_max!r}")
+    basis = basis or {}
+    worker_rss = basis.get("worker_rss_p95_bytes") or ram_default_bytes
+    core = max(WORKERS_MIN_CORE_FRACTION,
+               basis.get("worker_core_fraction_p50") or 0.0)
+    terms: dict[str, int | None] = {"workers_max": workers_max}
+    terms["cpu"] = (math.floor(cpu_cap / core) if cpu_cap else None)
+    terms["memory"] = (
+        math.floor((memory_cap_bytes * WORKERS_RAM_TARGET
+                    - basis.get("controller_rss_p95_bytes", 0)) / worker_rss)
+        if memory_cap_bytes else None)
+    write_bps = basis.get("worker_write_bps_p95")
+    terms["io"] = (math.floor(io_write_cap_bps / write_bps)
+                   if io_write_cap_bps and write_bps else None)
+    tests = basis.get("tests_collected")
+    terms["tests"] = (tests // WORKERS_TESTS_PER_WORKER
+                      if type(tests) is int else None)
+    selection = {
+        "requested": request, "source": source or "toml",
+        "workers_max": workers_max, "terms": terms,
+        "basis": basis or None, "cpu_cap": cpu_cap,
+        "memory_cap_bytes": memory_cap_bytes,
+        "worker_rss_bytes": worker_rss,
+        "worker_rss_source": ("measured p95" if basis.get(
+            "worker_rss_p95_bytes") else "declared or default"),
+        "over_capacity": [], "limit": None, "reason": None,
+    }
+    if request == "auto":
+        selection["mode"] = "auto"
+        if not basis:
+            selection.update(workers=1, limit="no-clean-profile",
+                             reason="no clean per-worker profile yet "
+                                    "(needs 2 clean runs or a --scaling run)")
+        elif cpu_cap is None or memory_cap_bytes is None:
+            selection.update(workers=1, limit="no-caps",
+                             reason="no enforced cpu and memory cap")
+        else:
+            active = {key: value for key, value in terms.items()
+                      if value is not None}
+            limit = min(active, key=lambda key: (active[key], list(terms).index(key)))
+            selection.update(workers=max(1, active[limit]), limit=limit)
+    else:
+        selection["mode"] = "explicit"
+        if request > workers_max:
+            fail(f"workers {request} exceeds workers_max ({workers_max})")
+        selection.update(workers=request)
+        selection["over_capacity"] = [
+            key for key, value in terms.items()
+            if key != "workers_max" and value is not None and request > value]
+    return selection
+
+
+def lane_config_digest(lane: dict) -> str:
+    """Digest of what makes the suite what it is (argv, environment, caps ...),
+    without the worker-count tuning keys, for the parity proof."""
+    public = {key: value for key, value in lane.items()
+              if not key.startswith("_")
+              and key not in WORKERS_DIGEST_EXCLUDED_KEYS}
+    return hashlib.sha256(json.dumps(
+        public, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def xdist_parity_path(project_dir: Path, lane_name: str) -> Path:
+    return history_dir(project_dir) / WORKERS_PARITY_SUBDIR / f"{lane_name}.json"
+
+
+def load_xdist_parity(project_dir: Path, lane_name: str, digest: str) -> str:
+    """`proven` | `stale` (config changed since the proof) | `absent`."""
+    try:
+        proof = json.loads(xdist_parity_path(
+            project_dir, lane_name).read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return "absent"
+    if not isinstance(proof, dict) or proof.get("identical") is not True:
+        return "absent"
+    return "proven" if proof.get("config_sha256") == digest else "stale"
+
+
+def store_xdist_parity(project_dir: Path, lane_name: str, digest: str,
+                       workers: int, tests: int, commit: str | None) -> Path:
+    path = xdist_parity_path(project_dir, lane_name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "schema": "xdist-parity/1", "lane": lane_name, "config_sha256": digest,
+        "workers": workers, "tests": tests, "commit": commit,
+        "identical": True,
+        "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }, sort_keys=True) + "\n", encoding="utf-8")
+    return path
+
+
+def workers_caps(lane: dict, env: dict, lane_name: str
+                 ) -> tuple[float | None, int | None, str]:
+    """(cpu cap in cores, memory cap in bytes, source) a `workers != 1` lane
+    runs under. Ephemeral lanes need an enforced memory and cpus cap; any
+    other lane needs cgprofile placement, and its caps are then unknown to
+    run-gate (auto stays at 1)."""
+    if env.get("mode") == "ephemeral":
+        resources = lane.get("resources") or {}
+        memory = resources.get("memory") or lane.get("memory")
+        cpus = resources.get("cpus") or (env.get("resources") or {}).get("cpus")
+        if not memory or not cpus:
+            fail(f"lane {lane_name!r}: workers != 1 requires enforced "
+                 "[resources] memory and cpus on an ephemeral lane (the caps "
+                 "are what the worker count is divided from)")
+        return float(cpus), parse_size_bytes(memory), "enforced lane caps"
+    if lane.get("resource_observer") != "cgprofile":
+        fail(f"lane {lane_name!r}: workers != 1 on a bare-host or exec lane "
+             "requires resource_observer = 'cgprofile' placement")
+    return None, None, "cgprofile placement; caps not visible to run-gate"
+
+
+def configure_workers(lane: dict, lane_name: str, cli_request: int | str | None,
+                      env: dict, project_dir: Path,
+                      options: dict | None = None) -> dict | None:
+    """Bind the lane/CLI/internal worker request to caps and history and store
+    the selection on the lane (`_workers_selection`, `_workers_env`)."""
+    options = options or {}
+    configured = lane.get("workers")
+    request = options.get("workers", cli_request)
+    source = "internal" if "workers" in options else (
+        "cli" if cli_request is not None else "toml")
+    if request is None:
+        request = configured
+    if configured is None:
+        if request is not None:
+            fail(f"--workers applies only to a command lane that declares "
+                 f"'workers' and the {WORKERS_TOKEN} token; lane "
+                 f"{lane_name!r} does not")
+        return None
+    if request != 1:
+        if lane.get("xdist_safe") is not True:
+            fail(f"lane {lane_name!r}: workers {request!r} requires "
+                 "xdist_safe = true")
+        cpu_cap, memory_cap, caps_source = workers_caps(lane, env, lane_name)
+    else:
+        cpu_cap, memory_cap, caps_source = None, None, "not needed for 1"
+    basis = None
+    if request == "auto":
+        store = load_history_store(history_store_path(project_dir))
+        basis = workers_basis_from_history(
+            lane_history_report(store, lane_name)["history"])
+    declared = (lane.get("resources") or {}).get("worker_ram")
+    selection = select_workers(
+        request, workers_max=lane.get("workers_max", WORKERS_DEFAULT_MAX),
+        cpu_cap=cpu_cap, memory_cap_bytes=memory_cap, basis=basis,
+        ram_default_bytes=(parse_size_bytes(declared) if declared
+                           else WORKERS_DEFAULT_RAM_BYTES),
+        source=source)
+    selection["caps_source"] = caps_source
+    digest = lane_config_digest(lane)
+    selection["parity"] = (load_xdist_parity(project_dir, lane_name, digest)
+                           if selection["workers"] > 1 else "not-needed")
+    selection["scaling"] = bool(options.get("scaling"))
+    selection["rerun"] = bool(options.get("lf"))
+    lane["_workers_selection"] = selection
+    lane["_workers_env"] = {"RUN_GATE_WORKERS": str(selection["workers"])}
+    return selection
+
+
+def disclose_workers(lane_name: str, selection: dict | None) -> None:
+    """One INFO line: the count and why, plus the parity state."""
+    if not isinstance(selection, dict):
+        return
+    why = selection["limit"] or "requested"
+    detail = f" ({selection['reason']})" if selection.get("reason") else ""
+    print(f"run-gate: xdist workers: lane={lane_name} "
+          f"N={selection['workers']} mode={selection['mode']} limit={why}"
+          f"{detail} parity={selection['parity']}", flush=True)
+    if selection["workers"] > 1 and selection["parity"] != "proven":
+        print(f"run-gate: WARNING: xdist parity is {selection['parity']} for "
+              f"lane {lane_name!r}; run `run-gate {lane_name} --xdist-parity` "
+              "to prove N=1 and N=k produce identical per-test outcomes",
+              flush=True)
+    if selection["over_capacity"]:
+        print(f"run-gate: WARNING: explicit workers {selection['workers']} "
+              f"exceeds the sizing term(s): "
+              f"{', '.join(selection['over_capacity'])}", flush=True)
+
+
+def prepare_workers_run(lane: dict, record: dict, project_dir: Path,
+                        options: dict | None = None) -> None:
+    """Create the run's profile directory and fix the lane's extra env. Called
+    once the run record (and so the run id) exists, never on a dry run."""
+    selection = lane.get("_workers_selection")
+    if selection is None:
+        return
+    options = options or {}
+    directory = (history_dir(project_dir) / WORKERS_PROFILE_SUBDIR
+                 / record["run_id"])
+    directory.mkdir(parents=True, exist_ok=True)
+    extra = [os.environ.get("PYTEST_ADDOPTS", "")]
+    junit = directory / "junit.xml" if options.get("junit") else None
+    if junit is not None:
+        extra.append(f"--junitxml={shlex.quote(str(junit))}")
+        record["_workers_junit"] = str(junit)
+    if options.get("lf"):
+        extra.append("--lf")
+    env = lane["_workers_env"]
+    env["RUN_GATE_PROFILE_DIR"] = str(directory)
+    if any(extra[1:]):
+        env["PYTEST_ADDOPTS"] = " ".join(part for part in extra if part)
+    record["_workers_profile_dir"] = str(directory)
+    record["workers"] = {key: selection[key] for key in (
+        "workers", "mode", "requested", "source", "limit", "reason",
+        "workers_max", "terms", "worker_rss_bytes", "worker_rss_source",
+        "cpu_cap", "memory_cap_bytes", "caps_source", "parity", "scaling",
+        "rerun", "over_capacity", "basis")}
+
+
+def lane_workers_env(lane: dict) -> dict[str, str]:
+    """Env a workers lane's runner exports on top of the resource env."""
+    return dict(lane.get("_workers_env") or {})
+
+
+def attach_workers_profiles(record: dict) -> None:
+    """Fold the run's per-worker profiles into the record. Tolerant by design:
+    this runs inside `finish_run_record` and must never raise."""
+    directory = record.pop("_workers_profile_dir", None)
+    junit = record.pop("_workers_junit", None)
+    if directory is None:
+        return
+    folded = aggregate_worker_profiles(read_worker_profiles(Path(directory)))
+    record["workers_profile"] = ({"status": "MEASURED"} if folded else
+                                 {"status": "NO_MEASUREMENT",
+                                  "reason": "no measured xdist worker profile"})
+    if folded:
+        record["per_worker"] = folded["per_worker"]
+        record["controller"] = folded["controller"]
+        record["tests_collected"] = folded["tests_collected"]
+    if junit is not None:
+        outcomes = junit_outcomes(Path(junit))
+        record["workers"]["junit"] = junit
+        if outcomes is not None and record.get("tests_collected") is None:
+            record["tests_collected"] = len(outcomes)
+    else:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+FAILED_TEST_RE = re.compile(r"^FAILED (\S+)", re.MULTILINE)
+
+
+def failed_tests_from_log(log_path: str | None) -> list[str]:
+    """Node ids of pytest's `FAILED ...` summary lines in the lane log."""
+    if not log_path:
+        return []
+    try:
+        text = Path(log_path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    return list(dict.fromkeys(FAILED_TEST_RE.findall(text)))
+
+
+def xdist_isolation_recheck(result: "LaneResult", lane: dict,
+                            record: dict | None, options: dict,
+                            rerun: Callable[[], "LaneResult"]
+                            ) -> "LaneResult":
+    """A test failure at N > 1 is re-run once serially (`-n 1`, `--lf`). A
+    failure that passes serially is an isolation defect, never a PASS."""
+    selection = lane.get("_workers_selection")
+    if (record is None or not selection or selection["workers"] <= 1
+            or options.get("no_recheck") or result.verdict != "FAIL"
+            or result.exit_code != 1):
+        return result
+    failed = failed_tests_from_log(record.get("log_path"))
+    print(f"run-gate: xdist recheck: {len(failed) or 'some'} test(s) failed "
+          f"at N={selection['workers']}; re-running once with 1 worker and "
+          "--lf", flush=True)
+    serial = rerun()
+    # The serial re-run is evidence for this run, not a run of its own: its
+    # record is never flushed and its profile directory is dropped.
+    discarded = (serial._record or {}).get("_workers_profile_dir")
+    if discarded:
+        shutil.rmtree(discarded, ignore_errors=True)
+    record["xdist_recheck"] = {"failed_tests": failed,
+                               "serial_verdict": serial.verdict}
+    if serial.verdict != "PASS":
+        return result
+    names = ", ".join(failed) or "(not identifiable from the log)"
+    print(f"run-gate: INCONCLUSIVE/{XDIST_ISOLATION_REASON}: failed at "
+          f"N={selection['workers']} but passed serially: {names}",
+          flush=True)
+    return LaneResult("FAIL", result.exit_code, XDIST_ISOLATION_REASON,
+                      result.log_path)
+
+
+def strip_cli_options(arguments: list[str]) -> list[str]:
+    """Drop the worker-mode flags (and their values) from a lane argv, so a
+    measurement step can re-dispatch the same invocation."""
+    out, skip = [], 0
+    for index, item in enumerate(arguments):
+        if skip:
+            skip -= 1
+            continue
+        if item == "--":
+            out.extend(arguments[index:])
+            break
+        name = item.split("=", 1)[0]
+        if name in WORKERS_CLI_FLAGS:
+            skip = 0 if "=" in item else WORKERS_CLI_FLAGS[name]
+            continue
+        out.append(item)
+    return out
+
+
+def record_contaminated(record: dict | None) -> bool:
+    """SEAM for RG-144: whether a step's measurement is contaminated."""
+    return bool(record) and not workers_entry_is_clean(record)
+
+
+def scaling_row(count: int, steps: list[dict], baseline_wall: float | None,
+                baseline_outcomes: dict | None) -> dict:
+    """One T2/T3 row from a worker count's steps (dicts with `record`,
+    `outcomes`, `contaminated`)."""
+    walls = [step["record"].get("duration_seconds") for step in steps]
+    walls = [wall for wall in walls if isinstance(wall, (int, float))]
+    wall = nearest_rank(walls, 0.5) if walls else None
+    per_worker = [step["record"].get("per_worker") or {} for step in steps]
+
+    def merged(key: str, field: str):
+        values = [(item.get(key) or {}).get(field) for item in per_worker]
+        values = [value for value in values if value is not None]
+        if not values:
+            return None
+        return nearest_rank(values, 0.5) if field == "p50" else max(values)
+
+    def lane_value(step: dict, *path: str):
+        node = step["record"].get("resources") or {}
+        for key in path:
+            node = node.get(key) if isinstance(node, dict) else None
+        return node
+
+    peaks = [lane_value(step, "memory", "peak_bytes") for step in steps]
+    peaks = [peak for peak in peaks if peak is not None]
+    stalls = [lane_value(step, "host", "memory_full_stall_seconds")
+              for step in steps]
+    stalls = [stall for stall in stalls if stall is not None]
+    speedup = (baseline_wall / wall if wall and baseline_wall else None)
+    mismatches = []
+    if baseline_outcomes is not None:
+        for step in steps:
+            outcomes = step["outcomes"] or {}
+            mismatches.extend(sorted(
+                {name for name in set(outcomes) | set(baseline_outcomes)
+                 if outcomes.get(name) != baseline_outcomes.get(name)}))
+    return {
+        "workers": count, "reps": len(steps), "wall_p50": wall,
+        "speedup": speedup,
+        "efficiency": (speedup / count if speedup is not None else None),
+        "lane_memory_peak_bytes": max(peaks) if peaks else None,
+        "rss_p50": merged("rss_peak_bytes", "p50"),
+        "rss_p95": merged("rss_peak_bytes", "p95"),
+        "rss_max": merged("rss_peak_bytes", "max"),
+        "cpu_p50": merged("cpu_seconds", "p50"),
+        "write_p95": merged("io_write_bytes", "p95"),
+        "stall_seconds": max(stalls) if stalls else None,
+        "contaminated": any(step["contaminated"] for step in steps),
+        "mismatches": sorted(set(mismatches)),
+        "identical": not mismatches,
+    }
+
+
+def _cell(value: object, fmt: str = "{:.1f}") -> str:
+    return fmt.format(value) if isinstance(value, (int, float)) \
+        and not isinstance(value, bool) else "-"
+
+
+def format_scaling_table(rows: list[dict]) -> list[str]:
+    """T2/T3: N | reps | wall p50 | speedup | efficiency | lane peak |
+    per-worker RSS p50/p95/max | CPU p50 | IO write p95 | stall |
+    contaminated | identical to N=1."""
+    header = ("N", "reps", "wall_p50_s", "speedup", "eff", "lane_peak_MiB",
+              "rss_p50_MiB", "rss_p95_MiB", "rss_max_MiB", "cpu_p50_s",
+              "write_p95_MiB", "stall_s", "contaminated", "same_as_N1")
+    mib = 1024 * 1024
+    lines = [" | ".join(header)]
+    for row in rows:
+        def scaled(key: str) -> str:
+            value = row[key]
+            return _cell(None if value is None else value / mib, "{:.0f}")
+        lines.append(" | ".join((
+            str(row["workers"]), str(row["reps"]), _cell(row["wall_p50"]),
+            _cell(row["speedup"], "{:.2f}"), _cell(row["efficiency"], "{:.2f}"),
+            scaled("lane_memory_peak_bytes"), scaled("rss_p50"),
+            scaled("rss_p95"), scaled("rss_max"), _cell(row["cpu_p50"]),
+            scaled("write_p95"), _cell(row["stall_seconds"]),
+            "yes" if row["contaminated"] else "no",
+            "yes" if row["identical"] else "NO")))
+    return lines
+
+
+def run_workers_measurement(args: argparse.Namespace, lane: dict,
+                            request_argv: list[str], project_dir: Path,
+                            commit: str | None,
+                            dispatch: Callable[..., "LaneResult"]
+                            ) -> "LaneResult":
+    """`--scaling` (RG-147) and `--xdist-parity` (RG-146): re-dispatch the same
+    invocation once per worker count, one container at a time, baseline first,
+    recording every step like an ordinary run."""
+    base_argv = strip_cli_options(request_argv)
+    if args.scaling:
+        counts = parse_scaling_cli(args.scaling)
+        repeats = parse_repeat_cli(args.repeat, counts)
+    else:
+        parity_workers = (args.workers_request
+                          if type(args.workers_request) is int
+                          else min(2, lane.get("workers_max",
+                                               WORKERS_DEFAULT_MAX)))
+        counts = [1, parity_workers]
+        repeats = {count: 1 for count in counts}
+    if lane.get("xdist_safe") is not True and counts[-1] != 1:
+        fail(f"lane {args.lane!r}: measuring workers > 1 requires "
+             "xdist_safe = true")
+    rows, failures = [], []
+    baseline_wall, baseline_outcomes = None, None
+    for count in counts:
+        steps = []
+        for _ in range(repeats[count]):
+            for _attempt in range(2):
+                step = run_workers_step(args, base_argv, count, dispatch,
+                                        scaling=bool(args.scaling))
+                if not step["contaminated"]:
+                    break
+            steps.append(step)
+            if step["result"].verdict != "PASS":
+                failures.append((count, step["result"]))
+        row = scaling_row(count, steps, baseline_wall, baseline_outcomes)
+        if count == 1:
+            baseline_wall = row["wall_p50"]
+            baseline_outcomes = steps[0]["outcomes"] or {}
+        rows.append(row)
+        if failures:
+            break
+    print(f"run-gate: {'scaling' if args.scaling else 'xdist parity'} "
+          f"results for lane {args.lane!r}", flush=True)
+    for line in format_scaling_table(rows):
+        print(line, flush=True)
+    if failures:
+        count, result = failures[0]
+        return LaneResult(result.verdict, result.exit_code,
+                          result.reason or f"step-failed-at-N={count}",
+                          result.log_path, _lane_name=args.lane)
+    mismatched = [row for row in rows if not row["identical"]]
+    if mismatched:
+        for row in mismatched:
+            print(f"run-gate: N={row['workers']} differs from N=1 in: "
+                  f"{', '.join(row['mismatches'][:20])}", flush=True)
+        return LaneResult("FAIL", None, XDIST_ISOLATION_REASON,
+                          _lane_name=args.lane)
+    if any(row["contaminated"] for row in rows):
+        return LaneResult("FAIL", None, "scaling-contaminated",
+                          _lane_name=args.lane)
+    if not args.scaling:
+        if not baseline_outcomes or counts[-1] == 1:
+            print("run-gate: no per-test junit outcomes were produced (does "
+                  "the lane run pytest?) or N=1 was the only step; no parity "
+                  "proof stored", flush=True)
+            return LaneResult("FAIL", None, "no-parity-evidence",
+                              _lane_name=args.lane)
+        path = store_xdist_parity(
+            project_dir, args.lane, lane_config_digest(lane), counts[-1],
+            len(baseline_outcomes), commit)
+        print(f"run-gate: xdist parity proven for N=1 vs N={counts[-1]} "
+              f"({path})", flush=True)
+    return LaneResult("PASS", 0, _lane_name=args.lane)
+
+
+def run_workers_step(args: argparse.Namespace, base_argv: list[str],
+                     count: int, dispatch: Callable[..., "LaneResult"],
+                     *, scaling: bool) -> dict:
+    """One measured step: dispatch at N, record it, read back its outcomes."""
+    result = dispatch(base_argv, _workers_options={
+        "workers": count, "junit": True, "scaling": scaling,
+        "no_recheck": True})
+    record = result._record or {}
+    finish(result)
+    junit = (record.get("workers") or {}).get("junit")
+    outcomes = junit_outcomes(Path(junit)) if junit else None
+    if junit:
+        shutil.rmtree(Path(junit).parent, ignore_errors=True)
+    return {"result": result, "record": record, "outcomes": outcomes,
+            "contaminated": record_contaminated(record)}
+
+
 def _assay_failure_summary(log_path: str | None,
                            progress_path: Path) -> tuple[list[tuple[str, str]],
                                                          str | None]:
@@ -14841,7 +15630,8 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         run_record.get("r2_jobs") if run_record is not None
         else lane.get("_r2_jobs_selection"))
     extra_flags = extra_mount_flags()
-    resource_env = resource_forwarded_env(resource_settings, "ephemeral")
+    resource_env = {**resource_forwarded_env(resource_settings, "ephemeral"),
+                    **lane_workers_env(lane)}
     preload_file = None
     preload_flags = []
     if resource_settings.get("io_sync") == "relaxed":
@@ -15246,7 +16036,8 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
         value = os.environ.get(key)
         if value:
             argv += ["-e", f"{key}={value}"]
-    resource_env = resource_forwarded_env(resource_settings or {}, "exec")
+    resource_env = {**resource_forwarded_env(resource_settings or {}, "exec"),
+                    **lane_workers_env(lane)}
     for key, value in resource_env.items():
         argv += ["-e", f"{key}={value}"]
     # RG-55/contract Sec 4.1: same position, same rule as the ephemeral path.
@@ -15729,7 +16520,8 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
             else lane_command_argv(lane, worktree, request_base))
     print(f"run-gate: {installed_version()} | lane {lane_name} | env {env_source}",
           flush=True)
-    resource_env = resource_forwarded_env(resource_settings or {}, "host")
+    resource_env = {**resource_forwarded_env(resource_settings or {}, "host"),
+                    **lane_workers_env(lane)}
     log_resource_forwarded_env(resource_env)
     if lane.get("kind") == "assay":
         assure_assay_state_root(
@@ -16898,7 +17690,8 @@ def _dispatch_sequence(name: str, lane: dict, args: argparse.Namespace,
 
 def _dispatch(argv: list[str] | None = None, *,
               _admission_ticket=None,
-              _admission_managed: bool = False) -> LaneResult:
+              _admission_managed: bool = False,
+              _workers_options: dict | None = None) -> LaneResult:
     parser = RunGateArgumentParser(add_help=False, prog=PROG)
     parser.add_argument("lane", nargs="?")
     parser.add_argument("target", nargs="?")
@@ -16920,6 +17713,18 @@ def _dispatch(argv: list[str] | None = None, *,
                         "{base} token")
     parser.add_argument("--jobs", metavar="N|auto",
                         help="native R2 assay worker count; positive N or auto")
+    parser.add_argument("--workers", metavar="N|auto", default=None,
+                        help="RG-146: xdist worker count for a command lane "
+                             "that declares `workers` and the {workers} token")
+    parser.add_argument("--scaling", metavar="N,N,..", default=None,
+                        help="RG-147: run the lane at each worker count "
+                             "(baseline 1 first) and print the scaling table")
+    parser.add_argument("--repeat", metavar="N:R,*:R", default=None,
+                        help="--scaling only: repetitions per worker count")
+    parser.add_argument("--xdist-parity", action="store_true",
+                        help="RG-146: run N=1 and N=k (--workers k, default "
+                             "2), compare per-test outcomes and store the "
+                             "proof keyed by the lane config digest")
     parser.add_argument("--io-sync", choices=("strict", "relaxed"),
                         help="per-invocation fsync policy override; relaxed runs "
                              "are excluded from history")
@@ -16996,6 +17801,29 @@ def _dispatch(argv: list[str] | None = None, *,
         args = parser.parse_args(parse_argv)
         args.lane_args = lane_args
         args.jobs_request = parse_r2_jobs_cli(args.jobs)
+        args.workers_request = parse_workers_cli(args.workers)
+        workers_modes = [flag for flag, given in (
+            ("--workers", args.workers is not None),
+            ("--scaling", args.scaling is not None),
+            ("--repeat", args.repeat is not None),
+            ("--xdist-parity", args.xdist_parity)) if given]
+        if workers_modes and (
+                args.lane is None or args.lane in _NO_LANE_FACT_VERBS
+                or args.lane in {"doctor", "history", "footprint",
+                                 "validate-pointers", "migrate-modes",
+                                 "admission", "status"}
+                or args.list or args.check_env):
+            fail(f"{', '.join(workers_modes)} apply to a lane run only")
+        if args.scaling is not None or args.xdist_parity:
+            if args.scaling is not None and args.xdist_parity:
+                fail("--scaling and --xdist-parity are separate modes")
+            if args.scaling is not None and args.workers is not None:
+                fail("--scaling names its own worker counts; drop --workers")
+            if args.json or args.dry_run or args.fresh or lane_args:
+                fail("--scaling and --xdist-parity accept no --json, "
+                     "--dry-run, --fresh or selective arguments")
+        if args.repeat is not None and args.scaling is None:
+            fail("--repeat applies to --scaling only")
         if args.io_sync is not None or args.cow is not None:
             if (args.lane is None or args.lane in _NO_LANE_FACT_VERBS
                     or args.lane in {"doctor", "history", "footprint",
@@ -17431,6 +18259,15 @@ def _dispatch(argv: list[str] | None = None, *,
         r2_jobs_selection = configure_r2_jobs(
             lane, args.lane, args.jobs_request, resource_settings, env,
             env_source, repo, worktree, eff_proj)
+        workers_options = _workers_options or {}
+        if args.scaling is not None or args.xdist_parity:
+            return run_workers_measurement(
+                args, lane, request_argv, eff_proj, head_commit(worktree),
+                _dispatch)
+        workers_selection = configure_workers(
+            lane, args.lane, args.workers_request, env, eff_proj,
+            workers_options)
+        disclose_workers(args.lane, workers_selection)
         if lane.get("_selective_assay"):
             selected = lane["_selective_assay"]
             if selected.get("reuse_from") is not None:
@@ -17465,6 +18302,7 @@ def _dispatch(argv: list[str] | None = None, *,
             record["resource_settings"] = resource_settings
             record["resource_sources"] = resource_sources
             record_r2_jobs_selection(record, lane, r2_jobs_selection, eff_proj)
+            prepare_workers_run(lane, record, eff_proj, workers_options)
             image_selection = image_selection_record(
                 env, lane_environment_name(lane), env_source,
             )
@@ -17771,7 +18609,14 @@ def _dispatch(argv: list[str] | None = None, *,
         elif lane["kind"] == "assay":
             result = LaneResult("PASS" if code == 0 else "FAIL", code)
         else:
-            result = command_lane_result(code, lane)
+            result = xdist_isolation_recheck(
+                command_lane_result(code, lane), lane, record,
+                workers_options,
+                lambda: _dispatch(
+                    request_argv, _admission_ticket=_admission_ticket,
+                    _admission_managed=_admission_managed,
+                    _workers_options={**workers_options, "workers": 1,
+                                      "lf": True, "no_recheck": True}))
         if (lane["kind"] == "assay" and not args.dry_run
                 and result.verdict != "PASS"):
             _report_failed_assay(args.lane, record, eff_proj, repo, lane,

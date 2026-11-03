@@ -33,6 +33,28 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 - `r2_candidate_ram_p95_bytes` / `r2_candidate_ram_samples` and the history
   duration and resource medians are computed from clean profiles only.
 
+- RG-146: lane keys `workers` (int or `"auto"`), `workers_max` and
+  `xdist_safe` for pytest-xdist command lanes, with the `{workers}` argv token
+  and `RUN_GATE_WORKERS`; enforced cpu and memory caps (or cgprofile placement)
+  required for `workers != 1`; `auto` sized from clean per-worker history
+  (latest scaling run or the last two or more runs) with a declared
+  `resources.worker_ram` or 1 GiB fallback; per-worker numbers and the
+  selection stored in history entries; a serial recheck that reports a failure
+  that only occurs at N > 1 as `XDIST_ISOLATION` (verdict FAIL, history outcome
+  `inconclusive`); `--workers N|auto`; `--xdist-parity` with a stored proof;
+  the `run_gate_profile` pytest plugin shipped in the wheel (pytest11 entry
+  point).
+- RG-147: `--scaling N,N,.. [--repeat N:R,*:R]` measurement mode that runs
+  the baseline first, repeats a contaminated step once, and prints the
+  speedup/efficiency/per-worker-memory table.
+
+### Changed
+- History keeps one entry per commit, io_sync and xdist worker count (was per
+  commit and io_sync), so scaling steps do not overwrite each other.
+- Seams for RG-144/RG-145: `workers_entry_is_clean` and `record_contaminated`
+  read a `contamination` object on history entries; profile ingestion beyond
+  the plugin's own files is RG-145's.
+
 <!-- cmru: release history -->
 
 ## [24.3.0] - 2026-11-02

@@ -1786,7 +1786,8 @@ class TestRG78ClosedExitTable:
                    and isinstance(node.value.func, ast.Name)
                    and node.value.func.id in {"LaneResult", "operation_result",
                                               "_dispatch_sequence",
-                                              "_dispatch_admission"}
+                                              "_dispatch_admission",
+                                              "run_workers_measurement"}
                    for node in dispatch_returns)
         sequence = next(node for node in tree.body
                         if isinstance(node, ast.FunctionDef)
@@ -12392,7 +12393,9 @@ class TestWheelPackaging:
         assert scm["git_describe_command"][-2:] == ["--match", "run-gate-v*"]
         assert proj["scripts"] == {"run-gate": "run_gate:main"}
         assert cfg["tool"]["setuptools"]["py-modules"] == [
-            "run_gate", "run_gate_admission"]
+            "run_gate", "run_gate_admission", "run_gate_profile"]
+        assert cfg["project"]["entry-points"]["pytest11"] == {
+            "run_gate_profile": "run_gate_profile"}
         assert proj["dependencies"] == []
         assert (RUN_GATE_DIR / "run_gate.py").is_file()
         assert not (RUN_GATE_DIR / "run-gate.py").exists()

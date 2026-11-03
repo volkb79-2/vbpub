@@ -22,9 +22,14 @@ dynamic = ["version"]
 [project.scripts]
 run-gate = "run_gate:main"
 
+# RG-146: per-process resource profiles for xdist lanes (inert unless
+# RUN_GATE_PROFILE_DIR is set).
+[project.entry-points.pytest11]
+run_gate_profile = "run_gate_profile"
+
 [tool.setuptools]
 # The installed console entrypoint imports this regular Python module.
-py-modules = ["run_gate", "run_gate_admission"]
+py-modules = ["run_gate", "run_gate_admission", "run_gate_profile"]
 
 # Version comes from SemVer git tags, resolved against the enclosing checkout
 # (root = ".."): the release transaction always builds from a worktree whose
