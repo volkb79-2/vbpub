@@ -14,6 +14,13 @@ from ciu import cli, composefile, deploy, worktree
 from ciu.worktree import WorktreeError
 
 
+@pytest.fixture(autouse=True)
+def _no_instance_record_seed(monkeypatch):
+    """These tests stub the verb bodies; CIU-139's seeding has its own tests
+    (test_ciu_resolve_unprimed_env.py) against a real generated record."""
+    monkeypatch.setattr(cli, "_seed_selected_root_env", lambda _root: None)
+
+
 @pytest.fixture
 def resolvable_repo(tmp_path, monkeypatch):
     repo = tmp_path / "repo"

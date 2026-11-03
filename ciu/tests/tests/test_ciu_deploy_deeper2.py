@@ -32,7 +32,9 @@ def test_graph_rejects_malformed_reference_instead_of_publishing_it(monkeypatch,
     assert deploy.action_graph(
         tmp_path, _profile(), [{"path": "applications/api"}], rendered, fmt="json"
     ) == 2
-    assert "applications/api" in capsys.readouterr().out
+    captured = capsys.readouterr()
+    assert "applications/api" in captured.err
+    assert captured.out == ""
 
 
 def test_graph_emits_machine_readable_edges_for_valid_rendered_topology(tmp_path, capsys):

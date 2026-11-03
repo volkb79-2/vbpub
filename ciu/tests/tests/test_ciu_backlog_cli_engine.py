@@ -12,6 +12,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from ciu import cli, deploy, engine  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _no_instance_record_seed(monkeypatch):
+    """These tests stub the verb bodies; CIU-139's seeding has its own tests
+    (test_ciu_resolve_unprimed_env.py) against a real generated record."""
+    monkeypatch.setattr(cli, "_seed_selected_root_env", lambda _root: None)
+
+
 def test_resolve_cli_requires_json_and_emits_document(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli, "_resolve_repo_root_deploy", lambda _root: tmp_path)
     seen = {}

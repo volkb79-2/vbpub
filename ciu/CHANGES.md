@@ -91,6 +91,11 @@ the technical detail below it.
 
 ## [Unreleased]
 
+### Fixed
+- CIU-144: the CIU-117 worktree image-scoping notice now goes to stderr, so `ciu resolve --json` and `ciu check --json` keep stdout to one JSON document in a linked worktree whose stack declares `build:`.
+- CIU-86: `ciu graph --format json` (every format) writes its own notices and validation errors to stderr; stdout carries only the graph (S13.5).
+- CIU-139: `ciu resolve` and `ciu exec` seed identity and machine facts from the selected root's instance record (as `ciu up`/`check` do), so they work in an unprimed shell and from any cwd with `--root-folder`; a root with no record refuses naming `ciu env generate`.
+
 ## [7.18.0] - 2026-10-28
 <!-- cmru: generated -->
 <!-- cmru: source-end=2fa170b29ef870cd8e985d5ea895a1b87423ce98 -->

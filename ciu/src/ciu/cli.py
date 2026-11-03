@@ -1773,6 +1773,27 @@ def _worktree_exec(rest: list[str], resolve_repo_root) -> int:
     return wt_mod.exec_instance(repo_root, logical_name, argv)
 
 
+def _seed_selected_root_env(define_root: Path | None) -> None:
+    """Seed this process from the selected root's instance record (CIU-139).
+
+    `resolve` and `exec` render Compose, so they need the same identity and
+    machine facts `ciu up`/`check` get from ``bootstrap_workspace_env``; an
+    unprimed shell must not be a failure. The bootstrap is read-only: a root
+    with no record refuses naming the file and `ciu env generate`.
+    """
+    from .config_constants import GLOBAL_CONFIG_DEFAULTS as _defaults
+    from .workspace_env import REQUIRED_KEYS_CORE, bootstrap_workspace_env
+
+    bootstrap_workspace_env(
+        start_dir=Path.cwd(),
+        define_root=define_root,
+        defaults_filename=_defaults,
+        generate_env=False,
+        update_cert_permission=False,
+        required_keys=REQUIRED_KEYS_CORE,
+    )
+
+
 def _resolve_identities_cli(rest: list[str]) -> int:
     """CLI adapter for the read-only ``ciu resolve`` data surface."""
     define_root, rest = _extract_define_root(rest)
@@ -1789,6 +1810,7 @@ def _resolve_identities_cli(rest: list[str]) -> int:
     repo_root = _resolve_repo_root_deploy(define_root)
     from .deploy import resolve_identities
     try:
+        _seed_selected_root_env(define_root)
         document = resolve_identities(
             repo_root,
             stack=opts.stack,
@@ -1830,6 +1852,7 @@ def _exec_service_cli(rest: list[str]) -> int:
     repo_root = _resolve_repo_root_deploy(define_root)
     from .deploy import exec_service
     try:
+        _seed_selected_root_env(define_root)
         return exec_service(
             repo_root, opts.selector, command_args, profiles=opts.profile
         )

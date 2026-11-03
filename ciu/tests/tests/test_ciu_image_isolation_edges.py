@@ -541,7 +541,10 @@ def test_scope_worktree_image_check_accepts_explicit_primary_map_and_no_change(
         check_primary_image_map=True,
     )
     assert "team/app:dev-id" in result
-    assert "suffix 'id'" in capsys.readouterr().out
+    captured = capsys.readouterr()
+    # CIU-144: the notice moved to stderr (not vanished); stdout stays clean.
+    assert "suffix 'id'" in captured.err
+    assert "[CIU-117]" not in captured.out
     assert engine.scope_worktree_compose_images(tmp_path, result) == result
 
 
