@@ -10679,6 +10679,11 @@ backlog prose).
 - Handoff: `assay/nyxloom-trove/handoffs/assay-P35-execution-interruption-boundary.md`
   on branches `assay-next-wave` (carved), `assay-b099-p35-repair` (repair
   attempt), and `review/assay-p35-execution-interruption-boundary` (review).
+- Archive (2026-11-04): the local branch `assay-b099-p35-repair` was removed
+  in the worktree close-out (operator Q6, B103 stays archived); its tip is
+  preserved as the git tag `archive/assay-b099-p35-repair` (siblings
+  `archive/assay-next-wave`, `archive/assay-p35-execution-interruption-review`).
+  Read the design with `git show archive/assay-b099-p35-repair:<path>`.
 - Branch commits of interest: `bcb70320` (carve interruption receipt
   boundary), `c132d598` (reserve next interruption package id), `40b2106e`
   (repair P35 interruption handoff), `6d34f0d7` (close P35 residual handoff
