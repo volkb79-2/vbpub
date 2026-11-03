@@ -41,22 +41,37 @@ Like every ciu root, run `ciu up` from the main checkout path (S16.3 refuses to 
 worktree whose project does not yet exist in the primary checkout). A bare `ciu up` selects
 nothing: always pass `--dir`.
 
-## Images (freshness rule)
+## Images (freshness rule, with a recorded exception)
 
-`stable-11031`, all four images, pinned `tag@sha256` (manifest digests verified with
-`docker buildx imagetools inspect`, 2026-11-04). Pushed to Docker Hub 2026-06-08 (149 days old).
-It is the **newest stable tag Docker Hub carries**: GitHub has `stable-11248-3` (2026-11-02),
-`stable-11248-1/-2` (2026-10-22/23) and `stable-11146-*` (2026-08), but Hub has no such tags, so
-they cannot be pulled. Re-check Hub when revisiting; bump `image_tag` and `image_date`
-together (a test enforces digest pinning and the 14-day rule against `checked_on`).
+`ghcr.io/jitsi/{web,prosody,jicofo,jvb}:stable-11248-3`, pinned `tag@sha256` manifest-list digests
+(`docker buildx imagetools inspect`, 2026-11-04; image build 2026-11-02). **14-day exception:** the
+release is 2 days old; the operator explicitly prefers it for its security fixes (decision 2026-11-04;
+`[jitsi.images] freshness_exception` in the defaults, enforced by the test). Docker Hub has no
+`stable-11248*` tags (404), the official images are on GHCR. The previous pin was Hub
+`stable-11031` (2026-06-08).
+
+stable-11248 changed the image contract, which the templates follow: images run as the unprivileged user
+`s6` (uid 1000, no chown of `/config`; hostdirs are `1000:1000` 0750), `/run` and `/tmp` are tmpfs (the
+`/run` tmpfs needs `uid=1000,gid=1000`, upstream's `mode=1750` root-owned tmpfs is not writable for `s6`),
+nginx listens on 8000 (not 80), prosody renders its config into `/run/prosody/config` and stores
+accounts in `/var/lib/prosody` (hostdir `vol-prosody-data`). Still no TCP harvester for media.
 
 ## Verified (2026-11-04)
 
-Host-side smoke, see `/home/vscode/vbpub-release-program-20261027/reports/JITSI-PROJECT-REPORT.md`:
-all four containers up (web, jvb, prosody healthy), prosody `internal_hashed` auth, 4 accounts
-registered idempotently, `https://jitsi.<domain>/` served through the edge with a valid
-certificate, conference page loads (pre-join), XMPP websocket upgrades (101) through the edge.
-Not verifiable from the host: UDP 10000 reachability from outside and a real multi-party call.
+Started with `ciu up --dir voice-screen-share/jitsi-server -y` from the main checkout; all four containers
+healthy; through the edge, `https://jitsi.<domain>/` answers 200 over HTTP/2 with a valid Let's Encrypt
+chain, `/xmpp-websocket` upgrades (101), the pre-join page renders (pwmcp). From a second host (other
+public IP): HTTPS, WebSocket, and UDP 10000 packets all arrive at the host and are forwarded to the jvb
+container (iptables DNAT/FORWARD counters). JVB (ice4j single-port harvester) answers STUN only for a
+known ICE ufrag, so a bare STUN request gets no reply even locally: reachability is shown by the counters,
+media by a real multi-party call (still manual).
+
+## devcontainer note (ciu defect)
+
+In a devcontainer `ciu up` stops at S6.5 ("root helper cgroup parent ... is not verified loaded: systemd
+is not PID 1") as soon as a hostdir needs an owner other than the operator. Workaround used: create
+`vol-*-config` and `vol-prosody-data` once, `chown 1000:1000` / `chmod 0750` them with a one-shot root
+container, then `ciu up` accepts them (S6.3). Filed in the ciu backlog.
 
 ## Tests
 

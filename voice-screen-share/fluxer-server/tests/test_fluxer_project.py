@@ -132,8 +132,8 @@ def test_no_live_edge_routers_and_own_router_name() -> None:
     assert text.count("traefik.http.routers.fluxer-vss.") == 2
 
 
-def test_not_routed_through_the_edge_by_default() -> None:
-    cfg = _cfg()
+def test_not_routed_through_the_edge_when_disabled() -> None:
+    cfg = _cfg(expose_public=False)
     assert cfg["expose_public"] is False
     yaml = pytest.importorskip("yaml")
     doc = yaml.safe_load(_render(COMPOSE, fluxer=cfg))

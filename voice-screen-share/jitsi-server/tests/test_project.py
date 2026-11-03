@@ -43,6 +43,8 @@ def _compose_text() -> str:
     # hostdir values are injected by ciu at render time; stand-ins here.
     for svc in ("web", "prosody", "jicofo", "jvb"):
         cfg[svc]["hostdir"] = {"config": f"/tmp/vol-{svc}-config"}
+        if svc == "prosody":
+            cfg[svc]["hostdir"]["data"] = "/tmp/vol-prosody-data"
     cfg["container_prefix"] = "jitsi-test"
     return _render(COMPOSE, {"jitsi": cfg})
 
@@ -212,10 +214,13 @@ def test_images_pinned_by_digest_and_at_least_14_days_old() -> None:
     checked = dt.date.fromisoformat(cfg["images"]["checked_on"])
     for svc in ("web", "prosody", "jicofo", "jvb"):
         s = cfg[svc]
-        assert s["image"].startswith("jitsi/")
+        assert s["image"].startswith(("jitsi/", "ghcr.io/jitsi/"))
         assert re.fullmatch(r"stable-\d+(-\d+)?@sha256:[0-9a-f]{64}", s["image_tag"]), svc
         age = (checked - dt.date.fromisoformat(s["image_date"])).days
-        assert age >= cfg["images"]["min_age_days"], svc
+        if not cfg["images"].get("freshness_exception"):
+            assert age >= cfg["images"]["min_age_days"], svc
+        else:
+            assert cfg["images"]["freshness_exception_reason"], svc
     # all four from the same release
     assert len({cfg[s]["image_tag"].split("@")[0] for s in ("web", "prosody", "jicofo", "jvb")}) == 1
 

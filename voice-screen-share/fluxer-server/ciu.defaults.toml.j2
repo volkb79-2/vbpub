@@ -14,17 +14,17 @@
 #     (documented consumer pattern, tls-edge/docs/CONSUMERS.md), with its OWN
 #     host name and certificate.
 #   - No hard-coded domain: public_host derives from $PUBLIC_FQDN and can be
-#     overridden; expose_public defaults to false until the operator has a DNS
-#     record for public_host and decides to route it through the live edge.
+#     overridden; expose_public is true (operator decision 2026-11-04: wildcard
+#     DNS covers public_host, tls-edge ACME issues its certificate).
 [fluxer]
 name = "fluxer"
 container_prefix = "{% if deploy is defined %}{{ deploy.project_name }}-{{ deploy.environment_tag }}{% else %}fluxer{% endif %}"
 # Own host name (own certificate issued by tls-edge). Override per host.
 public_host = "fluxer.{{ env.PUBLIC_FQDN }}"
-# false: nothing is routed through tls-edge (the stack answers only on its own
-# network; reach it with `docker exec`). true: the Caddy `edge` service joins
+# true (default since 2026-11-04): the Caddy `edge` service joins
 # `ingress_network` and carries the Traefik labels for public_host.
-expose_public = false
+# false: nothing is routed through tls-edge (reach it with `docker exec`).
+expose_public = true
 ingress_network = "ingress_public"
 # Public URL parts the clients are told (behind tls-edge: https on 443).
 public_scheme = "https"

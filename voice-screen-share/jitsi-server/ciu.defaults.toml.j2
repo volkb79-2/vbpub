@@ -28,55 +28,58 @@ ingress_network = "ingress_public"
 # Edge router/service name: unique across the host (CONSUMER_GUIDE naming rule).
 router_name = "vss-jitsi-web"
 
-# ── Images (third-party; freshness rule: newest release >= 14 days old) ─────
-# Checked 2026-11-04 against Docker Hub. stable-11031 (pushed 2026-06-08, 149
-# days old) is the NEWEST stable tag Docker Hub carries for all four images;
-# GitHub has newer docker-jitsi-meet releases (stable-11248-3 on 2026-11-02,
-# stable-11248-1/-2 on 2026-10-22/23) but Hub has no such tag, so they cannot
-# be pulled and are not used. Tag pinned with the multi-arch manifest digest
-# (verified with `docker buildx imagetools inspect`, 2026-11-04). Re-check
-# Hub for a newer stable-* tag when this is revisited.
+# ── Images (third-party; official GHCR images, operator exception to the 14-day rule) ──
+# stable-11248-3 (docker-jitsi-meet release 2026-11-02; image build 2026-11-02) is the
+# newest stable release. Docker Hub has no such tag (jitsi/web:stable-11248-3 is 404),
+# the official images are on GHCR (ghcr.io/jitsi/*). It is only 2 days old: the
+# operator explicitly prefers it for security fixes (decision 2026-11-04), so the
+# 14-day rule is waived for this pin (freshness_exception). Pinned tag@manifest-list
+# digest (docker buildx imagetools inspect, 2026-11-04). Previous pin stable-11031
+# (Hub, 2026-06-08) remains the fallback.
 [jitsi.images]
 checked_on = "2026-11-04"
 min_age_days = 14
+freshness_exception = true
+freshness_exception_reason = "operator preference for security fixes, 2026-11-04; stable-11248-3 is 2 days old"
 
 [jitsi.web]
 name = "web"
-image = "jitsi/web"
-image_tag = "stable-11031@sha256:2183593bbbe1b5e27c368e3737efc51915ce7742de93f594e5ca7950c864c233"
-image_date = "2026-06-08"
-port = 80
+image = "ghcr.io/jitsi/web"
+image_tag = "stable-11248-3@sha256:f2b3f749deb9b9d6d5b96cba50dc67f9c23a218af4fa13c63a7f17812ce4e147"
+image_date = "2026-11-02"
+# stable-11248+ nginx listens on 8000 (HTTP) / 8443 (TLS) inside the container.
+port = 8000
 mem_limit = "256m"
 mem_swap_limit = "1g"
 cpus = "0.5"
 
 [jitsi.prosody]
 name = "prosody"
-image = "jitsi/prosody"
-image_tag = "stable-11031@sha256:926c508c0d9198bf9d0b6adb88ce9092461e9a79e2895fb57fe4ef5f44ff3523"
-image_date = "2026-06-08"
+image = "ghcr.io/jitsi/prosody"
+image_tag = "stable-11248-3@sha256:3f1943334f2c07244d2f2ec582fa7b59e226d461ef97db267f0a92cbba13b968"
+image_date = "2026-11-02"
 mem_limit = "256m"
 mem_swap_limit = "1g"
 cpus = "0.5"
 
 [jitsi.jicofo]
 name = "jicofo"
-image = "jitsi/jicofo"
-image_tag = "stable-11031@sha256:1f78fb0c0548ae5efd83a2b488df6aabbae4a70bc6f64c74395b6937b3aceb98"
-image_date = "2026-06-08"
+image = "ghcr.io/jitsi/jicofo"
+image_tag = "stable-11248-3@sha256:b934149573661e2d8e020e47bd81521263a7289de5fb38ba7da95d5b70933cd2"
+image_date = "2026-11-02"
 mem_limit = "512m"
 mem_swap_limit = "1g"
 cpus = "0.5"
 
 [jitsi.jvb]
 name = "jvb"
-image = "jitsi/jvb"
-image_tag = "stable-11031@sha256:3460de3541a8f96d007b8f2b4681ea8321cae64c17387338eabf776e73cd0f51"
-image_date = "2026-06-08"
+image = "ghcr.io/jitsi/jvb"
+image_tag = "stable-11248-3@sha256:d8e100c3573d0935aaa93b02daaa7f74d172042f2518c5f7e6036125c1d4ba7e"
+image_date = "2026-11-02"
 # Media port, published on the HOST (UDP). Owned by this project in the
 # voice-screen-share port plan; it must stay equal to the README port row.
 port = 10000
-# No TCP media fallback: the stable-11031 jvb image's config template has no
+# No TCP media fallback: the stable-11248-3 jvb image's config template has no
 # TCP harvester settings (checked 2026-11-04), and the edge has no raw-TCP
 # entrypoint for one. Clients that cannot use UDP 10000 cannot get media.
 mem_limit = "1g"
@@ -142,27 +145,25 @@ user_dummy3 = { directive = "GEN_LOCAL:jitsi/user_dummy3", mode = "0600", consum
 post_compose = ["hooks/post_compose_users.py"]
 
 # ── Hostdirs (S6): config for each service; no database ─────────────────────
-# The images start as root (s6) and chown /config to their own service user on
-# first start (measured 2026-11-04: prosody 100:994 [group unchanged], jicofo
-# 999:1000, jvb 998:1000; web leaves it alone). A later `ciu up` then fails
-# S6.3 ("existing hostdir has incompatible ownership") unless the declaration
-# states those values, so they are declared. They are image-defined uids.
-# Modes: prosody/jicofo/jvb 0750 (owner = the service uid declared here, so the
-# service keeps rwx; group r-x; no world access: these dirs hold account
-# records and rendered component/auth secrets). web 0755: its /config holds
-# only nginx/Meet frontend config (no secrets) and nginx workers run as a
-# different user than the directory owner, so world r-x is kept (USERS.md).
+# stable-11248+ images run as the unprivileged user `s6` (uid/gid 1000) and no
+# longer chown /config themselves (measured 2026-11-04), so every config dir is
+# declared 1000:1000, mode 0750 (owner rwx, group r-x, no world access: the
+# dirs hold account records and rendered component/auth secrets). Stable-11031
+# images started as root and used 100/999/998 here; on an upgrade re-own the
+# existing vol-* dirs to 1000:1000 first.
 [jitsi.web.hostdir]
-config = { path = "", mode = "0755" }
+config = { path = "", uid = 1000, gid = 1000, mode = "0750" }
 
 [jitsi.prosody.hostdir]
-config = { path = "", uid = 100, mode = "0750" }
+config = { path = "", uid = 1000, gid = 1000, mode = "0750" }
+# Account store (/var/lib/prosody); persists registered users across recreation.
+data = { path = "", uid = 1000, gid = 1000, mode = "0750" }
 
 [jitsi.jicofo.hostdir]
-config = { path = "", uid = 999, gid = 1000, mode = "0750" }
+config = { path = "", uid = 1000, gid = 1000, mode = "0750" }
 
 [jitsi.jvb.hostdir]
-config = { path = "", uid = 998, gid = 1000, mode = "0750" }
+config = { path = "", uid = 1000, gid = 1000, mode = "0750" }
 
 [jitsi.health]
 interval = "20s"
