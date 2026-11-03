@@ -951,6 +951,16 @@ def test_cx32_ac25_flags_a_library_path_built_from_pieces(tmp_path):
     )
 
 
+def test_cx32_ac25_piecewise_window_is_400_characters(tmp_path):
+    near = "sys.path.insert(0, 'x')\n" + "y = 1\n" * 10 + 'q = ("libraries", "cli-extended")\n'
+    just_outside = (
+        "sys.path.insert(0, 'x')\n" + "y = 1\n" * 80 + 'q = ("libraries", "cli-extended")\n'
+    )
+    item = _audit(tmp_path, files={"near.py": near, "far.py": just_outside})["no-path-hacks"]
+    # Documented behaviour: an unrelated near-miss is flagged, a far one is not.
+    assert (item.status, item.evidence) == ("fail", ("near.py",))
+
+
 def test_cx32_ac25_piecewise_hack_keeps_the_marker_exemption(tmp_path):
     files = {
         "t.py": (
