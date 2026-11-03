@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import fcntl
 from html.parser import HTMLParser
 import hashlib
 import os
@@ -352,9 +353,31 @@ def ensure_in_downloads(
     A present file is reused only when its SHA-256 equals the published digest; a
     mismatching file is refused, never overwritten. A fetch under sudo is handed
     back to the invoking user so the shared folder does not fill with root files.
+    Concurrent runs serialize on an advisory lock file (downloads/.<name>.lock),
+    so the second run waits and then reuses the first run's verified copy.
     """
     directory = (downloads_dir or DOWNLOADS_DIR)
     directory.mkdir(parents=True, exist_ok=True)
+    lock_path = directory / f".{asset.filename}.lock"
+    try:
+        with lock_path.open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            return _ensure_in_downloads_locked(
+                asset, directory, expected_sha256=expected_sha256, progress=progress
+            )
+    except OSError as exc:
+        if isinstance(exc, UpstreamError):
+            raise
+        raise UpstreamError(f"could not lock {lock_path}: {exc}") from exc
+
+
+def _ensure_in_downloads_locked(
+    asset: UpstreamIso,
+    directory: Path,
+    *,
+    expected_sha256: str,
+    progress: Callable[[str], None] | None,
+) -> tuple[Path, str]:
     target = directory / asset.filename
     expected = expected_sha256.lower()
     if target.exists():

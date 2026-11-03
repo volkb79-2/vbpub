@@ -952,7 +952,7 @@ def build_cli():
         description="Run generic Netcup ISO installs or the TrueNAS golden-disk restore workflow.",
         getting_started=(
             "./install-restore-iso.py start 804027 --iso ../truenas/golden-iso/artifacts/restore.iso",
-            "./install-restore-iso.py finish 804027 --yes --ssh-host v1001.vxxu.de --ssh-identity-file ../truenas/golden-iso/vm/root_ed25519 --ssh-known-hosts ../truenas/golden-iso/vm/restore-known_hosts",
+            "./install-restore-iso.py finish 804027 --yes --ssh-host v1001.vxxu.de --ssh-identity-file ../truenas/artifacts/vm-lab/golden-source-27-20GiB/root_ed25519 --ssh-known-hosts ../truenas/artifacts/vm-lab/golden-source-27-20GiB/restore-known_hosts",
         ),
         logging_logger="netcup.install_restore_iso",
         unexpected_exceptions="report",
@@ -1050,7 +1050,7 @@ def build_cli():
                 _option(("--task-timeout-seconds",), "Maximum wait for each SCP task; omit to wait until it ends.", group="STOP CONDITIONS", metavar="SECONDS", type=_positive_finite, default=None),
             ),
             examples=(
-                "./install-restore-iso.py finish 804027 --restore-complete --ssh-host v1001.vxxu.de --ssh-host-key-alias '[127.0.0.1]:2223' --ssh-identity-file ../truenas/golden-iso/vm/root_ed25519 --ssh-known-hosts ../truenas/golden-iso/vm/restore-known_hosts --yes",
+                "./install-restore-iso.py finish 804027 --restore-complete --ssh-host v1001.vxxu.de --ssh-host-key-alias '[127.0.0.1]:2223' --ssh-identity-file ../truenas/artifacts/vm-lab/golden-source-27-20GiB/root_ed25519 --ssh-known-hosts ../truenas/artifacts/vm-lab/golden-source-27-20GiB/restore-known_hosts --yes",
             ),
             handler=_finish,
         )
@@ -1081,7 +1081,7 @@ def build_cli():
                 _option(("--task-timeout-seconds",), "Maximum wait for each SCP task; omit to wait until it ends.", group="STOP CONDITIONS", metavar="SECONDS", type=_positive_finite, default=None),
             ),
             examples=(
-                "./install-restore-iso.py recover 804027 --try-disk-boot --ssh-host v1001.vxxu.de --ssh-identity-file ../truenas/golden-iso/vm/root_ed25519 --ssh-known-hosts ../truenas/golden-iso/vm/restore-known_hosts --yes",
+                "./install-restore-iso.py recover 804027 --try-disk-boot --ssh-host v1001.vxxu.de --ssh-identity-file ../truenas/artifacts/vm-lab/golden-source-27-20GiB/root_ed25519 --ssh-known-hosts ../truenas/artifacts/vm-lab/golden-source-27-20GiB/restore-known_hosts --yes",
             ),
             handler=_recover,
         )

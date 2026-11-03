@@ -143,8 +143,8 @@ and verify SSH plus the boot pool:
   --restore-complete \
   --ssh-host v1001.vxxu.de \
   --ssh-host-key-alias '[127.0.0.1]:2223' \
-  --ssh-identity-file ../truenas/golden-iso/vm/root_ed25519 \
-  --ssh-known-hosts ../truenas/golden-iso/vm/restore-known_hosts \
+  --ssh-identity-file ../truenas/artifacts/vm-lab/golden-source-27-20GiB/root_ed25519 \
+  --ssh-known-hosts ../truenas/artifacts/vm-lab/golden-source-27-20GiB/restore-known_hosts \
   --yes
 ```
 
@@ -167,8 +167,8 @@ uncertified:
   --state-file .state/restore-804027-v5.json \
   --try-disk-boot \
   --ssh-host v1001.vxxu.de \
-  --ssh-identity-file /workspaces/vbpub/scripts/truenas/golden-iso/vm/root_ed25519 \
-  --ssh-known-hosts /workspaces/vbpub/scripts/truenas/golden-iso/vm/restore-known_hosts \
+  --ssh-identity-file /workspaces/vbpub/scripts/truenas/artifacts/vm-lab/golden-source-27-20GiB/root_ed25519 \
+  --ssh-known-hosts /workspaces/vbpub/scripts/truenas/artifacts/vm-lab/golden-source-27-20GiB/restore-known_hosts \
   --yes
 ```
 

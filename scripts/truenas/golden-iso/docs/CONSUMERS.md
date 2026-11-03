@@ -601,7 +601,7 @@ import tomllib
 from pathlib import Path
 
 secrets = tomllib.loads(Path("artifacts/truenas-27-20GiB-golden.secrets.toml").read_text())
-key = Path("vm/root_ed25519")
+key = Path("../artifacts/vm-lab/golden-source-27-20GiB/root_ed25519")
 key.write_text(secrets["root_ssh"]["private_key"].rstrip() + "\n")
 key.chmod(0o600)
 PY

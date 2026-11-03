@@ -239,7 +239,7 @@ reboot lane:
 cd scripts/truenas
 export TRUENAS_TEST_PORT=2222
 export TRUENAS_TEST_KEY="$PWD/boot-pool-patch/artifacts/.live-test-root-key"
-export TRUENAS_TEST_KNOWN_HOSTS="$PWD/.vm/v27-path-a-20261016-r3/known_hosts"
+export TRUENAS_TEST_KNOWN_HOSTS="$PWD/artifacts/vm-lab/v27-path-a-20261016-r3/known_hosts"
 export TRUENAS_STORAGE_PROFILE=path-a
 export TRUENAS_EXPECTED_VERSION=27.0.0-RC.1
 export TRUENAS_TEST_ALLOW_MUTATIONS=1
@@ -315,8 +315,8 @@ If the generated public-key file is missing, derive it from the protected
 private key without copying the private key into the tester:
 
 ```bash
-ssh-keygen -y -f golden-iso/vm/root_ed25519 > golden-iso/vm/root_ed25519.pub
-chmod 0644 golden-iso/vm/root_ed25519.pub
+ssh-keygen -y -f artifacts/vm-lab/golden-source-27-20GiB/root_ed25519 > artifacts/vm-lab/golden-source-27-20GiB/root_ed25519.pub
+chmod 0644 artifacts/vm-lab/golden-source-27-20GiB/root_ed25519.pub
 ```
 
 Example for a disposable v27 Path A target:
@@ -332,7 +332,7 @@ export TRUENAS_EXPECTED_VERSION=27.0.0-RC.1
 export TRUENAS_TEST_ALLOW_MUTATIONS=1
 : "${TRUENAS_UI_URL:?set the verified HTTPS origin}"
 export TRUENAS_UI_SECRET_FILE="$PWD/boot-pool-patch/artifacts/nas-ui-secrets.toml"
-export TRUENAS_ROOT_SSH_PUBLIC_KEY_FILE="$PWD/golden-iso/vm/root_ed25519.pub"
+export TRUENAS_ROOT_SSH_PUBLIC_KEY_FILE="$PWD/artifacts/vm-lab/golden-source-27-20GiB/root_ed25519.pub"
 export PWMCP_WS_URL=ws://pwmcp:3000/
 export PWMCP_PLAYWRIGHT_VERSION=1.64.0 # use `pwmcp contract`
 
@@ -424,7 +424,7 @@ the prepared root key, and pinned SSH host key already stored under
 cd scripts/truenas
 : "${TRUENAS_TEST_HOST:?set the inspected disposable target address}"
 export TRUENAS_TEST_PORT=22
-export TRUENAS_TEST_KEY="$PWD/golden-iso/vm/root_ed25519"
+export TRUENAS_TEST_KEY="$PWD/artifacts/vm-lab/golden-source-27-20GiB/root_ed25519"
 : "${TRUENAS_TEST_KNOWN_HOSTS:?load the pinned known_hosts path}"
 export TRUENAS_STORAGE_PROFILE=path-a
 export TRUENAS_EXPECTED_VERSION=27.0.0-RC.1
@@ -1113,7 +1113,7 @@ lane with:
 cd scripts/truenas
 export TRUENAS_TEST_PORT=2222
 export TRUENAS_TEST_KEY="$PWD/boot-pool-patch/artifacts/.live-test-root-key"
-export TRUENAS_TEST_KNOWN_HOSTS="$PWD/.vm/v27-path-a-update-cdrom-rerun1/known_hosts"
+export TRUENAS_TEST_KNOWN_HOSTS="$PWD/artifacts/vm-lab/v27-path-a-update-cdrom-rerun1/known_hosts"
 export TRUENAS_STORAGE_PROFILE=path-a
 export TRUENAS_EXPECTED_VERSION=27.0.0-RC.1
 export TRUENAS_UPDATE_EXPECTED_VERSION='28.0.0-MASTER+20261014-230204'
@@ -1306,7 +1306,7 @@ source "$VENV/bin/activate"
 export DOCKER_HOST=unix:///var/run/docker.sock
 : "${TRUENAS_TEST_HOST:?set the inspected disposable target address}"
 export TRUENAS_TEST_PORT=22
-export TRUENAS_TEST_KEY="$PWD/golden-iso/vm/root_ed25519"
+export TRUENAS_TEST_KEY="$PWD/artifacts/vm-lab/golden-source-27-20GiB/root_ed25519"
 : "${TRUENAS_TEST_KNOWN_HOSTS:?load the pinned known_hosts path}"
 export TRUENAS_TEST_DOCKER_NETWORK=custom-test-bridge
 export TRUENAS_EXPECTED_VERSION='27.0.0-MASTER+20261029-173417'
@@ -1314,7 +1314,7 @@ export TRUENAS_TEST_ALLOW_MUTATIONS=1
 export TRUENAS_STORAGE_PROFILE=both
 export TRUENAS_SURVIVAL_MODE=patched
 export TRUENAS_SURVIVAL_PROFILE=both
-export TRUENAS_SURVIVAL_SSH_PUBLIC_KEY_FILE="$PWD/golden-iso/vm/root_ed25519.pub"
+export TRUENAS_SURVIVAL_SSH_PUBLIC_KEY_FILE="$PWD/artifacts/vm-lab/golden-source-27-20GiB/root_ed25519.pub"
 export TRUENAS_SURVIVAL_ARTIFACT_DIR="$PWD/.update-survival-patched"
 mkdir -m 0700 "$TRUENAS_SURVIVAL_ARTIFACT_DIR"
 export TRUENAS_UPDATE_EXPECTED_VERSION='28.0.0-MASTER+20261029-175210'
@@ -1417,7 +1417,7 @@ passed, use its SSH port and strict host-key file:
 ```bash
 cd scripts/truenas
 export TRUENAS_TEST_PORT=2225
-export TRUENAS_TEST_KEY="$PWD/golden-iso/vm/root_ed25519"
+export TRUENAS_TEST_KEY="$PWD/artifacts/vm-lab/golden-source-27-20GiB/root_ed25519"
 export TRUENAS_TEST_KNOWN_HOSTS="$PWD/boot-pool-patch/artifacts/v28-path-b-20261017/known_hosts"
 export TRUENAS_STORAGE_PROFILE=path-b
 export TRUENAS_EXPECTED_VERSION='28.0.0-MASTER+20261014-230204'
@@ -1438,7 +1438,7 @@ For the local v28 update guest used in this worktree, run:
 cd scripts/truenas
 export TRUENAS_TEST_PORT=2222
 export TRUENAS_TEST_KEY="$PWD/boot-pool-patch/artifacts/.live-test-root-key"
-export TRUENAS_TEST_KNOWN_HOSTS="$PWD/.vm/v27-path-a-update-cdrom-rerun1/known_hosts"
+export TRUENAS_TEST_KNOWN_HOSTS="$PWD/artifacts/vm-lab/v27-path-a-update-cdrom-rerun1/known_hosts"
 export TRUENAS_STORAGE_PROFILE=path-a
 export TRUENAS_EXPECTED_VERSION='28.0.0-MASTER+20261014-230204'
 export TRUENAS_TEST_ALLOW_MUTATIONS=1
@@ -1561,7 +1561,7 @@ historical run is logged at
 [`live-storage-v27-path-a-20261016.log`](../artifacts/live-storage-v27-path-a-20261016.log);
 the later existing-container adversarial gates are listed above. The guest shut
 down through QMP/ACPI; its COW disk and EFI state remain under
-`scripts/truenas/.vm/v27-path-a-20261016-r3`. Path A uses a finite-quota,
+`scripts/truenas/artifacts/vm-lab/v27-path-a-20261016-r3`. Path A uses a finite-quota,
 mounted `boot-pool/user-data` namespace on a full-disk layout. Path B creates
 `boot-disk-data` on a reserved GPT tail after a 16 GiB image was restored to a
 20 GiB disk; the pool auto-imported after reboot and retained a marker. The

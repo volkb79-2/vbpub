@@ -209,6 +209,39 @@ def test_ensure_in_downloads_fetches_once_then_reuses_the_verified_copy(tmp_path
     assert (tmp_path / (asset.filename + ".sha256")).read_text().startswith(expected)
 
 
+def test_ensure_in_downloads_concurrent_runs_fetch_once_under_the_lock(tmp_path, monkeypatch, asset):
+    import threading
+    import time
+
+    payload = b"vanilla installer ISO fixture"
+    expected = hashlib.sha256(payload).hexdigest()
+    calls = []
+
+    def slow_request(*args, **kwargs):
+        calls.append(1)
+        time.sleep(0.3)
+        return _Response(payload)
+
+    monkeypatch.setattr(upstream, "_request", slow_request)
+    results, errors = [], []
+
+    def run():
+        try:
+            results.append(upstream.ensure_in_downloads(asset, expected_sha256=expected, downloads_dir=tmp_path))
+        except Exception as exc:  # pragma: no cover - failure path
+            errors.append(exc)
+
+    threads = [threading.Thread(target=run) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert not errors
+    assert len(calls) == 1 and len(results) == 2
+    assert (tmp_path / f".{asset.filename}.lock").exists()
+
+
 def test_ensure_in_downloads_refuses_a_file_that_differs_from_the_published_digest(tmp_path, asset):
     (tmp_path / asset.filename).write_bytes(b"tampered")
     with pytest.raises(upstream.UpstreamError, match="differs from the published"):

@@ -20,7 +20,7 @@ detail lives. A FIXED entry means code, tests and docs landed together.
 | TN-08 | Open acceptance boundaries: guest OS boot and real KVM selection, NFS/SMB client access, real second-disk cache target and import order, UI cache controls, real SLOG/special behaviour, Path B auxiliary roles | Minor | OPEN |
 | TN-09 | Legacy TrueNAS 24.10 API adapter (WebSocket/auth/job) for the shared client; moot once TN-02 lands on tnt | Minor | OPEN |
 | TN-10 | Committed docs link to ignored evidence logs under `boot-pool-patch/artifacts/` and name host-specific absolute paths (`/home/vscode/...`); move durable evidence into `docs/acceptance-results/` and make references host-agnostic | Minor | OPEN |
-| TN-11 | `vanilla-iso-patcher` upstream builds re-download the ISO into a per-run work directory; reuse the checksum-verified copy in the repo `downloads/` folder | Minor | OPEN |
+| TN-11 | `vanilla-iso-patcher` upstream builds re-download the ISO into a per-run work directory; reuse the checksum-verified copy in the repo `downloads/` folder | Minor | FIXED (19f71f7ff) |
 | TN-12 | Registered gate lanes: confirm `unit` budget and the CoW/fsync-off lane switch (run-gate RG-149) once main's gate policy applies; keep live lanes manual | Minor | OPEN |
 | TN-13 | Storage layout migration (vm-lab, downloads, cache modes, requirements naming) | Minor | FIXED (finish-truenas-iso-20261104) |
 
