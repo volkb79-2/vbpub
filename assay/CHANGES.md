@@ -11,6 +11,12 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - Native R2 progress and state now drain by dispatch position instead of canonical index when scheduling is active (`--jobs` above 1); a serial run is unchanged. `assay analyze campaign` accepts a progress stream whose finished candidates are a contiguous prefix of dispatch order rather than of canonical index.
 - Documented the supported `--jobs` range and the limits that bind at high worker counts (consumer guide, "Candidate scheduling and the admission budget").
 
+### Fixed
+- B196: the copy-on-write adapter no longer imports `cowtree` when `MDT_COW_ROOT` is unset (and `COWTREE_MODE` is `auto` or `off`), so a missing sibling package cannot become an import error before any verdict.
+- B197: a run now collects dead copy-on-write runs (killed by SIGKILL or a container kill) through `cowtree.gc` before opening its own run; collection failure is an advisory.
+- B199: a copy-on-write workspace that fails to close after the measurement finished is reported as `assay: advisory:` and the verdict stands; a leaked snapshot state still refuses.
+- B200: the CoW-versus-plain snapshot parity test now compares `git status`, the index entries and the index tree against HEAD's tree. The real-btrfs CI run of it remains open.
+
 <!-- cmru: release history -->
 
 ## [11.0.0] - 2026-11-02
