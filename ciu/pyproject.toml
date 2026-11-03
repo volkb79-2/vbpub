@@ -12,7 +12,15 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 authors = [{name = "Volker Badziong"}]
+# cli-extended is a REAL wheel dependency (unified-adoption CX-D1), never vendored and
+# never put on a path. Floor 0.5.0: the released wheel tester-unified installs; it carries
+# register_doctor/register_skills_verbs (doctor + skills groups), CliIdentity.resolve with
+# version_probe, VerbSpec(dry_run=...) and the surface lifecycle ciu's CLI is registered with.
+# It is published to GitHub Releases only (the bare name is unclaimed on PyPI), so every
+# install of ciu MUST be `--no-index --find-links <wheelhouse>` or `--no-deps` after
+# installing cli-extended first; get.py hoists cli-extended first (KI-51).
 dependencies = [
+	"cli-extended>=0.5.0",
 	"Jinja2>=3.1.2",
 	"PyYAML>=6.0.1",
 	"tomli_w>=1.0.0",
@@ -57,7 +65,22 @@ worktree = "../libraries/worktree/src/worktree"
 # into a consumer stack by reading them via importlib.resources, mirroring
 # how templates/* already ships `ciu init`'s scaffold templates the same way.
 [tool.setuptools.package-data]
-ciu = ["data/*.c", "templates/*", "hook_templates/*"]
+# skills/** — the agent skills ship as package data (`ciu skills install`; AC-19).
+ciu = ["data/*.c", "templates/*", "hook_templates/*", "skills/**/*"]
+
+# Surface lifecycle (cli-extended AC-16..AC-18): one entry covers every ciu route (the
+# delegated groups are mounted on the root registry). Run `cli-extended surface check`
+# from ciu/ with the package importable (PYTHONPATH=src or an installed wheel).
+[tool.cli-extended]
+schema_version = 1
+
+[[tool.cli-extended.clis]]
+id = "ciu"
+factory = "ciu.cli_registry:build_cli"
+review = "docs/cli-review.toml"
+manifest = "docs/cli-surface.json"
+spec = "docs/SPEC.md"
+findings = "docs/cli-review-findings.toml"
 
 # Version is derived from git tags by setuptools-scm (no clock, no manual bump).
 # Release = annotated tag `ciu-vX.Y.Z`; untagged commit = `X.Y.(Z+1).devN+g<sha>`.

@@ -87,6 +87,41 @@ CIU_TEST_SUITE_ENV = "CIU_TEST_SUITE"
 # subprocess a test spawns both read os.environ, and neither sees a fixture.
 os.environ[CIU_TEST_SUITE_ENV] = "1"
 
+
+def _ensure_ciu_distribution_metadata() -> None:
+    """Give a source-mode run the installed-distribution metadata ``ciu`` resolves its version from.
+
+    ``CliIdentity.resolve`` reads the version from the ``ciu`` distribution (and a build-time
+    ``_version.py``) and, by design, never invents one. The gate's tester image installs
+    cli-extended but NOT ciu (the tests import ``src``), so without this the CLI refuses to start
+    (exit 3). A minimal ``.dist-info`` in a throwaway directory on ``sys.path`` -- and on
+    ``PYTHONPATH``, so every ``ciu`` subprocess a test spawns resolves the same version -- stands in
+    for the install. A real install (or an editable one) is left alone.
+    """
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        version("ciu")
+        return
+    except PackageNotFoundError:
+        pass
+    import atexit
+    import sys
+
+    root = Path(tempfile.mkdtemp(prefix="ciu-test-dist-"))
+    info = root / "ciu-0.0.0+tests.dist-info"
+    info.mkdir()
+    (info / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: ciu\nVersion: 0.0.0+tests\n", encoding="utf-8"
+    )
+    sys.path.insert(0, str(root))
+    existing = os.environ.get("PYTHONPATH")
+    os.environ["PYTHONPATH"] = str(root) + (os.pathsep + existing if existing else "")
+    atexit.register(shutil.rmtree, root, True)
+
+
+_ensure_ciu_distribution_metadata()
+
 _AMBIENT_ENV_VARS = (
     "REPO_ROOT",
     "PHYSICAL_REPO_ROOT",
