@@ -28,11 +28,13 @@ from unittest import mock
 
 import pytest
 
+from _testdeps import optional_module
+
 ROOT = Path(__file__).resolve().parents[1]
 TAG = "pwmcp-v9.9.9"
 TAG2 = "pwmcp-v9.9.10"
 
-pytest.importorskip("cmru.manifest", reason="cmru (manifest writer) is not importable")
+optional_module("cmru.manifest", "cmru (manifest writer) builds the bundle manifest", module_level=True)
 from cmru.manifest import build_bundle_manifest, write_manifest  # noqa: E402
 from cmru.release import sha256_file  # noqa: E402
 
