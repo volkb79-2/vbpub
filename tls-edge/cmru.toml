@@ -4,7 +4,7 @@ schema_version = 1
 kind = "none"
 
 [env]
-TLS_EDGE_RELEASE_NOTES = "## tls-edge tarball\n\nEdge proxy and TLS termination stack for vbpub infrastructure.\n\n**Verify**\n```bash\nsha256sum -c tls-edge-v*.tar.xz.sha256\n```"
+TLS_EDGE_RELEASE_NOTES = "## tls-edge offline installer\n\nEdge proxy and TLS termination (Traefik v3) as a self-contained instance, one bundle per interpreter: `tls-edge-v<ver>-py313.tar.xz` and `-py314`. Install with `get.py install --variant py313` (see docs/INSTALL.md).\n\n**Breaking**: the alternate HTTPS port (9443) is removed; ciu container names are `tls-edge-<id>-traefik` / `-dockerproxy`. Read docs/INSTALL.md section 8 before updating a live edge.\n\n**Verify** (releases are unsigned: SHA-256 and the in-bundle manifest only)\n```bash\nsha256sum -c tls-edge-v*-py313.tar.xz.sha256\n```"
 
 [project]
 id = "tls-edge"
