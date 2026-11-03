@@ -324,6 +324,7 @@ def test_prevention_checker_warns_on_fill_old_fstrim_snapshot_and_provider_usage
 
 def test_prevention_checker_is_quiet_when_healthy_and_says_unknown_when_blind(world):
     cfg, env, c = covs(world)
+    c["fill"] = {}  # This test is about missing fstrim/provider facts, not live disk usage.
     codes = {f["code"] for f in cov.prevention(cfg, c, time.time)}
     assert {"fstrim_unknown", "provider_unknown"} <= codes and "fill" not in codes
     c["fill"] = {"/d": {"used_pct": 40.0}}

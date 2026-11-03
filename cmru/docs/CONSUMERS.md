@@ -440,13 +440,23 @@ by CMRU orchestration; it does not define a second step format. The bundle
 library reads its dedicated bundle TOML. Its loader rejects unknown keys and
 wrong TOML value types at each table boundary; see S9.4a in the spec.
 
+### Python entrypoints
+
+Call `prepare_project_environment` before calculating a command or image
+reference that depends on the project's configured registry or repository
+identity. It reads the same nearest CMRU configuration as `run_step` and does
+not run the declared step.
+
 ```python
 from pathlib import Path
 
 from cmru.bundle import run_bundle
-from cmru.runner import run_step
+from cmru.runner import prepare_project_environment, run_step
 
-# These calls execute configured work. run_step may remove declared clean
+# Prepare configured registry and repository identity before computing refs.
+prepare_project_environment(Path("cmru.toml"))
+
+# run_step executes configured work and may remove declared clean
 # directories and runs the step commands; run_bundle removes dist_dir first.
 # Use cmru run --step NAME --dry-run when you need to inspect project step effects.
 run_step(Path("cmru.toml"), "build")

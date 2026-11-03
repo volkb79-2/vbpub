@@ -662,8 +662,11 @@ durable rate and whose `note` carries the recommendation key; `iobench ceilings 
 
 The test builds its collectors from the live host (`covs(world)`) and asserts that no `fill` finding is raised. On a host whose
 root filesystem is above the fill threshold (observed at 74% used) the finding appears and the `smoke` lane fails although
-nothing in the change under test is related. **Fix:** make the test hermetic by injecting the fill collector (as the sibling test
-already does with `c["fill"]`), so verdicts do not depend on the machine's disk usage.
+nothing in the change under test is related.
+
+**CLOSED 2026-11-03.** The test now injects an empty fill result before checking the unknown fstrim/provider facts, so verdicts do
+not depend on the machine's disk usage. `test_covariates_record_fill_discard_provider_queue_and_prio` continues to exercise live
+fill collection using the fixture's controlled filesystem.
 
 ## MDT-033 - host-setup: the capacity unavailable to MDT (RAM, disk swap, CPU cores) drives sizing, protection and PSI control (2026-11-03)
 
@@ -933,3 +936,8 @@ the release flow): the two variables, that the environment wins over the `docker
 
 **Acceptance.** A test on fake `systemctl` shows `install.sh` without `--restart-docker` issues no Docker restart on any path;
 the scratch-host reproduction is recorded with its cause (or "not reproducible with live-restore, restart was explicit").
+||||||| df2e3ef3d
+The test builds its collectors from the live host (`covs(world)`) and asserts that no `fill` finding is raised. On a host whose
+root filesystem is above the fill threshold (observed at 74% used) the finding appears and the `smoke` lane fails although
+nothing in the change under test is related. **Fix:** make the test hermetic by injecting the fill collector (as the sibling test
+already does with `c["fill"]`), so verdicts do not depend on the machine's disk usage.
