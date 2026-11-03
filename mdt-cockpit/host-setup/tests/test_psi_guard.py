@@ -282,23 +282,61 @@ class ServiceWiringTests(unittest.TestCase):
         self.assertIn('scripts/mdt-psi-guard.py', install)
         self.assertIn('MDT_PSI_GUARD:-report', install)
 
-    def test_the_reconcile_sweep_skips_keys_the_guard_owns(self) -> None:
+    def test_the_reconcile_sweep_writes_no_guard_owned_key(self) -> None:
+        # The sweep never writes cpu.weight/io.weight/memory.high of a tier slice, so there is
+        # nothing to skip; the real overwriter is systemd (documented in the guard).
+        script = (ROOT / "scripts" / "mdt-dev-governance-reconcile.sh").read_text()
+        self.assertNotIn("_mdt_guard_owns", script)
+        self.assertNotIn("psi-guard owns (left untouched", script)
+        self.assertIn("daemon-reload", (ROOT / "scripts" / "mdt-psi-guard.py").read_text())
+
+    def test_counters_are_keyed_by_path_so_a_vanished_unit_does_not_shift_the_others(self) -> None:
+        host = FakeHost(self)
+        for extra in ("aux.slice", "zzz.slice"):
+            d = host.cg / extra
+            d.mkdir()
+            (d / "memory.pressure").write_text("some avg10=0.00 avg60=0.00 avg300=0.00 total=5000000000\n")
+        guard = GUARD.Guard(cg_root=host.cg, units=["aux.slice", "wings.slice", "zzz.slice"],
+                            state_dir=host.state, mode="report", proc_pressure=host.proc)
+        guard.tick(0.0)
+        guard.tick(1.0)
+        # aux.slice vanishes: wings.slice moves from index 1 to 0. Its huge-total neighbour's
+        # counter must not be compared against wings' (that would be a spurious ~5000x share).
+        import shutil
+        shutil.rmtree(host.cg / "aux.slice")
+        host.stall()
+        guard.tick(2.0)
+        self.assertLess(guard.rate["unit_memory_some"], 0.01)
+        self.assertEqual([e for e in host.events() if e["event"] == "pressure"], [])
+
+    def test_a_signal_whose_every_source_vanishes_releases_and_reverts(self) -> None:
         host = FakeHost(self)
         guard = host.guard("enforce")
         guard.tick(0.0)
-        drive(host, guard, 12, share_mem=0.5)
-        script = (ROOT / "scripts" / "mdt-dev-governance-reconcile.sh").read_text()
-        start = script.index("_psi_guard_state=")
-        end = script.index("if [ -r \"$_psi_guard_state\" ]")
-        snippet = script[start:end]
-        probe = (
-            f'MDT_PSI_GUARD_STATE="{host.state / "state.json"}"; {snippet}\n'
-            '_mdt_guard_owns dev-gates.slice/cpu.weight && echo owned-gates || echo free-gates\n'
-            '_mdt_guard_owns dev-gates.slice/memory.high && echo owned-high || echo free-high\n'
-            '_mdt_guard_owns dev-interactive.slice/cpu.weight && echo owned-int || echo free-int\n'
-        )
-        out = subprocess.run(["bash", "-c", probe], capture_output=True, text=True, check=False)
-        self.assertEqual(out.stdout.split(), ["owned-gates", "free-high", "free-int"], out.stderr)
+        t = drive(host, guard, 12, share_mem=0.5)
+        self.assertEqual(host.value("dev-gates.slice", "cpu.weight"), "1")
+        (host.cg / "wings.slice" / "memory.pressure").unlink()
+        (host.cg / "wings.slice" / "cpu.pressure").unlink()
+        guard.tick(float(t + 1))
+        self.assertEqual(host.value("dev-gates.slice", "cpu.weight"), "100")
+        self.assertEqual(host.value("dev-gates.slice", "io.weight"), "default 100")
+        self.assertEqual(guard.owned_keys(), [])
+        names = [e["event"] for e in host.events()]
+        self.assertIn("unreadable", names)
+        self.assertIn("reverted", names)
+
+    def test_events_are_rotated_so_the_tmpfs_file_stays_bounded(self) -> None:
+        host = FakeHost(self)
+        guard = host.guard("report", max_event_bytes=2000)
+        for i in range(400):
+            guard.event("would_apply", float(i), key="dev-gates.slice/cpu.weight", value="1", original="100")
+        log = host.state / "events.jsonl"
+        older = host.state / "events.jsonl.1"
+        self.assertTrue(older.exists())
+        self.assertLess(log.stat().st_size, 2000 + 200)
+        self.assertLess(older.stat().st_size, 2000 + 200)
+        self.assertEqual(sorted(p.name for p in host.state.iterdir() if p.name.startswith("events")),
+                         ["events.jsonl", "events.jsonl.1"])
 
 
 if __name__ == "__main__":

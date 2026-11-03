@@ -290,19 +290,16 @@ if [ -r "${MDT_PROC_ROOT:-/proc}/swaps" ] && [ -e "$CG/dev.slice/io.max" ]; then
   fi
 fi
 
-# --- PSI guard coordination ----------------------------------------------------
+# --- PSI guard state (informational) -------------------------------------------
 # mdt-psi-guard temporarily owns the tier CPUWeight/IOWeight/MemoryHigh while the protected
-# units are under pressure and lists the keys in its state file. This sweep must not write a
-# key the guard owns: any slice-level write of cpu.weight, io.weight or memory.high goes
-# through _mdt_guard_owns first. (Today the sweep writes none of them; the check keeps it
-# that way if one is added.)
+# units are under pressure and lists the keys in its state file. This sweep writes none of
+# those keys, so it neither skips nor overwrites anything; it only logs what the guard owns.
+# The real overwriter is systemd itself (daemon-reload / set-property re-apply the unit
+# values); see the "Known limit" in scripts/mdt-psi-guard.py.
 _psi_guard_state="${MDT_PSI_GUARD_STATE:-/run/mdt/psi-guard/state.json}"
-_mdt_guard_owns() { # _mdt_guard_owns <tier>/<cgroup file> e.g. dev-gates.slice/memory.high
-  [ -r "$_psi_guard_state" ] && grep -Fq "\"$1\"" "$_psi_guard_state"
-}
 if [ -r "$_psi_guard_state" ]; then
   _guard_owned=$(python3 -c 'import json,sys; print(" ".join(sorted(json.load(open(sys.argv[1])).get("owned", {}))))' "$_psi_guard_state" 2>/dev/null || true)
-  [ -n "$_guard_owned" ] && log "psi-guard owns (left untouched by this sweep): $_guard_owned"
+  [ -n "$_guard_owned" ] && log "psi-guard currently owns: $_guard_owned"
 fi
 
 # --- slice zswap writeback policies -------------------------------------------

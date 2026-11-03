@@ -807,7 +807,9 @@ after M6. Final operator decisions of 2026-11-03 supersede every earlier wording
   - `MDT_PSI_GUARD = off|report|enforce`, shipped as `report`. It switches to `enforce` after M6.
   - Events go to `/run/mdt/psi-guard/events.jsonl`, which run-gate RG-144 reads as a contamination source. The
     devcontainer template mounts that directory read-only.
-  - `mdt-dev-governance-reconcile` skips the keys the guard currently owns; the guard state file lists them.
+  - The guard state file lists the keys the guard currently owns (the reconcile sweep writes none of them and only logs the list).
+    The real overwriter of an active throttle is systemd (`daemon-reload`, `set-property`), documented as a known limit.
+  - `events.jsonl` rotates at 1 MiB to `events.jsonl.1` (tmpfs); RG-144 reads both.
 - **MDT-033.f Wizard prompt texts** (no "reserve"):
   - `RAM unavailable to MDT — used by other services on this host (0 if none) [suggested: …]:`
   - `Disk swap unavailable to MDT — swap space other services on this host occupy (0 if none) [suggested: …]:`
@@ -832,7 +834,7 @@ after M6. Final operator decisions of 2026-11-03 supersede every earlier wording
   only after confirmation and only for named units.
 - **Probe:** suggestions on a fake tree (with and without `memory.min`); it writes nothing.
 - **PSI guard:** staged actions and their revert on a fake cgroupfs with injected pressure; restore on stop and at
-  boot; reconcile skips guard-owned keys; `report` mode writes events and changes nothing.
+  boot; a vanished source releases and a counter is keyed by path; the event file is bounded; `report` mode writes events and changes nothing.
 - **Docs:** README, `host-setup.env.example` and CONSUMERS agree (docs-in-sync test).
 
 **Test plan.**

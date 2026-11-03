@@ -218,7 +218,11 @@ events only, nothing changed) or `enforce`. In `enforce`:
 
 Every change is reverted on release, on stop and at the next start (the
 originals are kept in `/run/mdt/psi-guard/state.json`, which also lists the keys
-the guard owns; the reconcile sweep consults it before writing any of them). It
+the guard owns; the reconcile sweep writes none of them and only logs them).
+`events.jsonl` is rotated at 1 MiB to `events.jsonl.1` (it is on tmpfs), so
+readers consume both files. A `systemctl daemon-reload` or `set-property` during
+an active episode re-applies the units' own values and undoes the throttle
+(systemd is the overwriter, not the sweep), so do not reload during one. It
 never freezes or kills anything: a wall-clock budget that expired while frozen
 would change a result. Events are appended to `/run/mdt/psi-guard/events.jsonl`
 for run-gate to read as a contamination source.
