@@ -102,11 +102,16 @@ the technical detail below it.
 - CIU-101: the engine `--help` module-guard test no longer fails when an unrelated finalizer warning lands in its recording window.
 - CIU-146: `ciu down --profile`/`--phases` stops only the containers (running or exited) of the selected stacks, enumerated by each stack's exact compose-project label; an empty selection refuses instead of widening, and bare `ciu down` stays project-wide (S7.8).
 - CIU-147: the generated overlay stamps each service that mounts rendered configfiles with a `ciu.configfile.sha256` label (content hash of the mounted staging directories), so a changed rendered config recreates exactly that service on `ciu up` and an unchanged render recreates nothing (S8.3 step 15/16).
+- fix(ciu): `ciu worktree rm` cleans every committed CIU root of the checkout (discovered at the target's own HEAD), each under its own identity, before deleting it; any discovery, identity or clean failure preserves the checkout and records and reports the roots already cleaned (CIU-138).
+- CIU-138: `ciu worktree rm` now also refuses a checkout that gained uncommitted changes since the initial inventory BEFORE the first sibling root is cleaned, and refuses a discovered sibling root that resolves outside the checkout (symlink swap). SPEC S16.4 lists `refork` in the closed `operation` vocabulary; S16.9 states that resources of already-cleaned sibling roots are gone when a later step refuses.
+- WT-OW-01: the shared worktree library re-reads the mount table immediately before the Git deletion and before each permission-retry deletion (`git worktree remove` retry and residual `rmtree`), narrowing the time-of-check window (still a point-in-time read; see `libraries/worktree/CONSUMERS.md`).
+
+### Changed
+- `ciu/get.py` was re-rendered from the installer template (tls-edge installer work; `cmru.toml` comments now point at `cmru installer render`); the byte-identity test in `test_ciu_host_enroll.py` guards drift. Installed `get.py` consumers pick up the new installer on the next fetch.
+- First `ciu up` after upgrading recreates each service that mounts rendered configfiles once (existing containers lack the `ciu.configfile.sha256` label, CIU-147). File mode and symlinks are not hashed: a mode-only change does not recreate.
+
 ### Added
 - feat(ciu): `ciu worktree refork LOGICAL [--onto TRUNK] [--json]` re-records `fork_point_sha` after a legitimate rebase so run-gate's derived base (R-35a) works again without a hand-passed `--base` (CIU-142). It refuses a dirty tree and a trunk that is not an ancestor of HEAD, is idempotent, and leaves record schema 6 unchanged (the previous value and timestamp are reported in its JSON document, operation `refork`). `ciu worktree inspect` now reports a `fork_point` status (`current`/`stale`/`unrecorded`/`unknown`) and names the verb for a stale record.
-
-### Fixed
-- fix(ciu): `ciu worktree rm` cleans every committed CIU root of the checkout (discovered at the target's own HEAD), each under its own identity, before deleting it; any discovery, identity or clean failure preserves the checkout and records and reports the roots already cleaned (CIU-138).
 
 ## [7.18.0] - 2026-10-28
 <!-- cmru: generated -->

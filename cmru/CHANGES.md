@@ -44,6 +44,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - fix(cmru): config validation refuses `project.release.build_step = "push"`, because the publishing step cannot sit inside the release-tag rollback window (KI-56).
 - fix(cmru): a `--dry-run --resume` restores the retained candidate tip after previewing, instead of leaving the prepared external-version inputs committed (KI-102).
 - fix(cmru): a failed repository-visibility lookup, an unsupported owner type, or a 5xx package lookup after the image push is now a warning with the one-time UI remediation, not a release failure (KI-103).
+- fix(cmru): the embedded `worktree` library now re-reads the mount table right before every deletion, including the permission-retry paths (WT-OW-01); a mount under a release or build workspace refuses removal through `cmru` cleanup and `cmru abandon` (adapter test added). The library copy is byte-identical to ciu's (one source directory, packaged by both wheels); release ciu first, then cmru.
 - fix(cmru): the bound launcher appends a source root that carries a stale `*.egg-info`, so the installed distribution metadata wins the identity check (KI-67).
 <!-- cmru: pending release notes end -->
 
