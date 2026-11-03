@@ -558,11 +558,23 @@ answers on: `serve` exits 2 and names the path (CP-34).
 thread, so a client that sends its request line slowly, or a long verb (`report`,
 a `stop` against a wedged worker), no longer delays other verbs. Admission is
 bounded: 32 connections reading a request line, 16 verbs running, 32 open
-`watch` streams. A request over a bound is answered
+`watch` streams, and a separate pool of 2 running `report` verbs (a report is
+a heavy subprocess, so it cannot starve `status` or `stop`). A request over a
+bound is answered
 `{"ok": false, "error": {"code": "busy", ...}}`; the code is additive (contract
 stays 1) and the right reaction is to retry shortly. `version`, `host`,
 `status` and `gc` are read-only snapshots; `start`, `stop` and `report` are
 guarded by the registry and session locks.
+
+**Stopping the daemon.** On SIGTERM the daemon waits up to 4 s for running
+verbs, up to 4 s for the sampling workers, then finalizes the live sessions
+(forced, with a 1 s session-lock wait), so a normal stop ends in about 9 s.
+Live sessions are finalized as `aborted: "daemon-stopped"`; a daemon that exits
+3 after losing its control socket aborts them the same way. Docker's default
+stop grace is 10 s, too close for a wedged session, so run the daemon with
+`stop_grace_period: 30s` (the ciu project sets it) or `docker stop --time 30`.
+A session that could not be finalized in time is recovered as an orphan at the
+next start.
 
 A stopped session whose DAMON owner was closed carries
 `summary.damon_cleanup: {"confirmed": <bool>, "slot": <int|null>,

@@ -3,7 +3,7 @@ kind: backlog-entry
 schema_version: 1
 id: CP-39
 title: "Observer contract 3: per-subject measurement windows (process-tree and cgroup mode) as the single source of per-candidate and per-worker resource numbers"
-status: carved
+status: fixed
 type: "feature"
 component: "resource-observer"
 context_estimate: "large"
@@ -136,3 +136,5 @@ request per connection and the existing 4096-byte and 5-second limits.
 ## Updates
 
 **2026-11-03** — Implemented in branch fan-cgp-20261103 (lib/observer_windows.py, resource_observer.resolve_window_peer, serve.py dispatch, fixtures observer-window-v3-*.json, docs PROTOCOL section 9 and CONSUMERS). Unit suite: 2752 passed, coverage 100% line and branch. Pending: review, the registered r0-r1 gate on the exact tip, release as 1.2.0, and the live M1 calibration on r1002 (process-tree CPU vs cgroup mode, RSS ratio, kernel peak-reset support), which has NOT been run. CP-33 (concurrent accept) is not implemented: window sampling is on its own thread and the window verbs are bounded, but the observer accept loop is still serial for slow peers. CP-29's io.stat reader is not shared yet; the window code carries its own.
+
+FIXED 2026-11-04 (2d1f0a6cf, merged to main; delta review fixes in fix-cgp-20261104c). Pre-release delta review: a child forked between the round's process scan and the `cgroup.procs` read no longer counts as foreign (live parent-chain check, `_descends_from`). The live M1 calibration on r1002 is still outstanding and belongs to the release record.

@@ -370,6 +370,37 @@ def test_a_foreign_pid_makes_every_cgroup_metric_shared_even_after_it_leaves(wor
     assert result["attribution"]["foreign_pids_max"] == 1
 
 
+def test_a_child_forked_after_the_table_scan_is_not_foreign(world):
+    reg = world.registry()
+    opened = _open(reg, mode="cgroup")
+    stale = observer_windows.ProcTable(str(world.proc))   # the round's shared scan
+    # 5002 is a child of the tree's 5001, forked after that scan: it is in
+    # cgroup.procs but not in the scanned tree. A grandchild (5003) is
+    # reached through it.
+    world.add_proc(5002, ppid=5001, nspid=(5002, 12), rss=1)
+    world.add_proc(5003, ppid=5002, nspid=(5003, 13), rss=1)
+    world.members(4200, PEER, 5000, 5001, 5002, 5003)
+    (window,) = reg._windows.values()
+    reg._tick(window, stale)
+    _advance_cgroup(world)
+    result = _close(reg, opened["window"])
+    assert result["attribution"]["foreign_pids_max"] == 0
+    assert result["metrics"]["cpu_seconds"] == pytest.approx(2.5)
+    assert "cpu_seconds" not in result["missing"]
+
+
+def test_a_member_outside_the_tree_with_a_cyclic_parent_chain_is_foreign(world):
+    reg = world.registry()
+    opened = _open(reg, mode="cgroup")
+    world.add_proc(7000, ppid=7001, nspid=(7000, 20), rss=1)
+    world.add_proc(7001, ppid=7000, nspid=(7001, 21), rss=1)
+    world.members(4200, PEER, 5000, 5001, 7000)
+    (window,) = reg._windows.values()
+    reg._tick(window, observer_windows.ProcTable(str(world.proc)))
+    result = _close(reg, opened["window"])
+    assert result["attribution"]["foreign_pids_max"] == 1
+
+
 def test_a_foreign_pid_present_at_open_is_seen_by_the_first_sample(world):
     world.members(4200, PEER, 5000, 5001, 6000)
     reg = world.registry()
