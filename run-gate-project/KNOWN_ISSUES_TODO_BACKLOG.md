@@ -132,7 +132,7 @@ SPEC §9.
 | RG-112 | `git gc` inside a narrow lane container fails: reflog expiry locks sibling worktrees' read-only admin dirs | Low | BY DESIGN, DOCUMENTED 2026-10-27 |
 | RG-113 | the B108 closeout cap was half of the remaining budget per call, and there are two calls | Medium | FIXED IN CANDIDATE 2026-10-27 (`81a7d3ee5`) |
 | RG-114 | the exec-lane cleanup has no SIGTERM deferral | Low | OPEN 2026-10-27 |
-| RG-115 | a follower still collects the Assay closeout (duplicate evidence, spurious `unavailable` WARNING) | Low | OPEN 2026-10-27 |
+| RG-115 | a follower still collects the Assay closeout (duplicate evidence, spurious `unavailable` WARNING) | Low | FIXED 2026-11-04 (1b5ecf768) |
 | RG-116 | diff-coverage gate candidates from the 2026-10-27 audit (no-newline marker, `--allow-first-release` in the lane, single `--source`, `+++` content line, git colour/ext-diff, continuation lines) | High | FIXED 2026-11-04 (3fea77a5b; items 1, 2 and 5 earlier, in 24.3.0) |
 | RG-117 | admission / runtime candidates from the 2026-10-27 audit (inspect race, secret values on argv, `save_container_logs` symlink window, slice nesting, uncaught exceptions exit 1, ticket resume by name) | Medium | OPEN, unverified candidates |
 | RG-118 | RG-106 oracle 5: refuse an image with no passwd entry for the resolved `user` uid | Low | OPEN 2026-10-27 (design in entry) |
@@ -6529,7 +6529,7 @@ command names it).
 
 ## RG-115 — a follower (disowned record) still collects the Assay closeout and can print an "unavailable" WARNING or retain duplicate evidence
 
-**Status:** OPEN 2026-10-27 (round-2 review minor, not fixed in the wave). Severity Low.
+**Status:** FIXED 2026-11-04 (1b5ecf768): `finish_assay_closeout` skips a record carrying `_flushed` (prints `assay closeout: the owning client records it`); a `None` record still collects, as before (existing behaviour with history off). Test `test_a_disowned_follower_record_skips_the_closeout`. Severity Low.
 
 **Observed.** `_dispatch` runs `finish_assay_closeout` for every non-dry-run assay lane. A follower's record is disowned (`disown_run_record` sets `_flushed`) and writes no history, yet the closeout reads the OWNER's `.assay/campaign-*` files, retains a second copy under its own random run id and, when the owner has not finished writing them, warns `assay closeout unavailable`.
 
@@ -6957,6 +6957,8 @@ test_cow_refuses_bad_root_value` now includes both `//` and `//..`; the
 oracle was run red before the guard change.
 
 ## RG-139 — R2 campaign closeout never passes the coverage artifact to the analyzer
+
+**Status:** FIXED 2026-11-04 (1b5ecf768), run-gate side. The closeout forwards the inventory-declared `judge.coverage.artifact` as `--coverage` (feature-detected from `analyze campaign --help`, so a judge without the flag keeps the old closeout), retains it as `<run-id>.coverage.json` when the analysis reports `parsed_and_reverified_r1`, and prints `coverage artifact <status>` in the closeout line. `assay analyze campaign --coverage` already exists in the assay source tree (`assay/analysis/src/assay_analysis/campaign.py`, parser `--coverage`); whether the assay release installed in a lane has it is detected at run time. Live confirmation that a campaign now closes `complete` needs a real R2 lane run on an assay with the flag (not done here).
 
 The automatic closeout that follows an `r2` lane invokes `assay analyze
 campaign` with the lane file, progress, state directory, verdict and observed
