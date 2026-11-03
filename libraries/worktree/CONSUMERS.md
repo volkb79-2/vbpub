@@ -159,3 +159,20 @@ is enabled on a host whose Git is older than 2.48, that Git lists the raw relati
 value and every worktree removal refuses with the non-absolute-path error. The refusal
 is safe: nothing is deleted. Use Git 2.48 or newer wherever relative worktree paths
 are enabled.
+
+## Open work
+
+- **WT-OW-01 refuse removal when a mount sits under the worktree.** Removal today walks the tree and deletes. A bind mount, or
+  a subvolume mounted at a path inside the worktree, makes `rm -rf` fail with EBUSY or, worse, descend into the mounted content
+  and delete it (VM disks, for instance). Before any deletion, list the mounts under the worktree (`findmnt -R <worktree>`, or
+  the mount table read directly) and refuse with a message naming each mount point and "detach it first". Exit as the other
+  safe refusals do: nothing deleted, one removal phase event. Shared by ciu and cmru, so the check lives here, not in the
+  adapters. Closes when a test with an injected mount table covers refuse and pass cases, and both adapters' removal tests
+  show the refusal through their own surface.
+- **WT-OW-02 delete subvolumes properly.** A btrfs subvolume inside a worktree (the declared CoW paths of `libraries/cowtree`
+  COW-BL-02) is removed with the subvolume-delete ioctl, not by unlinking its files, and only on a filesystem mounted with
+  `user_subvol_rm_allowed` for an unprivileged owner. The removal pipeline gets a pre-delete hook that the adapter fills
+  (ciu: CIU-159); the library itself stays agnostic of which paths are subvolumes and detects them by inode number 256 on a
+  btrfs filesystem. An undeletable subvolume is a refusal that names the path and the missing mount option, never a partial
+  removal. Closes when a fake-backend test shows the order (subvolumes first, then the tree) and a live btrfs test removes a
+  worktree holding a nested subvolume.
