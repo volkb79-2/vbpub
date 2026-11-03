@@ -1,7 +1,12 @@
 #!/bin/sh
 # Launch ONE QEMU TCG UEFI guest for the TrueNAS console capture (no KVM here).
 #
-# Usage: [VGA_DEV=virtio-vga] launch-truenas-vm.sh <workdir> <iso|none>
+# Usage: [VM_NAME=<vm-name>] [VGA_DEV=virtio-vga] launch-truenas-vm.sh [<workdir>] <iso|none>
+#
+# <workdir> is optional. Omitted, it is <pwmcp dir>/artifacts/vm-lab/<vm-name> (derived from this script's
+# location; VM_NAME defaults to truenas-27.0.0-rc1-installed). With ONE argument that argument is <iso|none>.
+# <iso> given as a bare file name (no "/") is resolved in the downloads dir: $MDT_DOWNLOADS_DIR, else
+# <repo root>/downloads. A path (any "/") is used as given. "none" boots without an ISO.
 #
 # <workdir> must already contain (create them once, per run):
 #   disk.qcow2     qemu-img create -q -f qcow2 <workdir>/disk.qcow2 20G
@@ -17,8 +22,21 @@
 # VGA_DEV defaults to virtio-vga: with std `VGA` QMP screendump of the TrueNAS kernel console
 # returned a garbage image under QEMU 10.0.13.
 set -eu
-W="${1:?usage: launch-truenas-vm.sh <workdir> <iso|none>}"
-ISO="${2:?usage: launch-truenas-vm.sh <workdir> <iso|none>}"
+USAGE="usage: launch-truenas-vm.sh [<workdir>] <iso|none>"
+HERE="$(cd "$(dirname "$0")" && pwd)"
+PWMCP_DIR="$(cd "$HERE/../.." && pwd)"
+REPO_ROOT="$(cd "$PWMCP_DIR/.." && pwd)"
+VM_NAME="${VM_NAME:-truenas-27.0.0-rc1-installed}"
+DOWNLOADS_DIR="${MDT_DOWNLOADS_DIR:-$REPO_ROOT/downloads}"
+case $# in
+  1) W="$PWMCP_DIR/artifacts/vm-lab/$VM_NAME"; ISO="$1" ;;
+  2) W="$1"; ISO="$2" ;;
+  *) echo "$USAGE" >&2; exit 2 ;;
+esac
+case "$ISO" in
+  none|*/*) ;;
+  *) ISO="$DOWNLOADS_DIR/$ISO" ;;
+esac
 VGA_DEV="${VGA_DEV:-virtio-vga}"
 OVMF_CODE="${OVMF_CODE:-/usr/share/OVMF/OVMF_CODE_4M.fd}"
 

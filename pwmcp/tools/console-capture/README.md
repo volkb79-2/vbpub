@@ -50,10 +50,19 @@ otherwise it is a real change and is kept, and the old frame becomes the second 
 * `--qmp-json '{"execute":...}'`, `--quit`.
 * Giving more than one of these is rejected (earlier versions silently preferred `--keys`).
 
-## Launcher: `launch-truenas-vm.sh WORKDIR ISO|none`
+## Launcher: `launch-truenas-vm.sh [WORKDIR] ISO|none`
 
 QEMU TCG + OVMF, 2 vCPU, 3 GiB, user-mode networking, same shape as
-`scripts/debian-install-v2/testing/vm/vmctl`. Per run, create in WORKDIR once:
+`scripts/debian-install-v2/testing/vm/vmctl`.
+
+WORKDIR is optional. Omitted, it is `<pwmcp dir>/artifacts/vm-lab/<vm-name>`, derived from the script's own location;
+`<vm-name>` is `$VM_NAME`, default `truenas-27.0.0-rc1-installed`. With one argument, that argument is the ISO. An ISO
+given as a bare file name (no `/`) is looked up in the downloads directory (`$MDT_DOWNLOADS_DIR`, default
+`<repo root>/downloads`); anything containing `/` is used as given. `none` boots without an ISO. Explicit
+arguments work unchanged. This VM is owned by the console-capture tooling: its installed `disk.qcow2`, `OVMF_VARS.fd`
+and `serial.log` live in the vm-lab folder above (see the repository `AGENTS.md`, "VM files and downloads").
+
+Per run, create in WORKDIR once:
 `qemu-img create -q -f qcow2 WORKDIR/disk.qcow2 20G` and
 `cp /usr/share/OVMF/OVMF_VARS_4M.fd WORKDIR/OVMF_VARS.fd`; the script checks they and the OVMF code file exist and
 says what is missing. `VGA_DEV` defaults to `virtio-vga` (with std `VGA` the TrueNAS kernel console screendump was

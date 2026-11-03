@@ -3,7 +3,7 @@
 This file records consumer-facing product gaps for later triage. Normative
 behavior remains in the product specification and consumer documentation.
 
-Last updated: 2026-11-03 (local console-corpus verification; R2 follow-up; GlyphGrid tooling integration; PWMCP-18 transparency gap identified during R2 survivor triage).
+Last updated: 2026-11-03 (VM layout / PWMCP-21; local console-corpus verification; R2 follow-up; GlyphGrid tooling integration; PWMCP-18 transparency gap identified during R2 survivor triage).
 
 ## PWMCP-01 — Provide a rendered-page inspection command
 
@@ -553,3 +553,16 @@ separate mutation-evidence follow-up.
 
 **Close by:** resume the r2 campaign on the btrfs runner with the supported lane and parallelism, account for all candidates, triage the five pending
 rows and remaining survivors, then record the final verdict and any accepted survivors here or in the linked R2 report.
+
+## PWMCP-21 — corpus tooling should consume the per-project VM layout
+
+**Status:** OPEN (filed 2026-11-03). The console-capture launcher now defaults to
+`pwmcp/artifacts/vm-lab/<vm-name>/` and resolves bare ISO names in the repo `downloads/` directory (root `AGENTS.md`,
+"VM files and downloads"). The corpus side does not yet follow: capture output (`console_capture.py run --out`) and the
+verifier still take explicit paths, and `tools/glyphgrid/eval_glyphgrid.py` hardcodes `DEFAULT_SERIES` under a home directory.
+
+**Proposed fix.** Keep captured frames in `pwmcp/artifacts/console-corpus/` (`frames/`, `manifest.jsonl`), derived from the script
+location, and make that the documented place to point `PWMCP_CONSOLE_CORPUS_DIR` at. Do not turn it into an implicit default:
+the corpus design (`docs/DESIGN-OCR-PHASE2-3.md`) deliberately has no fallback, so an unset variable must keep raising
+`CorpusMissing`; any change there is a design decision, not a path derivation. Replace the `eval_glyphgrid.py` home-directory default with a
+location derived from the same folder, and update the corpus README, `docs/CONSUMERS.md#local-console-corpus` and this tool's README.

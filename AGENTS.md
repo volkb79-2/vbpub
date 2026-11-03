@@ -24,6 +24,14 @@ argv budget) and `nyxloom/nyxloom-trove/STANDING.md` (the current wave's frozen
 files). A hand-started CLI agent gets only this file — a nyxloomd-dispatched one
 gets the set injected — so check `ls nyxloom/nyxloom-trove/*.md` yourself.
 
+## VM files and downloads (estate-wide)
+
+- Every project keeps its VM files (installed disks, per-run disks, OVMF vars, serial logs) in `<project dir>/artifacts/vm-lab/<vm-name>/`. `**/artifacts/` is gitignored. Scripts derive the path from their own location and never hardcode it; an explicit argument or environment override may replace it.
+- Large shared downloads (ISOs and the like, with their `.sha256`) live in the gitignored `<repo root>/downloads/`; override with `MDT_DOWNLOADS_DIR`.
+- CoW is the operator's choice, not the script's: where the filesystem supports it, the operator mounts a CoW subvolume over the vm-lab folder; otherwise it is a plain directory. Scripts must not care which.
+- Each VM has exactly one owning project. Another project may reference that VM by explicit path but must not keep a copy or its own state for it.
+- Warning: `git clean -x` (or `-xdf`) deletes every ignored `artifacts/` directory, including all VM disks, and `downloads/`. Never run it in a checkout that holds VM files.
+
 ## Writing a handoff / dispatch prompt — honor AUTHORING.md
 When you are asked to **start an agent for a task**, or to **write a prompt or a
 handoff package**, first read and follow
