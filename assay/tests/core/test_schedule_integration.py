@@ -71,7 +71,7 @@ def _hosted_windows(monkeypatch):
     monkeypatch.setattr(
         _window_host,
         "run_window",
-        lambda plan, *, cwd, timeout, process_runner, clock: runner_module.execute_plan(
+        lambda plan, *, cwd, timeout, process_runner, clock, profile=None: runner_module.execute_plan(
             plan, cwd=cwd, timeout=timeout, process_runner=process_runner, clock=clock
         ),
     )
