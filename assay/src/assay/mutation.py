@@ -5610,8 +5610,7 @@ def _execute_mutation_jobs(
         nonlocal next_canonical
         if scheduler is not None:
             return scheduler.next_candidate(time.monotonic())
-        if next_canonical >= total:
-            return None
+        # The dispatch loop only asks while `len(dispatch_order) < total`.
         next_canonical += 1
         return next_canonical - 1
 
