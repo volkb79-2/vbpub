@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import struct
 import sys
 import zlib
@@ -87,6 +88,18 @@ def mini(tmp_path: Path) -> dict:
     }
 
 
+def _index_records(mini: dict) -> list[dict]:
+    path = mini["corpus_root"] / mini["pin"]["series_manifest"]
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+def _write_index_records(mini: dict, records: list[dict]) -> None:
+    path = mini["corpus_root"] / mini["pin"]["series_manifest"]
+    path.write_text(
+        "".join(json.dumps(record) + "\n" for record in records), encoding="utf-8"
+    )
+
+
 def test_package_is_deterministic_and_checks_the_series_index_first(mini: dict, tmp_path: Path) -> None:
     again = tmp_path / "again.tar"
     assert cc.package(mini["frames"], again, mini["pin"], mini["corpus_root"]) == {
@@ -120,16 +133,127 @@ def test_locate_uses_only_the_explicit_absolute_local_path(
         cc.locate(assets_file=mini["assets"], corpus_root=mini["corpus_root"])
 
 
-def test_an_invalid_explicit_path_is_an_error_and_never_skips_or_falls_back(
+def test_an_invalid_explicit_path_with_trailing_slash_is_an_error_and_never_skips_or_falls_back(
     mini: dict, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv(cc.ENV_DIR, str(tmp_path / "missing"))
-    with pytest.raises(cc.CorpusError, match="does not verify"):
+    monkeypatch.setenv(cc.ENV_DIR, str(tmp_path / "missing") + "/")
+    with pytest.raises(cc.CorpusError, match=re.escape("is set but does not verify")):
         cc.locate(assets_file=mini["assets"], corpus_root=mini["corpus_root"])
     monkeypatch.setenv(cc.ENV_DIR, str(mini["directory"]))
     broken = mini["frames"] / "0001_3s.png"
     broken.write_bytes(b"changed")
     with pytest.raises(cc.CorpusError, match="sha256 differs"):
+        cc.locate(assets_file=mini["assets"], corpus_root=mini["corpus_root"])
+
+
+@pytest.mark.parametrize(
+    ("damage", "message"),
+    [
+        ("missing", "missing ['0001_3s.png']"),
+        ("symlink", "is not a regular file"),
+    ],
+)
+def test_verify_frames_rejects_missing_and_symlinked_frame_files(
+    mini: dict, tmp_path: Path, damage: str, message: str
+) -> None:
+    victim = mini["frames"] / "0001_3s.png"
+    index = cc.load_index(mini["pin"], mini["corpus_root"])
+    if damage == "missing":
+        victim.unlink()
+    else:
+        data = victim.read_bytes()
+        victim.unlink()
+        target = tmp_path / "outside.png"
+        target.write_bytes(data)
+        victim.symlink_to(target)
+
+    with pytest.raises(cc.CorpusError, match=re.escape(message)):
+        cc.verify_frames(mini["frames"], index)
+
+
+def test_verify_directory_rejects_a_symlinked_frames_directory(mini: dict) -> None:
+    frames = mini["frames"]
+    target = mini["directory"] / "frames-real"
+    frames.rename(target)
+    frames.symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(cc.CorpusError, match=re.escape("is not a regular directory")):
+        cc.verify_directory(mini["directory"], mini["pin"], mini["corpus_root"])
+
+
+def test_verify_directory_rejects_a_symlinked_corpus_directory(
+    mini: dict, tmp_path: Path
+) -> None:
+    directory = mini["directory"]
+    target = tmp_path / "corpus-real"
+    directory.rename(target)
+    directory.symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(cc.CorpusError, match=re.escape("is not a local corpus directory")):
+        cc.verify_directory(directory, mini["pin"], mini["corpus_root"])
+
+
+@pytest.mark.parametrize(
+    ("damage", "message"),
+    [
+        ("non_png", "not a PNG with an IHDR header"),
+        ("dimensions", "PNG dimensions differ from the series manifest"),
+    ],
+)
+def test_verify_frames_rejects_bad_png_data_and_dimensions(
+    mini: dict, damage: str, message: str
+) -> None:
+    name = "0001_3s.png"
+    frame = mini["frames"] / name
+    records = _index_records(mini)
+    record = next(row for row in records if row["file"] == name)
+    if damage == "non_png":
+        data = b"this is not a PNG image with an IHDR header"
+    else:
+        data = _png(9, 4, 99)
+    frame.write_bytes(data)
+    # Keep the content hash current so these cases reach the PNG checks.
+    record["sha256"] = hashlib.sha256(data).hexdigest()
+    _write_index_records(mini, records)
+    index = cc.load_index(mini["pin"], mini["corpus_root"])
+
+    with pytest.raises(cc.CorpusError, match=re.escape(message)):
+        cc.verify_frames(mini["frames"], index)
+
+
+@pytest.mark.parametrize(
+    ("damage", "message"),
+    [
+        ("traversal", "unexpected file name or digest"),
+        ("duplicate", "duplicate frame 0001_3s.png"),
+        ("wrong_count", "2 frames, the pin says 3"),
+    ],
+)
+def test_load_index_rejects_unsafe_duplicate_and_wrong_count_records(
+    mini: dict, damage: str, message: str
+) -> None:
+    records = _index_records(mini)
+    if damage == "traversal":
+        records[0]["file"] = "../0001_3s.png"
+    elif damage == "duplicate":
+        records[1] = dict(records[0])
+    else:
+        records.pop()
+    _write_index_records(mini, records)
+
+    with pytest.raises(cc.CorpusError, match=re.escape(message)):
+        cc.load_index(mini["pin"], mini["corpus_root"])
+
+
+def test_locate_rejects_an_explicitly_empty_corpus_directory(
+    mini: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(cc.ENV_DIR, "")
+
+    with pytest.raises(
+        cc.CorpusError,
+        match=re.escape(f"{cc.ENV_DIR} is set but empty"),
+    ):
         cc.locate(assets_file=mini["assets"], corpus_root=mini["corpus_root"])
 
 
