@@ -143,7 +143,7 @@ the rest of a larger disk available for a manually created data partition:
 
 Swap sizing is tied to both machine resources and disk capacity. A pure
 RAM-based rule can consume most of a small VM's disk, while a fixed GiB value
-does not scale across 20–512 GB images. The default is
+does not scale across the nominal 20–512 GB example disks. The default is
 `min(ceil(2 × RAM in GiB), round-half-up(20% of disk capacity in GiB))`:
 twice guest RAM rounded up to GiB, capped by 20% of actual disk bytes rounded
 to the nearest GiB. The resulting values for common disk/RAM pairs are listed in the
@@ -343,6 +343,34 @@ its Trixie first boot also asks for a root password on the serial console.
 Cloud-init is not expected to affect an idle CPU benchmark materially, so the
 main benefit would be a simpler, more explicit guest setup rather than a
 guaranteed score improvement. See the [image-choice notes](../testing/vm/USAGE-TESTING.md#image-choice).
+
+## Hypervisor boot disk and NoCloud seed
+
+The intended VM starts from Debian's generic cloud image. That image already
+contains cloud-init and avoids treating this project as a Debian ISO
+installer. The private `build-iso` artifact carries NoCloud user-data and
+meta-data, so the hypervisor must present it as a data CD-ROM while booting the
+Debian disk first. Making the seed ISO first in firmware boot order would try
+to boot a non-bootable data volume and would not start the installer.
+
+The generic cloud QCOW2 is intentionally compact as a downloaded file, and
+its virtual disk capacity can be smaller than the VM's intended installation
+disk. Hyper-V must grow its converted VHDX; Proxmox/ZFS must resize the imported
+volume; TrueNAS must create the destination ZFS volume at the requested final
+capacity before importing. The consumer guide requires that capacity to be
+chosen explicitly instead of silently accepting a too-small image size.
+
+The setup differs by hypervisor because they expose storage differently:
+Hyper-V uses VHDX, Proxmox imports a QCOW2 into an explicitly selected storage,
+and TrueNAS imports a dataset image into a ZFS volume and attaches it as a VM
+device. The TrueNAS importer requires the VM to be stopped with autostart
+disabled during conversion. An incomplete ZFS volume may be the VM's only boot
+disk, so device boot order does not protect it from an early start. VM
+lifecycle on TrueNAS 27+ is managed with [`truenas/tnt`](../../../truenas/tnt/README.md)
+(`tnt vm ...`); its reference VM disk-image importer (TNT-61) is the
+[prior-art client](../../../truenas/tnt/docs/prior-art/truenas-vm/README.md)
+until the verb ships in `tnt`. Copyable workflows are in
+[`CONSUMERS.md`](CONSUMERS.md#boot-a-debian-cloud-vm-with-the-private-seed-iso).
 
 ## Prompt library boundary
 

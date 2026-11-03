@@ -134,6 +134,14 @@ adjacent commits. This small launch-time race is accepted; after the Git fetch,
 the installer code and released profile are read from the same checked-out
 tree. See the [design rationale](docs/DESIGN-GUIDE.md#private-vm-seed-iso-and-moving-profiles).
 
+The seed ISO can also boot the installer on a self-hosted VM: use a Debian
+Trixie cloud image as the boot disk and attach the seed ISO as a NoCloud data
+CD-ROM. Step-by-step setup for TrueNAS, Proxmox with ZFS storage, and Hyper-V
+is in [the hypervisor consumer guide](docs/CONSUMERS.md#boot-a-debian-cloud-vm-with-the-private-seed-iso).
+The boot-disk/seed split and the reason disk capacity must be chosen explicitly
+are in the [design guide](docs/DESIGN-GUIDE.md#hypervisor-boot-disk-and-nocloud-seed).
+For TrueNAS API-managed VM lifecycle, use [`tnt`](../../truenas/tnt/README.md).
+
 ## Cloud-init cache cleanup policy
 
 The shared config/profile key `cloud_init_cleanup_mode` controls cloud-init
