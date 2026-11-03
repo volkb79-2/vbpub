@@ -1388,6 +1388,12 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   via `:healthy` instead of the dedicated `:completed` terminal.
 - **S7.8** Container lookups MUST use exact names or anchored name/label filters,
   never substring matches.
+  A restricted teardown (`ciu down --profile NAME` / `--phases N,M`, CIU-146)
+  MUST act only on the selected stacks: it resolves each selected stack's
+  compose project (S8.7) and enumerates containers, in every state, by the
+  exact `com.docker.compose.project` label. A selection that resolves to no
+  stack refuses; it never falls back to the whole-project name prefix. Only a
+  bare `ciu down` (no `--profile`, no `--phases`) is project-wide.
 
 ### Registry
 
@@ -1603,6 +1609,15 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   `ctx.wait_tcp(<host>, <port>)`. This avoids every hook re-implementing a poll
   loop while keeping CIU agnostic about which services a given hook touches
   (CIU-4).
+- **S8.3a** *Config-content recreate (CIU-147).* Compose recreates a container
+  from a hash of its service definition, and a bind mount contributes only its
+  path, so a re-rendered configfile would otherwise leave the old process
+  running. At step 15 the overlay MUST give every service that mounts a
+  rendered configfile directory the label `ciu.configfile.sha256`, the SHA-256
+  over the files of the mounted staging directories (relative path and bytes).
+  Changed content changes the service definition and Compose recreates exactly
+  that service; identical content keeps the label and recreates nothing. CIU
+  MUST NOT pass an unconditional `--force-recreate`.
 - **S8.4** On any abort, CIU restores the process working directory and does
   not leave partial overlay/configfile artifacts referenced by a previous
   successful overlay (atomic replace per file).
