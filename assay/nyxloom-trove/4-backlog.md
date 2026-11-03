@@ -14009,3 +14009,77 @@ Operator direction: mutation campaigns run without fsync by default.
 **Dependencies and order.** After RG-149 lands in run-gate (so the default exists), and with or after B207 (scheduling
 consumes the same profiles). Independent of the v18 verdict cut (B208), except that the mode recording lands in
 `judgment.r2.profile` if B208 is still open.
+
+<!-- Id note (2026-11-04): B210 exists on branch finish-assay-1-20261104 (not on main). The ids below start at B211; the controller
+     resolves ordering on merge. -->
+
+## B211 — assay launchers run as the checkout owner with a generated passwd/group overlay; editable installs go to a lane prefix (lane-uid phase 3)
+
+**Status: OPEN (filed 2026-11-04).** Operator decision 2026-11-04 (binding): tester lanes run as the checkout owner with a generated read-only
+passwd/group overlay, a per-lane HOME and a read-only tester venv; the baked uid 1003 rule retires. Run-gate RG-151 is phase 1, tester-base
+TB-13 phase 2, this entry and cmru KI-114 phase 3, run-gate RG-153 the default flip.
+
+**Problem.**
+
+- `tools/*gate.sh` launch containers through the assay-owned path (`tools/tester-unified-gate.sh`, `tools/self-qualification-gate.sh`,
+  `tools/self-qualification-container.sh`) and verify identity against a hard-coded user: the B105 identity check at
+  `tools/self-qualification-container.sh:601` compares `.Config.User` with `1003`.
+- A different host owner uid reaches the same "dubious ownership" failure that RG-150 documents; assay replaces git's config and
+  setuptools-scm strips `GIT_*`, so `safe.directory` cannot help.
+- The editable assay install writes into `/opt/tester-venv`, owned by uid 1003 today.
+
+**Design.**
+
+- A small helper in `tools/` (one function, shared by the launchers, tested once) that: resolves uid:gid by `stat` of the checkout root, refuses
+  uid 0, writes a read-only `passwd` and `group` overlay (image's files read once per image id, plus one line for the owner uid with
+  `HOME=/home/lane`) into the lane directory and bind-mounts it `:ro`. Its contract matches run-gate RG-151 exactly (same overlay shape, same
+  lane HOME variables) and it is documented once in `tester-unified/docs/CONSUMERS.md`.
+- Every launcher passes `--user <owner uid:gid>`; the identity check compares against the resolved owner instead of `1003`.
+- Per-lane HOME and XDG directories; the editable install and any `pip install` target a per-lane prefix (`PYTHONUSERBASE`, or a lane
+  venv with `--system-site-packages`); the tester venv is read-only.
+- Audit assay's own gate scripts for writes under `/opt/tester-venv` and record the list.
+
+**Acceptance criteria.**
+
+- On a scratch host whose checkout owner uid is not 1003 the self-qualification and the tester-unified gate pass; the B105 identity check
+  accepts the owner uid and refuses any other.
+- The overlay is mounted read-only; the editable install lands in the lane prefix; a write into `/opt/tester-venv` is a test failure.
+- **Non-mdt path (operator criterion, 2026-11-04).** A test (fake docker, temp checkout) shows the launchers on a plain Debian host or a non-mdt
+  devcontainer: uid taken from the checkout owner, docker gid from `stat` of the socket actually mounted, and no step needs the mdt cockpit or any mdt
+  group.
+
+**Test plan.** Helper unit tests (fake `stat`, fixture passwd), launcher command-construction tests, one live tester run under a foreign uid.
+
+**Dependencies and order.** After RG-151 and TB-13; in parallel with KI-114. Then RG-153.
+
+## B212 — assay observer launchers: drop `ASSAY_GATE_HOST_DOCKER_GID`, derive gids by `stat`, assert against both docker-class gids
+
+**Status: OPEN (filed 2026-11-04).** Operator decision 2026-11-04: new fixed estate group `mdt-docker` (gid 2751) on the host relay socket and on
+`/run/cgprofile` (mdt-cockpit MDT-053, cgprofile CP-43); every consumer derives the gid by `stat` of the socket it mounts.
+
+**Problem.** `tools/resource-observer-gid.sh:56-75` (`assay_host_docker_gid`) accepts an environment override `ASSAY_GATE_HOST_DOCKER_GID`
+(passed in "from the host launcher", which is the stale host-number pattern) and otherwise reads `/run/cgprofile` and requires mode 770.
+The observer gid must differ from the docker gid. On an mdt host there are now two docker-class gids (`mdt-docker` on the cgprofile
+directory and the relay socket, and the host `docker` group); on a non-mdt host there is one and possibly no cgprofile at all.
+
+**Design.**
+
+- Remove the `ASSAY_GATE_HOST_DOCKER_GID` input entirely (no alias; a set variable is an error naming the replacement, so no stale launcher
+  silently relies on it).
+- Derive the docker-class gid by `stat` of the docker socket the launcher mounts (`DOCKER_HOST` when `unix://`, else the default) and, when
+  present, of `/run/cgprofile`.
+- Assert the observer socket gid differs from every derived docker-class gid (socket gid, `/run/cgprofile` directory gid); keep the
+  existing mode and ownership checks of the observer directory.
+- Messages name the paths read, never a group name.
+
+**Acceptance criteria.**
+
+- The helper's tests cover: observer gid equal to the socket gid refused; equal to the `/run/cgprofile` gid refused; distinct accepted; the old
+  variable set gives a clear error.
+- No `ASSAY_GATE_HOST_DOCKER_GID` remains in `assay/`, docs or tests except the refusal test.
+- **Non-mdt path.** With no `/run/cgprofile` and an arbitrary-gid docker socket the launchers work without the observer (or refuse the observer
+  feature with one clear infrastructure message when it is required) and require no mdt group.
+
+**Test plan.** `bash` helper tests with injected `stat` results, plus the existing launcher tests updated.
+
+**Dependencies and order.** After CP-43 and with MDT-053; pairs with run-gate RG-152.
