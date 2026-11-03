@@ -20,7 +20,7 @@ CMRU's release identity refuses, even if an ambient `CGPROFILE_VERSION` is
 present.
 
 No network fetch happens inside the image build itself beyond what `pip
-install -r requirements.txt` and the base image pull need — see the
+install -r requirements-report.txt` and the base image pull need — see the
 Dockerfile's own header for the collector/report tier split this mirrors.
 """
 from __future__ import annotations

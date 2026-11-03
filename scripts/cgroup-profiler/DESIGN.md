@@ -107,8 +107,8 @@ stack (`ciu.*.toml.j2`/`ciu.compose.yml.j2` at the project root) and image
 "Running the daemon" section for the operator's-eye view; this file stays
 the module-contract reference.
 
-**Built once, never assembled at run time.** Dependencies are pinned in
-`requirements.txt` and installed into `venv/` by `./setup.sh`, ahead of any
+**Built once, never assembled at run time.** Report dependencies are pinned in
+`requirements-report.txt` and installed into `venv/` by `./setup.sh`, ahead of any
 profiling run. No code path may pip-install, download, or fetch a CDN asset
 while profiling — that would add exactly the load the tool exists to measure.
 `plotly.js` is inlined into each report from the *installed* package, which is
@@ -134,7 +134,7 @@ scripts/cgroup-profiler/
   ciu.compose.yml.j2           RG-55: the daemon's compose service block
   ciu.toml.j2                  RG-55: sparse per-stack override (optional)
   setup.sh               build venv/ from pinned requirements (run once)
-  requirements.txt       pinned: pandas, plotly, matplotlib, ruptures, scipy…
+  requirements-report.txt pinned: pandas, plotly, matplotlib, ruptures, scipy…
   DESIGN.md              this file
   README.md              what it is, quickstart; "Running the daemon" (RG-55)
   ATTACH-GUIDE.md        how to wrap/attach to a gate; "Profiling a run-gate
@@ -870,8 +870,8 @@ number.
 - Respect the two dependency tiers from §1: collector modules import **nothing
   outside the standard library**; analysis and report modules use the pinned
   libraries freely and should reach for them rather than write the algorithm.
-- Any new dependency goes in `requirements.txt` and is installed by `setup.sh`
-  — never at run time.
+- Any new dependency goes in the matching `pyproject.toml` extra, then is
+  re-locked into `requirements-report.txt` for `setup.sh` — never at run time.
 - Comments explain *why*, at the density of `util.py`/`targets.py`. No
   banner comments restating the signature.
 - Tests are `pytest`, live in `tests/`, use `tmp_path` and synthetic fixtures,

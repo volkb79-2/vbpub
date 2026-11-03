@@ -132,7 +132,7 @@ real Unix socket in a temp dir with fake cgroupfs/proc roots.
 **C6 — image.** `scripts/cgroup-profiler/Dockerfile`: base `python:3.14-slim`
 (DESIGN.md §6 names 3.14 — if that tag cannot be pulled here, use the
 newest 3.x slim available and record it), copy `cgprofile.py lib/ docs/`,
-build a venv from `requirements.txt` (the lock) for the report tier only,
+build a venv from `requirements-report.txt` (the lock) for the report tier only,
 a `/usr/local/bin/cgprofile` wrapper (collector verbs on system python,
 `report` on the venv — mirror the `cgprofile` bash shim's split), OCI
 labels incl. `org.opencontainers.image.revision`, `ENTRYPOINT

@@ -161,10 +161,28 @@ Docker/test output too; add `--log-append` to retain prior transcripts with a di
 cmru/            cmru source (CLI, runner, hosts), SPEC, tests
 ciu/ pwmcp/ tls-edge/ modern-debian-tools-python-debug/ game_stuff/   products
 nyxloom/      project-neutral workflow control-plane design/pilot
-scripts/         shared ops scripts (netcup, debian-install, …; needs requirements.txt)
+scripts/         shared ops scripts (netcup, debian-install, …; see
+                  Python dependency installs below)
 docs/            release tooling, versioning, plans
 cmru.orchestration.toml  cmru/build-initial-standalone.sh
                          estate release-toolchain configuration and bootstrap
 ```
+
+### Shared script Python dependencies
+
+Install runtime dependencies for the shared Python scripts from the repository
+root:
+
+```bash
+python3 -m pip install -r requirements-runtime.txt
+```
+
+For their tests, install the test tools as well:
+
+```bash
+python3 -m pip install -r requirements-test.txt
+```
+
+Install both files when setting up an environment to run the scripts' tests.
 
 > Housekeeping: see [`docs/plan-cleanup.md`](docs/plan-cleanup.md) for the leftover-file cleanup plan.

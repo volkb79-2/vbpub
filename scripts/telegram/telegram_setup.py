@@ -943,7 +943,7 @@ def setup_forum_mtproto(
     if not _has_telethon():
         print(
             "Missing dependency 'telethon'. Install it with: pip install telethon\n"
-            "(or add it to requirements.txt and rebuild your environment)",
+            "(or add it to requirements-runtime.txt and rebuild your environment)",
             file=sys.stderr,
         )
         return 2

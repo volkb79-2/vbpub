@@ -31,7 +31,7 @@ one, while still rendering whatever ``Analysis`` it is actually given.
 
 **Why this file does not import jinja2.** DESIGN §4.11 and this task's brief
 both assume it is installed; in this checkout's ``venv`` it is not (absent
-from ``requirements.txt``, and this module owns neither that file nor the
+from ``requirements-report.txt``, and this module owns neither that file nor the
 venv it would need to be added to). Every place jinja2's autoescaping would
 have been used, :func:`html.escape` does the identical job for plain text and
 attribute values, and JSON blocks destined for a ``<script>`` tag get their
