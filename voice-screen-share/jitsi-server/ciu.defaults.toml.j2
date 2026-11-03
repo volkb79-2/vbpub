@@ -1,0 +1,163 @@
+# ==========================================================================
+# jitsi-server — self-hosted Jitsi Meet (docker-jitsi-meet images)
+# ==========================================================================
+# Four services: web (nginx + Jitsi Meet frontend), prosody (XMPP), jicofo
+# (conference focus), jvb (video bridge, the SFU). Group calls, screen share
+# and — with the Jitsi Meet Electron desktop client — remote control.
+# Client side: CLIENT.md. Credentials: USERS.md.
+#
+# POSTURE (pinned by tests/):
+#   - HTTPS via the host-side tls-edge: `web` joins `ingress_public` with
+#     Traefik labels and its OWN hostname (jitsi.<domain>, its own certificate).
+#     No domain is hard-coded in tracked files: `public_host` derives from
+#     PUBLIC_FQDN, and a sparse ciu.toml.j2 can override it.
+#   - Media: JVB publishes UDP `jvb.port` (10000) DIRECTLY on the host. The
+#     edge has no UDP/TCP entrypoint for it, and tls-edge is not modified.
+#     Open UDP 10000 in the host AND provider firewall (README.md).
+#   - Secure-domain auth: ENABLE_AUTH=1, AUTH_TYPE=internal. Only registered
+#     users create/join; the hook registers them with `prosodyctl register`.
+[jitsi]
+name = "jitsi"
+container_prefix = "{% if deploy is defined %}{{ deploy.project_name }}-{{ deploy.environment_tag }}{% else %}jitsi{% endif %}"
+# Own hostname -> own certificate at the edge. Domain stays configurable.
+public_host = "jitsi.{{ env.PUBLIC_FQDN }}"
+# Address JVB advertises in ICE candidates. Must be the host's PUBLIC IP
+# (the edge host is NATed or not, this value is what clients try to reach).
+public_ip = "{{ env.PUBLIC_IP }}"
+ingress_network = "ingress_public"
+# Edge router/service name: unique across the host (CONSUMER_GUIDE naming rule).
+router_name = "vss-jitsi-web"
+
+# ── Images (third-party; freshness rule: newest release >= 14 days old) ─────
+# Checked 2026-11-04 against Docker Hub. stable-11031 (pushed 2026-06-08, 149
+# days old) is the NEWEST stable tag Docker Hub carries for all four images;
+# GitHub has newer docker-jitsi-meet releases (stable-11248-3 on 2026-11-02,
+# stable-11248-1/-2 on 2026-10-22/23) but Hub has no such tag, so they cannot
+# be pulled and are not used. Tag pinned with the multi-arch manifest digest
+# (verified with `docker buildx imagetools inspect`, 2026-11-04). Re-check
+# Hub for a newer stable-* tag when this is revisited.
+[jitsi.images]
+checked_on = "2026-11-04"
+min_age_days = 14
+
+[jitsi.web]
+name = "web"
+image = "jitsi/web"
+image_tag = "stable-11031@sha256:2183593bbbe1b5e27c368e3737efc51915ce7742de93f594e5ca7950c864c233"
+image_date = "2026-06-08"
+port = 80
+mem_limit = "256m"
+mem_swap_limit = "1g"
+cpus = "0.5"
+
+[jitsi.prosody]
+name = "prosody"
+image = "jitsi/prosody"
+image_tag = "stable-11031@sha256:926c508c0d9198bf9d0b6adb88ce9092461e9a79e2895fb57fe4ef5f44ff3523"
+image_date = "2026-06-08"
+mem_limit = "256m"
+mem_swap_limit = "1g"
+cpus = "0.5"
+
+[jitsi.jicofo]
+name = "jicofo"
+image = "jitsi/jicofo"
+image_tag = "stable-11031@sha256:1f78fb0c0548ae5efd83a2b488df6aabbae4a70bc6f64c74395b6937b3aceb98"
+image_date = "2026-06-08"
+mem_limit = "512m"
+mem_swap_limit = "1g"
+cpus = "0.5"
+
+[jitsi.jvb]
+name = "jvb"
+image = "jitsi/jvb"
+image_tag = "stable-11031@sha256:3460de3541a8f96d007b8f2b4681ea8321cae64c17387338eabf776e73cd0f51"
+image_date = "2026-06-08"
+# Media port, published on the HOST (UDP). Owned by this project in the
+# voice-screen-share port plan; it must stay equal to the README port row.
+port = 10000
+# Optional TCP fallback for clients that cannot use UDP. 0 = off (default).
+# The edge has no raw-TCP entrypoint for it, so it would be a second directly
+# published host port (conventionally 4443); needs the operator's go.
+tcp_fallback_port = 0
+mem_limit = "1g"
+mem_swap_limit = "2g"
+cpus = "2"
+
+# ── Authentication (secure domain, internal prosody accounts) ───────────────
+# guests = false: every participant logs in (registered users only), which
+# is the safe default on a public host and what remote control needs anyway
+# (both ends run the Electron app). true = ENABLE_GUESTS=1: anonymous people
+# may join an already-started room by link, only logged-in users start rooms.
+[jitsi.auth]
+enabled = true
+type = "internal"
+guests = false
+xmpp_domain = "meet.jitsi"
+
+# ── Users (registered by hooks/post_compose_users.py on every `ciu up`) ─────
+# Each `secret` is a GEN_LOCAL file under .ciu/secrets/jitsi/ (mode 0600,
+# gitignored). To rotate one: delete the file, `ciu up` (USERS.md).
+[[jitsi.users]]
+name = "admin"
+secret = "user_admin"
+
+[[jitsi.users]]
+name = "dummy1"
+secret = "user_dummy1"
+
+[[jitsi.users]]
+name = "dummy2"
+secret = "user_dummy2"
+
+[[jitsi.users]]
+name = "dummy3"
+secret = "user_dummy3"
+
+# ── Secrets (S4) ─────────────────────────────────────────────────────────────
+# The Jitsi images take these three ONLY from env (no *_FILE form), so they use
+# ciu's `expose_env` escape hatch (S4.19), same reasoning as mattermost-server's
+# DB password. They appear in the container environment (readable to the docker
+# group); that is the images' design. User passwords never reach compose:
+# `consumed_by = "hook"`, read by the hook, fed to prosodyctl over stdin.
+[jitsi.secrets]
+jicofo_auth_password = { directive = "GEN_LOCAL:jitsi/jicofo_auth_password", mode = "0600", expose_env = "JITSI_JICOFO_AUTH_PASSWORD" }
+jvb_auth_password = { directive = "GEN_LOCAL:jitsi/jvb_auth_password", mode = "0600", expose_env = "JITSI_JVB_AUTH_PASSWORD" }
+jicofo_component_secret = { directive = "GEN_LOCAL:jitsi/jicofo_component_secret", mode = "0600", expose_env = "JITSI_JICOFO_COMPONENT_SECRET" }
+user_admin = { directive = "GEN_LOCAL:jitsi/user_admin", mode = "0600", consumed_by = "hook" }
+user_dummy1 = { directive = "GEN_LOCAL:jitsi/user_dummy1", mode = "0600", consumed_by = "hook" }
+user_dummy2 = { directive = "GEN_LOCAL:jitsi/user_dummy2", mode = "0600", consumed_by = "hook" }
+user_dummy3 = { directive = "GEN_LOCAL:jitsi/user_dummy3", mode = "0600", consumed_by = "hook" }
+
+[jitsi.hooks]
+post_compose = ["hooks/post_compose_users.py"]
+
+# ── Hostdirs (S6): config for each service; no database ─────────────────────
+# The Jitsi images start as root (s6) and chown /config themselves, so the
+# default owner/mode is enough.
+[jitsi.web.hostdir]
+config = { path = "", mode = "0775" }
+
+[jitsi.prosody.hostdir]
+config = { path = "", mode = "0775" }
+
+[jitsi.jicofo.hostdir]
+config = { path = "", mode = "0775" }
+
+[jitsi.jvb.hostdir]
+config = { path = "", mode = "0775" }
+
+[jitsi.health]
+interval = "20s"
+timeout = "10s"
+retries = 6
+start_period = "60s"
+
+[jitsi.logging]
+max_size = "10m"
+max_file = "3"
+
+[jitsi.governance]
+mem_limit = "1g"
+mem_swap_limit = "2g"
+cpus = "1"
