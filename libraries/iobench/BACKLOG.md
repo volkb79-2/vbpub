@@ -144,6 +144,53 @@ weak oracles):
     - otherwise the same bounded-loop rule in the code under test.
 - **Acceptance:** each of the five, replayed with `--rejudge`, ends as `killed` within 60 s.
 
+**Group B status (branch `fan-iob-b-20261103`, 2026-11-03; testing, shape, cli, guard, series, restore, matrix, derive, plausibility).**
+All 144 survivors of these nine files are decided; 0 open. Tests: `tests/test_r2b_{testing,series,shape,cli,guard,restore,matrix,derive,plausibility}.py`
+(116 tests; fast lane `run-gate r0-r1`: 870 passed, coverage 100 % branch). Kills were verified by applying each mutant by hand to a scratch copy of the
+original source and running only the new test file (every "killed" below failed that file; nothing was rejudged by assay, which is not installed in the cockpit).
+
+| File | Survived | Killed by a test | Mutation point removed (simplified / dead code) | Equivalent (argued) | Open |
+|---|---:|---:|---:|---:|---:|
+| testing.py | 31 | 22 | 5 (221 `i > 0`, 359, 640, 777, 266 dead `o_direct`) | 4 (96, 226, 351, 374) | 0 |
+| shape.py | 25 | 23 | 0 | 2 (96, 128 `LtE->Lt`) | 0 |
+| cli.py | 16 | 15 | 1 (324, `None if x is None else x` is `x`) | 0 | 0 |
+| guard.py | 16 | 16 | 0 | 0 | 0 |
+| series.py | 15 | 14 | 1 (186, `downsample` without the `<=` branch) | 0 | 0 |
+| restore.py | 13 | 11 | 1 (370, dead `prior.locked = False`) | 1 (158) | 0 |
+| matrix.py | 10 | 9 | 0 | 1 (181 `Lt->LtE`) | 0 |
+| derive.py | 9 | 8 | 0 | 1 (71 `Gt->GtE`) | 0 |
+| plausibility.py | 9 | 8 | 0 | 1 (27) | 0 |
+
+Equivalence arguments (line numbers of the pre-change source):
+
+- **Float boundary no float can hit** (shape.py 96 and 128, plausibility.py 27): the compared value is `q - 1` (or `1 - q`) for a quotient `q` of two floats,
+  against 0.15 or 0.20, which are not dyadic. `q - 1` is exact for `q` in [0.5, 2), so equality needs `q = 1 + fl(0.15)` (or `1 - fl(0.2)`), which has more
+  mantissa bits than a double holds (the low three mantissa bits of fl(0.15) are 011; those of fl(0.2) are 010). No input reaches the boundary, so `>` and `>=` agree.
+  The other tolerance edges (cv 0.15/0.40/0.20, r2 0.9, residual 0.25, ratios 0.7/1.3/3/5/1.5/1.2) are reachable and are pinned exactly.
+- **testing.py 96** (`order[b] <= 1e-12` after `order[b] -= d`): equality would need `a - fl(a - cap) == 1e-12` exactly with `a - cap > 1e-9`; the
+  subtraction grid at that magnitude (about 2e-16 at a = 1) cannot represent 1e-12, so the remainder is never exactly the epsilon.
+- **testing.py 226** (`w > 0` in `mode_profile`): the weights are differences of `phi` over a bin inside the +-4 sigma window; none is zero for any (latency, sigma) grid
+  searched (8 latencies x 6 sigmas, every bin).
+- **testing.py 351 and 374** (the fake's byte cap): at exact equality the original and the mutant both end the sample at the same `end_t` with `io_bytes == io_size`
+  (the span `(io_size - io_bytes) / bps` is the whole span), so the outputs coincide; the `- 1e-6` tolerance in 351 cannot be hit exactly by the simulation.
+- **restore.py 158**: the line above already refuses unless `protect_cgroup` and `abort_psi` are both given or both absent, so the `and` only narrows the types for `_validate_guards`; `or` behaves the same.
+- **matrix.py 181** (`len(measured) < 3`): `measured` is always a prefix of the plan (the budget only shrinks), and `measured[-1] == REF2` holds only for the complete plan
+  (6 or 8 cells); a 3-cell prefix is therefore refused by the `REF2` clause already. The `or` chain itself is pinned (4 measured cells now fail the stage).
+- **derive.py 71** (`int(k) > cand`): the size equal to `cand` has just failed `v >= F`, so it is never in `meets` whichever way the boundary goes.
+
+Other changes that came out of this group:
+
+- **The five `budget_exceeded` candidates were non-terminating loops created by the mutant, not slow tests** (testing.py 585 `_resolve`, 596 and 653 the `while d and d not in dirs`
+  parent walks, stages.py 141 `supervise` spinning on a finished handle, sweep.py 61 `quiet_gap_ended` never true). There is no `pytest-timeout` in tester-unified,
+  and a bound inside the fake or the code under test would hide the loop, so `tests/conftest.py` now carries an autouse per-test wall-clock limit (30 s, the slowest real test takes
+  about 3 s; `SIGALRM`, re-armed every second, raising a `BaseException` so a broad `except` cannot swallow it; `@pytest.mark.time_limit(n)` overrides, marker registered in `pytest.ini`).
+  Replayed by hand against the whole suite: the five end as killed (testing.py 585 in 18 s, 596 and 653 in 34 s, stages.py 141 in 7 s, sweep.py 61 in 128 s, the
+  last because its first failing test is test number 678 of 760, after about 95 s of passing tests plus the 30 s limit: it does not meet the 60 s acceptance by itself). A smaller
+  limit would shave 15 s, not reach 60; the real lever is test selection or running the candidate's changed-file tests first (see "The bigger lever" below).
+- `FakeDevice` no longer carries the unused `o_direct` attribute; `FakeHost._mount_for`, `_meminfo`, the fresh-penalty guard in `FakeFio.simulate`, `mode_profile` and series.py `downsample` lost the
+  comparison that made an equivalent mutant (behaviour unchanged, covered by the old and the new tests). `restore.recover_previous` lost a `finally` that reset a local that is never read again.
+- `test_bl06_n_r3_2_a_survivor_holding_the_pipe_cannot_hang_the_run` failed once in a long single-container run (passed alone and in the gate run): a wall-clock test, not touched here; watch it in the rerun.
+
 **Scheduling and profile hooks this lane will use** (cross-tool design `docs/design/RESOURCE-PROFILES.md`):
 
 - **Profiles (assay B206).** The rerun records cgprofile profiles per candidate: exact numbers in cgroup mode at
