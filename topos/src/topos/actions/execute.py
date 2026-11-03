@@ -553,40 +553,89 @@ class _GateRefusal:
 Gate = Callable[[], _GateRefusal | None]
 
 
+class _OwnerSafetyGate:
+    """P87 owner / protected-ID post-audit gate for one Docker verb.
+
+    Always engaged (B-039): ``owner_inspect=None`` means "use the production
+    ``docker inspect`` resolver", never "skip the gate". Tests substitute a
+    resolver explicitly. The evaluator is fail-closed: a single
+    ``docker inspect`` resolves the canonical identity and labels, and any
+    owner-managed / owner-ambiguous / protected / inspect-failure verdict is a
+    typed, audited refusal. Non-Docker kinds are untouched by the evaluator.
+
+    On success the inspected canonical full ID is kept so :meth:`bind_argv`
+    can execute by that immutable ID instead of the raw accepted name/ID
+    string (B-040): a name reassigned after the authorizing inspect can no
+    longer redirect the verb to another container.
+    """
+
+    def __init__(
+        self,
+        kind: str,
+        target: str,
+        owner_inspect: Callable[[str], object] | None,
+        owner_protected_services: Collection[str] | None,
+    ) -> None:
+        self._kind = kind
+        self._target = target
+        self._owner_inspect = owner_inspect
+        self._owner_protected_services = owner_protected_services
+        self.full_id: str | None = None
+
+    def __call__(self) -> _GateRefusal | None:
+        from topos.actions import lifecycle_adapters, owner_safety
+
+        if self._kind not in owner_safety.DOCKER_OWNER_GUARDED_KINDS:
+            return None
+        inspect = (
+            self._owner_inspect
+            if self._owner_inspect is not None
+            else owner_safety.default_owner_inspect
+        )
+        services = (
+            self._owner_protected_services
+            if self._owner_protected_services is not None
+            else owner_safety.default_protected_services()
+        )
+        captured: list[object] = []
+
+        def single_inspect(name: str) -> object:
+            raw = inspect(name)
+            captured.append(raw)
+            return raw
+
+        refusal = lifecycle_adapters.evaluate_docker_owner_chain(
+            self._kind, self._target, inspect=single_inspect, protected_services=services
+        )
+        if refusal is not None:
+            return _GateRefusal(refusal.message)
+        resolved = owner_safety.resolve_identity(captured[-1]) if captured else None
+        if resolved is None:
+            return _GateRefusal(
+                f"could not establish the canonical ID of container {self._target!r}; "
+                "refusing the mutation (no name-only fallback)"
+            )
+        self.full_id = resolved.full_id
+        return None
+
+    def bind_argv(self, argv: tuple[str, ...]) -> tuple[str, ...]:
+        """Replace the accepted target token with the inspected canonical ID."""
+        if self.full_id is None:
+            return argv
+        if self._target not in argv[1:]:
+            raise ValueError("target token not found in argv; cannot bind canonical ID")
+        return (argv[0],) + tuple(
+            self.full_id if token == self._target else token for token in argv[1:]
+        )
+
+
 def _make_owner_safety_gate(
     kind: str,
     target: str,
     owner_inspect: Callable[[str], object] | None,
     owner_protected_services: Collection[str] | None,
-) -> Gate:
-    """Build the P87 owner / protected-ID post-audit gate for one Docker verb.
-
-    A no-op when no ``owner_inspect`` seam is engaged (the legacy P46/P72
-    path), so the existing start/stop/restart/kill/update contract is
-    preserved. Once engaged the underlying evaluator is fail-closed: a single
-    ``docker inspect`` resolves the canonical identity and labels, and any
-    owner-managed / owner-ambiguous / protected / inspect-failure verdict is a
-    typed, audited refusal.
-    """
-
-    def gate() -> _GateRefusal | None:
-        if owner_inspect is None:
-            return None
-        from topos.actions import lifecycle_adapters, owner_safety
-
-        services = (
-            owner_protected_services
-            if owner_protected_services is not None
-            else owner_safety.default_protected_services()
-        )
-        refusal = lifecycle_adapters.evaluate_docker_owner_chain(
-            kind, target, inspect=owner_inspect, protected_services=services
-        )
-        if refusal is None:
-            return None
-        return _GateRefusal(refusal.message)
-
-    return gate
+) -> _OwnerSafetyGate:
+    return _OwnerSafetyGate(kind, target, owner_inspect, owner_protected_services)
 
 
 def _make_systemd_owner_gate(
@@ -639,6 +688,7 @@ def _execute_gated(
     build_spec: Callable[[], _ExecutionSpec],
     pre_audit_gates: tuple[Gate, ...] = (),
     post_audit_gates: tuple[Gate, ...] = (),
+    argv_binder: Callable[[tuple[str, ...]], tuple[str, ...]] | None = None,
 ) -> ExecuteResult:
     """Run the single P46 gate/audit/runner sequence for every action verb.
 
@@ -714,7 +764,23 @@ def _execute_gated(
         started = float(now())
     except BaseException:
         started = time.time()
-    for gate in post_audit_gates:
+    def bind_refusal() -> _GateRefusal | None:
+        # B-040: after the authorizing gates, run by the inspected canonical ID.
+        nonlocal spec
+        if argv_binder is None:
+            return None
+        try:
+            bound = argv_binder(spec.argv)
+            spec = dataclasses.replace(
+                spec,
+                argv=bound,
+                plan=dataclasses.replace(spec.plan, argv=bound),
+            )
+        except ValueError as exc:
+            return _GateRefusal(str(exc))
+        return None
+
+    for gate in (*post_audit_gates, bind_refusal):
         refusal = gate()
         if refusal is None:
             continue
@@ -884,6 +950,9 @@ def execute_plan(
             return _GateRefusal(str(exc))
         return None
 
+    owner_gate = _make_owner_safety_gate(
+        kind, target, owner_inspect, owner_protected_services
+    )
     return _execute_gated(
         kind,
         target,
@@ -900,11 +969,10 @@ def execute_plan(
         pre_audit_gates=(action_kind_gate, plan_gate),
         post_audit_gates=(
             target_revalidation_gate,
-            _make_owner_safety_gate(
-                kind, target, owner_inspect, owner_protected_services
-            ),
+            owner_gate,
             _make_systemd_owner_gate(kind, target, systemd_owner_lookup),
         ),
+        argv_binder=owner_gate.bind_argv,
     )
 
 
@@ -1203,6 +1271,9 @@ def execute_kill(
             return _GateRefusal(str(exc))
         return None
 
+    owner_gate = _make_owner_safety_gate(
+        kind, target, owner_inspect, owner_protected_services
+    )
     return _execute_gated(
         kind,
         target,
@@ -1217,12 +1288,8 @@ def execute_kill(
         timeout=timeout,
         build_spec=build_spec,
         pre_audit_gates=(signal_gate, force_gate, protected_gate, action_kind_gate),
-        post_audit_gates=(
-            target_revalidation_gate,
-            _make_owner_safety_gate(
-                kind, target, owner_inspect, owner_protected_services
-            ),
-        ),
+        post_audit_gates=(target_revalidation_gate, owner_gate),
+        argv_binder=owner_gate.bind_argv,
     )
 
 
@@ -1344,6 +1411,9 @@ def execute_update(
             return _GateRefusal(str(exc))
         return None
 
+    owner_gate = _make_owner_safety_gate(
+        "docker-update", target, owner_inspect, owner_protected_services
+    )
     return _execute_gated(
         "docker-update",
         target,
@@ -1364,10 +1434,6 @@ def execute_update(
             systemd_target_gate,
             current_memory_gate,
         ),
-        post_audit_gates=(
-            target_revalidation_gate,
-            _make_owner_safety_gate(
-                "docker-update", target, owner_inspect, owner_protected_services
-            ),
-        ),
+        post_audit_gates=(target_revalidation_gate, owner_gate),
+        argv_binder=owner_gate.bind_argv,
     )

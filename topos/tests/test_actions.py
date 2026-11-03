@@ -517,7 +517,12 @@ class TestExecutionSuccess:
             root_check=lambda: True,
         )
         assert result.outcome == "success"
-        assert collected == [(DOCKER_EXECUTABLE, "restart", "my-container")]
+        # B-040: executes by the inspected canonical ID (conftest's standalone
+        # resolver derives it from the name), never the raw accepted name.
+        import hashlib
+
+        full_id = hashlib.sha256(b"my-container").hexdigest()
+        assert collected == [(DOCKER_EXECUTABLE, "restart", full_id)]
 
     def test_systemd_stop_args(self, tmp_path: Path) -> None:
         from topos.actions.execute import execute_plan, ExecuteResult
