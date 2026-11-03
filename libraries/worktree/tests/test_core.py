@@ -694,6 +694,15 @@ def test_mounts_under_fails_closed_on_unreadable_or_malformed_table(tmp_path: Pa
         core.mounts_under(tmp_path, mountinfo_reader=lambda: "1 2 3\n")
 
 
+def test_mounts_under_accepts_a_row_with_exactly_the_five_leading_fields(tmp_path: Path) -> None:
+    """Boundary: mount point is field five; a row ending there is still a row."""
+    root = tmp_path / "checkout"
+    table = f"1 2 3:4 / {root}/inner\n"
+    assert core.mounts_under(root, mountinfo_reader=lambda: table) == [root / "inner"]
+    with pytest.raises(core.WorkspaceError, match="malformed mount table row"):
+        core.mounts_under(root, mountinfo_reader=lambda: "1 2 3:4 /\n")
+
+
 def test_mounts_under_reads_the_real_mount_table_by_default(tmp_path: Path) -> None:
     assert core.mounts_under(tmp_path / "definitely-not-a-mount") == []
     # The real table always has "/" and never reports it as under a subpath.
