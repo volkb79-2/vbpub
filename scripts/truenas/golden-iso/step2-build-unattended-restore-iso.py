@@ -211,6 +211,10 @@ def load_secrets(path: Path, image: Path) -> dict[str, str]:
         raise BuildError(f"cannot parse secret TOML: {type(exc).__name__}") from None
     if values.get("schema_version") != 1 or values.get("image_file") != image.name:
         raise BuildError("secret TOML does not identify this golden image")
+    try:
+        capture_id = credentials.require_matching_pair(image, path, values.get("capture_id"))
+    except credentials.CredentialError as exc:
+        raise BuildError(str(exc)) from None
     admin = values.get("truenas_admin", {})
     root_ssh = values.get("root_ssh", {})
     mattermost = values.get("mattermost", {})
@@ -237,7 +241,7 @@ def load_secrets(path: Path, image: Path) -> dict[str, str]:
         derived = public_key_from_private(private_path)
     if derived.split()[:2] != public_key.split()[:2]:
         raise BuildError("root SSH public key in secret TOML does not match its private key")
-    return {"mattermost_webhook_url": webhook}
+    return {"mattermost_webhook_url": webhook, "capture_id": capture_id}
 
 
 def hash_file(path: Path, algorithm: str) -> str:
@@ -827,7 +831,14 @@ def build(args: argparse.Namespace) -> None:
     base_iso = args.base_iso.resolve()
     sums = args.base_checksums.resolve()
     image = args.image.resolve()
-    secrets_file = args.secrets.resolve()
+    if args.secrets is not None:
+        secrets_file = args.secrets.resolve()
+    else:
+        # Locate the sidecar by capture ID, next to the image.
+        _, image_id = credentials.split_capture_stem(image)
+        if image_id is None:
+            raise BuildError("golden image file name must carry the 8-hex capture ID (<stem>-<id>.raw)")
+        secrets_file = image.parent / credentials.sidecar_name_for(image, image_id)
     output = args.output.resolve()
     if output in {base_iso, sums, image, secrets_file}:
         raise BuildError("output ISO path must differ from all build inputs")
@@ -861,6 +872,7 @@ def build(args: argparse.Namespace) -> None:
         manifest: dict[str, object] = {
             "schema_version": 1,
             **image_facts,
+            "capture_id": webhook_config["capture_id"],
             "raw_image_sha256": raw_sha,
             "compressed_image_sha256": compressed_sha,
             "efi_loader": EFI_LOADER,
@@ -890,7 +902,11 @@ def build(args: argparse.Namespace) -> None:
     os.chmod(checksum, 0o600)
     log(f"Built ISO: {output} ({output.stat().st_size} bytes)")
     log(f"ISO SHA-256: {digest}")
-    log("The ISO contains the Mattermost webhook; keep this build artifact private.")
+    log(f"Capture ID {webhook_config['capture_id']}: cleartext secrets are in the matching "
+        f"{credentials.sidecar_name_for(image, webhook_config['capture_id'])} sidecar.")
+    log("The ISO contains the golden disk (password hash, API-key record, root key, host keys, "
+        "machine identity) and the Mattermost webhook; keep this build artifact private and rotate "
+        "after restore: see golden-iso/README.md 'Secrets baked into a golden ISO'.")
 
 
 def make_parser() -> argparse.ArgumentParser:
@@ -925,7 +941,11 @@ def make_parser() -> argparse.ArgumentParser:
     build_parser.add_argument("--base-signature", type=Path)
     build_parser.add_argument("--debian-cd-keyring", type=Path)
     build_parser.add_argument("--image", type=Path, required=True)
-    build_parser.add_argument("--secrets", type=Path, required=True)
+    build_parser.add_argument(
+        "--secrets", type=Path, default=None,
+        help="secrets sidecar; default is <stem>-<capture ID>.secrets.toml beside the image, "
+        "and its ID must equal the image's ID",
+    )
     build_parser.add_argument("--output", type=Path, required=True)
     build_parser.add_argument("--force", action="store_true")
     build_parser.set_defaults(func=build)

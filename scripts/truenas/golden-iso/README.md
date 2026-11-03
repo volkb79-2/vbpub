@@ -18,9 +18,8 @@ has three scripts:
    validates a Debian Live base ISO, embeds the golden disk and restore runtime,
    and produces the unattended restore ISO.
 3. [`step3-apply-restored-preseed.py`](step3-apply-restored-preseed.py)
-   rotates the golden administrator password and API key to fresh per-host
-   random values and applies root-key SSH settings on a restored host over
-   pinned SSH. It sends secrets through middleware
+   reapplies a protected administrator password and root-key SSH settings to a
+   restored host over pinned SSH. It sends the password through middleware
    stdin, not command arguments; see the [design guide](docs/DESIGN-GUIDE.md#post-restore-preseed)
    and [consumer procedure](docs/CONSUMERS.md#apply-the-post-restore-preseed).
 
@@ -48,12 +47,73 @@ the golden-image scripts do not invoke the patch workflow.
 Credential rule (TN-03): no credential is chosen or documented by hand. Step 1
 generates a random `truenas_admin` password and a dynamic API key at every
 capture and stores both in the mode-0600 gitignored sidecar (0700 directory);
-the public bootstrap password is never accepted as a final value. Because the
-golden disk carries that password hash and API key, step 3 replaces both on
-each restored host with a fresh random password and API key, stored in a
-per-host mode-0600 gitignored sidecar (`artifacts/hosts/<host>.secrets.toml` by
-default). Run step 3 before any other action on a restored host. Scripts print
+the public bootstrap password is never accepted as a final value. Scripts print
 only sidecar paths, never values.
+
+Capture ID: every capture gets an 8-hex-digit ID (`secrets.token_hex(4)`). It
+is part of both file names, `truenas-27-20GiB-golden-<id>.raw` and
+`truenas-27-20GiB-golden-<id>.secrets.toml`, is recorded inside the sidecar
+(`capture_id`) and in the restore ISO manifest, and is what ties an image to its
+secrets. Step 2 `build` locates the sidecar next to the image by that ID and
+refuses a sidecar whose file-name ID or recorded ID differs from the image's.
+Name the ISO `truenas-27-20GiB-unattended-restore-<id>.iso` so the Netcup
+restore controller can show the ID.
+
+A restore is unattended and does not rotate anything: the restored host keeps
+the golden image's secrets, and rotating them is the user's job after the
+restore.
+
+## Secrets baked into a golden ISO / what to change after a restore
+
+The golden disk is restored byte for byte, so these secrets travel with the
+image (`...-<id>.raw`) and with every restore ISO built from it. Treat both as
+private, credential-bearing artifacts; never publish, share, or attach them.
+
+| Secret baked in | Where it lives in the image/ISO | Cleartext |
+|---|---|---|
+| `truenas_admin` password (hash) | TrueNAS config database on the disk | sidecar `[truenas_admin].password` |
+| API key record (`truenas-27-20GiB-golden-image`) | TrueNAS config database on the disk | sidecar `[truenas_api].api_key` |
+| root SSH authorized key (public half) | root user record on the disk | sidecar `[root_ssh].public_key`; private half `[root_ssh].private_key` |
+| SSH host keys | `/etc/ssh` on the disk | not stored (pin via known_hosts) |
+| machine-id / system identity | `/etc/machine-id` and TrueNAS system GUID on the disk | not stored |
+| TrueNAS default TLS certificate and private key (UI/API) | TrueNAS config database on the disk | not stored |
+| Mattermost webhook URL (token) | restore ISO only: `/etc/truenas-unattended-restore/runtime.json` (mode 0600 inside the Live root) | sidecar `[mattermost].webhook_url` |
+
+Cleartext values exist only in the mode-0600 sidecar
+`truenas-27-20GiB-golden-<id>.secrets.toml` (0700 `artifacts/` directory,
+gitignored). The 8-hex ID in the file name identifies the pair. Nothing else
+holds them: scripts never print them and tracked files never contain them.
+
+Before the restored host is exposed to a network that you do not fully control,
+rotate everything below (the restored host is reachable with the baked-in
+secrets until you do). Run the commands over root SSH with the key from the
+sidecar, as `root` on the host:
+
+1. Admin password: pick a new random value and set it, then record it in your
+   own password store.
+   `midclt call user.update "$(midclt call user.query '[["username","=","truenas_admin"]]' | jq '.[0].id')" "{\"password\": \"$NEW\"}"`
+   (or UI: Credentials > Users > truenas_admin > Edit).
+2. API key: `midclt call api_key.query` to list, `midclt call api_key.delete <id>`
+   for the golden key, then
+   `midclt call api_key.create '{"name":"<name>","username":"truenas_admin"}'`
+   (the returned `key` is shown once; or UI: top-right user menu > API Keys).
+3. Root SSH key: replace the authorized key with your own public key,
+   `midclt call user.update <root-id> '{"sshpubkey": "<your ssh-ed25519 line>"}'`,
+   verify a login with the new key, and stop using the sidecar's private key.
+4. SSH host keys: `rm -f /etc/ssh/ssh_host_*` (exact names only), then
+   `ssh-keygen -A && midclt call service.control RESTART ssh`;
+   update your known_hosts pins afterwards.
+5. Machine identity (only if the host should be distinct from other restores of
+   the same image): `rm -f /etc/machine-id && systemd-machine-id-setup` and
+   reboot.
+6. TLS certificate: generate a new certificate in the UI (Credentials >
+   Certificates) and select it as the UI certificate (System > General), or
+   `midclt call system.general.update '{"ui_certificate": <new-cert-id>}'`.
+7. Mattermost webhook: revoke the golden webhook in Mattermost (Integrations >
+   Incoming Webhooks) after the last restore that uses the ISO; build a new ISO
+   with a new webhook for later restores.
+
+A first-boot helper script that runs this checklist is optional (TN-14).
 
 ## Current artifact status
 

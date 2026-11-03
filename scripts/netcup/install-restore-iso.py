@@ -79,6 +79,20 @@ def _state_path(server_id: int, workflow: str = "restore") -> Path:
     return STATE_DIR / f"{workflow}-{server_id}.json"
 
 
+_CAPTURE_ID_IN_NAME = re.compile(r"-([0-9a-f]{8})(?:\.[A-Za-z0-9.]+)?\Z")
+POST_RESTORE_POINTER = (
+    "The restored host still carries the golden image's baked-in secrets: rotate them "
+    "before exposing it. Checklist: scripts/truenas/golden-iso/README.md, section "
+    "'Secrets baked into a golden ISO / what to change after a restore'."
+)
+
+
+def _capture_id_from_name(name: str) -> str | None:
+    """The 8-hex golden capture ID carried in an ISO file name, if any."""
+    match = _CAPTURE_ID_IN_NAME.search(name)
+    return match.group(1) if match else None
+
+
 def _load_state(path: Path, server_id: int) -> dict[str, Any]:
     if not path.is_file():
         raise CliFailure(f"restore workflow state not found: {path}")
@@ -400,6 +414,10 @@ def _start(args: Any, runtime: Any) -> int:
         "original_boot_order": current_order,
         "tasks": {},
     }
+    if workflow_operation != "install":
+        capture_id = _capture_id_from_name(path.stem) or _capture_id_from_name(iso_name[: -len(".iso")])
+        if capture_id:
+            state["capture_id"] = capture_id
     if workflow_operation == "install":
         state["operation"] = "installer"
         state["readiness"] = {
@@ -410,6 +428,8 @@ def _start(args: Any, runtime: Any) -> int:
     runtime.output.info(f"Target: {_server_name(details)} (server {args.server_id})")
     runtime.output.info(f"ISO: {path} ({path.stat().st_size} bytes, SHA-256 {digest})")
     runtime.output.info(f"Uploaded user ISO name: {iso_name}")
+    if state.get("capture_id"):
+        runtime.output.info(f"Golden capture ID: {state['capture_id']} (secrets sidecar: *-{state['capture_id']}.secrets.toml)")
     runtime.output.info(f"Saved boot order for final restoration: {','.join(current_order)}")
     if workflow_operation == "install":
         runtime.output.info("The ISO will boot first. The installer must power off the guest on successful completion.")
@@ -909,6 +929,13 @@ def _finish_or_recover(args: Any, runtime: Any, *, recovery: bool) -> int:
             runtime.output.info(f"Disk-boot recovery completed: {state_path}")
         else:
             runtime.output.info(f"Restore workflow completed: {state_path}")
+            capture_id = state.get("capture_id")
+            if capture_id:
+                runtime.output.info(
+                    f"Golden capture ID {capture_id}: cleartext secrets are in the matching "
+                    f"*-{capture_id}.secrets.toml sidecar."
+                )
+            runtime.output.info(POST_RESTORE_POINTER)
     return 0
 
 

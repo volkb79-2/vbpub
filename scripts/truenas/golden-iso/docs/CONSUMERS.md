@@ -429,6 +429,13 @@ step 1 and later host verification:
 stat -c '%a %n' artifacts/truenas-27-20GiB-golden.secrets.toml
 ```
 
+This file is only the seed for the capture. Step 1 generates an 8-hex-digit
+capture ID and writes the real pair under ID-bearing names,
+`truenas-27-20GiB-golden-<id>.raw` and `truenas-27-20GiB-golden-<id>.secrets.toml`,
+recording the ID in the sidecar. A retry of an interrupted capture (no image yet)
+keeps its ID; every finished capture gets a new one, so an image and a
+sidecar of different captures can never be mixed up.
+
 The secret file must be mode `600`. The builder validates the admin password,
 Ed25519 key pair, HTTPS webhook, and image basename; do not print the TOML.
 The source VM must be powered off before running step 1. It starts the installed
@@ -441,8 +448,9 @@ checks the GPT, EFI loader, size, and SHA-256:
 
 ```sh
 ./step1-install-prepare-truenas.py --api-key-expiry-days 30
-sha256sum artifacts/truenas-27-20GiB-golden.raw
-stat -c '%a %n' artifacts/truenas-27-20GiB-golden.secrets.toml
+ID=<the 8-hex capture ID step 1 logged>
+sha256sum artifacts/truenas-27-20GiB-golden-$ID.raw
+stat -c '%a %n' artifacts/truenas-27-20GiB-golden-$ID.secrets.toml
 ```
 
 Choose an expiry interval long enough for capture, upload, restore, and API
@@ -490,12 +498,17 @@ sudo python3 step2-build-unattended-restore-iso.py build \
   --base-checksums "$DOWNLOADS/SHA512SUMS" \
   --base-signature "$DOWNLOADS/SHA512SUMS.sign" \
   --debian-cd-keyring /usr/share/keyrings/debian-role-keys.pgp \
-  --image artifacts/truenas-27-20GiB-golden.raw \
-  --secrets artifacts/truenas-27-20GiB-golden.secrets.toml \
-  --output artifacts/truenas-27-20GiB-unattended-restore.iso
-sha256sum --check artifacts/truenas-27-20GiB-unattended-restore.iso.sha256
-xorriso -indev artifacts/truenas-27-20GiB-unattended-restore.iso -report_el_torito plain
+  --image artifacts/truenas-27-20GiB-golden-$ID.raw \
+  --output artifacts/truenas-27-20GiB-unattended-restore-$ID.iso
+sha256sum --check artifacts/truenas-27-20GiB-unattended-restore-$ID.iso.sha256
+xorriso -indev artifacts/truenas-27-20GiB-unattended-restore-$ID.iso -report_el_torito plain
 ```
+
+Without `--secrets` the builder finds the sidecar by ID next to the image
+(`truenas-27-20GiB-golden-$ID.secrets.toml`). It refuses to build when the ID in
+the image name, the sidecar name, and the sidecar's `capture_id` are not all
+identical, and records the ID in the ISO manifest. Keep the ID in the ISO name:
+the Netcup restore controller reads it from there and shows it.
 
 At runtime the service requires UEFI and exactly one unmounted, writable,
 non-removable disk apart from the ISO. It reports discovered disks and
@@ -844,11 +857,11 @@ root SSH key used by its existing acceptance tools after the provider restore
 has booted. Prepare a pinned `v1001.known_hosts` entry from the captured
 TrueNAS source host key; do not accept a new key without comparing its
 fingerprint to the source key. Hold the provider lock while applying the
-preseed. The command generates a fresh random admin password, replaces the
-golden API key with a new per-host key, and writes both to the mode-0600
-`--host-secrets` TOML (gitignored; it refuses to replace a finished one, so
-remove the old file deliberately first). Values travel as `midclt` stdin
-payloads and are never printed; only the sidecar path is:
+preseed. The command reads the mode-0600 admin TOML locally (the golden
+sidecar of the restored image, `...-golden-<id>.secrets.toml`) and sends the
+password as a `midclt` stdin payload. It does not rotate anything: the restored
+host keeps the golden image's secrets until you rotate them, see
+[Secrets baked into a golden ISO / what to change after a restore](#secrets-baked-into-a-golden-iso--what-to-change-after-a-restore):
 
 ```bash
 cd scripts/netcup
@@ -857,7 +870,7 @@ flock -x /home/vscode/vbpub-release-program-20261027/v1001.lock \
     --host v1001.vxxu.de \
     --ssh-identity ../truenas/boot-pool-patch/artifacts/.live-test-root-key \
     --known-hosts ../truenas/boot-pool-patch/artifacts/v1001.known_hosts \
-    --host-secrets ../truenas/boot-pool-patch/artifacts/v1001-ui-secrets.toml \
+    --admin-secrets ../truenas/boot-pool-patch/artifacts/v1001-ui-secrets.toml \
     --root-public-key ../truenas/boot-pool-patch/artifacts/.live-test-root-key.pub \
     --expected-version 27.0.0-RC.1 --yes
 ```
@@ -865,3 +878,37 @@ flock -x /home/vscode/vbpub-release-program-20261027/v1001.lock \
 The step refuses a different build or an existing v27 patch record. Follow it
 with the registered `live-ui-auth` and `live-ui-prepare-ssh` gates to verify
 the saved UI credentials and key-only SSH behavior before taking a snapshot.
+
+## Secrets baked into a golden ISO / what to change after a restore
+
+The restore is unattended and byte-for-byte: the restored host keeps every
+secret of the golden capture, and later access works through them by design.
+Rotating them is the user's step after the restore, before the host is exposed.
+The image `truenas-27-20GiB-golden-<id>.raw` and every ISO built from it are
+private, credential-bearing artifacts. Cleartext values exist only in the
+mode-0600, gitignored sidecar `truenas-27-20GiB-golden-<id>.secrets.toml`; the
+8-hex `<id>` in both file names (and in the ISO name, manifest, and the Netcup
+controller output) identifies the pair.
+
+Secrets that travel with the image and the restore ISO:
+
+- `truenas_admin` password hash (cleartext: sidecar `[truenas_admin].password`)
+- the API key record `truenas-27-20GiB-golden-image` (cleartext: sidecar `[truenas_api].api_key`)
+- root SSH authorized key (public half) and its private counterpart (sidecar `[root_ssh].private_key`)
+- SSH host keys (`/etc/ssh/ssh_host_*`)
+- machine-id and TrueNAS system identity
+- the TrueNAS default TLS certificate and private key for the UI/API
+- the Mattermost webhook URL/token (restore ISO only, `/etc/truenas-unattended-restore/runtime.json`; sidecar `[mattermost].webhook_url`)
+
+Post-restore checklist (as `root` over SSH on the restored host; the full
+commands are in the [README section of the same name](../README.md#secrets-baked-into-a-golden-iso--what-to-change-after-a-restore)):
+
+1. Set a new `truenas_admin` password (`midclt call user.update ...` or UI).
+2. Delete the golden API key (`midclt call api_key.delete <id>`) and create your own (`api_key.create`).
+3. Replace root's `sshpubkey` with your own key, verify login, then stop using the sidecar's private key.
+4. Regenerate SSH host keys (`rm -f /etc/ssh/ssh_host_*`, `ssh-keygen -A`, restart ssh) and update known_hosts pins.
+5. Regenerate the machine-id if the host must be distinct from other restores of the image.
+6. Generate and select a new TLS certificate.
+7. Revoke the golden Mattermost webhook once no further restore needs the ISO.
+
+Do this before the host is reachable from an untrusted network.

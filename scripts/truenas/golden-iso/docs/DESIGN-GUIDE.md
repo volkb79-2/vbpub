@@ -93,29 +93,29 @@ not copy the cleartext API key or root private key into the ISO. The ISO does
 embed the complete disk, including TrueNAS's stored API-key record, password
 hash, root public key, SSH host keys, and machine identity. It also embeds the
 live notification webhook, so the image, sidecar, and ISO must all be handled
-as private artifacts. The restore runtime restores the disk as captured, so a
-restored host starts with the golden password hash and API key; step 3 (below)
-is the rotation point and must run before any other action on a restored host.
+as private artifacts. The restore runtime restores the disk as captured and
+rotates nothing, so a restored host starts with the golden password hash, API
+key, root key, host keys, and identity; rotating them afterwards is the user's
+decision (see README, "Secrets baked into a golden ISO").
 
 Step 1 sets the golden `truenas_admin` password to a random per-capture value
 (32 characters from a safe alphabet, `secrets` module) and creates a dynamic
 API key per capture, both persisted atomically in the sidecar (mode 0600 in a
 0700 directory, gitignored). A key that belongs to a finished capture is
 replaced by the next capture, and the literal bootstrap password is refused.
-Each restored host gets its own password and API key from step 3, stored in a
-per-host gitignored sidecar, so no secret is shared across hosts.
+Each capture also has an 8-hex-digit ID that is part of the image and sidecar
+file names and is recorded in the sidecar and the ISO manifest; step 2 refuses
+an image/sidecar pair whose IDs differ.
 
 ### Post-restore preseed
 
 The restore ISO contains the source image's administrator password hash and
 root SSH settings. A provider reinstall that must preserve an established test
-identity needs a fresh per-host `truenas_admin` password and API key and the
+identity needs to reapply that host's protected `truenas_admin` password and
 root public key after the disk boots. `step3-apply-restored-preseed.py` checks
 the exact expected TrueNAS build and pinned SSH host key, refuses a patch
-install record, writes the new password to the per-host sidecar first, sets it
-through `midclt`'s stdin payload form, deletes every API key the golden disk
-carried, creates and records one new key, and verifies the root key plus
-password-authentication settings. The private
+install record, updates the password through `midclt`'s stdin payload form,
+and verifies the root key plus password-authentication settings. The private
 password is never placed in the SSH command line or printed in errors. The
 provider caller still holds the host lock around this mutation.
 

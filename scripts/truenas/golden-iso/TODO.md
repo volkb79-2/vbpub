@@ -17,21 +17,21 @@ never documented.
   sidecar (0700 directory, gitignored `artifacts/`); step 1 prints only the
   path. The bootstrap password is refused as a final value, and a key that
   belongs to a finished capture is revoked and replaced by the next capture.
-- The golden disk carries that password hash and API key, so every restored
-  host runs `step3-apply-restored-preseed.py` first: it replaces both with a
-  per-host random password and API key stored in a per-host mode-0600
-  gitignored sidecar. No host shares a secret with the golden image or another
-  host.
-- Every live test of a restored host reads its credentials from that per-host
-  sidecar; values never appear in tracked files, docs, or logs
+- Every capture has an 8-hex-digit ID in both the image and the sidecar file
+  name (`...-golden-<id>.raw`, `...-golden-<id>.secrets.toml`); step 2 refuses
+  a pair whose IDs differ.
+- The restore is unattended and does not rotate: the restored host keeps the
+  golden image's secrets by design, and the user rotates them after the
+  restore with the README checklist ("Secrets baked into a golden ISO / what to
+  change after a restore").
+- Values never appear in tracked files, docs, or logs
   (`tests/test_credentials.py` scans tracked files for credential-like values).
 - The ISO contains the whole golden disk, so treat the image and ISO as private
   credential-bearing artifacts. Capture the disk and its matching sidecar
   together.
 
-Open: the restore runtime itself does not rotate on first boot (rotation is the
-controller-side step 3 over pinned root SSH); a hardened first-boot rotation
-inside the runtime is TN-14.
+Open (optional, low priority): a first-boot helper script that implements the
+post-restore checklist (TN-14).
 
 Keep the feature summary in [`README.md`](README.md), adoption commands in
 [`docs/CONSUMERS.md`](docs/CONSUMERS.md), and restore rationale in
