@@ -301,6 +301,14 @@ if [[ "${builder_kind}" != "python-wheel-builder" ]]; then
                 echo "        remove it by exact tag (docker rmi ${builder_base}) or build the right image: docker buildx build --load -t ${builder_base} tester-base/" >&2
                 exit 2
             fi
+            # A tester-unified image carries the tester-base labels it inherited unless it resets them (older
+            # images do): its own base-image label says it is a consumer, never a tester-base build (TB-11).
+            tb_consumer="$(docker image inspect --format '{{index .Config.Labels "org.vbpub.tester-unified.base-image"}}' "${builder_base}" 2>/dev/null || true)"
+            if [[ -n "${tb_consumer}" ]]; then
+                echo "[ERROR] ${builder_base} carries org.vbpub.tester-unified.base-image='${tb_consumer}': it is a tester-unified image, not a tester-base build; refusing to use it as the builder's base" >&2
+                echo "        remove it by exact tag (docker rmi ${builder_base}) or build the right image: docker buildx build --load -t ${builder_base} tester-base/" >&2
+                exit 2
+            fi
             if [[ "${tb_hash}" == "${tester_base_source_hash}" ]]; then
                 build_tester_base=0
             else

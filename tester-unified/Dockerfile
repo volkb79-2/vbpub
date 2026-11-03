@@ -52,6 +52,11 @@ ARG TESTER_UNIFIED_BASE_IMAGE
 ARG WINGS_GO_TOOLCHAIN_IMAGE
 LABEL org.vbpub.tester-unified.base-image="${TESTER_UNIFIED_BASE_IMAGE}"
 LABEL org.vbpub.tester-unified.go-toolchain-image="${WINGS_GO_TOOLCHAIN_IMAGE}"
+# OCI labels are inherited from the base. This image is NOT a tester-base build: reset tester-base's
+# identity labels so an image mistakenly tagged `tester-base:local` fails the bootstrap kind check, and so
+# an empty inherited source-hash is never read as a tester-base verdict about this image (TB-11).
+LABEL org.vbpub.tester-base.kind="" \
+      org.vbpub.tester-base.source-hash=""
 # The identity the base reference resolved to when this image was built (build-image.sh supplies and
 # re-reads it): the reference above can be a mutable local tag, the id says which content it was.
 ARG TESTER_UNIFIED_BASE_IMAGE_ID

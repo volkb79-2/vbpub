@@ -15,7 +15,9 @@ Either way three independent statements of the digest must agree before a file i
 pointer (default mode only), the release's ``<asset>.sha256`` sidecar, and the hash of the downloaded
 bytes.  Only https downloads from this repository's GitHub Releases are accepted (the redirect policy
 is the one ``fetch-cli-extended.py`` already enforces).  Stdlib only.  The staged directory holds
-exactly one ``run_gate-<version>-py3-none-any.whl``, which is what ``build-image.sh --wheel-dir``
+exactly one ``run_gate-<version>-py3-none-any.whl`` plus ``<wheel>.sha256`` (the digest verified here,
+which ``build-image.sh`` compares with its own hash of the staged file; reads are capped at 64 MiB and a
+transient transport failure is retried, three attempts in all), which is what ``build-image.sh --wheel-dir``
 (and ``run-gate-wheel-version.py``) consume.
 
 No age window is applied: this is a first-party wheel and the gate requires THE published release,
@@ -29,6 +31,8 @@ import importlib.util
 import json
 import re
 import sys
+import time
+import urllib.error
 from pathlib import Path
 from typing import Callable
 
@@ -85,11 +89,38 @@ def resolve(version: str | None, pointer_url: str, fetch: Callable[[str], bytes]
     return found, _digest(pointer.get("sha256"), "the release pointer")
 
 
+#: Bounded retry of a transient transport failure (TB-12): three attempts in all, one and two seconds apart.
+ATTEMPTS = 3
+BACKOFF_SECONDS = (1.0, 2.0)
+
+
+def _retrying(
+    fetch: Callable[[str], bytes], attempts: int = ATTEMPTS,
+    sleep: Callable[[float], None] = time.sleep,
+) -> Callable[[str], bytes]:
+    """`fetch` that retries an OSError up to ``attempts`` times in all. Never retried: an oversized body
+    (retrying cannot help) and an HTTP 4xx answer (the server said no, not "try later")."""
+    def call(url: str) -> bytes:
+        for attempt in range(attempts - 1):
+            try:
+                return fetch(url)
+            except _net.ResponseTooLarge:
+                raise
+            except urllib.error.HTTPError as exc:
+                if 400 <= exc.code < 500:
+                    raise
+            except OSError:
+                pass
+            sleep(BACKOFF_SECONDS[min(attempt, len(BACKOFF_SECONDS) - 1)])
+        return fetch(url)  # the last attempt: its failure is the caller's refusal
+    return call
+
+
 def fetch_wheel(
     version: str | None, dest: Path, fetch: Callable[[str], bytes] | None = None,
-    pointer_url: str = POINTER_URL,
+    pointer_url: str = POINTER_URL, sleep: Callable[[float], None] = time.sleep,
 ) -> Path:
-    fetch = fetch or _net._urlopen_bytes
+    fetch = _retrying(fetch or _net._urlopen_bytes, sleep=sleep)
     resolved, pointer_sha = resolve(version, pointer_url, fetch)
     name = _asset_name(resolved)
     url = _net._check_url(_asset_url(resolved))
@@ -117,7 +148,11 @@ def fetch_wheel(
         raise FetchError(f"{dest} already holds a run_gate wheel; stage into an empty directory")
     # Atomic and exclusive (temporary name, link(2) into place): a name planted between the glob and
     # the link is refused rather than followed, and a failed write leaves no partial wheel behind.
-    return _net._stage(dest, name, payload, FetchError)
+    staged = _net._stage(dest, name, payload, FetchError)
+    # The digest this fetcher verified (pointer, sidecar and bytes agree), left beside the wheel so the
+    # builder can assert the bytes it installs are the ones verified here (TB-12).
+    _net._stage(dest, name + ".sha256", f"{actual}  {name}\n".encode("ascii"), FetchError)
+    return staged
 
 
 def main(argv: list[str] | None = None) -> int:
