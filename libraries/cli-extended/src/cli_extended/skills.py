@@ -16,7 +16,7 @@ import re
 import secrets
 import shutil
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from importlib import resources
 from pathlib import Path
@@ -708,6 +708,22 @@ def _overwrite_option() -> OptionSpec:
 _SKILLS_LIBRARY_FLAGS = frozenset({"--dry-run", "--json"})
 
 
+def _without_library_flags(options: Sequence[OptionSpec]) -> tuple[OptionSpec, ...]:
+    """Drop only the colliding flag strings; keep the option's other aliases.
+
+    An option left with no flag at all is dropped.
+    """
+
+    kept: list[OptionSpec] = []
+    for option in options:
+        rest = tuple(f for f in option.flags if f not in _SKILLS_LIBRARY_FLAGS)
+        if len(rest) == len(option.flags):
+            kept.append(option)
+        elif rest:
+            kept.append(replace(option, flags=rest))
+    return tuple(kept)
+
+
 def register_skills_verbs(
     registry: CliRegistry, *, package: str, resource_dir: str = "skills"
 ) -> None:
@@ -736,11 +752,7 @@ def register_skills_verbs(
         # global options, or the delegated parser rejects them.
         # CLI-EXT-30: except a consumer's legacy ``--dry-run``/``--json``, which
         # the delegate's own verbs already declare (a duplicate would raise).
-        global_options=tuple(
-            option
-            for option in registry.global_options
-            if not _SKILLS_LIBRARY_FLAGS.intersection(option.flags)
-        ),
+        global_options=_without_library_flags(registry.global_options),
         logging_logger=registry.logging_logger,
         unexpected_exceptions=registry.unexpected_exceptions,
         identity_banner=registry.identity_banner,
