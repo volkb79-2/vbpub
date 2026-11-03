@@ -2718,4 +2718,24 @@ by `stat` of the mounted socket.
 - **Non-mdt path.** On a plain host or non-mdt devcontainer the uid is the user's own, the docker gid comes from the mounted socket, and no mdt group
   or path is required (test with fakes).
 
+## KI-115 — `tarball-publish` cannot publish a multi-variant release; `publish_versioned_variants` has no handler
+
+**Status:** OPEN. Filed 2026-11-04 (found packaging tls-edge with per-interpreter wheels).
+
+**Problem.** `[[project.variants]]` (S-REL.6) and `publish_versioned_variants` exist, `get.py --variant` selects an asset, but
+`cmd_tarball_publish` accepts exactly one retained tarball and no handler calls the variants keystone. A project with platform wheels in its
+bundle (tls-edge: MarkupSafe and PyYAML for cp313 and cp314) has to carry a project script that calls the keystone directly, and that script
+cannot honour a retained build-output record (`CMRU_BUILD_OUTPUT_ROOT`).
+
+**Design.** `cmru handler tarball-publish --variants` (glob per variant resolved by `find_artifact(..., variant=...)`): validates every
+variant file against the retained build-output record exactly as the single-asset path does, stages copies, and calls
+`publish_versioned_variants` with the curated release notes.
+
+**Acceptance criteria.**
+
+- End-to-end test with a fake GitHub host: two variants publish under one tag with sidecars and a `latest.json` listing both; a missing
+  variant file or one outside the retained record is refused before any upload.
+- tls-edge replaces `scripts/publish-variants.py` with the handler and its retained-output path works.
+- **Non-mdt path.** Pure fakes, no devcontainer.
+
 **Dependencies and order.** After RG-151 and TB-13; parallel with assay B211. Then run-gate RG-153.

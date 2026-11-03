@@ -38,7 +38,7 @@ Maintenance in place: after a successful install/update this file is copied to
 update|status|rollback` works without downloading get.py again. (Not possible when
 get.py was piped into `python3 -`: download the file and run it instead.)
 
-Requires: python3 (stdlib only); system tools: python3, docker
+Requires: python3 (stdlib only); system tools: python3, docker, git
 """
 from __future__ import annotations
 
@@ -74,32 +74,32 @@ ASSET_SUFFIX     = ".tar.xz"
 MANIFEST_NAME    = "manifest.json"
 SIGNATURE_NAME   = "manifest.json.minisig"
 PROJECT_NAME     = "tls-edge"     # the minisign trusted comment must name it
-ENTRYPOINT       = ""           # "" means no adapter
+ENTRYPOINT       = "installer/adapter.py"           # "" means no adapter
 # minisign public key (base64). "" => the release is unsigned (SHA256 only).
 MANIFEST_PUBKEY  = ""
-REQUIRED_COMMANDS: List[str] = ["python3", "docker"]
-PRESERVE_PATHS: List[str]    = ["ciu-stack/ciu.toml.j2", "edge-proxy/.env"]
+REQUIRED_COMMANDS: List[str] = ["python3", "docker", "git"]
+PRESERVE_PATHS: List[str]    = []
 # [(glob, distribution), ...] in install order (cli-extended is hoisted first at install).
-WHEEL_SPECS: List[Tuple[str, str]] = []
+WHEEL_SPECS: List[Tuple[str, str]] = [["wheels/ciu-*.whl", "ciu"], ["wheels/jinja2-*.whl", "Jinja2"], ["wheels/markupsafe-*.whl", "MarkupSafe"], ["wheels/pyyaml-*.whl", "PyYAML"], ["wheels/tomli_w-*.whl", "tomli_w"]]
 # Commands exposed as <root>/bin/<cmd> -> ../current/venv/bin/<cmd>.
-LAUNCHERS: List[str] = []
+LAUNCHERS: List[str] = ["ciu"]
 # Stable stack folder: "" = none; else <root>/<STABLE_DIR>/ mirrors the ACTIVE release's
 # manifest `files` (wheels excluded) after every install/update/rollback, so a tool that
 # derives identity from its physical path sees one path across releases.
-STABLE_DIR = ""
+STABLE_DIR = "stack"
 # Commands written as `exec <root>/current/venv/bin/<cmd>` shell stubs INTO <STABLE_DIR>.
-STUB_LAUNCHERS: List[str] = []
+STUB_LAUNCHERS: List[str] = ["ciu"]
 # Wizard questions: [{id, prompt, type, default, choices, required}, ...]; answers live in
 # <root>/shared/answers.toml (0600) and are exported as CMRU_INSTALLER_ANSWERS.
-QUESTIONS: List[dict] = []
+QUESTIONS: List[dict] = [{"id": "domain", "prompt": "Public domain served through the edge (TLS_EDGE_DOMAIN, e.g. example.test)", "type": "string", "default": None, "choices": [], "required": True}, {"id": "acme_email", "prompt": "ACME account email (Let's Encrypt notices; empty = none)", "type": "string", "default": None, "choices": [], "required": False}, {"id": "tls_mode", "prompt": "Certificate mode", "type": "choice", "default": "acme-tls", "choices": ["acme-tls", "acme-http", "acme-dns", "static", "dev"], "required": True}, {"id": "dns_provider", "prompt": "DNS provider (lego name, only for acme-dns; empty = cloudflare)", "type": "string", "default": None, "choices": [], "required": False}, {"id": "calls", "prompt": "Publish the Mattermost Calls pair on 8443 (tcp and udp)?", "type": "bool", "default": True, "choices": [], "required": True}]
 # Per-interpreter variants (S-REL.6). [] ⇒ one unambiguous single-asset release.
 # When non-empty the release carries one asset per variant, named <tag>-<name><suffix>,
 # and the operator MUST select one at install time with --variant NAME (no silent default).
-VARIANTS: List[dict] = []  # e.g. [{"name": "py39", "label": "Python 3.9"}, ...]
+VARIANTS: List[dict] = [{"name": "py313", "label": "CPython 3.13, x86_64 glibc"}, {"name": "py314", "label": "CPython 3.14, x86_64 glibc"}]  # e.g. [{"name": "py39", "label": "Python 3.9"}, ...]
 
 # Scope directories (injected)
-INSTALL_DIR_SYSTEM = "/opt/tls-edge"
-INSTALL_DIR_USER   = "tls-edge"   # leaf; expanded under XDG_DATA_HOME
+INSTALL_DIR_SYSTEM = "/srv/tls-edge-instance"
+INSTALL_DIR_USER   = "tls-edge-instance"   # leaf; expanded under XDG_DATA_HOME
 
 RELEASES_API = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/releases"
 

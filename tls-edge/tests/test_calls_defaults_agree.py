@@ -34,14 +34,24 @@ def test_calls_media_pair_is_8443() -> None:
     calls = _tls_edge()["calls"]
     assert calls["public_port"] == 8443
     assert calls["udp_internal_port"] == 8443
-    # TCP needs its own internal port: internal 8443/TCP is the alt HTTPS entrypoint.
-    assert calls["tcp_internal_port"] != 8443
+    # There is no alternate HTTPS entrypoint any more, so the TCP media socket
+    # uses the same number as UDP (a TCP and a UDP socket do not collide).
+    assert calls["tcp_internal_port"] == 8443
 
 
-def test_alt_https_does_not_collide_with_calls_tcp() -> None:
+def test_no_alternate_https_port_by_default() -> None:
     t = _tls_edge()
-    assert t["ports"]["https_alt"] != t["calls"]["public_port"]
-    assert t["ports"]["https_alt"] != t["ports"]["https"]
+    assert "https_alt" not in t["ports"]
+    for path in (TRAEFIK_J2, COMPOSE_J2, EDGE_COMPOSE, EDGE_TRAEFIK):
+        text = path.read_text(encoding="utf-8")
+        assert "websecure-alt" not in text and "https_alt" not in text, path
+
+
+def test_public_ports_are_exactly_80_443_8443() -> None:
+    """The edge's published set: 80/tcp, 443/tcp and the 8443 tcp+udp media pair."""
+    published = re.findall(r'^\s*- "(?:\{\{.*?\}\})?([^"]+)"', EDGE_COMPOSE.read_text(), re.M)
+    ports = sorted(p for p in published if re.fullmatch(r"\d+:\d+(/(tcp|udp))?", p))
+    assert ports == ["443:443", "80:80", "8443:8443/tcp", "8443:8443/udp"]
 
 
 def test_static_edge_proxy_publishes_the_same_pair() -> None:
