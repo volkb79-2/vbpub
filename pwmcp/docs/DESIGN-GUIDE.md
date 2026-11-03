@@ -123,12 +123,15 @@ licence attribution. Attribution uncertainty is recorded explicitly, and the
 font data has not had legal review for redistribution in an image.
 
 `imagegen` makes synthetic console frames with exact ground truth and controlled
-transforms. Generated PNGs, truth files, atlases, and reports belong under the
-ignored `scratch/` directory. Prefer these deterministic per-font alphabets for
-general reader tests; use real console output only where the behavior depends on
-an actual install screen. See the [tool README](../tools/glyphgrid/README.md) for
-the command vocabulary and the [consumer examples](CONSUMERS.md#glyphgrid-development-tooling)
-for a working invocation.
+transforms. The integration adds no screenshots and does not copy the operator's
+larger local console corpus into these tooling changes. Generated PNGs, truth
+files, atlases, and reports belong under the ignored `scratch/` directory. See the
+[tool README](../tools/glyphgrid/README.md) for the command vocabulary and the
+[consumer examples](CONSUMERS.md#glyphgrid-development-tooling) for a working
+invocation.
+
+Prefer these deterministic per-font alphabets for general reader tests; use
+real console output only where behavior depends on an actual install screen.
 
 ## Local console corpus
 
