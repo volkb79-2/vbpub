@@ -31,10 +31,36 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
      volume); it skips it with a stderr WARN. The release-notes generator picks this up from
      the `fix(cmru): ...` commit subject. -->
 
+<!-- cmru: release history -->
+
+## [7.1.4] - 2026-11-03
+<!-- cmru: generated -->
+<!-- cmru: source-end=6350a31b4a35ae26982f550ba6686bbea47e4b8e -->
+
+### Added
+- feat(cmru): preflight release gate dry-runs (9d0e63687)
+
+### Fixed
+- fix(cmru): KI-79 dry-run check only when gate-provisional is configured; honest KI-111 wording (7684e3e2f)
+- fix(mdt): prepare CMRU env before local-dev tag checks (030bc97bb)
+
+### Changed
+- cmru tests: make the prepared-version-at-HEAD test hermetic (throwaway git repo; canary copy has no .git) (d902ac079)
+- Merge branch 'req-renames-20261103' (1eaaf51c3)
+- Merge branch 'r1002-mdt-fixes-20261103' (0cd520954)
+- chore: split root Python requirements (54fb70000)
+
+### Documentation
+- docs(cmru): file KI-109..111 from the 7.1.3 release attempts (b287feb4b)
+
+### Testing
+- test: isolate prepare_project_environment env in mdt-cockpit test; add cmru-side unit test (ba500e561)
+- test(cmru): cover release preflight failure branches (8346e4c10)
+
+<!-- cmru: pending release notes begin -->
 - feat(cmru): check the planned CMRU release version, Run-Gate image identity, and bootstrap guide version during `cmru release --dry-run`, before allocating a candidate worktree (KI-109, KI-111).
 - fix(cmru): stop writing an unnamed temporary copy of failed coverage-canary control output; the complete output remains in stderr and the lane log (KI-110).
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [7.1.3] - 2026-11-03
 <!-- cmru: generated -->
