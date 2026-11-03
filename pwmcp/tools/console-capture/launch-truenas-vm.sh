@@ -10,7 +10,7 @@
 # <repo root>/downloads (script-relative; no environment override). A path (any "/") is used as given.
 # "none" boots without an ISO.
 #
-# <workdir> is created, and OVMF_VARS.fd copied in when missing. disk.qcow2 is NEVER created (refused with
+# <workdir> is created, and OVMF_VARS.fd copied in from $OVMF_VARS when missing, only after the refusals below. disk.qcow2 is NEVER created (refused with
 # instructions): qemu-img create -q -f qcow2 <workdir>/disk.qcow2 20G, or fork with cp --reflink=always.
 # It creates: qmp.sock (in a short $XDG_RUNTIME_DIR//tmp dir if the path would exceed 107 bytes; the
 # actual path is printed), qemu.pid, serial.log. Same shape as
@@ -41,12 +41,8 @@ case "$ISO" in
 esac
 VGA_DEV="${VGA_DEV:-virtio-vga}"
 OVMF_CODE="${OVMF_CODE:-/usr/share/OVMF/OVMF_CODE_4M.fd}"
+OVMF_VARS="${OVMF_VARS:-/usr/share/OVMF/OVMF_VARS_4M.fd}"
 
-[ -r "$OVMF_CODE" ] || { echo "launch: OVMF firmware not found: $OVMF_CODE (apt install ovmf, or set OVMF_CODE)" >&2; exit 1; }
-mkdir -p "$W"
-if [ ! -f "$W/OVMF_VARS.fd" ]; then
-  cp /usr/share/OVMF/OVMF_VARS_4M.fd "$W/OVMF_VARS.fd" || { echo "launch: cannot create $W/OVMF_VARS.fd from /usr/share/OVMF/OVMF_VARS_4M.fd" >&2; exit 1; }
-fi
 # Never create disk.qcow2 here: this VM's value is its INSTALLED disk; a blank one would silently boot an installer.
 if [ ! -f "$W/disk.qcow2" ]; then
   echo "launch: no installed disk at $W/disk.qcow2." >&2
@@ -67,6 +63,12 @@ fi
 if [ "$ISO" != "none" ]; then
   [ -f "$ISO" ] || { echo "launch: ISO not a readable file: $ISO (downloads dir: $DOWNLOADS_DIR; fetch it into that folder; 1-arg form takes <iso|none>, not a directory)" >&2; exit 1; }
   [ -r "$ISO" ] || { echo "launch: ISO not readable: $ISO (downloads dir: $DOWNLOADS_DIR)" >&2; exit 1; }
+fi
+# Firmware is needed only past every refusal above: no side effect (mkdir, copy) happens before them.
+[ -r "$OVMF_CODE" ] || { echo "launch: OVMF firmware not found: $OVMF_CODE (apt install ovmf, or set OVMF_CODE)" >&2; exit 1; }
+mkdir -p "$W"
+if [ ! -f "$W/OVMF_VARS.fd" ]; then
+  cp "$OVMF_VARS" "$W/OVMF_VARS.fd" || { echo "launch: cannot create $W/OVMF_VARS.fd from $OVMF_VARS" >&2; exit 1; }
 fi
 FSTYPE="$(stat -f -c %T "$W" 2>/dev/null || echo unknown)"
 [ "$FSTYPE" = "btrfs" ] || echo "launch: INFO: $W is on $FSTYPE (no CoW); fine, scripts do not depend on it" >&2

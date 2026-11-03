@@ -20,9 +20,12 @@ def env(tmp_path: Path) -> dict[str, str]:
     qemu.chmod(0o755)
     code = tmp_path / "CODE.fd"
     code.write_bytes(b"x")
+    vars_ = tmp_path / "VARS.fd"
+    vars_.write_bytes(b"v")
     return {
         "PATH": f"{bindir}:{os.environ['PATH']}",
         "OVMF_CODE": str(code),
+        "OVMF_VARS": str(vars_),
         "STUB_ARGS": str(tmp_path / "args.txt"),
         "XDG_RUNTIME_DIR": str(tmp_path / "run"),
     }
@@ -41,7 +44,7 @@ def test_missing_disk_refused_never_created(env, tmp_path):
     w = tmp_path / "w"
     r = run(env, str(w), "none")
     assert r.returncode == 1 and "no installed disk" in r.stderr and "holds it" in r.stderr
-    assert (w / "OVMF_VARS.fd").is_file() and not (w / "disk.qcow2").exists()
+    assert not (w / "OVMF_VARS.fd").exists() and not (w / "disk.qcow2").exists()
 
 
 def test_directory_as_iso_refused(env, tmp_path):
