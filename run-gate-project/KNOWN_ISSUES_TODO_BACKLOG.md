@@ -7342,3 +7342,41 @@ pre-flip strict entries plus new relaxed entries. One tester-lane run showing `/
 
 **Order.** In 24.4.0 or later, after RG-146 (workers), so the worker-count work and the fsync flip are measured
 separately. Ships with the `durable` declarations in the same release.
+
+## RG-150 — lane user, checkout owner and cockpit user must be one uid; a mismatch surfaces as three unrelated errors
+
+**Status:** OPEN (recipe documented in CONSUMERS.md "Runner uid: one owner for checkout, cockpit and lane"; preflight
+open). Severity: usability. Filed 2026-11-04 from the r1002 reinstall (six failed `worktree` lane attempts).
+
+**Observed.** The `tester-unified` lane user is uid 1003 (image `USER`, `/opt/tester-venv` and `/home/tester` owned by
+it). On r1002 the runner account and the cockpit `vscode` user were uid 1000, so a checkout had to belong to one of two
+uids and each choice failed somewhere else:
+
+- Checkout owned by 1000 (cockpit user): the lane container (1003) reaches Git through setuptools-scm during
+  `pip install --editable assay` (and through Assay's own Git, which runs with `GIT_CONFIG_NOSYSTEM=1` and
+  `GIT_CONFIG_GLOBAL=/dev/null`) and Git reports `dubious ownership`. Run-Gate printed only
+  `run-gate: editable assay install failed`; the Git line is buried in pip's build log. RG-99's
+  `safe.directory=*` environment injection cannot help: `vcs_versioning` removes every `GIT_*` variable except a short
+  keep list from its Git environment (verified: a throwaway `XDG_CONFIG_HOME` global config does reach it, so the
+  install step alone could be made to pass, but Assay's own run-time check still refuses by design: "Run assay as the
+  repository owner or fix the tree's ownership/uid mapping").
+- Checkout owned by 1003: the cockpit's `run-gate` host-side Git (`git_out`, hardened with `GIT_CONFIG_NOSYSTEM=1` and
+  `GIT_CONFIG_GLOBAL=/dev/null`) ignores any `safe.directory` in the system or global config. Only a `GIT_CONFIG_COUNT`
+  entry from the process environment survives (`host_git_environment` appends to it). The cockpit user also cannot
+  create `<project>/.run-gate` or `.assay` in a 1003-owned tree, and the Assay CoW root must be owned by the lane uid
+  (`MDT_COW_ROOT must be owned by the non-root caller uid 1003`), which a runner-owned `/srv/cow/mdt-cow` (0700) is not.
+
+**Root cause.** A uid mismatch between the account that owns checkouts and the CoW root and the fixed lane uid. The estate
+convention is that the host dev user is uid 1003 (the devcontainer's `updateRemoteUserUID` step maps `vscode` onto the
+workspace owner); r1002 provisioned `runner` as 1000 and its docker-run cockpit has no such step.
+
+**Fix applied on r1002 (no Run-Gate code change).** `runner` and the cockpit `vscode` user are uid/gid 1003; home, checkouts
+and the CoW root are owned by it; the lane then passes with no `safe.directory`, ACLs or world-writable directories
+(`worktree` lane PASS, see the r1002 report). Provisioning now sets the runner uid from `RUNNER_UID` (default 1003) and the
+cockpit start script remaps `vscode` to the runner uid.
+
+**Expected (open part).** A preflight in `run-gate` that compares the owner uid of the judged tree (and of the
+`MDT_COW_ROOT`) with the lane user's uid (`environments.*.user`, else the image user) and refuses with one actionable line
+("checkout owned by uid 1000, lane runs as 1003: see CONSUMERS.md runner uid recipe") before the editable install, instead of
+`editable assay install failed`. Optional: surface the Git error line when the editable install fails.
+
