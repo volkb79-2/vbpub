@@ -16,7 +16,9 @@ cd /srv/pwmcp-instance
 ciu up
 ```
 
-The connected devcontainer joins the instance network. Configure an MCP client
+The connected devcontainer joins the instance network: `ciu up` attaches the container it
+runs in, and when the devcontainer is later recreated or rebuilt while the stack still runs,
+the finalize step re-attaches it automatically (no manual `docker network connect`). Configure an MCP client
 inside it with:
 
 ```json

@@ -5,6 +5,10 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 
 ### Added
+- The finalize step attaches a recreated or rebuilt devcontainer to the network of an already
+  running PWMCP stack (filtered `docker ps`, exact-name inspect, alias `pwmcp`; idempotent,
+  non-fatal), so `PWMCP_MCP_URL=http://pwmcp:8931/mcp` resolves without a manual
+  `docker network connect`. With no running stack it logs how to start it.
 - The Python version of a release is a top-level input: `LATEST_KNOWN_PYTHON=3.15 cmru release mdt-cockpit`
   (the environment wins over the `docker-bake.hcl` default, as `docker buildx bake` itself resolves
   variables) publishes `trixie-py3.15-php8.5-<date>` and its `-latest` next to the default variant.

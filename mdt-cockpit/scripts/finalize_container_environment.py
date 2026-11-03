@@ -454,11 +454,94 @@ def repair_docker_socket_relay() -> None:
          "unusable; fall back to DOCKER_HOST=unix:///var/run/docker-host.sock")
 
 
+# ── PWMCP network join ──────────────────────────────────────────────────────
+# `ciu up` in /srv/pwmcp-instance attaches the container that ran it to the stack
+# network, and the stack (restart: unless-stopped) outlives this container. A
+# devcontainer that is RECREATED or REBUILT starts on the default bridge only, so the
+# alias `pwmcp` (PWMCP_MCP_URL=http://pwmcp:8931/mcp) does not resolve until it is
+# attached again. postCreateCommand runs on every create/rebuild, which is exactly
+# when a network membership is lost (a plain restart keeps it). Not ciu-aware: it
+# looks only at Docker labels/aliases of the stack's own container.
+PWMCP_ALIAS = "pwmcp"
+PWMCP_DOCKER_TIMEOUT_SECONDS = 20
+
+
+def _docker(*argv: str) -> subprocess.CompletedProcess | None:
+    docker = shutil.which("docker")
+    if docker is None:
+        return None
+    try:
+        return subprocess.run(
+            [docker, *argv], capture_output=True, text=True,
+            timeout=PWMCP_DOCKER_TIMEOUT_SECONDS, check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        warn(f"docker {' '.join(argv[:2])}: {e}")
+        return None
+
+
+def _container_networks(name: str) -> dict | None:
+    """Networks of exactly the container ``name``: {network: [aliases]}, None if unknown."""
+    res = _docker("inspect", "--format", "{{json .NetworkSettings.Networks}}", name)
+    if res is None or res.returncode != 0:
+        return None
+    try:
+        nets = json.loads(res.stdout.strip() or "null")
+    except ValueError:
+        return None
+    if not isinstance(nets, dict):
+        return None
+    return {k: list((v or {}).get("Aliases") or []) for k, v in nets.items()}
+
+
+def join_pwmcp_network() -> None:
+    """Attach this container to the network of a running PWMCP stack. Never fails finalize.
+
+    The stack's container is found with a filtered `docker ps` (name prefix `pwmcp-` and the
+    compose service label `pwmcp`), then inspected by exact name; only a network on which it
+    carries the alias `pwmcp` counts. Already attached to one of them: nothing to do.
+    """
+    if shutil.which("docker") is None:
+        return
+    me = os.environ.get("HOSTNAME") or os.uname().nodename
+    listed = _docker(
+        "ps", "--filter", "name=^pwmcp-", "--filter", "label=com.docker.compose.service=pwmcp",
+        "--format", "{{.Names}}",
+    )
+    names = sorted(n for n in (listed.stdout.split() if listed and listed.returncode == 0 else []))
+    mine = _container_networks(me)
+    if mine is None:
+        warn(f"pwmcp network: cannot inspect this container ({me}); skipped")
+        return
+    candidates: list[str] = []
+    for name in names:
+        for net, aliases in (_container_networks(name) or {}).items():
+            if PWMCP_ALIAS in aliases and net not in candidates:
+                candidates.append(net)
+    if not candidates:
+        info("pwmcp: no running PWMCP stack found; to start it: cd /srv/pwmcp-instance && ciu up "
+             f"(the {PWMCP_ALIAS} alias resolves once this container is on its network)")
+        return
+    shared = [n for n in candidates if n in mine]
+    if shared:
+        info(f"pwmcp: already on network {shared[0]}")
+        return
+    if len(candidates) > 1:
+        warn(f"pwmcp: several PWMCP networks ({', '.join(candidates)}); joining {candidates[0]}")
+    res = _docker("network", "connect", candidates[0], me)
+    if res is not None and res.returncode == 0:
+        ok(f"pwmcp: joined network {candidates[0]}")
+    else:
+        detail = ((res.stderr or res.stdout) if res else "docker unavailable").strip().splitlines()
+        warn(f"pwmcp: network connect {candidates[0]} failed: {detail[-1] if detail else 'no output'}")
+
+
 def run_generic_steps(envd: dict) -> bool:
     info("generic mdt steps…")
     setup_zshrc_stub()
     setup_vscode_settings(envd["env_type"])
     repair_docker_socket_relay()
+    join_pwmcp_network()
     buildkit_ok = setup_buildkit_builder(required=envd["env_type"] == "devcontainer")
     verify_base_tools()
     install_agent_skills()

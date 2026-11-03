@@ -100,6 +100,8 @@ def test_generic_steps_no_longer_seed_copy_or_link_anything_else_into_the_home(
     # The skills step writes the tools' own stamped skill directories; it has its own tests
     # (test_finalize_agent_skills.py) and must not run the real CLIs of the test host here.
     monkeypatch.setattr(finalize, "install_agent_skills", lambda: None)
+    # The PWMCP network join talks to the real docker daemon; tested in test_finalize_pwmcp_network.py.
+    monkeypatch.setattr(finalize, "join_pwmcp_network", lambda: None)
 
     assert finalize.run_generic_steps({"env_type": "local"}) is True
 
