@@ -1,0 +1,91 @@
+{
+  "request": {
+    "verb": "window-close",
+    "args": {
+      "thread_id": 50,
+      "window": "w-0123456789abcdef0123456789abcdef"
+    },
+    "contract": 3
+  },
+  "response": {
+    "ok": true,
+    "contract": 3,
+    "window": "w-0123456789abcdef0123456789abcdef",
+    "metrics": {
+      "rss_peak_bytes": 6144000,
+      "memory_peak_bytes": 9000,
+      "swap_peak_bytes": 77,
+      "cpu_seconds": 2.5,
+      "cpu_user_seconds": 1.4,
+      "cpu_system_seconds": 1.1,
+      "io_read_bytes": 1005,
+      "io_write_bytes": 4005,
+      "io_read_ops": 11,
+      "io_write_ops": 21,
+      "psi_memory_some_seconds": 0.25,
+      "psi_memory_full_seconds": 0.1,
+      "psi_cpu_some_seconds": 0.5,
+      "psi_io_some_seconds": 1.0,
+      "psi_io_full_seconds": 0.75
+    },
+    "missing": {},
+    "sources": {
+      "rss_peak_bytes": "sampled-sum-rss",
+      "memory_peak_bytes": "memory.peak",
+      "swap_peak_bytes": "memory.swap.peak",
+      "cpu_seconds": "cpu.stat",
+      "cpu_user_seconds": "cpu.stat",
+      "cpu_system_seconds": "cpu.stat",
+      "io_read_bytes": "io.stat",
+      "io_write_bytes": "io.stat",
+      "io_read_ops": "io.stat",
+      "io_write_ops": "io.stat",
+      "psi_memory_some_seconds": "psi",
+      "psi_memory_full_seconds": "psi",
+      "psi_cpu_some_seconds": "psi",
+      "psi_io_some_seconds": "psi",
+      "psi_io_full_seconds": "psi"
+    },
+    "context": {
+      "container_psi_memory_some_seconds": 0.25,
+      "container_psi_memory_full_seconds": 0.1,
+      "container_psi_cpu_some_seconds": 0.5,
+      "container_psi_io_some_seconds": 1.0,
+      "container_psi_io_full_seconds": 0.75,
+      "host_psi_memory_some_seconds": 0.0,
+      "host_psi_memory_full_seconds": 0.0,
+      "host_psi_cpu_some_seconds": 0.0,
+      "host_psi_io_some_seconds": 0.0,
+      "host_psi_io_full_seconds": 0.0,
+      "container_memory_events_local": {
+        "high": 0,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0
+      },
+      "ancestors_memory_events_local": [
+        {
+          "path": "/dev.slice/dev-gates.slice",
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0
+        },
+        {
+          "path": "/dev.slice",
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0
+        }
+      ]
+    },
+    "attribution": {
+      "mode": "cgroup",
+      "foreign_pids_max": 0,
+      "tree_pids_max": 2,
+      "samples": 2,
+      "baseline_bytes": 700
+    }
+  }
+}

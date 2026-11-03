@@ -122,7 +122,23 @@
         "on_stall": "report",
         "progress_stream": null
       }
-    }
+    },
+    "ancestors_memory_events_local": [
+      {
+        "path": "/dev.slice/dev-background.slice",
+        "high": 0,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0
+      },
+      {
+        "path": "/dev.slice",
+        "high": 0,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0
+      }
+    ]
   },
   "session_dir": "/var/lib/cgprofile/sessions/s-20260912T101500Z-9f01",
   "series": {

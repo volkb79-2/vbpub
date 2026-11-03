@@ -226,8 +226,12 @@ protocol remains contract 1. The resource observer refuses a host mount using
 process tried to fork, even when an ancestor's `pids.max` rejected it, so it
 cannot attribute enforcement to the right cgroup. `memory_localevents` remains
 supported with the candidate-subgroup check described in the protocol. The
-resource observer requires contract 2; contract-1 observer requests receive an
-explicit unsupported-contract refusal.
+resource observer accepts contract 2 (`resource-limits`) and contract 3
+(`window-open` and `window-close`, per-subject measurement windows in
+process-tree or cgroup mode, see
+[the observer protocol](docs/PROTOCOL.md#9-observer-contract-3-measurement-windows)
+and [consumer rules](docs/CONSUMERS.md#measurement-windows-observer-contract-3));
+contract-1 observer requests receive an explicit unsupported-contract refusal.
 It also receives a read-only host `/proc` bind and an
 explicitly writable host cgroup-v2 view for opt-in P6 placement. The host
 system-bus socket is mounted only into the daemon; the read-only bind does not
@@ -286,6 +290,7 @@ The daemon's version response is contract major 1:
   },
   "resource_observer": {
     "contract": 2,
+    "contracts": [2, 3],
     "path": "/run/cgprofile/observer/resource-observer.sock",
     "listening": true
   }

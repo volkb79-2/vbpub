@@ -8,6 +8,10 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
 
 ## [Unreleased]
 
+### Added
+- Observer contract 3 (CP-39): `window-open` and `window-close` on the observer socket return per-subject measurement windows (peak RSS, CPU, I/O bytes and operations, memory and swap peaks, PSI) in `process-tree` mode (works in a shared container) or `cgroup` mode (exact while the leaf holds nothing foreign; otherwise `SHARED_CGROUP`). Every null metric carries a reason code. `version.resource_observer` gains `"contracts": [2, 3]` while `"contract"` stays 2; contract 2 and `resource-limits` are unchanged. New error codes `window-refused` (reason `limit`) and `window-lost`. Fixtures: `tests/fixtures/rg55/observer-window-v3-*.json`. Release as 1.2.0 together with CP-40.
+- Summary key `ancestors_memory_events_local` (CP-40): the increase in local `high`, `max`, `oom` and `oom_kill` of each ancestor up to `dev.slice` over the session, and the same list in every window's `context`, so a consumer can tell reclaim driven from above the lane from the lane's own limit. Optional key; the Summary schema stays v1.1. Fixture: `tests/fixtures/rg55/summary-v1.1-ancestors.json`.
+
 ### Changed
 - Rename the report dependency lock to `requirements-report.txt`; keep the same pinned packages in `setup.sh` and the image build.
 

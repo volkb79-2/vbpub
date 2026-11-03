@@ -45,3 +45,7 @@ These are design questions, not claims that contract 3 is already feasible.
 - Exact-tree gates exercise parallel candidates in a nested slice tree and prove no event is lost between the candidate leaf and relevant ancestors.
 - A measured pilot compares serialized contract-2 execution, per-candidate leaves, and a more root-level container placement for attribution, throughput, memory, and operational cost.
 - README, DESIGN-GUIDE, CONSUMERS, protocol documentation, and the compatibility matrix describe any eventual public contract before release.
+
+## Updates
+
+**2026-11-03** — From CP-39: a per-candidate leaf makes contract-3 cgroup-mode windows exclusive at jobs above 1. That is the payoff of CP-23 for resource attribution, in addition to the limit-event attribution it was filed for. Until then jobs above 1 uses process-tree mode.
