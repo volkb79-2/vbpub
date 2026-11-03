@@ -5,6 +5,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 
 ### Added
+- Backlog MDT-049 to MDT-052 filed from a live runner reinstall: the BuildKit shim rewrites an explicit `BUILDX_BUILDER=default`
+  (`MDT_BUILDX_PASSTHROUGH=1` is the workaround), the example `DEV_INTERACTIVE_MEMORY_LOW`, `mdt-host-check.sh` `auto` noise, and the
+  missing UID remap in the docker-run form of the host-folder cockpit.
 - The finalize step attaches a recreated or rebuilt devcontainer to the network of an already
   running PWMCP stack (filtered `docker ps`, `docker inspect --type container`, alias `pwmcp`;
   idempotent, non-fatal). The stack is selected by the exact name `pwmcp-<INSTANCE_ID>-pwmcp` of this

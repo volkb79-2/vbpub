@@ -556,6 +556,12 @@ egress. The WireGuard example exposes only the outer UDP handshake and drops
 other provider-level ingress; a guest `wg0` interface is not a separate SCP
 NIC, so the guest firewall must enforce the actual `wg0`-only service rule.
 
+## Runner hosts
+
+[`runner/`](runner/README.md) holds the generic, reviewed scripts that turn an installed host into a parallel test runner (account, Btrfs CoW
+area, checkout sync, detached jobs, gate tools and images, cockpit, R2 campaign supervisor). Host-specific values come from a gitignored
+`runner/runner.env`. The runner account must be uid 1003 (backlog NC-04).
+
 ## CustomScript source
 
 The customScript producer is responsible for its remote URL, repository
