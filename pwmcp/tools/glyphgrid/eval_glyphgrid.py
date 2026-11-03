@@ -24,8 +24,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import glyphgrid as gg  # noqa: E402
 import learn_atlas as la  # noqa: E402
 
-DEFAULT_CORPUS = "/workspaces/vbpub/.claude/worktrees/agent-acd84ff048b08a1ba/pwmcp/tests/corpus/console/truenas-27-vanilla"
-DEFAULT_SERIES = "/home/vscode/console-corpus/frames"
+# Defaults derive from this script's location (pwmcp/tools/glyphgrid/), never from a home directory or a worktree.
+_PWMCP_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+DEFAULT_CORPUS = os.path.join(_PWMCP_ROOT, "tests", "corpus", "console", "truenas-27-vanilla")
+DEFAULT_SERIES = os.path.join(_PWMCP_ROOT, "artifacts", "console-corpus", "frames")
 
 # frame category by the transcriber's description (README "Frames" table); used only for aggregation
 CATEGORY = {}

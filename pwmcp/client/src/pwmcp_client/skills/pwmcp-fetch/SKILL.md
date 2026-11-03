@@ -159,6 +159,12 @@ useful when a page is failing to render something), `browser_take_screenshot`,
 
 ## Gotchas hit in practice
 
+- **Fetches must be serialised: one at a time per service.** The service has ONE shared
+  browser. A second parallel MCP client fails with `Browser is already in use for
+  <profile dir>, use --isolated to run multiple instances of the same browser`. Do NOT act on
+  that text: the service cannot take `--isolated` (it breaks the shared-browser mode). Wait for
+  the first fetch to finish, then retry; run page fetches in sequence, never in parallel.
+
 - **Don't skip the wait.** A `browser_snapshot` called right after
   `browser_navigate` on a heavy SPA showed only `generic [active] / alert /
   status` — essentially nothing — even though the page had genuinely
