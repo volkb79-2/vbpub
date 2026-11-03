@@ -27,6 +27,13 @@ run-gate = "run_gate:main"
 [project.entry-points.pytest11]
 run_gate_profile = "run_gate_profile"
 
+# RG-122: pytest-cov decides `--cov-fail-under` at the configured precision
+# (default 0 digits) but prints the total at two. At precision 0 a 96.94%
+# total passes a 97 floor; at 2 the exit status and the printed figure agree.
+# tests/test_coverage_precision.py pins this at the pytest-cov boundary.
+[tool.coverage.report]
+precision = 2
+
 [tool.setuptools]
 # The installed console entrypoint imports this regular Python module.
 py-modules = ["run_gate", "run_gate_admission", "run_gate_profile"]

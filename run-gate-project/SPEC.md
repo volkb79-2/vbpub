@@ -1471,7 +1471,8 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   `tools/coverage_gate.py` (vendored from `topos/tools/`, the estate's
   thinnest copy — MIGRATION PENDING per its header, do not fork further;
   its own `--source` default is scoped to `run_gate.py` alone, not the
-  whole project, so a bare invocation can't silently reproduce the
+  whole project (the lane repeats `--source` for `run_gate_admission.py`
+  too), so a bare invocation can't silently reproduce the
   scoping bug this floor was built to prevent). Because TOTAL line+branch
   coverage measured ~47% at adoption time, the floor enforced is DIFF
   coverage at 100% (topos/nyxloom legacy-code pattern: every changed
