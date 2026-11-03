@@ -7333,3 +7333,104 @@ pre-flip strict entries plus new relaxed entries. One tester-lane run showing `/
 
 **Order.** In 24.4.0 or later, after RG-146 (workers), so the worker-count work and the fsync flip are measured
 separately. Ships with the `durable` declarations in the same release.
+
+<!-- Id note (2026-11-04): RG-150 (lane user, checkout owner and cockpit user must be one uid) exists only on branch
+     fix-r1002-gate-ownership-20261104. The ids below start at RG-151; the controller resolves ordering on merge. -->
+
+## RG-151 — lanes run as the checkout owner: `user = "owner"`, generated passwd/group overlay, per-lane HOME (lane-uid phase 1)
+
+**Status:** OPEN. Filed 2026-11-04. Supersedes RG-118 (RG-106 oracle 5). Keeps the RG-150 preflight as the safety net.
+
+**Problem.** `tester-unified` bakes `tester:1003` and the tester environment runs as that uid. Every host must therefore use exactly uid
+1003 for the checkout, the CoW root and the cockpit user, or lanes fail with an obscure git "dubious ownership" error (RG-150, assay
+"editable install failed", NC-04, MDT-052). RG-106 added `user = "invoker" | "uid[:gid]"`, but "invoker" inside a cockpit is `vscode`,
+which equals the owner only after a remap; the real requirement is "owner". cowtree also requires the CoW root owner to equal the caller
+(`libraries/cowtree/src/cowtree/paths.py:89-90`), and assay replaces git's config and setuptools-scm strips `GIT_*`, so `safe.directory`
+(RG-99) cannot help.
+
+**Decision record (operator, 2026-11-04, binding).** Lanes run as the checkout owner with a generated read-only passwd/group overlay, a per-lane
+HOME and a read-only tester venv. Four-phase rollout (this entry is phase 1; phases 2 to 4 are TB-13, B211/KI-114 and RG-153). RG-150's owner
+preflight stays as a safety net. The baked uid 1003 rule retires at phase 4.
+
+**Design (phase 1).**
+
+- New `[environments.<n>] user = "owner"`: resolve the uid:gid by `stat` of the judged worktree root (the checkout root, not `.run-gate/`), pass it
+  as `--user uid:gid`, and refuse uid 0 and a gid/uid that cannot be a lane user. "owner" is also the new documented value for
+  `tester` once phase 4 flips the default (RG-153).
+- Generated overlay: read the image's `/etc/passwd` and `/etc/group` once per image id (cached under the lane-independent run-gate state
+  directory), append one line for the resolved uid (`lane:x:<uid>:<gid>::/home/lane:/bin/bash`, group `lane`) unless the image already has
+  that uid, write both files read-only to the lane directory and bind-mount them `:ro` over `/etc/passwd` and `/etc/group`.
+  No nss_wrapper and no LD_PRELOAD (static and Go binaries would escape it).
+- Per-lane HOME: a writable directory in the lane scratch area, plus `XDG_CACHE_HOME`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `TMPDIR` under it;
+  `HOME=/home/lane` inside. It is removed with the lane directory (the lane's CoW clones, if any, are the user's responsibility as today).
+- Fold RG-118 in: refuse a resolved uid with no passwd entry when no overlay applies (so "invoker"/"uid" environments keep the old guard).
+- RG-150 owner preflight: before the lane starts, refuse with ONE line naming the three owners when the worktree owner, the CoW root owner
+  and the effective lane uid differ, so the old failure class never surfaces as three unrelated errors.
+- `RUN_GATE_*` lane environment gains `RUN_GATE_LANE_UID/GID/HOME` so gate scripts and assay can use them (documented once in
+  `tester-unified/docs/CONSUMERS.md`, TB-13).
+- Docker-using lanes still add the socket gid, derived by `stat` of the socket the lane mounts (RG-152), never a configured number.
+
+**Acceptance criteria.**
+
+- `user = "owner"` resolves uid:gid from a temp checkout owned by a non-1003 uid; passes `--user`; refuses root.
+- The overlay contains exactly the image's entries plus one line; `getpwuid`, `getpass.getuser`, `git`, `ssh` and `whoami` work inside a
+  lane whose uid is absent from the image (live tester lane).
+- Mount flags are `ro`; the lane cannot modify `/etc/passwd`.
+- The RG-150 preflight reproduces its single-line refusal when the CoW root owner differs.
+- **Non-mdt path (operator criterion, 2026-11-04).** A test shows that on a plain Debian host or a non-mdt devcontainer, where the user's uid is
+  whatever the OS gave (for example 1000) and there is no cockpit remap, `user = "owner"` runs the lane with that uid and nothing consults
+  or requires `mdt-docker`, `/etc/mdt` or any mdt group; docker-socket lanes use the gid of the socket actually mounted.
+
+**Test plan.** Resolver and overlay unit tests with fake `stat` and a fixture passwd; command-construction tests (`--user`, ro binds, HOME);
+one tester-lane smoke on the real image; regression tests for RG-106's `invoker` and `uid:gid` forms and RG-118's refusal.
+
+**Dependencies and order.** First package of the lane-uid rollout (RG-151, then TB-13, then B211 and KI-114 in parallel, then RG-153).
+Independent of RG-152. After branch fix-r1002-gate-ownership merges (RG-150).
+
+## RG-152 — docker and observer gids are derived by `stat` of the sockets actually used; the negative assertion covers both docker-class gids
+
+**Status:** OPEN. Filed 2026-11-04.
+
+**Problem.** `run_gate.py:8700-8712` asserts the observer gid differs from the docker gid, derived by `stat` (correct), and `ctl.sock` is reached
+through the cockpit's inherited `docker` gid. With the fixed `mdt-docker` group (mdt-cockpit MDT-053, gid 2751) there are two docker-class gids on
+an mdt host (`mdt-docker` and the host `docker` group), and on a non-mdt host there is only one, possibly under a different name.
+
+**Decision record (operator, 2026-11-04).** Every consumer derives gids by `stat` on the socket it mounts or connects to; nothing reads a
+configured docker gid and nothing requires the mdt group. Requirement: repo tools must keep working when the user does NOT use the mdt cockpit.
+
+**Design.**
+
+- Replace any docker-gid lookup (including the fallbacks that read `DOCKER_GID` or `getgrnam("docker")`) with `os.stat()` on the
+  resolved docker socket (`DOCKER_HOST` when `unix://`, else the default) and on the `/run/cgprofile` and `/run/cgprofile/observer` directories.
+- The observer assertion becomes: observer gid differs from the docker-socket gid AND from the `/run/cgprofile` directory gid
+  (which is `mdt-docker` on an mdt host, per CP-43). On a host without cgprofile the existing infrastructure refusal stays.
+- ctl access: try `ctl.sock`; on `EACCES` fall back to the existing `docker exec` carrier (`run_gate.py:688,711`) while the container deployment
+  exists, then report a clear "add yourself to the directory's group or CGPROFILE_ALLOW_UIDS" message naming the gid read by `stat`.
+- Forwarding to lanes: only the observer gid is added as a supplementary group, never the socket group (unchanged).
+
+**Acceptance criteria.**
+
+- Table tests over (docker gid, mdt-docker dir gid, observer gid) cases: equal observer gid is refused; distinct passes.
+- No reference to `DOCKER_GID`, `getgrnam("docker")` or the name `mdt-docker` in `run_gate.py` outside docs/tests.
+- **Non-mdt path.** A test with a fake docker socket of an arbitrary gid and no `/run/cgprofile` shows: docker use works, the cgprofile
+  features report "observer unavailable" cleanly (no mdt hint required), and no code path needs the mdt group.
+
+**Test plan.** Unit tests with temp sockets and directories chowned to test gids where permitted, otherwise injected `stat` results.
+
+**Dependencies and order.** After CP-43 (the model) and with or after MDT-053. Assay B212 mirrors this in its launchers.
+
+## RG-153 — `owner` becomes the default lane user for the tester environment; retire the baked uid 1003 rule (lane-uid phase 4)
+
+**Status:** BLOCKED on RG-151, TB-13 and B211/KI-114. Filed 2026-11-04.
+
+**Decision record (operator, 2026-11-04).** After phases 1 to 3 the default flips and the "everything is uid 1003" host rule retires.
+
+**Design.** The shipped `tester` environment default (`run-gate.root.toml`, project templates, docs) becomes `user = "owner"`;
+the `== 1003` assertions in `tester-unified/run:259,305` and `assay/tools/self-qualification-container.sh:601` become `== owner`
+(owned by TB-13 and B211); NC-04 and MDT-052 are relaxed through MDT-059 ("any uid, as long as checkout, CoW root and cockpit share it").
+The RG-150 preflight stays. Docs: one CONSUMERS statement of the lane user contract.
+
+**Acceptance.** The registered gate of run-gate, assay, cmru and one third project passes with a non-1003 owner uid on a scratch host;
+a test pins that no committed default names 1003.
+
+**Dependencies and order.** Last package of the rollout; then MDT-059.
