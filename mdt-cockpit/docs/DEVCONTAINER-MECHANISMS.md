@@ -103,7 +103,7 @@ because the managed remote builder cannot see the local image store.
 
 | Argument | Why |
 |---|---|
-| `--name`, `--hostname` | stable identity (`<repo>-devcontainer-<user>`, or `mdt-cockpit-<user>` in the host-folder variant) |
+| `--name`, `--hostname` | stable identity (`mdt-cockpit-<user>-<repo>`, or `mdt-cockpit-<user>` in the host-folder variant) |
 | `--group-add ${localEnv:DOCKER_GID}` | access to the Docker and BuildKit sockets |
 | `--cgroup-parent=dev-interactive.slice` | host resource tier; placement is create-time only |
 | `--cap-add SYS_ADMIN`, `--device /dev/fuse` | sshfs and `mount(2)` inside the container |

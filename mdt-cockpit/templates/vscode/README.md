@@ -50,6 +50,6 @@ a service) or inside tmux in a container that stays up (`shutdownAction: "none"`
 
 ## Entering the container without VS Code
 
-On the Docker host: `docker exec -it -u vscode <container> zsh`, where the container is `<folder>-devcontainer-<USER>` (per-repo template) or `mdt-cockpit-<USER>` (host-folder template); `docker ps --format '{{.Names}}'` lists it. That shell lacks
+On the Docker host: `docker exec -it -u vscode <container> zsh`, where the container is `mdt-cockpit-<USER>-<folder>` (per-repo template) or `mdt-cockpit-<USER>` (host-folder template); `docker ps --format '{{.Names}}'` lists it. That shell lacks
 VS Code's environment (`SSH_AUTH_SOCK`, `BROWSER`, the git credential helper). A tmux session started in a
 VS Code terminal can be attached from there with `tmux attach -t main`.
