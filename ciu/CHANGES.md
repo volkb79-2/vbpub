@@ -95,6 +95,10 @@ the technical detail below it.
 - CIU-144: the CIU-117 worktree image-scoping notice now goes to stderr, so `ciu resolve --json` and `ciu check --json` keep stdout to one JSON document in a linked worktree whose stack declares `build:`.
 - CIU-86: `ciu graph --format json` (every format) writes its own notices and validation errors to stderr; stdout carries only the graph (S13.5).
 - CIU-139: `ciu resolve` and `ciu exec` seed identity and machine facts from the selected root's instance record (as `ciu up`/`check` do), so they work in an unprimed shell and from any cwd with `--root-folder`; a root with no record refuses naming `ciu env generate`.
+- CIU-102: `ctx.secret_file(name)` now resolves a secret a hook persisted itself (S9.4a, found through the stack's provenance sidecar) instead of raising `KeyError`; a name never persisted still raises.
+- CIU-150: the governance slice preflight also checks a literal `cgroup_parent: <name>.slice` authored in a stack's compose file. A slice systemd definitely reports absent refuses (exit 2); an inconclusive probe (cockpit, no systemd PID 1) now WARNs and continues.
+- CIU-148: SPEC S15.20 and DESIGN-NOTES D8 cite dstdns `docs/RESOURCE-GOVERNANCE.md` (sections 4 and 6) instead of the merged-away `KSM-OPTIN-MEASUREMENTS.md`.
+- CIU-101: the engine `--help` module-guard test no longer fails when an unrelated finalizer warning lands in its recording window.
 
 ## [7.18.0] - 2026-10-28
 <!-- cmru: generated -->

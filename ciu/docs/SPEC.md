@@ -3414,7 +3414,7 @@ Measurement on one estate found `LD_PRELOAD`'s reach far wider than assumed
 static binary it later `exec`s inherits the flag), so few services need it
 there. That is an estate fact, not a CIU one: a consumer whose images are
 static-only has no other way to opt in. Full data: dstdns
-`docs/KSM-OPTIN-MEASUREMENTS.md`; design discussion: `docs/DESIGN-NOTES.md` D8.
+`docs/RESOURCE-GOVERNANCE.md` (sections 4 and 6); design discussion: `docs/DESIGN-NOTES.md` D8.
 
 ### S15.12 — Named-slice existence preflight (D-G9 check 1)
 

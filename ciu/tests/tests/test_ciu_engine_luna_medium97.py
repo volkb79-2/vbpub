@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import runpy
 import sys
 import warnings
@@ -121,6 +122,7 @@ def test_engine_module_guard_help_exits_cleanly_without_warning_summary(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setattr(sys, "argv", ["ciu.engine", "--help"])
+    gc.collect()  # CIU-101: flush other tests' pending finalizer warnings first
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         with pytest.raises(SystemExit) as exit_info:
@@ -128,4 +130,16 @@ def test_engine_module_guard_help_exits_cleanly_without_warning_summary(
 
     assert exit_info.value.code == 0
     assert "usage:" in capsys.readouterr().out
-    assert all(item.category is RuntimeWarning for item in caught)
+    # CIU-101: `simplefilter("always")` also records unrelated warnings that
+    # other tests leave pending (ResourceWarning/DeprecationWarning surfaced by
+    # a garbage collection landing inside this window), which made this flaky.
+    # The contract is that CIU itself emits no warning; runpy's own
+    # RuntimeWarning (module already in sys.modules) is expected.
+    ciu_dir = str(Path(engine.__file__).resolve().parent)
+    ours = [
+        item
+        for item in caught
+        if item.category is not RuntimeWarning
+        and str(Path(item.filename).resolve()).startswith(ciu_dir)
+    ]
+    assert ours == []

@@ -2083,6 +2083,38 @@ def apply_mem_min_injections(
             )
 
 
+_COMPOSE_CGROUP_PARENT_RE = re.compile(
+    r"""^\s*cgroup_parent:\s*["']?([A-Za-z0-9_.@:\\-]+\.slice)["']?\s*(?:#.*)?$""",
+    re.MULTILINE,
+)
+#: Slices every systemd host already has; naming one is not a governance claim.
+_DEFAULT_SLICES = frozenset({"-.slice", "system.slice", "user.slice", "machine.slice"})
+
+
+def _compose_authored_slices(repo_root: Path, entry: dict) -> list[str]:
+    """CIU-150: literal named slices a stack's compose file authors itself.
+
+    Scans the committed compose text (``ciu.compose.yml.j2`` or the shipped
+    ``docker-compose.yml``) for a literal ``cgroup_parent: <name>.slice``.
+    Templated values (``{{ ... }}``) do not match and are left to the
+    governance table path. Default systemd slices are ignored.
+    """
+    from .config_constants import CIU_COMPOSE_TEMPLATE, SHIPPED_COMPOSE
+
+    stack_dir = repo_root / entry["path"]
+    names = (SHIPPED_COMPOSE,) if phases_pkg.service_shipped(entry["service"]) else (CIU_COMPOSE_TEMPLATE,)
+    found: list[str] = []
+    for name in names:
+        path = stack_dir / name
+        if not path.is_file():
+            continue
+        for match in _COMPOSE_CGROUP_PARENT_RE.finditer(path.read_text(encoding="utf-8")):
+            slice_name = match.group(1)
+            if slice_name not in _DEFAULT_SLICES and slice_name not in found:
+                found.append(slice_name)
+    return found
+
+
 def governance_slice_preflight(
     repo_root: Path,
     profile: profiles_pkg.Profile,
@@ -2140,6 +2172,7 @@ def governance_slice_preflight(
     # slice_name -> max declared mem_min in bytes across stacks sharing it
     mem_min_required: dict[str, int] = {}
     mem_min_sources: dict[str, list[str]] = {}
+    compose_authored: set[str] = set()
 
     for entry in selection:
         rel = entry["path"]
@@ -2149,6 +2182,11 @@ def governance_slice_preflight(
         # names a slice explicitly nor picks up the ambient env var — that is
         # exactly the "misconfigured, must not deploy" case this preflight
         # exists to catch, so let it propagate.
+        # CIU-150: a compose-authored cgroup_parent places containers outside
+        # the governance table; it needs the same loaded-slice proof.
+        for authored in _compose_authored_slices(repo_root, entry):
+            checked.setdefault(authored, []).append(rel)
+            compose_authored.add(authored)
         resolved = _resolve_entry_governance(entry, rendered, config)
         if resolved is None:
             continue
@@ -2175,7 +2213,19 @@ def governance_slice_preflight(
     for slice_name, stacks in checked.items():
         exists, note = governance_mod.check_slice_unit(slice_name)
         if exists is None:
-            info(f"[INFO] [S15.G9-1] {note}")
+            if compose_authored:
+                # CIU-150: an unprovable host (cockpit, no systemd PID 1) is
+                # not a refusal, but a compose-authored slice goes unchecked,
+                # so say so loudly instead of an INFO line.
+                warn_policy.warn_or_raise(
+                    "[S15.G9-1] cannot prove compose-authored cgroup_parent "
+                    f"slice(s) {sorted(compose_authored)} are loaded on the "
+                    f"Docker host — an absent slice is auto-created "
+                    f"UNBOUNDED: {note}",
+                    severity="WARN", config=config,
+                )
+            else:
+                info(f"[INFO] [S15.G9-1] {note}")
             return  # inconclusive/no-systemd applies to every slice equally
         if exists:
             info(f"[INFO] [S15.G9-1] governance slice OK — {note}")
