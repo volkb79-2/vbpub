@@ -99,6 +99,8 @@ the technical detail below it.
 - CIU-150: the governance slice preflight also checks a literal `cgroup_parent: <name>.slice` authored in a stack's compose file. A slice systemd definitely reports absent refuses (exit 2); an inconclusive probe (cockpit, no systemd PID 1) now WARNs and continues.
 - CIU-148: SPEC S15.20 and DESIGN-NOTES D8 cite dstdns `docs/RESOURCE-GOVERNANCE.md` (sections 4 and 6) instead of the merged-away `KSM-OPTIN-MEASUREMENTS.md`.
 - CIU-101: the engine `--help` module-guard test no longer fails when an unrelated finalizer warning lands in its recording window.
+- CIU-146: `ciu down --profile`/`--phases` stops only the containers (running or exited) of the selected stacks, enumerated by each stack's exact compose-project label; an empty selection refuses instead of widening, and bare `ciu down` stays project-wide (S7.8).
+- CIU-147: the generated overlay stamps each service that mounts rendered configfiles with a `ciu.configfile.sha256` label (content hash of the mounted staging directories), so a changed rendered config recreates exactly that service on `ciu up` and an unchanged render recreates nothing (S8.3 step 15/16).
 ### Added
 - feat(ciu): `ciu worktree refork LOGICAL [--onto TRUNK] [--json]` re-records `fork_point_sha` after a legitimate rebase so run-gate's derived base (R-35a) works again without a hand-passed `--base` (CIU-142). It refuses a dirty tree and a trunk that is not an ancestor of HEAD, is idempotent, and leaves record schema 6 unchanged (the previous value and timestamp are reported in its JSON document, operation `refork`). `ciu worktree inspect` now reports a `fork_point` status (`current`/`stale`/`unrecorded`/`unknown`) and names the verb for a stale record.
 
