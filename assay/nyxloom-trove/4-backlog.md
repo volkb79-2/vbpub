@@ -223,7 +223,7 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 - B025 — attestation-timeout infrastructure forward — dedicated regression and registered gate complete
 
 **Later waves (open, not scheduled)**
-- B085 — third test-path veto (R3 canary) untouched by B074's opt-out — OPEN (JS/R3 wave)
+- B085 — third test-path veto (R3 canary) untouched by B074's opt-out — FIXED 2026-11-04 (a3aefbd49)
 - B087 — JavaScript/TypeScript canary (R3) — **SHIPPED in `assay-v9.0.0`**; the tag's generated changelog records merge `1b5f61a91`; both dstdns R3 canaries PASS with retained schema-v15 verdicts and verifier transcripts.
 - B078 — R0 trusts only the wrapped target's exit code — PARTIAL (checkpoints 2/3: pytest, go test)
 - B103 — execution-interruption boundary (reserved stub; ID collision with an unmerged branch's own B099/A-448 only) — OPEN (owned by the RG-55 continuation)
@@ -9414,7 +9414,7 @@ claim that the current release was "5.2" is wrong.
 
 ## B085 — a THIRD declared-target test-path veto (`judge.canary.target`, R3) is untouched by B074's opt-out and its refusal names neither a flag nor a remedy
 
-**Status: OPEN (filed 2026-09-09) — `canary.py`'s `is_test_path` veto (R3) still does not consult `allow_test_path_targets`, confirmed on main.**
+**Status: FIXED 2026-11-04 (a3aefbd49) — ruling: the flag asserts a layout claim, so it reaches R3 too; a test FILENAME is still refused and the refusal names the flag. Filed 2026-09-09; was OPEN, canary.py's veto did not consult the flag.**
 
 **Filed 2026-09-09** by B074+B077's round-2 fix-verification reviewer,
 while confirming the B074→R2 extension reached exactly the sites it
@@ -13559,7 +13559,7 @@ environment cannot support them, or run them only in the tester image.
 
 ## B184 — synthetic 10.0.1-shape crashed and budget_exceeded resume fixtures
 
-**Status: OPEN.** `tests/fixtures/mutation-state-10.0.1/` holds real IOBench
+**Status: FIXED 2026-11-04 (a3aefbd49).** `tests/fixtures/mutation-state-10.0.1/` holds real IOBench
 `killed` and `survived` records only; PWMCP left no records. Add synthetic
 `crashed` and `budget_exceeded` 10.0.1-shape records so the resume validator's
 rejection (state recorded under another assay version is re-executed, never
@@ -13580,7 +13580,7 @@ revalidation. Treat these fields as a cache miss so the candidate is re-run.
 
 ## B187 — use the shared R0 observation mapping
 
-**Status: OPEN.** `_classify_r0_result` hand-maps observation status instead of
+**Status: FIXED 2026-11-04 (a3aefbd49).** `_classify_r0_result` hand-maps observation status instead of
 using `contention.observation_input`; route it through the shared mapping.
 
 ## B188 — key R2 coverage exclusions by stable source identity
@@ -13655,7 +13655,8 @@ mutation buckets, template seal order, and cleanup; the controller runs the
 
 ## B194 — pilot selector minimum size blocks small pilots
 
-**Status: OPEN (found by the CW9 btrfs pilot, 2026-11-01).**
+**Status: FIXED 2026-11-04 (a3aefbd49) for the size minimum; the second half (no scanner candidates in a small non-scanner plan) remains open.**
+Found by the CW9 btrfs pilot, 2026-11-01.
 `tools/b110_pilot_select.py --size 20` is refused because its minimum is the
 per-file coverage (59 for assay's own plan) plus missing-operator coverage, and
 it cannot select from a plan without scanner candidates (a small project's
