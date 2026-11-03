@@ -58,3 +58,14 @@ Items the IOB-03 P3 review wave and the later review waves deliberately did not 
      * Live checks: `--exclusive_open=1` refuses on a mounted scratch partition with EBUSY; a `RuntimeMaxSec` overrun exits non-zero; a double SIGTERM ends a running blkdiscard; the IOB-BL-04 plausibility item; IOB-BL-08 decided from the real histograms; the work dir never holds more than one cell's load files (IOB-TGT-05).
   4. Plausibility review of the acceptance-run numbers.
   5. The iogov bridge (division of labour, item 1), then IOB-BL-12.
+
+## IOB-R2-01 — native R2 on r1002 (2026-11-03): 318 survivors, 5 budget-exceeded; the campaign is incomplete
+
+The first full native R2 for `libraries/iobench` (Run-Gate 24.3.0, `jobs = "auto"` → 3 workers, 1,220 candidates, 17 h) ended with 897 killed,
+**318 survived**, 0 equivalent, 0 crashed, 0 hung and **5 `budget_exceeded`** (all five reproduce under `--jobs 1 --rejudge` at ~289–308 s, no OOM:
+real candidate timeouts, not parallel flakes). Evidence: `evidence/iobench-r2-r1002/` of the release-program directory (survivor list
+`survivors-from-verdict.csv`, replay status, archive) and the report `IOBENCH-R2-R1002-2026-11-02.md`.
+Survivors by file: calibrate.py 59, cache.py 44, testing.py 31, shape.py 25, cli.py 16, guard.py 16, series.py 15, dryrun.py 14, restore.py 13,
+matrix.py 10, derive.py 9, plausibility.py 9 (rest smaller). **Next:** (1) triage per file (killer test, equivalent argued by simplifying the code,
+or oracle weakness); (2) decide the five timeouts (per-candidate budget vs a faster test slice, reviewed separately); (3) rerun the R2 with the
+resume state; the rerun is cheap for decided candidates. Not release-blocking for the already-released tools.
