@@ -551,6 +551,10 @@ on the changed targets. The latest campaign judged 56 candidates and retained re
 PWMCP-18 (`containers/ocr/ocr_service.py:387`) remains an open survivor. The r4 release already shipped after its R1 gate, so this item tracks the
 separate mutation-evidence follow-up.
 
+**Runner note (2026-11-04).** `pwmcp/assay.toml` `[lanes.r2.judge.mutation]` declares `jobs = 1`, so `run-gate r2 --jobs auto` selects N=1
+(`jobs_max=1` in Run-Gate's INFO line) however many CPUs the runner has: the 384-candidate campaign runs serially. Parallel judging needs a
+declared `jobs` above 1 (or `"auto"`) in `assay.toml`, which is a pwmcp decision (candidate isolation and the OCR service tests' memory).
+
 **Close by:** resume the r2 campaign on the btrfs runner with the supported lane and parallelism, account for all candidates, triage the five pending
 rows and remaining survivors, then record the final verdict and any accepted survivors here or in the linked R2 report.
 

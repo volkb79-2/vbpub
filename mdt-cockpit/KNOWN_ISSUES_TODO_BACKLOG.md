@@ -969,3 +969,52 @@ image's wheel list without inventing a package.
 
 **Acceptance.** `cgprofile` resolves from a published wheel and `check_wheel_set` plus the manifest test pass with it declared;
 or the decision to stay image-less is recorded here with the checkout invocation.
+
+## MDT-049 - the BuildKit shim rewrites an explicit `BUILDX_BUILDER=default` to `mdt-managed`; builds FROM a locally loaded image fail (2026-11-04)
+
+**Status:** OPEN. Found while building `tester-unified` on a runner host on top of a locally loaded `tester-base:local`.
+
+**Observed.** `docker-buildx-shim.sh` treats `BUILDX_BUILDER` unset **and** `default` the same (`case ... ""|default) BUILDX_BUILDER=$MDT_BUILDER`). The
+managed builder is rootless BuildKit with its own image store; it cannot see an image that exists only in the Docker daemon's store, so
+`FROM tester-base:local` fails with `pull access denied ... repository does not exist`. A caller who selects `default` explicitly (the
+docker driver, which does see local images) is overridden without notice. The only escape is `MDT_BUILDX_PASSTHROUGH=1`, which also disables
+the cgroup/registration handling for that call.
+
+**Next steps.**
+
+1. Honor an explicit `BUILDX_BUILDER=default` (rewrite only when it is unset), or keep the rewrite and print one stderr line naming
+   `MDT_BUILDX_PASSTHROUGH=1` and `--builder` as the way to the docker driver.
+2. Document the local-base-image limitation and the passthrough workaround in `tester-unified/README.md` ("Build") and
+   `docs/BUILD-ARCHITECTURE.md`.
+3. Alternative that removes the need: build `tester-base` with `--output type=image` into the registry used by the managed builder, or pass the base as a
+   BuildKit `--build-context` of the local image.
+
+**Acceptance.** A shim test (fake buildx plugin) shows `BUILDX_BUILDER=default` is passed through unchanged, or that the hint line is printed; the
+docs name the workaround.
+
+## MDT-050 - `host-setup.env.example` ships `DEV_INTERACTIVE_MEMORY_LOW=2.5G` while the README says no MemoryLow is proposed (2026-11-04)
+
+**Status:** OPEN. The wizard warns on the shipped example: `DEV_INTERACTIVE_MEMORY_LOW` is set but `dev.slice` has no `MemoryLow` ancestor, so it is
+inert. A first live `install.sh` run needed a manual edit to the empty value.
+
+**Fix.** Set the example default to empty (line 265, `DEV_INTERACTIVE_MEMORY_LOW=`), keep the allowed-values comment, and add a test that the
+example parses with no wizard warning on a host with no `DEV_MEMORY_LOW`.
+
+## MDT-051 - `mdt-host-check.sh` warns on `auto` values it should resolve (2026-11-04)
+
+**Status:** OPEN. On a freshly installed host 10 of 12 warnings were noise: `DEV_*_CPU_QUOTA=auto is not a recognized CPUQuota form (N%%)` (the message
+also doubles the `%`) and `*_SWAP_MAX=auto is not byte-comparable`. The other two (no io baseline; IOWeight inert without io.cost) are real and expected.
+
+**Fix.** Resolve `auto` to the computed value (the same function the installer uses) before comparing, or skip the comparison with an `info` line;
+fix the doubled `%%` in the message. Test: a fake host-setup.env with `auto` for both keys yields no warning.
+
+## MDT-052 - the docker-run form of the host-folder cockpit has no UID remap, so checkouts, CoW root and lane user disagree (2026-11-04)
+
+**Status:** OPEN. Hosts without the devcontainer CLI create the cockpit with `docker run`, which skips `updateRemoteUserUID`. The container's `vscode`
+(uid 1000) then owns nothing the 1003 `tester-unified` lane user can share: a checkout owned by one uid fails Git (`dubious ownership`) or the CoW root
+check (`MDT_COW_ROOT must be owned by the non-root caller uid`) on the other side (Run-Gate RG-150).
+
+**Fix.** Ship the docker-run equivalent as a supported helper (`mdt-cockpit run-host-folder`, or a documented script) that creates the container as root,
+remaps `vscode` to the owner uid/gid of the checkouts directory (`groupmod`/`usermod`), then runs `finalize_container_environment.py` as `vscode`; document that
+the runner account must be uid 1003 (the tester-unified lane uid). Test the helper with a fake docker.
+

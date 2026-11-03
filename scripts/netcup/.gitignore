@@ -12,3 +12,6 @@ remote-logs/
 
 # Local env files (secrets)
 .env
+
+# Runner host values (host-specific; copy runner/runner.env.example)
+runner/runner.env
