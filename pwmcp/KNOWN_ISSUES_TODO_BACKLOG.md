@@ -566,3 +566,23 @@ location, and make that the documented place to point `PWMCP_CONSOLE_CORPUS_DIR`
 the corpus design (`docs/DESIGN-OCR-PHASE2-3.md`) deliberately has no fallback, so an unset variable must keep raising
 `CorpusMissing`; any change there is a design decision, not a path derivation. Replace the `eval_glyphgrid.py` home-directory default with a
 location derived from the same folder, and update the corpus README, `docs/CONSUMERS.md#local-console-corpus` and this tool's README.
+
+## PWMCP-22 — unported groundwork from the 2026-10-27 canvas-capture session: xterm.js buffer reader, password-only login helper, intrinsic-bitmap canvas capture
+
+**Status:** OPEN (filed 2026-11-04 while closing out the `.claude/worktrees` session worktrees). The shipped `pwmcp ocr --selector` path
+(compositor screenshot of the element) and the console-capture tools on main superseded that session's `pwmcp canvas-capture` verb and its
+TrueNAS/Netcup scripts; three ideas from it are not on main.
+
+- **xterm.js text without OCR.** Web terminals that expose `window.term` (Proxmox serial consoles and node shells) hold exact text in
+  `term.buffer.active.getLine(i).translateToString(true)`; reading it beats OCR and a WebGL canvas's `toDataURL` is blank. Measured on one setup only.
+- **Password-only login helper.** Fill from named environment variables (values never logged or returned), submit with a real `press('Enter')`
+  (spice-html5 listens for the Enter key event, not a button click). Never run against a live prompt.
+- **Intrinsic canvas bitmap.** `canvas.toDataURL` (with `getImageData` fallback) returns the page-painted bitmap, which a glyph-grid reader needs;
+  the screenshot path returns the element as displayed (CSS pixels). The metadata records whether CSS scaling applied.
+
+**Source.** Commits `c827746d9`, `7c5b35beb`, `19a78ceb2` (modules `pwmcp_client/{canvas,login,terminal}.py`, tests, CLI-SPEC/USAGE/surface
+entries). The branch was deleted; the commits are preserved as a git bundle at
+`/workspaces/vbpub/artifacts/worktree-archive-20261104/worktree-agent-ae5983017bc3b1d7e.bundle` (gitignored, local; `git fetch <bundle> <ref>`).
+
+**Close by:** decide against the PWMCP-11 phase 2 watcher design whether the in-page bitmap read and the xterm reader belong in the watcher or as
+standalone verbs, then port the wanted pieces from the bundle onto current main (the CLI surface files conflict) or drop them with a reason here.
