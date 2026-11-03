@@ -69,11 +69,8 @@ def test_templates_use_the_configured_ports_for_both_entrypoints() -> None:
 
 
 def _mattermost_defaults() -> Path | None:
-    for base in (ROOT.parent, ROOT.parent / "voice-screen-share"):
-        cand = base / "mattermost-server" / "ciu.defaults.toml.j2"
-        if cand.is_file():
-            return cand
-    return None
+    cand = ROOT.parent / "voice-screen-share" / "mattermost-server" / "ciu.defaults.toml.j2"
+    return cand if cand.is_file() else None
 
 
 def test_agrees_with_mattermost_project_when_present() -> None:

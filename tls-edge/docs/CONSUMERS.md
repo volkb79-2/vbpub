@@ -10,7 +10,7 @@ The Mattermost app must join `ingress_public`, expose its Calls listener to
 that network, and advertise its public hostname and media port. Its Traefik
 labels need one TCP router and one UDP router that point to the app's media
 listener. The Mattermost stack in this repository provides those labels in
-`mattermost-server/ciu.compose.yml.j2`; do not add a second media route for the
+`voice-screen-share/mattermost-server/ciu.compose.yml.j2`; do not add a second media route for the
 same app.
 
 For a different self-hosted consumer, follow the same transport mapping:
