@@ -600,7 +600,10 @@ def test_prepare_project_environment_uses_registered_registry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The local-dev preflight derives its image prefix from the CMRU config."""
-    monkeypatch.delenv("REGISTRY", raising=False)
+    # The real API writes REGISTRY and other keys with plain os.environ[...] assignments;
+    # a private copy (restored by monkeypatch) keeps them out of every later test.
+    private_environ = {key: value for key, value in os.environ.items() if key != "REGISTRY"}
+    monkeypatch.setattr(os, "environ", private_environ)
     build_push.prepare_project_environment(ROOT / "cmru.toml")
     assert os.environ["REGISTRY"] == "ghcr.io"
 
