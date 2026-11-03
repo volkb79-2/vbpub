@@ -2029,6 +2029,15 @@ when the cleanup policy selected no release tags for deletion. `--dry-run`
 renders the same plan and performs no mutation; `--yes` confirms that same
 captured plan.
 
+**S2.5a — Nested wheel pyprojects** (`project.wheel_pyprojects`, KI-83). A project
+whose wheel lives below its root lists the project-relative paths of those
+`pyproject.toml` files, for example `wheel_pyprojects = ["client/pyproject.toml"]`.
+`cmru dependencies` holds each listed file to the same rule as the root
+`pyproject.toml`: a first-party requirement must be declared in
+`depends_on`, and the refusal names the consumer, the provider and the nested
+file. Each path must be a non-empty relative `pyproject.toml` path without `..`,
+listed once, and must exist.
+
 **S2.6 — Tool dependencies** (`[[project.tool_dependencies]]`, S15). A project
 declares a first-party artifact its OWN tests/tooling consume (not a released
 product output — see S1). This is distinct from

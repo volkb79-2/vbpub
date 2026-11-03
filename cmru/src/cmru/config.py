@@ -406,6 +406,9 @@ class ProjectS2Config:
     # First-party artifacts this project's tests/tooling consume (S15). Empty ⇒ no
     # declared tool dependency (today's behaviour, unchanged).
     tool_dependencies: List[ToolDependency] = field(default_factory=list)
+    # Project-relative nested wheel pyproject.toml files whose first-party
+    # requirements the dependency preflight also checks (KI-83).
+    wheel_pyprojects: List[str] = field(default_factory=list)
     description: str = ""
     project_root: Optional[Path] = None
     env: Mapping[str, str] = field(default_factory=dict)
@@ -840,6 +843,32 @@ def _parse_variants(name: str, raw: dict) -> List[VariantConfig]:
 # as early as possible, rather than let a malformed value reach verification later.
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _KNOWN_TOOL_DEPENDENCY_KEYS = {"project", "version", "path", "sha256"}
+
+
+def _parse_wheel_pyprojects(name: str, raw: dict) -> List[str]:
+    """Parse ``project.wheel_pyprojects``: project-relative nested pyproject paths."""
+    items = raw.get("wheel_pyprojects")
+    if items is None:
+        return []
+    if not isinstance(items, list):
+        _error(f"project.{name}.wheel_pyprojects must be an array of strings")
+    paths: List[str] = []
+    for index, item in enumerate(items):
+        where = f"project.{name}.wheel_pyprojects[{index}]"
+        if not isinstance(item, str) or not item.strip():
+            _error(f"{where} must be a non-empty string")
+        candidate = Path(item.strip())
+        if (
+            candidate.is_absolute()
+            or ".." in candidate.parts
+            or candidate.name != "pyproject.toml"
+        ):
+            _error(f"{where} must be a project-relative path to a pyproject.toml")
+        normalised = candidate.as_posix()
+        if normalised in paths:
+            _error(f"project.{name}.wheel_pyprojects lists {normalised!r} twice")
+        paths.append(normalised)
+    return paths
 
 
 def _parse_tool_dependencies(name: str, raw: dict) -> List[ToolDependency]:
@@ -1379,7 +1408,8 @@ def _parse_project_document(
     _reject_unknown(
         project_raw,
         {"id", "description", "template_revision", "prefix", "artifacts", "scm_dist", "version",
-         "release", "installer", "variants", "tool_dependencies"},
+         "release", "installer", "variants", "tool_dependencies",
+         "wheel_pyprojects"},
         "project",
     )
     name = _require(project_raw, "id", "project")
@@ -1451,6 +1481,7 @@ def _parse_project_document(
         installer = _parse_installer(name, project_raw["installer"])
     variants = _parse_variants(name, project_raw)
     tool_dependencies = _parse_tool_dependencies(name, project_raw)
+    wheel_pyprojects = _parse_wheel_pyprojects(name, project_raw)
     steps = _validate_runner_steps(raw.get("steps"))
     required_steps = {"run-tests", "push"}
     missing_steps = sorted(required_steps - set(steps))
@@ -1474,6 +1505,7 @@ def _parse_project_document(
             changelog=changelog,
             variants=variants,
             tool_dependencies=tool_dependencies,
+            wheel_pyprojects=wheel_pyprojects,
             description=description.strip(),
             project_root=config_path.parent.resolve(),
             env=env,

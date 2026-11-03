@@ -1672,7 +1672,11 @@ complete KI-51.
 
 **Oracle:** a config with `build_step = "push"` is rejected at load; a normal `build` step is accepted.
 
-### KI-57 — No multi-project or nested-project end-to-end case for merge-promote (REL-15 follow-up) — *open, severity: minor*
+### KI-57 — No multi-project or nested-project end-to-end case for merge-promote (REL-15 follow-up) — *FIXED 2026-11-04 (3633db417), severity: minor*
+
+`test_ki57_promote_checks_every_released_project_path_including_nested_ones` drives real-git `promote_workspace` with two
+projects and a project nested two levels deep (siblings, parent, name-prefix directory allowed; own subtree refused). The
+per-project promotion order and checkpointing of a multi-project transaction through the CLI remain unexercised.
 
 **Observed:** `tests/test_release_end_to_end_real_git.py` drives a single project under `demo/`. Merge-promote's project-path check (`project_paths`), the per-project promotion order and the checkpointing are never exercised with two projects in one transaction or a project nested more than one level deep.
 
@@ -2140,7 +2144,9 @@ entry.
 
 ### KI-83 — dependency preflight misses first-party requirements in nested wheel projects
 
-**Status:** open; severity: minor. Transferred from PWMCP-02's CMRU note; that branch used
+**Status:** FIXED 2026-11-04 (4906ed249): `[project] wheel_pyprojects = ["client/pyproject.toml"]` (SPEC S2.5a); `cmru dependencies`
+runs the same first-party requirement check over each declared file and names consumer, provider and nested file. pwmcp's own
+`cmru.toml` does not yet declare `client/pyproject.toml`; that is a pwmcp-side follow-up. Severity: minor. Transferred from PWMCP-02's CMRU note; that branch used
 KI-70, which is already assigned to the mutation-campaign issue in this candidate.
 
 **Observed:** `cmru/src/cmru/dependencies.py` checks first-party requirements only in the
@@ -2257,7 +2263,9 @@ or unreadable". Split the single error message so it names which comparison fail
 
 ### KI-87 — the mutation campaign's known-good control keeps no log and only a bounded output tail
 
-**Status:** open; severity: minor. Filed 2026-10-20 from review CMRU-FIX-01 (F-03).
+**Status:** FIXED 2026-11-04 (60eb2bc13): `_run(full_output_log=...)` keeps the complete control output and a red or timed-out
+control streams all of it to stderr (the retained lane log, as KI-110 chose for the canary) instead of a file beside the
+evidence; the error names it. Filed 2026-10-20 from review CMRU-FIX-01 (F-03); severity: minor.
 
 **Observed:** `mutation_campaign.py` reads the control's output through `_read_output_tail` (the last 1 MiB), so for a very
 large output the FAILURES section may already be cut off, and `failure_excerpt` then returns a labelled tail. Unlike the
@@ -2269,7 +2277,9 @@ the file in the error message; stream to the file instead of keeping only the ta
 
 ### KI-88 — the fixture-closure scan test only sees literal `REPO_ROOT / "..."` reads and exempts whole modules
 
-**Status:** open; severity: minor. Filed 2026-10-20 from review CMRU-FIX-01 (F-05).
+**Status:** FIXED 2026-11-04 (1c679ba40): `tests/_repo_root_scan.py` resolves aliases, `parents[N]`, `.parent`, `joinpath` and
+flags non-literal tails; exemptions are per function (skipif) or declared per module with a verified guard; the pathspec
+function and tracked-ness are used (KI-107 had already shared the pathspec). F-06 read counts not pinned. Filed 2026-10-20 from review CMRU-FIX-01 (F-05); severity: minor.
 
 **Observed:** `test_fixture_carries_every_repo_root_file_the_suite_reads` (tests/test_project_fixture.py) matches only the
 identifier `REPO_ROOT` followed by string literals. Reads spelled `REPO / ...`, `Path(__file__).resolve().parents[N] / ...`,
@@ -2595,7 +2605,10 @@ with no Release) have no publication time and are still deleted by `--policy` re
 
 ### KI-106 - the fixed 600 s mutation candidate timeout can record a false kill under host load
 
-**Status:** OPEN; severity: minor, correctness under contention. The mutation lane gives the known-good control and every candidate
+**Status:** FIXED 2026-11-04 (60eb2bc13): candidates run under `max(configured, 2 x measured control seconds)`
+(`candidate_timeout_seconds`, recorded in the evidence). The "false kill" half was already stale: a timed-out candidate is
+`crashed`/`timeout` (`_candidate_result`), never `killed`, pinned by `test_timeout_is_inconclusive_and_cannot_count_as_a_kill`.
+Original report: severity: minor, correctness under contention. The mutation lane gives the known-good control and every candidate
 the same fixed `--timeout-seconds 600`. A slow control fails loudly, but a SURVIVING mutant runs the whole suite and, if host
 contention stretches it past the cap, is recorded as a killed mutant: a false kill. **Fix:** derive each candidate's timeout from the
 control duration measured in the same run (for example `max(600, 2 x control)`), and record a candidate timeout that coincides with

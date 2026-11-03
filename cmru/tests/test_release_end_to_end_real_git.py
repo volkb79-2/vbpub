@@ -730,6 +730,53 @@ def test_rel04_project_path_touch_is_detected_by_promote_in_process(e2e):
     assert e2e.out("status", "--porcelain=v1", cwd=workspace.path) == ""
 
 
+@pytest.mark.parametrize(
+    ("project_paths", "concurrent", "merges"),
+    [
+        # Two projects in one transaction: main may advance in an unreleased sibling,
+        # never in either released project.
+        (("demo",), "other/b.txt", True),
+        (("demo", "other"), "other/b.txt", False),
+        (("demo", "other"), "demo/a.txt", False),
+        (("demo", "other"), "third/c.txt", True),
+        # A project nested two levels deep: its siblings, its parent directory and a
+        # directory sharing its name prefix are not its own paths; its subtree is.
+        (("group/inner",), "group/sibling/x.txt", True),
+        (("group/inner",), "group/x.txt", True),
+        (("group/inner",), "group/inner-two/x.txt", True),
+        (("group/inner",), "group/inner/deep/x.txt", False),
+        (("group/inner", "demo"), "group/inner/deep/x.txt", False),
+    ],
+)
+def test_ki57_promote_checks_every_released_project_path_including_nested_ones(
+    e2e, project_paths, concurrent, merges,
+):
+    workspace = _real_candidate(e2e, "cmru/release/multi")
+    e2e.advance_main_hook(concurrent)
+    subprocess.run(["sh", e2e.env["GATE_HOOK"]], check=True, env=e2e.env)
+
+    if not merges:
+        with pytest.raises(RuntimeError, match="changed the released project's own paths") as raised:
+            transaction.promote_workspace(
+                workspace, project_paths=project_paths, release_label="demo-v9",
+            )
+        assert concurrent in str(raised.value)
+        assert e2e.out("status", "--porcelain=v1", cwd=workspace.path) == ""
+        return
+    transaction.promote_workspace(
+        workspace, project_paths=project_paths, release_label="demo-v9",
+    )
+    main = e2e.origin_main()
+    files = e2e.out(
+        "--git-dir", str(e2e.origin), "ls-tree", "-r", "--name-only", main, cwd=e2e.root,
+    ).splitlines()
+    assert concurrent in files and "README.md" in files
+    subjects = e2e.out(
+        "--git-dir", str(e2e.origin), "log", "--format=%s", main, cwd=e2e.root,
+    ).splitlines()
+    assert "Merge origin/main into release candidate demo-v9" in subjects
+
+
 def test_rel04_unknown_project_paths_stop_the_merge(e2e):
     workspace = _real_candidate(e2e, "cmru/release/unknown")
     e2e.advance_main_hook("other.txt")

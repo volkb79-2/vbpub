@@ -33,6 +33,11 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ### Fixed
 - WT-OW-01: the embedded `worktree` library refuses workspace removal (release/build worktree cleanup, `cmru abandon`) when any mount, such as a CoW subvolume or bind mount, sits at or under the checkout. It names each mount ("detach it first"), never unmounts, and `force` does not override it. Ships with the identical library copy in ciu (install ciu first, then cmru).
+- fix(cmru): the mutation campaign scales each candidate's timeout from the measured known-good control duration, `max(configured, 2 x control)`, instead of a fixed cap (KI-106)
+- fix(cmru): a failed or timed-out mutation control streams its complete output to stderr, so the lane log keeps more than the 1 MiB tail (KI-87)
+- fix(cmru): the fixture-closure test scans every repository-root path spelling with an AST walk, per function and per declared guard, and checks tracked-ness (KI-88)
+- fix(cmru): `cmru dependencies` checks first-party requirements of nested wheel `pyproject.toml` files declared in `project.wheel_pyprojects` (KI-83)
+- test(cmru): end-to-end merge-promote cases for several projects in one transaction and a project nested two levels deep (KI-57)
 
 <!-- cmru: release history -->
 
