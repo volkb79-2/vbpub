@@ -1364,8 +1364,6 @@ def mounts_under(
     prefix = os.fspath(root).rstrip("/") + "/"
     found: list[Path] = []
     for line in text.splitlines():
-        if not line.strip():
-            continue
         fields = line.split(" ")
         if len(fields) < 5:
             raise WorkspaceError(
