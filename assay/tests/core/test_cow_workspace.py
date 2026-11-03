@@ -11,7 +11,7 @@ import pytest
 
 from assay import _cow_workspace
 from assay.errors import AssayError, Outcome, ReasonCode
-from assay.workspace import WorkspaceEstimate
+from assay.workspace import WorkspaceCleanupError, WorkspaceEstimate
 
 
 class FakeCowError(Exception):
@@ -30,7 +30,8 @@ class FakeSpaceEstimate:
 
 
 class FakeRun:
-    def __init__(self, root: Path, *, caps=None, clone_error=None):
+    def __init__(self, root: Path, *, caps=None, clone_error=None, exit_error=None):
+        self.exit_error = exit_error
         self.path = root / "run"
         self.path.mkdir()
         self.trees = self.path / "trees"
@@ -51,6 +52,8 @@ class FakeRun:
 
     def __exit__(self, exc_type, exc, traceback):
         self.closed = True
+        if self.exit_error is not None:
+            raise self.exit_error
         return False
 
     def ingest_tree(self, source, name):
@@ -111,12 +114,179 @@ class FakeCowtree:
         return self.run
 
 
-def _area(*, backend="btrfs", fs_type="btrfs"):
-    return SimpleNamespace(caps=SimpleNamespace(backend=backend, fs_type=fs_type))
+def _area(*, backend="btrfs", fs_type="btrfs", runs_dir="/cow/runs"):
+    return SimpleNamespace(
+        caps=SimpleNamespace(backend=backend, fs_type=fs_type), runs_dir=runs_dir
+    )
 
 
-def _install(monkeypatch, cowtree):
+class FakeGc:
+    """Stands in for the `cowtree.gc` module; records the scanned dirs."""
+
+    def __init__(self, items=(), error=None):
+        self.items = list(items)
+        self.error = error
+        self.scanned = []
+
+    def gc(self, scan_dir):
+        self.scanned.append(scan_dir)
+        if self.error is not None:
+            raise self.error("gc failed")
+        return self.items
+
+
+def _install(monkeypatch, cowtree, gc=None):
+    monkeypatch.setenv("MDT_COW_ROOT", "/cow")
+    monkeypatch.delenv("COWTREE_MODE", raising=False)
     monkeypatch.setattr(_cow_workspace, "_load_cowtree", lambda: cowtree)
+    fake_gc = gc if gc is not None else FakeGc()
+    monkeypatch.setattr(_cow_workspace, "_load_cowtree_gc", lambda: fake_gc)
+    return fake_gc
+
+
+def test_cowtree_gc_import_names_the_gc_module(monkeypatch):
+    module = object()
+    calls = []
+    monkeypatch.setattr(
+        _cow_workspace.importlib,
+        "import_module",
+        lambda name: calls.append(name) or module,
+    )
+
+    assert _cow_workspace._load_cowtree_gc() is module
+    assert calls == ["cowtree.gc"]
+
+
+def test_unconfigured_cow_root_never_imports_cowtree(tmp_path, monkeypatch):
+    # B196: no MDT_COW_ROOT means no area; a missing cowtree must not matter.
+    monkeypatch.delenv("MDT_COW_ROOT", raising=False)
+    monkeypatch.delenv("COWTREE_MODE", raising=False)
+
+    def fail_import():
+        raise ImportError("cowtree is not installed")
+
+    monkeypatch.setattr(_cow_workspace, "_load_cowtree", fail_import)
+
+    with _cow_workspace.open_workspace(
+        WorkspaceEstimate(1, 1, 2), scratch_root=tmp_path
+    ) as selected:
+        assert selected is None
+
+
+def test_cowtree_mode_off_without_a_root_never_imports_cowtree(tmp_path, monkeypatch):
+    monkeypatch.delenv("MDT_COW_ROOT", raising=False)
+    monkeypatch.setenv("COWTREE_MODE", "off")
+    monkeypatch.setattr(
+        _cow_workspace, "_load_cowtree", lambda: pytest.fail("must not import")
+    )
+
+    with _cow_workspace.open_workspace(
+        WorkspaceEstimate(1, 1, 2), scratch_root=tmp_path
+    ) as selected:
+        assert selected is None
+
+
+def test_an_invalid_cowtree_mode_still_reaches_cowtree(tmp_path, monkeypatch):
+    cowtree = FakeCowtree(detect_error=FakeRootInvalid)
+    _install(monkeypatch, cowtree)
+    monkeypatch.delenv("MDT_COW_ROOT", raising=False)
+    monkeypatch.setenv("COWTREE_MODE", "bogus")
+
+    with pytest.raises(AssayError, match="detect failed"):
+        with _cow_workspace.open_workspace(
+            WorkspaceEstimate(1, 1, 2), scratch_root=tmp_path
+        ):
+            pytest.fail("an invalid mode must be refused by cowtree")
+
+
+def test_dead_runs_are_collected_before_the_run_opens(tmp_path, monkeypatch, capsys):
+    # B197: a SIGKILLed earlier run left its directory; gc runs first.
+    run = FakeRun(tmp_path)
+    order = []
+    cowtree = FakeCowtree(area=_area(runs_dir="/cow/runs"), run=run)
+    real_open = cowtree.open_run
+
+    def recording_open(*args, **kwargs):
+        order.append("open_run")
+        return real_open(*args, **kwargs)
+
+    cowtree.open_run = recording_open
+    gc = _install(
+        monkeypatch,
+        cowtree,
+        FakeGc([SimpleNamespace(status="deleted"), SimpleNamespace(status="owner-live")]),
+    )
+    original_gc = gc.gc
+    gc.gc = lambda scan_dir: order.append("gc") or original_gc(scan_dir)
+
+    with _cow_workspace.open_workspace(WorkspaceEstimate(1, 1, 2), scratch_root=tmp_path):
+        pass
+
+    assert gc.scanned == ["/cow/runs"]
+    assert order == ["gc", "open_run"]
+    assert "collected 1 dead copy-on-write run(s)" in capsys.readouterr().err
+
+
+def test_a_failing_dead_run_collection_is_an_advisory_not_a_refusal(
+    tmp_path, monkeypatch, capsys
+):
+    run = FakeRun(tmp_path)
+    _install(
+        monkeypatch,
+        FakeCowtree(area=_area(), run=run),
+        FakeGc(error=FakeCowError),
+    )
+
+    with _cow_workspace.open_workspace(
+        WorkspaceEstimate(1, 1, 2), scratch_root=tmp_path
+    ) as selected:
+        assert selected is not None
+
+    assert "dead copy-on-write run collection failed: gc failed" in capsys.readouterr().err
+
+
+def test_a_non_btrfs_area_is_not_collected(tmp_path, monkeypatch):
+    gc = _install(monkeypatch, FakeCowtree(area=_area(backend="reflink", fs_type="xfs")))
+
+    with _cow_workspace.open_workspace(
+        WorkspaceEstimate(1, 1, 2), scratch_root=tmp_path
+    ) as selected:
+        assert selected is None
+
+    assert gc.scanned == []
+
+
+def test_a_close_failure_after_the_body_is_a_cleanup_error(tmp_path, monkeypatch):
+    # B199: Run.close failing AFTER the measurement completed is a distinct,
+    # advisory-able error; the same failure DURING the body stays a refusal.
+    run = FakeRun(
+        tmp_path, exit_error=FakeCowError("owner.lock could not be removed")
+    )
+    _install(monkeypatch, FakeCowtree(area=_area(), run=run))
+
+    with pytest.raises(WorkspaceCleanupError) as caught:
+        with _cow_workspace.open_workspace(
+            WorkspaceEstimate(1, 1, 2), scratch_root=tmp_path
+        ):
+            pass
+
+    assert caught.value.reason_code is ReasonCode.EXEC_FAILED
+    assert "cleanup failed: owner.lock could not be removed" in str(caught.value)
+
+
+def test_a_body_failure_is_not_reported_as_a_cleanup_error(tmp_path, monkeypatch):
+    run = FakeRun(tmp_path, clone_error=FakeCowError)
+    _install(monkeypatch, FakeCowtree(area=_area(), run=run))
+    source = tmp_path / "source"
+    source.write_bytes(b"x")
+
+    with pytest.raises(AssayError) as caught:
+        with _cow_workspace.open_workspace(
+            WorkspaceEstimate(1, 1, 2), scratch_root=tmp_path
+        ) as selected:
+            selected.clone_file(source, tmp_path / "dest")
+
+    assert not isinstance(caught.value, WorkspaceCleanupError)
 
 
 def test_cowtree_import_is_lazy_and_names_the_embedded_package(monkeypatch):

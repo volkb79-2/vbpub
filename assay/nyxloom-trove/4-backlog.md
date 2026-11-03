@@ -13690,11 +13690,11 @@ survivor, and bisect against the pre-CW8 commit.
 
 ## B196 — cowtree is imported for every higher-rigor lane even when MDT_COW_ROOT is unset
 
-**Status: OPEN (filed at 10.2.0).** P2: same failure class as B191 (a missing sibling package turns into an import error before any verdict). Import cowtree lazily only when a CoW area is configured. Source: 10.2.0 pre-release review F1.
+**Status: FIXED 2026-11-04 (301d31d10).** `_cow_workspace.open_workspace` returns the plain path without importing cowtree when `MDT_COW_ROOT` is unset. Originally: P2: same failure class as B191 (a missing sibling package turns into an import error before any verdict). Import cowtree lazily only when a CoW area is configured. Source: 10.2.0 pre-release review F1.
 
 ## B197 — Dead CoW runs are not collected after SIGKILL or a container kill
 
-**Status: OPEN (filed at 10.2.0).** P2: the run directory stays under MDT_COW_ROOT/runs/ and nothing collects it; run `cowtree gc` for dead runs at the start of the next run. Source: review F2.
+**Status: FIXED 2026-11-04 (301d31d10).** The adapter runs `cowtree.gc` on the area's runs dir before `open_run`; a gc failure is an advisory. Originally: P2: the run directory stays under MDT_COW_ROOT/runs/ and nothing collects it; run `cowtree gc` for dead runs at the start of the next run. Source: review F2.
 
 ## B198 — The wheel ships a top-level cowtree package
 
@@ -13702,11 +13702,11 @@ survivor, and bisect against the pre-CW8 commit.
 
 ## B199 — Cleanup-only failures after a finished measurement are ERROR, not an advisory
 
-**Status: OPEN (filed at 10.2.0).** P3: a Run.close failure after the verdict inputs are complete (for example files a test wrote next to the snapshot) should be an advisory. Source: review F4.
+**Status: FIXED 2026-11-04 (301d31d10).** A workspace close failure after the body finished raises `WorkspaceCleanupError`, which `run_lane` prints as `assay: advisory:` and keeps the outcome; the leak RuntimeError and the LANE_TIMEOUT rule are unchanged. Originally: P3: a Run.close failure after the verdict inputs are complete (for example files a test wrote next to the snapshot) should be an advisory. Source: review F4.
 
 ## B200 — CoW parity test lacks git status/index and has never run on a real btrfs area in CI
 
-**Status: OPEN (filed at 10.2.0).** P3: add git status and the index to the plain-versus-clone parity test and run it once on a real btrfs area (a scratch VM pilot passed on 2026-11-01). Source: review F5.
+**Status: PARTIAL 2026-11-04 (43f38ef7c): git status and index assertions added; the real-btrfs CI run stays OPEN (needs a btrfs area).** Originally: P3: add git status and the index to the plain-versus-clone parity test and run it once on a real btrfs area (a scratch VM pilot passed on 2026-11-01). Source: review F5.
 
 ## B201 — Optional packed-object reflink path on XFS
 

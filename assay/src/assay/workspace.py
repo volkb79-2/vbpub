@@ -12,7 +12,17 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, Protocol
 
+from .errors import AssayError
 from .records import positional_record
+
+
+class WorkspaceCleanupError(AssayError):
+    """A workspace failed to close AFTER its measurement body finished.
+
+    Distinct from an open/use failure: every verdict input already exists
+    when this is raised, so the runner reports it as an advisory instead of
+    voiding the measurement (B199).
+    """
 
 
 @positional_record
