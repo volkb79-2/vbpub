@@ -58,7 +58,7 @@ def test_minor_release_outside_ki79_window_is_a_failed_precondition(tmp_path, mo
     waiver = next(row for row in rows if row.check == "KI-79 waiver window")
     assert waiver.status == "FAIL"
     assert "7.2.0" in waiver.detail
-    assert "full `gate` lane" in waiver.remedy
+    assert "to `run-gate gate`" in waiver.remedy
 
 
 def test_minor_release_inside_ki79_window_passes_the_gate_validator(tmp_path, monkeypatch):
@@ -744,6 +744,13 @@ def _release_precondition_args(**updates):
     return SimpleNamespace(**values)
 
 
+_CMRU_TOML_PROVISIONAL = (
+    '[steps.run-tests]\n'
+    'commands = [{ label = "gate", argv = ["run-gate", "gate-provisional"], cwd = "." }]\n'
+)
+_CMRU_TOML_FULL = _CMRU_TOML_PROVISIONAL.replace("gate-provisional", "gate")
+
+
 def _mock_cli_release_preconditions(monkeypatch, tmp_path, *, changed=True):
     project = SimpleNamespace(
         name="cmru", project_root=tmp_path / "cmru", prefix="cmru-v",
@@ -760,6 +767,10 @@ def _mock_cli_release_preconditions(monkeypatch, tmp_path, *, changed=True):
     monkeypatch.setattr(
         cli, "_project_config_for_release_snapshot",
         lambda *_args: project,
+    )
+    monkeypatch.setattr(
+        cli, "_cmru_snapshot_config_text",
+        lambda *_args: (Path("cmru/cmru.toml"), _CMRU_TOML_PROVISIONAL),
     )
     monkeypatch.setattr(
         cli, "_known_project_scope_names", lambda _configs: frozenset({"cmru"}),
@@ -799,8 +810,8 @@ def test_release_precondition_helper_reports_one_pass_line_and_uses_planned_vers
     rows = [release_preconditions.GatePrecondition("cmru", "waiver", "PASS", "accepted")]
     observed = {}
 
-    def evaluate(repo_root, source_root, revision, versions):
-        observed.update(
+    def evaluate(repo_root, source_root, revision, versions, **kwargs):
+        observed.update(gate_provisional=kwargs["gate_provisional"],
             repo_root=repo_root, source_root=source_root, revision=revision,
             versions=versions,
         )
@@ -816,6 +827,7 @@ def test_release_precondition_helper_reports_one_pass_line_and_uses_planned_vers
 
     assert revision == "b" * 40
     assert observed["versions"] == {"cmru": "7.1.4"}
+    assert observed["gate_provisional"] is True
     assert "Release gate preconditions: PASS (cmru 7.1.4)." in capsys.readouterr().out
 
 
@@ -825,7 +837,7 @@ def test_release_precondition_helper_keeps_parent_dispatch_output_quiet(
     configs = _mock_cli_release_preconditions(monkeypatch, tmp_path)
     monkeypatch.setattr(
         release_preconditions, "evaluate_release_gate_preconditions",
-        lambda *_args: [release_preconditions.GatePrecondition("cmru", "waiver", "PASS", "ok")],
+        lambda *_args, **_kwargs: [release_preconditions.GatePrecondition("cmru", "waiver", "PASS", "ok")],
     )
 
     cli._release_gate_preconditions_before_dispatch(
@@ -843,7 +855,7 @@ def test_release_precondition_helper_reports_explicit_gate_skip(
     configs = _mock_cli_release_preconditions(monkeypatch, tmp_path)
     monkeypatch.setattr(
         release_preconditions, "evaluate_release_gate_preconditions",
-        lambda *_args: pytest.fail("a skipped gate must not run gate preconditions"),
+        lambda *_args, **_kwargs: pytest.fail("a skipped gate must not run gate preconditions"),
     )
 
     cli._release_gate_preconditions_before_dispatch(
@@ -879,7 +891,7 @@ def test_release_precondition_helper_fails_with_policy_exit_and_remedy(
     configs = _mock_cli_release_preconditions(monkeypatch, tmp_path)
     monkeypatch.setattr(
         release_preconditions, "evaluate_release_gate_preconditions",
-        lambda *_args: [release_preconditions.GatePrecondition(
+        lambda *_args, **_kwargs: [release_preconditions.GatePrecondition(
             "cmru", "KI-79", "FAIL", "planned 7.2.0 is outside the window", "run full gate",
         )],
     )
@@ -907,7 +919,7 @@ def test_release_precondition_helper_uses_feature_source_revision(
     )
     observed = {}
 
-    def evaluate(_repo_root, _source_root, revision, versions):
+    def evaluate(_repo_root, _source_root, revision, versions, **_kwargs):
         observed.update(revision=revision, versions=versions)
         return [release_preconditions.GatePrecondition("cmru", "waiver", "PASS", "accepted")]
 
@@ -1138,3 +1150,78 @@ def test_release_launcher_preserves_precondition_error_exit_codes(
         )
 
     assert caught.value.code == exit_code
+
+
+def test_non_provisional_gate_skips_the_ki79_window_even_for_a_minor_release(
+    tmp_path, monkeypatch,
+):
+    repo_root = _gate_preconditions(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        release_preconditions, "_load_release_gate",
+        lambda *_args: pytest.fail("no waiver is used, so the KI-79 validator must not run"),
+    )
+
+    rows = release_preconditions.evaluate_release_gate_preconditions(
+        repo_root, repo_root, "HEAD", {"cmru": "7.2.0"}, gate_provisional=False,
+    )
+
+    waiver = next(row for row in rows if row.check == "KI-79 waiver window")
+    assert waiver.status == "SKIPPED"
+    assert "gate-provisional" in waiver.detail
+    assert [row.check for row in rows][1:] == [
+        "Run-Gate image identity", "Bootstrap Run-Gate version",
+    ]
+    assert not any(row.status == "FAIL" for row in rows)
+
+
+def test_ki79_failure_advice_leads_to_a_passing_or_skipped_row(tmp_path, monkeypatch):
+    repo_root = _gate_preconditions(tmp_path, monkeypatch)
+    failed = release_preconditions.evaluate_release_gate_preconditions(
+        repo_root, repo_root, "HEAD", {"cmru": "7.2.0"},
+        gate_provisional=release_preconditions.run_tests_uses_provisional_gate(
+            _CMRU_TOML_PROVISIONAL,
+        ),
+    )[0]
+    assert failed.status == "FAIL"
+    assert "run-gate gate-provisional" in failed.remedy and "run-gate gate`" in failed.remedy
+
+    # Follow the remedy: the run-tests command becomes the full gate.
+    followed = release_preconditions.evaluate_release_gate_preconditions(
+        repo_root, repo_root, "HEAD", {"cmru": "7.2.0"},
+        gate_provisional=release_preconditions.run_tests_uses_provisional_gate(
+            _CMRU_TOML_FULL,
+        ),
+    )[0]
+    assert followed.status == "SKIPPED"
+
+
+def test_run_tests_provisional_detection_reads_the_configured_argv():
+    assert release_preconditions.run_tests_uses_provisional_gate(_CMRU_TOML_PROVISIONAL)
+    assert not release_preconditions.run_tests_uses_provisional_gate(_CMRU_TOML_FULL)
+    assert not release_preconditions.run_tests_uses_provisional_gate("[project]\nname = 'x'\n")
+    real = (Path(__file__).resolve().parents[1] / "cmru.toml").read_text("utf-8")
+    assert release_preconditions.run_tests_uses_provisional_gate(real)
+
+
+def test_release_precondition_helper_passes_the_full_gate_choice_through(
+    tmp_path, monkeypatch,
+):
+    configs = _mock_cli_release_preconditions(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        cli, "_cmru_snapshot_config_text",
+        lambda *_args: (Path("cmru/cmru.toml"), _CMRU_TOML_FULL),
+    )
+    observed = {}
+
+    def evaluate(*_args, **kwargs):
+        observed.update(kwargs)
+        return [release_preconditions.GatePrecondition("cmru", "waiver", "SKIPPED", "full gate")]
+
+    monkeypatch.setattr(release_preconditions, "evaluate_release_gate_preconditions", evaluate)
+
+    cli._release_gate_preconditions_before_dispatch(
+        tmp_path, tmp_path / "cmru.orchestration.toml", configs, ["cmru"],
+        _release_precondition_args(), git_auth=None, report=False,
+    )
+
+    assert observed == {"gate_provisional": False}

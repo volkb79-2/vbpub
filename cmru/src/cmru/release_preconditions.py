@@ -302,16 +302,43 @@ def _bootstrap_version_precondition(
     )
 
 
+def run_tests_uses_provisional_gate(config_text: str) -> bool:
+    """True when ``[steps.run-tests]`` in a cmru.toml runs ``gate-provisional``.
+
+    Only that lane carries the KI-79 R2 postponement, so only a release that
+    configures it needs the waiver-window check.
+    """
+    document = tomllib.loads(config_text)
+    commands = document.get("steps", {}).get("run-tests", {}).get("commands", [])
+    return any("gate-provisional" in command.get("argv", []) for command in commands)
+
+
 def evaluate_release_gate_preconditions(
     repo_root: Path,
     source_git_root: Path,
     revision: str,
     planned_versions: Mapping[str, str],
+    *,
+    gate_provisional: bool = True,
 ) -> list[GatePrecondition]:
-    """Evaluate CMRU's three release-gate preconditions for the planned release."""
+    """Evaluate CMRU's three release-gate preconditions for the planned release.
+
+    ``gate_provisional`` says whether cmru.toml's run-tests step runs the
+    provisional gate; the KI-79 window only binds then.
+    """
     version = planned_versions.get("cmru")
     if version is None:
         return []
+    if not gate_provisional:
+        return [
+            GatePrecondition(
+                "cmru", "KI-79 waiver window", "SKIPPED",
+                "cmru.toml's run-tests step does not run `gate-provisional`; the full "
+                "gate is configured, so no R2 postponement is used.",
+            ),
+            check_run_gate_image_precondition(repo_root, source_git_root, revision),
+            _bootstrap_version_precondition(source_git_root, revision),
+        ]
     try:
         gate = _load_release_gate(source_git_root, revision)
         waiver_error = _prepared_version_error(gate, version)
@@ -323,9 +350,9 @@ def evaluate_release_gate_preconditions(
         else:
             waiver = GatePrecondition(
                 "cmru", "KI-79 waiver window", "FAIL", waiver_error,
-                "Run the full `gate` lane for this release by changing `cmru/cmru.toml`'s "
-                "run-tests command to `run-gate gate`; widening KI-79 requires a recorded "
-                "operator decision.",
+                "Change `cmru/cmru.toml`'s run-tests command from `run-gate gate-provisional` "
+                "to `run-gate gate` (the full lane, no postponement; the check is then "
+                "SKIPPED), or obtain a recorded operator decision to widen KI-79.",
             )
     except Exception as exc:
         waiver = GatePrecondition(

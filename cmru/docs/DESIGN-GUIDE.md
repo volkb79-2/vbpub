@@ -1025,9 +1025,12 @@ through worktree setup and the start of a long gate before it refused.
 The launcher checks those facts against the release source snapshot before
 allocating a worktree. The KI-79 check makes a temporary prepared changelog and
 calls the gate's `_validate_postponement`, so the bounds and authorization
-remain defined in one place. The image check uses the gate's installed-wheel,
+remain defined in one place. It runs only when the source revision's
+`cmru.toml` run-tests step runs `gate-provisional`, the one lane that uses the
+postponement; otherwise the row is `SKIPPED`. The image check uses the gate's installed-wheel,
 published-wheel, and image-label identity preflight; it inspects the selected
-image without starting a tester container. If Docker is unavailable, it says
+image without starting a tester container, and downloads the published
+Run-Gate wheel from GitHub to compare digests, so it needs network access. If Docker is unavailable, it says
 `SKIPPED` instead of treating an unreachable image as empty or as a match. The
 bootstrap comparison uses one parser shared with the zero-release sequence
 test, so the preflight and test reject the same stale or conflicting version

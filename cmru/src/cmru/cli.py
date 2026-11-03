@@ -6850,6 +6850,7 @@ def _release_gate_preconditions_before_dispatch(
         GatePrecondition,
         evaluate_release_gate_preconditions,
         format_gate_precondition_report,
+        run_tests_uses_provisional_gate,
     )
     from cmru.version import status_records
 
@@ -6898,8 +6899,12 @@ def _release_gate_preconditions_before_dispatch(
             "cmru has no CMRU-derived tagged release version in this plan.",
         )]
     else:
+        _config_rel, config_text = _cmru_snapshot_config_text(
+            source_git_root, revision, config_path, configs,
+        )
         rows = evaluate_release_gate_preconditions(
             repo_root, source_git_root, revision, {"cmru": planned_version},
+            gate_provisional=run_tests_uses_provisional_gate(config_text),
         )
 
     if any(row.status == "FAIL" for row in rows):
@@ -6916,17 +6921,28 @@ def _release_gate_preconditions_before_dispatch(
     return revision
 
 
-def _project_config_for_release_snapshot(
+def _cmru_snapshot_config_text(
     source_git_root: Path, revision: str, config_path: Path,
     configs: Mapping[str, ProjectConfig],
-) -> ProjectConfig:
-    """Parse CMRU's project config from the exact source commit, without a worktree."""
+) -> tuple[Path, str]:
+    """Return CMRU's project config path and text at the exact source commit."""
     config_rel = _project_config_paths_at_snapshot(
         source_git_root, revision, config_path, configs, ["cmru"],
     )["cmru"]
     content = _read_git_path_at_commit(
         source_git_root, revision, config_rel,
         source_label=f"release source ({revision[:12]}:{config_rel.as_posix()})",
+    )
+    return config_rel, content
+
+
+def _project_config_for_release_snapshot(
+    source_git_root: Path, revision: str, config_path: Path,
+    configs: Mapping[str, ProjectConfig],
+) -> ProjectConfig:
+    """Parse CMRU's project config from the exact source commit, without a worktree."""
+    config_rel, content = _cmru_snapshot_config_text(
+        source_git_root, revision, config_path, configs,
     )
     with tempfile.TemporaryDirectory(prefix="cmru-release-config-") as temporary:
         snapshot_config = Path(temporary) / PROJECT_CONFIG_FILENAME

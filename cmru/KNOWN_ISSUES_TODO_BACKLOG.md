@@ -2629,7 +2629,7 @@ refusal now points only to the complete output above in the lane log. The focuse
 
 **Status:** FIXED 2026-11-03. The release gate authorizes the R2 postponement only for patch lines below 7.2.0, so `cmru release cmru`
 with a minor bump (cmru proposed 7.2.0 from the commit types) is refused in `gate-provisional`. 7.1.3 was released as a patch instead.
-`cmru release --dry-run` now calls the gate's own KI-79 validator for the planned version before creating a candidate worktree and exits 4 with a remedy if the gate would refuse it. The KI-79 window is unchanged: run the full `gate` lane for a version outside it, or widen the window only through a recorded operator decision.
+`cmru release --dry-run` now calls the gate's own KI-79 validator for the planned version before creating a candidate worktree and exits 4 with a remedy if the gate would refuse it, but only when `cmru.toml`'s run-tests step runs `gate-provisional`; with the full `gate` configured the row is `SKIPPED`. The KI-79 window is unchanged: run the full `gate` lane for a version outside it, or widen the window only through a recorded operator decision.
 
 ## KI-110 — the canary leaves an unnamed temporary copy of a red control log
 
@@ -2640,7 +2640,9 @@ red control's full output. It already streams that output to stderr, so the lane
 ## KI-111 — the release dry-run does not exercise the gate preconditions that failed the first three cmru release attempts
 
 **Status:** FIXED 2026-11-03. Before any release worktree is created, `cmru release --dry-run` checks the planned version with the gate's
-KI-79 validator, verifies the selected tester image's Run-Gate version and wheel digest through the release gate's own identity preflight
-(image inspection only; Docker-unavailable is explicitly `SKIPPED`), and compares the bootstrap guide with the latest stable Run-Gate
+KI-79 validator (only when `cmru.toml`'s run-tests step runs `gate-provisional`; otherwise that row is `SKIPPED`), verifies the selected
+tester image's Run-Gate version and wheel digest through the release gate's own identity preflight (it inspects the image and downloads the
+published Run-Gate release sidecar and wheel from GitHub to compare digests, so it needs network access; Docker-unavailable is explicitly
+`SKIPPED`, a GitHub outage is a `FAIL` with a restore-access remedy), and compares the bootstrap guide with the latest stable Run-Gate
 changelog version. The bootstrap check shares its parser with the zero-release sequence test. Any failed check prints a remedy and exits 4
 without creating a workspace; widening the waiver window remains an operator decision, not part of this fix.

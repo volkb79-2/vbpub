@@ -803,22 +803,25 @@ leaves `"state": "failed"` with an empty `deferred_lanes` and no marker; an invo
 before a new gate starts leaves the previous run's marker and manifest untouched.
 
 Before creating a release candidate worktree, the dry-run checks the plan and
-the three gate preconditions that can be checked cheaply. Run it with the same
+the three gate preconditions that can be checked before a worktree exists. Run it with the same
 version flags you intend to release:
 
 ```sh
 cmru release cmru --minor --dry-run
 ```
 
-The check compares the planned version with the gate's KI-79 window, inspects
-the selected tester image's Run-Gate version and wheel digest, and requires
+The check compares the planned version with the gate's KI-79 window (only when
+`cmru/cmru.toml`'s run-tests step runs `gate-provisional`; with the full `gate`
+configured that row is `SKIPPED`), inspects the selected tester image's
+Run-Gate version, downloads the published Run-Gate wheel from GitHub to compare
+its digest (so the dry-run needs network access), and requires
 `docs/BOOTSTRAP-FROM-ZERO.md` to name the latest stable Run-Gate version in
 `run-gate-project/CHANGES.md`. When all checks pass, the existing preview gains
 one `Release gate preconditions: PASS` line. If Docker is unavailable, the
 image row says `SKIPPED` and the dry-run continues; that row does not certify
 the image. A failure prints its remedy and exits 4 before a worktree is
-created. For a version outside the KI-79 window, run the full `gate` lane for
-that release or obtain an explicit operator decision to widen the window. For
+created. For a version outside the KI-79 window, change the run-tests command to the
+full `gate` lane (the row then reads `SKIPPED`) or obtain an explicit operator decision to widen the window. For
 an image mismatch, rebuild the selected image with the exact published
 Run-Gate wheel named in the remedy. For a stale bootstrap guide, update every
 Run-Gate version in the guide to the version recorded by the Run-Gate changelog.
