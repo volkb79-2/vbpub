@@ -19,9 +19,11 @@ uses the Traefik container's TCP port 8443 but is published externally on
 the host publishes 8443/TCP to it. Calls UDP 8443 is published to the
 Traefik container's 8443/UDP socket. There is no TCP/UDP port collision.
 
-The listener is optional and disabled in tls-edge defaults. The tracked host
-override enables it for the Mattermost deployment. Other tls-edge installs
-do not open a media port unless their own override enables the feature.
+The listener is on in tls-edge defaults (`[tls_edge.calls] enabled = true,
+public_port = 8443`), matching the Mattermost project's default media port;
+alternate HTTPS defaults to public 9443 so TCP 8443 is free for Calls. An
+edge that must not open a media port sets `enabled = false`. The agreement
+between the two defaults is pinned by `tests/test_calls_defaults_agree.py`.
 
 ## Privacy and operating boundary
 

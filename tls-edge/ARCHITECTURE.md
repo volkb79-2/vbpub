@@ -497,7 +497,7 @@ ambiguous.  At least one discriminator is required.
 | Option | Requirement | Recommendation |
 |---|---|---|
 | Different subdomains (`svc1.domain`, `svc2.domain`) | DNS that resolves each name to this host (wildcard record covers all at once); ACME modes issue certs automatically | **Preferred** |
-| Different external ports (`443`, `8443`) | Only one service per port; limited number of ports | **Fallback** |
+| Different external ports (`443`, `9443`) | Only one service per port; limited number of ports | **Fallback** |
 | Different path prefixes (`/svcA`, `/svcB`) | Services must not conflict on `/api` etc.; requires path rewriting sometimes | Possible addition |
 | Custom routing header | Non-standard; clients must set the header | Not viable for general use |
 | Different host IPs | Multiple public IPs on the host | Infrastructure option |
@@ -506,13 +506,13 @@ ambiguous.  At least one discriminator is required.
 
 Two HTTP/TLS Traefik entrypoints are defined:
 - `websecure` on port 443: used for subdomain routing.
-- `websecure-alt` on port 8443: used for port-based routing when a subdomain
+- `websecure-alt` (container port 8443, published on public 9443 by default): used for port-based routing when a subdomain
   is not resolvable to this host or (in static mode) not in the certificate
   SAN list.
 
 When Mattermost Calls support is enabled, two raw L4 entrypoints are added:
-one TCP and one UDP. The default feature is off. On the gstammtisch host, the
-public port 8443 is used for both Calls protocols, while alternate HTTPS is
+one TCP and one UDP. The default feature is on. Public port 8443 is used
+for both Calls protocols by default, while alternate HTTPS is
 published on 9443 and still reaches Traefik's internal TCP 8443. Calls TCP
 uses internal TCP 8444; Calls UDP uses internal UDP 8443. These are distinct
 protocol sockets, so the numeric port can be reused safely.
@@ -872,7 +872,7 @@ curl --cacert /path/to/local-ca.crt https://svc.my.domain/
 curl -k https://svc.my.domain/
 
 # Port-based routing check
-curl -sv https://my.domain:8443/ 2>&1 | grep -E "< HTTP"
+curl -sv https://my.domain:9443/ 2>&1 | grep -E "< HTTP"
 ```
 
 Note: port 80 is off by default.  There is no HTTP→HTTPS redirect unless

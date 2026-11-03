@@ -125,7 +125,8 @@ harmless if present, but omitting them keeps labels clean.
 
 Use when a subdomain cannot be made to resolve to this host, or (in static
 mode) is not in the certificate SAN list.  The service is reached at
-`https://my.domain:8443`.
+`https://my.domain:9443` (public alt port default; public 8443 is reserved
+for Mattermost Calls media, TCP and UDP).
 
 ```yaml
 labels:
@@ -396,7 +397,7 @@ curl --cacert /path/to/local-ca.crt https://svc.my.domain/
 curl -k https://svc.my.domain/        # insecure; dev only
 
 # Port-based routing check
-curl -v https://my.domain:8443/
+curl -v https://my.domain:9443/
 ```
 
 Note: port 80 is off by default.  `curl http://svc.my.domain/` will be
@@ -433,7 +434,7 @@ docker run --rm --network <your-stack>_private alpine \
 Docker host port collisions (two containers try to `ports: - "443:..."` directly):
 - Docker rejects the second `docker compose up` with an error like:
   `Bind for 0.0.0.0:443 failed: port is already allocated`
-- Only the edge-proxy stack should ever publish ports 443 and 8443 (and
+- Only the edge-proxy stack should ever publish ports 443, 9443 and 8443 (and
   optionally 80).
 - Consumer stacks must NOT publish their own ports on those numbers.
 
@@ -567,7 +568,7 @@ or when adding new domains.
 |---|---|---|
 | `traefik.enable=true` | yes | Opt this container into Traefik routing |
 | `traefik.http.routers.<n>.rule` | yes | Routing rule, e.g. `Host(...)` |
-| `traefik.http.routers.<n>.entrypoints` | yes | `websecure` (443) or `websecure-alt` (default 8443; host override may differ) |
+| `traefik.http.routers.<n>.entrypoints` | yes | `websecure` (443) or `websecure-alt` (default public 9443; host override may differ) |
 | `traefik.http.services.<n>.loadbalancer.server.port` | yes | Container port to forward to |
 | `traefik.http.routers.<n>.tls=true` | no | TLS is enabled at the entrypoint level — not needed |
 | `traefik.http.routers.<n>.tls.certresolver` | no | Cert resolver is set at the entrypoint level — not needed |

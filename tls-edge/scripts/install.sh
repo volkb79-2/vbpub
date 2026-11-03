@@ -11,7 +11,7 @@
 #   --dns-provider <cloudflare|hetzner|route53|desec|other>
 #   --staging           use Let's Encrypt staging CA
 #   --enable-port-80
-#   --ports <http>:<https>:<alt>   (e.g. 80:443:8443)
+#   --ports <http>:<https>:<alt>   (e.g. 80:443:9443)
 #   --cert-tool <mkcert|openssl>
 #   --yes               non-interactive (accept all suggestions)
 #   --render-only       write config + render templates, do not start stack
@@ -75,7 +75,7 @@ Options:
   --dns-provider <p> DNS provider: cloudflare | hetzner | route53 | desec | other
   --staging          Use Let's Encrypt staging CA
   --enable-port-80   Expose port 80 (HTTP -> HTTPS redirect / HTTP-01 challenges)
-  --ports h:s:a      Custom port mapping http:https:https_alt (default 80:443:8443)
+  --ports h:s:a      Custom port mapping http:https:https_alt (default 80:443:9443)
   --cert-tool <t>    Dev cert tool: mkcert | openssl
   --yes              Non-interactive; accept all suggestions
   --render-only      Write ciu.toml.j2 + render templates; do not start stack
@@ -332,7 +332,7 @@ echo "  [✓] Explicit per-subdomain records — add A records as you go"
 if [[ "$WANT_WILDCARD" == "y" ]]; then
     echo "  [✓] Wildcard cert — requires acme-dns (automated DNS API) or CNAME delegation + manual certbot"
 fi
-echo "  [✓] Port-based fallback — https_alt :8443 always available"
+echo "  [✓] Port-based fallback — https_alt :9443 always available"
 hr
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -427,7 +427,7 @@ fi
 # Custom ports
 PORT_HTTP=80
 PORT_HTTPS=443
-PORT_ALT=8443
+PORT_ALT=9443
 BIND_IP=""
 
 if [[ -n "$OPT_PORTS" ]]; then
@@ -764,7 +764,7 @@ fi
     [[ "$EXPOSE_HTTP" == "true" ]] && _ports_section+="expose_http = true\n"
     [[ "$PORT_HTTP"  != "80"   ]] && _ports_section+="http = $PORT_HTTP\n"
     [[ "$PORT_HTTPS" != "443"  ]] && _ports_section+="https = $PORT_HTTPS\n"
-    [[ "$PORT_ALT"   != "8443" ]] && _ports_section+="https_alt = $PORT_ALT\n"
+    [[ "$PORT_ALT"   != "9443" ]] && _ports_section+="https_alt = $PORT_ALT\n"
     [[ -n "$BIND_IP"           ]] && _ports_section+="bind_ip = \"$BIND_IP\"\n"
     if [[ -n "$_ports_section" ]]; then
         echo "[tls_edge.ports]"
