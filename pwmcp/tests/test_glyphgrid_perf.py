@@ -145,7 +145,7 @@ def test_read_image_synthetic_identical(atlas):
             for src in ("t1", "t2"):
                 a.add("syn", 8, 16, p["key"], p["char"], src)
     for im in (render(lines), render(lines, reverse_cols={(1, 1), (1, 2)}), render(lines).resize((1280, 768), Image.NEAREST)):
-        fast, ref = both(lambda: canon(gg.read_image(im, a)))
+        fast, ref = both(lambda: canon(gg.read_image(im, a, max_seconds=3600.0)))
         assert fast == ref
 
 
@@ -153,7 +153,9 @@ def test_read_image_synthetic_identical(atlas):
 @pytest.mark.parametrize("path", FRAMES, ids=[os.path.basename(p) for p in FRAMES])
 def test_committed_corpus_frame_identical_to_reference(atlas, path):
     assert len(FRAMES) == 20, "the committed corpus has 20 curated frames"
-    fast, ref = both(lambda: canon(gg.read_image(path, atlas)))
+    # The font-file phase search has a wall-clock budget (max_seconds=4.0): the slower reference path can exhaust it under host
+    # load and return an earlier phase, so the identity check would depend on contention. An effectively unlimited budget makes it deterministic.
+    fast, ref = both(lambda: canon(gg.read_image(path, atlas, max_seconds=3600.0)))
     assert fast == ref
 
 

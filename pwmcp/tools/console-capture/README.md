@@ -50,6 +50,17 @@ otherwise it is a real change and is kept, and the old frame becomes the second 
 * `--qmp-json '{"execute":...}'`, `--quit`.
 * Giving more than one of these is rejected (earlier versions silently preferred `--keys`).
 
+## TrueNAS API client TLS (`truenas_rpc.py`)
+
+The JSON-RPC client logs in with `PASSWORD_PLAIN`, so it verifies the server certificate and host name by default.
+A throwaway TrueNAS test install normally has a self-signed certificate. For that case ONLY (operator decision,
+2026-10-27: TLS verification may be off only for throwaway TrueNAS test infrastructure helpers, explicitly and documented):
+
+* `TRUENAS_INSECURE_TLS=1` disables verification and prints a `WARNING` to stderr on every connection. Any other value
+  (unset, empty, `0`) keeps verification on.
+* `TRUENAS_CA_FILE=/path/cert.pem` keeps verification on and trusts that certificate or CA (preferred when you can export it).
+* Never set the insecure variable for a host that holds real data or real credentials.
+
 ## Launcher: `launch-truenas-vm.sh [WORKDIR] ISO|none`
 
 QEMU TCG + OVMF, 2 vCPU, 3 GiB, user-mode networking, same shape as

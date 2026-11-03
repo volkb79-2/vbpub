@@ -6,8 +6,11 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ### Added
 - GlyphGrid tooling: additional attributed console-font atlases, identity-checked faster reads with frame-sequence reuse, and the deterministic `imagegen` test-image generator. No behavior change in the service; the GlyphGrid engine remains unavailable (HTTP 501).
+- Installer: `get.py` is regenerated from the shared cmru installer template. New behaviour: unattended install (`install --unattended`, with `--answers FILE` for projects that ask wizard questions; pwmcp asks none), a maintenance copy of the installer at `<root>/bin/pwmcp-installer`, and the template's reworked install/update/rollback transaction. The `pwmcp` launcher, release layout and verified-wheel venv are unchanged.
+- Console-capture TrueNAS API helper: TLS verification is on by default; `TRUENAS_INSECURE_TLS=1` (throwaway test installs only, warns on stderr) or `TRUENAS_CA_FILE` is the explicit opt-out/alternative.
 
 ### Testing
+- Offline installer test (`tests/test_installer_offline.py`): the committed `get.py` runs unattended install, update and rollback against a fixture bundle with no network.
 - Keep the full 242-frame console capture local and unpublished. Corpus tests verify an explicit `PWMCP_CONSOLE_CORPUS_DIR` against the frame index and deterministic tar pin; they skip with a reason when unset, and `PWMCP_REQUIRE_CONSOLE_CORPUS=1` makes absence fail. The registered gate lanes remain corpus-free.
 
 <!-- cmru: release history -->
