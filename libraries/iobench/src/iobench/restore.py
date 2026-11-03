@@ -364,10 +364,7 @@ class Safety:
         prior = Safety(self.host, doc["run"], doc["started"], journal=self.journal, lock=self.lock)
         prior.entries, prior.files, prior.coupled = doc["entries"], doc["files"], doc["coupled"]
         prior.locked = prior.journal_written = True  # the journal is the dead run's, and this session holds the lock
-        try:
-            return prior.restore()
-        finally:
-            prior.locked = False
+        return prior.restore()
 
 
 def parse_journal(text: str) -> dict[str, Any]:
