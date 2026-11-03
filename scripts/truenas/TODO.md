@@ -4,6 +4,60 @@ The boot-pool patch and golden-image workflows keep their own open work under
 their project directories. This file tracks shared API, VM runner, and installer
 infrastructure.
 
+## 2026-10-22 vanilla-iso-patcher must run as root: make it run as the invoking user
+
+### Problem
+
+`vanilla-iso-patcher create` refuses to run unless it is root (`patch_iso.py:271-275`,
+`cli.py:278-279`; `CONSUMERS.md` lines 20 and 166). The stated reason: it unpacks the live
+filesystem with `unsquashfs -d`, edits files, and rebuilds it with `mksquashfs`, so root is needed
+to keep SquashFS ownership, device nodes and extended attributes. A non-root user cannot `chown`,
+`mknod`, or set `security.*` xattrs, so a user-owned unpack would build a wrong OS image.
+
+Consequences observed or inferred:
+- The work directory is `.vanilla-iso-patcher-*` inside the output ISO's directory
+  (`patch_iso.py:290`, so inside the worktree). A killed run leaves a root-owned extraction tree
+  (230-280 MB per version) there; `ciu worktree rm`, `git worktree remove`, branch pruning and plain
+  cleanup then fail halfway or need sudo.
+- Delta artifacts and probe trees end up root-owned.
+- It cannot run in the unprivileged devcontainer user without sudo, and a root process in the
+  devcontainer (which has SYS_ADMIN) can touch more than it needs.
+- `golden-iso/step2-build-unattended-restore-iso.py` also drives `xorriso` (check whether it needs
+  root too; not verified).
+
+Goal: a full `create` as the invoking user, leaving nothing root-owned, with an image equivalent to
+today's root-built one.
+
+### Solutions to explore (none verified against this ISO)
+
+1. **No unpack at all: `sqfs2tar | patch the tar stream (Python tarfile) | tar2sqfs`**
+   (squashfs-tools-ng, not installed here). Ownership, device entries and xattrs travel inside the tar;
+   nothing is extracted to disk (saves 230-280 MB of writes per run, which matters at 10-20 MB/s).
+   Check: xattr fidelity (`security.capability`), compression and block size parity, that
+   `unsquashfs -ll` of old and new differ only in the patched files. `patch_iso.py` already reads single
+   files with `unsquashfs -cat`, which suggests only a handful of files change; list them first.
+2. **`fakeroot` around unsquashfs, edit, mksquashfs** (fakeroot 1.37 is installed). Keeps ownership and
+   device nodes; weaker for xattrs. Cheap to try.
+3. **User namespaces (`unshare -Ur`)**: uid 0 inside, but real device nodes cannot be created in a user
+   namespace, so this does not work without emulation (1 or 2).
+4. **A disposable root elsewhere: a rootful throwaway container or a VM** (plausible, the project already
+   runs QEMU). The patcher runs as root inside it; inputs/outputs move through a mount or a disk image;
+   the result is chowned to the user. Strongest isolation and no root-owned files in the worktree, but
+   QEMU TCG is slow without KVM (mksquashfs of 250 MB), and exchanging files adds plumbing.
+5. **Narrow the root step and move the mess**: keep root only for unpack/repack, put the work directory in
+   a private scratch directory (`--work-dir`, not next to the output), clean it with a root helper (for
+   example `docker run -u 0` on the bind mount), and never leave it in the worktree. Interim mitigation.
+6. **Do not rebuild the squashfs**: apply the patches at ISO level (the repo has
+   `multisession_overlay_poc.py`) or at delta level. Needs the changed files to be reachable without
+   rewriting the live filesystem; feasibility unknown.
+
+### Acceptance
+
+- Output ISO boots and passes the existing install/boot tests, and `unsquashfs -ll` of the rebuilt
+  filesystem equals the root-built one except for the intended changes (ownership, modes, devices, xattrs).
+- No file in the worktree is root-owned after success or after a killed run.
+- Context and rationale: `mdt-cockpit/docs/BTRFS-COW-OPTIONS.md` (storage design review, 2026-10-22).
+
 ## 2026-10-21 v1001 public-host access check
 
 ### Paused live-test result
