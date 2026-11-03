@@ -1981,7 +1981,11 @@ only the selected stack's rendered services declare container names.
   [--stack S] [--service X] [--live] --json` reports resolved service identities grouped by exact
   repo-relative stack path and Compose service key. It reads rendered config
   in memory, contacts no Docker daemon unless `--live`, and never repairs an
-  outdated identity record. Repeated `--profile` options select and compose
+  outdated identity record. Like `ciu exec`, it first seeds the process from
+  the selected root's instance record exactly as `ciu check` does (CIU-139),
+  so an unprimed shell works; a root with no record refuses naming
+  `ciu env generate`. Notices (such as the CIU-117 image-scoping line) go to
+  stderr: stdout is exactly one JSON document (CIU-144). Repeated `--profile` options select and compose
   deployment profiles; without them, the ordinary configured/ambient
   selection applies. This lets an exact `--stack` name a stack that belongs
   only to an optional profile without silently changing selection. Its
@@ -2518,9 +2522,9 @@ artifact's age, so a migration rule for it would be pure duplication.
   graph itself goes to stdout so it can be piped directly into documentation.
   The orchestrator-level half of this promise (the `_run`-level `[INFO]` lines
   ahead of dispatch) is enforced since CIU-84, the same fix as S13.4a's.
-  `action_graph`'s OWN `info()`/`error()` calls (the empty-graph note, the
-  two shape/provisioning-validation error paths) are NOT yet gated on
-  `--format json` — a real, narrower remaining gap, filed as CIU-86.
+  `action_graph`'s OWN notices and errors (the empty-graph note, the two
+  shape/provisioning-validation error paths) go to stderr for every format
+  since CIU-86.
 
 ### S13.4b — `[registry.*]` schema validation (`ciu check` stage 7)
 

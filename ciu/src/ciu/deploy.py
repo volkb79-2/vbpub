@@ -4291,6 +4291,11 @@ def action_graph(
     """
     from . import provisioning as provisioning_pkg
 
+    def _diag(prefix: str, msg: str) -> None:
+        # CIU-86: stdout carries only the graph (S13.5); notices and errors
+        # go to stderr for every format.
+        print(f"[{prefix}] {msg}", file=sys.stderr, flush=True)
+
     stacks: dict[str, dict] = {}
     for entry in selection:
         rel = entry["path"]
@@ -4300,7 +4305,7 @@ def action_graph(
         try:
             root_key = config_model.validate_stack_shape(stack_cfg)
         except ValueError as exc:
-            error(str(exc))
+            _diag("ERROR", str(exc))
             return 2
         root_section = stack_cfg.get(root_key, {})
         requires = root_section.get("requires", [])
@@ -4315,7 +4320,7 @@ def action_graph(
         try:
             config_model.validate_stack_provisioning(stack_cfg, source=rel)
         except ValueError as exc:
-            error(str(exc))
+            _diag("ERROR", str(exc))
             return 2
         # NOTE: deliberately NOT threading `provides_container` (CIU-89) into
         # this dict — unlike provisioning_graph()/action_check()'s own
@@ -4327,7 +4332,7 @@ def action_graph(
         stacks[rel] = {"requires": requires, "provides": provides}
 
     if not stacks:
-        info("No stacks with requires/provides — nothing to graph")
+        _diag("INFO", "No stacks with requires/provides — nothing to graph")
         return 0
 
     print(provisioning_pkg.render_graph(stacks, fmt=fmt))

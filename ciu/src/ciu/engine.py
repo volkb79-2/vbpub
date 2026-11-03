@@ -1522,8 +1522,11 @@ def scope_worktree_compose_images(
                 candidates, primary_image_references
             )
     if scoped != rendered_compose:
+        # STDERR: `ciu resolve --json` / `ciu check --json` reach this function
+        # and stdout must carry only their JSON document (S18, S13.4a; CIU-144).
         print(
             f"[CIU-117] project-built images use worktree tag suffix {suffix!r}",
+            file=sys.stderr,
             flush=True,
         )
     return scoped
