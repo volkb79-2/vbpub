@@ -904,9 +904,9 @@ def execute_plan(
     ``owner_inspect`` (P87, migrated to the P93 owner-chain protocol in
     ``lifecycle_adapters.evaluate_docker_owner_chain``) engages the Docker
     owner / protected-ID safety gate for the ``docker-start``/``docker-stop``/
-    ``docker-restart`` kinds. When it is ``None`` the gate is a no-op and the
-    legacy P46 behavior is preserved; the production CLI wires it to a real
-    ``docker inspect`` resolver.
+    ``docker-restart`` kinds. The gate is always on: ``None`` selects the
+    production ``docker inspect`` resolver, and the verb then runs by the
+    inspected canonical full ID (B-039, B-040).
 
     ``systemd_owner_lookup`` (P93) is the equivalent seam for the
     ``systemd-*`` kinds. It is ``None`` in production today -- no owner above
@@ -1207,9 +1207,9 @@ def execute_kill(
     result bounds, and fail-closed audit contract.  Additionally validates
     the signal (closed allowlist) and checks protected entities.
 
-    ``owner_inspect`` (P87) engages the Docker owner / protected-ID safety gate
-    for the ``docker-kill`` kind (``systemd-kill`` is unaffected). When it is
-    ``None`` the gate is a no-op and the legacy P72 behavior is preserved.
+    ``owner_inspect`` (P87) is the Docker owner / protected-ID safety gate's
+    resolver for the ``docker-kill`` kind (``systemd-kill`` is unaffected). The
+    gate is always on: ``None`` selects the production ``docker inspect``.
 
     ``confirm`` must be ``"KILL"`` (per-verb token — distinct from
     ``"EXECUTE"`` used by start/stop/restart).
@@ -1325,8 +1325,8 @@ def execute_update(
     ``owner_inspect`` (P87) engages the Docker owner / protected-ID safety gate.
     A durable ``docker update`` is refused for any owner-managed container; a
     runtime-only update remains available only when the inspected object is
-    demonstrably standalone. When ``owner_inspect`` is ``None`` the gate is a
-    no-op and the legacy P72 behavior is preserved.
+    demonstrably standalone. The gate is always on: ``owner_inspect=None``
+    selects the production ``docker inspect``.
 
     ``confirm`` must be ``"UPDATE"`` (per-verb token — distinct from
     ``"EXECUTE"`` and ``"KILL"``).

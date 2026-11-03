@@ -2,6 +2,12 @@
 
 All notable changes to this project are recorded here. Entries marked `cmru: generated` are produced from the project-scoped release range before the release gate runs.
 
+## [Unreleased]
+
+- fix(actions): the Docker owner / protected-ID gate is always on; omitting `owner_inspect` uses the production `docker inspect` (B-039)
+- fix(actions): Docker verbs run by the inspected canonical full ID instead of the raw name, closing the rename race (B-040)
+- fix(collect): io_cap_saturation_pct is judged per device against that device's own io.max cap, with the device attributed (B-012)
+
 <!-- cmru: release history -->
 
 ## [0.4.2] - 2026-10-21
