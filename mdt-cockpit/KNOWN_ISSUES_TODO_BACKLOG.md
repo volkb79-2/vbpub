@@ -660,7 +660,8 @@ durable rate and whose `note` carries the recommendation key; `iobench ceilings 
 
 ## MDT-032 - iogov: `test_prevention_checker_is_quiet_when_healthy_and_says_unknown_when_blind` reads the real filesystem fill (2026-11-02)
 
-The test builds its collectors from the live host (`covs(world)`) and asserts that no `fill` finding is raised. On a host whose
-root filesystem is above the fill threshold (observed at 74% used) the finding appears and the `smoke` lane fails although
-nothing in the change under test is related. **Fix:** make the test hermetic by injecting the fill collector (as the sibling test
-already does with `c["fill"]`), so verdicts do not depend on the machine's disk usage.
+**CLOSED 2026-11-03.** The test builds its collectors from the live host (`covs(world)`) and asserts that no `fill` finding is
+raised. On a host whose root filesystem is above the fill threshold (observed at 74% used) the finding appears and the `smoke`
+lane fails although nothing in the change under test is related. The test now injects an empty fill result before checking the
+unknown fstrim/provider facts. `test_covariates_record_fill_discard_provider_queue_and_prio` continues to exercise live fill
+collection using the fixture's controlled filesystem.
