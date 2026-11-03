@@ -24,7 +24,6 @@ def env(tmp_path: Path) -> dict[str, str]:
         "PATH": f"{bindir}:{os.environ['PATH']}",
         "OVMF_CODE": str(code),
         "STUB_ARGS": str(tmp_path / "args.txt"),
-        "MDT_DOWNLOADS_DIR": str(tmp_path / "dl"),
         "XDG_RUNTIME_DIR": str(tmp_path / "run"),
     }
 
@@ -50,7 +49,7 @@ def test_directory_as_iso_refused(env, tmp_path):
     w.mkdir()
     (w / "disk.qcow2").write_bytes(b"d")
     r = run(env, str(w), str(tmp_path))
-    assert r.returncode == 1 and "ISO not a readable file" in r.stderr and "MDT_DOWNLOADS_DIR" in r.stderr
+    assert r.returncode == 1 and "ISO not a readable file" in r.stderr and "downloads dir:" in r.stderr
 
 
 def test_alive_pidfile_refused(env, tmp_path):
@@ -70,3 +69,8 @@ def test_long_workdir_moves_socket(env, tmp_path):
     assert r.returncode == 0, r.stderr
     sock = [a for a in Path(env["STUB_ARGS"]).read_text().split("\n") if a.startswith("unix:")][0][5:].split(",")[0]
     assert len(sock) <= 107 and sock.startswith(env["XDG_RUNTIME_DIR"])
+
+
+def test_no_env_override_or_git_resolution():
+    text = LAUNCHER.read_text()
+    assert "MDT_DOWNLOADS_DIR" not in text and "git-common-dir" not in text

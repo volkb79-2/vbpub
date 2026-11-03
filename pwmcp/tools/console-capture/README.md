@@ -55,17 +55,16 @@ otherwise it is a real change and is kept, and the old frame becomes the second 
 QEMU TCG + OVMF, 2 vCPU, 3 GiB, user-mode networking, same shape as
 `scripts/debian-install-v2/testing/vm/vmctl`.
 
-WORKDIR is optional. Omitted, it is the MAIN checkout's `pwmcp/artifacts/vm-lab/<vm-name>` (resolved through
-`git rev-parse --git-common-dir`, so a `.worktrees/` checkout shares the one installed disk; without git the script's
-own checkout is used, with one INFO line); `<vm-name>` is `$VM_NAME`, default `truenas-27.0.0-rc1-installed`. With one
-argument, that argument is the ISO (a directory is refused). An ISO given as a bare file name (no `/`) is looked up in
-the downloads directory (`$MDT_DOWNLOADS_DIR`, default `<main checkout>/downloads`); anything containing `/` is used
-as given. `none` boots without an ISO. Explicit arguments win. This VM is owned by the console-capture tooling (see
-the repository `AGENTS.md`, "VM files and downloads").
+WORKDIR is optional. Omitted, it is `<pwmcp dir>/artifacts/vm-lab/<vm-name>`, derived from the script's own location
+(no environment override); `<vm-name>` is `$VM_NAME`, default `truenas-27.0.0-rc1-installed`. A worktree uses its own
+copy of that folder (a clone of main's on CoW hosts, otherwise empty; persist by copying to main). With one argument,
+that argument is the ISO (a directory is refused). An ISO given as a bare file name (no `/`) is looked up in
+`<repo root>/downloads`; anything containing `/` is used as given. `none` boots without an ISO. This VM is owned by
+the console-capture tooling (see the repository `AGENTS.md`, "VM files and downloads").
 
 The script creates WORKDIR and copies `OVMF_VARS.fd` when missing, but never creates `disk.qcow2`: without it, it
 refuses with two options (install from scratch with `qemu-img create -q -f qcow2 WORKDIR/disk.qcow2 20G` plus the ISO,
-or reuse the installed VM from the main checkout / an explicit WORKDIR). It refuses to start while `WORKDIR/qemu.pid`
+or reuse the installed VM from the checkout that holds it / an explicit WORKDIR). It refuses to start while `WORKDIR/qemu.pid`
 is alive. To fork the VM, clone its disk with a reflink: `cp --reflink=always <installed>/disk.qcow2 WORKDIR/disk.qcow2`
 and pass that WORKDIR. The QMP socket is `WORKDIR/qmp.sock`; if that path would exceed 107 bytes it is placed in
 `${XDG_RUNTIME_DIR:-/tmp}/pwmcp-vm-<uid>-<key>/qmp.sock` instead; the actual path is printed on start (pass it to

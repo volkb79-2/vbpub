@@ -3,11 +3,12 @@
 #
 # Usage: [VM_NAME=<vm-name>] [VGA_DEV=virtio-vga] launch-truenas-vm.sh [<workdir>] <iso|none>
 #
-# <workdir> is optional. Omitted, it is the MAIN checkout's pwmcp/artifacts/vm-lab/<vm-name> (the installed
-# disk exists once; resolved via git --git-common-dir, so a .worktrees/ checkout shares it; VM_NAME defaults
-# to truenas-27.0.0-rc1-installed). Refuses to start when <workdir>/qemu.pid is alive. With ONE argument that argument is <iso|none>.
-# <iso> given as a bare file name (no "/") is resolved in the downloads dir: $MDT_DOWNLOADS_DIR, else
-# <main checkout>/downloads. A path (any "/") is used as given. "none" boots without an ISO.
+# <workdir> is optional. Omitted, it is <pwmcp dir>/artifacts/vm-lab/<vm-name>, derived from this script's
+# location (VM_NAME defaults to truenas-27.0.0-rc1-installed). A worktree uses its own copy of that folder
+# (a clone of main's on CoW hosts, else empty). Refuses to start when <workdir>/qemu.pid is alive.
+# With ONE argument that argument is <iso|none>. <iso> given as a bare file name (no "/") is resolved in
+# <repo root>/downloads (script-relative; no environment override). A path (any "/") is used as given.
+# "none" boots without an ISO.
 #
 # <workdir> is created, and OVMF_VARS.fd copied in when missing. disk.qcow2 is NEVER created (refused with
 # instructions): qemu-img create -q -f qcow2 <workdir>/disk.qcow2 20G, or fork with cp --reflink=always.
@@ -27,22 +28,10 @@ USAGE="usage: launch-truenas-vm.sh [<workdir>] <iso|none>"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 PWMCP_DIR="$(cd "$HERE/../.." && pwd)"
 REPO_ROOT="$(cd "$PWMCP_DIR/.." && pwd)"
-PWMCP_REL="${PWMCP_DIR#"$REPO_ROOT"/}"
 VM_NAME="${VM_NAME:-truenas-27.0.0-rc1-installed}"
-
-# "Repo root" for downloads and for the stateful VM disk is the MAIN checkout (shared by all worktrees):
-# the parent of `git rev-parse --git-common-dir` when that is named .git. Without git, fall back to this
-# script's own checkout and say so.
-MAIN_ROOT="$REPO_ROOT"
-GITCOMMON="$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
-if [ -n "$GITCOMMON" ] && [ "$(basename "$GITCOMMON")" = ".git" ]; then
-  MAIN_ROOT="$(dirname "$GITCOMMON")"
-else
-  echo "launch: INFO: main checkout not resolvable via git; using script-relative root $REPO_ROOT" >&2
-fi
-DOWNLOADS_DIR="${MDT_DOWNLOADS_DIR:-$MAIN_ROOT/downloads}"
+DOWNLOADS_DIR="$REPO_ROOT/downloads"
 case $# in
-  1) W="$MAIN_ROOT/$PWMCP_REL/artifacts/vm-lab/$VM_NAME"; ISO="$1" ;;
+  1) W="$PWMCP_DIR/artifacts/vm-lab/$VM_NAME"; ISO="$1" ;;
   2) W="$1"; ISO="$2" ;;
   *) echo "$USAGE" >&2; exit 2 ;;
 esac
@@ -62,7 +51,7 @@ fi
 if [ ! -f "$W/disk.qcow2" ]; then
   echo "launch: no installed disk at $W/disk.qcow2." >&2
   echo "  to install from scratch: qemu-img create -q -f qcow2 '$W/disk.qcow2' 20G, then pass the ISO." >&2
-  echo "  to reuse the installed VM: run it from the main checkout ($MAIN_ROOT) or pass its work directory explicitly;" >&2
+  echo "  to reuse the installed VM: run it from the checkout that holds it (main) or pass its work directory explicitly;" >&2
   echo "  to fork it: cp --reflink=always <installed>/disk.qcow2 '$W/disk.qcow2'." >&2
   exit 1
 fi
@@ -76,7 +65,7 @@ if [ -f "$W/qemu.pid" ]; then
   esac
 fi
 if [ "$ISO" != "none" ]; then
-  [ -f "$ISO" ] || { echo "launch: ISO not a readable file: $ISO (downloads dir: $DOWNLOADS_DIR; fetch it or set MDT_DOWNLOADS_DIR; 1-arg form takes <iso|none>, not a directory)" >&2; exit 1; }
+  [ -f "$ISO" ] || { echo "launch: ISO not a readable file: $ISO (downloads dir: $DOWNLOADS_DIR; fetch it into that folder; 1-arg form takes <iso|none>, not a directory)" >&2; exit 1; }
   [ -r "$ISO" ] || { echo "launch: ISO not readable: $ISO (downloads dir: $DOWNLOADS_DIR)" >&2; exit 1; }
 fi
 FSTYPE="$(stat -f -c %T "$W" 2>/dev/null || echo unknown)"
