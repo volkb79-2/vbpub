@@ -4178,6 +4178,38 @@ exit 64
         assert retained.read_bytes() == b'{"files": {}}'
         assert retained.stat().st_mode & 0o777 == 0o600
 
+    def test_a_retained_coverage_artifact_is_named_in_the_disclosure(
+            self, tmp_path, monkeypatch, capsys):
+        verdict = self._seed(tmp_path, self._doc(coverage={
+            "artifact_status": "parsed_and_reverified_r1"}))
+        (verdict.parent / "coverage-unit.json").write_text("{}")
+        monkeypatch.setenv(run_gate.EVIDENCE_DIR_ENV_VAR,
+                           str(tmp_path / "evidence"))
+        closeout = run_gate.finish_assay_closeout(
+            self._cov_lane("x"), "unit", {"run_id": "r"}, self._COMMIT,
+            verdict, run_gate.LaneResult("FAIL", 1, assay_outcome="FAIL"),
+            None)
+        out = capsys.readouterr().out
+        assert "coverage artifact parsed_and_reverified_r1" in out
+        assert f"(retained {closeout['coverage_path']})" in out
+
+    @pytest.mark.parametrize("shape", ["absent", "unreadable"])
+    def test_a_coverage_artifact_that_cannot_be_read_is_not_retained(
+            self, tmp_path, monkeypatch, shape):
+        verdict = self._seed(tmp_path, self._doc(coverage={
+            "artifact_status": "parsed_and_reverified_r1"}))
+        if shape == "unreadable":
+            (verdict.parent / "coverage-unit.json").mkdir()
+        monkeypatch.setenv(run_gate.EVIDENCE_DIR_ENV_VAR,
+                           str(tmp_path / "evidence"))
+        closeout = run_gate.collect_assay_closeout(
+            self._cov_lane("x"), "unit", "run1", self._COMMIT, verdict,
+            run_gate.LaneResult("FAIL", 1, assay_outcome="FAIL"), None)
+        assert closeout["coverage_path"] is None
+        assert closeout["status"] == "incomplete"
+        if shape == "unreadable":
+            assert "not retained" in closeout["coverage_status"]
+
     def test_an_unsupplied_coverage_artifact_is_named_in_the_disclosure(
             self, tmp_path, monkeypatch, capsys):
         verdict = self._seed(tmp_path, self._doc(coverage={
