@@ -136,6 +136,15 @@ are created under the selected temporary directory and require an explicit
 `gc --scan DIR`; the CLI logs that instruction instead of implying it scanned
 those runs.
 
+## Manifest fsync is not a correctness dependency
+
+`_write_manifest` fsyncs the file and directory, but under the relaxed-fsync
+default (preload no-op) a host crash may leave `owner.json` missing, empty or
+truncated. Cowtree never depends on the fsync: `gc._manifest` returns `None` for
+any unreadable or invalid manifest, so such a run is never trusted, never
+collected automatically, and reported as `manifestless-or-invalid`. See SPEC
+"Persistence declarations" (P1-P4) for the per-write table.
+
 ## Known limitation: owner manifest ahead of memory after a failed reserve write
 
 `run.py` `_write_manifest` replaces `owner.json` and then fsyncs the directory.
