@@ -10,6 +10,7 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+from assay import observer_windows
 from assay.errors import EXIT_CODES, Outcome, REASON_CODES, ReasonCode
 from assay.r2_command import R2_APPENDED, R2_TRANSFORM_ID, collection_digest, transform_argv
 from assay.verdict import MUTATION_BUCKETS, ROLLUP_PRECEDENCE
@@ -36,9 +37,9 @@ _COMMAND_FIELDS = {
     "coverage_baseline",
     "r2_baseline",
 }
+# B206 (assay 12): a candidate's own clock only. Resource numbers are the
+# candidate's `profile` (cgprofile observer), validated separately.
 _RESOURCE_FIELDS = {
-    "cpu_seconds",
-    "peak_rss_bytes",
     "phase_seconds",
     "startup_seconds",
 }
@@ -604,14 +605,8 @@ def _finite_nonnegative(value: Any) -> bool:
 def validate_resources(raw: Any, *, candidate_id: str, context: str) -> dict[str, Any]:
     if not isinstance(raw, dict) or set(raw) != _RESOURCE_FIELDS:
         raise ValueError(f"{context} measurements for {candidate_id} have missing or unknown fields")
-    cpu = raw.get("cpu_seconds")
-    rss = raw.get("peak_rss_bytes")
     phases = raw.get("phase_seconds")
     startup = raw.get("startup_seconds")
-    if cpu is not None and not _finite_nonnegative(cpu):
-        raise ValueError(f"{context} CPU measurement for {candidate_id} is invalid")
-    if rss is not None and (type(rss) is not int or rss < 0):
-        raise ValueError(f"{context} RSS measurement for {candidate_id} is invalid")
     if not isinstance(phases, dict) or set(phases) != _PHASE_FIELDS or any(
         not _finite_nonnegative(value) for value in phases.values()
     ):
@@ -638,8 +633,25 @@ def validate_progress_measurements(event: dict[str, Any], *, candidate_id: str) 
         raise ValueError(f"pilot candidate {candidate_id} is missing resource measurements")
     resources = {field: event[field] for field in _RESOURCE_FIELDS}
     validate_resources(resources, candidate_id=candidate_id, context="progress")
-    return {"elapsed_seconds": elapsed, "tests_completed": tests_completed, **resources}
+    profile = validate_profile_field(event.get("profile"), candidate_id=candidate_id, context="progress")
+    return {
+        "elapsed_seconds": elapsed,
+        "tests_completed": tests_completed,
+        **resources,
+        "profile": profile,
+    }
+
+
+def validate_profile_field(raw: Any, *, candidate_id: str, context: str) -> dict[str, Any]:
+    """The candidate's `resource-profile/1` object (B206), as assay writes it."""
+    try:
+        observer_windows.validate_profile(raw)
+    except ValueError as exc:
+        raise ValueError(f"{context} profile for {candidate_id} is invalid: {exc}") from exc
+    return raw
 
 
 def validate_state_measurements(record: dict[str, Any], *, candidate_id: str) -> dict[str, Any]:
-    return validate_resources(record.get("resources"), candidate_id=candidate_id, context="state")
+    resources = validate_resources(record.get("resources"), candidate_id=candidate_id, context="state")
+    profile = validate_profile_field(record.get("profile"), candidate_id=candidate_id, context="state")
+    return {**resources, "profile": profile}

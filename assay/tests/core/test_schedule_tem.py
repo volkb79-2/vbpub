@@ -434,16 +434,86 @@ def test_history_round_trips_and_ignores_corruption():
         {
             "schema": _schedule.HISTORY_SCHEMA,
             "candidates": {
-                "ok": {"path": "p", "wall_seconds": 1, "rss_peak_bytes": 2},
-                "negative": {"path": "p", "wall_seconds": -1, "rss_peak_bytes": -5},
-                "nopath": {"wall_seconds": 1},
-                "bool": {"path": "p", "wall_seconds": True, "rss_peak_bytes": False},
+                "ok": {"path": "p", "wall_seconds": 1, "profile": {"rss_peak_bytes": 2}},
+                "negative": {"path": "p", "wall_seconds": -1, "profile": {"rss_peak_bytes": -5}},
+                "noprofile": {"path": "p", "wall_seconds": 1},
+                "nopath": {"wall_seconds": 1, "profile": {"rss_peak_bytes": 2}},
+                "bool": {"path": "p", "wall_seconds": True, "profile": {"rss_peak_bytes": False}},
                 "text": "x",
             },
         }
     )
     parsed, _ = parse_history(junk)
     assert set(parsed) == {"ok"}
+
+
+def test_history_is_written_as_profile_digests_and_never_with_the_old_numeric_key():
+    entries = {
+        "a" * 64: HistoryEntry("x.py", 1.5, 123, "MEASURED", None),
+        "b" * 64: HistoryEntry("y.py", 2.5, None, "NO_MEASUREMENT", "OBSERVER_UNAVAILABLE"),
+    }
+    document = json.loads(render_history(entries))
+    assert document["schema"] == "assay-schedule-history/2"
+    for item in document["candidates"].values():
+        assert "rss_peak_bytes" not in item  # only inside `profile`
+    assert document["candidates"]["b" * 64]["profile"] == {
+        "status": "NO_MEASUREMENT", "reason": "OBSERVER_UNAVAILABLE", "rss_peak_bytes": None,
+    }
+    parsed, reason = parse_history(render_history(entries))
+    assert reason is None and parsed == entries
+
+
+def test_history_written_by_assay_11_is_still_read():
+    legacy = json.dumps(
+        {
+            "schema": "assay-schedule-history/1",
+            "candidates": {
+                "a" * 64: {"path": "x.py", "wall_seconds": 4.0, "rss_peak_bytes": 700},
+                "b" * 64: {"path": "y.py", "wall_seconds": 1.0, "rss_peak_bytes": None},
+            },
+        }
+    )
+    parsed, reason = parse_history(legacy)
+    assert reason is None
+    assert parsed == {
+        "a" * 64: HistoryEntry("x.py", 4.0, 700),
+        "b" * 64: HistoryEntry("y.py", 1.0, None),
+    }
+
+
+def test_history_reads_a_full_resource_profile_object():
+    profile = {
+        "schema": "resource-profile/1", "status": "MEASURED", "reason": None,
+        "wall_seconds": 9.5, "metrics": {"rss_peak_bytes": 4096, "cpu_seconds": 1.0},
+    }
+    document = json.dumps(
+        {"schema": _schedule.HISTORY_SCHEMA,
+         "candidates": {"a" * 64: {"path": "x.py", "wall_seconds": None, "profile": profile}}}
+    )
+    parsed, reason = parse_history(document)
+    assert reason is None
+    assert parsed == {"a" * 64: HistoryEntry("x.py", 9.5, 4096, "MEASURED", None)}
+
+
+def test_the_verdict_schedule_summary_is_overall_ratios_sources_and_confusion():
+    pairs = _pairs(3)
+    predictions = [_profile(10, 100), _profile(10, 100), _profile(10, 100)]
+    scheduler = TemScheduler(pairs, predictions, budget_bytes=None, workers=2)
+    errors = {}
+    for step in range(3):
+        index = scheduler.next_candidate(float(step))
+        scheduler.complete(index, step + 1.0, wall_seconds=20.0, rss_peak_bytes=150 * MIB)
+        errors[index] = scheduler.error(index, wall_seconds=20.0, rss_peak_bytes=150 * MIB)
+    summary = scheduler.verdict_summary(errors=errors)
+    assert summary["policy"] == "tem-lpt" and summary["jobs"] == 2
+    assert summary["memory_budget_bytes"] is None
+    assert set(summary["thresholds"]) == {"high_bytes", "low_bytes", "high_factor", "low_factor"}
+    assert summary["error"]["rss_ratio"] == {"p50": 1.5, "p95": 1.5}
+    assert summary["error"]["wall_ratio"] == {"p50": 2.0, "p95": 2.0}
+    assert sum(sum(row.values()) for row in summary["error"]["class_confusion"].values()) == 3
+    assert sum(summary["prediction_sources"].values()) == 3
+    canonical = _schedule.canonical_verdict_summary(jobs=1, memory_budget_bytes=None)
+    assert canonical["policy"] == "canonical" and canonical["error"] is None
 
 
 # -- predicted versus actual ------------------------------------------------
@@ -457,6 +527,11 @@ def test_error_records_ratios_and_the_reason_when_nothing_was_measured():
     unmeasured = scheduler.error(1, wall_seconds=None, rss_peak_bytes=None)
     assert unmeasured["rss_ratio"] is None and unmeasured["wall_ratio"] is None
     assert "no peak RSS" in unmeasured["reason"]
+    reasoned = scheduler.error(
+        1, wall_seconds=3.0, rss_peak_bytes=None, profile_reason="OBSERVER_UNAVAILABLE"
+    )
+    assert "(OBSERVER_UNAVAILABLE)" in reasoned["reason"]
+    assert reasoned["profile_reason"] == "OBSERVER_UNAVAILABLE"
 
 
 def test_summary_counts_sources_classes_confusion_and_overshoots():

@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from assay import observer_windows
 from assay.candidate_identity import candidate_id_from_fields
 from assay.mutation import MUTATION_BUCKETS, MUTATION_STATE_SCHEMA_VERSION
 from assay.process_tree import ProcessTreeEvidence
@@ -167,6 +168,15 @@ def _write_selection(
     return candidates_path.read_bytes(), selection_path.read_bytes()
 
 
+# B206: a candidate's cgprofile profile; with no observer it is an explicit
+# NO_MEASUREMENT.
+PILOT_PROFILE = observer_windows.build_profile(
+    observer_windows.WindowResult(reason=observer_windows.OBSERVER_UNAVAILABLE),
+    subject={"tool": "assay", "lane": "r2", "kind": "r2-candidate"},
+    wall_seconds=2.5,
+)
+
+
 def _zero_resources() -> dict:
     zero = CounterDelta(before=0, after=0, delta=0)
     return ResourceLimitEvidence(
@@ -261,8 +271,6 @@ def _valid_pilot(tmp_path: Path, *, size: int = 1) -> dict:
     }), encoding="utf-8")
     resources = _zero_resources()
     cost_resources = {
-        "cpu_seconds": None,
-        "peak_rss_bytes": None,
         "phase_seconds": {
             "materialize": 0.1,
             "command": 0.2,
@@ -308,6 +316,8 @@ def _valid_pilot(tmp_path: Path, *, size: int = 1) -> dict:
                 "failed_call_index": None,
             },
             "resources": cost_resources,
+            "profile": PILOT_PROFILE,
+            "worker_count": 1,
             "terminal_result": {
                 "outcome": "FAIL",
                 "reason_code": "COMMAND_FAILED",
@@ -392,6 +402,7 @@ def _valid_pilot(tmp_path: Path, *, size: int = 1) -> dict:
                 "elapsed_seconds": 2.5,
                 "tests_completed": None,
                 **cost_resources,
+                "profile": PILOT_PROFILE,
                 "resource_limit_evidence": resources,
             }
             for index, identity in enumerate(selected_ids)

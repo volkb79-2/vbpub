@@ -29,11 +29,14 @@ from assay.config import LaneFile, load_lane_file
 from assay.errors import AssayError
 from assay.mutation import PROGRESS_EVENTS, select_mutation_shard
 from assay.safeio import read_bounded_file
-from assay.verdict import MUTATION_BUCKETS
+from assay.verdict import MUTATION_BUCKETS, check_resource_profile
 
 from assay_analysis import evidence
 
-SCHEMA_VERSION = 2
+#: Bumped 2 -> 3 (B206, assay 12.0.0): a candidate carries `profile` (the
+#: cgprofile resource profile, or null for archived progress) in place of
+#: `cpu_seconds` and `peak_rss_bytes`.
+SCHEMA_VERSION = 3
 MAX_PROGRESS_BYTES = 64 * 1024 * 1024
 MAX_VERDICT_BYTES = 16 * 1024 * 1024
 MAX_LANE_FILE_BYTES = 4 * 1024 * 1024
@@ -107,6 +110,17 @@ def _optional_number(value: Any, where: str) -> float | None:
     return None if value is None else _finite_number(value, where)
 
 
+def _optional_profile(value: Any) -> dict | None:
+    """``None`` or a well-formed ``resource-profile/1`` object (B206)."""
+    if value is None:
+        return None
+    try:
+        check_resource_profile(value)
+    except ValueError as exc:
+        raise ValueError(f"candidate profile is invalid: {exc}") from exc
+    return dict(value)
+
+
 def _optional_object(value: Any, keys: tuple[str, ...], where: str) -> dict | None:
     """``None`` or an object with exactly *keys*, each a number or ``None`` (W8's shapes)."""
     if value is None:
@@ -172,6 +186,35 @@ def _read_artifact(path: Path, *, limit: int, label: str) -> tuple[bytes, dict]:
     }
 
 
+#: The previous verdict schema version, still READ for archived campaigns.
+ARCHIVED_VERDICT_VERSION = 17
+
+
+def _archived_verdict_failures(document: dict) -> list[str]:
+    """Shape checks for an archived v17 verdict; empty when it is usable as
+    read-only evidence. Not a re-verification: that needs the producing
+    assay's own verifier."""
+    failures: list[str] = []
+    if not isinstance(document.get("lane"), str) or not document["lane"]:
+        failures.append("archived v17 verdict has no lane")
+    if not isinstance(document.get("commit"), str) or not document["commit"]:
+        failures.append("archived v17 verdict has no commit")
+    if not isinstance(document.get("claims"), list) or not document["claims"]:
+        failures.append("archived v17 verdict has no claims")
+    judgment = document.get("judgment")
+    if not isinstance(judgment, dict):
+        failures.append("archived v17 verdict has no judgment object")
+    else:
+        r2 = judgment.get("r2")
+        if r2 is not None and not isinstance(r2, dict):
+            failures.append("archived v17 verdict judgment.r2 is not an object")
+        elif isinstance(r2, dict) and r2.get("producer") == "native":
+            jobs = r2.get("jobs")
+            if isinstance(jobs, bool) or not isinstance(jobs, int) or jobs < 1:
+                failures.append("archived v17 verdict judgment.r2.jobs is not a positive integer")
+    return failures
+
+
 def _read_verified_verdict(path: Path, *, expected: str) -> dict:
     """Verify one bounded verdict read and retain the identity of those bytes."""
     raw, artifact = _read_artifact(path, limit=MAX_VERDICT_BYTES, label="verdict")
@@ -180,7 +223,13 @@ def _read_verified_verdict(path: Path, *, expected: str) -> dict:
     except UnicodeDecodeError as exc:
         raise ValueError(f"verdict artifact is not UTF-8: {path}") from exc
     document = evidence._json(text)
-    failures = evidence.verify_text(text)
+    if isinstance(document, dict) and document.get("schema_version") == ARCHIVED_VERDICT_VERSION:
+        # B208: an archived v17 campaign verdict (assay 11.x) is READ-ONLY
+        # evidence. The current verifier refuses it (a verdict is never
+        # upgraded in place), so only its shape is checked here.
+        failures = _archived_verdict_failures(document)
+    else:
+        failures = evidence.verify_text(text)
     if failures:
         raise ValueError("invalid Assay verdict: " + "; ".join(failures))
     integrity = document.get("worktree_integrity") or {}
@@ -651,10 +700,11 @@ def _run_summary(
                 "outcome_bucket": event["outcome_bucket"],
                 "elapsed_seconds": elapsed,
                 "emitted_at": emitted_at.isoformat(),
-                "cpu_seconds": _optional_number(event.get("cpu_seconds"), "candidate cpu_seconds"),
-                "peak_rss_bytes": _optional_number(
-                    event.get("peak_rss_bytes"), "candidate peak_rss_bytes"
-                ),
+                # B206 (analysis schema 3): the cgprofile resource profile
+                # replaces the old numeric keys. A progress stream written by
+                # assay <= 11 (archived, read-only) has none, so its candidate
+                # profile is null; its old numeric keys are not carried over.
+                "profile": _optional_profile(event.get("profile")),
                 "phase_seconds": _optional_object(
                     event.get("phase_seconds"), PHASE_SECONDS_KEYS, "candidate phase_seconds"
                 ),
@@ -1245,8 +1295,7 @@ def _row(item: dict, site: dict) -> dict:
         "end_byte": site.get("end_byte"),
         "execution_mode": mode,
         "elapsed_seconds": event.get("elapsed_seconds"),
-        "cpu_seconds": event.get("cpu_seconds"),
-        "peak_rss_bytes": event.get("peak_rss_bytes"),
+        "profile": event.get("profile"),
         "phase_seconds": event.get("phase_seconds"),
         "startup_seconds": event.get("startup_seconds"),
         "started_count": _typed(evidence_object.get("started_count"), int),

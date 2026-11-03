@@ -5,6 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from conftest import R2_TELEMETRY
 
 import assay.verdict as models
 from assay.errors import Outcome, ReasonCode
@@ -381,6 +382,7 @@ def _native_r2(**overrides):
         "operators": ("python:compare-swap",),
         "kill_attribution": "unattributed",
         "cold_witness_kills": False,
+        **R2_TELEMETRY,
     }
     values.update(overrides)
     return JudgmentR2(**values)

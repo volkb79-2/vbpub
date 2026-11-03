@@ -1,9 +1,11 @@
 """B111 measurement evidence: baseline setup/teardown forwarding (O9), the
-resource sidecar and event-time readers, `tree_sample` (O7b) and the
-end-to-end candidate resource evidence (O8).
+resource sidecar and event-time readers, and the end-to-end candidate
+evidence (O8).
 
-Nothing here asserts a duration or a sample count: the values are properties
-of records the tests write themselves or of kernel-reported counters.
+B206 (assay 12): resource NUMBERS no longer come from Assay. The sidecar
+keeps only the spawn time, the candidate's evidence is Assay's own clock
+(phase and startup seconds) plus the cgprofile `profile`, and the first
+failing test (B205). Nothing here asserts a duration or a sample count.
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ import pytest
 from conftest import GitRepo, make_lane, make_r2_judge
 
 from assay import liveness, mutation, runner
+from assay import observer_windows as ow
 from assay.adapters.python import PythonAdapter
 from assay.config import MutationConfig
 from assay.errors import Outcome
@@ -115,14 +118,7 @@ def test_o9_a_missing_or_absent_events_file_has_no_rows(tmp_path: Path) -> None:
 # read_resource_sidecar / first_event_times
 # --------------------------------------------------------------------------
 
-_SIDECAR = {
-    "format": 1,
-    "samples": 3,
-    "cpu_seconds": 1.5,
-    "peak_rss_bytes": 1024,
-    "write_bytes": 2048,
-    "spawned_at": 1790000000.5,
-}
+_SIDECAR = {"format": 1, "spawned_at": 1790000000.5}
 
 
 def test_read_resource_sidecar_is_none_unless_the_file_is_a_format_1_object(
@@ -181,7 +177,7 @@ def test_first_event_times_rejects_a_t_that_is_not_a_finite_number(
 
 
 # --------------------------------------------------------------------------
-# _measured_resources: the startup gaps are exact differences of recorded
+# _startup_seconds: the startup gaps are exact differences of recorded
 # stamps (hand-written sidecar and events, no clock)
 # --------------------------------------------------------------------------
 
@@ -205,14 +201,9 @@ _STAMPED_EVENTS = [
 ]
 
 
-def test_measured_resources_are_the_sidecar_values_and_the_stamp_differences(tmp_path: Path) -> None:
+def test_startup_seconds_are_the_stamp_differences(tmp_path: Path) -> None:
     path = _startup_fixture(tmp_path, sidecar={**_SIDECAR, "spawned_at": 100.0}, events=_STAMPED_EVENTS)
-    assert mutation._measured_resources(path) == (
-        1.5,
-        1024,
-        2048,
-        {"to_session_start": 0.25, "to_first_test": 1.5},
-    )
+    assert mutation._startup_seconds(path) == {"to_session_start": 0.25, "to_first_test": 1.5}
 
 
 @pytest.mark.parametrize(
@@ -223,187 +214,71 @@ def test_measured_resources_are_the_sidecar_values_and_the_stamp_differences(tmp
         ({**_SIDECAR, "spawned_at": True}, _STAMPED_EVENTS),  # an ill-typed spawn stamp
     ],
 )
-def test_measured_resources_startup_gaps_are_none_when_an_operand_is_missing(
+def test_startup_seconds_are_none_when_an_operand_is_missing(
     tmp_path: Path, sidecar: dict[str, Any] | None, events: list[dict[str, Any]] | None
 ) -> None:
-    _cpu, _rss, _write_bytes, startup = mutation._measured_resources(
+    startup = mutation._startup_seconds(
         _startup_fixture(tmp_path, sidecar=sidecar, events=events)
     )
     assert startup == {"to_session_start": None, "to_first_test": None}
 
 
-def test_measured_resources_refuse_ill_typed_sidecar_values(tmp_path: Path) -> None:
+def test_startup_seconds_refuse_a_negative_gap(tmp_path: Path) -> None:
     path = _startup_fixture(
-        tmp_path,
-        sidecar={
-            **_SIDECAR,
-            "cpu_seconds": True,
-            "peak_rss_bytes": 1024.0,
-            "write_bytes": True,
-        },
-        events=_STAMPED_EVENTS,
+        tmp_path, sidecar={**_SIDECAR, "spawned_at": 102.0}, events=_STAMPED_EVENTS
     )
-    cpu, rss, write_bytes, _startup = mutation._measured_resources(path)
-    assert (cpu, rss, write_bytes) == (None, None, None)
+    assert mutation._startup_seconds(path) == {"to_session_start": None, "to_first_test": None}
 
 
-def test_measured_resources_refuse_negative_measurements(tmp_path: Path) -> None:
-    path = _startup_fixture(
-        tmp_path,
-        sidecar={
-            **_SIDECAR,
-            "spawned_at": 102.0,
-            "cpu_seconds": -1.0,
-            "peak_rss_bytes": -1,
-            "write_bytes": -1,
-        },
-        events=_STAMPED_EVENTS,
+def test_the_sidecar_is_written_with_the_spawn_time_only(tmp_path: Path) -> None:
+    """B206: the liveness monitor records no CPU, RSS or IO number."""
+    runner_ = liveness.LivenessRunner(events_dir=tmp_path / "events", expect_next_event_within_s=30)
+    completed = runner_(
+        [sys.executable, "-c", "pass"], env=dict(os.environ), cwd=tmp_path, timeout=60
     )
-
-    cpu, rss, write_bytes, startup = mutation._measured_resources(path)
-
-    assert (cpu, rss, write_bytes) == (None, None, None)
-    assert startup == {"to_session_start": None, "to_first_test": None}
-
-
-@pytest.mark.parametrize(
-    ("contents", "expected"),
-    [
-        ("read_bytes: 10\nwrite_bytes: 25\n", 25),
-        ("read_bytes: 10\n", None),
-        ("write_bytes: not-a-number\n", None),
-        ("write_bytes: -1\n", None),
-    ],
-)
-def test_proc_io_write_bytes_reads_only_a_nonnegative_counter(
-    tmp_path: Path, contents: str, expected: int | None
-) -> None:
-    (tmp_path / "321").mkdir()
-    (tmp_path / "321" / "io").write_text(contents, encoding="ascii")
-    assert liveness._pid_io_write_bytes(321, proc_root=tmp_path) == expected
-
-
-def test_missing_proc_io_is_null_not_error(tmp_path: Path) -> None:
-    (tmp_path / "321").mkdir()
-    assert liveness._pid_io_write_bytes(321, proc_root=tmp_path) is None
-
-
-@pytest.mark.parametrize(
-    ("contents", "resident_pages"),
-    [
-        ("100 2 1 0 0 0 0\n", 2),
-        ("100\n", None),
-        ("100 invalid 1\n", None),
-        ("100 -1 1\n", None),
-        (None, None),
-    ],
-)
-def test_process_rss_bytes_reads_resident_pages_or_returns_none(
-    tmp_path: Path, contents: str | None, resident_pages: int | None
-) -> None:
-    (tmp_path / "321").mkdir()
-    if contents is not None:
-        (tmp_path / "321" / "statm").write_text(contents, encoding="ascii")
-    expected = None if resident_pages is None else resident_pages * os.sysconf("SC_PAGE_SIZE")
-    assert liveness.process_rss_bytes(321, proc_root=tmp_path) == expected
-
-
-@pytest.mark.parametrize(
-    ("io_values", "expected"),
-    [((20, 30), 50), ((20, None), None)],
-)
-def test_tree_sample_sums_write_bytes_or_marks_the_tree_unknown(
-    monkeypatch: pytest.MonkeyPatch,
-    io_values: tuple[int | None, int | None],
-    expected: int | None,
-) -> None:
-    monkeypatch.setattr(
-        liveness,
-        "_walk_tree",
-        lambda root_pid, reader: [reader(1), reader(2)],
-    )
-    monkeypatch.setattr(
-        liveness,
-        "_pid_stat",
-        lambda pid: liveness._PidStat(ticks=1, child_ticks=0, rss_pages=2),
-    )
-    monkeypatch.setattr(
-        liveness,
-        "_pid_io_write_bytes",
-        lambda pid: io_values[pid - 1],
-    )
-
-    assert liveness.tree_sample(1).write_bytes == expected
+    assert completed.returncode == 0
+    sidecar = liveness.read_resource_sidecar(runner_._events_path_for_cwd(tmp_path))
+    assert sidecar is not None
+    assert set(sidecar) == {"format", "spawned_at"}
 
 
 # --------------------------------------------------------------------------
-# tree_sample (O7b)
+# first_failing_test (B205)
 # --------------------------------------------------------------------------
 
 
-def test_tree_sample_of_this_process_has_cpu_and_memory() -> None:
-    sample = liveness.tree_sample(os.getpid())
-    assert sample.cpu_seconds > 0
-    assert sample.rss_bytes > 0
+def _failed(nodeid: Any, pid: int = 9, outcome: str = "failed") -> dict[str, Any]:
+    return {"event": "test", "when": "call", "nodeid": nodeid, "outcome": outcome,
+            "duration_s": 1.0, "t": 1.0, "pid": pid}
 
 
-def test_tree_sample_of_a_dead_pid_raises_oserror() -> None:
-    with pytest.raises(OSError):
-        liveness.tree_sample(999_999_999)
-
-
-_REAPING_HELPER = """
-import os, sys
-
-def ticks():
-    raw = open('/proc/self/stat').read()
-    fields = raw[raw.rfind(')') + 2:].split()
-    return int(fields[11]) + int(fields[12])
-
-child = os.fork()
-if child == 0:
-    while ticks() < 50:
-        pass
-    os._exit(0)
-os.waitpid(child, 0)
-sys.stdout.write('ready\\n')
-sys.stdout.flush()
-sys.stdin.read()
-"""
-
-
-def _stat_ticks(pid: int) -> tuple[int, int]:
-    """``(utime + stime, cutime + cstime)`` as the kernel reports them."""
-    raw = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
-    fields = raw[raw.rfind(")") + 2 :].split()
-    return int(fields[11]) + int(fields[12]), int(fields[13]) + int(fields[14])
-
-
-def test_o7b_cpu_of_a_reaped_descendant_is_counted_through_its_live_parent() -> None:
-    helper = subprocess.Popen(
-        [sys.executable, "-c", _REAPING_HELPER],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        text=True,
+def test_first_failing_test_is_the_first_failed_test_event_of_the_owner(tmp_path: Path) -> None:
+    events = _write(
+        tmp_path / "e.ndjson",
+        [
+            {"event": "session_start", "t": 0.0, "pid": 9},
+            _failed("foreign::t", pid=8),  # not the owner's stream
+            _failed("ok::t", outcome="passed"),
+            _failed("tests/a.py::test_first"),
+            _failed("tests/a.py::test_second"),
+        ],
     )
-    try:
-        assert helper.stdout is not None
-        # The readiness line is the synchronization point; 60 s only guards a hang.
-        ready, _, _ = select.select([helper.stdout], [], [], 60)
-        assert ready, "the helper never reported that its child was reaped"
-        assert helper.stdout.readline() == "ready\n"
-        own_ticks, reaped_ticks = _stat_ticks(helper.pid)
-        # The fixture only discriminates when the reaped child out-burned the
-        # helper itself: a live-only sum is then strictly smaller.
-        assert reaped_ticks > own_ticks
-        assert liveness.tree_sample(helper.pid).cpu_seconds >= reaped_ticks / os.sysconf(
-            "SC_CLK_TCK"
-        )
-    finally:
-        assert helper.stdin is not None
-        helper.stdin.close()
-        helper.stdout.close()
-        helper.wait(timeout=60)
+    assert liveness.first_failing_test(events) == "tests/a.py::test_first"
+
+
+def test_first_failing_test_is_none_when_unknown(tmp_path: Path) -> None:
+    assert liveness.first_failing_test(None) is None
+    assert liveness.first_failing_test(tmp_path / "absent.ndjson") is None
+    passed = _write(
+        tmp_path / "p.ndjson",
+        [{"event": "session_start", "t": 0.0, "pid": 9}, _failed("a::t", outcome="passed")],
+    )
+    assert liveness.first_failing_test(passed) is None
+    nameless = _write(
+        tmp_path / "n.ndjson",
+        [{"event": "session_start", "t": 0.0, "pid": 9}, _failed(["a"]), _failed("")],
+    )
+    assert liveness.first_failing_test(nameless) is None
 
 
 # --------------------------------------------------------------------------
@@ -431,9 +306,10 @@ def _seed_two_candidate_lane(repo: GitRepo) -> tuple[str, str]:
     return base, repo.commit_all("two compare-swap mutation sites")
 
 
-def test_candidate_event_has_peak_rss_and_write_bytes(
+def test_candidate_event_carries_a_profile_and_no_assay_measured_numbers(
     git_repo: GitRepo, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.delenv("ASSAY_RESOURCE_OBSERVER_SOCKET", raising=False)
     base, head = _seed_two_candidate_lane(git_repo)
     lane = make_lane(
         rigor=("R0", "R2"),
@@ -477,7 +353,7 @@ def test_candidate_event_has_peak_rss_and_write_bytes(
 
     verdict = judge_lane(progress_artifact=progress)
     assert verdict.outcome is Outcome.PASS
-    assert [kwargs["sampler"] for kwargs in constructed] == [liveness.tree_sample]
+    assert constructed and all("sampler" not in kwargs for kwargs in constructed)
 
     events = [
         json.loads(line)
@@ -490,14 +366,19 @@ def test_candidate_event_has_peak_rss_and_write_bytes(
     ]
     assert len(events) == 2
     assert len(records) == len(events)
-    keys = ("cpu_seconds", "peak_rss_bytes", "phase_seconds", "startup_seconds")
+    keys = ("phase_seconds", "startup_seconds")
+    removed = {"cpu_seconds", "peak_rss_bytes", "write_bytes", "judge_rss_bytes", "resources"}
     for event in events:
         assert set(keys) <= set(event)
-        cpu, rss = event["cpu_seconds"], event["peak_rss_bytes"]
-        assert cpu is None or (isinstance(cpu, float) and cpu >= 0)
-        assert rss is None or (
-            isinstance(rss, int) and not isinstance(rss, bool) and rss >= 0
-        )
+        assert not removed & set(event)  # hard cut: no old key, no alias
+        profile = event["profile"]
+        ow.validate_profile(profile)
+        # No observer: an explicit NO_MEASUREMENT, every metric null.
+        assert (profile["status"], profile["reason"]) == ("NO_MEASUREMENT", "OBSERVER_UNAVAILABLE")
+        assert all(value is None for value in profile["metrics"].values())
+        assert profile["wall_seconds"] == event["elapsed_seconds"]  # Assay's own clock
+        assert event["worker_count"] == 1
+        assert event["first_failing_test"] == "tests/test_behavior.py::test_behavior"
         phases = event["phase_seconds"]
         assert set(phases) == {"materialize", "command", "integrity", "teardown"}
         assert all(isinstance(value, float) and value >= 0 for value in phases.values())
@@ -506,30 +387,32 @@ def test_candidate_event_has_peak_rss_and_write_bytes(
         assert all(
             value is None or isinstance(value, float) for value in startup.values()
         )
-        resources = event["resources"]
-        assert set(resources) == {"cpu_seconds", "peak_rss_bytes", "write_bytes"}
-        assert resources["cpu_seconds"] == event["cpu_seconds"]
-        assert resources["peak_rss_bytes"] == event["peak_rss_bytes"]
-        write_bytes = resources["write_bytes"]
-        assert write_bytes is None or (
-            isinstance(write_bytes, int)
-            and not isinstance(write_bytes, bool)
-            and write_bytes >= 0
-        )
-        judge_rss = event["judge_rss_bytes"]
-        assert judge_rss is None or (
-            isinstance(judge_rss, int)
-            and not isinstance(judge_rss, bool)
-            and judge_rss >= 0
-        )
     records_by_id = {record["candidate_id"]: record for record in records}
     for event in events:
         record = records_by_id[event["candidate_id"]]
-        assert {key: record["resources"][key] for key in keys} == {
-            key: event[key] for key in keys
-        }
-        assert record["resources"]["write_bytes"] == event["resources"]["write_bytes"]
-        assert record["resources"]["judge_rss_bytes"] == event["judge_rss_bytes"]
+        assert record["resources"] == {key: event[key] for key in keys}
+        assert record["profile"] == event["profile"]
+        assert record["worker_count"] == 1
+        assert record["first_failing_test"] == event["first_failing_test"]
+    # One resource-profile/1 line per candidate, next to the progress stream.
+    profile_lines = [
+        json.loads(line)
+        for line in (tmp_path / "progress.profile.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert sorted(line["subject"]["id"] for line in profile_lines) == sorted(
+        event["candidate_id"] for event in events
+    )
+    assert [line for line in profile_lines if line["status"] != "NO_MEASUREMENT"] == []
+    document = verdict.to_dict()
+    r2 = document["judgment"]["r2"]
+    assert r2["jobs"] == 1 and r2["worker_counts"] == {"1": 2}
+    assert r2["profile"]["status_counts"] == {"MEASURED": 0, "PARTIAL": 0, "NO_MEASUREMENT": 2}
+    assert r2["profile"]["reason_counts"] == {"OBSERVER_UNAVAILABLE": 2}
+    killed = [item for claim in document["claims"] if claim.get("mutation")
+              for item in claim["mutation"]["killed"]]
+    assert {item["first_failing_test"] for item in killed} == {
+        "tests/test_behavior.py::test_behavior"
+    }
 
     # A resumed run reuses the state records (the loader accepts `resources`)
     # and classifies identically.

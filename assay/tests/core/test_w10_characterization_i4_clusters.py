@@ -11,7 +11,7 @@ from pathlib import Path
 from types import MappingProxyType
 
 import pytest
-from conftest import FakeAdapter, make_deadline, make_lane, make_plan
+from conftest import R2_TELEMETRY, FakeAdapter, make_deadline, make_lane, make_plan
 
 from assay import canary, git, liveness
 from assay.coverage import derive_branch_capability, derive_exclusion_capability
@@ -577,6 +577,7 @@ def _r2_with(mode, targets):
         targets=targets,
         kill_attribution="unattributed",
         cold_witness_kills=False,
+        **R2_TELEMETRY,
     )
 
 

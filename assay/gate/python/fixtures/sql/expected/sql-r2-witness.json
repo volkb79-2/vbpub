@@ -111,6 +111,7 @@
         "killed": [
           {
             "candidate_id": "97186bdc83e730802494d5f5898374c72fb7c584d9baf4da96b490a0f666360c",
+            "first_failing_test": null,
             "description": "NOT NULL -> NULL",
             "end_byte": 262,
             "execution": {
@@ -169,6 +170,7 @@
           },
           {
             "candidate_id": "d2a71e5853b4f26fffa8a0f904d36abb5cce58cd16e9ec0f552ba3f7ed29e757",
+            "first_failing_test": null,
             "description": "CHECK (...) -> CHECK (true)",
             "end_byte": 291,
             "execution": {
@@ -227,6 +229,7 @@
           },
           {
             "candidate_id": "5177642fc6ad6bcebf4f13b0e80305caf084aa6f68398b73d801018dbe929e22",
+            "first_failing_test": null,
             "description": "NOT NULL -> NULL",
             "end_byte": 371,
             "execution": {
@@ -285,6 +288,7 @@
           },
           {
             "candidate_id": "4050e477ca81059f3e13bfcb46ea36314cb0a5ce7207931a3e7f2433cc59f109",
+            "first_failing_test": null,
             "description": "CHECK (...) -> CHECK (true)",
             "end_byte": 465,
             "execution": {
@@ -343,6 +347,7 @@
           },
           {
             "candidate_id": "afe9b6bd5490e93f28a87bbeddb282034f4327e2f3c0a29deb751cf26faca9b6",
+            "first_failing_test": null,
             "description": "CHECK (...) -> CHECK (true)",
             "end_byte": 578,
             "execution": {
@@ -401,6 +406,7 @@
           },
           {
             "candidate_id": "6a6646326ac691c73a1f2c5f1498f46cfa35beb7730e3a1b1518202e42fea538",
+            "first_failing_test": null,
             "description": "IN (...) widened with 4",
             "end_byte": 577,
             "execution": {
@@ -459,6 +465,7 @@
           },
           {
             "candidate_id": "4ca153d34efb6570c7d1d69853244e4068c0e0e5e5609a7c68663d23c06bf297",
+            "first_failing_test": null,
             "description": "UNIQUE -> CHECK (true)",
             "end_byte": 613,
             "execution": {
@@ -517,6 +524,7 @@
           },
           {
             "candidate_id": "2f7b188786af711152c1f09550bdcdab3590777cbac9c2bd2b86dcb7f311892d",
+            "first_failing_test": null,
             "description": "REFERENCES ... -> CHECK (true)",
             "end_byte": 782,
             "execution": {
@@ -575,6 +583,7 @@
           },
           {
             "candidate_id": "8819c525a0a01bc38173ceae42a6552d8bf57831bafb125daa1843023eba0560",
+            "first_failing_test": null,
             "description": "ON DELETE NO ACTION -> ON DELETE CASCADE",
             "end_byte": 782,
             "execution": {
@@ -633,6 +642,7 @@
           },
           {
             "candidate_id": "5c5b33af3bff014d5943c55b309b8dab22b832b9b02d5ddd7c8ade51a7ccf92e",
+            "first_failing_test": null,
             "description": "UNIQUE -> CHECK (true)",
             "end_byte": 905,
             "execution": {
@@ -691,6 +701,7 @@
           },
           {
             "candidate_id": "3c430fa55f047c4500c70e4fdd09ae09d914cf1e5a8d74159008f276a170b77f",
+            "first_failing_test": null,
             "description": "FOREIGN KEY (...) REFERENCES ... -> CHECK (true)",
             "end_byte": 1039,
             "execution": {
@@ -749,6 +760,7 @@
           },
           {
             "candidate_id": "2dff2a15d38083c6302eaf7e0b71b4d08b96c6c0374ce8675eee61e8d5cf3039",
+            "first_failing_test": null,
             "description": "ON DELETE RESTRICT -> ON DELETE CASCADE",
             "end_byte": 1021,
             "execution": {
@@ -807,6 +819,7 @@
           },
           {
             "candidate_id": "7e1c02f7cbabfa7896c6100a9d3313d7f03aa1abc41fd6277f8708018630f181",
+            "first_failing_test": null,
             "description": "SET NOT NULL -> DROP NOT NULL",
             "end_byte": 1099,
             "execution": {
@@ -865,6 +878,7 @@
           },
           {
             "candidate_id": "a6f7dd8568b1d06a166d0c0d388585b5d65f4c378a0ac1e6f494a4b1d326291a",
+            "first_failing_test": null,
             "description": "CHECK (...) -> CHECK (true)",
             "end_byte": 1177,
             "execution": {
@@ -923,6 +937,7 @@
           },
           {
             "candidate_id": "2f9494f22f4b3adc2a7b934a0296d56f441b529e00c4efc7feba2da7c9a87090",
+            "first_failing_test": null,
             "description": "CREATE UNIQUE INDEX -> CREATE INDEX",
             "end_byte": 1268,
             "execution": {
@@ -981,6 +996,7 @@
           },
           {
             "candidate_id": "f84222b55596d41bd9d2afa766d92259fb92460e94ec1e24806e91c176661ae5",
+            "first_failing_test": null,
             "description": "CREATE UNIQUE INDEX -> CREATE INDEX",
             "end_byte": 1334,
             "execution": {
@@ -1039,6 +1055,7 @@
           },
           {
             "candidate_id": "b3571e8517ff0bf0eea99d524826e33733b2c734766865191edfdfa0c9610894",
+            "first_failing_test": null,
             "description": "FOREIGN KEY (...) REFERENCES ... -> CHECK (true)",
             "end_byte": 1721,
             "execution": {
@@ -1097,6 +1114,7 @@
           },
           {
             "candidate_id": "52b7c7cb9deed8903ab17129bef9a081cf6922fa13027791a10d88d96fd1573e",
+            "first_failing_test": null,
             "description": "ON DELETE RESTRICT -> ON DELETE CASCADE",
             "end_byte": 1721,
             "execution": {
@@ -1155,6 +1173,7 @@
           },
           {
             "candidate_id": "16cadf77b7e4aa4c8eff24300499cc85b774e4ee873fc06ea1bc5f4736ddb731",
+            "first_failing_test": null,
             "description": "CREATE TRIGGER ...; -> SELECT 1;",
             "end_byte": 2383,
             "execution": {
@@ -1213,6 +1232,7 @@
           },
           {
             "candidate_id": "1e4b8fe970d63db675579f958661ce5945918b7b91ac65ad483bd2209436e423",
+            "first_failing_test": null,
             "description": "CREATE TRIGGER ...; -> SELECT 1;",
             "end_byte": 2678,
             "execution": {
@@ -1271,6 +1291,7 @@
           },
           {
             "candidate_id": "96d5aea45422f3784cf19a49fbca799e6915f88a8d00fef7b344ebf451f519d0",
+            "first_failing_test": null,
             "description": "CREATE TRIGGER ...; -> SELECT 1;",
             "end_byte": 3060,
             "execution": {
@@ -1477,6 +1498,18 @@
       "equivalence_artifact": ".assay/schema-dump.sql",
       "equivalence_ledger": null,
       "jobs": 1,
+      "worker_counts": {
+        "1": 24
+      },
+      "profile": "@PROFILE_SUMMARY@",
+      "schedule": {
+        "error": null,
+        "jobs": 1,
+        "memory_budget_bytes": null,
+        "policy": "canonical",
+        "prediction_sources": {},
+        "thresholds": null
+      },
       "kill_attribution": "declared",
       "kill_signal_artifact": ".assay/kill-signal.txt",
       "liveness": {
@@ -1513,7 +1546,7 @@
   "lane": "sql_qualification",
   "outcome": "FAIL",
   "reason_code": "MUTANTS_SURVIVED",
-  "schema_version": 17,
+  "schema_version": 18,
   "scope": "S1",
   "snapshot_policy": {
     "selection": "repository"

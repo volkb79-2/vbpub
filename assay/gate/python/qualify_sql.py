@@ -992,6 +992,16 @@ def normalize_verdict(document: Mapping[str, Any], *, assay_version: str, head_o
     # The auto budget is derived from this run's measured baseline wall time:
     # real, but not a stable witness value.
     normalized.get("judgment", {}).get("r2", {}).pop("budget_per_candidate_derived_s", None)
+    # (B206) The profile summary counts what the cgprofile observer answered
+    # during THIS run (measured, partial or NO_MEASUREMENT by reason), which
+    # depends on the gate host's observer, never on the judged schema: keep the
+    # exact worker counts and the canonical schedule, canonicalize the counters.
+    r2_policy = normalized.get("judgment", {}).get("r2")
+    if r2_policy is not None and "profile" in r2_policy:
+        profile = r2_policy["profile"]
+        if not isinstance(profile, dict) or set(profile) != {"status_counts", "reason_counts", "observer"}:
+            raise QualificationError("artifact judgment.r2.profile is not a profile summary")
+        r2_policy["profile"] = "@PROFILE_SUMMARY@"
     # Absolute event counters include earlier activity in visible ancestor
     # cgroups (including sibling gate phases). The per-candidate delta is the
     # evidence that affects a verdict; keep it exact and canonicalize only the

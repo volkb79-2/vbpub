@@ -12,6 +12,7 @@ from __future__ import annotations
 import math
 
 import pytest
+from conftest import R2_TELEMETRY
 
 from assay.candidate_identity import candidate_id_from_fields
 from assay.errors import Outcome, ReasonCode
@@ -238,6 +239,7 @@ def _native_r2(**overrides) -> JudgmentR2:
         "operators": ("python:compare-swap",),
         "kill_attribution": "unattributed",
         "cold_witness_kills": False,
+        **R2_TELEMETRY,
     }
     values.update(overrides)
     return JudgmentR2(**values)

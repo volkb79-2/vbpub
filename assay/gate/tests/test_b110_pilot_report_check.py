@@ -18,6 +18,7 @@ from types import ModuleType
 
 import pytest
 
+from assay import observer_windows
 from assay.adapters.python import PythonAdapter
 from assay.mutation import (
     MUTATION_BUCKETS,
@@ -42,6 +43,14 @@ GO_PATH = "assay/src/assay/adapters/go.py"
 BOOL_PATH = "assay/src/assay/adapters/pilot_bool_fixture.py"
 CONFIG_PATH = "assay/assay.toml"
 WHEEL_SHA256 = "c" * 64
+# B206: a candidate's cgprofile profile; with no observer it is an explicit
+# NO_MEASUREMENT.
+PILOT_PROFILE = observer_windows.build_profile(
+    observer_windows.WindowResult(reason=observer_windows.OBSERVER_UNAVAILABLE),
+    subject={"tool": "assay", "lane": "r2", "kind": "r2-candidate"},
+    wall_seconds=2.5,
+)
+
 ZERO_RESOURCE_EVIDENCE = {
     "cgroup_version": 2,
     "pids_events": {"max": {"before": 0, "after": 0, "delta": 0}},
@@ -325,8 +334,6 @@ operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-fli
         manifest_path=r2_manifest_path,
     )
     cost_resources = {
-        "cpu_seconds": None,
-        "peak_rss_bytes": None,
         "phase_seconds": {
             "materialize": 0.1,
             "command": 0.2,
@@ -439,6 +446,8 @@ operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-fli
                 "failed_call_index": None,
             },
             "resources": cost_resources,
+            "profile": PILOT_PROFILE,
+            "worker_count": 1,
             "campaign_deadline_sha256": deadline_sha256,
             "resource_limit_evidence": ZERO_RESOURCE_EVIDENCE,
             "process_tree_evidence": PROCESS_TREE_EVIDENCE,
@@ -524,6 +533,7 @@ operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-fli
                 "elapsed_seconds": 2.5,
                 "tests_completed": None,
                 **cost_resources,
+                "profile": PILOT_PROFILE,
             }
             for index, row in enumerate(candidate_rows)
         ],
@@ -973,6 +983,7 @@ def test_hung_progress_must_carry_the_validated_liveness_trace(tmp_path: Path):
         "elapsed_seconds": 2.5,
         "tests_completed": None,
         **record["resources"],
+        "profile": record["profile"],
     }
     progress_facts = {
         "resumed_ids": set(),
@@ -1315,6 +1326,7 @@ def _write_resumed_progress(
                 "elapsed_seconds": 2.5,
                 "tests_completed": None,
                 **record["resources"],
+                "profile": record["profile"],
             }
         )
     events.extend(
@@ -1357,6 +1369,7 @@ def _write_resumed_progress(
             "elapsed_seconds": 2.5,
             "tests_completed": None,
             **fixture["cost_resources"],
+            "profile": PILOT_PROFILE,
         }
         for index, identity in enumerate(pending_ids)
     )

@@ -1298,9 +1298,7 @@ def _verify_resumed_progress(
         )
         if any(
             progress_measurements[field] != state_measurements[field]
-            for field in (
-                "cpu_seconds", "peak_rss_bytes", "phase_seconds", "startup_seconds"
-            )
+            for field in ("phase_seconds", "startup_seconds", "profile")
         ):
             raise ValueError(f"candidate {identity} cost measurements differ from its state record")
         if record.get("outcome_bucket") == "hung":

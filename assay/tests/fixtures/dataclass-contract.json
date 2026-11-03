@@ -863,6 +863,40 @@
         "weakref_slot": false
       }
     },
+    "assay.observer_windows.WindowConfig": {
+      "fields": {},
+      "params": {
+        "eq": true,
+        "frozen": true,
+        "init": true,
+        "kw_only": false,
+        "match_args": true,
+        "order": false,
+        "repr": true,
+        "slots": false,
+        "unsafe_hash": false,
+        "weakref_slot": false
+      }
+    },
+    "assay.observer_windows.WindowResult": {
+      "fields": {
+        "asked": {
+          "default": false
+        }
+      },
+      "params": {
+        "eq": true,
+        "frozen": true,
+        "init": true,
+        "kw_only": true,
+        "match_args": true,
+        "order": false,
+        "repr": true,
+        "slots": false,
+        "unsafe_hash": false,
+        "weakref_slot": false
+      }
+    },
     "assay.process_tree.ProcessTreeDescendant": {
       "fields": {},
       "params": {

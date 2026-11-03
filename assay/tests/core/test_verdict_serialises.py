@@ -26,7 +26,7 @@ from __future__ import annotations
 import json
 
 import pytest
-from conftest import SCHEMA_PATH, VERDICT_FIXTURES, verdict_fixture, why_invalid
+from conftest import R2_TELEMETRY, SCHEMA_PATH, VERDICT_FIXTURES, verdict_fixture, why_invalid
 from jsonschema import Draft202012Validator
 
 from assay.errors import Outcome, ReasonCode
@@ -306,6 +306,7 @@ def build_inconclusive() -> Verdict:
                 operators=("python:compare-swap",),
                 kill_attribution="unattributed",
                 cold_witness_kills=False,
+                **R2_TELEMETRY,
             ),
         ),
         snapshot_policy=REPOSITORY_POLICY,

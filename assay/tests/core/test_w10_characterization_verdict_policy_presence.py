@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
-from conftest import fixed_clock, make_lane, native_mutation, native_outcome
+from conftest import R2_TELEMETRY, fixed_clock, make_lane, native_mutation, native_outcome
 
 from assay import runner
 from assay.errors import AssayError, Outcome, ReasonCode
@@ -103,6 +103,7 @@ R2_POLICY = JudgmentR2(
     operators=("python:compare-swap",),
     kill_attribution="unattributed",
     cold_witness_kills=False,
+    **R2_TELEMETRY,
 )
 R3_POLICY = JudgmentR3(mechanism="uncovered-line", targets=("a.py",))
 R4_POLICY = JudgmentR4(

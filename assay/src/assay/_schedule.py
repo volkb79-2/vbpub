@@ -63,7 +63,12 @@ SOURCE_RANK = {
     SOURCE_NONE: 6,
 }
 
-HISTORY_SCHEMA = "assay-schedule-history/1"
+#: assay 12 writes history/2: each entry carries a ``profile`` digest (the
+#: resource profile's status, reason and ``rss_peak_bytes``). history/1, written
+#: by assay 11.x with bare numeric ``rss_peak_bytes``, is still READ (old
+#: history is evidence for predictions) and never written.
+HISTORY_SCHEMA = "assay-schedule-history/2"
+LEGACY_HISTORY_SCHEMA = "assay-schedule-history/1"
 SCHEDULE_SCHEMA = "assay-schedule/1"
 #: Deliberately not ``*.json`` (this one and the summary below): tools and
 #: tests glob the state directory for candidate records (``<id>.json``), and
@@ -91,9 +96,19 @@ class Thresholds:
 
 @positional_record
 class HistoryEntry:
+    """What one candidate measured: its own wall clock and, from its
+    resource profile, the peak RSS (``None`` when the profile has no number).
+
+    ``profile_status`` and ``profile_reason`` are the profile's status and
+    reason code (``NO_MEASUREMENT`` plus a reason explains a missing RSS);
+    both are ``None`` for history read from assay <= 11.
+    """
+
     path: str
     wall_seconds: float | None
     rss_peak_bytes: int | None
+    profile_status: str | None = None
+    profile_reason: str | None = None
 
 
 def _percentile(values: Sequence[float], q: float) -> float:
@@ -156,17 +171,38 @@ def parse_history(raw: bytes | str | None) -> tuple[dict[str, HistoryEntry], str
         return {}, f"history is not valid JSON: {exc}"
     if (
         not isinstance(document, dict)
-        or document.get("schema") != HISTORY_SCHEMA
+        or document.get("schema") not in (HISTORY_SCHEMA, LEGACY_HISTORY_SCHEMA)
         or not isinstance(document.get("candidates"), dict)
     ):
         return {}, "history has an unexpected schema"
+    legacy = document["schema"] == LEGACY_HISTORY_SCHEMA
     entries: dict[str, HistoryEntry] = {}
     for identity, item in document["candidates"].items():
         if not isinstance(identity, str) or not isinstance(item, dict):
             continue
         path = item.get("path")
         wall = item.get("wall_seconds")
-        rss = item.get("rss_peak_bytes")
+        status: str | None = None
+        reason: str | None = None
+        if legacy:
+            # assay <= 11: the peak RSS is a bare numeric key.
+            rss = item.get("rss_peak_bytes")
+        else:
+            profile = item.get("profile")
+            if not isinstance(profile, dict):
+                continue
+            metrics = profile.get("metrics")
+            if isinstance(metrics, dict):
+                # A full `resource-profile/1` object (as a state record or a
+                # profile line carries it): its wall clock and peak RSS.
+                rss = metrics.get("rss_peak_bytes")
+                if wall is None:
+                    wall = profile.get("wall_seconds")
+            else:
+                rss = profile.get("rss_peak_bytes")
+            raw_status, raw_reason = profile.get("status"), profile.get("reason")
+            status = raw_status if isinstance(raw_status, str) else None
+            reason = raw_reason if isinstance(raw_reason, str) else None
         if not isinstance(path, str):
             continue
         if isinstance(wall, bool) or not isinstance(wall, (int, float)) or wall < 0:
@@ -175,18 +211,25 @@ def parse_history(raw: bytes | str | None) -> tuple[dict[str, HistoryEntry], str
             rss = None
         if wall is None and rss is None:
             continue
-        entries[identity] = HistoryEntry(path, None if wall is None else float(wall), rss)
+        entries[identity] = HistoryEntry(
+            path, None if wall is None else float(wall), rss, status, reason
+        )
     return entries, None
 
 
 def render_history(entries: Mapping[str, HistoryEntry]) -> bytes:
+    """history/2: the old numeric keys are never written."""
     document = {
         "schema": HISTORY_SCHEMA,
         "candidates": {
             identity: {
                 "path": entry.path,
                 "wall_seconds": entry.wall_seconds,
-                "rss_peak_bytes": entry.rss_peak_bytes,
+                "profile": {
+                    "status": entry.profile_status,
+                    "reason": entry.profile_reason,
+                    "rss_peak_bytes": entry.rss_peak_bytes,
+                },
             }
             for identity, entry in sorted(entries.items())
         },
@@ -440,16 +483,22 @@ class TemScheduler:
         *,
         wall_seconds: float | None,
         rss_peak_bytes: int | None,
+        profile_reason: str | None = None,
     ) -> dict[str, Any]:
         """Actual over predicted for one finished candidate, judged against
         the prediction made at dispatch. Ratios are ``None`` with a reason
-        when either side has no measurement."""
+        when either side has no measurement; a candidate whose profile is
+        ``NO_MEASUREMENT`` carries that profile's reason code."""
         prediction = self._pred[index]
         reasons: list[str] = []
         rss_ratio: float | None = None
         wall_ratio: float | None = None
         if rss_peak_bytes is None:
-            reasons.append("no peak RSS was recorded for the candidate")
+            reasons.append(
+                "no peak RSS was recorded for the candidate"
+                if profile_reason is None
+                else f"no peak RSS was recorded for the candidate ({profile_reason})"
+            )
         elif prediction.rss_peak_bytes in (None, 0):
             reasons.append("no RSS prediction was available")
         else:
@@ -465,6 +514,7 @@ class TemScheduler:
             "wall_ratio": wall_ratio,
             "class_actual": classify(rss_peak_bytes, self.thresholds),
             **({"reason": "; ".join(reasons)} if reasons else {}),
+            **({"profile_reason": profile_reason} if profile_reason is not None else {}),
         }
 
     def summary(self, *, errors: Mapping[int, Mapping[str, Any]]) -> dict[str, Any]:
@@ -528,6 +578,57 @@ class TemScheduler:
             "admission_overshoots": self.admission_overshoots(),
         }
 
+    def verdict_summary(self, *, errors: Mapping[int, Mapping[str, Any]]) -> dict[str, Any]:
+        """``judgment.r2.schedule`` (verdict v18, design 4.2): the policy, the
+        class thresholds and factors, the admission budget, the worker count,
+        how many candidates each prediction source served, and the error
+        summary over all sources."""
+        sources = collections.Counter(
+            self._initial_pred[i].source for i in range(len(self._ids))
+        )
+        rss_ratios: list[float] = []
+        wall_ratios: list[float] = []
+        confusion: dict[str, dict[str, int]] = {
+            name: {HIGH: 0, NORMAL: 0, LOW: 0} for name in (HIGH, NORMAL, LOW)
+        }
+        for index, error in errors.items():
+            if error.get("rss_ratio") is not None:
+                rss_ratios.append(float(error["rss_ratio"]))
+            if error.get("wall_ratio") is not None:
+                wall_ratios.append(float(error["wall_ratio"]))
+            confusion[self._class[index]][error["class_actual"]] += 1
+
+        def quantiles(values: list[float]) -> dict[str, float | None]:
+            if not values:
+                return {"p50": None, "p95": None}
+            return {
+                "p50": round(_percentile(values, 0.5), 4),
+                "p95": round(_percentile(values, 0.95), 4),
+            }
+
+        return {
+            "policy": "tem-lpt",
+            "thresholds": {
+                "high_bytes": (
+                    None if self.thresholds is None else round(self.thresholds.high_bytes)
+                ),
+                "low_bytes": (
+                    None if self.thresholds is None else round(self.thresholds.low_bytes)
+                ),
+                "high_factor": self.high_factor,
+                "low_factor": self.low_factor,
+            },
+            "memory_budget_bytes": self.budget_bytes,
+            "jobs": self.workers,
+            "prediction_sources": {name: sources.get(name, 0) for name in SOURCE_RANK},
+            "error": {
+                "rss_ratio": quantiles(rss_ratios),
+                "wall_ratio": quantiles(wall_ratios),
+                "class_confusion": confusion,
+                "admission_overshoots": self.admission_overshoots(),
+            },
+        }
+
     def admission_overshoots(self) -> int:
         """Moments (candidate starts) at which the sum of the ACTUAL peaks of
         the running candidates exceeded the budget: an upper envelope computed
@@ -548,6 +649,19 @@ class TemScheduler:
             if kind == 1 and level > self.budget_bytes:
                 overshoots += 1
         return overshoots
+
+
+def canonical_verdict_summary(*, jobs: int, memory_budget_bytes: int | None) -> dict[str, Any]:
+    """``judgment.r2.schedule`` for a run in canonical order (a serial run):
+    no classes, no predictions, no error summary."""
+    return {
+        "policy": "canonical",
+        "thresholds": None,
+        "memory_budget_bytes": memory_budget_bytes,
+        "jobs": jobs,
+        "prediction_sources": {},
+        "error": None,
+    }
 
 
 def plan_dispatch_order(

@@ -101,6 +101,7 @@ and avoids re-opening the same cycle purely for a type hint.
 
 from __future__ import annotations
 
+import collections
 import fnmatch
 import hashlib
 import json
@@ -140,7 +141,7 @@ from . import _durable
 from . import _limit_ledger
 from . import _schedule
 from . import contention as _contention
-from . import git, liveness, safeio
+from . import git, liveness, observer_windows, safeio
 from . import termination as _termination
 from .candidate_identity import candidate_id_from_fields
 from .diff import AddedLines
@@ -276,15 +277,15 @@ MUTATION_STATE_RECORD_LIMIT = 1024 * 1024
 #: on B088 rather than widened into this change.)
 MUTATION_STATE_SCHEMA_VERSION = 1
 
-_STATE_RESOURCE_KEYS = frozenset(
-    {
-        "cpu_seconds",
-        "peak_rss_bytes",
-        "write_bytes",
-        "judge_rss_bytes",
-        "phase_seconds",
-        "startup_seconds",
-    }
+#: B206 (assay 12): the state record's ``resources`` object keeps only
+#: Assay's own clock. Per-candidate resource numbers come from the cgprofile
+#: observer and live in the record's ``profile`` key.
+_STATE_RESOURCE_KEYS = frozenset({"phase_seconds", "startup_seconds"})
+#: Numeric keys written by assay <= 11. They are still ACCEPTED when a record
+#: is read (so an old record is a routine cache miss under the new judge label,
+#: never a hard error) and are never written.
+_LEGACY_STATE_RESOURCE_KEYS = frozenset(
+    {"cpu_seconds", "peak_rss_bytes", "write_bytes", "judge_rss_bytes"}
 )
 _STATE_RESOURCE_PHASE_KEYS = frozenset(
     {"materialize", "command", "integrity", "teardown"}
@@ -294,7 +295,11 @@ _STATE_RESOURCE_STARTUP_KEYS = frozenset({"to_session_start", "to_first_test"})
 #: (B088) The serialization label folded into :func:`judge_sha256`, so a
 #: future change to WHAT the judge identity covers yields visibly different
 #: digests instead of silently comparable ones.
-_JUDGE_DIGEST_LABEL = "assay-judge-identity/13"
+#: Advanced to /14 by B206/B208 (assay 12, verdict v18): a state record now
+#: carries its worker count (B203), and a killed record its first failing test
+#: (B205); records written by assay <= 11 cannot state either, so they are
+#: cache misses.
+_JUDGE_DIGEST_LABEL = "assay-judge-identity/14"
 
 #: (B088) Returned by :func:`_load_validated_state_record` when a record was
 #: FOUND, is well-formed, and is still not evidence about this run -- its
@@ -1170,15 +1175,44 @@ def progress_writer(
         if parent_fd is not None:
             os.close(parent_fd)
         raise
+    profile_name = _profile_sibling_name(expanded.name)
+    profile_stream: Any = None
     try:
         with stream:
 
             def write(event: Mapping[str, Any]) -> None:
+                nonlocal profile_stream
                 try:
                     stream.write(
                         json.dumps(event, separators=(",", ":"), sort_keys=True) + "\n"
                     )
                     stream.flush()
+                    profile = (
+                        event.get("profile") if event.get("event") == "candidate" else None
+                    )
+                    if isinstance(profile, Mapping):
+                        # B206: one `resource-profile/1` line per candidate,
+                        # next to the progress stream, opened on the first one
+                        # so a lane without R2 candidates creates no file.
+                        if profile_stream is None:
+                            profile_descriptor = os.open(
+                                profile_name,
+                                os.O_WRONLY
+                                | os.O_APPEND
+                                | os.O_CREAT
+                                | os.O_CLOEXEC
+                                | os.O_NOFOLLOW,
+                                0o666,
+                                dir_fd=parent_fd,
+                            )
+                            profile_stream = os.fdopen(
+                                profile_descriptor, "a", encoding="utf-8"
+                            )
+                        profile_stream.write(
+                            json.dumps(profile, separators=(",", ":"), sort_keys=True)
+                            + "\n"
+                        )
+                        profile_stream.flush()
                 except OSError as exc:
                     raise AssayError(
                         f"cannot write to the progress destination "
@@ -1187,7 +1221,11 @@ def progress_writer(
                         reason_code=ReasonCode.OUTPUT_WRITE_FAILED,
                     ) from exc
 
-            yield write
+            try:
+                yield write
+            finally:
+                if profile_stream is not None:
+                    profile_stream.close()
     except OSError as exc:
         # `stream`'s own `__exit__` (flush + close) can still raise, e.g. a
         # filesystem that only surfaces ENOSPC on close.
@@ -1198,6 +1236,18 @@ def progress_writer(
         ) from exc
     finally:
         _close_if_open(parent_fd)
+
+
+def _profile_sibling_name(progress_name: str) -> str:
+    """The per-candidate profile file next to a progress file:
+    ``progress-<lane>.jsonl`` becomes ``profile-<lane>.jsonl``; any other name
+    gets ``.profile`` before its extension."""
+    if progress_name.startswith("progress-"):
+        return "profile-" + progress_name[len("progress-"):]
+    stem, dot, extension = progress_name.rpartition(".")
+    if not dot:
+        return progress_name + ".profile.jsonl"
+    return f"{stem}.profile.{extension}"
 
 
 def _close_if_open(descriptor: int | None) -> None:
@@ -2466,7 +2516,9 @@ def _load_validated_state_record(
             raise MutationStateError(
                 f"mutation-state record {identity} resources must be an object"
             )
-        unknown_resource_keys = set(raw_resources) - _STATE_RESOURCE_KEYS
+        unknown_resource_keys = set(raw_resources) - (
+            _STATE_RESOURCE_KEYS | _LEGACY_STATE_RESOURCE_KEYS
+        )
         if unknown_resource_keys:
             raise MutationStateError(
                 f"mutation-state record {identity} resources has unknown fields "
@@ -2734,6 +2786,30 @@ def _load_validated_state_record(
         raise MutationStateError(
             f"cold-witness mutation-state record {identity} is missing required evidence"
         )
+    # (B203/B205/B206) The record is current. It must state the worker count
+    # that produced it, may carry the candidate's resource profile, and names
+    # the first failing test only when it was killed.
+    worker_count = payload.get("worker_count")
+    if type(worker_count) is not int or worker_count < 1:
+        raise MutationStateError(
+            f"mutation-state record {identity} worker_count must be a positive integer"
+        )
+    try:
+        observer_windows.validate_profile(payload.get("profile"))
+    except ValueError as exc:
+        raise MutationStateError(
+            f"mutation-state record {identity} has an invalid profile: {exc}"
+        ) from exc
+    first_failing = payload.get("first_failing_test")
+    if first_failing is not None and (
+        not isinstance(first_failing, str)
+        or not first_failing
+        or payload["outcome_bucket"] != "killed"
+    ):
+        raise MutationStateError(
+            f"mutation-state record {identity} first_failing_test must be a "
+            "non-empty string on a killed record, or null"
+        )
     return payload
 
 
@@ -2815,6 +2891,7 @@ def _outcome_from_record(record: Mapping[str, Any]) -> MutantOutcome:
             replacement_sha256=record["replacement_sha256"],
             operator=record["operator"],
             description=record["description"],
+            first_failing_test=record.get("first_failing_test"),
             candidate_id=record["candidate_id"],
             source_sha256=record["source_sha256"],
             mutated_file_sha256=record["mutated_file_sha256"],
@@ -3078,15 +3155,17 @@ class _MutantRun:
     #: B107: exact CPU/PSI evidence retained when the liveness runner stops
     #: a candidate. A resource stall never becomes a functional bucket.
     liveness_resource_evidence: Mapping[str, Any] | None = None
-    #: B111/AP-6 diagnostic evidence (never a classification input): sampled
-    #: tree CPU, peak sum-RSS and write-byte lower bounds, startup gaps read
-    #: from the liveness sidecar and events file (`None` off a liveness lane),
-    #: one point-in-time RSS sample of the assay judge, and the worker's own
-    #: monotonic phase split (always measured).
-    cpu_seconds: float | None = None
-    peak_rss_bytes: int | None = None
-    write_bytes: int | None = None
-    judge_rss_bytes: int | None = None
+    #: B111/AP-6 diagnostic evidence (never a classification input): startup
+    #: gaps read from the liveness sidecar and events file (`None` off a
+    #: liveness lane) and the worker's own monotonic phase split (always
+    #: measured). Resource numbers are NOT here: they come only from the
+    #: cgprofile observer, as :attr:`profile_result` (B206).
+    #: What the observer window produced for this attempt, or ``None`` when no
+    #: window was requested for it (a replayed run, an in-process test seam).
+    profile_result: "observer_windows.WindowResult | None" = None
+    #: (B205) The first failing test id read from the liveness events file, or
+    #: ``None`` when unknown (no plugin events, or no failed test reported).
+    first_failing_test: str | None = None
     phase_seconds: Mapping[str, float] | None = None
     startup_seconds: Mapping[str, float | None] | None = None
     execution: MutationExecution = MutationExecution(mode="full")
@@ -3145,19 +3224,68 @@ def _zero_window_resource_limit_evidence(
     return evidence, reason
 
 
-def _measured_resources(
-    events_path: Path,
-) -> tuple[float | None, int | None, int | None, dict[str, float | None]]:
-    """``(cpu_seconds, peak_rss_bytes, write_bytes, startup_seconds)`` for
-    one liveness candidate, from its resource sidecar and events file.
+def _fold_resumed_telemetry(
+    executed: Mapping[str, Any] | None, records: Iterable[Mapping[str, Any]]
+) -> dict[str, Any]:
+    """Add the resumed state records' profiles and worker counts (B203) to the
+    telemetry of the candidates this invocation executed. Every current record
+    states its ``worker_count`` and ``profile`` (the loader refuses one that
+    does not), so the campaign totals cover every candidate in the verdict."""
+    executed = executed or {}
+    profile_part = executed.get("profile") or {}
+    statuses: collections.Counter = collections.Counter(
+        profile_part.get("status_counts") or {}
+    )
+    reasons: collections.Counter = collections.Counter(
+        profile_part.get("reason_counts") or {}
+    )
+    modes: set[str] = set(profile_part.get("modes") or ())
+    worker_counts: collections.Counter = collections.Counter(
+        executed.get("worker_counts") or {}
+    )
+    for entry in records:
+        worker_counts[str(entry["worker_count"])] += 1
+        profile = entry["profile"]
+        statuses[profile["status"]] += 1
+        if profile["reason"] is not None:
+            reasons[profile["reason"]] += 1
+        mode = profile["observer"].get("mode")
+        if mode is not None:
+            modes.add(mode)
+    return {
+        "profile": {
+            "status_counts": dict(statuses),
+            "reason_counts": dict(reasons),
+            "modes": sorted(modes),
+        },
+        "worker_counts": dict(worker_counts),
+        "schedule": executed.get("schedule"),
+    }
+
+
+def _profile_rss_bytes(profile: Mapping[str, Any]) -> int | None:
+    """The profile's peak RSS as an integer, or ``None`` when the observer
+    produced no number for it."""
+    value = profile["metrics"]["rss_peak_bytes"]
+    return None if value is None else int(value)
+
+
+def _result_rss_bytes(result: "observer_windows.WindowResult | None") -> int | None:
+    """Peak RSS of one finished observer window (the scheduler's prediction
+    input), or ``None`` when there was no reply."""
+    if result is None or result.reply is None:
+        return None
+    value = result.reply["metrics"]["rss_peak_bytes"]
+    return None if value is None else int(value)
+
+
+def _startup_seconds(events_path: Path) -> dict[str, float | None]:
+    """``startup_seconds`` for one liveness candidate, from its sidecar's spawn
+    time and its events file: Assay's own clock, not a resource measurement.
     Anything absent, negative, or ill-typed is ``None``: diagnostics never
     fail a candidate."""
     sidecar = liveness.read_resource_sidecar(events_path) or {}
     spawned_at = liveness._finite_number(sidecar.get("spawned_at"))
-    cpu_seconds = liveness._finite_number(sidecar.get("cpu_seconds"))
-    peak_rss = liveness._finite_number(sidecar.get("peak_rss_bytes"))
-    write_bytes = sidecar.get("write_bytes")
-    cpu_seconds = cpu_seconds if cpu_seconds is not None and cpu_seconds >= 0 else None
     session_start, first_test = liveness.first_event_times(events_path)
     to_session_start = (
         None if session_start is None or spawned_at is None else session_start - spawned_at
@@ -3165,23 +3293,18 @@ def _measured_resources(
     to_first_test = (
         None if first_test is None or spawned_at is None else first_test - spawned_at
     )
-    return (
-        cpu_seconds,
-        peak_rss if isinstance(peak_rss, int) and peak_rss >= 0 else None,
-        write_bytes if type(write_bytes) is int and write_bytes >= 0 else None,
-        {
-            "to_session_start": (
-                to_session_start
-                if to_session_start is not None and to_session_start >= 0
-                else None
-            ),
-            "to_first_test": (
-                to_first_test
-                if to_first_test is not None and to_first_test >= 0
-                else None
-            ),
-        },
-    )
+    return {
+        "to_session_start": (
+            to_session_start
+            if to_session_start is not None and to_session_start >= 0
+            else None
+        ),
+        "to_first_test": (
+            to_first_test
+            if to_first_test is not None and to_first_test >= 0
+            else None
+        ),
+    }
 
 
 def _has_clean_failure_report(
@@ -3398,6 +3521,7 @@ def _outcome_of(
     *,
     resource_limit_evidence: ResourceLimitEvidence | None,
     kill_signal: str | None = None,
+    first_failing_test: str | None = None,
     execution: MutationExecution | None = None,
     evidence: MutantEvidence | None = None,
     process_tree_evidence: ProcessTreeEvidence | None = None,
@@ -3426,6 +3550,7 @@ def _outcome_of(
         operator=job.site.operator,
         description=job.site.description,
         kill_signal=kill_signal,
+        first_failing_test=first_failing_test,
         candidate_id=candidate_id_from_fields(
             path=job.path,
             source_sha256=source_sha256,
@@ -4357,7 +4482,14 @@ def run_mutation(
         )
 
         if resumed_records:
+            executed_telemetry = result_payload.r2_telemetry
             result_payload = merge_mutations(result_payload, resumed_records)
+            result_payload = _dataclass_replace(
+                result_payload,
+                r2_telemetry=_fold_resumed_telemetry(
+                    executed_telemetry, resumed_records
+                ),
+            )
         if complete_campaign:
             # `_execute_mutation_jobs` has returned by now; resume merging can
             # still take time and must remain inside the persisted deadline.
@@ -4661,6 +4793,13 @@ def _execute_mutation_jobs(
     worker_index_lock = threading.Lock()
     worker_indices: dict[int, int] = {}
     candidate_workers: dict[int, int] = {}
+    # B206: the cgprofile observer is the only source of per-candidate numbers.
+    # Run-wide policy (ask contract support once, stop asking after three
+    # consecutive failures) lives here, in the coordinator.
+    profile_collector = observer_windows.ProfileCollector(
+        socket_path=os.environ.get(observer_windows.OBSERVER_SOCKET_ENV) or None,
+        jobs=jobs,
+    )
 
     def _worker_index_for_current_thread() -> int:
         identity = threading.get_ident()
@@ -4806,6 +4945,7 @@ def _execute_mutation_jobs(
                 resource_observation_reason: str | None = None
                 resource_limit_changes: tuple[str, ...] = ()
                 receipt_capture = None
+                profile_slot: observer_windows.WindowSlot | None = None
                 try:
                     if witness_capture_active and active_injection is not None:
                         receipt_capture = ReceiptCapture()
@@ -4815,25 +4955,39 @@ def _execute_mutation_jobs(
                             target_node_id=target_node_id,
                             cold=cold,
                         )
-                    if window_host_run is None:
-                        result = execute_plan(
-                            attempt_plan,
-                            cwd=snapshot.project_root,
-                            timeout=command_deadline,
-                            process_runner=process_runner,
-                            clock=clock,
-                        )
-                    else:
-                        result = window_host_run(
-                            attempt_plan,
-                            cwd=snapshot.project_root,
-                            timeout=command_deadline,
-                            process_runner=process_runner,
-                            clock=clock,
-                        )
+                    # B206: the candidate's observer window is opened by the
+                    # process that spawns the root and its result comes back
+                    # through the slot; a refused or absent observer leaves a
+                    # NO_MEASUREMENT reason, never a different execution.
+                    with observer_windows.activate(
+                        profile_collector.config()
+                    ) as profile_slot:
+                        if window_host_run is None:
+                            result = execute_plan(
+                                attempt_plan,
+                                cwd=snapshot.project_root,
+                                timeout=command_deadline,
+                                process_runner=process_runner,
+                                clock=clock,
+                            )
+                        else:
+                            result = window_host_run(
+                                attempt_plan,
+                                cwd=snapshot.project_root,
+                                timeout=command_deadline,
+                                process_runner=process_runner,
+                                clock=clock,
+                                **(
+                                    {}
+                                    if profile_slot is None or not profile_slot.active
+                                    else {"profile": profile_slot}
+                                ),
+                            )
                 except BaseException as exc:
                     execution_error = exc
                 finally:
+                    if profile_slot is not None:
+                        profile_collector.record(profile_slot.result)
                     if limit_broker is None:
                         (
                             resource_limits_after,
@@ -4944,22 +5098,16 @@ def _execute_mutation_jobs(
             # "agrees today" is not a property an edit to either side
             # preserves).
             tests_completed: int | None = None
-            cpu_seconds: float | None = None
-            peak_rss_bytes: int | None = None
-            write_bytes: int | None = None
             startup_seconds: dict[str, float | None] | None = None
+            first_failing_test: str | None = None
             if liveness_events_dir is not None:
                 candidate_events = liveness.candidate_events_path(
                     liveness_events_dir,
                     resolve_run_cwd(snapshot.project_root, plan),
                 )
                 tests_completed = liveness.count_test_events(candidate_events)
-                (
-                    cpu_seconds,
-                    peak_rss_bytes,
-                    write_bytes,
-                    startup_seconds,
-                ) = _measured_resources(candidate_events)
+                startup_seconds = _startup_seconds(candidate_events)
+                first_failing_test = liveness.first_failing_test(candidate_events)
             integrity_started_monotonic = time.monotonic()
             # P26/A-212: the ONE lane deadline IS forwarded here, so this
             # check's own Git children are bounded by the same budget as
@@ -5014,7 +5162,6 @@ def _execute_mutation_jobs(
         # bucket until cleanup has completed within the lane budget.
         deadline.remaining()
         teardown_finished_monotonic = time.monotonic()
-        judge_rss_bytes = liveness.process_rss_bytes(os.getpid())
         run = _MutantRun(
             result=result,
             equivalence_bytes=equivalence_bytes,
@@ -5022,10 +5169,8 @@ def _execute_mutation_jobs(
             elapsed_seconds=elapsed_seconds,
             tests_completed=tests_completed,
             liveness_resource_evidence=result.liveness_resource_evidence,
-            cpu_seconds=cpu_seconds,
-            peak_rss_bytes=peak_rss_bytes,
-            write_bytes=write_bytes,
-            judge_rss_bytes=judge_rss_bytes,
+            profile_result=profile_slot.result if profile_slot is not None else None,
+            first_failing_test=first_failing_test,
             phase_seconds={
                 "materialize": entered_monotonic - started_monotonic,
                 "command": command_finished_monotonic - command_started_monotonic,
@@ -5315,15 +5460,28 @@ def _execute_mutation_jobs(
         # Classification itself is main-thread work and can cross the lane
         # boundary. Refuse before staging a candidate progress event or state.
         deadline.remaining()
+        # B206: the candidate's resource profile. Every number in it comes from
+        # the cgprofile observer; without one it is an explicit
+        # NO_MEASUREMENT. `wall_seconds` is Assay's own clock.
+        profile = observer_windows.build_profile(
+            run.profile_result,
+            subject={
+                "tool": "assay",
+                "lane": "r2",
+                "kind": "r2-candidate",
+                "id": candidate_id(job_list[position]),
+                "worker_index": candidate_workers.get(position),
+                "workers": jobs,
+                "commit": None,
+                "tree": None,
+            },
+            wall_seconds=round(run.elapsed_seconds, 3),
+        )
+        profile_collector.finish(candidate_id(job_list[position]), profile)
         # B111/AP-6: diagnostic evidence only (never a classification input),
-        # built once so progress and state carry identical measured values.
+        # built once so progress and state carry identical values. Assay's own
+        # clock only (B206): phase split and startup gaps.
         resources = {
-            "cpu_seconds": (
-                round(run.cpu_seconds, 3) if run.cpu_seconds is not None else None
-            ),
-            "peak_rss_bytes": run.peak_rss_bytes,
-            "write_bytes": run.write_bytes,
-            "judge_rss_bytes": run.judge_rss_bytes,
             "phase_seconds": (
                 {name: round(value, 3) for name, value in run.phase_seconds.items()}
                 if run.phase_seconds is not None
@@ -5415,6 +5573,15 @@ def _execute_mutation_jobs(
                 "lineno": job_list[position].site.lineno,
                 "description": job_list[position].site.description,
                 "outcome_bucket": outcome_bucket,
+                # (B203) The worker count that produced this record, so a
+                # resumed campaign can state the maximum and per-count totals.
+                "worker_count": jobs,
+                "profile": profile,
+                **(
+                    {"first_failing_test": run.first_failing_test}
+                    if outcome_bucket == "killed"
+                    else {}
+                ),
                 **(
                     {"forced_bucket": run.forced_bucket}
                     if run.forced_bucket is not None
@@ -5481,12 +5648,17 @@ def _execute_mutation_jobs(
                 state_root_fd=state_root_fd,
                 commit_guard=deadline.remaining,
             )
-        # What this candidate measured feeds the next campaign's predictions.
+        # What this candidate measured feeds the next campaign's predictions:
+        # its own wall clock and the profile's peak RSS (none when the observer
+        # produced no number).
+        profile_rss = _profile_rss_bytes(profile)
         if state_root is not None and run.elapsed_seconds >= 0:
             history_updates[candidate_id(job_list[position])] = _schedule.HistoryEntry(
                 job_list[position].path,
                 round(run.elapsed_seconds, 3),
-                run.peak_rss_bytes,
+                profile_rss,
+                profile_status=profile["status"],
+                profile_reason=profile["reason"],
             )
         schedule_keys: dict[str, Any] = {}
         if scheduler is not None and slot is not None:
@@ -5494,7 +5666,8 @@ def _execute_mutation_jobs(
             error = scheduler.error(
                 position,
                 wall_seconds=run.elapsed_seconds,
-                rss_peak_bytes=run.peak_rss_bytes,
+                rss_peak_bytes=profile_rss,
+                profile_reason=profile["reason"],
             )
             schedule_errors[position] = error
             schedule_keys = {
@@ -5524,19 +5697,16 @@ def _execute_mutation_jobs(
             "elapsed_seconds": round(run.elapsed_seconds, 3),
             "tests_completed": run.tests_completed,
             "resource_limit_changes": list(run.resource_limit_changes),
-            "resources": {
-                key: resources[key]
-                for key in ("cpu_seconds", "peak_rss_bytes", "write_bytes")
-            },
-            "judge_rss_bytes": resources["judge_rss_bytes"],
+            "worker_count": jobs,
+            "profile": profile,
+            **(
+                {"first_failing_test": run.first_failing_test}
+                if outcome_bucket == "killed"
+                else {}
+            ),
             **{
                 key: resources[key]
-                for key in (
-                    "cpu_seconds",
-                    "peak_rss_bytes",
-                    "phase_seconds",
-                    "startup_seconds",
-                )
+                for key in ("phase_seconds", "startup_seconds")
             },
             **(
                 {"resource_limit_evidence": resource_limit_evidence.to_dict()}
@@ -5707,7 +5877,9 @@ def _execute_mutation_jobs(
                                     None if run is None else run.elapsed_seconds
                                 ),
                                 rss_peak_bytes=(
-                                    None if run is None else run.peak_rss_bytes
+                                    None
+                                    if run is None
+                                    else _result_rss_bytes(run.profile_result)
                                 ),
                             )
                     _record_ready_in_order()
@@ -5841,6 +6013,7 @@ def _execute_mutation_jobs(
             _outcome_of(
                 job,
                 kill_signal=kill_signal,
+                first_failing_test=run.first_failing_test if bucket == "killed" else None,
                 execution=run.execution,
                 resource_limit_evidence=run.resource_limit_evidence,
                 evidence=run.evidence,
@@ -5849,9 +6022,31 @@ def _execute_mutation_jobs(
             )
         )
 
+    statuses, reasons, modes = profile_collector.counters()
+    never_started = sum(1 for flagged in budget_exceeded_mask if flagged)
+    if never_started:
+        # A candidate that never ran has no window: NO_MEASUREMENT/NOT_STARTED.
+        statuses[observer_windows.STATUS_NO_MEASUREMENT] += never_started
+        reasons[observer_windows.NOT_STARTED] += never_started
+    telemetry: dict[str, Any] = {
+        "profile": {
+            "status_counts": dict(statuses),
+            "reason_counts": dict(reasons),
+            "modes": sorted(modes),
+        },
+        "worker_counts": {str(jobs): len(executed_runs)} if executed_runs else {},
+        "schedule": (
+            scheduler.verdict_summary(errors=schedule_errors)
+            if scheduler is not None
+            else _schedule.canonical_verdict_summary(
+                jobs=jobs, memory_budget_bytes=schedule_options.memory_budget_bytes
+            )
+        ),
+    }
     mutation = Mutation(
         candidate_count=candidate_count,
         total=total,
+        r2_telemetry=telemetry,
         **{name: tuple(buckets[name]) for name in MUTATION_BUCKETS},
     )
     if complete_campaign:

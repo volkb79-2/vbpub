@@ -18,9 +18,9 @@
   ],
   "properties": {
     "schema_version": {
-      "description": "The verdict schema version, independent of assay.toml lane schema version. Exactly one schema is active in a released build: producers emit v17 and the verifier refuses every other version.",
+      "description": "The verdict schema version, independent of assay.toml lane schema version. Exactly one schema is active in a released build: producers emit v18 and the verifier refuses every other version.",
       "type": "integer",
-      "const": 17
+      "const": 18
     },
     "assay_version": {
       "type": "string",
@@ -1386,6 +1386,55 @@
         }
       ]
     },
+    "schedule_quantiles": {
+      "description": "B207/schema v18: median and 95th percentile of actual over predicted, null when no candidate had both.",
+      "type": "object",
+      "required": [
+        "p50",
+        "p95"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "p50": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "p95": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        }
+      }
+    },
+    "schedule_class_counts": {
+      "description": "B207/schema v18: candidates of one predicted class by the class their measured peak RSS fell into.",
+      "type": "object",
+      "required": [
+        "high",
+        "normal",
+        "low"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "high": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "normal": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "low": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
     "mutation_candidate_ids": {
       "description": "B106/schema v13 exhaustive native candidate inventory for this submitted scope: the full plan or selected shard slice. Empty means the submitted scope contained no candidates. Omitted only for the pre-submission mutant-limit sentinel and for ingested reports.",
       "type": "array",
@@ -1791,6 +1840,14 @@
           "type": "string",
           "minLength": 1
         },
+        "first_failing_test": {
+          "description": "B205/schema v18: the node id of the first test the suite reported as failed for this kill, or null when unknown (no plugin events, a collection error, a reused witness). Required on every NATIVE killed entry (one that carries candidate_id); legal ONLY on a killed entry. Enforced per bucket below.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
         "discard_reason": {
           "description": "B079 (schema v12): why an ingested mutant was not attempted. Assay maps CompileError to compile_error and RuntimeError to runtime_error; the field is legal only on judgment.r2.discarded entries.",
           "enum": [
@@ -1937,6 +1994,18 @@
                 "$ref": "#/$defs/mutant_outcome"
               },
               {
+                "if": {
+                  "required": [
+                    "candidate_id"
+                  ]
+                },
+                "then": {
+                  "required": [
+                    "first_failing_test"
+                  ]
+                }
+              },
+              {
                 "not": {
                   "required": [
                     "discard_reason"
@@ -1966,6 +2035,13 @@
                     "discard_reason"
                   ]
                 }
+              },
+              {
+                "not": {
+                  "required": [
+                    "first_failing_test"
+                  ]
+                }
               }
             ]
           }
@@ -1990,6 +2066,13 @@
                     "discard_reason"
                   ]
                 }
+              },
+              {
+                "not": {
+                  "required": [
+                    "first_failing_test"
+                  ]
+                }
               }
             ]
           }
@@ -2012,6 +2095,13 @@
                 "not": {
                   "required": [
                     "discard_reason"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "required": [
+                    "first_failing_test"
                   ]
                 }
               }
@@ -2039,6 +2129,13 @@
                     "discard_reason"
                   ]
                 }
+              },
+              {
+                "not": {
+                  "required": [
+                    "first_failing_test"
+                  ]
+                }
               }
             ]
           }
@@ -2062,6 +2159,13 @@
                 "not": {
                   "required": [
                     "discard_reason"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "required": [
+                    "first_failing_test"
                   ]
                 }
               }
@@ -2274,6 +2378,13 @@
                 }
               },
               {
+                "not": {
+                  "required": [
+                    "first_failing_test"
+                  ]
+                }
+              },
+              {
                 "required": [
                   "discard_reason"
                 ]
@@ -2291,7 +2402,7 @@
           }
         },
         "jobs": {
-          "description": "B202/schema v17: the effective native R2 worker count of THIS invocation only (a resumed campaign may mix results from other worker counts; tracked as B203). Required as an integer >= 1 when producer is native; forbidden when ingested.",
+          "description": "B203/schema v18: the campaign MAXIMUM native R2 worker count, taken over every candidate record, resumed or newly executed (the per-count totals are in worker_counts). It is no longer the invocation's own selection. Required as an integer >= 1 when producer is native; forbidden when ingested.",
           "type": "integer",
           "minimum": 1
         },
@@ -2434,11 +2545,249 @@
           ]
         },
         "attribution": {
-          "description": "B202/schema v17: for THIS invocation only (B203): serial for one worker or overlap-conservative for multiple workers.",
+          "description": "B202/schema v17, B203/v18: derived from the campaign maximum worker count `jobs`: serial for one worker, overlap-conservative for more.",
           "enum": [
             "serial",
             "overlap-conservative"
           ]
+        },
+        "worker_counts": {
+          "description": "B203/schema v18: how many candidates were produced under each worker count, across resumed and newly executed state records, keyed by the decimal worker count. `jobs` is the maximum key (an empty object when no candidate ran or was resumed). Required when producer is native; forbidden when ingested.",
+          "type": "object",
+          "propertyNames": {
+            "pattern": "^[1-9][0-9]*$"
+          },
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "profile": {
+          "description": "B206/schema v18: counts of the cgprofile resource-profile statuses and reason codes over the campaign's candidates, and the observer identity. Per-candidate resource numbers are telemetry and never enter the verdict. reason_counts sums to status_counts.NO_MEASUREMENT (cross-field; checked by the model and the raw verifier). Required when producer is native; forbidden when ingested.",
+          "type": "object",
+          "required": [
+            "status_counts",
+            "reason_counts",
+            "observer"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "status_counts": {
+              "type": "object",
+              "required": [
+                "MEASURED",
+                "PARTIAL",
+                "NO_MEASUREMENT"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "MEASURED": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "PARTIAL": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "NO_MEASUREMENT": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "reason_counts": {
+              "type": "object",
+              "propertyNames": {
+                "enum": [
+                  "OBSERVER_UNAVAILABLE",
+                  "OBSERVER_REFUSED",
+                  "OBSERVER_CONTRACT_UNSUPPORTED",
+                  "OBSERVER_ERROR",
+                  "WINDOW_LOST",
+                  "NOT_STARTED",
+                  "SHARED_CGROUP",
+                  "REQUIRES_CGROUP_MODE",
+                  "CONTROLLER_DISABLED",
+                  "PEAK_RESET_UNSUPPORTED"
+                ]
+              },
+              "additionalProperties": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "observer": {
+              "type": "object",
+              "required": [
+                "name",
+                "version",
+                "contracts",
+                "modes"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "name": {
+                  "const": "cgprofile"
+                },
+                "version": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "minLength": 1
+                },
+                "contracts": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                },
+                "modes": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "items": {
+                    "enum": [
+                      "cgroup",
+                      "process-tree"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "schedule": {
+          "description": "B207/schema v18: the candidate scheduling policy of the campaign: `canonical` (a serial run: thresholds and error are null) or `tem-lpt` (two-ended matching for parallel runs), the class thresholds and factors, the admission budget, the worker count, how many candidates each prediction source served, and the predicted-versus-actual error summary. Required when producer is native; forbidden when ingested.",
+          "type": "object",
+          "required": [
+            "policy",
+            "thresholds",
+            "memory_budget_bytes",
+            "jobs",
+            "prediction_sources",
+            "error"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "policy": {
+              "enum": [
+                "canonical",
+                "tem-lpt"
+              ]
+            },
+            "thresholds": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "required": [
+                "high_bytes",
+                "low_bytes",
+                "high_factor",
+                "low_factor"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "high_bytes": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "low_bytes": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "high_factor": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                "low_factor": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                }
+              }
+            },
+            "memory_budget_bytes": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 1
+            },
+            "jobs": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "prediction_sources": {
+              "type": "object",
+              "propertyNames": {
+                "enum": [
+                  "profile",
+                  "live-file-median",
+                  "history-file-median",
+                  "history-lane-median",
+                  "operator",
+                  "none"
+                ]
+              },
+              "additionalProperties": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "error": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "required": [
+                "rss_ratio",
+                "wall_ratio",
+                "class_confusion",
+                "admission_overshoots"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "rss_ratio": {
+                  "$ref": "#/$defs/schedule_quantiles"
+                },
+                "wall_ratio": {
+                  "$ref": "#/$defs/schedule_quantiles"
+                },
+                "class_confusion": {
+                  "type": "object",
+                  "required": [
+                    "high",
+                    "normal",
+                    "low"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "high": {
+                      "$ref": "#/$defs/schedule_class_counts"
+                    },
+                    "normal": {
+                      "$ref": "#/$defs/schedule_class_counts"
+                    },
+                    "low": {
+                      "$ref": "#/$defs/schedule_class_counts"
+                    }
+                  }
+                },
+                "admission_overshoots": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            }
+          }
         }
       },
       "additionalProperties": false,
@@ -2548,7 +2897,10 @@
               "cold_witness_kills",
               "r2_command",
               "equivalence_ledger",
-              "attribution"
+              "attribution",
+              "worker_counts",
+              "profile",
+              "schedule"
             ],
             "allOf": [
               {
@@ -2601,6 +2953,27 @@
                 "not": {
                   "required": [
                     "jobs"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "required": [
+                    "worker_counts"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "required": [
+                    "profile"
+                  ]
+                }
+              },
+              {
+                "not": {
+                  "required": [
+                    "schedule"
                   ]
                 }
               },
