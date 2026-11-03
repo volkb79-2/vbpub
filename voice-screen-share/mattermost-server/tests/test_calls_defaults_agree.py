@@ -54,8 +54,10 @@ def test_defaults_agree_with_tls_edge() -> None:
     # The Mattermost label target port is the edge's UDP internal listener number
     # (TCP gets its own internal entrypoint port; the L4 service port is ours).
     assert calls["port"] == tls["calls"]["udp_internal_port"]
-    # Alt HTTPS must not take the Calls TCP port.
-    assert tls["ports"]["https_alt"] != calls["public_port"]
+    # The alternate HTTPS port was removed from the edge; Calls TCP/UDP 8443 agree.
+    assert "https_alt" not in tls["ports"]
+    assert tls["calls"]["tcp_internal_port"] == calls["public_port"] == 8443
+    assert tls["calls"]["udp_internal_port"] == calls["port"] == 8443
 
 
 def test_label_entrypoints_exist_in_tls_edge_traefik_template() -> None:

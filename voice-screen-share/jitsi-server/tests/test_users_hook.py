@@ -107,3 +107,13 @@ def test_validate_config_flags_bad_users(world):
     problems = hook.validate_config(cfg, ctx)
     assert any("invalid username" in p for p in problems)
     assert any("not declared" in p for p in problems)
+
+
+def test_dummy_users_skipped_by_default_and_registered_when_enabled(world):
+    hook, cfg, ctx, calls, _ = world
+    cfg["jitsi"]["users"][1]["dummy"] = True
+    hook.run(cfg, ctx)
+    assert len(calls) == 1 and calls[0]["argv"][-2] == "admin"
+    cfg["jitsi"]["auth"]["dummy_users"] = True
+    hook.run(cfg, ctx)
+    assert len(calls) == 3

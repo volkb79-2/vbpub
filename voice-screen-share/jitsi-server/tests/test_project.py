@@ -218,3 +218,14 @@ def test_images_pinned_by_digest_and_at_least_14_days_old() -> None:
         assert age >= cfg["images"]["min_age_days"], svc
     # all four from the same release
     assert len({cfg[s]["image_tag"].split("@")[0] for s in ("web", "prosody", "jicofo", "jvb")}) == 1
+
+
+def test_dummy_users_are_opt_in_and_hostdirs_are_not_group_writable() -> None:
+    cfg = _cfg()
+    assert cfg["auth"]["dummy_users"] is False
+    assert [u["name"] for u in cfg["users"] if not u.get("dummy")] == ["admin"]
+    for svc in ("web", "prosody", "jicofo", "jvb"):
+        mode = int(cfg[svc]["hostdir"]["config"]["mode"], 8)
+        assert mode & 0o022 == 0, svc
+        if svc != "web":
+            assert mode & 0o007 == 0, svc

@@ -93,10 +93,17 @@ enabled = true
 type = "internal"
 guests = false
 xmpp_domain = "meet.jitsi"
+# Register the `dummy = true` test accounts too (default false, see users below).
+dummy_users = false
 
 # ── Users (registered by hooks/post_compose_users.py on every `ciu up`) ─────
 # Each `secret` is a GEN_LOCAL file under .ciu/secrets/jitsi/ (mode 0600,
 # gitignored). To rotate one: delete the file, `ciu up` (USERS.md).
+# Entries marked `dummy = true` are test accounts: they are registered ONLY when
+# `jitsi.auth.dummy_users` is true (default false: a production host gets the admin
+# account only). Their secret files may still be generated, but nothing
+# registers them, so they grant no access.
+# (the key sits in [jitsi.auth], above)
 [[jitsi.users]]
 name = "admin"
 secret = "user_admin"
@@ -104,14 +111,17 @@ secret = "user_admin"
 [[jitsi.users]]
 name = "dummy1"
 secret = "user_dummy1"
+dummy = true
 
 [[jitsi.users]]
 name = "dummy2"
 secret = "user_dummy2"
+dummy = true
 
 [[jitsi.users]]
 name = "dummy3"
 secret = "user_dummy3"
+dummy = true
 
 # ── Secrets (S4) ─────────────────────────────────────────────────────────────
 # The Jitsi images take these three ONLY from env (no *_FILE form), so they use
@@ -137,17 +147,22 @@ post_compose = ["hooks/post_compose_users.py"]
 # 999:1000, jvb 998:1000; web leaves it alone). A later `ciu up` then fails
 # S6.3 ("existing hostdir has incompatible ownership") unless the declaration
 # states those values, so they are declared. They are image-defined uids.
+# Modes: prosody/jicofo/jvb 0750 (owner = the service uid declared here, so the
+# service keeps rwx; group r-x; no world access: these dirs hold account
+# records and rendered component/auth secrets). web 0755: its /config holds
+# only nginx/Meet frontend config (no secrets) and nginx workers run as a
+# different user than the directory owner, so world r-x is kept (USERS.md).
 [jitsi.web.hostdir]
-config = { path = "", mode = "0775" }
+config = { path = "", mode = "0755" }
 
 [jitsi.prosody.hostdir]
-config = { path = "", uid = 100, mode = "0775" }
+config = { path = "", uid = 100, mode = "0750" }
 
 [jitsi.jicofo.hostdir]
-config = { path = "", uid = 999, gid = 1000, mode = "0775" }
+config = { path = "", uid = 999, gid = 1000, mode = "0750" }
 
 [jitsi.jvb.hostdir]
-config = { path = "", uid = 998, gid = 1000, mode = "0775" }
+config = { path = "", uid = 998, gid = 1000, mode = "0750" }
 
 [jitsi.health]
 interval = "20s"

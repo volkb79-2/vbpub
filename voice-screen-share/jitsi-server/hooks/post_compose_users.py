@@ -120,7 +120,8 @@ def validate_config(config: dict, ctx) -> list:
 
 def run(config: dict, ctx) -> dict:
     root = _root(config)
-    users = root.get("users", [])
+    include_dummies = bool(root.get("auth", {}).get("dummy_users", False))
+    users = [u for u in root.get("users", []) if include_dummies or not u.get("dummy", False)]
     if not root.get("auth", {}).get("enabled", True):
         print("[JITSI-USERS] auth disabled, nothing to register", flush=True)
         return {}
