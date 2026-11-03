@@ -584,11 +584,21 @@ def _select_key(app, key):
 
 
 async def _wait_for(pilot, predicate, *, count=100):
+    # A view may not be mounted yet when polled (NoMatches under load); that
+    # means "not ready", not failure, so keep waiting within the bound.
+    from textual.css.query import NoMatches
+
+    def ready():
+        try:
+            return predicate()
+        except NoMatches:
+            return False
+
     for _ in range(count):
         await pilot.pause(0.05)
-        if predicate():
+        if ready():
             return
-    assert predicate(), "condition did not become true before the bounded UI wait ended"
+    assert ready(), "condition did not become true before the bounded UI wait ended"
 
 
 def test_system_update_tui_uses_reviewed_plan_and_shows_job_progress():
