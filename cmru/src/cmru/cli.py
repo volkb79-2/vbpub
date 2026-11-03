@@ -2750,14 +2750,7 @@ def _native_release_logging_scope() -> Iterator[None]:
                 os.dup2(current.saved_stderr, 2)
                 os.close(current.saved_stdout)
                 os.close(current.saved_stderr)
-            if flush_error is not None:
-                if active_exception is None:
-                    try:
-                        current.process.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        current.process.kill()
-                        current.process.wait()
-                    raise flush_error
+            if flush_error is not None and active_exception is not None:
                 active_exception.add_note(f"release log flush failed: {flush_error!r}")
             try:
                 current.process.wait(timeout=5)
@@ -2770,6 +2763,8 @@ def _native_release_logging_scope() -> Iterator[None]:
                 if active_exception is None:
                     raise error from exc
                 active_exception.add_note(f"{error}; cleanup timeout: {exc}")
+            if flush_error is not None and active_exception is None:
+                raise flush_error
 
 
 def _release_logging_scoped(function):

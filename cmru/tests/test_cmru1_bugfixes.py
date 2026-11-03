@@ -4,7 +4,6 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-import textwrap
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -118,6 +117,16 @@ def test_ki102_the_tip_is_restored_when_the_dry_run_exits_early(candidate):
     assert _git(candidate, "rev-parse", "HEAD") == before
 
 
+def test_ki102_a_resumed_dry_run_that_commits_nothing_changes_nothing(candidate):
+    before = _git(candidate, "rev-parse", "HEAD")
+    vargs = SimpleNamespace(dry_run=True, resume="/some/candidate")
+
+    with cli._resumed_dry_run_leaves_candidate_tip_unchanged(vargs, candidate):
+        pass
+
+    assert _git(candidate, "rev-parse", "HEAD") == before
+
+
 @pytest.mark.parametrize("dry_run, resume", [(True, None), (False, "/some/candidate"), (False, None)])
 def test_ki102_other_modes_keep_their_commits(candidate, dry_run, resume):
     before = _git(candidate, "rev-parse", "HEAD")
@@ -131,66 +140,46 @@ def test_ki102_other_modes_keep_their_commits(candidate, dry_run, resume):
 
 # --- tee flush: a broken pipe on flush must not skip the descriptor restore --------------
 
-_BROKEN_PIPE_SCRIPT = textwrap.dedent(
-    """
-    import os, sys
-    from cmru import cli
+class _BrokenStream:
+    def flush(self):
+        raise BrokenPipeError("closed pipe")
 
-    original = os.fstat(1)
-    log = sys.argv[1]
-    os.environ["CMRU_RELEASE_LOG"] = log
-    os.environ.pop("CMRU_NATIVE_RELEASE_LOGGING", None)
 
-    class Broken:
-        def flush(self):
-            raise BrokenPipeError("closed pipe")
+def _open_tee_scope(monkeypatch, tmp_path):
+    monkeypatch.setenv("CMRU_RELEASE_LOG", str(tmp_path / "release.log"))
+    monkeypatch.delenv("CMRU_NATIVE_RELEASE_LOGGING", raising=False)
+    return os.fstat(1)
 
-    outcome = "none"
-    try:
+
+def test_tee_flush_broken_pipe_still_restores_descriptors_and_keeps_the_inflight_exception(
+    monkeypatch, tmp_path,
+):
+    original = _open_tee_scope(monkeypatch, tmp_path)
+
+    with pytest.raises(RuntimeError, match="in-flight") as excinfo:
         with cli._native_release_logging_scope():
-            cli._configure_native_release_logging(__import__("pathlib").Path(log).parent, append=False)
-            real_stdout, real_stderr = sys.stdout, sys.stderr
-            sys.stdout = Broken()
-            sys.stderr = real_stderr
-            try:
-                raise RuntimeError("in-flight")
-            finally:
-                pass
-    except BaseException as exc:
-        outcome = type(exc).__name__ + ":" + ";".join(getattr(exc, "__notes__", []))
-    finally:
-        sys.stdout = real_stdout
-    restored = os.fstat(1).st_ino == original.st_ino
-    print("OUTCOME", outcome, "RESTORED", restored, "ACTIVE", cli._ACTIVE_NATIVE_RELEASE_LOGGING)
-    """
-)
+            cli._configure_native_release_logging(tmp_path, append=False)
+            tee = cli._ACTIVE_NATIVE_RELEASE_LOGGING.process
+            monkeypatch.setattr(sys, "stdout", _BrokenStream())
+            raise RuntimeError("in-flight")
+
+    assert any("BrokenPipeError" in note for note in excinfo.value.__notes__)
+    assert os.fstat(1).st_ino == original.st_ino
+    assert cli._ACTIVE_NATIVE_RELEASE_LOGGING is None
+    assert tee.wait(timeout=5) == 0
 
 
-def test_tee_flush_broken_pipe_still_restores_descriptors_and_keeps_the_inflight_exception(tmp_path):
-    result = subprocess.run(
-        [sys.executable, "-c", _BROKEN_PIPE_SCRIPT, str(tmp_path / "release.log")],
-        capture_output=True, text=True, check=False, timeout=60,
-        env={**os.environ, "PYTHONPATH": os.pathsep.join(
-            [str(Path(cli.__file__).resolve().parent.parent), os.environ.get("PYTHONPATH", "")])},
-    )
+def test_tee_flush_broken_pipe_without_an_inflight_exception_is_raised_after_the_restore(
+    monkeypatch, tmp_path,
+):
+    original = _open_tee_scope(monkeypatch, tmp_path)
 
-    line = next(row for row in result.stdout.splitlines() if row.startswith("OUTCOME"))
-    assert "OUTCOME RuntimeError:" in line  # the in-flight exception is not masked
-    assert "BrokenPipeError" in line  # the flush failure is recorded as a note
-    assert "RESTORED True" in line
-    assert "ACTIVE None" in line
+    with pytest.raises(BrokenPipeError):
+        with cli._native_release_logging_scope():
+            cli._configure_native_release_logging(tmp_path, append=False)
+            tee = cli._ACTIVE_NATIVE_RELEASE_LOGGING.process
+            monkeypatch.setattr(sys, "stdout", _BrokenStream())
 
-
-def test_tee_flush_broken_pipe_without_an_inflight_exception_is_raised_after_the_restore(tmp_path):
-    script = _BROKEN_PIPE_SCRIPT.replace('raise RuntimeError("in-flight")', "pass")
-
-    result = subprocess.run(
-        [sys.executable, "-c", script, str(tmp_path / "release.log")],
-        capture_output=True, text=True, check=False, timeout=60,
-        env={**os.environ, "PYTHONPATH": os.pathsep.join(
-            [str(Path(cli.__file__).resolve().parent.parent), os.environ.get("PYTHONPATH", "")])},
-    )
-
-    line = next(row for row in result.stdout.splitlines() if row.startswith("OUTCOME"))
-    assert "OUTCOME BrokenPipeError:" in line
-    assert "RESTORED True" in line
+    assert os.fstat(1).st_ino == original.st_ino
+    assert cli._ACTIVE_NATIVE_RELEASE_LOGGING is None
+    assert tee.wait(timeout=5) == 0

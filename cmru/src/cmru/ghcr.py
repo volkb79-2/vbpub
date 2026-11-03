@@ -300,10 +300,13 @@ class GitHubPackages:
             return current or expected_visibility
         new_visibility = str(updated.get("visibility") or "").strip()
         if new_visibility and new_visibility != expected_visibility:
-            self._fail(
-                f"GHCR package {package_name} visibility sync returned {new_visibility!r} "
-                f"instead of {expected_visibility!r}",
-                0,
-                json.dumps(updated),
+            # A server that CONFIRMS the wrong visibility is not an unreachable
+            # API: stay a hard failure in every mode (KI-103 degrades lookups only).
+            print(
+                f"[ERROR] GHCR package {package_name} visibility sync returned "
+                f"{new_visibility!r} instead of {expected_visibility!r}\n"
+                f"[ERROR] HTTP 0: {json.dumps(updated)}",
+                file=sys.stderr,
             )
+            raise SystemExit(1)
         return expected_visibility
