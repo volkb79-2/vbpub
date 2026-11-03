@@ -28,7 +28,18 @@ ROOT = Path(__file__).resolve().parents[1]
 TAG = "tls-edge-v9.9.9"
 TAG2 = "tls-edge-v9.9.10"
 
-pytest.importorskip("cmru.manifest", reason="cmru (manifest writer) is not importable")
+try:
+    import cmru.manifest  # noqa: F401  (the real manifest writer builds the fixture bundles)
+except ImportError as exc:
+    # This is the only end-to-end test of the installer: a missing cmru must be a failure,
+    # not a green skip. The single, explicit opt-out is TLS_EDGE_ALLOW_INSTALLER_SKIP=1.
+    if os.environ.get("TLS_EDGE_ALLOW_INSTALLER_SKIP") == "1":
+        pytest.skip(f"cmru is not importable (explicit opt-out): {exc}", allow_module_level=True)
+    pytest.fail(
+        f"cmru.manifest is not importable ({exc}); the installer test cannot run. Install cmru "
+        "(tester-unified ships it) or set TLS_EDGE_ALLOW_INSTALLER_SKIP=1 to skip deliberately.",
+        pytrace=False,
+    )
 
 
 def _load(name: str, path: Path):
@@ -236,3 +247,69 @@ def test_adapter_seed_modes():
         ADAPTER.seed_text({"domain": "example.test", "tls_mode": "bogus"})
     with pytest.raises(ValueError):
         ADAPTER.seed_text({"domain": "example.test", "acme_email": 'a"b@example.test'})
+
+
+def _repack(served: Path, tag: str, mutate) -> None:
+    """Re-pack a served bundle after `mutate(stage_dir)`, with a CONSISTENT sha256 sidecar,
+    so only the manifest/member checks (not the sidecar check) can catch the tamper."""
+    import shutil
+    asset = served / f"{tag}-py313.tar.xz"
+    work = served / "repack"
+    work.mkdir()
+    with tarfile.open(asset) as archive:
+        archive.extractall(work, filter="data")
+    mutate(work / tag)
+    asset.unlink()
+    with tarfile.open(asset, "w:xz") as archive:
+        archive.add(work / tag, arcname=tag)
+    shutil.rmtree(work)
+    digest = hashlib.sha256(asset.read_bytes()).hexdigest()
+    (served / f"{asset.name}.sha256").write_text(f"{digest}  {asset.name}\n", encoding="utf-8")
+
+
+def test_bad_sidecar_sha256_is_refused(env, tmp_path):
+    ns, root, answers = env
+    sidecar = tmp_path / "served" / f"{TAG}-py313.tar.xz.sha256"
+    sidecar.write_text(f"{'0' * 64}  {TAG}-py313.tar.xz\n", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        run(ns, "do_install", answers, version=TAG)
+    assert not (root / "stack").exists()
+
+
+def test_file_modified_after_manifest_is_refused(env, tmp_path):
+    ns, root, answers = env
+    _repack(tmp_path / "served", TAG,
+            lambda stage: (stage / "marker.txt").write_text("tampered", encoding="utf-8"))
+    with pytest.raises(SystemExit):
+        run(ns, "do_install", answers, version=TAG)
+    assert not (root / "stack").exists()
+
+
+def test_unlisted_extra_file_is_refused(env, tmp_path):
+    ns, root, answers = env
+    _repack(tmp_path / "served", TAG,
+            lambda stage: (stage / "evil.sh").write_text("#!/bin/sh\n", encoding="utf-8"))
+    with pytest.raises(SystemExit):
+        run(ns, "do_install", answers, version=TAG)
+    assert not (root / "stack").exists()
+
+
+def test_wheel_replaced_after_manifest_is_refused(env, tmp_path):
+    ns, root, answers = env
+    _repack(tmp_path / "served", TAG,
+            lambda stage: make_wheel(stage / "wheels", "jinja2", "1.0.0").write_bytes(b"not a wheel"))
+    with pytest.raises(SystemExit):
+        run(ns, "do_install", answers, version=TAG)
+    assert not (root / "stack").exists()
+
+
+def test_locally_modified_synced_file_blocks_update_until_overwrite_local(env):
+    ns, root, answers = env
+    stack = root / "stack"
+    run(ns, "do_install", answers, version=TAG)
+    (stack / "marker.txt").write_text("operator change", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        run(ns, "do_update", None, version=TAG2)
+    assert (stack / "marker.txt").read_text() == "operator change"
+    run(ns, "do_update", None, version=TAG2, overwrite_local=True)
+    assert (stack / "marker.txt").read_text() == "two"
