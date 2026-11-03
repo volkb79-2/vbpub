@@ -38,6 +38,14 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - fix(cmru): the fixture-closure test scans every repository-root path spelling with an AST walk, per function and per declared guard, and checks tracked-ness (KI-88)
 - fix(cmru): `cmru dependencies` checks first-party requirements of nested wheel `pyproject.toml` files declared in `project.wheel_pyprojects` (KI-83)
 - test(cmru): end-to-end merge-promote cases for several projects in one transaction and a project nested two levels deep (KI-57)
+<!-- cmru: pending release notes begin -->
+- fix(cmru): a `BrokenPipeError` (or closed stream) while flushing stdout/stderr at the end of the release log tee scope no longer skips the descriptor restore or masks the in-flight exception; the flush failure is attached as a note, or raised after the restore when nothing else is in flight (KI-115).
+- fix(cmru): the durable candidate backup branch on origin is re-pushed after every merge-promote retry, so a failed or interrupted promotion leaves the merged tip inspectable (KI-55).
+- fix(cmru): config validation refuses `project.release.build_step = "push"`, because the publishing step cannot sit inside the release-tag rollback window (KI-56).
+- fix(cmru): a `--dry-run --resume` restores the retained candidate tip after previewing, instead of leaving the prepared external-version inputs committed (KI-102).
+- fix(cmru): a failed repository-visibility lookup, an unsupported owner type, or a 5xx package lookup after the image push is now a warning with the one-time UI remediation, not a release failure (KI-103).
+- fix(cmru): the bound launcher appends a source root that carries a stale `*.egg-info`, so the installed distribution metadata wins the identity check (KI-67).
+<!-- cmru: pending release notes end -->
 
 <!-- cmru: release history -->
 

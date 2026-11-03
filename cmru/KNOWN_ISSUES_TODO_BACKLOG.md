@@ -1656,7 +1656,9 @@ complete KI-51.
 
 **Oracle:** the test passes; a controlled wrong implementation that lets the `RuntimeError` escape fails it; the `coverage` lane on main is green.
 
-### KI-55 — The durable candidate backup branch is not re-pushed after a merge-promote (REL-04 follow-up) — *open, severity: minor*
+### KI-55 — The durable candidate backup branch is not re-pushed after a merge-promote (REL-04 follow-up) — *FIXED 2026-11-04 (3e8b4712f), severity: minor*
+
+**FIXED 2026-11-04 (3e8b4712f):** `promote_workspace` calls `push_backup_branch` after each successful merge, before the retry push. Test: `tests/test_release_end_to_end_real_git.py::test_ki55_backup_branch_follows_the_candidate_through_merge_retries` (fails on the old code: the origin branch lacks the merge).
 
 **Observed:** `transaction.promote_workspace` now merges `origin/main` into the candidate when main advanced (`_merge_origin_main_into_candidate`), then pushes `HEAD` to `main`. The origin backup branch `cmru-release-...` (refreshed by `push_backup_branch` before the gate and after each tag commit) still points at the pre-merge tip until the transaction is cleaned up. If promotion then stops (a later retry fails, or the process dies between merge and push), the durable copy on origin lacks the merge commit that exists only in the local retained worktree.
 
@@ -1664,7 +1666,9 @@ complete KI-51.
 
 **Oracle:** an end-to-end case where main advances twice and the second promotion attempt fails: the origin candidate branch equals the local worktree tip. Fails on the current code.
 
-### KI-56 — Nothing prevents a publishing step inside the REL-05 tag-rollback window (`build_step = "push"`) — *open, severity: minor*
+### KI-56 — Nothing prevents a publishing step inside the REL-05 tag-rollback window (`build_step = "push"`) — *FIXED 2026-11-04 (3e8b4712f), severity: minor*
+
+**FIXED 2026-11-04 (3e8b4712f):** `config.py` refuses `project.release.build_step = "push"` at load (exit 2, message names the tag-rollback guarantee). Only the `push` step name is refused: it is the one publishing phase cmru defines. Test: `tests/test_cli_config_100_adversarial.py::test_project_document_rejects_invalid_contracts` (new `push` case).
 
 **Observed:** the REL-05 rollback treats the `build_step` phase as non-publishing and deletes the freshly pushed tag when it fails. A project that sets `build_step = "push"` (or whose build step publishes) would have already published when the rollback runs, so the rollback could delete a tag whose artifacts are public. Config validation accepts it today.
 
@@ -1760,7 +1764,9 @@ per-project promotion order and checkpointing of a multi-project transaction thr
 
 **Oracle:** `tests/test_packaging_cli_extended.py::test_wheel_build_cleanup_keeps_a_preexisting_build_dir_and_removes_its_own_egg_info` and `::test_wheel_build_cleanup_removes_the_build_dir_and_egg_info_it_created` (both parametrised over a raising and a succeeding build via a monkeypatched `_run`). Planted mutation (cleanup ignoring `preexisting`) fails the first.
 
-### KI-67 — bound launcher puts `cmru/src` first on `sys.path`, so a stale `cmru/src/cmru.egg-info` shadows the installed metadata and the refusal hides the cause — *partially fixed 2026-10-07 (`cmru-post6`): message only; the sys.path change is open, severity: minor*
+### KI-67 — bound launcher puts `cmru/src` first on `sys.path`, so a stale `cmru/src/cmru.egg-info` shadows the installed metadata and the refusal hides the cause — *FIXED 2026-11-04 (3e8b4712f) for the launcher sys.path ordering (message part fixed 2026-10-07 `cmru-post6`); the out-of-tree `wheel-build` / lane-ignores-egg-info ask of the second instance remains open, severity: minor*
+
+**FIXED 2026-11-04 (3e8b4712f):** `_bound_launcher_program` appends an import root that carries a `*.egg-info` instead of prepending it, so installed metadata wins the identity lookup (a genuinely different copy is still refused). Tests: `tests/test_cmru1_bugfixes.py::test_ki67_*` (planted prepend control resolves the stale metadata). Still open: the second-instance ask (`wheel-build` building out of tree or cleaning its own `build/` and `*.egg-info`; lanes ignoring package metadata in the judged tree).
 
 **Observed:** `_create_bound_cmru_launcher` (`src/cmru/cli.py`) prepends the source root to `sys.path`. A stale, git-ignored `cmru/src/cmru.egg-info` (a September dev build reporting 5.3.2.dev36) then shadowed the installed 6.0.0 metadata, and the identity check refused every project command ("expected 'cmru 6.0.0', got 'cmru 5.3.2.dev36...'"). Failing closed is right, but nothing in the message pointed at the cause.
 
@@ -2571,7 +2577,7 @@ README.md ("cleanup"), docs/RELEASE-TRANSACTIONS.md ("Failure and retained candi
 
 ### KI-102 - a `--dry-run --resume` commits prepared external-version inputs into the retained candidate it then calls "retained unchanged"
 
-**Status:** OPEN; severity: minor. Filed 2026-10-27 from reading `_release_child` / `_prepare_dry_run_external_versions`.
+**Status:** FIXED 2026-11-04 (3e8b4712f): the production call of `_release_child` runs inside `_resumed_dry_run_leaves_candidate_tip_unchanged`, which restores the candidate tip (`git reset --hard` to the pre-run HEAD, on every exit path) after a `--dry-run --resume`; tests `tests/test_cmru1_bugfixes.py::test_ki102_*`. Filed 2026-10-27 from reading `_release_child` / `_prepare_dry_run_external_versions`; severity: minor.
 A dry run of a project with an `external:` version strategy runs its `prepare` step and `_commit_prepared_generated` in the transaction
 worktree. For a new candidate that worktree is disposable (and since KI-91 it is discarded on failure too), but with `--resume` it is the
 retained candidate, whose tip then moves; the launcher afterwards prints `[DRY RUN] Existing release candidate ... was retained unchanged`.
@@ -2581,7 +2587,7 @@ A later real `--resume` replays that commit (the prepare output is deterministic
 
 ### KI-103 - the rest of the post-push GHCR visibility sync still hard-fails the release
 
-**Status:** OPEN; severity: minor, follow-up of KI-97. `GitHubPackages.repo_visibility()` (`_fail` on any HTTP >= 400, or a missing field)
+**Status:** FIXED 2026-11-04 (3e8b4712f): in `missing="warn"` mode (the default) every API failure inside `mirror_package_visibility` (repository lookup, unsupported `owner_type`, 5xx package lookup, mismatching sync response) is caught as the new `GhcrApiError` and degraded to the KI-97 `[WARN]` plus UI remediation, returning `None`; `missing="fail"` and the direct accessors keep the hard failure. Tests: `tests/test_ghcr.py` (5xx, repo lookup, owner type). Original text: severity: minor, follow-up of KI-97. `GitHubPackages.repo_visibility()` (`_fail` on any HTTP >= 400, or a missing field)
 and `_package_url` (unsupported `owner_type`) exit 1 from the same post-push position KI-97 fixed, and `mirror_package_visibility` still
 fails on a 5xx lookup. Degrade `repo_visibility` failures to the same warning (the push succeeded; visibility can be set once in the UI),
 or move the repository lookup BEFORE the push so a credential/config problem stops the step while nothing has happened.
@@ -2739,3 +2745,11 @@ variant file against the retained build-output record exactly as the single-asse
 - **Non-mdt path.** Pure fakes, no devcontainer.
 
 **Dependencies and order.** After RG-151 and TB-13; parallel with assay B211. Then run-gate RG-153.
+
+## KI-115 - the release log tee scope's unguarded `sys.stdout.flush()` could skip the descriptor restore and mask the in-flight exception
+
+**Status:** FIXED 2026-11-04 (3e8b4712f); severity: minor. (The bug-fix program called this "KI-112"; that id is the installer-features entry, so it is filed as KI-115.)
+`_native_release_logging_scope` flushed `sys.stdout`/`sys.stderr` before `os.dup2` restored fd 1/2. A `BrokenPipeError` from the flush skipped the
+restore (leaving the tee attached) and replaced the exception already in flight. The flush is now guarded: both descriptors are always restored,
+the flush failure is attached as a note to the in-flight exception, or raised after the restore when nothing else is in flight.
+Tests: `tests/test_cmru1_bugfixes.py::test_tee_flush_broken_pipe_*` (subprocess with a stdout whose flush raises `BrokenPipeError`).

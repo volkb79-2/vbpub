@@ -119,14 +119,56 @@ class TestGitHubPackages(unittest.TestCase):
                     "image", expected_visibility="public", retries=1, delay=0, missing="fail",
                 )
 
-    def test_other_lookup_errors_still_fail(self) -> None:
+    def test_package_lookup_5xx_warns_by_default_and_fails_when_demanded(self) -> None:
         gh = _pkg()
+        err = io.StringIO()
+        with (
+            patch.object(gh, "_request", return_value=(500, "boom")),
+            patch("cmru.ghcr.sys.stderr", err),
+        ):
+            self.assertIsNone(
+                gh.mirror_package_visibility("image", expected_visibility="public", retries=1)
+            )
+        self.assertIn("[WARN] Could not sync GHCR visibility for image", err.getvalue())
+        self.assertIn("HTTP 500", err.getvalue())
+        self.assertNotIn("[ERROR]", err.getvalue())
         with (
             patch.object(gh, "_request", return_value=(500, "boom")),
             patch("cmru.ghcr.sys.stderr", io.StringIO()),
         ):
             with self.assertRaises(SystemExit):
+                gh.mirror_package_visibility(
+                    "image", expected_visibility="public", retries=1, missing="fail",
+                )
+
+    def test_repo_visibility_lookup_failure_warns_instead_of_failing_the_release(self) -> None:
+        gh = _pkg()
+        err = io.StringIO()
+        with (
+            patch.object(gh, "_request", return_value=(404, "not found")),
+            patch("cmru.ghcr.sys.stderr", err),
+        ):
+            self.assertIsNone(gh.mirror_package_visibility("image", retries=1, delay=0))
+        self.assertIn("[WARN] Could not sync GHCR visibility for image", err.getvalue())
+        self.assertIn("fetch repository visibility", err.getvalue())
+        self.assertFalse(gh._soft)
+        # The direct accessor keeps its hard failure.
+        with (
+            patch.object(gh, "_request", return_value=(404, "not found")),
+            patch("cmru.ghcr.sys.stderr", io.StringIO()),
+        ):
+            with self.assertRaises(SystemExit):
+                gh.repo_visibility()
+
+    def test_unsupported_owner_type_warns_instead_of_failing_the_release(self) -> None:
+        gh = _pkg(owner_type="enterprise")
+        err = io.StringIO()
+        with patch("cmru.ghcr.sys.stderr", err):
+            self.assertIsNone(
                 gh.mirror_package_visibility("image", expected_visibility="public", retries=1)
+            )
+        self.assertIn("unsupported owner_type", err.getvalue())
+        self.assertIn("[WARN]", err.getvalue())
 
 
 if __name__ == "__main__":
