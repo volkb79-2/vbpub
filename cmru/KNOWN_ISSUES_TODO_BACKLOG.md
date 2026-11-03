@@ -2646,3 +2646,59 @@ published Run-Gate release sidecar and wheel from GitHub to compare digests, so 
 `SKIPPED`, a GitHub outage is a `FAIL` with a restore-access remedy), and compares the bootstrap guide with the latest stable Run-Gate
 changelog version. The bootstrap check shares its parser with the zero-release sequence test. Any failed check prints a remedy and exits 4
 without creating a workspace; widening the waiver window remains an operator decision, not part of this fix.
+
+<!-- Id note (2026-11-04): KI-112 exists on branch finish-cmru-1-20261104 (not on main). The ids below start at KI-113. -->
+
+## KI-113 — build handler option `build_contexts`: named OCI-layout or digest-pinned image contexts for local bases
+
+**Status:** OPEN. Filed 2026-11-04. Fix-level change, can ride a patch release.
+
+**Problem.** `cmru/build-initial-standalone.sh:312,320` builds tester-base and wheel-builder through the docker driver, bypassing the governed
+`mdt-managed` builder, because a remote builder cannot see dockerd's image store and a local base is a mutable tag (mdt-cockpit MDT-056,
+tester-base TB-11/TB-14).
+
+**Decision record (operator, 2026-11-04).** `mdt-managed` is the only builder; local bases are passed as OCI-layout build contexts pinned by
+digest. The bypass stays only for the fresh-host bootstrap, written as `--builder default`, never selected by an environment variable.
+
+**Design.** An optional `build_contexts` table in a build step of `cmru.toml`/orchestration: `name = "oci-layout://<repo-relative-dir>@sha256:<digest>"`
+or `"docker-image://<registry>@sha256:<digest>"`. Nothing else is accepted (no tags, no absolute paths, no `..`; the digest is mandatory). The
+build handler emits `--build-context <name>=<value>` after resolving the layout directory relative to the project root and verifying that its
+index digest equals the pinned one before the build starts. The digest enters the build identity recorded for the step. The bootstrap script keeps its
+documented bypass, spelled `--builder default`.
+
+**Acceptance criteria.**
+
+- Handler tests: accepted forms produce the exact flags; a tag, an absolute path, `..` or a missing digest is refused with a message naming the
+  field; a layout whose digest differs is refused before any build.
+- The release dry-run shows the contexts in the plan; the recorded identity includes the digests.
+- **Non-mdt path (operator criterion, 2026-11-04).** The option works with any buildx builder accepting named contexts and with no mdt tooling;
+  a test checks the argument construction without `mdt-managed`.
+
+**Test plan.** Unit tests of the handler; a dry-run test; one live build on the tester chain through MDT-056's pilot.
+
+**Dependencies and order.** Package 4 of MDT-056 (after tester-chain pilot TB-14, wheel-builder and srdm).
+
+## KI-114 — tester-gate launches the lane as the checkout owner with a generated passwd/group overlay (lane-uid phase 3)
+
+**Status:** OPEN. Filed 2026-11-04.
+
+**Problem.** `tester_gate.py` relies on the uid baked into tester-unified (uid 1003; `tester_gate.py:855-859` and the launch verification), so
+a cmru tester gate on a host whose checkout owner is another uid hits the RG-150 failure class (git "dubious ownership", `.run-gate/`
+permission denied, cowtree owner check).
+
+**Decision record (operator, 2026-11-04, binding).** Lanes run as the checkout owner with a generated read-only passwd/group overlay, a per-lane HOME and
+a read-only tester venv; the baked uid 1003 rule retires. This is phase 3; phase 1 is run-gate RG-151, phase 2 tester-base TB-13.
+
+**Design.** `tester-gate` resolves uid:gid by `stat` of the worktree root, refuses uid 0, writes the same overlay as run-gate RG-151 (the
+contract is documented once in `tester-unified/docs/CONSUMERS.md`; cmru carries its own small helper, not an import of run-gate internals),
+passes `--user` and a per-lane HOME/XDG, and keeps its other launch guards (cgroup parent, digest-pinned image). Docker lanes derive the socket gid
+by `stat` of the mounted socket.
+
+**Acceptance criteria.**
+
+- Helper and command-construction tests with a fake `stat`; the launch-verification no longer expects 1003 but the resolved owner.
+- Live on a scratch host with a non-1003 owner: the cmru release gate's tester-gate steps pass.
+- **Non-mdt path.** On a plain host or non-mdt devcontainer the uid is the user's own, the docker gid comes from the mounted socket, and no mdt group
+  or path is required (test with fakes).
+
+**Dependencies and order.** After RG-151 and TB-13; parallel with assay B211. Then run-gate RG-153.
