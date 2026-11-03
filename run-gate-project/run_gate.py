@@ -4382,11 +4382,25 @@ def print_footprint_line(lane_name: str, project_dir: Path,
     source_note = " [source: rusage-maxrss]" \
         if mem.get("source") == "rusage-maxrss" else ""
     floor_note = " (peak <= floor)" if mem.get("peak_at_floor") else ""
+    # RG-144: a stall is a contamination flag, never a capacity number next
+    # to peak/p90/cores. A flagged run says so (and that it is excluded from
+    # sizing); a run that hit its OWN limit says how often; only a run with
+    # neither keeps the plain host-stall context figure.
+    verdict = classify_summary(resources)
+    if verdict is not None and verdict["flagged"]:
+        stall_seg = (
+            f"measurement contaminated ({'; '.join(verdict['reasons'])}); "
+            "excluded from sizing")
+    else:
+        stall_seg = (f"{_fmt_stall_seconds(host.get('memory_full_stall_seconds'))}"
+                     " s stalled on memory (full)")
+    if verdict is not None and verdict["self_limited"]["flagged"]:
+        stall_seg += (" | memory limit reached "
+                      f"{verdict['self_limited']['memory_limit_events']} times")
     print(f"run-gate: footprint {lane_name}: peak {_fmt_mib(mem.get('peak_bytes'))}"
          f"{over_seg}, p90 {_fmt_mib(mem.get('p90_bytes'))}, "
          f"{_fmt_cores(cpu.get('cores_avg'))} cores avg, "
-         f"{_fmt_stall_seconds(host.get('memory_full_stall_seconds'))} "
-         f"s stalled on memory (full){hot_seg}; history median peak "
+         f"{stall_seg}{hot_seg}; history median peak "
          f"{_fmt_mib(hist_peak['median'])} ({hist_peak['count']} runs)"
          f"{manifest_seg}{source_note}{floor_note}", flush=True)
 
@@ -4973,14 +4987,20 @@ def history_store_path(project_dir: Path) -> Path:
     return history_dir(project_dir) / HISTORY_FILE_NAME
 
 
-def history_written_paths(project_dir: Path) -> list[Path]:
+def history_written_paths(project_dir: Path,
+                          lane: str | None = None) -> list[Path]:
     """EVERY path the recorder can leave in the tree — the store, the lock,
     and the temp file a crash between write and rename would strand. The
     ignore question has to be asked about all three, not just the one we
     think of first."""
     hdir = history_dir(project_dir)
-    return [hdir / HISTORY_FILE_NAME, hdir / HISTORY_LOCK_NAME,
-            hdir / f"{HISTORY_FILE_NAME}.tmp.{os.getpid()}"]
+    paths = [hdir / HISTORY_FILE_NAME, hdir / HISTORY_LOCK_NAME,
+             hdir / f"{HISTORY_FILE_NAME}.tmp.{os.getpid()}"]
+    if lane is not None:
+        sidecar = profile_sidecar_path(hdir, lane)
+        paths += [sidecar,
+                  sidecar.with_name(f"{sidecar.name}.tmp.{os.getpid()}")]
+    return paths
 
 
 def paths_are_git_ignored(worktree: Path, targets: list[Path]) -> bool | None:
@@ -5144,13 +5164,6 @@ def finish_run_record(record: dict, *, exit_code: int | None = None,
     record.pop("_verdict_path", None)
     record.pop("_progress_path", None)
     r2_progress_path = record.pop("_r2_progress_path", None)
-    if isinstance(r2_progress_path, str) and isinstance(
-            record.get("r2_jobs"), dict):
-        p95, samples = assay_progress_candidate_ram(
-            Path(r2_progress_path), commit=record.get("commit"))
-        if p95 is not None and samples:
-            record["r2_candidate_ram_p95_bytes"] = p95
-            record["r2_candidate_ram_samples"] = samples
     record.pop("_assay_identity_mode", None)
     record.setdefault("history_eligible", False)
     # RG-35 (RW-3): a re-attached or collected run is ONE run, and its
@@ -5230,7 +5243,552 @@ def finish_run_record(record: dict, *, exit_code: int | None = None,
         # exactly the direction that makes a "cheap, always run it" call
         # wrong. run-gate hands over both series; it does not pick one.
         record["history_eligible"] = True
+    attach_lane_profile(record, r2_progress_path)
     return record
+
+
+def head_tree(worktree: Path) -> str | None:
+    try:
+        proc = subprocess.run(["git", "-C", str(worktree), "rev-parse",
+                               "--verify", "HEAD^{tree}"],
+                              capture_output=True, text=True,
+                              env=host_git_environment())
+    except OSError:
+        return None
+    sha = proc.stdout.strip()
+    return sha if proc.returncode == 0 and re.fullmatch(
+        r"(?:[0-9a-f]{40}|[0-9a-f]{64})", sha) else None
+
+
+def attach_lane_profile(record: dict, r2_progress_path: object) -> None:
+    """RG-144/RG-145: classify the run, ingest candidate profiles, and stage
+    the `lane-profile/1` record (private `_lane_profile`, written to the
+    sidecar by `_record_invocation`). The history entry gains `contamination`
+    and `profile_summary`. R2 candidate RAM p95 comes from CLEAN subjects
+    only: a contaminated run records none, so it can never be a sizing
+    basis. Nothing is added when there is neither a Summary nor candidates."""
+    summary = record.get("resources")
+    summary = summary if isinstance(summary, dict) else None
+    subjects: list[dict] = []
+    exceeded: list[str] = []
+    is_r2 = isinstance(r2_progress_path, str) and isinstance(
+        record.get("r2_jobs"), dict)
+    if is_r2:
+        for event in assay_progress_candidate_events(
+                Path(r2_progress_path), record.get("commit")):
+            subject = profile_from_progress_event(
+                event, lane=record.get("lane"), commit=record.get("commit"))
+            subjects.append(subject)
+            if event.get("outcome_bucket") == "budget_exceeded":
+                exceeded.append(subject["subject"]["id"])
+    if summary is None and not subjects:
+        return
+    lane_profile = build_lane_profile(
+        lane=record.get("lane"), run_id=record.get("run_id"),
+        commit=record.get("commit"),
+        tree=head_tree(Path(record["worktree"]))
+        if record.get("worktree") else None,
+        kind="per_candidate" if is_r2 else "per_worker", subjects=subjects,
+        summary=summary, contamination=classify_summary(summary),
+        wall_seconds=record.get("duration_seconds"),
+        outcome=record.get("outcome"),
+        history_eligible=bool(record.get("history_eligible")),
+        started_at=record.get("started_at"), budget_exceeded_ids=exceeded)
+    record["_lane_profile"] = lane_profile
+    record["contamination"] = lane_profile["contamination"]
+    record["profile_summary"] = profile_summary(lane_profile)
+    if lane_profile["contaminated_budget_exceeded_ids"]:
+        record["rejudge_contaminated"] = list(
+            lane_profile["contaminated_budget_exceeded_ids"])
+    p95, samples = clean_rss_p95(lane_profile["subjects"])
+    if p95 is not None and samples:
+        record["r2_candidate_ram_p95_bytes"] = p95
+        record["r2_candidate_ram_samples"] = samples
+
+
+# ---------------------------------------------------------------------------
+# RG-144 / RG-145 -- resource profiles (design docs/design/RESOURCE-PROFILES.md
+# sections 2, 6.1 and 6.4). Pure data handling; no docker, no cgroup reads.
+#
+# * RG-144: "time stalled on memory" is a CONTAMINATION flag, never a
+#   capacity number. One rule (`classify_contamination`), owned here.
+# * RG-145: `resource-profile/1` ingestion from assay progress events (assay
+#   12 `profile` object, or the assay <= 11 numeric keys), per-run
+#   distributions, the bounded `.run-gate/profiles/<lane>.jsonl` sidecar, and
+#   cross-run percentiles recomputed from its RAW subjects.
+# There is deliberately NO fallback reader for the cgprofile observer: a
+# subject without a profile is NO_MEASUREMENT with a reason code.
+# ---------------------------------------------------------------------------
+
+PROFILE_SCHEMA = "resource-profile/1"
+LANE_PROFILE_SCHEMA = "lane-profile/1"
+
+# Calibrated by design section 9 M5; named so one edit changes the rule.
+CONTAMINATION_STALL_FLOOR_SECONDS = 2.0
+CONTAMINATION_STALL_WALL_FRACTION = 0.005
+PSI_GUARD_EVENTS_PATH = Path("/run/mdt/psi-guard/events.jsonl")
+
+PROFILES_DIR_NAME = "profiles"
+PROFILE_MAX_RUNS = 200
+PROFILE_MAX_SUBJECTS = 20_000
+
+PROFILE_METRIC_KEYS = ("rss_peak_bytes", "cpu_seconds", "io_read_bytes",
+                       "io_write_bytes", "wall_seconds")
+PROFILE_MEASURED_STATUSES = ("MEASURED", "PARTIAL")
+PROFILE_STATUSES = ("MEASURED", "PARTIAL", "NO_MEASUREMENT")
+
+
+def _profile_number(value: object) -> float | int | None:
+    """A finite, non-negative real number or None (bools are not numbers)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value if value >= 0 else None
+
+
+def _event_count(value: object) -> int:
+    number = _profile_number(value)
+    return int(number) if number is not None else 0
+
+
+def nearest_rank(sorted_values: list, percent: int):
+    """Nearest-rank percentile of an ascending list (an actual element)."""
+    index = max(0, math.ceil(percent / 100 * len(sorted_values)) - 1)
+    return sorted_values[index]
+
+
+def _iso_epoch(value: object) -> float | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return float(calendar.timegm(time.strptime(value,
+                                                   "%Y-%m-%dT%H:%M:%SZ")))
+    except ValueError:
+        return None
+
+
+def read_guard_events(path: Path, start: float | None,
+                      end: float | None) -> list[dict]:
+    """MDT PSI-guard actions inside [start, end]; `[]` when the file is not
+    mounted, unreadable, or the window is unknown. Unparseable lines skip.
+    `ts` is epoch seconds or an ISO-8601 `...Z` string."""
+    if start is None or end is None:
+        return []
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    found = []
+    for line in text.splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        stamp = _profile_number(event.get("ts"))
+        if stamp is None:
+            stamp = _iso_epoch(event.get("ts"))
+        if stamp is not None and start <= stamp <= end:
+            found.append(event)
+    return found
+
+
+def classify_contamination(*, wall_seconds: float | None,
+                           own_limit_events: int,
+                           memory_stall_seconds: float | None,
+                           ancestor_events: list | None,
+                           guard_events: list | None) -> dict:
+    """The one rule (design 6.1). `self_limited` and `contaminated` are
+    independent: a run can be both.
+
+    `ancestor_events` is a list of {path, high, max, ...} entries (None
+    entries are unreadable and skipped), or None when the observer does not
+    report it (cgprofile CP-40 absent): the criterion is then skipped,
+    recorded as `ancestor_events: "unknown"`, and neither flags nor clears
+    the run."""
+    reasons: list[str] = []
+    for entry in ancestor_events or ():
+        if not isinstance(entry, dict):
+            continue
+        count = _event_count(entry.get("high")) + _event_count(
+            entry.get("max"))
+        if count > 0:
+            reasons.append(f"ancestor memory limit reached {count} time(s) "
+                           f"at {entry.get('path', '?')}")
+    if guard_events:
+        reasons.append(f"MDT PSI guard acted {len(guard_events)} time(s) "
+                       "during the run")
+    self_limited = own_limit_events > 0
+    stall = _profile_number(memory_stall_seconds)
+    if stall is not None and not self_limited:
+        wall = _profile_number(wall_seconds) or 0.0
+        threshold = max(CONTAMINATION_STALL_FLOOR_SECONDS,
+                        CONTAMINATION_STALL_WALL_FRACTION * wall)
+        if stall >= threshold:
+            reasons.append(f"{stall:.1f} s memory stall not explained by "
+                           "the lane's own limit")
+    return {
+        "flagged": bool(reasons),
+        "reasons": reasons,
+        "self_limited": {"flagged": self_limited,
+                         "memory_limit_events": own_limit_events},
+        "ancestor_events": "unknown" if ancestor_events is None else "known",
+    }
+
+
+def classify_summary(summary: dict | None,
+                     guard_path: Path | None = None) -> dict | None:
+    """Classify one lane run from its cgprofile Summary (schema 1); None
+    when there is no Summary. Own limit events are the leaf's
+    `events.memory_high_breach` + `oom_kill` (the Summary has no separate
+    `max`). Lane stall is `pressure.memory_full_stall_seconds`, the session's
+    own cgroup, never the host-wide figure."""
+    if not isinstance(summary, dict):
+        return None
+    events = summary.get("events")
+    events = events if isinstance(events, dict) else {}
+    pressure = summary.get("pressure")
+    pressure = pressure if isinstance(pressure, dict) else {}
+    own = _event_count(events.get("memory_high_breach")) + _event_count(
+        events.get("oom_kill"))
+    ancestors = summary.get("ancestors_memory_events_local")
+    guard = read_guard_events(
+        guard_path or PSI_GUARD_EVENTS_PATH,
+        _iso_epoch(summary.get("started_at")),
+        _iso_epoch(summary.get("ended_at")))
+    return classify_contamination(
+        wall_seconds=summary.get("duration_seconds"), own_limit_events=own,
+        memory_stall_seconds=pressure.get("memory_full_stall_seconds"),
+        ancestor_events=ancestors if isinstance(ancestors, list) else None,
+        guard_events=guard)
+
+
+def classify_subject(subject: dict, run_contamination: dict | None) -> dict:
+    """A subject is contaminated when its own context says so or when the
+    run it belongs to is flagged (the lane cgroup and the host window are
+    shared by every subject of the run)."""
+    context = subject.get("context")
+    context = context if isinstance(context, dict) else {}
+    local = context.get("container_memory_events_local")
+    local = local if isinstance(local, dict) else {}
+    own = sum(_event_count(local.get(k)) for k in ("high", "max", "oom_kill"))
+    ancestors = context.get("ancestors_memory_events_local")
+    verdict = classify_contamination(
+        wall_seconds=subject.get("wall_seconds"), own_limit_events=own,
+        memory_stall_seconds=context.get("container_psi_memory_full_seconds"),
+        ancestor_events=ancestors if isinstance(ancestors, list) else None,
+        guard_events=None)
+    reasons = list(verdict["reasons"])
+    if run_contamination and run_contamination.get("flagged"):
+        reasons.extend(r for r in run_contamination["reasons"]
+                       if r not in reasons)
+    return {"flagged": bool(reasons), "reasons": reasons}
+
+
+def entry_is_contaminated(entry: dict) -> bool:
+    """True for a history entry whose run was flagged contaminated."""
+    node = entry.get("contamination") if isinstance(entry, dict) else None
+    return isinstance(node, dict) and node.get("flagged") is True
+
+
+def _blank_profile_metrics() -> dict:
+    keys = ("rss_peak_bytes", "memory_peak_bytes", "swap_peak_bytes",
+            "cpu_seconds", "cpu_user_seconds", "cpu_system_seconds",
+            "io_read_bytes", "io_write_bytes", "io_read_ops", "io_write_ops",
+            "psi_memory_some_seconds", "psi_memory_full_seconds",
+            "psi_cpu_some_seconds", "psi_io_some_seconds",
+            "psi_io_full_seconds")
+    return {key: None for key in keys}
+
+
+def no_measurement_profile(subject: dict, wall_seconds: object,
+                           reason: str = "OBSERVER_UNAVAILABLE") -> dict:
+    return {"schema": PROFILE_SCHEMA, "subject": subject,
+            "wall_seconds": _profile_number(wall_seconds),
+            "status": "NO_MEASUREMENT", "reason": reason, "observer": None,
+            "metrics": _blank_profile_metrics(), "missing": {}, "sources": {},
+            "context": {}}
+
+
+def _legacy_profile(event: dict, subject: dict) -> dict:
+    """assay <= 11 progress numeric keys (RG-148 compatibility window)."""
+    resources = event.get("resources")
+    resources = resources if isinstance(resources, dict) else {}
+
+    def pick(name):
+        for source in (resources, event):
+            value = _profile_number(source.get(name))
+            if value is not None:
+                return value
+        return None
+
+    rss, cpu, written = pick("peak_rss_bytes"), pick("cpu_seconds"), \
+        pick("write_bytes")
+    wall = _profile_number(event.get("elapsed_seconds"))
+    if rss is None and cpu is None and written is None:
+        return no_measurement_profile(subject, wall)
+    metrics = _blank_profile_metrics()
+    metrics.update({"rss_peak_bytes": rss, "cpu_seconds": cpu,
+                    "io_write_bytes": written})
+    missing = {key: "OBSERVER_UNAVAILABLE" for key, value in metrics.items()
+               if value is None}
+    return {"schema": PROFILE_SCHEMA, "subject": subject, "wall_seconds": wall,
+            "status": "MEASURED" if rss is not None else "PARTIAL",
+            "reason": None, "observer": {"name": "assay-progress-legacy"},
+            "metrics": metrics, "missing": missing, "sources": {},
+            "context": {}}
+
+
+def profile_from_progress_event(event: dict, *, lane: str | None = None,
+                                commit: str | None = None) -> dict:
+    """One `resource-profile/1` per assay `candidate` progress event.
+
+    Assay 12 carries a `profile` object; assay <= 11 carries numeric keys.
+    Neither present: NO_MEASUREMENT (never a guess, no other reader)."""
+    identity = event.get("candidate_id")
+    if not isinstance(identity, str):
+        index = event.get("candidate_index")
+        identity = str(index) if type(index) is int else "unknown"
+    subject = {"tool": "assay", "lane": lane, "kind": "r2-candidate",
+               "id": identity, "worker_index": event.get("worker_index"),
+               "commit": commit}
+    raw = event.get("profile")
+    if isinstance(raw, dict) and raw.get("schema") == PROFILE_SCHEMA \
+            and isinstance(raw.get("metrics"), dict):
+        if raw.get("status") not in PROFILE_STATUSES:
+            return no_measurement_profile(
+                subject, event.get("elapsed_seconds"), "OBSERVER_ERROR")
+        profile = dict(raw)
+        merged = dict(subject)
+        if isinstance(raw.get("subject"), dict):
+            merged.update({k: v for k, v in raw["subject"].items()
+                           if v is not None})
+        profile["subject"] = merged
+        profile["metrics"] = {**_blank_profile_metrics(), **raw["metrics"]}
+        wall = _profile_number(raw.get("wall_seconds"))
+        profile["wall_seconds"] = wall if wall is not None \
+            else _profile_number(event.get("elapsed_seconds"))
+        return profile
+    return _legacy_profile(event, subject)
+
+
+def distribution(values: list) -> dict:
+    ordered = sorted(values)
+    if not ordered:
+        return {"p50": None, "p95": None, "max": None, "n": 0}
+    return {"p50": nearest_rank(ordered, 50), "p95": nearest_rank(ordered, 95),
+            "max": ordered[-1], "n": len(ordered)}
+
+
+def _profile_metric(subject: dict, key: str):
+    if key == "wall_seconds":
+        return _profile_number(subject.get("wall_seconds"))
+    metrics = subject.get("metrics")
+    return _profile_number(metrics.get(key)) if isinstance(metrics, dict) \
+        else None
+
+
+def profile_is_clean_measured(subject: dict) -> bool:
+    contamination = subject.get("contamination")
+    return (subject.get("status") in PROFILE_MEASURED_STATUSES
+            and not (isinstance(contamination, dict)
+                     and contamination.get("flagged")))
+
+
+def profile_distributions(subjects: list[dict]) -> dict:
+    """Distributions over clean, measured subjects only. NO_MEASUREMENT and
+    contaminated subjects never enter (they are counted in
+    `profile_status_counts`)."""
+    clean = [s for s in subjects if profile_is_clean_measured(s)]
+    return {key: distribution([v for v in (_profile_metric(s, key)
+                                           for s in clean) if v is not None])
+            for key in PROFILE_METRIC_KEYS}
+
+
+def profile_status_counts(subjects: list[dict]) -> dict:
+    counts = {status: 0 for status in PROFILE_STATUSES}
+    for subject in subjects:
+        status = subject.get("status")
+        counts[status if status in counts else "NO_MEASUREMENT"] += 1
+    return counts
+
+
+def _lane_profile_status(subjects: list[dict], lane_measured: bool) -> str:
+    counts = profile_status_counts(subjects)
+    if not subjects:
+        return "MEASURED" if lane_measured else "NO_MEASUREMENT"
+    if counts["MEASURED"] == len(subjects):
+        return "MEASURED"
+    if counts["NO_MEASUREMENT"] == len(subjects) and not lane_measured:
+        return "NO_MEASUREMENT"
+    return "PARTIAL"
+
+
+def _lane_cgroup_numbers(summary: dict | None) -> dict:
+    summary = summary if isinstance(summary, dict) else {}
+    memory = summary.get("memory")
+    cpu = summary.get("cpu")
+    pressure = summary.get("pressure")
+    memory = memory if isinstance(memory, dict) else {}
+    cpu = cpu if isinstance(cpu, dict) else {}
+    pressure = pressure if isinstance(pressure, dict) else {}
+    return {"memory_peak_bytes": memory.get("peak_bytes"),
+            "cpu_seconds": cpu.get("seconds"),
+            "psi_memory_full_seconds": pressure.get(
+                "memory_full_stall_seconds")}
+
+
+def build_lane_profile(*, lane: str, run_id: str, commit: str | None,
+                       tree: str | None, kind: str, subjects: list[dict],
+                       summary: dict | None, contamination: dict | None,
+                       wall_seconds: float | None, outcome: str | None,
+                       history_eligible: bool, started_at: str | None,
+                       workers: int | None = None,
+                       budget_exceeded_ids: list[str] | None = None) -> dict:
+    """The `lane-profile/1` record (design 6.4). Every subject gets its own
+    contamination verdict before distributions are computed. `kind` is
+    `per_candidate` or `per_worker`."""
+    annotated = []
+    for subject in subjects:
+        item = dict(subject)
+        item["contamination"] = classify_subject(item, contamination)
+        annotated.append(item)
+    run_flag = contamination or {
+        "flagged": False, "reasons": [], "ancestor_events": "unknown",
+        "self_limited": {"flagged": False, "memory_limit_events": 0}}
+    exceeded = list(budget_exceeded_ids or [])
+    by_id = {s["subject"].get("id"): s for s in annotated}
+    return {
+        "schema": LANE_PROFILE_SCHEMA, "lane": lane, "run_id": run_id,
+        "commit": commit, "tree": tree, "workers": workers,
+        "started_at": started_at, "outcome": outcome,
+        "history_eligible": history_eligible, "wall_seconds": wall_seconds,
+        "status": _lane_profile_status(annotated, isinstance(summary, dict)),
+        "contamination": {"flagged": run_flag["flagged"],
+                          "reasons": list(run_flag["reasons"])},
+        "ancestor_events": run_flag["ancestor_events"],
+        "self_limited": dict(run_flag["self_limited"]),
+        "status_counts": profile_status_counts(annotated),
+        "contaminated_subjects": sum(
+            1 for s in annotated if s["contamination"]["flagged"]),
+        kind: profile_distributions(annotated),
+        "lane_cgroup": _lane_cgroup_numbers(summary),
+        "budget_exceeded_ids": exceeded,
+        "contaminated_budget_exceeded_ids": [
+            i for i in exceeded
+            if i in by_id and by_id[i]["contamination"]["flagged"]],
+        "subjects": annotated,
+    }
+
+
+def profile_summary(record: dict) -> dict:
+    """`history.json` entry key: the distributions without the subjects."""
+    return {key: value for key, value in record.items()
+            if key not in ("subjects", "budget_exceeded_ids",
+                           "contaminated_budget_exceeded_ids", "run_id",
+                           "commit", "tree", "started_at", "lane")}
+
+
+def clean_rss_p95(subjects: list[dict]) -> tuple[int | None, int]:
+    """Nearest-rank p95 of clean candidate RSS and its sample count (positive
+    values only, the historical sample rule)."""
+    values = sorted(int(v) for v in (_profile_metric(s, "rss_peak_bytes")
+                                     for s in subjects
+                                     if profile_is_clean_measured(s))
+                    if v is not None and v > 0)
+    if not values:
+        return None, 0
+    return nearest_rank(values, 95), len(values)
+
+
+def profile_sidecar_path(history_directory: Path, lane: str) -> Path:
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", lane) or "_"
+    return history_directory / PROFILES_DIR_NAME / f"{safe}.jsonl"
+
+
+def read_profile_records(path: Path) -> list[dict]:
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    records = []
+    for line in text.splitlines():
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue  # a torn or foreign line is skipped, never fatal
+        if isinstance(record, dict) and record.get(
+                "schema") == LANE_PROFILE_SCHEMA:
+            records.append(record)
+    return records
+
+
+def _bound_profile_records(records: list[dict], max_runs: int,
+                           max_subjects: int) -> list[dict]:
+    records = records[-max_runs:]
+    newest = records[-1]
+    if len(newest.get("subjects", [])) > max_subjects:
+        newest = dict(newest)
+        newest["subjects_truncated"] = len(newest["subjects"]) - max_subjects
+        newest["subjects"] = newest["subjects"][-max_subjects:]
+        records[-1] = newest
+    while len(records) > 1 and sum(
+            len(r.get("subjects", [])) for r in records) > max_subjects:
+        records.pop(0)
+    return records
+
+
+def append_profile_record(path: Path, record: dict, *,
+                          max_runs: int = PROFILE_MAX_RUNS,
+                          max_subjects: int = PROFILE_MAX_SUBJECTS) -> None:
+    """Append one record, rotating oldest-first, rewriting atomically (the
+    caller holds the history lock; the rewrite goes through a temporary
+    sibling and `os.replace`, so a reader sees a whole old or new file)."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    records = _bound_profile_records(read_profile_records(path) + [record],
+                                     max_runs, max_subjects)
+    tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}")
+    tmp.write_text("".join(json.dumps(r, sort_keys=True) + "\n"
+                           for r in records), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def clean_profile_records(records: list[dict]) -> list[dict]:
+    return [r for r in records
+            if not (isinstance(r.get("contamination"), dict)
+                    and r["contamination"].get("flagged"))]
+
+
+def pooled_profile_subjects(records: list[dict]) -> list[dict]:
+    return [s for r in clean_profile_records(records)
+            for s in r.get("subjects", [])]
+
+
+def profile_history_view(records: list[dict]) -> dict:
+    """What `run-gate history <lane>` prints: pooled clean distributions
+    (recomputed from raw subjects, never from stored p95s) plus the status
+    and contamination counts over every stored run."""
+    counts = {status: 0 for status in PROFILE_STATUSES}
+    for record in records:
+        for status, n in (record.get("status_counts") or {}).items():
+            if status in counts and isinstance(n, int):
+                counts[status] += n
+    return {
+        "runs": len(records),
+        "runs_contaminated": len(records) - len(clean_profile_records(records)),
+        "runs_self_limited": sum(
+            1 for r in records
+            if (r.get("self_limited") or {}).get("flagged")),
+        "subjects_contaminated": sum(
+            r["contaminated_subjects"] for r in records
+            if isinstance(r.get("contaminated_subjects"), int)),
+        "status_counts": counts,
+        "distributions": profile_distributions(
+            pooled_profile_subjects(records)),
+    }
 
 
 def _empty_history_store() -> dict:
@@ -5595,7 +6153,8 @@ def _acquire_store_lock(lock_path: Path, what: str) -> int:
 def _record_invocation(project_dir: Path, worktree: Path, record: dict,
                        keep: int) -> None:
     hdir = history_dir(project_dir)
-    ignored = paths_are_git_ignored(worktree, history_written_paths(project_dir))
+    ignored = paths_are_git_ignored(
+        worktree, history_written_paths(project_dir, record.get("lane")))
     if ignored is not True:
         why = ("is not fully git-ignored" if ignored is False
                else "could not be confirmed git-ignored")
@@ -5612,6 +6171,15 @@ def _record_invocation(project_dir: Path, worktree: Path, record: dict,
         _write_json_atomic(
             _apply_record(load_history_store(store_path), record, keep),
             store_path)
+        lane_profile = record.get("_lane_profile")
+        if lane_profile is not None:
+            # RG-145: a sidecar failure never costs the history entry above.
+            try:
+                append_profile_record(
+                    profile_sidecar_path(hdir, record["lane"]), lane_profile)
+            except OSError as exc:
+                print(f"{PROG}: WARNING: lane profile not recorded: {exc}",
+                      file=sys.stderr, flush=True)
     finally:
         os.close(fd)  # releases the flock
 
@@ -5651,10 +6219,39 @@ def flush_run_record(record: dict | None, *, exit_code: int | None = None,
     if record is None or record.get("_flushed"):
         return
     record["_flushed"] = True
+    finished = finish_run_record(record, exit_code=exit_code, error=error)
+    report_contaminated_budget_exceeded(finished)
     record_invocation(record["_project_dir"], Path(record["worktree"]),
-                      finish_run_record(record, exit_code=exit_code,
-                                        error=error),
-                      record["_keep"])
+                      finished, record["_keep"])
+
+
+def latest_contaminated_budget_exceeded(project_dir: Path,
+                                        lane_name: str) -> list[str]:
+    """Candidate ids to rejudge: the latest recorded run's contaminated
+    `budget_exceeded` candidates (empty when no profile record exists)."""
+    records = read_profile_records(
+        profile_sidecar_path(history_dir(project_dir), lane_name))
+    return list(records[-1].get("contaminated_budget_exceeded_ids") or []) \
+        if records else []
+
+
+def rejudge_contaminated_lines(lane_name: str, ids: list[str]) -> list[str]:
+    return [f"{PROG} {lane_name} --jobs 1 --rejudge {identity}"
+            for identity in ids]
+
+
+def report_contaminated_budget_exceeded(record: dict) -> None:
+    """RG-144 R2 closeout: `budget_exceeded` candidates whose profile is
+    contaminated are inconclusive, not product results (2026-09-14 rule).
+    Print the exact serial rejudge lines; `--rejudge-contaminated` runs them."""
+    ids = record.get("rejudge_contaminated")
+    if not ids:
+        return
+    print(f"{PROG}: {len(ids)} budget_exceeded candidate(s) ran under a "
+          "contaminated measurement and are inconclusive; rejudge serially "
+          "(or run once with --rejudge-contaminated):", flush=True)
+    for line in rejudge_contaminated_lines(record["lane"], ids):
+        print(f"  {line}", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -6468,6 +7065,9 @@ RESOURCE_SERIES_GETTERS = {
 
 
 def _lane_stats(entries: list[dict]) -> dict:
+    # RG-144: a contaminated run is not a sizing or duration basis; it stays
+    # in `history` (visible, flagged) but contributes to no median here.
+    entries = [e for e in entries if not entry_is_contaminated(e)]
     stats = duration_stats(entries)
     for key, getter in RESOURCE_SERIES_GETTERS.items():
         # RW-24/R-36k: byte-valued series (identified structurally by the
@@ -6615,6 +7215,40 @@ def _print_lane_history(lane_name: str, report: dict, keep: int) -> None:
             print("    " + _fmt_stats("completed (passes + fails)",
                                       report["stats"]["completed"]))
             print("      " + _fmt_resource_stats(report["stats"]["completed"]))
+    for line in _fmt_profile_view(report.get("profiles")):
+        print(line)
+
+
+def _fmt_profile_view(view: dict | None) -> list[str]:
+    """RG-145: the profile distributions and the status/contamination counts
+    (`run-gate history <lane>`). Empty when no profile was ever recorded."""
+    if not view or not view["runs"]:
+        return []
+    counts = view["status_counts"]
+    lines = [f"  profiles: {view['runs']} run(s) "
+             f"({view['runs_contaminated']} contaminated, "
+             f"{view['runs_self_limited']} self-limited); subjects "
+             f"MEASURED {counts['MEASURED']}, PARTIAL {counts['PARTIAL']}, "
+             f"NO_MEASUREMENT {counts['NO_MEASUREMENT']}, "
+             f"{view['subjects_contaminated']} contaminated "
+             "(clean, measured subjects only below)"]
+    for key, dist in view["distributions"].items():
+        if not dist["n"]:
+            lines.append(f"    {key:<15} none")
+            continue
+        fmt = _fmt_mib if key == "rss_peak_bytes" else (
+            _fmt_bytes_short if key.startswith("io_") else _fmt_seconds)
+        lines.append(f"    {key:<15} p50 {fmt(dist['p50'])}  "
+                     f"p95 {fmt(dist['p95'])}  max {fmt(dist['max'])}  "
+                     f"n={dist['n']}")
+    return lines
+
+
+def _fmt_bytes_short(value: object) -> str:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return "-"
+    return f"{value / 1024:.0f} KiB" if value < 1024 * 1024 \
+        else f"{value / (1024 * 1024):.0f} MiB"
 
 
 def cmd_history(lanes: dict, project_dir: Path, cfg: dict, cfg_path: Path,
@@ -6639,6 +7273,14 @@ def cmd_history(lanes: dict, project_dir: Path, cfg: dict, cfg_path: Path,
     store_path = history_store_path(project_dir)
     store = load_history_store(store_path)
     selected = [lane_name] if lane_name else sorted(lanes)
+
+    def lane_report(name: str) -> dict:
+        report = lane_history_report(store, name)
+        # RG-145: distributions recomputed from the sidecar's raw subjects.
+        report["profiles"] = profile_history_view(read_profile_records(
+            profile_sidecar_path(history_dir(project_dir), name)))
+        return report
+
     if as_json:
         print(json.dumps({
             "schema": HISTORY_SCHEMA,
@@ -6647,8 +7289,7 @@ def cmd_history(lanes: dict, project_dir: Path, cfg: dict, cfg_path: Path,
             "worktree_scope": worktree_scope,
             "keep": keep,
             "keep_source": keep_source,
-            "lanes": {name: lane_history_report(store, name)
-                      for name in selected},
+            "lanes": {name: lane_report(name) for name in selected},
         }, indent=2, sort_keys=True))
         return 0
     print(f"{PROG} {installed_version()} — lane invocation history")
@@ -6663,7 +7304,7 @@ def cmd_history(lanes: dict, project_dir: Path, cfg: dict, cfg_path: Path,
         return 0
     for name in selected:
         print("")
-        _print_lane_history(name, lane_history_report(store, name), keep)
+        _print_lane_history(name, lane_report(name), keep)
     return 0
 
 
@@ -10405,6 +11046,15 @@ def _candidate_peak_rss(event: dict) -> int | None:
     return int(raw)
 
 
+def assay_progress_candidate_events(path: Path, commit: str | None = None
+                                    ) -> list[dict]:
+    """Every `candidate` progress event, restricted to the runs of `commit`
+    when one is given (the RG-145 ingestion input)."""
+    return [event for segment in _assay_progress_segments(path)
+            if commit is None or segment["header"].get("commit") == commit
+            for event in segment["events"] if event.get("event") == "candidate"]
+
+
 def assay_progress_candidate_ram(path: Path, *, commit: str | None = None
                                 ) -> tuple[int | None, int]:
     """Return nearest-rank p95 candidate peak RSS and the sample count."""
@@ -10474,9 +11124,13 @@ def candidate_ram_from_history(project_dir: Path, lane_name: str,
                                ) -> tuple[int, int, str]:
     """Use max(declared RSS, measured p95), or the declared/default value.
 
-    Run-Gate history stores each run's p95 rather than its raw observations;
-    taking the highest recent p95 remains conservative without pretending
-    those summaries can be recombined into a new percentile.
+    RG-144/RG-145: contaminated runs and subjects are never a basis. The
+    measured p95 is recomputed from the RAW clean subjects in the lane's
+    profile sidecar (a percentile of stored p95s is not a percentile). Legacy
+    history entries without a sidecar record keep the historical rule: the
+    highest recent stored p95, still skipping flagged entries. The assay
+    progress file is consulted only while the lane has no profile record at
+    all, because its candidates carry no contamination verdict of their own.
     """
     if (declared_candidate_ram_bytes is not None
             and (type(declared_candidate_ram_bytes) is not int
@@ -10484,17 +11138,23 @@ def candidate_ram_from_history(project_dir: Path, lane_name: str,
         fail("declared candidate RAM must be a positive integer byte count")
     store = load_history_store(history_store_path(project_dir))
     entries = lane_history_report(store, lane_name)["history"]
-    measured_p95s = []
-    sample_count = 0
+    records = read_profile_records(
+        profile_sidecar_path(history_dir(project_dir), lane_name))
+    sidecar_run_ids = {r.get("run_id") for r in records}
+    clean_subjects = pooled_profile_subjects(records)
+    pooled_p95, sample_count = clean_rss_p95(clean_subjects)
+    measured_p95s = [pooled_p95] if pooled_p95 is not None else []
     for entry in entries:
         p95 = entry.get("r2_candidate_ram_p95_bytes")
         samples = entry.get("r2_candidate_ram_samples")
-        if (type(p95) is int and p95 > 0
+        if (entry.get("run_id") not in sidecar_run_ids
+                and not entry_is_contaminated(entry)
+                and type(p95) is int and p95 > 0
                 and type(samples) is int and samples > 0):
             measured_p95s.append(p95)
             sample_count += samples
     measured_p95 = max(measured_p95s) if measured_p95s else None
-    if measured_p95 is None:
+    if measured_p95 is None and not records:
         measured_p95, sample_count = assay_progress_candidate_ram(progress_path)
     if measured_p95 is not None and sample_count:
         if (declared_candidate_ram_bytes is not None
@@ -15688,6 +16348,8 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "  --reuse-from PATH assay R2 only: reuse candidates from an earlier verdict",
         "  --rejudge ID      assay R2 only; repeatable, joined for Assay",
         "  --rejudge-outcome B assay R2 only: outcome buckets for --rejudge",
+        "  --rejudge-contaminated  assay R2 only: serially rejudge the latest run's",
+        "                      contaminated budget_exceeded candidates (RG-144)",
         "  --dry-run         print the full execution plan (docker argv, mounts,",
         "                    slice, inner command) and exit 0 — every preflight",
         "                    is rehearsed and NO JUDGED lane is started. An",
@@ -16295,6 +16957,11 @@ def _dispatch(argv: list[str] | None = None, *,
     parser.add_argument("--rejudge", action="append", default=[], metavar="ID",
                         help="RG-66: assay R2 only — selectively rejudge an "
                              "ID; repeatable")
+    parser.add_argument("--rejudge-contaminated", action="store_true",
+                        help="RG-144: assay R2 only — serially (--jobs 1) "
+                             "rejudge the budget_exceeded candidates of the "
+                             "lane's latest run whose measurement was "
+                             "contaminated")
     parser.add_argument("--rejudge-outcome", metavar="BUCKET",
                         help="RG-66: assay R2 only — constrain rejudge outcomes")
     parser.add_argument("--allow-dirty", action="store_true")
@@ -16435,6 +17102,17 @@ def _dispatch(argv: list[str] | None = None, *,
                  "--lane for a merged write, not both")
         if args.rejudge_outcome and not args.rejudge:
             fail("--rejudge-outcome requires at least one --rejudge ID")
+        if args.rejudge_contaminated:
+            if args.lane is None or args.lane in (
+                    "doctor", "history", "footprint", "validate-pointers",
+                    "status"):
+                fail("--rejudge-contaminated applies only to an assay R2 lane")
+            if (args.rejudge or args.reuse_from is not None
+                    or args.rejudge_outcome is not None
+                    or args.jobs is not None):
+                fail("--rejudge-contaminated selects its own candidates and "
+                     "runs them serially; do not combine it with --rejudge, "
+                     "--reuse-from, --rejudge-outcome or --jobs")
         if args.json and (args.lane is None or args.lane in (
                 "doctor", "validate-pointers", "history", "footprint",
                 "status")) \
@@ -16645,6 +17323,23 @@ def _dispatch(argv: list[str] | None = None, *,
                  f"{', '.join(sorted(lanes)) or '(none)'} (config: {cfg_path}"
                  f"{f'; shared: {central_path}' if central_path else ''})")
         lane = lanes[args.lane]
+        if args.rejudge_contaminated:
+            if lane.get("kind") != "assay":
+                fail(f"--rejudge-contaminated applies only to an assay R2 "
+                     f"lane; lane {args.lane!r} has kind {lane.get('kind')!r}")
+            _repo, _tree, _top = resolve_repo_and_worktree(
+                project_dir, args.worktree)
+            args.rejudge = latest_contaminated_budget_exceeded(
+                effective_project_dir(project_dir, _top, _tree), args.lane)
+            if not args.rejudge:
+                fail(f"--rejudge-contaminated: lane {args.lane!r} has no "
+                     "contaminated budget_exceeded candidate in its latest "
+                     "recorded run")
+            args.jobs_request = 1
+            assay_selective = True
+            print(f"{PROG}: --rejudge-contaminated: rejudging "
+                  f"{len(args.rejudge)} candidate(s) serially (--jobs 1)",
+                  flush=True)
         if args.jobs_request is not None and lane.get("kind") != "assay":
             fail(f"--jobs applies only to native R2 assay lanes; lane "
                  f"{args.lane!r} has kind {lane.get('kind')!r}")

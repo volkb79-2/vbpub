@@ -9,6 +9,30 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+### Added
+- RG-144: "time stalled on memory" is a contamination flag. One run-gate rule
+  separates `self_limited` (the lane's own limit; printed as `memory limit
+  reached N times`) from `contaminated` (ancestor reclaim, MDT PSI-guard
+  overlap, or a stall of at least max(2 s, 0.5% of wall) the lane's own limit
+  does not explain). Contaminated runs and subjects are stored with
+  `contamination: {flagged, reasons}`, printed as `measurement contaminated
+  (...); excluded from sizing`, and excluded from the history medians,
+  `candidate_ram_from_history` and the R2 `jobs=auto` input. The R2 closeout
+  lists contaminated `budget_exceeded` candidates with exact serial rejudge
+  lines; new `--rejudge-contaminated` runs them.
+- RG-145: per-lane resource profiles. `resource-profile/1` ingestion from assay
+  12 progress `profile` objects and, in the compatibility window, assay <= 11
+  numeric keys (`NO_MEASUREMENT` when neither exists); a bounded
+  `.run-gate/profiles/<lane>.jsonl` sidecar of `lane-profile/1` records (200
+  runs / 20,000 subjects, oldest-first, atomic); an optional `profile_summary`
+  on history entries (history stays schema 2 and older versions still read
+  it); cross-run percentiles recomputed from raw subjects; `run-gate history`
+  prints the distributions and the status and contamination counts.
+
+### Changed
+- `r2_candidate_ram_p95_bytes` / `r2_candidate_ram_samples` and the history
+  duration and resource medians are computed from clean profiles only.
+
 <!-- cmru: release history -->
 
 ## [24.3.0] - 2026-11-02
