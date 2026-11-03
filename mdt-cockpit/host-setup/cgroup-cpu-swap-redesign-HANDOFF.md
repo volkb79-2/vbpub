@@ -38,11 +38,12 @@ governance. In order:
    `system.slice/dev-background.slice:docker:<id>`.
 5. Full redesign of `host-setup/units/*.slice.in` + `host-setup/install.sh` +
    `host-setup/host-setup.env.example` per explicit operator numbers:
-   - **CPU**: `dev.slice` gets `CPUQuota` = auto-detect `nproc -
-     DEV_CPU_RESERVE_CORES` (default reserve 1) when left empty; every child
+   - **CPU**: `dev.slice` gets `CPUQuota` = derived `nproc -
+     MDT_EXCLUDED_CPU_CORES` when left empty; every child
      slice (`dev-interactive`/`dev-background`/`dev-gates`/`dev-buildkitd`)
-     gets its OWN `CPUQuota` = auto-detect `nproc -
-     DEV_SUBSLICE_CPU_RESERVE_CORES` (default reserve 3).
+     gets its OWN `CPUQuota` = derived `nproc - MDT_EXCLUDED_CPU_CORES -
+     DEV_TIER_EXCLUDED_CPU_CORES` (the keys were originally named
+     `*_RESERVE_*`; see the README "Renamed keys (2026-11)").
    - **IOPS sub-ceiling**: `dev-gates.slice` and `dev-buildkitd.slice` each
      get a RUNTIME-ONLY (not a static unit line) `IOReadIOPSMax`/
      `IOWriteIOPSMax` at `DEV_SUBSLICE_IOPS_PCT`% (default 60%) of whatever
@@ -348,9 +349,9 @@ the review agent itself.
 12. `host-setup/install.sh` (~line 916, likely mis-cited — the CPU
     auto-detect logic this session added is much earlier in the file, near
     the swap-cascade code around line 130-150; re-locate before trusting
-    this line number): the `nproc - reserve` CPU auto-detect floors at 1
-    core; on a host where `nproc <= DEV_CPU_RESERVE_CORES`, the "reserve N
-    cores for host/production" guarantee silently collapses to reserving
+    this line number): the original `nproc - reserve` CPU auto-detect floored at 1
+    core, so on a host with `nproc` no larger than the excluded cores the "N
+    cores kept for host/production" guarantee silently collapsed to keeping
     ZERO cores (the floor kicks in and gives dev.slice all of the only
     core). Per estate memory this host has 8 cores, so this is a
     correctness bug in the general tool rather than an active risk on THIS

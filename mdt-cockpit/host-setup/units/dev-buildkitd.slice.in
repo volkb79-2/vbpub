@@ -30,11 +30,11 @@ MemoryMax=@DEV_BUILDKITD_MEMORY_MAX@
 MemorySwapMax=@DEV_BUILDKITD_MEMORY_SWAP_MAX@
 
 CPUWeight=@DEV_BUILDKITD_CPU_WEIGHT@
-# Hard cap (not just proportional share): auto-detected as (nproc -
-# DEV_SUBSLICE_CPU_RESERVE_CORES, default 3) cores at install time when left
-# unset in host-setup.env (mirrors the existing IO_DEV_PATH auto-discovery
-# convention), floored at 1 core. An explicit value in host-setup.env always
-# overrides the auto-detected one — same treatment every sibling child gets.
+# Hard cap (not just proportional share): derived as (nproc -
+# MDT_EXCLUDED_CPU_CORES - DEV_TIER_EXCLUDED_CPU_CORES) cores at install time when
+# left `auto` in host-setup.env (mirrors the existing IO_DEV_PATH auto-discovery
+# convention). An explicit value in host-setup.env always
+# overrides the derived one — same treatment every sibling child gets.
 CPUQuota=@DEV_BUILDKITD_CPU_QUOTA@
 # See the IOWeight note in dev-interactive.slice/dev-background.slice:
 # On a BFQ host KEEP <= 100 or the BFQ rescaling silently changes the ratio; with

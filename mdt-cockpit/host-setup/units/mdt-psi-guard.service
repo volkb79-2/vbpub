@@ -1,0 +1,19 @@
+# mdt host-setup — pressure guard for the capacity MDT shares with other services.
+# Deliberately outside dev.slice (it runs in system.slice): the guard must keep running
+# while the dev tiers are starved. It never freezes or kills anything; MDT_PSI_GUARD=
+# off|report|enforce in /etc/mdt/host-setup.env selects what it does.
+[Unit]
+Description=mdt host-setup — PSI guard for the protected host/production units
+Documentation=file:/etc/mdt/host-setup.env
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/mdt-psi-guard.py --config /etc/mdt/host-setup.env
+Restart=on-failure
+RestartSec=5
+# /run/mdt/psi-guard holds events.jsonl and state.json; keep them across a service restart.
+RuntimeDirectory=mdt/psi-guard
+RuntimeDirectoryPreserve=yes
+
+[Install]
+WantedBy=multi-user.target

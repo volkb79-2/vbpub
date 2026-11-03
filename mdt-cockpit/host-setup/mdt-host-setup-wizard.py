@@ -41,6 +41,8 @@ from __future__ import annotations
 
 import argparse
 from mdt_cli import MdtArgumentParser
+import mdt_capacity
+from decimal import Decimal
 import importlib.util
 import json
 import os
@@ -453,38 +455,27 @@ def is_size_string(value: str) -> bool:
     return bool(_SIZE_RE.match(value.strip()))
 
 
-def propose_memory_tiers(total_kib: int, avail_kib: int) -> dict[str, str]:
-    """Offer readable caps based on physical RAM, not transient free RAM.
+def propose_memory_tiers(total_kib: int, avail_kib: int, excluded_ram_kib: int = 0) -> dict[str, str]:
+    """Offer readable caps derived from the RAM MDT may use: physical RAM minus the RAM
+    unavailable to MDT (``MDT_EXCLUDED_RAM``).
 
-    ``MemAvailable`` changes with whatever happens to be running while the
-    wizard is opened. It is shown as context, but using it as a hard sizing
-    input would make a busy host propose unusably small limits and would make
-    the same hardware produce different policy every minute. The proportions
-    below are the host policy: they leave overlap between tiers.  Child
-    ``MemoryLow`` is intentionally not proposed on a fresh configuration
-    because the parent ``MemoryLow`` is unset by default; a protection value
-    that cannot reach through its ancestor is a misleading default.  Each
-    child control is independent; ordering within one slice is a hard
-    relationship, and a single child High/Max above its configured parent is
-    also refused, while sibling totals and Min/Low effectiveness remain review
-    information.
+    ``MemAvailable`` changes with whatever happens to be running while the wizard is
+    opened. It is shown as context, but using it as a hard sizing input would make a busy
+    host propose unusably small limits and would make the same hardware produce different
+    policy every minute. The fractions live in ``mdt_capacity`` (dev.slice MemoryMax =
+    RAM_MDT and MemoryHigh 92% of it; per tier High/Max 45/60, 50/70, 50/70, 25/35
+    percent). Their sum exceeds RAM_MDT on purpose: RAM is overcommitted and zswap and
+    disk swap absorb the cold part. Interactive MemoryLow is 15%, mirrored on dev.slice so
+    it is effective (a Low below an unset parent Low would be ineffective). Each child
+    control is independent; ordering within one slice is a hard relationship, and a single
+    child High/Max above its configured parent is also refused, while sibling totals and
+    Min/Low effectiveness remain review information.
     """
-    def frac(percent: int) -> str:
-        return kib_to_size_str(max(1, total_kib * percent // 100))
-
-    proposals = {
-        "DEV_MEMORY_HIGH": kib_to_size_str(max(1, total_kib * 75 // 100)),
-        "DEV_MEMORY_MAX": kib_to_size_str(total_kib),
-        "DEV_INTERACTIVE_MEMORY_HIGH": frac(20),
-        "DEV_INTERACTIVE_MEMORY_MAX": frac(32),
-        "DEV_BACKGROUND_MEMORY_HIGH": frac(32),
-        "DEV_BACKGROUND_MEMORY_MAX": frac(50),
-        "DEV_GATES_MEMORY_HIGH": frac(5),
-        "DEV_GATES_MEMORY_MAX": frac(10),
-        "DEV_BUILDKITD_MEMORY_HIGH": frac(10),
-        "DEV_BUILDKITD_MEMORY_MAX": frac(12),
+    ram_mdt_kib = max(1, total_kib - excluded_ram_kib)
+    return {
+        key: kib_to_size_str(max(1, value // 1024))
+        for key, value in mdt_capacity.tier_memory_bytes(ram_mdt_kib * 1024).items()
     }
-    return proposals
 
 
 def validate_positive_size(value: str) -> str | None:
@@ -826,8 +817,13 @@ def _config_value_validators() -> dict[str, Validator]:
         "DEV_STATIC_WIOPS": validate_positive_int,
         "DEV_STATIC_RBW": validate_positive_size,
         "DEV_STATIC_WBW": validate_positive_size,
-        "DEV_CPU_RESERVE_CORES": validate_nonneg_int,
-        "DEV_SUBSLICE_CPU_RESERVE_CORES": validate_nonneg_int,
+        "MDT_EXCLUDED_RAM": mdt_capacity.validate_size_or_zero,
+        "MDT_EXCLUDED_SWAP": mdt_capacity.validate_size_or_zero,
+        "MDT_HOST_SWAP_MARGIN": mdt_capacity.validate_size_or_zero,
+        "MDT_EXCLUDED_CPU_CORES": mdt_capacity.validate_cores,
+        "DEV_TIER_EXCLUDED_CPU_CORES": mdt_capacity.validate_cores,
+        "MDT_PROTECTED_UNITS": mdt_capacity.validate_units,
+        "MDT_PSI_GUARD": validate_psi_guard_mode,
         "DEV_CPU_QUOTA": validate_cpu_quota,
         "DEV_SWAP_CASCADE_PCT": validate_pct_1_100,
         "DEV_SWAP_MAX": validate_size_or_auto,
@@ -968,6 +964,11 @@ def validate_host_setup_values(
     to be written.  In particular, values preserved from an existing config
     are not trusted merely because the current prompt did not show them.
     """
+    renamed = mdt_capacity.renamed_key_errors(values)
+    if renamed:
+        # Refused before anything else: a retired key is never read, so accepting the
+        # file would silently drop the operator's capacity decision.
+        raise TemplateError("; ".join(renamed))
     optional = runtime_optional_pattern()
     # runtime-optional keys may be absent (an old env file); they are still validated when present
     missing = sorted(k for k in set(example) - set(values) if not optional.fullmatch(k))
@@ -1007,9 +1008,22 @@ def validate_host_setup_values(
             "invalid memory hierarchy: "
             + "; ".join(message for _, message in relationship_errors)
         )
+    capacity_warnings: list[str] = []
+    nproc = discover_nproc()
+    if nproc:
+        try:
+            capacity = mdt_capacity.derive_from_config(
+                values,
+                mem_total=total_kib * 1024,
+                swap_total=meminfo.get("SwapTotal", 0) * 1024,
+                nproc=nproc,
+            )
+        except mdt_capacity.CapacityError as exc:
+            raise TemplateError(f"invalid capacity unavailable to MDT: {exc}") from exc
+        capacity_warnings = list(capacity.warnings)
     # Parent/child High/Max differences are review-only observations.  Return
     # them so the CLI can report them without turning them into a refusal.
-    return memory_review_warnings(values)
+    return capacity_warnings + memory_review_warnings(values)
 
 
 def validate_host_setup_config(
@@ -1296,8 +1310,8 @@ def validate_cpu_quota(value: str) -> str | None:
     """Shared by dev.slice's own DEV_CPU_QUOTA and every child's own
     *_CPU_QUOTA (DEV_INTERACTIVE_CPU_QUOTA, DEV_BACKGROUND_CPU_QUOTA,
     DEV_GATES_CPU_QUOTA, DEV_BUILDKITD_CPU_QUOTA). Empty means "auto-detect
-    nproc - DEV_SUBSLICE_CPU_RESERVE_CORES cores at install time" (default
-    reserve 3; dev.slice itself uses DEV_CPU_RESERVE_CORES, default 1) —
+    (nproc - MDT_EXCLUDED_CPU_CORES - DEV_TIER_EXCLUDED_CPU_CORES) cores at
+    install time" (dev.slice itself uses nproc - MDT_EXCLUDED_CPU_CORES) —
     ``auto`` means derive the value at install time. ``-`` means omit the
     directive (systemd's unlimited/default behavior). Anything else must be
     systemd's own CPUQuota= percentage shape:
@@ -1313,10 +1327,8 @@ def validate_cpu_quota(value: str) -> str | None:
 
 
 def validate_nonneg_int(value: str) -> str | None:
-    """DEV_CPU_RESERVE_CORES / DEV_SUBSLICE_CPU_RESERVE_CORES: a plain count
-    of cores to reserve for the host/production, never empty (install.sh's
-    auto-detect formula is nproc - this value, floored at 1 core, so the
-    formula needs a number to subtract)."""
+    """A plain whole-number count, never empty (used for counts such as the
+    positive-integer parallelism keys)."""
     if not value:
         return "a whole number of cores is required (e.g. '1')"
     try:
@@ -1326,6 +1338,13 @@ def validate_nonneg_int(value: str) -> str | None:
     if n < 0:
         return "a negative core count makes no sense here"
     return None
+
+
+def validate_psi_guard_mode(value: str) -> str | None:
+    """MDT_PSI_GUARD: ``off`` (disabled), ``report`` (events only) or ``enforce``."""
+    if value in ("off", "report", "enforce"):
+        return None
+    return f"{value!r} is not valid: use off, report or enforce"
 
 
 def validate_positive_int(value: str) -> str | None:
@@ -2448,6 +2467,98 @@ def _reprompt_memory_constraints(
     raise ValueError("memory corrections did not converge after 64 prompts; the candidate was not written")
 
 
+DEFAULT_CGROUP_ROOT = Path("/sys/fs/cgroup")
+
+
+def _step_capacity_unavailable_to_mdt(
+    total_kib: int,
+    swap_kib: int,
+    host_nproc: int,
+    cfg_current: dict[str, str],
+    example_defaults: dict[str, str],
+    values: dict[str, str],
+) -> "mdt_capacity.Capacity":
+    """Ask for the capacity other services use (unavailable to MDT) and derive the rest.
+
+    Three numbers: RAM, DISK swap only (zswap is ignored) and CPU cores. Everything else
+    is MDT's. The answers are written into ``values``; the derived capacity drives every
+    later proposal. A combination that leaves MDT too little re-asks.
+    """
+    out("Capacity unavailable to MDT:")
+    for bullet in (
+        "Name what OTHER services on this host (a game server, a database, anything that is not MDT) use. That capacity is unavailable to MDT; everything else is MDT's.",
+        "RAM and CPU are overcommitted across the tiers on purpose. The other services are protected by weights, by `memory.min` on their own cgroups and by pressure (PSI), not by carving RAM out of dev.slice.",
+        "Only disk swap counts. zswap is ignored. About 512M of disk swap stays with the host (`MDT_HOST_SWAP_MARGIN`).",
+        "`--probe-excluded` suggests all three numbers from the named units' live cgroups (read-only).",
+    ):
+        out(f"- {bullet}", hang="  ")
+    for _attempt in range(64):
+        values["MDT_EXCLUDED_RAM"] = walk_key(
+            "  RAM unavailable to MDT \u2014 used by other services on this host (0 if none)",
+            "MDT_EXCLUDED_RAM", cfg_current, example_defaults,
+            validate=mdt_capacity.validate_size_or_zero,
+        )
+        out("  Swap space on the swap device that these services use.")
+        values["MDT_EXCLUDED_SWAP"] = walk_key(
+            "  Disk swap unavailable to MDT \u2014 swap space other services on this host occupy (0 if none)",
+            "MDT_EXCLUDED_SWAP", cfg_current, example_defaults,
+            validate=mdt_capacity.validate_size_or_zero,
+        )
+        values["MDT_EXCLUDED_CPU_CORES"] = walk_key(
+            "  CPU cores unavailable to MDT \u2014 used by other services on this host, fractions allowed (0 on a host without other load)",
+            "MDT_EXCLUDED_CPU_CORES", cfg_current, example_defaults,
+            validate=mdt_capacity.validate_cores,
+        )
+        values["DEV_TIER_EXCLUDED_CPU_CORES"] = walk_key(
+            "  Cores no single tier may use on top of the above (0 = tiers are capped only by dev.slice)",
+            "DEV_TIER_EXCLUDED_CPU_CORES", cfg_current, example_defaults,
+            validate=mdt_capacity.validate_cores,
+        )
+        values["MDT_PROTECTED_UNITS"] = walk_key(
+            "  Host/production units to verify and probe (space-separated, empty if none)",
+            "MDT_PROTECTED_UNITS", cfg_current, example_defaults,
+            validate=mdt_capacity.validate_units, allow_empty_token=True,
+        )
+        if values["MDT_PROTECTED_UNITS"] == "-":
+            values["MDT_PROTECTED_UNITS"] = ""
+        values["MDT_HOST_SWAP_MARGIN"] = walk_key(
+            "  Disk swap kept for the host itself, never given to MDT",
+            "MDT_HOST_SWAP_MARGIN", cfg_current, example_defaults,
+            validate=mdt_capacity.validate_size_or_zero,
+        )
+        try:
+            capacity = mdt_capacity.derive_from_config(
+                values,
+                mem_total=total_kib * 1024,
+                swap_total=swap_kib * 1024,
+                nproc=host_nproc,
+            )
+        except mdt_capacity.CapacityError as exc:
+            out(f"  invalid: {exc}")
+            continue
+        for warning in capacity.warnings:
+            out(f"WARN: {warning}", indent="  ")
+        if capacity.no_disk_swap and swap_kib > 0 and not ask_yn(
+            "  MDT would get no disk swap. Continue with these numbers?", False,
+            default_source="derived",
+        ):
+            continue
+        break
+    else:
+        raise ValueError("the capacity unavailable to MDT was not accepted after 64 attempts; the candidate was not written")
+    values["MDT_PSI_GUARD"] = walk_key(
+        "  Pressure guard (off = disabled, report = events only, enforce = throttle the dev tiers while the protected units are under pressure)",
+        "MDT_PSI_GUARD", cfg_current, example_defaults,
+        validate=validate_psi_guard_mode,
+    )
+    units = values["MDT_PROTECTED_UNITS"].split()
+    excluded_ram = mdt_capacity.parse_size_bytes(values["MDT_EXCLUDED_RAM"]) or 0
+    for warning in mdt_capacity.verify_protection(DEFAULT_CGROUP_ROOT, units, excluded_ram):
+        out(f"WARN: {warning}", indent="  ")
+    out(mdt_capacity.summary_line(capacity), indent="  ")
+    return capacity
+
+
 def step_slice_first_resources(
     meminfo: dict[str, int],
     cfg_current: dict[str, str],
@@ -2457,19 +2568,24 @@ def step_slice_first_resources(
     total_kib = meminfo["MemTotal"]
     avail_kib = meminfo.get("MemAvailable", 0)
     swap_kib = read_swap_total_kib(meminfo, "")
-    proposals = propose_memory_tiers(total_kib, avail_kib)
     values: dict[str, str] = {}
     host_nproc = discover_nproc()
     if not host_nproc:
         raise ValueError("nproc did not return a positive CPU count; cannot explain or derive CPU ceilings")
 
     section("Governed slices")
+    capacity = _step_capacity_unavailable_to_mdt(
+        total_kib, swap_kib, host_nproc, cfg_current, example_defaults, values
+    )
+    proposals = propose_memory_tiers(
+        total_kib, avail_kib, parse_size_to_kib(values["MDT_EXCLUDED_RAM"])
+    )
     out("Proposal inputs:")
     for bullet in (
-        f"MemTotal={kib_to_size_str(total_kib)} -> sizing source.",
+        f"MemTotal={kib_to_size_str(total_kib)} -> sizing source, minus the RAM unavailable to MDT.",
         f"MemAvailable={kib_to_size_str(avail_kib) if avail_kib > 0 else 'unavailable'} -> context only.",
         f"nproc={host_nproc}; SwapTotal={kib_to_size_str(swap_kib)}.",
-        "Proposals are caps/thresholds, not RAM reservations; they use physical MemTotal because MemAvailable is transient.",
+        "Proposals are caps/thresholds derived from the RAM MDT may use; they use physical MemTotal because MemAvailable is transient.",
     ):
         out(f"- {bullet}", hang="  ")
     out("Memory controls:")
@@ -2482,34 +2598,30 @@ def step_slice_first_resources(
     ):
         out(f"- {bullet}", hang="  ")
     out("Top-down example (starting proposals; your answers replace these values):")
-    root_reserve = parse_int_or_default(
-        resolve_default("DEV_CPU_RESERVE_CORES", cfg_current, example_defaults, None), 1
-    )
-    child_reserve = parse_int_or_default(
-        resolve_default("DEV_SUBSLICE_CPU_RESERVE_CORES", cfg_current, example_defaults, None), 3
-    )
+    root_cpu_pct = capacity.dev_cpu_quota_pct
+    child_cpu_pct = capacity.tier_cpu_quota_pct
     swap_pct = parse_int_or_default(
         resolve_default("DEV_SWAP_CASCADE_PCT", cfg_current, example_defaults, None), 80
     )
-    root_swap = (swap_kib * 1024 * swap_pct // 100) if swap_kib else "auto"
+    root_swap = capacity.swap_mdt_bytes if swap_kib else "auto"
     child_swap = (
         (root_swap * swap_pct // 100) if isinstance(root_swap, int) else "derived from parent"
     )
     table_rows = (
         ("dev.slice", "root estate", proposals["DEV_MEMORY_HIGH"] + "/" + proposals["DEV_MEMORY_MAX"],
-         f"{max(1, host_nproc - root_reserve) * 100}%", kib_or_auto(root_swap),
+         f"{root_cpu_pct}%", kib_or_auto(root_swap),
          "60% of measured device"),
         ("├─ dev-interactive.slice", "IDE/devcontainers", proposals["DEV_INTERACTIVE_MEMORY_HIGH"] + "/" + proposals["DEV_INTERACTIVE_MEMORY_MAX"],
-         f"{max(1, host_nproc - child_reserve) * 100}%", kib_or_auto(child_swap),
+         f"{child_cpu_pct}%", kib_or_auto(child_swap),
          "parent + leaf"),
         ("├─ dev-background.slice", "stacks/tests", proposals["DEV_BACKGROUND_MEMORY_HIGH"] + "/" + proposals["DEV_BACKGROUND_MEMORY_MAX"],
-         f"{max(1, host_nproc - child_reserve) * 100}%", kib_or_auto(child_swap),
+         f"{child_cpu_pct}%", kib_or_auto(child_swap),
          "parent + leaf"),
         ("├─ dev-gates.slice", "short gate lanes", proposals["DEV_GATES_MEMORY_HIGH"] + "/" + proposals["DEV_GATES_MEMORY_MAX"],
-         f"{max(1, host_nproc - child_reserve) * 100}%", kib_or_auto(child_swap),
+         f"{child_cpu_pct}%", kib_or_auto(child_swap),
          "parent IOPS × 60%"),
         ("├─ dev-buildkitd.slice", "shared BuildKit", proposals["DEV_BUILDKITD_MEMORY_HIGH"] + "/" + proposals["DEV_BUILDKITD_MEMORY_MAX"],
-         f"{max(1, host_nproc - child_reserve) * 100}%", kib_or_auto(child_swap),
+         f"{child_cpu_pct}%", kib_or_auto(child_swap),
          "parent IOPS × 60%"),
         ("└─ dev-memory_min_guaranteed.slice", "admitted floor", "optional", "inherited", "inherited",
          "inherited"),
@@ -2533,15 +2645,16 @@ def step_slice_first_resources(
             cpu_swap = "CPU/swap inherited" if row[3] == row[4] == "inherited" else f"CPU {row[3]} | swap {row[4]}"
             out(f"{row[0]} | H/M {row[2]} | {cpu_swap}", indent="  ")
             out(f"IO: {row[5]}; why: {why_by_cgroup[row[0]]}", indent="    ", hang="      ")
-    out("  * This is a concrete 16-GiB-style starting example. `auto` CPU/swap values are derived at install time; IO percentages are applied only after current benchmark results exist.")
-    out("Starting proposals (review before accepting):")
+    out("  * The table shows this host's derived starting values. `auto` CPU/swap values are derived at install time; IO percentages are applied only after current benchmark results exist.")
+    out("Starting proposals (review before accepting); percentages are of the RAM MDT may use:")
     for line in (
-        "dev.slice: MemoryHigh=75% / MemoryMax=100% of physical RAM",
-        "dev-interactive.slice: MemoryLow=unset / High=20% / Max=32%",
-        "dev-background.slice: MemoryLow=unset / High=32% / Max=50%",
-        "dev-gates.slice: MemoryLow=unset / High=5% / Max=10%",
-        "dev-buildkitd.slice: MemoryLow=unset / High=10% / Max=12%",
-        "MemoryLow is unset because the parent MemoryLow is unset; configure the parent first if soft protection is wanted.",
+        "dev.slice: MemoryLow=15% / MemoryHigh=92% / MemoryMax=100%",
+        "dev-interactive.slice: MemoryLow=15% / High=45% / Max=60%",
+        "dev-background.slice: MemoryLow=unset / High=50% / Max=70%",
+        "dev-gates.slice: MemoryLow=unset / High=50% / Max=70%",
+        "dev-buildkitd.slice: MemoryLow=unset / High=25% / Max=35%",
+        "The tier limits sum to more than the RAM MDT may use on purpose (overcommit); zswap and swap absorb the cold part.",
+        "dev.slice MemoryLow mirrors the interactive MemoryLow so the soft protection can reach the tier.",
     ):
         out(f"- {line}", hang="  ")
     _, suggested_min_kib, suggestion_formula = propose_memory_min_guaranteed_suggestion(
@@ -2554,7 +2667,7 @@ def step_slice_first_resources(
     out("Advisory guaranteed-floor math:")
     for bullet in (
         suggestion_formula,
-        "This is not a RAM reservation and is never selected automatically.",
+        "This is not RAM held back from other uses and is never selected automatically.",
         f"Optional ceiling suggestion: {kib_to_size_str(suggested_min_kib)}.",
     ):
         out(f"- {bullet}", hang="  ")
@@ -2563,7 +2676,7 @@ def step_slice_first_resources(
     for bullet in (
         "Memory: every field is optional; Enter keeps the default, `-` removes the directive. Sibling Min/Low/High controls are independent (their values are not summed). Hard rule per slice: Min <= Low <= High <= Max. A child High/Max above its parent is re-prompted; sibling totals above the parent are advisory only (that does not block). A child Min/Low without matching parent protection is allowed but may be ineffective; the wizard reports it. `MemoryMax` is RAM only.",
         "`MemorySwapMax` limits swap only: `auto` derives it from the live parent, a size is this slice's own ceiling, `-` omits the directive (unlimited/default).",
-        "`CPUQuota` is the slice's hard cap: `auto` derives it from the child reserve above, `-` omits it, an explicit N% wins. `CPUWeight` and `IOWeight` are relative shares, not caps, and matter only when siblings contend.",
+        "`CPUQuota` is the slice's hard cap: `auto` derives it from the capacity above, `-` omits it, an explicit N% wins. `CPUWeight` and `IOWeight` are relative shares, not caps, and matter only when siblings contend.",
         "`MemoryZSwapWriteback` is a per-slice yes/no policy, not a size; a no on an ancestor still disables writeback below it.",
     ):
         out(f"- {bullet}", hang="  ")
@@ -2600,33 +2713,19 @@ def step_slice_first_resources(
         out(f"- {bullet}", hang="  ")
     out("CPU ceilings:")
     for bullet in (
-        "Host/production reserve: cores excluded from the aggregate dev.slice auto-quota.",
-        "Child reserve: cores excluded from each child slice's auto-quota.",
-        "Neither reserve pins a CPU; they affect only an empty CPUQuota value.",
-        f"With nproc={host_nproc}, reserve 1 -> root {max(1, host_nproc - 1) * 100}%; reserve 3 -> child {max(1, host_nproc - 3) * 100}%.",
+        f"dev.slice auto-quota = nproc ({host_nproc}) - cores unavailable to MDT = {root_cpu_pct}%.",
+        f"Each tier's auto-quota = that minus DEV_TIER_EXCLUDED_CPU_CORES = {child_cpu_pct}%.",
+        "Neither number pins a CPU; they affect only an empty or `auto` CPUQuota value.",
         "An explicit N% is the hard cap and overrides auto-detection; CPUWeight is only a relative share.",
     ):
         out(f"- {bullet}", hang="  ")
-    values["DEV_CPU_RESERVE_CORES"] = walk_key(
-        "  host/production CPU reserve (cores excluded from root auto-quota)",
-        "DEV_CPU_RESERVE_CORES", cfg_current, example_defaults,
-        validate=validate_nonneg_int,
-    )
-    values["DEV_SUBSLICE_CPU_RESERVE_CORES"] = walk_key(
-        "  child dev CPU ceiling reserve (cores excluded from each child auto-quota)",
-        "DEV_SUBSLICE_CPU_RESERVE_CORES", cfg_current, example_defaults,
-        validate=validate_nonneg_int,
-    )
-    entered_root_reserve = parse_int_or_default(
-        values["DEV_CPU_RESERVE_CORES"], root_reserve
-    )
     root_cpu_default = resolve_default("DEV_CPU_QUOTA", cfg_current, example_defaults, "auto")
     values["DEV_CPU_QUOTA"] = walk_key(
         "  dev.slice CPUQuota (auto = derived; '-' = no directive/unlimited; N% = hard cap)",
         "DEV_CPU_QUOTA", cfg_current, example_defaults, validate=validate_cpu_quota,
         proposal="auto",
         default_display=(
-            f"auto -> {max(1, host_nproc - entered_root_reserve) * 100}%"
+            f"auto -> {root_cpu_pct}%"
             if root_cpu_default in ("", "auto") else None
         ),
         allow_empty_token=True, empty_value="-",
@@ -2639,7 +2738,7 @@ def step_slice_first_resources(
     out("Swap cascade:")
     for bullet in (
         "Swap is separate from RAM; MemorySwapMax limits swap only.",
-        "dev.slice blank -> DEV_SWAP_CASCADE_PCT% of host SwapTotal.",
+        "dev.slice `auto` -> the disk swap MDT may use (SwapTotal minus the disk swap unavailable to MDT minus MDT_HOST_SWAP_MARGIN).",
         "Child blank -> the same percentage of dev.slice's derived swap ceiling.",
         "`auto` derives; an explicit size overrides only that slice; `-` omits the directive and means unlimited/default at that level.",
     ):
@@ -2650,7 +2749,7 @@ def step_slice_first_resources(
         validate=validate_pct_1_100,
     )
     entered_swap_pct = parse_int_or_default(values["DEV_SWAP_CASCADE_PCT"], swap_pct)
-    root_swap = (swap_kib * 1024 * entered_swap_pct // 100) if swap_kib else "auto"
+    root_swap = capacity.swap_mdt_bytes if swap_kib else "auto"
     root_swap_default = resolve_default("DEV_SWAP_MAX", cfg_current, example_defaults, "auto")
     root_swap_display = None
     if root_swap_default in ("", "auto"):
@@ -2668,7 +2767,7 @@ def step_slice_first_resources(
         allow_empty_token=True, empty_value="-",
     )
     if values["DEV_SWAP_MAX"] in ("", "auto"):
-        child_swap = (swap_kib * 1024 * entered_swap_pct // 100) if swap_kib else "derived from host swap"
+        child_swap = (capacity.swap_mdt_bytes * entered_swap_pct // 100) if swap_kib else "derived from host swap"
     elif values["DEV_SWAP_MAX"] == "-":
         child_swap = "not derived because the parent is unlimited"
     else:
@@ -2747,15 +2846,12 @@ def step_slice_first_resources(
         child_cpu_default = resolve_default(
             f"{prefix}_CPU_QUOTA", cfg_current, example_defaults, "auto"
         )
-        entered_child_reserve = parse_int_or_default(
-            values["DEV_SUBSLICE_CPU_RESERVE_CORES"], child_reserve
-        )
         values[f"{prefix}_CPU_QUOTA"] = walk_key(
             "  CPUQuota (auto = derived; '-' = no directive/unlimited; N% = hard cap)",
             f"{prefix}_CPU_QUOTA", cfg_current, example_defaults,
             proposal="auto",
             default_display=(
-                f"auto -> {max(1, host_nproc - entered_child_reserve) * 100}%"
+                f"auto -> {child_cpu_pct}%"
                 if child_cpu_default in ("", "auto") else None
             ),
             validate=validate_cpu_quota,
@@ -3463,7 +3559,7 @@ def parse_cli_args(argv: list[str] | None = None) -> argparse.Namespace:
               - Each slice enforces Min <= Low <= High <= Max; one child High/Max
                 above its parent is re-prompted, while sibling totals above the
                 parent are advisory and do not block.
-              - CPU auto-quota uses nproc minus the selected host/child reserve, floored
+              - CPU auto-quota uses nproc minus the cores unavailable to MDT, floored
                 at one core.
               - IO percentages use measured io.cost ceilings: lower IOPS and sequential
                 bandwidth; no current results leave root unit statics authoritative and
@@ -3575,6 +3671,30 @@ def parse_cli_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--probe-excluded",
+        action="store_true",
+        help=(
+            "read-only: sample the named units' cgroups and SUGGEST the RAM, disk swap and CPU "
+            "cores unavailable to MDT (MDT_EXCLUDED_*); writes nothing unless --accept-probe"
+        ),
+    )
+    parser.add_argument(
+        "--units", nargs="+", metavar="UNIT", default=None,
+        help="with --probe-excluded: the host/production units to probe (default: MDT_PROTECTED_UNITS of --output)",
+    )
+    parser.add_argument(
+        "--seconds", type=float, default=600.0,
+        help="with --probe-excluded: the sampling window (default 600)",
+    )
+    parser.add_argument(
+        "--cgroup-root", type=Path, default=None, metavar="PATH",
+        help="with --probe-excluded: the cgroup2 mount (default /sys/fs/cgroup)",
+    )
+    parser.add_argument(
+        "--accept-probe", action="store_true",
+        help="with --probe-excluded: write the suggested numbers into the existing --output file",
+    )
+    parser.add_argument(
         "--with-baseline",
         action="store_true",
         help=(
@@ -3592,6 +3712,68 @@ def parse_cli_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def run_probe_excluded(args: argparse.Namespace, sleep=None, clock=None) -> int:
+    """``--probe-excluded``: suggest MDT_EXCLUDED_RAM / _SWAP / _CPU_CORES from live cgroups.
+
+    Read-only. The numbers are written only with ``--accept-probe``, and only into an
+    existing ``--output`` file (never created here).
+    """
+    import time
+
+    cfg: dict[str, str] = {}
+    text = ""
+    if args.output.exists():
+        text = args.output.read_text()
+        try:
+            cfg = parse_env_file(text, strict=True)
+        except TemplateError as exc:
+            print(f"ERROR: could not read `{args.output}`: {exc}", file=sys.stderr)
+            return 1
+        renamed = mdt_capacity.renamed_key_errors(cfg)
+        if renamed:
+            for message in renamed:
+                print(f"ERROR: {message}", file=sys.stderr)
+            return 1
+    units = args.units if args.units else cfg.get("MDT_PROTECTED_UNITS", "").split()
+    if not units:
+        print("ERROR: no units to probe: name them with --units or set MDT_PROTECTED_UNITS", file=sys.stderr)
+        return 2
+    error = mdt_capacity.validate_units(" ".join(units))
+    if error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 2
+    cg_root = args.cgroup_root or DEFAULT_CGROUP_ROOT
+    out(f"Probing {', '.join(units)} for {args.seconds:g}s (read-only; nothing is applied).")
+    result = mdt_capacity.probe_units(
+        cg_root, units, seconds=args.seconds, interval=5 if args.seconds >= 5 else max(args.seconds, 1),
+        sleep=sleep or time.sleep, clock=clock or time.monotonic,
+    )
+    excluded = mdt_capacity.parse_size_bytes(cfg.get("MDT_EXCLUDED_RAM", "0") or "0") or 0
+    out(mdt_capacity.format_probe(result, excluded, cg_root, units))
+    if not args.accept_probe:
+        out("Nothing was written. Re-run with --accept-probe to write these numbers into the --output file.")
+        return 0
+    if not args.output.exists():
+        print(f"ERROR: --accept-probe updates an existing file; `{args.output}` does not exist", file=sys.stderr)
+        return 1
+    updates = {
+        "MDT_EXCLUDED_RAM": mdt_capacity.format_size(result.ram),
+        "MDT_EXCLUDED_SWAP": mdt_capacity.format_size(result.swap),
+        "MDT_EXCLUDED_CPU_CORES": mdt_capacity._fmt_cores(Decimal(str(result.cpu_cores))),
+    }
+    if args.units:
+        updates["MDT_PROTECTED_UNITS"] = " ".join(units)
+    try:
+        for key, value in updates.items():
+            text = apply_value(text, key, value)
+    except TemplateError as exc:
+        print(f"ERROR: {exc}; nothing was written", file=sys.stderr)
+        return 1
+    write_atomic(args.output, text)
+    out(f"wrote {', '.join(f'{k}={v}' for k, v in updates.items())} to `{args.output}`")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_cli_args(argv)
 
@@ -3604,6 +3786,9 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+
+    if args.probe_excluded:
+        return run_probe_excluded(args)
 
     if args.check_scheduler is not None:
         error = validate_io_root_scheduler(args.check_scheduler) or io_scheduler_available_error(
@@ -3651,6 +3836,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.output.exists():
         try:
             cfg_current = parse_env_file(args.output.read_text(), strict=True)
+            renamed = mdt_capacity.renamed_key_errors(cfg_current)
+            if renamed:
+                for message in renamed:
+                    print(f"ERROR: {message}", file=sys.stderr)
+                print(
+                    f"No configuration was written. Rename the key(s) in `{args.output}` and re-run.",
+                    file=sys.stderr,
+                )
+                return 1
             out(f"Found an existing `{args.output}` -- using its values as defaults where they are actually set.")
         except (OSError, TemplateError) as exc:
             print(

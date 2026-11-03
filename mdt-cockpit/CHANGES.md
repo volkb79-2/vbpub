@@ -16,6 +16,29 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   on an older base.
 
 ### Changed
+- host-setup: the capacity unavailable to MDT drives sizing and protection (MDT-033). The operator names
+  three numbers, `MDT_EXCLUDED_RAM`, `MDT_EXCLUDED_SWAP` (disk swap only, zswap ignored) and
+  `MDT_EXCLUDED_CPU_CORES` (fractions allowed), plus `DEV_TIER_EXCLUDED_CPU_CORES`, `MDT_PROTECTED_UNITS` and
+  `MDT_HOST_SWAP_MARGIN` (512M). The wizard proposes tiers from `RAM_MDT = MemTotal - MDT_EXCLUDED_RAM`
+  (dev.slice 100%/92%; tiers 60/45, 70/50, 70/50, 35/25 percent, overcommitted by design), `dev.slice`
+  `MemorySwapMax` is `SwapTotal - MDT_EXCLUDED_SWAP - MDT_HOST_SWAP_MARGIN`, and the CPU quotas derive from
+  `nproc - MDT_EXCLUDED_CPU_CORES`. The install refuses `RAM_MDT < 1G` and `CPU_MDT < 0.5`, and asks to
+  confirm (`--confirm-no-disk-swap`) when MDT would get no disk swap. `mdt-host-check.sh` and the wizard warn
+  when the named units' `memory.min` does not cover the excluded RAM, when children exceed the parent, or when
+  their weights are below 4x `dev.slice`; `install.sh --apply-protection` (opt-in, confirmed) writes
+  `50-mdt-protection.conf` drop-ins for exactly those units. The new `mdt_capacity.py` module holds the
+  one implementation.
+- host-setup ships `mdt-psi-guard` (MDT-033.e): a stdlib service outside `dev.slice` that watches the
+  protected units' memory and CPU pressure and the host's memory `full` pressure. `MDT_PSI_GUARD=report`
+  (shipped) only writes `/run/mdt/psi-guard/events.jsonl`; `enforce` sets the tier weights to 1 and then
+  lowers `MemoryHigh` of the gates and background tiers, reverting on release, stop and the next start;
+  `off` disables the service. `mdt-dev-governance-reconcile.sh` skips keys listed in the guard's state file.
+- host-setup keys renamed outright, with no alias: `DEV_CPU_RESERVE_CORES` is `MDT_EXCLUDED_CPU_CORES`,
+  `DEV_SUBSLICE_CPU_RESERVE_CORES` is `DEV_TIER_EXCLUDED_CPU_CORES` (`max(0, k - c)`), `DEV_MEMORY_RESERVE` is
+  `MDT_EXCLUDED_RAM`. The installer, the wizard and `mdt-host-check.sh` refuse the old names with a message
+  naming the new key; the rename table is in the host-setup README ("Renamed keys (2026-11)"). The
+  operator renames `/etc/mdt/host-setup.env` before the next install; the shipped defaults move from
+  "1 and 3 cores withheld" to 0.
 - The default CoW root is renamed `/srv/devcontainers-cow/<user>/` to `/srv/mdt-cockpit-cow/<user>/`
   (templates, `.devcontainer/devcontainer.json`, docs, `MDT_COW_ROOT` examples); there is no alias and no
   fallback to the old path. Existing hosts must rename the mountpoint: `findmnt /srv/devcontainers-cow`

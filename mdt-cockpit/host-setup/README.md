@@ -52,12 +52,11 @@ dev.slice                    ONE absolute IOPS/bandwidth/CPU/swap ceiling —
 
 **CPU, swap, and zswap-writeback all get the same "one ceiling at dev.slice,
 one tighter sub-ceiling per child" treatment as IO:**
-- `CPUQuota`: `dev.slice` auto-detects `nproc - DEV_CPU_RESERVE_CORES`
-  (default 1); every child auto-detects `nproc - DEV_SUBSLICE_CPU_RESERVE_CORES`
-  (default 3) independently.
-- `MemorySwapMax`: auto-detected from this host's real total swap at
-  `DEV_SWAP_CASCADE_PCT`% (default 80), cascading — `dev.slice` = 80% of
-  host swap and each child = 80% of `dev.slice`'s derived number. The
+- `CPUQuota`: `dev.slice` derives `nproc - MDT_EXCLUDED_CPU_CORES`; every child
+  derives that minus `DEV_TIER_EXCLUDED_CPU_CORES` independently (both
+  default 0; see "Capacity unavailable to MDT" below).
+- `MemorySwapMax`: `dev.slice` is the disk swap MDT may use (`SWAP_MDT`, below);
+  each child is `DEV_SWAP_CASCADE_PCT`% (default 80) of `dev.slice`'s number. The
   inotify watcher's per-container swap cap is conditional: it applies 80%
   again only when that slice has an explicitly configured per-container
   memory pair; shipped pairs are disabled.
@@ -80,7 +79,7 @@ DESIGN-2026-09-12-liveness-placement-admission.md`).
 | `dev-interactive.slice` | devcontainers (IDE + AI agents) via devcontainer.json runArg | responsive: soft-protected working set (`MemoryLow`), generous `MemoryHigh`, cold tail compressed into zswap and allowed to drain to disk from there (`DEV_INTERACTIVE_ZSWAP_WRITEBACK`), never OOM-killed |
 | `dev-gates.slice` | gate/lane containers + placed lane leaves `rg-<token>`, via explicit `docker run --cgroup-parent` or `$CGROUP_PARENT_DEV_GATES` | the admission capacity object: bounded memory+swap, `systemd-oomd` kills inside the tier first — a gate is disposable, a stack is not |
 | `dev-background.slice` | long-running dev stacks (an app under development, ...), via compose `cgroup_parent`, explicit `docker run --cgroup-parent`, **or** the Docker daemon-wide default | bounded: hard memory+swap caps (relaxed swap given ample host swap — size for yours), `systemd-oomd` kills inside the tier first |
-| `dev-buildkitd.slice` | exactly one container: the host-managed rootless BuildKit worker (`mdt-buildkitd.service`, plain `docker run --cgroup-parent=`, never through a Buildx driver — see `plan-buildkitd-service.md`) | one shared build cache across every consuming project; hard `CPUQuota` auto-detected as `nproc - DEV_SUBSLICE_CPU_RESERVE_CORES` cores (default 3, same as every other child) unless overridden; active-build latency-sensitive, so `CPUWeight`/`IOWeight` sit between interactive's and background's; also gets a tighter runtime IOPS sub-ceiling (bandwidth untouched), same as `dev-gates.slice` |
+| `dev-buildkitd.slice` | exactly one container: the host-managed rootless BuildKit worker (`mdt-buildkitd.service`, plain `docker run --cgroup-parent=`, never through a Buildx driver — see `plan-buildkitd-service.md`) | one shared build cache across every consuming project; hard `CPUQuota` derived as `nproc - MDT_EXCLUDED_CPU_CORES - DEV_TIER_EXCLUDED_CPU_CORES` cores (same as every other child) unless overridden; active-build latency-sensitive, so `CPUWeight`/`IOWeight` sit between interactive's and background's; also gets a tighter runtime IOPS sub-ceiling (bandwidth untouched), same as `dev-gates.slice` |
 | (production tiers) | e.g. a production service's own top-level slice | owned elsewhere — this companion never touches them, it only keeps dev work from starving them |
 
 `dev.slice` (the shared parent) carries the **one** absolute IOPS/bandwidth
@@ -117,25 +116,151 @@ BFQ's 1..1000 range, so "1000 vs 100" would be 1.81:1, not 10:1 — express IO
 ratios by lowering the loser, never raising the winner.
 [CGROUP-NOTES.md §BFQ](CGROUP-NOTES.md#bfq-caveats) has the mapping table.
 
+## Capacity unavailable to MDT
+
+Three numbers name the capacity that other services on the host (a game
+server, a database, anything that is not MDT) use and that is therefore
+**unavailable to MDT**. Everything else is MDT's. The operator supplies only
+these; every dev-tier default is derived from them.
+
+| Key | Meaning | Default |
+|---|---|---|
+| `MDT_EXCLUDED_RAM` | RAM the other services use | `0` |
+| `MDT_EXCLUDED_SWAP` | DISK swap the other services occupy (zswap is ignored) | `0` |
+| `MDT_EXCLUDED_CPU_CORES` | cores the other services use; one decimal place (`0.5`, `1.5`); `0` on a host without other load | `0` |
+| `DEV_TIER_EXCLUDED_CPU_CORES` | cores no single tier may use on top of the above | `0` |
+| `MDT_PROTECTED_UNITS` | the other services' systemd units, space-separated, verified and probed | empty |
+| `MDT_HOST_SWAP_MARGIN` | disk swap kept for the host itself | `512M` |
+
+```
+RAM_MDT  = MemTotal  - MDT_EXCLUDED_RAM                          (refused below 1G)
+SWAP_MDT = SwapTotal - MDT_EXCLUDED_SWAP - MDT_HOST_SWAP_MARGIN  (<= 0: MDT gets no disk swap)
+CPU_MDT  = nproc     - MDT_EXCLUDED_CPU_CORES                    (refused below 0.5)
+```
+
+- `dev.slice`: `MemoryMax` = `RAM_MDT`, `MemoryHigh` = 92% of it,
+  `MemorySwapMax` = `SWAP_MDT`, `CPUQuota` = `CPU_MDT` x 100%.
+- Tiers (wizard proposals; an explicit value always wins): `MemoryMax` /
+  `MemoryHigh` as percent of `RAM_MDT` - interactive 60/45 (`MemoryLow` 15%,
+  mirrored on `dev.slice` so it can take effect), background 70/50, gates 70/50,
+  buildkitd 35/25. They sum to more than `RAM_MDT` on purpose: RAM and CPU are
+  overcommitted by design and zswap and disk swap absorb the cold part. A tier's
+  swap is `DEV_SWAP_CASCADE_PCT`% of `SWAP_MDT`; its `CPUQuota` is
+  (`CPU_MDT` - `DEV_TIER_EXCLUDED_CPU_CORES`) x 100%.
+- Protection of the other services is by weights (`CPUWeight`, `IOWeight`),
+  `memory.min` mirroring `MDT_EXCLUDED_RAM` on their own cgroups, and pressure
+  (PSI) as the control signal - not by carving RAM out of `dev.slice`.
+- A host with no swap needs no confirmation. When swap exists but `SWAP_MDT` is
+  not positive, the installer asks to confirm (or takes `--confirm-no-disk-swap`)
+  and MDT gets `MemorySwapMax=0`.
+- Lane workers and R2 jobs are sized by run-gate from measured per-worker
+  profiles, not from these limits. The tier `MemoryMax` is the safety cap; the
+  run-gate admission budget is the predictable need.
+
+Worked examples:
+
+| Host | Inputs | Result |
+|---|---|---|
+| Shared host | 8 cores, MemTotal 15.5 GiB, 69 GiB swap; `6500M` RAM, `14G` swap, `1.5` cores excluded | `RAM_MDT` 9.2 GiB, `SWAP_MDT` 54.5 GiB, `dev.slice` `CPUQuota` 650% |
+| Small host | 4 cores, 7.75 GiB RAM, all excluded values 0 | `RAM_MDT` 7.75 GiB, `SWAP_MDT` = SwapTotal - 512M, `CPUQuota` 400% |
+
+### Verifying the protection
+
+`mdt-host-check.sh` (and the wizard summary) WARN, for the units named in
+`MDT_PROTECTED_UNITS`, when:
+
+- the effective `memory.min` summed over them is below `MDT_EXCLUDED_RAM`;
+- the children's `memory.min` sum exceeds the parent's (the kernel then scales
+  the children down proportionally);
+- a unit's `CPUWeight` or `IOWeight` is below 4x that of `dev.slice`.
+
+This is verify-only: the production units are operator-owned.
+`sudo ./install.sh --apply-protection` is the opt-in alternative: after an
+interactive confirmation it writes `50-mdt-protection.conf` drop-ins with
+`MemoryMin=` (the excluded RAM, split by current use), `CPUWeight=` and
+`IOWeight=` (4x `dev.slice`) for exactly the named units, then runs
+`systemctl daemon-reload`. Nothing else is installed or restarted.
+
+### Suggesting the numbers: `--probe-excluded`
+
+```
+mdt-host-setup-wizard.py --probe-excluded [--units wings.slice ...] [--seconds 600]
+```
+
+Read-only. For each named unit (default: `MDT_PROTECTED_UNITS` of the installed
+config) it samples `memory.min`/`memory.current`/`memory.swap.current`, the
+`cpu.stat` usage and the weights, over the window, and prints a table plus the
+suggestions: RAM = the effective `memory.min` sum rounded up to 256M (the p95 of
+`memory.current` flagged "unprotected" when no `memory.min` is set), swap = the
+maximum of `memory.swap.current` rounded up to 512M, CPU = the p95 usage rate
+rounded up to 0.5 core. Nothing is written unless `--accept-probe` is also given,
+which updates the three numbers (and `MDT_PROTECTED_UNITS` when `--units` was
+given) in the file named by `--output`.
+
+### The PSI guard (`mdt-psi-guard`)
+
+A small stdlib service in `system.slice` (outside `dev.slice`, so it keeps
+running while the dev tiers are starved) that uses pressure (PSI) as the control
+signal. It watches the protected units' `memory.pressure` `some` (10%), the host's
+`/proc/pressure/memory` `full` (5%) and the protected units' `cpu.pressure`
+`some` (25%); a signal fires after 10 s above its threshold and is released after
+60 s below half of it. The stall share is the growth of the cumulative `total=`
+counter, which is what a kernel PSI trigger measures (the guard polls the counters
+instead of waiting on a trigger fd, so its logic is deterministic).
+
+`MDT_PSI_GUARD` selects the mode: `off` (service disabled), `report` (shipped:
+events only, nothing changed) or `enforce`. In `enforce`:
+
+1. `CPUWeight` and `IOWeight` of `dev-gates`, `dev-background` and
+   `dev-buildkitd` go to 1;
+2. after 30 s still above, `MemoryHigh` of `dev-gates` and `dev-background` is
+   lowered to `max(256M, 0.9 x memory.current)`.
+
+Every change is reverted on release, on stop and at the next start (the
+originals are kept in `/run/mdt/psi-guard/state.json`, which also lists the keys
+the guard owns; the reconcile sweep consults it before writing any of them). It
+never freezes or kills anything: a wall-clock budget that expired while frozen
+would change a result. Events are appended to `/run/mdt/psi-guard/events.jsonl`
+for run-gate to read as a contamination source.
+
+## Renamed keys (2026-11)
+
+The `*_RESERVE_*` keys were renamed outright; there is no alias. The installer,
+the wizard and `mdt-host-check.sh` refuse the old names with a message that names
+the new key. Rename them in `/etc/mdt/host-setup.env` before the next install:
+
+| Old key | New key | Value |
+|---|---|---|
+| `DEV_CPU_RESERVE_CORES=c` | `MDT_EXCLUDED_CPU_CORES` | `c` |
+| `DEV_SUBSLICE_CPU_RESERVE_CORES=k` | `DEV_TIER_EXCLUDED_CPU_CORES` | `max(0, k - c)`, which keeps today's tier quota (the parent's quota already caps a tier when `k < c`); `0` is recommended |
+| `DEV_MEMORY_RESERVE` | `MDT_EXCLUDED_RAM` | unchanged |
+
+Add the other new keys from `host-setup.env.example` (`MDT_EXCLUDED_SWAP`,
+`MDT_PROTECTED_UNITS`, `MDT_HOST_SWAP_MARGIN`, `MDT_PSI_GUARD`); an absent key is
+refused as missing.
+
 ## Wizard's top-down example
 
 The wizard shows this same hierarchy before it asks for values. The numbers
-below are a concrete starting example for a 16-GiB host; they are proposals,
-not facts. `auto` means derive from the host or parent at install time. The
-IO percentage is applied only after the identity-bound benchmark results are
-available.
+below are a concrete starting example for a host whose `RAM_MDT` is 16 GiB (no
+RAM excluded); they are proposals, not facts. `auto` means derive from the host
+or parent at install time. The IO percentage is applied only after the
+identity-bound benchmark results are available.
 
 | cgroup | MemoryHigh / MemoryMax | CPUQuota | MemorySwapMax | IO policy | Why it exists |
 |---|---:|---:|---:|---|---|
-| `dev.slice` (root estate) | `12G / 16G` | `700%` | `80% of host swap` | `60% of measured device` | One aggregate shield for production. |
-| ├─ `dev-interactive.slice` (IDE) | `3G / 5G` | `500%` | `80% of parent` | parent + per-container leaf | Keep the IDE/devcontainer responsive. |
-| ├─ `dev-background.slice` (long-running stacks) | `5G / 8G` | `500%` | `80% of parent` | parent + per-container leaf | Absorb ordinary stack load. |
-| ├─ `dev-gates.slice` (short lanes) | `800M / 1.5G` | `500%` | `80% of parent` | `60% of parent IOPS` | Bound disposable lanes without starving them. |
-| ├─ `dev-buildkitd.slice` (shared builder) | `1.5G / 2G` | `500%` | `80% of parent` | `60% of parent IOPS` | Protect the shared builder and its cache. |
+| `dev.slice` (root estate) | `14.5G / 16G` | `800%` (8 cores) | `SWAP_MDT` | `60% of measured device` | One aggregate shield for production. |
+| ├─ `dev-interactive.slice` (IDE) | `7G / 9.5G` | `800%` | `80% of parent` | parent + per-container leaf | Keep the IDE/devcontainer responsive. |
+| ├─ `dev-background.slice` (long-running stacks) | `8G / 11G` | `800%` | `80% of parent` | parent + per-container leaf | Absorb ordinary stack load. |
+| ├─ `dev-gates.slice` (short lanes) | `8G / 11G` | `800%` | `80% of parent` | `60% of parent IOPS` | Bound disposable lanes without starving them. |
+| ├─ `dev-buildkitd.slice` (shared builder) | `4G / 5.5G` | `800%` | `80% of parent` | `60% of parent IOPS` | Protect the shared builder and its cache. |
 | └─ `dev-memory_min_guaranteed.slice` (admitted floor) | optional | inherited | inherited | inherited | Share `MemoryMin` only when explicitly admitted. |
 
-The shipped `dev-gates.slice` example is intentionally conservative: its
-`1.5G` memory maximum cannot admit the contract-2 mutation lanes, which declare
+The tier limits sum to more than the 16 GiB on purpose (overcommit); the
+`dev.slice` ceiling is what bounds them together.
+
+Verify the `dev-gates.slice` size against the lanes you run: its
+`MemoryMax` must admit the contract-2 mutation lanes, which declare
 `2G` per container. Before running those lanes, tune the gate slice's
 `MemoryHigh` and `MemoryMax` above the sum of the active lane caps, with room
 for container and controller overhead. Two concurrent `2G` lanes need more
