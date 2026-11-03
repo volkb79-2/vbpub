@@ -8185,6 +8185,7 @@ def save_container_logs(docker: str, name: str,
         combined = grabbed.stdout + grabbed.stderr
         if grabbed.returncode != 0 and not combined.strip():
             return None
+        own_dir = target is None
         target = target or evidence_dir() / f"{name}.log"
         target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         # Review fix: container logs may echo credential material the suite
@@ -8194,6 +8195,9 @@ def save_container_logs(docker: str, name: str,
         # owned by someone else is refused rather than written into.
         if target.parent.stat().st_uid != os.geteuid():
             return None
+        if own_dir:
+            # mkdir(mode=) does not tighten an already-existing directory.
+            os.chmod(target.parent, 0o700)
         fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         try:
             if os.fstat(fd).st_uid != os.geteuid():
@@ -11860,10 +11864,9 @@ def junit_outcomes(path: Path) -> dict[str, str] | None:
 
 
 def workers_entry_is_clean(entry: dict) -> bool:
-    """SEAM for RG-144: the contamination rule owns this decision. Until it
-    lands, an entry is clean unless it already carries a flagged
-    `contamination` object. Every workers sizing basis reads entries only
-    through this function."""
+    """RG-144: an entry is clean unless it carries a flagged `contamination`
+    object (written by `classify_contamination`). Every workers sizing basis
+    reads entries only through this function."""
     contamination = entry.get("contamination")
     return not (isinstance(contamination, dict)
                 and contamination.get("flagged"))
@@ -12120,6 +12123,12 @@ def prepare_workers_run(lane: dict, record: dict, project_dir: Path,
     directory = (history_dir(project_dir) / WORKERS_PROFILE_SUBDIR
                  / record["run_id"])
     directory.mkdir(parents=True, exist_ok=True)
+    try:
+        # The lane user inside the container can differ from the invoking
+        # uid (RG-150/151/153); the profile directory must stay writable.
+        os.chmod(directory, 0o777)
+    except OSError:
+        pass
     extra = [os.environ.get("PYTEST_ADDOPTS", "")]
     junit = directory / "junit.xml" if options.get("junit") else None
     if junit is not None:
@@ -12235,7 +12244,7 @@ def strip_cli_options(arguments: list[str]) -> list[str]:
 
 
 def record_contaminated(record: dict | None) -> bool:
-    """SEAM for RG-144: whether a step's measurement is contaminated."""
+    """Whether a step's measurement is contaminated (RG-144)."""
     return bool(record) and not workers_entry_is_clean(record)
 
 
@@ -12379,6 +12388,9 @@ def run_workers_measurement(args: argparse.Namespace, lane: dict,
         return LaneResult("FAIL", None, XDIST_ISOLATION_REASON,
                           _lane_name=args.lane)
     if any(row["contaminated"] for row in rows):
+        print("run-gate: INCONCLUSIVE/scaling-contaminated: a step ran under "
+              "contention; the numbers are not a measurement (exit 1 is the "
+              "closed table's FAIL, the reason says inconclusive)", flush=True)
         return LaneResult("FAIL", None, "scaling-contaminated",
                           _lane_name=args.lane)
     if not args.scaling:
@@ -12386,6 +12398,7 @@ def run_workers_measurement(args: argparse.Namespace, lane: dict,
             print("run-gate: no per-test junit outcomes were produced (does "
                   "the lane run pytest?) or N=1 was the only step; no parity "
                   "proof stored", flush=True)
+            print("run-gate: INCONCLUSIVE/no-parity-evidence", flush=True)
             return LaneResult("FAIL", None, "no-parity-evidence",
                               _lane_name=args.lane)
         path = store_xdist_parity(
@@ -15894,8 +15907,9 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     forwarded_values = {key: os.environ[key] for key in env.get("forward_env", [])
                         if os.environ.get(key)}  # empty counts as ABSENT
     argv += env_flags_by_name(forwarded_values, docker_env_values)
-    for key, value in resource_env.items():   # run-gate facts, not secrets
-        argv += ["-e", f"{key}={value}"]
+    # run-gate facts are not secrets, but PYTEST_ADDOPTS is operator free
+    # text: names on argv, values in the client environment (RG-117a).
+    argv += env_flags_by_name(resource_env, docker_env_values)
     # RG-55/contract Sec 4.1: the token is appended in the SAME position as
     # `forward_env` values, immediately after that loop — `enabled = false`
     # (or the test-only kill switch) means no token at all, not an empty one.
@@ -16255,8 +16269,7 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
          if os.environ.get(key)}, docker_env_values)
     resource_env = {**resource_forwarded_env(resource_settings or {}, "exec"),
                     **lane_workers_env(lane)}
-    for key, value in resource_env.items():   # run-gate facts, not secrets
-        argv += ["-e", f"{key}={value}"]
+    argv += env_flags_by_name(resource_env, docker_env_values)
     # RG-55/contract Sec 4.1: same position, same rule as the ephemeral path.
     profiling = bool(profile_plan and profile_plan["enabled"])
     if profiling:

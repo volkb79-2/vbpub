@@ -7139,8 +7139,10 @@ these records, and the tables T2/T3 are produced from them.
 `NO_MEASUREMENT` and `auto` stays at 1. (2) The io term of the formula is never active: no lane key declares an io
 write cap. (3) The inconclusive result is verdict `FAIL` with reason `XDIST_ISOLATION` (history outcome
 `inconclusive`), because the verdict table is closed; a fifth verdict is a contract change. (4) Raw per-worker profiles
-are folded into the history entry only; the bounded sidecar is RG-145. (5) The contamination flag is read through the
-seam `workers_entry_is_clean` until RG-144 lands. (6) Live runs (design §9 M3) are not done. (7) The plugin is not yet
+are folded into the history entry only; the bounded sidecar is RG-145. (5) The contamination flag (RG-144, landed) is read
+through `workers_entry_is_clean`. Delta-review 2026-11-04 fixes (unreleased): plugin write failures degrade to
+`NO_MEASUREMENT` (H1), selftest diff-judges `run_gate_profile.py` (H2), inconclusive reasons print
+`INCONCLUSIVE/<reason>` (H3), resource env rides the client environment (M1). (6) Live runs (design §9 M3) are not done. (7) The plugin is not yet
 in the release-candidate wheel verification (`tools/release_candidate.py` checks `run_gate` and `run_gate_admission`).
 Severity: feature. Filed 2026-11-03. Design §6.2, §6.3.
 

@@ -32,10 +32,6 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   it); cross-run percentiles recomputed from raw subjects; `run-gate history`
   prints the distributions and the status and contamination counts.
 
-### Changed
-- `r2_candidate_ram_p95_bytes` / `r2_candidate_ram_samples` and the history
-  duration and resource medians are computed from clean profiles only.
-
 - RG-146: lane keys `workers` (int or `"auto"`), `workers_max` and
   `xdist_safe` for pytest-xdist command lanes, with the `{workers}` argv token
   and `RUN_GATE_WORKERS`; enforced cpu and memory caps (or cgprofile placement)
@@ -52,13 +48,30 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   speedup/efficiency/per-worker-memory table.
 
 ### Changed
+- `r2_candidate_ram_p95_bytes` / `r2_candidate_ram_samples` and the history
+  duration and resource medians are computed from clean profiles only.
 - History keeps one entry per commit, io_sync and xdist worker count (was per
-  commit and io_sync), so scaling steps do not overwrite each other.
-- Seams for RG-144/RG-145: `workers_entry_is_clean` and `record_contaminated`
-  read a `contamination` object on history entries; profile ingestion beyond
-  the plugin's own files is RG-145's.
+  commit and io_sync), so scaling steps do not overwrite each other; older
+  versions still read the entries.
+- `--scaling` and `--xdist-parity` end FAIL (exit 1, the closed table) with an
+  INCONCLUSIVE-class reason (`XDIST_ISOLATION`, `scaling-contaminated`,
+  `no-parity-evidence`) when the evidence is contaminated or missing; the run
+  prints `INCONCLUSIVE/<reason>` and its history outcome is `inconclusive`. Only
+  a real per-test outcome mismatch is a product FAIL.
+- `DockerAdmission.resume` never adopts an admission record that has no
+  `owner`, so a lane in flight across the upgrade acquires a fresh ticket.
+- `workers_entry_is_clean` and `record_contaminated` read the `contamination`
+  object on history entries.
 
 ### Fixed
+- Fix (delta review H1): the `run_gate_profile` plugin never changes a lane verdict: a failed profile write
+  (unwritable directory) or observer error is a stderr warning and `NO_MEASUREMENT`; the run's profile
+  directory is made 0777 so a container user with another uid can write it.
+- Fix (delta review H2): the selftest lane diff-judges `run_gate_profile.py` too (`--source`).
+- Fix (delta review M1): all resource facts including `PYTEST_ADDOPTS` now ride in the docker client's
+  environment (`-e KEY`), not on `docker run`/`docker exec` argv. (The env probe still carries only the
+  non-free-text facts as `-e KEY=value`.)
+- Fix (delta review M2): `save_container_logs` tightens an existing evidence directory to 0700.
 - Fix (RG-139): the R2 campaign closeout forwards the lane's declared coverage
   artifact (`--coverage`, from the Assay inventory; only when the verdict and
   the artifact exist and the judge's `analyze campaign` knows the flag), retains
@@ -73,8 +86,8 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   same mode's history; a manifest without a mode is treated as strict and
   `doctor` names the migration (re-run `footprint --write`).
 - Fix (RG-116 item 3, `tools/coverage_gate.py`): `--source` is repeatable and
-  the selftest lane passes `run_gate.py` and `run_gate_admission.py`, so the
-  admission module shipped in the wheel is diff-judged too.
+  the selftest lane passes `run_gate.py`, `run_gate_admission.py` and
+  `run_gate_profile.py`, so the modules shipped in the wheel are diff-judged too.
 - Fix (RG-116 item 4): a hunk body is delimited by its header line counts; an
   added line reading `++ x` is no longer taken for a `+++` file header.
 - Fix (RG-116 item 6): a changed continuation line of a multi-line statement
@@ -88,8 +101,7 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   during the profiling stop no longer skips the in-flight record clear.
 - Fix (RG-117a): forwarded secret values (`forward_env`, the profile token) travel in the docker client's
   environment as `-e KEY`; `docker run`/`docker exec` argv, `/proc/<pid>/cmdline` and the printed argv
-  carry names only. Resource facts (`RUN_GATE_IO_SYNC`, `COWTREE_MODE`, workers) stay `-e KEY=value`
-  (printed redacted).
+  carry names only. (Resource facts followed in the delta review M1 fix below.)
 - Fix (RG-117b): `save_container_logs` creates the file mode 0600 at creation (`O_NOFOLLOW`, no
   chmod-after-write window), creates its directory 0700 and refuses a planted symlink or a foreign-owned
   file or directory.
