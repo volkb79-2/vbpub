@@ -4,6 +4,13 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Added
+- The Python version of a release is a top-level input: `LATEST_KNOWN_PYTHON=3.15 cmru release mdt-cockpit`
+  (the environment wins over the `docker-bake.hcl` default, as `docker buildx bake` itself resolves
+  variables) publishes `trixie-py3.15-php8.5-<date>` and its `-latest` next to the default variant.
+  `DEVCONTAINERS_IGNORE_NEW_RELEASES=true` skips the newer-base stop when a release intentionally stays
+  on an older base.
+
 ### Changed
 - The devcontainer templates mount one home and one `/tmp` **per checkout**:
   `${localEnv:HOME}/mdt-cockpit-${localWorkspaceFolderBasename}-home/` and `-tmp/` (the vendored

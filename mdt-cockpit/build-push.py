@@ -111,7 +111,12 @@ def parse_args() -> argparse.Namespace:
 
 
 def _read_bake_default(var_name: str) -> str | None:
-    """Read a variable default from docker-bake.hcl."""
+    """Read a variable's value: the environment first (as docker buildx bake itself resolves it), else the
+    docker-bake.hcl default. This lets one checkout release several Python variants
+    (``LATEST_KNOWN_PYTHON=3.15 cmru release mdt-cockpit``)."""
+    env_value = os.environ.get(var_name, "").strip()
+    if env_value:
+        return env_value
     bake_path = ROOT / "docker-bake.hcl"
     if not bake_path.exists():
         return None

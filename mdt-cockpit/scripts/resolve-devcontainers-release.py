@@ -1300,7 +1300,11 @@ BAKE_FILE = PACKAGE_DOCS_ROOT.parent / "docker-bake.hcl"
 
 
 def _bake_default(name: str) -> str:
-    """Read a required literal variable default from the authoritative bake file."""
+    """Read a variable's value: the environment first (as docker buildx bake itself resolves it), else the
+    required literal default from the authoritative bake file."""
+    env_value = os.environ.get(name, "").strip()
+    if env_value:
+        return env_value
     content = BAKE_FILE.read_text(encoding="utf-8")
     match = re.search(
         rf'variable\s+"{re.escape(name)}"\s*\{{[^}}]*?default\s*=\s*"([^"]+)"',
