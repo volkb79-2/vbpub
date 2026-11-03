@@ -152,7 +152,7 @@ def parse_history(raw: bytes | str | None) -> tuple[dict[str, HistoryEntry], str
         return {}, None
     try:
         document = json.loads(raw)
-    except (ValueError, UnicodeDecodeError) as exc:
+    except (ValueError, UnicodeDecodeError, RecursionError) as exc:
         return {}, f"history is not valid JSON: {exc}"
     if (
         not isinstance(document, dict)
