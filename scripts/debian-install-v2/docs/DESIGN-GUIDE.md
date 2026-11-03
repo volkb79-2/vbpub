@@ -116,9 +116,11 @@ the cap. The cap is a root partition length measured from its existing start,
 not an absolute disk end; an unaligned start therefore does not lower the
 configured GiB limit.
 
-Before the first reboot, stage one prevents cloud-init or initramfs growroot
-from consuming the space before stage two can install the tail-swap boundary.
-Stage two repeats these idempotent guards. The installer writes
+Before the first reboot, stage one resolves and validates the root cap and
+tail-swap layout, then installs both growth guards before it installs the
+initramfs shrink hook. Both guards are in place if an unplanned reboot occurs
+while `update-initramfs` rebuilds images. Stage two repeats these idempotent
+guards. The installer writes
 `/etc/cloud/cloud.cfg.d/99-debian-install-v2-root-cap.cfg` with
 `growpart: {mode: off}` and `resize_rootfs: false`, and creates
 `/etc/growroot-disabled` so the initramfs growroot integration also stays off.
