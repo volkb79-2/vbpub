@@ -91,6 +91,12 @@ the technical detail below it.
 
 ## [Unreleased]
 
+### Fixed
+- CIU-102: `ctx.secret_file(name)` now resolves a secret a hook persisted itself (S9.4a, found through the stack's provenance sidecar) instead of raising `KeyError`; a name never persisted still raises.
+- CIU-150: the governance slice preflight also checks a literal `cgroup_parent: <name>.slice` authored in a stack's compose file. A slice systemd definitely reports absent refuses (exit 2); an inconclusive probe (cockpit, no systemd PID 1) now WARNs and continues.
+- CIU-148: SPEC S15.20 and DESIGN-NOTES D8 cite dstdns `docs/RESOURCE-GOVERNANCE.md` (sections 4 and 6) instead of the merged-away `KSM-OPTIN-MEASUREMENTS.md`.
+- CIU-101: the engine `--help` module-guard test no longer fails when an unrelated finalizer warning lands in its recording window.
+
 ## [7.18.0] - 2026-10-28
 <!-- cmru: generated -->
 <!-- cmru: source-end=2fa170b29ef870cd8e985d5ea895a1b87423ce98 -->
