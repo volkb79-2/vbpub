@@ -162,3 +162,27 @@ def test_live_ui_fallback_and_resolve_error(monkeypatch: pytest.MonkeyPatch, cap
     collector.collect_once = lambda: (_ for _ in ()).throw(ContainerResolveError("live missing"))  # type: ignore[method-assign]
     assert cli.main(["--once", "--json"]) == 2
     assert capsys.readouterr().err.strip() == "live missing"
+
+
+@pytest.mark.parametrize("raise_in", ["collector", "ui"])
+def test_live_tui_selector_error_exits_with_typed_code(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], raise_in: str
+) -> None:
+    """B-023: an unresolvable selector in the live TUI exits 2 like --once, no traceback."""
+    collector = FakeCollector(config=SimpleNamespace(interval=7.5))
+    failure = ContainerResolveError("live tui missing")
+
+    def build_collector(**_kwargs: object) -> FakeCollector:
+        if raise_in == "collector":
+            raise failure
+        return collector
+
+    def run_ui(*_args: object, **_kwargs: object) -> int:
+        raise failure
+
+    monkeypatch.setattr(cli, "Collector", build_collector)
+    monkeypatch.setattr(cli, "live_frame_stream", lambda *_args, **_kwargs: iter(()))
+    monkeypatch.setattr(cli, "_run_ui", run_ui)
+
+    assert cli.main(["--container", "nope"]) == 2
+    assert capsys.readouterr().err.strip() == "live tui missing"

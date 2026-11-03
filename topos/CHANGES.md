@@ -2,6 +2,14 @@
 
 All notable changes to this project are recorded here. Entries marked `cmru: generated` are produced from the project-scoped release range before the release gate runs.
 
+## [Unreleased]
+
+- fix(topos/tests): B-047 version assertions compare against `topos.__version__` (fallback test reads pyproject `fallback_version`) instead of the literal "0.1.0"
+- fix(topos/tests): B-003 MCP-dependent smoke/server tests skip cleanly (`requires_mcp`) when the `topos[mcp]` extra is absent; the P84 gate still fails such a run
+- fix(topos/cli): B-023 an unresolvable selector in the live TUI exits 2 with the typed message, as `--once` does
+- feat(topos/registry): B-024 `--metrics network` is accepted as an alias for the `net` family
+- fix(topos/mcp): B-031 `limit` is advertised as an integer in the `topos_overview`/`topos_history` input schemas; bool is still rejected with a typed error
+
 <!-- cmru: release history -->
 
 ## [0.4.2] - 2026-10-21

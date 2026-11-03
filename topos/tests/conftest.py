@@ -23,6 +23,25 @@ def fixture_frame():
     return frame_from_jsonable(payload)
 
 
+def _mcp_extra_installed() -> bool:
+    import importlib.util
+
+    return importlib.util.find_spec("mcp") is not None
+
+
+def requires_mcp(func):
+    """Skip a test that needs the optional ``topos[mcp]`` extra when it is absent (B-003).
+
+    The P84 gate in this file still fails the session when the extra is missing
+    in a gate environment, so a skip here can never read as a pass.
+    """
+    import pytest
+
+    return pytest.mark.skipif(
+        not _mcp_extra_installed(), reason="topos[mcp] extra not installed"
+    )(func)
+
+
 def systemctl_fixture_runner(name: str):
     from topos.drift.origin import ShowResult
 

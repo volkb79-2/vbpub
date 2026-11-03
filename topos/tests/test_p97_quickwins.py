@@ -214,6 +214,13 @@ class TestRegistryQuickwins:
         with pytest.raises(ValueError, match="empty selector"):
             parse_metrics_selector("ram,")
 
+    def test_parse_metrics_selector_accepts_network_as_alias_for_net(self):
+        """B-024: ``network`` resolves to the ``net`` family and keeps its block."""
+        assert parse_metrics_selector("network") == parse_metrics_selector("net")
+        metrics, blocks = parse_metrics_selector("ram,network")
+        assert "net_rx_bps" in metrics and "ram" in metrics
+        assert blocks == frozenset({"network"})
+
     def test_parse_metrics_selector_rejects_all_unknown(self):
         """All tokens unknown -> no metrics kept -> ValueError (line 279)."""
         with pytest.raises(ValueError, match="unknown metric token"):

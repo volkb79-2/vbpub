@@ -15,7 +15,7 @@ import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Annotated, Any, Protocol
 
 from topos.collect.dockerjoin import ContainerResolveError, resolve_container_key
 from topos.daemon import redaction
@@ -146,6 +146,20 @@ class McpServer:
             instructions="Read-only daemon metrics. No mutation or filesystem tools are exposed.",
         )
 
+        from pydantic import WithJsonSchema
+
+        def integer_limit_schema(tool: Callable[..., Any]) -> Callable[..., Any]:
+            """Advertise ``limit`` as a JSON integer without SDK-side coercion (B-031).
+
+            The parameter stays ``object`` for validation so a ``bool`` still
+            reaches the strict validators and becomes a typed tool error; only
+            the published JSON schema says ``integer``.  The annotation is set
+            as a real object because the module's string annotations cannot
+            see this local name.
+            """
+            tool.__annotations__["limit"] = Annotated[object, WithJsonSchema({"type": "integer"})]
+            return tool
+
         @mcp.tool(
             name="topos_health",
             description=(
@@ -164,6 +178,7 @@ class McpServer:
                 "the aggregate response cap is 4 MiB, with unavailable metrics omitted."
             ),
         )
+        @integer_limit_schema
         def topos_overview(sort_by: str = "ram", limit: object = 20) -> dict[str, object]:
             # Keep this uncoerced at the SDK boundary so Python's ``bool``-is-
             # ``int`` quirk reaches the explicit strict validator below.
@@ -191,6 +206,7 @@ class McpServer:
                 "and redacted values are marked."
             ),
         )
+        @integer_limit_schema
         def topos_history(
             selector: str, metric: str = "ram", window: str = "last:300", limit: object = 100
         ) -> dict[str, object]:
