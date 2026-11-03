@@ -476,7 +476,8 @@ the flag SURVIVES `execve`.** Three arms — baseline `/bin/sleep` → `no`,
 the exec. Repeated against a genuinely static target (`ldd: not a dynamic
 executable`): **`no` unwrapped, `yes` wrapped.** Reproducer and full numbers live
 with the consumer that ran it: dstdns `tools/ksm-optin/ksm-exec-probe.sh` and
-`docs/KSM-OPTIN-MEASUREMENTS.md`.
+`docs/RESOURCE-GOVERNANCE.md` (sections 4 and 6; the former
+`KSM-OPTIN-MEASUREMENTS.md` was merged into it).
 
 So the wrapper is **strictly more general** than the shim: static and dynamic,
 glibc and musl, and with no `-nostdlib` / zero-`DT_NEEDED` constraint on the
