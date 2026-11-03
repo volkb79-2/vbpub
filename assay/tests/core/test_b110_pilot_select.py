@@ -1526,13 +1526,27 @@ raise SystemExit(module.main(sys.argv[4:]))
     ).hexdigest()
 
 
-def test_S8_selector_refuses_size_below_per_file_plus_missing_operator(tmp_path: Path):
+def test_S8_selector_falls_back_to_operator_coverage_below_per_file_minimum(
+    tmp_path: Path,
+):
+    """B194: a size below per-file plus missing-operator coverage is a seeded
+    fill that still covers every operator; only a size below the operator
+    count is refused."""
     repo = tmp_path / "repo"
     repo.mkdir()
     rows, _files = _valid_fixture(repo)
-    result = _run_selector(tmp_path, rows, repo, "--size", "2")
-    assert result.returncode == 2
-    assert "size 2 is smaller than per-file (2) plus missing-operator (1) coverage" in result.stderr
+    operators = sorted({row["operator"] for row in rows})
+    assert len({row["path"] for row in rows}) + 1 > len(operators), "fixture shape"
+
+    small = _run_selector(tmp_path / "small", rows, repo, "--size", str(len(operators)))
+    assert small.returncode == 0, small.stderr
+    report = json.loads((tmp_path / "small" / "selection.json").read_text())
+    assert len(report["stratified"]) == len(operators)
+    assert sorted(row["operator"] for row in report["stratified"]) == operators
+
+    refused = _run_selector(tmp_path / "refused", rows, repo, "--size", str(len(operators) - 1))
+    assert refused.returncode == 2
+    assert f"smaller than the operator count ({len(operators)})" in refused.stderr
 
 
 def test_S3_selector_fills_exact_size_and_reports_all_rows_for_smaller_plans(tmp_path: Path):

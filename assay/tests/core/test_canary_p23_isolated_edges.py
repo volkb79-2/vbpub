@@ -454,3 +454,58 @@ def test_a_test_path_canary_target_is_still_refused_before_any_unit(
 
     assert caught.value.outcome is Outcome.ERROR
     assert caught.value.reason_code is ReasonCode.BAD_LANE_CONFIG
+
+
+def _allow_test_paths(lane):
+    import dataclasses
+
+    return dataclasses.replace(
+        lane, judge=dataclasses.replace(lane.judge, allow_test_path_targets=True)
+    )
+
+
+def _canary_on(git_repo: GitRepo, tmp_path: Path, lane, target: str, head_rev: str):
+    scratch = tmp_path / "scratch"
+    scratch.mkdir(parents=True)
+    with prepared_snapshot(git_repo, commit=head_rev, scratch_root=scratch) as prepared:
+        return run_isolated_canary(
+            lane,
+            prepared=prepared,
+            plan=make_plan(lane),
+            deadline=make_deadline(),
+            project_root=git_repo.path,
+            resolved_base=None,
+            mechanism="no-such-mechanism",
+            target=target,
+            adapter=PythonAdapter(),
+            process_runner=_pass_everything,
+            clock=_clock,
+        )
+
+
+def test_b085_refusal_names_the_flag_and_the_flag_admits_a_layout_test_path(
+    git_repo: GitRepo, tmp_path: Path
+):
+    """B085: the R3 veto names its remedy; with the lane's
+    ``allow_test_path_targets`` a library file under ``tests/`` passes the veto
+    (it reaches the unrecognised-mechanism result), while a test FILENAME is
+    still refused with the flag set."""
+    _seed(git_repo)
+    git_repo.write("pkg/tests/helper.py", "def h():\n    return 1\n")
+    git_repo.write("pkg/test_thing.py", "def test_x():\n    assert True\n")
+    head = git_repo.commit_all("add targets")
+    lane = _r3_lane(git_repo)
+
+    with pytest.raises(AssayError, match="allow_test_path_targets") as refused:
+        _canary_on(git_repo, tmp_path / "a", lane, "pkg/tests/helper.py", head)
+    assert refused.value.reason_code is ReasonCode.BAD_LANE_CONFIG
+
+    result = _canary_on(
+        git_repo, tmp_path / "b", _allow_test_paths(lane), "pkg/tests/helper.py", head
+    )
+    assert result is not None
+
+    with pytest.raises(AssayError, match="FILENAME"):
+        _canary_on(
+            git_repo, tmp_path / "c", _allow_test_paths(lane), "pkg/test_thing.py", head
+        )

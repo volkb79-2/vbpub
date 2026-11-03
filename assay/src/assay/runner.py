@@ -1676,8 +1676,8 @@ def _classify_r0_result(
         limits=None if observed is None else observed.limits,
         observation=(
             "not_requested"
-            if observed is None or observed.status == "unobserved"
-            else observed.status
+            if observed is None
+            else contention.observation_input(observed)
         ),
         observation_required=observation_required,
     )

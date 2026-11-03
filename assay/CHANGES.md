@@ -7,6 +7,12 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ### Added
 - B207: two-ended-matching candidate scheduling for parallel native R2 (`--jobs` above 1). Candidates are classed high, normal or low by predicted peak RSS and dispatched longest-first with at most one high running; `--memory-budget-bytes` (`ASSAY_R2_MEMORY_BUDGET_BYTES`) adds an admission rule on the predicted RSS sum (one candidate always runs, a queued high reserves the slot). Predictions come from what assay already records (`elapsed_seconds`, `peak_rss_bytes`, kept in `.schedule-history.v1` in the state directory), then live and last-campaign file medians, lane medians, and the new lane keys `judge.mutation.prediction_wall_seconds` and `prediction_rss_bytes`; the class factors are `schedule_high_factor` and `schedule_low_factor`. Progress candidate events gain `dispatch_position`, `prediction` and `prediction_error`; the state directory gains `schedule-summary.v1` (not `*.json`, so candidate-record globs stay exact); `assay lanes --json` gains `capabilities` (`r2-memory-budget`, `r2-schedule-tem`). Results are unchanged and independent of the order. Cgprofile-sourced numbers (B206) and the verdict schema fields (B208) are not part of this change.
 
+### Fixed
+- B085: the R3 canary target's test-path veto honours `judge.allow_test_path_targets` (a test FILENAME is still refused) and its refusal names the flag.
+- B187: R0 result classification maps the observation status through `contention.observation_input` instead of a hand-written copy.
+- B194: `tools/b110_pilot_select.py --size` below the per-file plus missing-operator minimum falls back to a seeded operator-covering fill; only a size below the operator count is refused.
+- B184: synthetic 10.0.1-shape `crashed` and `budget_exceeded` state fixtures prove the resume rejection for every bucket.
+
 ### Changed
 - Native R2 progress and state now drain by dispatch position instead of canonical index when scheduling is active (`--jobs` above 1); a serial run is unchanged. `assay analyze campaign` accepts a progress stream whose finished candidates are a contiguous prefix of dispatch order rather than of canonical index.
 - Documented the supported `--jobs` range and the limits that bind at high worker counts (consumer guide, "Candidate scheduling and the admission budget").
