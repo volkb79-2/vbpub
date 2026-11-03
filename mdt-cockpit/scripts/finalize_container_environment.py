@@ -60,6 +60,7 @@ from mdt_cli import MdtArgumentParser
 import json
 import os
 import pwd
+import re
 import shutil
 import stat
 import subprocess
@@ -482,7 +483,7 @@ def _docker(*argv: str) -> subprocess.CompletedProcess | None:
 
 def _container_networks(name: str) -> dict | None:
     """Networks of exactly the container ``name``: {network: [aliases]}, None if unknown."""
-    res = _docker("inspect", "--format", "{{json .NetworkSettings.Networks}}", name)
+    res = _docker("inspect", "--type", "container", "--format", "{{json .NetworkSettings.Networks}}", name)
     if res is None or res.returncode != 0:
         return None
     try:
@@ -494,43 +495,91 @@ def _container_networks(name: str) -> dict | None:
     return {k: list((v or {}).get("Aliases") or []) for k, v in nets.items()}
 
 
-def join_pwmcp_network() -> None:
-    """Attach this container to the network of a running PWMCP stack. Never fails finalize.
+PWMCP_OVERRIDE_ENV = "PWMCP_STACK_CONTAINER"
+_INSTANCE_ID_RE = re.compile(r'^\s*(?:export\s+)?INSTANCE_ID=["\']?([A-Za-z0-9_-]+)["\']?\s*$', re.M)
 
-    The stack's container is found with a filtered `docker ps` (name prefix `pwmcp-` and the
-    compose service label `pwmcp`), then inspected by exact name; only a network on which it
-    carries the alias `pwmcp` counts. Already attached to one of them: nothing to do.
+
+def pwmcp_stack_container_name(workspace: Path | None = None) -> tuple[str | None, str]:
+    """The exact name of THIS cockpit's PWMCP stack container, and where it came from.
+
+    Every PWMCP stack is named `pwmcp-<INSTANCE_ID>-pwmcp`, and instance, worktree, gate and
+    other users' stacks all match a generic filter, so the name is derived from this
+    workspace's identity: PWMCP_STACK_CONTAINER (explicit override), else INSTANCE_ID from the
+    environment, else the INSTANCE_ID line of <workspace>/ciu.env. (None, "") when unknown.
+    """
+    override = os.environ.get(PWMCP_OVERRIDE_ENV, "").strip()
+    if override:
+        return override, PWMCP_OVERRIDE_ENV
+    iid = os.environ.get("INSTANCE_ID", "").strip()
+    if iid:
+        return f"pwmcp-{iid}-pwmcp", "INSTANCE_ID"
+    env_file = (workspace or Path.cwd()) / "ciu.env"
+    try:
+        m = _INSTANCE_ID_RE.search(env_file.read_text(encoding="utf-8"))
+    except OSError:
+        m = None
+    if m:
+        return f"pwmcp-{m.group(1)}-pwmcp", str(env_file)
+    return None, ""
+
+
+def join_pwmcp_network(workspace: Path | None = None) -> None:
+    """Attach this container to the network of ITS OWN running PWMCP stack. Never fails finalize.
+
+    The stack container is selected by exact name derived from this workspace's identity (see
+    pwmcp_stack_container_name), never "the first one": other stacks on the host (worktree,
+    gate, another user's) are ignored, and with no identity or no exact match nothing is
+    joined. The candidate is found with a filtered `docker ps` and inspected (`--type
+    container`); only a network on which it carries the alias `pwmcp` counts. Already
+    attached: nothing to do.
     """
     if shutil.which("docker") is None:
         return
     me = os.environ.get("HOSTNAME") or os.uname().nodename
+    expected, source = pwmcp_stack_container_name(workspace)
+    choose = (f"set {PWMCP_OVERRIDE_ENV}=<container name> (e.g. in remoteEnv) to choose the stack, "
+              "or INSTANCE_ID / ciu.env in the workspace")
     listed = _docker(
         "ps", "--filter", "name=^pwmcp-", "--filter", "label=com.docker.compose.service=pwmcp",
         "--format", "{{.Names}}",
     )
-    names = sorted(n for n in (listed.stdout.split() if listed and listed.returncode == 0 else []))
+    if listed is None or listed.returncode != 0:
+        detail = ((listed.stderr or listed.stdout) if listed else "docker unavailable").strip().splitlines()
+        warn(f"pwmcp: docker ps failed ({detail[-1] if detail else 'no output'}); skipped")
+        return
+    names = sorted(listed.stdout.split())
+    if expected is None:
+        info(f"pwmcp: this workspace's PWMCP identity is unknown (found: {', '.join(names) or 'none'}); "
+             f"not joining any stack; {choose}")
+        return
+    matches = [n for n in names if n == expected]
+    if len(matches) != 1:
+        if names:
+            info(f"pwmcp: no running stack named {expected} (from {source}); other stacks "
+                 f"({', '.join(names)}) are not joined; {choose}")
+        else:
+            info(f"pwmcp: no running PWMCP stack found; to start it: cd /srv/pwmcp-instance && ciu up "
+                 f"(the {PWMCP_ALIAS} alias resolves once this container is on its network)")
+        return
     mine = _container_networks(me)
     if mine is None:
         warn(f"pwmcp network: cannot inspect this container ({me}); skipped")
         return
-    candidates: list[str] = []
-    for name in names:
-        for net, aliases in (_container_networks(name) or {}).items():
-            if PWMCP_ALIAS in aliases and net not in candidates:
-                candidates.append(net)
+    candidates = [net for net, aliases in (_container_networks(matches[0]) or {}).items()
+                  if PWMCP_ALIAS in aliases]
     if not candidates:
-        info("pwmcp: no running PWMCP stack found; to start it: cd /srv/pwmcp-instance && ciu up "
-             f"(the {PWMCP_ALIAS} alias resolves once this container is on its network)")
+        info(f"pwmcp: {matches[0]} has no network carrying the alias {PWMCP_ALIAS}; skipped")
         return
     shared = [n for n in candidates if n in mine]
     if shared:
         info(f"pwmcp: already on network {shared[0]}")
         return
     if len(candidates) > 1:
-        warn(f"pwmcp: several PWMCP networks ({', '.join(candidates)}); joining {candidates[0]}")
+        warn(f"pwmcp: {matches[0]} carries the alias on several networks ({', '.join(candidates)}); "
+             f"joining {candidates[0]}")
     res = _docker("network", "connect", candidates[0], me)
     if res is not None and res.returncode == 0:
-        ok(f"pwmcp: joined network {candidates[0]}")
+        ok(f"pwmcp: joined network {candidates[0]} ({matches[0]})")
     else:
         detail = ((res.stderr or res.stdout) if res else "docker unavailable").strip().splitlines()
         warn(f"pwmcp: network connect {candidates[0]} failed: {detail[-1] if detail else 'no output'}")

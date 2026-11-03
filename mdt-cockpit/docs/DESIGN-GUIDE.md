@@ -70,12 +70,19 @@ format.
 stack (`restart: unless-stopped`) outlives a devcontainer that is recreated or rebuilt,
 which starts on the default bridge alone, so `pwmcp` would not resolve. The finalize step
 (`postCreateCommand`, so on every create and rebuild; a plain restart keeps its networks)
-therefore runs `join_pwmcp_network`: it finds the stack container with a filtered
-`docker ps` (name `^pwmcp-`, compose service label `pwmcp`), inspects it by exact name, and
-`docker network connect`s this container to a network on which it carries the alias `pwmcp`
-unless already attached. It is idempotent and never fails finalize; with no running stack
-it logs one INFO line pointing at `cd /srv/pwmcp-instance && ciu up` (which then attaches
-the container itself). It does not use ciu, only Docker labels and aliases.
+therefore runs `join_pwmcp_network`. Several PWMCP stacks are normal on one host (instance,
+worktree, gate, other users'), all named `pwmcp-<INSTANCE_ID>-pwmcp` with the alias `pwmcp`, so
+the step never picks "the first": it derives the exact container name of THIS workspace's stack
+from `PWMCP_STACK_CONTAINER` (explicit override, e.g. in `remoteEnv`), else `INSTANCE_ID` from the
+environment, else the `INSTANCE_ID` line of `<workspace>/ciu.env`. It finds that container with a
+filtered `docker ps` (name `^pwmcp-`, compose service label `pwmcp`), inspects it with
+`docker inspect --type container`, and `docker network connect`s this container to a network on
+which it carries the alias, unless already attached. Unknown identity or no exact match joins
+nothing and logs one INFO line naming the override. A failing `docker ps` is a WARN with its
+error. It assumes `$HOSTNAME` resolves this container (`--hostname` equals `--name`, or the
+default ID hostname); otherwise it skips. It is idempotent and never fails finalize; with no
+running stack it logs one INFO line pointing at `cd /srv/pwmcp-instance && ciu up` (which then
+attaches the container itself). It does not use ciu, only Docker labels and aliases.
 
 ## The home is user state; image assets live outside it
 
