@@ -696,3 +696,12 @@ suffers). So `DEV_MEMORY_RESERVE` should (a) mirror into `memory.min` for named 
 `MemoryMax` sum into a hard physical-RAM budget. CPU: a "very safe" gates setting on a 4-core scratch host is 3.5 cores (`DEV_SUBSLICE_CPU_RESERVE_CORES=0.5`
 equivalent), with weights keeping host services first. Per-lane worker counts must be sized from MEASURED per-worker RAM (see run-gate footprint numbers) so the
 overcommit stays inside what zswap can absorb.
+
+**Revision 2 (operator, 2026-11-03): the boundary and the two numbers.** The operator configures the production services and their protection (on the shared host:
+`wings.slice` `memory.min=6500M`, `memory.high=15000M`, zswap writeback on, two game-server scopes at `memory.min` 4000M + 3000M, 13.8 GB of swap in use on average;
+the soulmask monitor output is the reference). MDT only asks what to assume UNUSABLE for itself and treats everything else as its own: the wizard asks for (1) the
+RAM set aside for host/production services (mirrored as `memory.min` on their cgroups, optionally read from the live cgroup tree: sum of `memory.min` of the named
+slices) and (2) the expected disk swap use of those services (not zswap), and assumes MDT may use the remaining RAM plus the remaining swap (swap total minus the
+production expectation minus a small host swap reserve, about 500 MB). RAM is overcommitted by design; CPU may be overcommitted too (a job that waits on IO frees its core
+for another), kept safe by cgroup weights and PSI; on a host with no production services (the scratch VM) both numbers are 0 and the host reserve alone applies.
+Parallelism (lane workers, R2 jobs) is sized from the measured p95 per-worker RSS, not from the limits.
