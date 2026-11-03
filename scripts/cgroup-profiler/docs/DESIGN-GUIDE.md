@@ -630,6 +630,21 @@ manually exporting either value.
 The pasteable CIU pin and verification command live in
 [`CONSUMERS.md`](CONSUMERS.md#deploy-a-published-daemon-image-with-ciu).
 
+## Release checklist for 1.2.0
+
+- Run `cmru release` with `--set-version 1.2.0`. `cmru.toml` uses
+  `bump = "conventional"`, and most commits of this release are not
+  conventional-typed, so the computed bump would be 1.1.1. Check the version
+  in the `--dry-run` output before the real run.
+- After the image is published, bump `tag = "1.1.0"` in `ciu.toml.j2` to the
+  new release (contract 3 and the CP-31/CP-33/CP-34 fixes exist only in 1.2.0),
+  then deploy it.
+- R2 (mutation) is not part of the release gate and was waived for 1.2.0
+  (CP-30 stays open); say so in the release notes.
+- Confirm the PyPI upload time of `coverage` 7.16.2 is at least 14 days before
+  the tag.
+- Daemon deployments set `stop_grace_period: 30s` (the ciu template does).
+
 ## The GitHub Release body for the published image
 
 The image on GHCR is cgprofile's only released artifact: nothing is uploaded to the GitHub

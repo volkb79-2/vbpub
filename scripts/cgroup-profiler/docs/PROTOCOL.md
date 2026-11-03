@@ -205,7 +205,7 @@ consecutive incomplete attempt finalizes anyway with `stop_forced`; also
 answered when finalization itself failed, naming the error, in which case the
 session is reopened and a retry is safe), `busy` (additive, contract stays 1:
 the daemon is at an admission bound, 32 connections reading a request line, 16
-verbs running or 32 `watch` streams, or is shutting down; retry shortly), and
+verbs running, 2 `report` verbs running or 32 `watch` streams, or is shutting down; retry shortly), and
 from §8.8 `peer-refused`, `place-refused:*`, `bad-policy`, `not-streaming`.
 
 Additive optional Summary keys (cgprofile 1.1.0; the contract number stays 1
@@ -370,4 +370,3 @@ died), `daemon-error`.
 window; request handlers only open and read, so a slow window never delays
 another peer's answer. A window keeps running maxima and sums only. Open
 windows are not persisted: after a restart a close gets `window-lost`.
-
