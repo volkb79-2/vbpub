@@ -664,3 +664,24 @@ The test builds its collectors from the live host (`covs(world)`) and asserts th
 root filesystem is above the fill threshold (observed at 74% used) the finding appears and the `smoke` lane fails although
 nothing in the change under test is related. **Fix:** make the test hermetic by injecting the fill collector (as the sibling test
 already does with `c["fill"]`), so verdicts do not depend on the machine's disk usage.
+
+## MDT-033 - host-setup wizard: a RAM reserve (`DEV_MEMORY_RESERVE`) should drive the memory sizing (2026-11-03)
+
+**Status:** OPEN. CPU already has reserve keys (`DEV_CPU_RESERVE_CORES`, `DEV_SUBSLICE_CPU_RESERVE_CORES`); memory sizing uses fixed fractions of total RAM
+(`propose_memory_tiers`, `mdt-host-setup-wizard.py` ~455) and the shipped README table is sized for about 16 GB (dev.slice 12G/16G exceeds an 8 GB host).
+Found while sizing a 4-core / 7.9 GB scratch VM with no other load (wizard values 1.5G/2G + 100% CPU were chosen conservatively; 100% CPU per tier came from
+`DEV_SUBSLICE_CPU_RESERVE_CORES=3` on 4 cores; a pre-existing gates slice outside dev.slice added 6 GiB on top).
+
+**Design (Opus review 2026-11-03).**
+1. New key `DEV_MEMORY_RESERVE` = `auto` | `0` | size, in `host-setup.env.example` section 2.4: RAM kept outside dev.slice for the rest of the host (OS, other
+   services, page cache headroom, slices outside dev.slice). `auto` = max(1G, 10% of MemTotal) rounded to 256M. A config without the key keeps today's behaviour.
+2. Budget B = MemTotal - reserve. dev.slice MemoryMax = B, MemoryHigh = 90% of B. Children keep the current fractions applied to B (interactive 20%/32%, background
+   32%/50%, gates 5%/10%, buildkitd 10%/12% as High/Max); floors MemoryMax >= 512M, MemoryHigh >= 384M; round to 128M. Decision for the operator: raise gates and buildkitd
+   to 15%/25% (5%/10% gates is unusable below 16 GB).
+3. Explicit pairs in the config always win and are the prompt defaults; MemoryLow and the guaranteed ceiling must fit in B (hard), their sum above 50% of B is advisory;
+   zswap needs no adjustment (compressed pages are charged to the owning cgroup; swap caps derive from SwapTotal).
+4. Wizard prompt: "RAM to keep outside dev.slice for the rest of this host (OS, production services, slices outside dev.slice). auto = the larger of 1G and 10% of RAM ...",
+   then show the dev.slice budget and base every memory suggestion on it.
+5. Validation (wizard and `validate_host_setup_values`): reserve must be a size and leave B >= 1G; `DEV_MEMORY_MAX` <= B when a reserve is set (re-prompt like the existing
+   child-vs-parent rule ~667-689); advisory warning when a known slice outside dev.slice has a MemoryMax above the reserve. Also document: on a 4-core host with no other
+   load set `DEV_SUBSLICE_CPU_RESERVE_CORES=1` (300% per tier instead of 100%).
