@@ -2239,8 +2239,21 @@ The lane invokes its coverage helper this way:
 
 ```console
 python tools/coverage_gate.py --repo . --base latest-release-tag \
-  --coverage-json coverage.json --source run_gate.py
+  --coverage-json coverage.json --source run_gate.py \
+  --source run_gate_admission.py
 ```
+
+`--source` repeats; a path is judged against the first prefix that contains
+it. Changed continuation lines of a multi-line statement are judged as the
+statement's first line (the only one coverage.py lists), and a hunk body is
+delimited by its header counts, so an added line reading `++ x` is not
+mistaken for a file header.
+
+A `kind = "command"` lane that relies on `pytest --cov-fail-under` must set
+`[tool.coverage.report] precision = 2` (or pass `--cov-precision=2`):
+pytest-cov compares the total at the configured precision (default 0 digits)
+while printing it at two, so 96.94% against a 97 floor exits 0 otherwise
+(RG-122). Run-Gate maps the process exit status and never parses tool output.
 
 Only on a project's FIRST stable release, when no stable tag exists anywhere,
 may the explicit `--allow-first-release` option report this diff check as

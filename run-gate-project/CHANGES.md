@@ -55,6 +55,20 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   read a `contamination` object on history entries; profile ingestion beyond
   the plugin's own files is RG-145's.
 
+### Fixed
+- Fix (RG-116 item 3, `tools/coverage_gate.py`): `--source` is repeatable and
+  the selftest lane passes `run_gate.py` and `run_gate_admission.py`, so the
+  admission module shipped in the wheel is diff-judged too.
+- Fix (RG-116 item 4): a hunk body is delimited by its header line counts; an
+  added line reading `++ x` is no longer taken for a `+++` file header.
+- Fix (RG-116 item 6): a changed continuation line of a multi-line statement
+  (or the wrapped header of a `def`/`if`) is judged as the statement's first
+  line through the AST `end_lineno`, so it no longer leaves the denominator.
+- Fix (RG-122): the project sets `[tool.coverage.report] precision = 2` so a
+  96.97% total fails `--cov-fail-under=97` instead of exiting 0;
+  `tests/test_coverage_precision.py` pins it against real pytest-cov and
+  CONSUMERS.md tells command-lane consumers to do the same.
+
 <!-- cmru: release history -->
 
 ## [24.3.0] - 2026-11-02
