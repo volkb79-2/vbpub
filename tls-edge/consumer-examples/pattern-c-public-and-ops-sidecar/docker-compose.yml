@@ -53,16 +53,12 @@ services:
     labels:
       - traefik.enable=true
       # TLS comes from the entrypoint — no tls=true label needed.
-      - traefik.http.routers.pattern-c-app.rule=Host(`app.my.domain`)
+      - traefik.http.routers.pattern-c-app.rule=Host(`app.${TLS_EDGE_DOMAIN:?set TLS_EDGE_DOMAIN}`)
       - traefik.http.routers.pattern-c-app.entrypoints=websecure
       # Explicitly tell Traefik to route to port 8080 only.  Without this,
       # Traefik guesses the first exposed port; if the app exposes several,
       # the wrong one could be selected.
       - traefik.http.services.pattern-c-app.loadbalancer.server.port=8080
-
-      # Port-based fallback (use instead of the subdomain labels above):
-      # - traefik.http.routers.pattern-c-app.rule=Host(`my.domain`)
-      # - traefik.http.routers.pattern-c-app.entrypoints=websecure-alt
 
   # ── Ops sidecar ───────────────────────────────────────────────────────────
   # Shares app's network namespace.  Has no independent Docker network.

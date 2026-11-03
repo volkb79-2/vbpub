@@ -5,7 +5,7 @@
 #   - talks to a database / cache / worker that must NEVER be reachable
 #     from outside the stack.
 #
-# Routing: https://api.my.domain  →  Traefik  →  api:8080
+# Routing: https://api.<TLS_EDGE_DOMAIN>  →  Traefik  →  api:8080
 #
 # Network layout:
 #   ingress_public  – shared with Traefik.  Only 'api' joins this.
@@ -37,13 +37,9 @@ services:
     labels:
       - traefik.enable=true
       # TLS comes from the entrypoint — no tls=true label needed.
-      - traefik.http.routers.pattern-b-api.rule=Host(`api.my.domain`)
+      - traefik.http.routers.pattern-b-api.rule=Host(`api.${TLS_EDGE_DOMAIN:?set TLS_EDGE_DOMAIN}`)
       - traefik.http.routers.pattern-b-api.entrypoints=websecure
       - traefik.http.services.pattern-b-api.loadbalancer.server.port=8080
-
-      # Port-based fallback (use instead of the subdomain labels above):
-      # - traefik.http.routers.pattern-b-api.rule=Host(`my.domain`)
-      # - traefik.http.routers.pattern-b-api.entrypoints=websecure-alt
 
   # ── Private database – never on ingress_public ────────────────────────────
   db:
