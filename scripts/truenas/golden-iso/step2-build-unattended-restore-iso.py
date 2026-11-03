@@ -23,6 +23,9 @@ from urllib.parse import urlsplit
 
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+import credentials  # noqa: E402
+
 RUNTIME_DIR = HERE / "runtime"
 EFI_LOADER = r"\EFI\BOOT\BOOTX64.EFI"
 EXPECTED_PARTITION_CODES = ["EF02", "EF00", "BF01"]
@@ -145,19 +148,26 @@ def initialize_secrets(args: argparse.Namespace) -> None:
     if output.exists() and not args.force:
         raise BuildError(f"refusing to replace existing secrets file: {output}")
 
-    password_path = args.admin_password_file.resolve()
+    password_path = args.admin_password_file.resolve() if args.admin_password_file else None
     private_path = args.root_private_key.resolve()
     public_path = args.root_public_key.resolve()
     webhook_path = args.webhook_file.resolve()
     if output in {image, password_path, private_path, public_path, webhook_path}:
         raise BuildError("secrets TOML output must not replace one of its input files")
-    if not password_path.is_file():
-        raise BuildError(f"administrator password file not found: {password_path}")
-    if stat.S_IMODE(password_path.stat().st_mode) & 0o077:
-        raise BuildError("administrator password file must be mode 0600 or stricter")
-    password = password_path.read_text(encoding="utf-8").strip()
-    if len(password) < 16 or "\n" in password or "\r" in password:
-        raise BuildError("administrator password must contain at least 16 characters")
+    if password_path is None:
+        # Default: a random password; step 1 rotates it again at every capture.
+        password = credentials.generate_password()
+    else:
+        if not password_path.is_file():
+            raise BuildError(f"administrator password file not found: {password_path}")
+        if stat.S_IMODE(password_path.stat().st_mode) & 0o077:
+            raise BuildError("administrator password file must be mode 0600 or stricter")
+        try:
+            password = credentials.validate_admin_password(
+                password_path.read_text(encoding="utf-8").strip()
+            )
+        except credentials.CredentialError as exc:
+            raise BuildError(str(exc)) from None
 
     public_key = public_key_from_private(private_path)
     supplied_public = public_path.read_text(encoding="utf-8").strip()
@@ -186,19 +196,7 @@ def initialize_secrets(args: argparse.Namespace) -> None:
             "",
         ]
     )
-    output.parent.mkdir(parents=True, exist_ok=True)
-    temporary = output.with_name(output.name + f".tmp-{os.getpid()}")
-    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            stream.write(sidecar)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, output)
-        os.chmod(output, 0o600)
-    finally:
-        if temporary.exists():
-            temporary.unlink()
+    credentials.atomic_write_private(output, sidecar.encode("utf-8"))
     log(f"Private sibling secret file created: {output}")
 
 
@@ -905,7 +903,12 @@ def make_parser() -> argparse.ArgumentParser:
         help="combine credential inputs into a mode-0600 TOML sibling of the image",
     )
     init.add_argument("--image", type=Path, required=True)
-    init.add_argument("--admin-password-file", type=Path, required=True)
+    init.add_argument(
+        "--admin-password-file",
+        type=Path,
+        default=None,
+        help="optional; default is a generated random password (step 1 rotates it per capture)",
+    )
     init.add_argument("--root-private-key", type=Path, required=True)
     init.add_argument("--root-public-key", type=Path, required=True)
     init.add_argument("--webhook-file", type=Path, required=True)

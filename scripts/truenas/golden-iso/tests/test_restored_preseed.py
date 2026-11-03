@@ -45,6 +45,12 @@ class FakeTarget:
             return {"passwordauth": False}
         if method == "service.control":
             return None
+        if method == "api_key.query":
+            # first query: golden key carried by the disk; later: only the new one
+            self.key_queries = getattr(self, "key_queries", 0) + 1
+            return [{"id": 5, "name": "golden"}] if self.key_queries == 1 else [{"id": 9}]
+        if method == "api_key.create":
+            return {"id": 9, "key": "9-fresh-one-time-key-value-0123456789"}
         return None
 
 
@@ -92,15 +98,74 @@ def test_apply_preseed_refuses_existing_patch_record_before_mutation() -> None:
     assert [method for method, _params, _sensitive in target.calls] == ["system.info"]
 
 
-def test_read_admin_password_requires_private_valid_toml(tmp_path: Path) -> None:
-    secret = tmp_path / "ui-secrets.toml"
-    secret.write_text('[truenas_admin]\nusername = "truenas_admin"\npassword = "test-only-password-value"\n')
-    secret.chmod(0o600)
-    assert PRESEED._read_admin_password(secret) == "test-only-password-value"
+def test_apply_preseed_replaces_golden_api_keys_and_returns_fresh_record() -> None:
+    target = FakeTarget()
+    record = PRESEED.apply_preseed(
+        target,
+        expected_version="27.0.0-RC.1",
+        admin_password="test-only-password-value",
+        root_public_key="ssh-ed25519 AAAATEST test",
+        host="h1.example",
+    )
+    assert ("api_key.delete", (5,), False) in target.calls
+    create = next(call for call in target.calls if call[0] == "api_key.create")
+    assert create[2] is True  # payload goes over stdin
+    assert record["id"] == 9 and record["api_key"].startswith("9-fresh")
+    assert record["key_name"] == "restored-h1.example"
 
-    secret.chmod(0o644)
-    with pytest.raises(PRESEED.PreseedError, match="mode 0600"):
-        PRESEED._read_admin_password(secret)
+
+def test_apply_preseed_refuses_bootstrap_password_before_any_call() -> None:
+    target = FakeTarget()
+    with pytest.raises(PRESEED.PreseedError, match="bootstrap"):
+        PRESEED.apply_preseed(
+            target,
+            expected_version="27.0.0-RC.1",
+            admin_password="truenas",
+            root_public_key="ssh-ed25519 AAAATEST test",
+        )
+    assert target.calls == []
+
+
+def test_host_secrets_are_private_and_pending_may_be_replaced(tmp_path: Path) -> None:
+    path = tmp_path / "hosts" / "h1.secrets.toml"
+    PRESEED._write_host_secrets(path, "h1", "x" * 32, None)
+    assert oct(path.stat().st_mode & 0o777) == "0o600"
+    assert oct(path.parent.stat().st_mode & 0o777) == "0o700"
+    PRESEED._check_host_secrets_target(path)  # pending: replaceable
+    PRESEED._write_host_secrets(
+        path, "h1", "x" * 32,
+        {"api_key": "k" * 20, "key_name": "n", "expires_at": "2027-01-01T00:00:00+00:00", "id": 9},
+    )
+    with pytest.raises(PRESEED.PreseedError, match="refusing to replace"):
+        PRESEED._check_host_secrets_target(path)
+
+
+def test_main_prints_only_the_sidecar_path_never_the_values(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    pub = tmp_path / "root.pub"
+    pub.write_text("ssh-ed25519 AAAATEST test\n")
+    sidecar = tmp_path / "h.secrets.toml"
+    target = FakeTarget()
+    monkeypatch.setattr(PRESEED, "RemoteTrueNAS", lambda *a, **k: target)
+    rc = PRESEED.main([
+        "--host", "h1.example", "--ssh-identity", str(pub), "--known-hosts", str(pub),
+        "--root-public-key", str(pub), "--expected-version", "27.0.0-RC.1",
+        "--host-secrets", str(sidecar), "--yes",
+    ])
+    assert rc == 0
+    out = capsys.readouterr()
+    text = sidecar.read_text()
+    import tomllib
+    doc = tomllib.loads(text)
+    password = doc["truenas_admin"]["password"]
+    assert len(password) >= 24 and doc["state"] == "rotated"
+    assert password not in out.out + out.err
+    assert doc["truenas_api"]["api_key"] not in out.out + out.err
+    assert str(sidecar) in out.out
+    # password sent to the host is the one in the sidecar, on stdin only
+    call = next(c for c in target.calls if c[0] == "user.update" and c[1][0] == 1100)
+    assert call[1][1] == {"password": password}
 
 
 def test_read_root_public_key_requires_one_ed25519_key(tmp_path: Path) -> None:

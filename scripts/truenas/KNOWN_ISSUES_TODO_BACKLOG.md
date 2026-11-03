@@ -12,7 +12,8 @@ detail lives. A FIXED entry means code, tests and docs landed together.
 |---|---|---|---|
 | TN-01 | `vanilla-iso-patcher create` needs root and leaves root-owned work trees; run it as the invoking user | Major | OPEN |
 | TN-02 | Fold the generic API client and VM lifecycle CLIs (`truenas-api.py`, `install-vm.py`, `truenas_api_client.py`) into `truenas/tnt` (TNT-60 device verbs, TNT-61 disk-image import), then delete them here | Major | OPEN |
-| TN-03 | Golden-image credential rotation: rotate the exposed API key and golden sidecar password on the source VM before the next capture | Major | OPEN (operator action) |
+| TN-03 | Golden-image credentials are dynamic: step 1 generates a random admin password and API key per capture (0600 sidecar), step 3 rotates both per restored host | Major | FIXED (commit recorded below) |
+| TN-14 | Optional hardening: rotate the golden password/API key inside the restore runtime on first boot (no controller step needed); today rotation is the controller-side step 3 and a restored host keeps the golden credentials until it runs | Minor | OPEN |
 | TN-04 | Exercise golden source/restore on a stable TrueNAS 27 release and run a live smoke test of the restore runtime on TrueNAS 28 | Minor | OPEN |
 | TN-05 | Later v28 nightly: new guarded adapter plus the full API/UI matrix; never widen the exact-build fingerprint set | Minor | OPEN |
 | TN-06 | Clean-target UI acceptance for the v27 `20261029-173417` bridge build | Minor | OPEN |
@@ -49,10 +50,21 @@ drive guests and patch acceptance, not the TrueNAS API. Neither `truenas-api.py`
 the reason not to invest in them further; `cli-extended surface check` passes for
 `vanilla-iso-patcher` and for `scripts/netcup` `install-restore-iso`.
 
-### TN-03 credential rotation
+### TN-03 credential rotation (fixed)
 
-Detail and the credential boundary: `golden-iso/TODO.md`. Operator action on the source
-VM; no code change. Rotate before any new capture or live test of an installed golden image.
+Rule and detail: `golden-iso/TODO.md`; code in `golden-iso/credentials.py`, step 1 and
+step 3; tests `golden-iso/tests/test_credentials.py` and `test_restored_preseed.py`.
+Operator decision 2026-11-04: no manual rotation. The next step 1 run replaces the
+sidecar password and any pre-existing API key automatically.
+
+### TN-14 first-boot rotation in the restore runtime
+
+Today a restored host keeps the golden password hash and API key until the controller
+runs step 3 (root SSH is already key-only and the host is not reachable with the golden
+password over SSH). A runtime-side rotation needs the runtime to generate secrets and hand
+them back to the controller (the runtime only has a Mattermost webhook channel, which must
+not carry secrets), so it needs a new sealed hand-over design. Until then, run step 3
+before any other action on a restored host.
 
 ### TN-04..TN-09
 

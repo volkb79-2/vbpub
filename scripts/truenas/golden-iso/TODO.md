@@ -9,38 +9,29 @@
 
 ## Preserve the golden-image credential boundary
 
-Every live test of an installed golden image must rotate the publicly known
-`truenas_admin/truenas` bootstrap password before any other test action. Use a
-fresh random password per host, store it only in a mode-0600, gitignored
-host-specific TOML file, and have later access gates read that file. Never put
-the value in the golden recipe's public documentation, tracked configuration,
-or test logs. Keep these live-host credentials separate from the golden
-source-image sidecar and its API key.
+Rule (TN-03, implemented): credentials are generated, never chosen by hand and
+never documented.
 
-`step1-install-prepare-truenas.py` creates and validates the `truenas_admin`
-API key before capture, stores its cleartext value in the mode-0600 sibling
-sidecar, and refuses to create a duplicate on rerun. The restore ISO builder
-does not read or embed that cleartext API key. The ISO contains the whole
-golden disk and therefore includes TrueNAS's stored API-key record along with
-the configured administrator, root SSH key, SSH host keys, and machine
-identity. Treat the image and ISO as private credential-bearing artifacts.
+- Step 1 sets a random `truenas_admin` password (32 characters, `secrets`) and
+  creates a dynamic API key at every capture. Both live only in the mode-0600
+  sidecar (0700 directory, gitignored `artifacts/`); step 1 prints only the
+  path. The bootstrap password is refused as a final value, and a key that
+  belongs to a finished capture is revoked and replaced by the next capture.
+- The golden disk carries that password hash and API key, so every restored
+  host runs `step3-apply-restored-preseed.py` first: it replaces both with a
+  per-host random password and API key stored in a per-host mode-0600
+  gitignored sidecar. No host shares a secret with the golden image or another
+  host.
+- Every live test of a restored host reads its credentials from that per-host
+  sidecar; values never appear in tracked files, docs, or logs
+  (`tests/test_credentials.py` scans tracked files for credential-like values).
+- The ISO contains the whole golden disk, so treat the image and ISO as private
+  credential-bearing artifacts. Capture the disk and its matching sidecar
+  together.
 
-On 2026-10-21, an attempt to check public host v1001 used the password from
-this golden sidecar. The user corrected the target credentials: v1001 still
-uses the install-time account password, so the earlier rejection was a
-credential-selection mistake, not evidence that the host password changed or
-failed. Keep the v1001 credential separate from the golden sidecar. The
-sidecar's own administrator password appeared in an earlier browser tool
-snapshot, so rotate it on the source TrueNAS before capturing another image.
-
-The saved API key was sent to v1001 by the shared API client with TLS
-verification disabled; the server returned `Invalid API key`, so no API
-method ran. Treat that key as exposed. Before the next capture, revoke it on
-the source TrueNAS, remove its `truenas_api` block from the sidecar, and run
-`step1-install-prepare-truenas.py --revoke-orphan-api-key` so step 1 creates
-and validates a replacement. Capture the disk and matching mode-0600 sidecar
-together; never update only the sidecar while leaving the captured disk
-unchanged.
+Open: the restore runtime itself does not rotate on first boot (rotation is the
+controller-side step 3 over pinned root SSH); a hardened first-boot rotation
+inside the runtime is TN-14.
 
 Keep the feature summary in [`README.md`](README.md), adoption commands in
 [`docs/CONSUMERS.md`](docs/CONSUMERS.md), and restore rationale in

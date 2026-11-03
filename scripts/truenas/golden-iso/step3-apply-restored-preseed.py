@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Apply protected TrueNAS credentials and root-key SSH after a disk restore."""
+"""Rotate golden credentials and apply root-key SSH on a restored host.
+
+The golden disk carries a shared admin password hash and API key. This step,
+run over the pinned root SSH channel, replaces both with a fresh random
+password and API key per host and stores them in a gitignored 0600 sidecar.
+"""
 
 from __future__ import annotations
 
@@ -14,7 +19,12 @@ import subprocess
 import sys
 import tomllib
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Any
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+import credentials  # noqa: E402
 
 
 class PreseedError(RuntimeError):
@@ -24,22 +34,47 @@ class PreseedError(RuntimeError):
 HOST_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\Z")
 
 
-def _read_admin_password(path: Path) -> str:
-    if not path.is_file():
-        raise PreseedError(f"administrator secret file not found: {path}")
-    if stat.S_IMODE(path.stat().st_mode) & 0o077:
-        raise PreseedError("administrator secret file must be mode 0600 or stricter")
+def _default_host_secrets(host: str) -> Path:
+    # <repo>/scripts/truenas/golden-iso/artifacts/ is covered by the **/artifacts/ ignore rule.
+    return HERE / "artifacts" / "hosts" / f"{host}.secrets.toml"
+
+
+def _write_host_secrets(
+    path: Path, host: str, password: str, api: dict[str, Any] | None
+) -> None:
+    lines = [
+        "schema_version = 1",
+        f"host = {credentials.toml_string(host)}",
+        f'state = "{"rotated" if api else "pending"}"',
+        "",
+        "[truenas_admin]",
+        'username = "truenas_admin"',
+        f"password = {credentials.toml_string(password)}",
+        "",
+    ]
+    if api:
+        lines += [
+            "[truenas_api]",
+            'username = "truenas_admin"',
+            f"api_key = {credentials.toml_string(api['api_key'])}",
+            f"key_name = {credentials.toml_string(api['key_name'])}",
+            f"expires_at = {credentials.toml_string(api['expires_at'])}",
+            f"id = {int(api['id'])}",
+            "",
+        ]
+    credentials.atomic_write_private(path, "\n".join(lines).encode("utf-8"))
+
+
+def _check_host_secrets_target(path: Path) -> None:
+    """A finished per-host sidecar is never silently replaced; a pending one may be."""
+    if not path.exists():
+        return
     try:
-        document = tomllib.loads(path.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError) as exc:
-        raise PreseedError(f"cannot read administrator secret file: {type(exc).__name__}") from None
-    admin = document.get("truenas_admin")
-    if not isinstance(admin, dict) or admin.get("username") != "truenas_admin":
-        raise PreseedError("administrator secret file must identify the truenas_admin account")
-    password = admin.get("password")
-    if not isinstance(password, str) or len(password) < 16 or "\n" in password or "\r" in password:
-        raise PreseedError("administrator secret file has an invalid password value")
-    return password
+        state = tomllib.loads(path.read_text(encoding="utf-8")).get("state")
+    except (OSError, tomllib.TOMLDecodeError):
+        state = None
+    if state != "pending":
+        raise PreseedError(f"refusing to replace an existing per-host secret file: {path}")
 
 
 def _read_root_public_key(path: Path) -> str:
@@ -152,7 +187,14 @@ def apply_preseed(
     expected_version: str,
     admin_password: str,
     root_public_key: str,
-) -> None:
+    host: str = "restored-host",
+    api_key_expiry_days: int = 30,
+) -> dict[str, Any]:
+    """Rotate every golden credential on the restored host; return the new API key record."""
+    try:
+        credentials.validate_admin_password(admin_password)
+    except credentials.CredentialError as exc:
+        raise PreseedError(str(exc)) from None
     info = target.call("system.info")
     if not isinstance(info, dict) or info.get("version") != expected_version:
         observed = info.get("version") if isinstance(info, dict) else "malformed response"
@@ -163,6 +205,7 @@ def apply_preseed(
 
     admin_id = _user_id(target.call("user.query", [["username", "=", "truenas_admin"]]), "truenas_admin")
     target.call("user.update", admin_id, {"password": admin_password}, sensitive=True)
+    api_record = _rotate_api_key(target, host, api_key_expiry_days)
 
     root_id = _user_id(target.call("user.query", [["username", "=", "root"]]), "root")
     target.call(
@@ -198,6 +241,43 @@ def apply_preseed(
         raise PreseedError("global SSH password authentication remains enabled")
     if target.command(["id", "-u"], timeout=30).stdout.strip() != "0":
         raise PreseedError("root SSH did not return UID 0 after applying the preseed")
+    return api_record
+
+
+def _rotate_api_key(target: RemoteTrueNAS, host: str, expiry_days: int) -> dict[str, Any]:
+    """Delete every API key the golden disk carries and mint one fresh key for this host."""
+    keys = target.call("api_key.query")
+    if not isinstance(keys, list) or any(not isinstance(row, dict) for row in keys):
+        raise PreseedError("api_key.query returned an unexpected response shape")
+    for row in keys:
+        if type(row.get("id")) is not int:
+            raise PreseedError("api_key.query returned a key without an integer id")
+        target.call("api_key.delete", row["id"])
+    expires_at = datetime.now(timezone.utc) + timedelta(days=expiry_days)
+    key_name = f"restored-{host}"[:60]
+    created = target.call(
+        "api_key.create",
+        {
+            "name": key_name,
+            "username": "truenas_admin",
+            "expires_at": {"$date": int(expires_at.timestamp() * 1000)},
+        },
+        sensitive=True,
+    )
+    key = created.get("key") or created.get("api_key") if isinstance(created, dict) else created
+    key_id = created.get("id") if isinstance(created, dict) else None
+    if not isinstance(key, str) or len(key.strip()) < 16 or type(key_id) is not int:
+        raise PreseedError("api_key.create did not return a usable one-time key and id")
+    remaining = target.call("api_key.query")
+    if (not isinstance(remaining, list)
+            or [row.get("id") for row in remaining if isinstance(row, dict)] != [key_id]):
+        raise PreseedError("golden API keys remain on the restored host after rotation")
+    return {
+        "api_key": key.strip(),
+        "key_name": key_name,
+        "expires_at": expires_at.isoformat(timespec="seconds"),
+        "id": key_id,
+    }
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -206,8 +286,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--port", type=int, default=22)
     parser.add_argument("--ssh-identity", required=True, type=Path)
     parser.add_argument("--known-hosts", required=True, type=Path)
-    parser.add_argument("--admin-secrets", required=True, type=Path,
-                        help="mode-0600 TOML with [truenas_admin].username and password")
+    parser.add_argument("--host-secrets", type=Path, default=None,
+                        help="output: per-host mode-0600 sidecar for the NEW random admin password and "
+                        "API key (default: golden-iso/artifacts/hosts/<host>.secrets.toml, gitignored)")
+    parser.add_argument("--api-key-expiry-days", type=int, default=30,
+                        help="expiry of the per-host API key created at restore")
     parser.add_argument("--root-public-key", required=True, type=Path)
     parser.add_argument("--expected-version", required=True)
     parser.add_argument("--yes", action="store_true", help="confirm this credential mutation on the named host")
@@ -221,16 +304,26 @@ def main(argv: list[str] | None = None) -> int:
             raise PreseedError("pass --yes only for the explicitly authorized restored host")
         if not 1 <= args.port <= 65535:
             raise PreseedError("SSH port must be between 1 and 65535")
-        password = _read_admin_password(args.admin_secrets)
+        if not 1 <= args.api_key_expiry_days <= 3650:
+            raise PreseedError("API key expiry must be between 1 and 3650 days")
+        secrets_path = (args.host_secrets or _default_host_secrets(args.host)).resolve()
+        _check_host_secrets_target(secrets_path)
+        password = credentials.generate_password()
         public_key = _read_root_public_key(args.root_public_key)
         target = RemoteTrueNAS(args.host, args.port, args.ssh_identity, args.known_hosts)
-        apply_preseed(
+        # Persist the password BEFORE any mutation so a crash never strands the host.
+        _write_host_secrets(secrets_path, args.host, password, None)
+        api_record = apply_preseed(
             target,
             expected_version=args.expected_version,
             admin_password=password,
             root_public_key=public_key,
+            host=args.host,
+            api_key_expiry_days=args.api_key_expiry_days,
         )
+        _write_host_secrets(secrets_path, args.host, password, api_record)
         print(f"PASS restored-host preseed applied on {args.host}: {args.expected_version}; root SSH UID 0")
+        print(f"Per-host credentials (new random password and API key): {secrets_path}")
         return 0
     except (OSError, PreseedError, ValueError) as exc:
         print(f"FAIL: {exc}", file=sys.stderr)

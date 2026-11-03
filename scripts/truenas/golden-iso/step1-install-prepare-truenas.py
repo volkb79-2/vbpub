@@ -3,8 +3,10 @@
 
 The TrueNAS installer itself is interactive. Install the VM once using the
 serial/VNC procedure in README.md, then this script configures the administrator
-password and root SSH key, creates (or reuses) an API key, validates it through
-the shared WebSocket client, and captures the powered-off QCOW2 as raw.
+password (a fresh random value per capture, stored only in the 0600 sidecar)
+and root SSH key, creates a dynamic API key (an interrupted run's key is
+reused, any earlier capture's key is replaced), validates it through the
+shared WebSocket client, and captures the powered-off QCOW2 as raw.
 """
 
 from __future__ import annotations
@@ -31,6 +33,8 @@ from typing import Any, Iterator
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
+sys.path.insert(0, str(HERE))
+import credentials
 from truenas_api_client import TrueNASAPIClient, TrueNASAPIError, TrueNASSettings
 
 
@@ -123,9 +127,12 @@ def load_secret_document(path: Path, image: Path) -> dict[str, Any]:
     private_key = root_ssh.get("private_key")
     public_key = root_ssh.get("public_key")
     webhook = mattermost.get("webhook_url")
+    # The sidecar password is replaced at every capture, so a stored value only
+    # needs to be a plausible secret, but it must never be the bootstrap value.
+    if not isinstance(password, str) or password.strip().lower() in credentials.BOOTSTRAP_PASSWORDS:
+        raise StepError("secret sidecar holds the public bootstrap password")
     if (
         admin.get("username") != "truenas_admin"
-        or not isinstance(password, str)
         or len(password) < 16
         or "\n" in password
         or "\r" in password
@@ -156,7 +163,7 @@ def serialize_secret_document(document: dict[str, Any]) -> str:
     admin = document["truenas_admin"]
     root_ssh = document["root_ssh"]
     mattermost = document["mattermost"]
-    api = document["truenas_api"]
+    api = document.get("truenas_api")
     lines = [
         "schema_version = 1",
         f"image_file = {toml_string(document['image_file'])}",
@@ -173,36 +180,27 @@ def serialize_secret_document(document: dict[str, Any]) -> str:
         "[mattermost]",
         f"webhook_url = {toml_string(mattermost['webhook_url'])}",
         "",
-        "[truenas_api]",
-        'username = "truenas_admin"',
-        f"api_key = {toml_string(api['api_key'])}",
-        f"key_name = {toml_string(api['key_name'])}",
-        f"expires_at = {toml_string(api['expires_at'])}",
-        f"id = {int(api['id'])}",
-        "",
     ]
+    if api:
+        lines += [
+            "[truenas_api]",
+            'username = "truenas_admin"',
+            f"api_key = {toml_string(api['api_key'])}",
+            f"key_name = {toml_string(api['key_name'])}",
+            f"expires_at = {toml_string(api['expires_at'])}",
+            f"id = {int(api['id'])}",
+        ]
+        if api.get("capture_pending"):
+            lines.append("capture_pending = true")
+        if api.get("captured_image_sha256"):
+            lines.append(f"captured_image_sha256 = {toml_string(api['captured_image_sha256'])}")
+        lines.append("")
     return "\n".join(lines)
 
 
-def atomic_write(path: Path, content: bytes, *, mode: int = 0o600) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
-    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
-    try:
-        with os.fdopen(fd, "wb") as stream:
-            stream.write(content)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.chmod(temporary, mode)
-        os.replace(temporary, path)
-        directory_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
-    finally:
-        if temporary.exists():
-            temporary.unlink()
+def atomic_write(path: Path, content: bytes) -> None:
+    """Mode-0600 atomic write inside a 0700 directory (see credentials.py)."""
+    credentials.atomic_write_private(path, content)
 
 
 def sha256_file(path: Path) -> str:
@@ -726,6 +724,28 @@ def run_step(args: argparse.Namespace) -> None:
     if image.exists() and not args.force:
         raise StepError(f"refusing to replace existing raw image without --force: {image}")
 
+    # TN-03: every capture gets a fresh admin password; a key that already
+    # belongs to a finished capture is replaced, never reused.
+    try:
+        if args.admin_password_file is not None:
+            pw_path = args.admin_password_file.resolve()
+            if stat.S_IMODE(pw_path.stat().st_mode) & 0o077:
+                raise StepError("administrator password file must be mode 0600 or stricter")
+            new_password = credentials.validate_admin_password(pw_path.read_text(encoding="utf-8").strip())
+        else:
+            new_password = credentials.generate_password()
+    except credentials.CredentialError as exc:
+        raise StepError(str(exc)) from None
+    document["truenas_admin"]["password"] = new_password
+    stale_key_id: int | None = None
+    stale_dropped = False
+    # Only a key minted by an interrupted run of THIS flow ("capture_pending")
+    # is reused; any other key, including legacy blocks, is replaced.
+    if api_block_is_valid(document) and document["truenas_api"].get("capture_pending") is not True:
+        stale_id = document["truenas_api"].get("id")
+        stale_key_id = stale_id if type(stale_id) is int else None
+        del document["truenas_api"]
+        stale_dropped = True
     current_key = document.get("truenas_api", {}).get("api_key") if api_block_is_valid(document) else None
     old_sidecar = secrets_path.read_bytes()
     created_id: int | None = None
@@ -738,6 +758,16 @@ def run_step(args: argparse.Namespace) -> None:
             source.wait_for_root_ssh()
             source.wait_for_middleware()
             source.configure(document)
+            if stale_dropped:
+                for entry in source.list_api_keys():
+                    if entry.get("id") == stale_key_id or entry.get("name") == API_KEY_NAME:
+                        if type(entry.get("id")) is int:
+                            source.middleware("api_key.delete", entry["id"], sensitive=True)
+                            log("Revoked the API key of the previous capture on the source VM.")
+            # The new password is live on the source VM: persist it now, with the
+            # still-pending key block (if any), so the sidecar never lags the disk.
+            atomic_write(secrets_path, serialize_secret_document(document).encode("utf-8"))
+            old_sidecar = secrets_path.read_bytes()
 
             expires_at: datetime | None = None
             if current_key:
@@ -757,6 +787,7 @@ def run_step(args: argparse.Namespace) -> None:
                         "key_name": API_KEY_NAME,
                         "expires_at": expires_at.isoformat(timespec="seconds"),
                         "id": created_id,
+                        "capture_pending": True,
                     }
                     log(f"New API key authenticated through the shared client to TrueNAS {info.get('version')}.")
                 except Exception:
@@ -794,6 +825,11 @@ def run_step(args: argparse.Namespace) -> None:
             )
             log(f"Golden raw image: {image} ({disk_size_bytes} bytes)")
             log(f"Golden raw SHA-256: {digest}")
+            # Mark the key as belonging to this finished capture so the next
+            # capture rotates it instead of reusing it.
+            document["truenas_api"].pop("capture_pending", None)
+            document["truenas_api"]["captured_image_sha256"] = digest
+            atomic_write(secrets_path, serialize_secret_document(document).encode("utf-8"))
             log(f"Protected secret sidecar: {secrets_path} (mode 0600)")
         except Exception:
             if created_id is not None and qemu is not None and qemu.poll() is None:
@@ -848,6 +884,13 @@ def make_parser() -> argparse.ArgumentParser:
         type=positive_days,
         required=True,
         help="explicit expiration interval for a newly created truenas_admin API key",
+    )
+    parser.add_argument(
+        "--admin-password-file",
+        type=Path,
+        default=None,
+        help="optional mode-0600 file with the admin password to apply; default is a generated "
+        "random password written only to the sidecar (never printed)",
     )
     parser.add_argument("--startup-timeout", type=int, default=900)
     parser.add_argument("--force", action="store_true", help="replace an existing raw golden image after verified capture")

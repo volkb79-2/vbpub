@@ -18,8 +18,9 @@ has three scripts:
    validates a Debian Live base ISO, embeds the golden disk and restore runtime,
    and produces the unattended restore ISO.
 3. [`step3-apply-restored-preseed.py`](step3-apply-restored-preseed.py)
-   reapplies a protected administrator password and root-key SSH settings to a
-   restored host over pinned SSH. It sends the password through middleware
+   rotates the golden administrator password and API key to fresh per-host
+   random values and applies root-key SSH settings on a restored host over
+   pinned SSH. It sends secrets through middleware
    stdin, not command arguments; see the [design guide](docs/DESIGN-GUIDE.md#post-restore-preseed)
    and [consumer procedure](docs/CONSUMERS.md#apply-the-post-restore-preseed).
 
@@ -44,11 +45,15 @@ and unresolved compatibility evidence. The workflow is separate from the
 after boot, while patching the source before capture requires a manual step;
 the golden-image scripts do not invoke the patch workflow.
 
-Treat the bootstrap `truenas_admin` password as public once a golden recipe is
-published. Immediately after booting a live test host, change it to a fresh
-random per-host password before running any test; save that value only in a
-mode-0600 gitignored host-secret TOML so later gates can reconnect. This
-host-side credential is separate from the golden source-image sidecar.
+Credential rule (TN-03): no credential is chosen or documented by hand. Step 1
+generates a random `truenas_admin` password and a dynamic API key at every
+capture and stores both in the mode-0600 gitignored sidecar (0700 directory);
+the public bootstrap password is never accepted as a final value. Because the
+golden disk carries that password hash and API key, step 3 replaces both on
+each restored host with a fresh random password and API key, stored in a
+per-host mode-0600 gitignored sidecar (`artifacts/hosts/<host>.secrets.toml` by
+default). Run step 3 before any other action on a restored host. Scripts print
+only sidecar paths, never values.
 
 ## Current artifact status
 

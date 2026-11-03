@@ -212,20 +212,18 @@ cp /usr/share/OVMF/OVMF_VARS_4M.fd ../artifacts/vm-lab/golden-source-27-20GiB/OV
 test -f ../artifacts/vm-lab/golden-source-27-20GiB/root_ed25519 || ssh-keygen -q -t ed25519 -N '' -C truenas-golden-iso-test -f ../artifacts/vm-lab/golden-source-27-20GiB/root_ed25519
 umask 077
 openssl rand -hex 12 > artifacts/truenas-installer-password
-openssl rand -base64 32 > artifacts/truenas-admin-password
-chmod 600 artifacts/truenas-installer-password artifacts/truenas-admin-password ../artifacts/vm-lab/golden-source-27-20GiB/root_ed25519 ../artifacts/vm-lab/golden-source-27-20GiB/OVMF_VARS.fd
+chmod 600 artifacts/truenas-installer-password ../artifacts/vm-lab/golden-source-27-20GiB/root_ed25519 ../artifacts/vm-lab/golden-source-27-20GiB/OVMF_VARS.fd
 ```
 
 The `ssh-keygen -N ''` key has no passphrase and is for this local disposable
 test only. For a non-disposable system, generate a separate key and protect it
 with a passphrase. Keep the installer password separate from the canonical
 golden-image administrator password: the installer password is only needed to
-finish this manual install, while step 1 applies the password from the secret
-sidecar before it captures the image.
-
-The generated canonical admin password is 32 random bytes encoded as Base64.
-Keep both password files private; they are ignored by Git. To type the
-temporary installer password, display it in a private second terminal:
+finish this manual install. The golden admin password is never chosen by hand:
+step 1 generates a random one (32 characters, `secrets` module) at every capture,
+applies it, and stores it in the mode-0600 sidecar. The installer password file
+is ignored by Git. To type the temporary installer password, display it in a
+private second terminal:
 
 ```sh
 cat artifacts/truenas-installer-password
@@ -412,15 +410,18 @@ test did not resize or repair partition tables.
 Before the first automated capture, create the sibling secret TOML from the
 canonical golden-image administrator password, root key pair, and Mattermost
 webhook. The canonical password may differ from the temporary install password;
-step 1 applies the sidecar value before capture. The image path supplies the
-expected image basename; it need not exist yet. Keep the admin password file
-mode 0600 and retain the SSH private key in the protected `scripts/truenas/artifacts/vm-lab/golden-source-27-20GiB/` directory for
+step 1 replaces the admin password with a fresh random value before capture
+(`--admin-password-file` is optional and only for a deliberately supplied value
+of at least 24 characters; the literal bootstrap password is refused). The image
+path supplies the expected image basename; it need not exist yet. The sidecar
+lives in `artifacts/` (gitignored), is written atomically with mode 0600 in a
+0700 directory, and is the only place the admin password and the dynamic API
+key exist; step 1 prints only its path. Retain the SSH private key in the protected `scripts/truenas/artifacts/vm-lab/golden-source-27-20GiB/` directory for
 step 1 and later host verification:
 
 ```sh
 ./step2-build-unattended-restore-iso.py init-secrets \
   --image artifacts/truenas-27-20GiB-golden.raw \
-  --admin-password-file artifacts/truenas-admin-password \
   --root-private-key ../artifacts/vm-lab/golden-source-27-20GiB/root_ed25519 \
   --root-public-key ../artifacts/vm-lab/golden-source-27-20GiB/root_ed25519.pub \
   --webhook-file /workspaces/vbpub/mattermost-server/.ciu/secrets/installer_webhook_url \
@@ -843,8 +844,11 @@ root SSH key used by its existing acceptance tools after the provider restore
 has booted. Prepare a pinned `v1001.known_hosts` entry from the captured
 TrueNAS source host key; do not accept a new key without comparing its
 fingerprint to the source key. Hold the provider lock while applying the
-preseed. The command reads the mode-0600 admin TOML locally and sends the
-password as a `midclt` stdin payload:
+preseed. The command generates a fresh random admin password, replaces the
+golden API key with a new per-host key, and writes both to the mode-0600
+`--host-secrets` TOML (gitignored; it refuses to replace a finished one, so
+remove the old file deliberately first). Values travel as `midclt` stdin
+payloads and are never printed; only the sidecar path is:
 
 ```bash
 cd scripts/netcup
@@ -853,7 +857,7 @@ flock -x /home/vscode/vbpub-release-program-20261027/v1001.lock \
     --host v1001.vxxu.de \
     --ssh-identity ../truenas/boot-pool-patch/artifacts/.live-test-root-key \
     --known-hosts ../truenas/boot-pool-patch/artifacts/v1001.known_hosts \
-    --admin-secrets ../truenas/boot-pool-patch/artifacts/v1001-ui-secrets.toml \
+    --host-secrets ../truenas/boot-pool-patch/artifacts/v1001-ui-secrets.toml \
     --root-public-key ../truenas/boot-pool-patch/artifacts/.live-test-root-key.pub \
     --expected-version 27.0.0-RC.1 --yes
 ```
