@@ -5731,3 +5731,40 @@ shared budget and fail-closed remainder.
 CIU-134 is FIXED by the consented retry, durable resume checkpoint, and exact-path S6.5 helper described above. CIU-151 remains
 OPEN until the physical owner-label path behavior is verified on a live stack. Tests used temporary Git repositories and did
 not invoke a privileged helper against a real checkout.
+
+## CIU-159 — `ciu worktree create/rm` should snapshot and delete the project's declared CoW paths
+
+**Status: OPEN.** Depends on `libraries/cowtree` COW-BL-01 (declaration schema) and COW-BL-02 (provision and worktree
+operations). Estate convention: AGENTS.md "Directory conventions and VM files".
+
+**Decision (operator).** Ciu stays agnostic of `artifacts`, `vm-lab` and `downloads`. The project declares its CoW-managed
+gitignored paths in the shared cowtree schema (`path`, `mode` = `clone-from-main`, `compression`, `fallback`); ciu reads the
+declaration only through cowtree. The checkout, with `.worktrees/` inside it, lives on the CoW filesystem. Worktrees still come
+from git. No mount-over, no `MDT_*` or other environment path override.
+
+**Required behavior.**
+
+- **`worktree create`.** Run `git worktree add`; then, for each declared path, snapshot main's subvolume into the worktree and
+  restore the tracked placeholder files (`README.md`, `.gitignore`) from the worktree's own branch, so `git status` is clean
+  right after creation. A path without a main subvolume (main not provisioned) is created as an empty folder with the
+  placeholder, and one INFO line says main is not provisioned.
+- **Plain host (fallback).** The checkout is not on a CoW filesystem, or the backend is unavailable: each declared path stays
+  the empty committed placeholder and ciu prints one INFO line per path. Exit status is unchanged, and nothing is retried.
+- **`worktree rm`.**
+  - Delete the declared subvolumes with the subvolume-delete ioctl before removing the tree (never `rm -rf` into a subvolume).
+  - Keep the protected-state report: declared paths still count as ignored state (CIU-156/CIU-158 classes), and the consent
+    flag still gates discarding them.
+  - Refuse when a foreign mount sits under the worktree, with "detach <path> first" (the check is shared through
+    `libraries/worktree`, WT-OW-01).
+- **Persistence.** Content a worktree should keep is copied (reflink) to main's declared path by the user; ciu does not merge
+  back, and the worktree-create message says so once.
+- **Provisioning is not ciu's job.** Creating the subvolumes in main is the cowtree provision operation, run by the project's
+  setup or by an explicit `cowtree provision` call; ciu never provisions on `worktree create`.
+
+**Acceptance.**
+
+- Temp-checkout tests with a FakeBackend: create on a provisioned main (snapshot, then restore, clean status), create on an
+  unprovisioned main (empty folder plus INFO), plain-host fallback (one INFO per path), rm deleting declared subvolumes in order,
+  rm refusing under a foreign mount, rm with protected state needing consent.
+- One live btrfs run on the tester host proves a clean `git status` after create and no residue after rm.
+- Nothing in `ciu/` names `vm-lab`, `downloads` or `artifacts` outside tests.
