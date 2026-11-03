@@ -21,6 +21,98 @@ the technical detail below it.
 
 <!-- cmru: release history -->
 
+## [7.19.0] - 2026-11-02
+<!-- cmru: generated -->
+<!-- cmru: source-end=1852853efc14b6491f5eec3e3ee81199fbf51ec0 -->
+
+### Fixed
+- fix(ciu): resume through checkpointed ignored parents (f1210e80a)
+- fix(ciu): handle unreadable retry blockers and helper exits (104138b23)
+- fix(ciu): harden permission-specific worktree retry (f81edaeab)
+- fix(ciu): add consented permission retry for worktree removal (6dbcc29b8)
+- fix(ciu): protect ignored descendants and retry dirty removal (4b1f915fa)
+- fix(ciu): make worktree rm cleanup retry-safe (15b5ad795)
+- fix(ciu): harden worktree removal safety (be0334461)
+
+### Changed
+- ciu: make worktree rm safe and observable (fcc04c5bd)
+
+### Documentation
+- docs(ciu): index rows for CIU-156..158 (2bda161e5)
+- docs(ciu): file CIU-156..158 and the stage 2 status note (ef758eaa9)
+- docs(ciu): retain the P53 review-05 report the P53 log cites (3c64fe330)
+
+### Testing
+- test(ciu): close worktree branch coverage gaps (ff9c9cc0a)
+- test(ciu): keep source-only suite fixture patches scoped (21b3a5005)
+- test(ciu): isolate tests from host Docker identity (086667246)
+- test(ciu): supply DOCKER_GID for the whole ambient-identity test module (05c3c1441)
+- test(ciu): make the contaminated-shell env generation test independent of host Docker group (9ae9289e2)
+
+<!-- cmru: pending release notes begin -->
+### Fixed
+- `ciu worktree rm` can retry a confirmed Git permission failure through the governed S6.5 helper after successful cleanup. `--root-escalation BRANCH` is exact-branch consent; the retry is limited to validated failed descendants below the checkout's real path, supports a second invocation after Git drops its registration, and reports paths left behind on failure.
+- The S6.5 retry re-derives the host checkout path and requires it to match the shared record, verifies parent and target device/inode identities inside the helper, disables recursive bind mounts, and refuses nested mounts. The helper requires Docker CLI and Engine 25.0.0 or newer. Deferred resume re-walks the leftover checkout with a 100,000-entry limit, refuses new protected components and entries changed after the checkpoint, and keeps full remaining paths in JSON while limiting diagnostic text to 20 paths plus the total.
+- Deferred resume accepts a protected component below a Git-collapsed ignored parent only when the checkpoint recorded that parent as protected with reason `descendant`. Name-only, size-capped, unreadable, and non-protected entries do not authorize additional nested protected names; entries modified after the checkpoint still refuse.
+- The `--reset` volume cleanup path (`_rmtree_with_fallback`) also requires Docker CLI and Engine 25.0.0 or newer when it uses the S6.5 helper; older distro `docker.io` versions such as 20.10 are refused.
+- The shared worktree library offers adapters a `residual_checkout_guard` immediately before its unprivileged Git retry or local removal of a leftover checkout after Git has dropped the registration.
+- Protected ignored entries now report why they are protected (`name`, `descendant`, `walk-capped`, or `unreadable`). One 100,000-entry walk budget applies per checkout; unvisited groups become protected. The post-clean inventory allows protected entries to downgrade to a lower class while continuing to refuse new protected state and growth.
+- `ciu worktree rm` now treats disappeared or smaller ignored entries as data removed by `ciu clean`; newly appearing, newly protected, newly unsized, or growing entries still stop removal. The JSON report separates remaining `discarded_state` from grouped `removed_by_clean` entries.
+- Retrying `rm` with the same exact `--discard-protected-state BRANCH` succeeds when an earlier cleanup already removed the protected state. Markerless identity cleanup compares Docker owner labels against the target's resolved physical root, cross-checked with generated facts.
+- `rm` refuses only newly appearing uncommitted paths on its second status check. Refusal messages show at most 20 paths and the total; failure JSON retains the complete `uncommitted_changes` list.
+- Ignored-state inventory now finds `.assay` and `vol-*` descendants inside Git-collapsed ignored directories. A capped or unreadable walk is treated as protected, so `rm` needs exact-branch consent and `branches -y` will not prune it.
+- `--discard-changes BRANCH` is idempotent for the exact attached branch: a retry may reuse the flag after `ciu clean` removed the dirty paths before a later removal phase failed. Wrong-branch and detached-checkout refusals remain.
+- Keep ordinary CIU tests independent of the host Docker group and socket; Docker-GID fallback tests continue to control their own inputs.
+- Keep fixture patches scoped so the CIU suite can run from source when Python child processes have no installed CIU distribution; CLI subprocess tests provide the checkout's source path explicitly.
+- `ciu worktree rm` can clean a markerless old checkout using its exact shared workspace record and the matching committed CIU root in the primary checkout; the operation refuses when that identity cannot be verified.
+- Markerless cleanup verifies each resource's owner label against the target CIU root and refuses to clean the primary checkout's own identity. `--force` may remove the checkout after a failed or unverifiable clean and leave its resources behind.
+- A Git permission failure after successful cleanup now offers an exact-path retry through S6.5. `--root-escalation BRANCH` is explicit exact-branch consent; the retry rechecks the shared identity, checkout and Git admin inodes, physical checkout mapping, blocker paths, and expected branch tip. If Git already dropped registration, the durable shared checkpoint permits a second invocation to resume safely.
+- Protected ignored-state reports include `protected_reason` (`name`, `descendant`, `walk-capped`, or `unreadable`); protected-to-lower-class changes no longer block cleanup, and one 100,000-entry budget spans all ignored roots in a checkout.
+- `rm` now refuses tracked or non-ignored untracked changes unless `--discard-changes BRANCH` names the exact branch; the report lists the discarded paths. Protected ignored state includes `.assay/` and any `vol-*` path component, including below nested CIU roots. Other ignored paths such as logs, artifacts, and evidence are unclassified, disclosed, and removed.
+- `rm` keeps an unmerged or unproven branch tip by default, reports its full tip, and deletes a merged branch only against its recorded base. `--keep-branch` and `--delete-branch` expose the explicit choices; compare-and-delete preserves a branch that moved during cleanup.
+- The branch survey and prune disclose ignored files and directories with bounded size facts. Protected `.assay/` resume state and any `vol-*` path component require an exact `--discard-protected-state BRANCH`; `-y` alone preserves them. Enumeration failures are non-prunable, and regenerable or unclassified ignored entries remain visible without blocking.
+
+### Changed
+- Worktree lifecycle JSON advances to schema 2 and the removal phase report to schema 2, adding `privileged_retry`. `ciu worktree branches --json` advances to schema 4 for `protected_reason` and the checkout-wide walk cap.
+- `rm --json` success documents add `removed_by_clean`; failure documents include the full `uncommitted_changes` list when status was readable.
+- `ciu worktree branches --json` advances to schema 4 for protected-state reasons and the total walk cap. The `dirty` field retains its Git status meaning.
+- `ciu worktree rm --json` uses schema 2 for the per-phase lifecycle map, ignored-state inventory, and `privileged_retry` status, target list, command, and remaining paths.
+- `rm` inventories ignored state and Git changes again before checkout deletion. Unreadable entries remain listed with their reason and size error; a checkout deletion error reports partial removal and the exact paths known to remain.
+- The shared lifecycle removes its record before attempting an optional branch deletion. If compare-and-delete fails, the branch remains and the record does not become stranded after the checkout is gone.
+
+### Adoption / Migration Notes
+- Both discard options remain exact-branch consent. They can be repeated after a partial cleanup as no-op consent if `ciu clean` already removed the protected state or changed paths. Consumers of removal JSON should read `removed_by_clean` and `uncommitted_changes` when present.
+- `--root-escalation BRANCH` is separate from `--discard-protected-state BRANCH`; a protected failed target may require both. CIU-134, CIU-156, CIU-157, CIU-158, CIU-153, and CIU-154 are fixed. CIU-151 remains OPEN until markerless cleanup's physical-path behavior is verified live on a stack.
+- Current CIU-151 coverage uses simulated Docker owner labels; physical-path behavior still needs live stack verification.
+- Consumers that validate branch-survey JSON must accept `schema_version: 4`, the ignored-state categories, and the `protected_reason` vocabulary. Removal-document consumers must accept schema 2, the `privileged_retry` status vocabulary (including `awaiting-consent`), and the failure `remaining` paths. Unknown values remain a refusal.
+- `rm` now retains unmerged branches by default. Use `--delete-branch` only when deleting that ref is intended; use `--keep-branch` when a merged ref should remain.
+- Review the exact relative targets and retry command before passing `--root-escalation BRANCH`; `-y` and `--force` do not imply root consent. CIU-151 still needs a live stack probe for physical owner-label path behavior.
+<!-- cmru: pending release notes end -->
+
+## [Unreleased]
+
+### Fixed
+- WT-OW-01: `ciu worktree rm` refuses, before `ciu clean` or any deletion, when a mount (CoW subvolume, bind mount) sits at or under the checkout; each mount is named ("detach it first"), nothing is unmounted, and `--force` does not override it. The check lives in the shared `libraries/worktree` (identical copy embedded in cmru).
+- CIU-144: the CIU-117 worktree image-scoping notice now goes to stderr, so `ciu resolve --json` and `ciu check --json` keep stdout to one JSON document in a linked worktree whose stack declares `build:`.
+- CIU-86: `ciu graph --format json` (every format) writes its own notices and validation errors to stderr; stdout carries only the graph (S13.5).
+- CIU-139: `ciu resolve` and `ciu exec` seed identity and machine facts from the selected root's instance record (as `ciu up`/`check` do), so they work in an unprimed shell and from any cwd with `--root-folder`; a root with no record refuses naming `ciu env generate`.
+- CIU-102: `ctx.secret_file(name)` now resolves a secret a hook persisted itself (S9.4a, found through the stack's provenance sidecar) instead of raising `KeyError`; a name never persisted still raises.
+- CIU-150: the governance slice preflight also checks a literal `cgroup_parent: <name>.slice` authored in a stack's compose file. A slice systemd definitely reports absent refuses (exit 2); an inconclusive probe (cockpit, no systemd PID 1) now WARNs and continues.
+- CIU-148: SPEC S15.20 and DESIGN-NOTES D8 cite dstdns `docs/RESOURCE-GOVERNANCE.md` (sections 4 and 6) instead of the merged-away `KSM-OPTIN-MEASUREMENTS.md`.
+- CIU-101: the engine `--help` module-guard test no longer fails when an unrelated finalizer warning lands in its recording window.
+- CIU-146: `ciu down --profile`/`--phases` stops only the containers (running or exited) of the selected stacks, enumerated by each stack's exact compose-project label; an empty selection refuses instead of widening, and bare `ciu down` stays project-wide (S7.8).
+- CIU-147: the generated overlay stamps each service that mounts rendered configfiles with a `ciu.configfile.sha256` label (content hash of the mounted staging directories), so a changed rendered config recreates exactly that service on `ciu up` and an unchanged render recreates nothing (S8.3 step 15/16).
+- fix(ciu): `ciu worktree rm` cleans every committed CIU root of the checkout (discovered at the target's own HEAD), each under its own identity, before deleting it; any discovery, identity or clean failure preserves the checkout and records and reports the roots already cleaned (CIU-138).
+- CIU-138: `ciu worktree rm` now also refuses a checkout that gained uncommitted changes since the initial inventory BEFORE the first sibling root is cleaned, and refuses a discovered sibling root that resolves outside the checkout (symlink swap). SPEC S16.4 lists `refork` in the closed `operation` vocabulary; S16.9 states that resources of already-cleaned sibling roots are gone when a later step refuses.
+- WT-OW-01: the shared worktree library re-reads the mount table immediately before the Git deletion and before each permission-retry deletion (`git worktree remove` retry and residual `rmtree`), narrowing the time-of-check window (still a point-in-time read; see `libraries/worktree/CONSUMERS.md`).
+
+### Changed
+- `ciu/get.py` was re-rendered from the installer template (tls-edge installer work; `cmru.toml` comments now point at `cmru installer render`); the byte-identity test in `test_ciu_host_enroll.py` guards drift. Installed `get.py` consumers pick up the new installer on the next fetch.
+- First `ciu up` after upgrading recreates each service that mounts rendered configfiles once (existing containers lack the `ciu.configfile.sha256` label, CIU-147). File mode and symlinks are not hashed: a mode-only change does not recreate.
+
+### Added
+- feat(ciu): `ciu worktree refork LOGICAL [--onto TRUNK] [--json]` re-records `fork_point_sha` after a legitimate rebase so run-gate's derived base (R-35a) works again without a hand-passed `--base` (CIU-142). It refuses a dirty tree and a trunk that is not an ancestor of HEAD, is idempotent, and leaves record schema 6 unchanged (the previous value and timestamp are reported in its JSON document, operation `refork`). `ciu worktree inspect` now reports a `fork_point` status (`current`/`stale`/`unrecorded`/`unknown`) and names the verb for a stale record.
+
 ## [7.18.0] - 2026-10-28
 <!-- cmru: generated -->
 <!-- cmru: source-end=2fa170b29ef870cd8e985d5ea895a1b87423ce98 -->
@@ -169,8 +261,6 @@ the technical detail below it.
 - Keep the allocation-lock bypass private to CIU's internal call path instead of exposing it as a user-facing CLI option.
 - Preserve the CLI's concise `[ERROR]` diagnostic when private worktree env generation runs under an already-held allocation lock; expected workspace identity errors no longer surface as Python tracebacks.
 <!-- cmru: pending release notes end -->
-
-## [Unreleased]
 
 ## [7.16.0] - 2026-10-07
 <!-- cmru: generated -->

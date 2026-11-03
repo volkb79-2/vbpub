@@ -6,10 +6,10 @@ Virtual Machines, Apps, Reporting, System (slide-out). There is no "Virtualizati
 entry in the v27 UI: Network lives under System, and Containers/VMs are separate top-level items.
 TrueNAS puts “My API Keys” in the top-right account settings menu; tnt nests it under Credentials because its tree has
 no account menu.
-Entries the web UI shows only conditionally (entitlement, feature or hardware dependent) carry ``conditional``:
-Apps, Containers, Virtual Machines, KMIP and Enclosure. tnt keeps the separately implemented Containers and Virtual
-Machines routes visible and marks the TrueNAS entitlement condition in text. Per-host detection for conditional
-entries is tracked in BACKLOG TNT-35. Deviations are marked ``tnt_only`` and listed in docs/DESIGN.md section 4.
+Entries the web UI shows only conditionally (feature or hardware dependent) carry ``conditional``: Apps, Containers,
+Virtual Machines, KMIP and Enclosure. tnt probes their read-only v27 endpoints once per host generation, hides entries
+the host reports as unsupported, and keeps failed probes visible as unavailable. Deviations are marked ``tnt_only`` and
+listed in docs/DESIGN.md section 4.
 """
 from __future__ import annotations
 
@@ -32,11 +32,14 @@ def _p(key: str, label: str, milestone: str = "Later", **kw) -> MenuItem:
     return MenuItem(key, label, milestone=milestone, **kw)
 
 
+PROBED_CONDITIONAL_MENU_KEYS = frozenset({"apps", "containers", "vm", "kmip", "viewenclosure"})
+
+
 MENU: tuple[MenuItem, ...] = (
     MenuItem("dashboard", "Dashboard", "implemented", "It2"),
     MenuItem("storage", "Storage", "implemented", "M0", children=(
         MenuItem("storage/health", "Health", "implemented", "It2"),
-        _p("storage/pools", "Pools", "Later", matrix=("A-09", "B-03", "B-06")),
+        MenuItem("storage/pools", "Pools", "implemented", "M3", matrix=("A-09", "B-03", "B-06")),
         MenuItem("storage/disks", "Disks", "implemented", "M0", matrix=("B-01",)),
         _p("storage/free-space", "Free space and partitions", "Later", tnt_only=True, matrix=("B-01", "B-02", "B-03")),
         _p("storage/import", "Import Pool", "Later", matrix=("B-06",)),
@@ -46,6 +49,7 @@ MENU: tuple[MenuItem, ...] = (
     MenuItem("sharing", "Shares", "implemented", "M2", matrix=("A-07", "B-05")),
     MenuItem("data-protection", "Data Protection", "implemented", "M1", children=(
         MenuItem("snapshot-tasks", "Periodic Snapshot Tasks", "implemented", "M2"),
+        MenuItem("scrub-tasks", "Pool Scrub Schedules", "implemented", "M3"),
         MenuItem("snapshots", "Snapshots", "implemented", "M1"),
         MenuItem("replication", "Replication Tasks", "implemented", "M2"),
         MenuItem("cloud-sync", "Cloud Sync Tasks", "implemented", "M2"),

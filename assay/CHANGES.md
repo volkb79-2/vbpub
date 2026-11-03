@@ -4,12 +4,293 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
-### Fixed
-- Sort declared whole-target paths when building R1 and native/ingested R2
-  verdicts; avoid reporting pytest-cov's platform banner as the first failing
-  test or treating R0 execution errors as measured test failures (B181).
+### Added
+- B207: two-ended-matching candidate scheduling for parallel native R2 (`--jobs` above 1). Candidates are classed high, normal or low by predicted peak RSS and dispatched longest-first with at most one high running; `--memory-budget-bytes` (`ASSAY_R2_MEMORY_BUDGET_BYTES`) adds an admission rule on the predicted RSS sum (one candidate always runs, a queued high reserves the slot). Predictions come from what assay already records (`elapsed_seconds`, `peak_rss_bytes`, kept in `.schedule-history.v1` in the state directory), then live and last-campaign file medians, lane medians, and the new lane keys `judge.mutation.prediction_wall_seconds` and `prediction_rss_bytes`; the class factors are `schedule_high_factor` and `schedule_low_factor`. Progress candidate events gain `dispatch_position`, `prediction` and `prediction_error`; the state directory gains `schedule-summary.v1` (not `*.json`, so candidate-record globs stay exact); `assay lanes --json` gains `capabilities` (`r2-memory-budget`, `r2-schedule-tem`). Results are unchanged and independent of the order. Cgprofile-sourced numbers (B206) and the verdict schema fields (B208) are not part of this change.
+
+### Changed
+- Extend the provisional-release R2 postponement (B169) to assay versions below 12.1.0 (operator decision D1, 2026-11-04) so 12.0.0 ships under it; R2 runs later with `--jobs` on the scratch host. The window is one constant in `tools/self-qualification-gate.sh` and the full `self-qualification` lane is unchanged.
+- Native R2 progress and state now drain by dispatch position instead of canonical index when scheduling is active (`--jobs` above 1); a serial run is unchanged. `assay analyze campaign` accepts a progress stream whose finished candidates are a contiguous prefix of dispatch order rather than of canonical index.
+- Documented the supported `--jobs` range and the limits that bind at high worker counts (consumer guide, "Candidate scheduling and the admission budget").
 
 <!-- cmru: release history -->
+
+## [11.0.0] - 2026-11-02
+<!-- cmru: generated -->
+<!-- cmru: source-end=d3cfab031ff73ceacdad639646321c3dcdf7fd8f -->
+
+### Added
+- feat(assay): 11.0.0 prep (B169 window <11.1.0, tolerant procfs ppid scan, schema notes for jobs/attribution) (5a0545e5d)
+- feat(assay): isolate serial mutation windows (412273eaa)
+
+### Fixed
+- fix: close WP8 v17 full-suite gaps (1272121e5)
+- fix: import report summary through public surface (75233fdc4)
+- fix(assay-analysis): honor jobs_max in campaign analysis (254a3403f)
+- fix(assay): close PR1b gate regressions (9eeb3d0df)
+- fix(assay): harden window-host result parsing (8e991cdd8)
+- fix(assay): forward termination through window hosts (ee8e00c51)
+
+### Changed
+- Fix WP8 review findings (960981951)
+- assay: add verdict schema v17 for 11.0.0 (755b0502f)
+- assay: implement parallel native mutation scheduling (37900dc9f)
+
+### Documentation
+- docs(assay,run-gate): known issue for flaky-kill credit (B204, B205); RG-142 (6204dd4d7)
+- docs(assay): file 10.2.0 pre-release review follow-ups B196-B201 (346b6fc67)
+
+### Testing
+- test(assay): postponement window assertion matches <11.1.0 (d3cfab031)
+- test(assay): drop unused signal import (49b023434)
+- test: refresh reviewed dataclass contracts (e12a64886)
+- test: carry v17 canary cause evidence (82d89a662)
+- test: align v16 reuse refusal expectation (6c9f264df)
+- test: refresh B105 exclusion line inventory (c2d3646bf)
+- test: align policy presence fixture with verdict v17 (6700f8fc8)
+- test(assay-analysis): cover PR1b jobs_max lane semantics (12f721e66)
+- test(assay): self lanes declare jobs_max, not jobs (b1b392fd2)
+- test(assay): cover native R2 runtime worker default (8ffbfe704)
+- test(assay): distinguish mutation policy from runtime jobs (fb36b3a54)
+- test(assay): pin immutable limit broker responses (7fa1e22fd)
+- test(assay): pin PR1b gate regressions red first (8e136027d)
+- test(assay): cover PR1a liveness cleanup branches (407972710)
+- test(assay): cover PR1a worker boundary regressions (1e7790358)
+- test(assay): specify isolated mutation window host (fe85f8839)
+
+### Documentation
+- A flaky suite test can turn a surviving mutant into a recorded kill in any run, serial or parallel (B204, B205). The 56-candidate `--jobs 1` versus `--jobs 3` pilot agreed on 53 candidates; all three disagreements trace to intermittent failures in the project under test, and `--jobs 3` matched isolated serial replays on every candidate. Treat bucket differences between runs as suite flakes unless an isolated serial replay reproduces them.
+
+### Added
+- Extend the provisional-release R2 postponement (B169) to assay versions below 11.1.0 so 11.0.0 ships under it; the full `self-qualification` lane is unchanged.
+- Run native R2 candidate windows concurrently with `assay run --jobs N` up to the lane's `judge.mutation.jobs_max`, using coordinator-ordered progress/state and conservative overlapping limit-event attribution.
+- Add `jobs` and `attribution` to the progress run event and `worker_index` to candidate events; resume identity stays independent of worker count, and the WP7 retry tail remains serial.
+- Record this invocation's effective native R2 worker count and attribution in
+  verdict schema v17. Resumed candidate state does not retain earlier worker
+  counts, so these fields do not summarize a mixed-count campaign;
+  campaign-wide attribution is tracked in B203. Retain the underlying suite
+  outcome and descendant identities when cleanup finds a process-tree leak,
+  while keeping that candidate in `crashed`.
+
+### Changed
+- Require a cheap-clone workspace for native R2 runs with more than one worker. Assay 11.0.0 makes verdict schema v17 a hard cut from v16, replaces process-tree `cleanup_seconds` with signal and descendant identity evidence, and adds `canary_attempt.cause` so verification can re-derive the R3 attempt.
+- Consumers must regenerate v16 verdicts; v16-era judge identities cause resumed campaign records to be re-executed. Run-Gate reads only top-level verdict fields, CMRU reads exit codes, and dstdns remains on its v15 pin.
+
+### Fixed
+- Make campaign analysis read v17 `judgment.r2.jobs` and `attribution`, and refuse v16 verdicts consistently. The one-worker default still applies when a native lane has no runtime selection.
+
+## [10.2.0] - 2026-11-01
+<!-- cmru: generated -->
+<!-- cmru: source-end=2266ee8c2f1da5b359e320e255e1d29c1dd2f2f6 -->
+
+### Added
+- feat(assay): add sealed CoW snapshot templates (89a7a9fb7)
+- feat(assay): add CoW workspaces and raw fsync (ed0872495)
+
+### Fixed
+- fix(assay): fall back to plain snapshots for a non-btrfs CoW area (ec5374fec)
+- fix(assay): use the raw fsync syscall only on 64-bit Linux (897c144f1)
+- fix(assay): re-fix the replaced file's directory mtime in Level B clones (f78e3c065)
+- fix(assay): include cowtree in SQL witness bootstrap (f6f72ef99)
+- fix(assay): drop unreachable None guard in _close_repository (00a2fcda2)
+- fix(assay): repair CW8 preflight and tester gates (1defadb9c)
+- fix(assay): include cowtree in sparse clones (11b0b3c1e)
+
+### Changed
+- chore(assay): prepare 10.2.0 inputs (B169 window <10.3.0, B194/B195, CHANGES) (391456ce0)
+
+### Documentation
+- docs(assay): record the 10.2.0 review fixes (16f3ddca0)
+- docs(assay): file B192 launcher cancellation test flake (9170dc585)
+
+### Testing
+- test(assay): specify CW9 sealed template clones (b20bc6b5d)
+- test(assay): cover SQL witness bootstrap and diagnostics (0bbc07e55)
+- test(assay): pin CW8 gate regressions (165c15784)
+- test(assay): specify CoW workspace seam (ec2f8a6e6)
+- test(assay): specify preload-safe fsync fallback (0b889d661)
+- test(assay): specify raw fsync durability seam (51a125f3a)
+
+<!-- cmru: pending release notes begin -->
+### Added
+- Auto-detect a user-owned btrfs workspace for higher-rigor snapshots and reflink packed Git objects through cowtree, with the existing copy path retained when no CoW area is configured.
+- For cheap-clone workspaces, seal one verified base snapshot and clone it per execution unit, applying replacements inside each clone while preserving the existing no-CoW path and verdict buckets.
+
+### Changed
+- The R2 postponement for self-qualification (B169) is valid for release versions `>=10.0.0,<10.3.0`.
+- Run each serial native R2 command window in a dedicated Assay process while retaining the existing candidate buckets, resource evidence, resume records, and v16 verdict shape.
+
+### Fixed
+- Use the Linux fsync syscall directly for mutation state, pilot state, and verdict writes, so replacing `os.fsync` cannot bypass durability. Only a 64-bit Linux interpreter uses the raw syscall; other platforms use `os.fsync`.
+- A valid CoW area whose backend is not btrfs (XFS reflink, or btrfs without unprivileged subvolume deletion) keeps the plain copy path with one advisory line instead of failing every snapshot lane.
+- A cheap-clone replacement restores the fixed mtime of the replaced file's directory, matching the plain snapshot exactly.
+- Keep B105 target inventories sorted, classify the new workspace estimate through the shared record contract, and exercise CoW cleanup failures without replacing the original refusal.
+- Refresh the B105 exclusion line map after the CW8 source import shifted its reviewed `TYPE_CHECKING` block.
+- Include stdout and stderr tails when SQL qualification's assay run fails before writing its verdict artifact.
+<!-- cmru: pending release notes end -->
+
+## [10.1.0] - 2026-10-31
+<!-- cmru: generated -->
+<!-- cmru: source-end=33123538c07316632b618c8e3587dbee881c65e5 -->
+
+### Added
+- feat(assay): retry unresolved R2 candidates serially (bb440b2df)
+- feat(assay): add PR0 candidate resource metrics (4680e0054)
+- feat(assay): require receipt for R3 import-break (76ac1371e)
+- feat(assay): add WP1 termination classifier (aa3adbcf4)
+
+### Fixed
+- fix(assay): keep retries inside candidate budget (8cfee5ad3)
+- fix(assay): keep R1 judged after a self-signaled R0 FAIL (ff9f8046c)
+- fix(assay): correct AP-4 R0 and R1 wiring (a6e1c8ef7)
+- fix(assay): complete WP3 receipt canary fixes (1c11a5b71)
+- fix(assay): attribute ancestor events with missing candidate counters (9f8595e47)
+- fix(assay): preserve replay errors and unknown counters (a636d5fe5)
+- fix(assay): apply AP-1 review corrections (d5cf8a82b)
+- fix(assay): align replay and state revalidation (4f37c0116)
+- fix(assay): refresh coverage exclusion line map (1e42dec6d)
+- fix(assay): align R2 termination and resource evidence (415b35f1d)
+- fix(assay): preserve canary and timeout semantics (065091320)
+- fix(assay): withhold kill credit from unobserved failures (da3fe963c)
+- fix(assay): wire R0 termination and telemetry (72acc0573)
+- fix(assay): correct real-Go qualification rationale (034d04269)
+- fix(assay): align R2 pilot checks with optional limits (62bf8805b)
+- fix(assay): preserve non-clean R2 terminal classifications (3f8c5cd00)
+- fix(assay): refresh coverage exclusion line inventory (051598e14)
+- fix(assay): keep unstable R2 resource windows as telemetry (6451f7fcd)
+- fix(assay): cover the WP1 classifier target (3524c7a98)
+- fix(assay): construct contention evidence in tests (b6137aedc)
+- fix: repair merged R2 gate failures (80e3d81fd)
+- fix: repair whole-source R2 start failures (5b042b60b)
+
+### Changed
+- Merge origin/main into assay-pr0-20261031 (9fe1b72d4)
+- Merge origin/main into assay-wp2-20261030 (a8511d0f4)
+- Merge origin/main into assay-pr0-20261031 (6b8f3a4dd)
+- Merge origin/main into assay-wp7-20261031 (3b979e252)
+- Merge origin/main into assay-wp2-20261030 (e57dfc9ca)
+- Merge remote-tracking branch 'origin/main' into assay-wp3-20261030 (40183f724)
+- Merge assay AP-1 r2fix (termination classifier, limit-window identity/value split, P2-c) (5f9a8af68)
+- Cover WP2 telemetry branches and evidence (702b8cc30)
+- Merge remote-tracking branch 'origin/main' into assay-r2fix-20261030 (f29d10373)
+- keep Assay Go preflight fixture portable (2bb8ed461)
+- Fix WP1 P3 documentation findings (391c71931)
+- assay: key no-measurement table projection by row name (d7e30981e)
+- assay: assert termination table's no-measurement projection (cfe56b189)
+- assay: reconcile WP1 termination contract and targets (e3395f81f)
+- Merge R2 start fixes: sorted R1 targets (PWMCP), failure summary ignores coverage banner, IOBench leak and maxfail; backlog id renumbered B171 -> B181 against the descendant-evidence entry (646d445ed)
+
+### Documentation
+- docs(assay): close release review notes (c204f1371)
+- docs: file assay B183-B185 backlog notes and cowtree owner-manifest known limitation (239403475)
+- docs(assay): consolidate WP5 and prepare 10.1.0 (05911789c)
+- docs(assay): record WP1 preflight acceptance (3518847f4)
+- docs(assay): record WP1 gate status (6d828e37a)
+- docs: record R2 triage gate evidence (d909cd3d5)
+
+### Testing
+- test(assay): cover retry budget and import-break exit (c62cef169)
+- test(assay): update B169 waiver window expectations (160d06484)
+- test(assay): capture AP-4 R0 and R1 regressions (9c5a31935)
+- test(assay): align standalone R3 lane expectations with receipt semantics (2a1f035b9)
+- test(assay): update python import-break statement expectation to the one-line form (360611e43)
+- test(assay): pin final AP-5 retry evidence (c6003baa3)
+- test(assay): assert retry resource windows (42a60be49)
+- test(assay): align fixtures with AP-5 retries (2cb4a73a1)
+- test(assay): script AP-5 retry receipts (572348121)
+- test(assay): update JS import-break shape assertion to the one-line ts-ignore form (46e8a9773)
+- test(assay): let the mutation test driver repeat its last step for the serial retry (36ccf72d7)
+- test(assay): specify PR0 candidate resource metrics (258a82365)
+- test(assay): cover AP-5 serial tail retries (37e9dd2b5)
+- test(assay): add AP-3 receipt canary regressions (43bc47d71)
+- test(assay): update stale missing-leaf-counter observer test to ancestor attribution (0e3356019)
+- test(assay): keep comparison error fixture uncomparable (e80cdce8a)
+- test(assay): align ancestor event expectations (f20891239)
+- test(assay): separate terminal projections from classifier rows (acaf0410e)
+- test(assay): pin AP-1 regressions before fixes (c3c00ea13)
+- test(assay): close AP-1 coverage gaps (b2e97da29)
+- test(assay): expect refusal for malformed witness (ea6562dea)
+- test(assay): add AP-1 classifier and resource alignment oracles (81b36baab)
+- test(assay): expect inconclusive for unattributed canary failures (9efe81b9d)
+- test(assay): cover unobserved state revalidation branches (3625c4de7)
+- test(assay): distinguish unobserved cached kills (3c678368a)
+- test(assay): specify receipt-backed R3 canary (f4c194b15)
+- test(assay): add WP2 R0/R1 oracles (66c663559)
+- test(assay): use immutable command result fixtures (cf6afce5d)
+- test(assay): close R2 telemetry coverage gaps (90317aa32)
+- test(assay): cover degradable R2 resource observations (a2cd5d48c)
+- test(assay): define WP1 termination decision table (3faa78781)
+
+<!-- cmru: pending release notes begin -->
+### R0 and R1
+- On a failed R0 command, an external signal, direct resource-limit event, or
+  required unavailable observation produces `ERROR/EXEC_FAILED` with
+  deterministic detail. A self-inflicted fatal signal such as `SIGSEGV`
+  remains `FAIL/COMMAND_FAILED`; a completed PASS remains PASS. A complete
+  report failure stays a functional failure unless a higher-precedence limit
+  event was observed. `execute_command()` applies this R0 mapping for library
+  callers.
+- R1 inherits a non-judgeable R0 termination as `ERROR/EXEC_FAILED`, including
+  `NOT_RUN`; it cannot use a coverage artifact to mask that infrastructure
+  failure. A self-signaled R0 failure keeps R1 judged. When R0 is judgeable,
+  R1 applies its usual coverage rules. Declared whole-target paths are sorted
+  in R1 and native/ingested R2 verdicts, and R0 execution errors are not
+  reported as measured test failures (B181).
+
+### R2
+- A PASS with an exited leader remains `survived` even when a direct limit
+  event is observed; a PASS with a signaled leader is `crashed`. Any positive
+  failure-relevant pids or OOM event makes a non-PASS candidate `crashed` and
+  denies kill credit, even with a failed-call witness. After the fail-closed
+  initial capability probe, an unavailable or identity-changed candidate
+  window is recorded as unobserved telemetry and the campaign continues. A
+  `killed` result requires an ordinary exit 1, a current-run pytest failed-call
+  witness and clean leader exit. That is the only failure shape that earns
+  kill credit with an unobserved window; bare nonzero exits, signals and
+  shell-wrapped statuses such as 137 are `crashed`. A configured limit-value
+  change keeps the window observed. A completed
+  witness-prefix replay with a positive event is discarded in favor of a full
+  command with a fresh window; replay errors still propagate.
+- After the initial sweep, Assay retries once and serially each candidate run
+  in the current invocation that ends `crashed`, per-candidate
+  `budget_exceeded`, or `hung`. A deadline mask closes the retry phase. Before
+  each retry, if a per-candidate budget is known, the remaining campaign time
+  must fit that full budget; otherwise Assay keeps the first-run result. The
+  retry uses the shared classifier and replaces saved candidate state (B179).
+
+### R3
+- An `import-break` catch requires a normal nonzero exit, the expected
+  `COMMAND_FAILED` reason and a matching receipt written by the injected
+  statement. Signal deaths, report-derived failures with exit status zero, and
+  static checks that fail before the statement runs are `INCONCLUSIVE`; lanes
+  that lint or type-check before tests should use `uncovered-line` when R1 is
+  declared. A clean control `FAIL` remains visible in the attempt evidence,
+  and the verifier derives incomplete transformed runs as `INCONCLUSIVE`.
+
+### Progress and diagnostics
+- Native R2 candidate progress and resumable state add process-tree
+  `write_bytes`, nested `cpu_seconds` and `peak_rss_bytes`, and the judge's
+  `judge_rss_bytes`; unavailable procfs measurements remain null. Candidate
+  progress reports configured limit changes in `resource_limit_changes` (an
+  empty list when unchanged). Progress retains the top-level `cpu_seconds` and
+  `peak_rss_bytes` keys alongside the nested `resources.*` keys. Each serial
+  retry emits `candidate_retry` with the first and final buckets.
+- `command_finished.resources` carries the window duration, observation
+  status, PSI deltas, CPU-throttling duration and direct limit-event deltas.
+  R0 emits one advisory line after a failed command with measured PSI or CPU
+  throttling. Pressure telemetry stays out of verdict fields, claim details,
+  canary descriptions and captured output tails; causal infrastructure
+  evidence remains in deterministic claim detail.
+
+### Schema compatibility
+- Native R2 accepts optional `resource_limit_evidence` within verdict schema
+  v16, the recorded D2 exception to A-477. No verdict key or schema version
+  changed.
+
+### Resume state
+- A new Assay build re-executes resumed campaign state because the Assay
+  version is part of the judge identity. A matching cached `crashed` record is
+  reused on `--resume`; use `--resume --rejudge crashed` to execute it again.
+<!-- cmru: pending release notes end -->
 
 ## [10.0.1] - 2026-10-30
 <!-- cmru: generated -->
@@ -237,7 +518,8 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ### Release notes
 - 10.0.0 is a provisional release for mutation purposes: the R2 mutation campaign
-  was waived by operator decision on 2026-10-27 (release wave waiver; see B169).
+  was waived by operator decision on 2026-10-27 and extended by the operator on
+  2026-10-31 through the 10.1.0 release (see B169).
   No R2 pass is claimed. Every other gate (R0, R1 line and branch coverage, the
   analysis lane, the independent self-hosting witness and the distribution build)
   ran.
@@ -245,15 +527,16 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   step, `cmru.toml` `run-tests`): the full qualification minus R2. It runs R0,
   R1 over all of `src/assay` (whole-target 100% line and branch) and the R3
   canary, and records `.assay/mutation-postponed-assay.json` (tracking id B169,
-  operator decision 2026-10-27, valid only for a prepared release version in
-  `[10.0.0, 10.1.0)`, result `provisional`, never an R2 pass). The marker check
+  operator decision 2026-10-27, extended by operator on 2026-10-31, valid only
+  for a prepared release version in `[10.0.0, 10.2.0)`, result `provisional`,
+  never an R2 pass). The marker check
   reads the first dated release heading after `Unreleased`, requires it to
   match CMRU's protected release-transaction version, and requires a visible
-  stable `assay-vX.Y.Z` tag below 10.1.0; it refuses when no stable tag can be
+  stable `assay-vX.Y.Z` tag below 10.2.0; it refuses when no stable tag can be
   listed. Its `cmru_release_gate_version_bound` boolean records whether the
   protected transaction version was received and matched.
   CMRU runs this lane after the self-hosted gate and before tagging, so the
-  prepared version check also refuses the 10.1.0 release before its tag exists.
+  prepared version check also refuses the 10.2.0 release before its tag exists.
   The 210-minute lane requires the gate coordinator to keep other registered
   gates serial across projects; Run-Gate's Assay resource lock covers only
   Assay lanes. The full `self-qualification` lane is unchanged and clears the

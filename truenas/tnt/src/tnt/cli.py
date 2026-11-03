@@ -8,6 +8,8 @@ from __future__ import annotations
 import sys
 import json
 import getpass
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +17,7 @@ from cli_extended import (ArgumentSpec, CheckResult, CliFailure, CliIdentity, Cl
                           VerbGroup, VerbSpec, register_doctor)
 
 from . import profile as prof
-from .errors import PlanExecutionError, TntError
+from .errors import PlanExecutionError, Refused, TntError, TransportError
 from .host_store import HostStore, load_host_store
 from .query import disk_table
 from .session import SessionOpener, open_session
@@ -396,6 +398,8 @@ def _workflow_action(args: Any, runtime: CliRuntime, opener: SessionOpener, acti
 
 
 def _system_action(args: Any, runtime: CliRuntime, opener: SessionOpener, action_factory: Any) -> int:
+    if getattr(args, "expect_version", None) is not None and not getattr(args, "wait", False):
+        raise CliFailure("--expect-version requires --wait")
     session = _open(args, opener, allow_write=args.allow_write)
     try:
         action = action_factory(session)
@@ -406,37 +410,117 @@ def _system_action(args: Any, runtime: CliRuntime, opener: SessionOpener, action
         if not args.allow_write:
             raise CliFailure(f"plan was not applied; pass --allow-write to apply it\n{plan.render()}")
         methods = {call.method for call in action.calls}
+        applied_uncertainly = False
+        progress_lock = threading.Lock()
+        progress_finished = False
+        progress_started = False
 
         def progress(job: Any) -> None:
+            nonlocal progress_started
             detail = job.get("progress") if isinstance(job, dict) else None
             percent = detail.get("percent") if isinstance(detail, dict) else None
             if isinstance(percent, (int, float)) and not isinstance(percent, bool):
-                print(f"\rUpdate job progress: {percent:.0f}%", file=sys.stderr, end="", flush=True)
+                with progress_lock:
+                    if not progress_finished:
+                        progress_started = True
+                        print(f"\rUpdate job progress: {percent:.0f}%", file=sys.stderr, end="", flush=True)
+
+        def finish_progress(completed: bool) -> None:
+            nonlocal progress_finished
+            with progress_lock:
+                if progress_finished:
+                    return
+                progress_finished = True
+                if completed:
+                    # A terminal job can be observed before its final callback reaches this thread.
+                    # Report completion after apply_plan returns so success always ends at 100%.
+                    print("\rUpdate job progress: 100%", file=sys.stderr, flush=True)
+                elif progress_started:
+                    print(file=sys.stderr, flush=True)
 
         try:
             result = apply_plan(plan, session.rpc, allow_write=True, typed_confirmation=args.confirm,
-                                job_progress=progress if "update.run" in methods else None)
+                                job_progress=progress if methods & {"update.run", "update.download"} else None)
         except PlanExecutionError as exc:
             partial = exc.partial
-            payload = {"plan": plan.render(), "completed": False, "result": list(partial),
-                       "calls": _call_records(partial, session),
-                       "error": session.credential.scrub(str(exc)) if session.credential else str(exc)}
-            _emit(runtime, payload, f"{plan.render()}\nSystem action outcome is partial or uncertain:\n"
-                                   f"{json.dumps(payload, indent=2, sort_keys=True, default=str)}")
-            return 1
-        if "update.run" in methods:
-            print(file=sys.stderr, flush=True)
+            if "system.reboot" in methods and getattr(args, "wait", False) and action.system_baseline is not None:
+                applied_uncertainly = True
+                result = partial
+            else:
+                if methods & {"update.run", "update.download"}:
+                    finish_progress(completed=False)
+                payload = {"plan": plan.render(), "completed": False, "result": list(partial),
+                           "calls": _call_records(partial, session),
+                           "error": session.credential.scrub(str(exc)) if session.credential else str(exc)}
+                _emit(runtime, payload, f"{plan.render()}\nSystem action outcome is partial or uncertain:\n"
+                                       f"{json.dumps(payload, indent=2, sort_keys=True, default=str)}")
+                return 1
+        if methods & {"update.run", "update.download"}:
+            finish_progress(completed=True)
         payload = {"plan": plan.render(), "result": list(result), "calls": _call_records(result, session),
                    "completed": True}
         text = f"{plan.render()}\nSystem action completed."
         if "system.reboot" in methods:
             text += " The host is rebooting; the CLI session will close."
+            if getattr(args, "wait", False):
+                baseline = action.system_baseline
+                if baseline is None:
+                    raise CliFailure("reboot wait requires the reviewed system baseline")
+                expected_version = getattr(args, "expect_version", None)
+                session.close()
+                report = _wait_for_system_return(
+                    session.profile, session.credential, opener, insecure_ack=args.insecure,
+                    baseline=baseline, expected_version=expected_version,
+                )
+                payload["reconnected"] = report
+                payload["submission_uncertain"] = applied_uncertainly
+                text = f"{plan.render()}\nHost returned READY after reboot: " \
+                    f"{report['version']} on boot environment {report['boot_environment']} " \
+                    f"(boot ID {report['boot_id']})."
+                if applied_uncertainly:
+                    text += " The reboot RPC reply was lost; the new boot ID confirms the reboot completed."
         elif "system.shutdown" in methods:
             text += " The host is shutting down."
         _emit(runtime, payload, text)
         return 0
     finally:
         session.close()
+
+
+def _wait_for_system_return(profile: Any, credential: Any, opener: SessionOpener, *, insecure_ack: bool,
+                            baseline: tuple[str, str, str], expected_version: str | None,
+                            attempts: int = 180, interval: float = 10.0) -> dict[str, Any]:
+    """Reconnect with fresh read-only sessions; never replay the reboot request."""
+    last = "the host did not return to READY"
+    for attempt in range(attempts):
+        if attempt:
+            time.sleep(interval)
+        if attempt % 6 == 0:
+            print(f"Waiting for TrueNAS to return READY ({attempt + 1}/{attempts} reconnect attempts)…",
+                  file=sys.stderr, flush=True)
+        fresh = None
+        try:
+            fresh = opener(profile, secret=credential, insecure_ack=insecure_ack, allow_write=False)
+            state = fresh.rpc.call("system.state")
+            if state != "READY":
+                last = f"host is still {state!r}"
+                continue
+            try:
+                return fresh.workflows.verify_system_reboot(baseline, expected_version=expected_version)
+            except Refused as exc:
+                if exc.rule == "system-reboot-not-observed":
+                    last = str(exc)
+                    continue
+                raise
+        except TransportError as exc:
+            if exc.kind == "connect":
+                last = str(exc)
+                continue
+            raise
+        finally:
+            if fresh is not None:
+                fresh.close()
+    raise CliFailure(f"reboot was not verified after {attempts} bounded reconnect attempts: {last}")
 
 
 def _system_config_export(args: Any, runtime: CliRuntime, opener: SessionOpener) -> int:
@@ -635,6 +719,32 @@ def _task_protocol_cli(ident: CliIdentity, opener: SessionOpener, kind: str) -> 
         child.register(VerbSpec("delete", None, "Delete a periodic snapshot task.", group=VerbGroup.MODIFICATION.value,
                                 arguments=(id_arg,), options=write_options, handler=lambda a, r: _workflow_action(a, r, opener,
                                     lambda s: s.workflows.snapshot_task_delete_action(a.task_id))))
+    elif kind == "scrub":
+        id_arg = ArgumentSpec("task_id", "Pool scrub schedule ID.", metavar="ID", parser_kwargs={"type": int})
+        child.register(VerbSpec("list", None, "List pool scrub schedules.", group=VerbGroup.EXPLORATION.value,
+                                options=read_options, handler=lambda a, r: _workflow_read(a, r, opener,
+                                    lambda s: s.workflows.scrub_tasks())))
+        child.register(VerbSpec("show", None, "Show one pool scrub schedule.", group=VerbGroup.EXPLORATION.value,
+                                arguments=(id_arg,), options=read_options, handler=lambda a, r: _workflow_read(a, r, opener,
+                                    lambda s: s.workflows.scrub_task(a.task_id))))
+        child.register(VerbSpec("create", None, "Create a pool scrub schedule from a v27 JSON payload.",
+                                group=VerbGroup.MODIFICATION.value,
+                                options=write_options + (_value(("--file",), "JSON schedule payload.", "FILE", "WORKFLOW"),),
+                                handler=lambda a, r: _workflow_action(a, r, opener,
+                                    lambda s: s.workflows.scrub_task_create_action(_read_json_object(a.file)))))
+        child.register(VerbSpec("update", None, "Update a pool scrub schedule from a v27 JSON payload.",
+                                group=VerbGroup.MODIFICATION.value, arguments=(id_arg,),
+                                options=write_options + (_value(("--file",), "JSON fields to update.", "FILE", "WORKFLOW"),),
+                                handler=lambda a, r: _workflow_action(a, r, opener,
+                                    lambda s: s.workflows.scrub_task_update_action(a.task_id, _read_json_object(a.file)))))
+        child.register(VerbSpec("run", None, "Start a full pool scrub now as a tracked v27 job.",
+                                group=VerbGroup.MODIFICATION.value, arguments=(id_arg,), options=write_options,
+                                handler=lambda a, r: _workflow_action(a, r, opener,
+                                    lambda s: s.workflows.scrub_task_run_action(a.task_id))))
+        child.register(VerbSpec("delete", None, "Delete a pool scrub schedule (typed confirmation required).",
+                                group=VerbGroup.MODIFICATION.value, arguments=(id_arg,), options=write_options,
+                                handler=lambda a, r: _workflow_action(a, r, opener,
+                                    lambda s: s.workflows.scrub_task_delete_action(a.task_id))))
     elif kind == "replication":
         name_arg = ArgumentSpec("name", "Replication task name.", metavar="NAME")
         child.register(VerbSpec("list", None, "List replication tasks.", group=VerbGroup.EXPLORATION.value,
@@ -676,6 +786,7 @@ def _task_verbs(ident: CliIdentity, opener: SessionOpener) -> list[VerbSpec]:
     return [VerbSpec(name, None, description, group=VerbGroup.EXPLORATION.value,
                      delegate=_task_protocol_cli(ident, opener, name))
             for name, description in (("snapshot", "Manage periodic snapshot tasks."),
+                                      ("scrub", "Manage pool scrub schedules."),
                                       ("replication", "Inspect and run replication tasks."),
                                       ("cloudsync", "Inspect and run cloud-sync tasks."))]
 
@@ -707,27 +818,69 @@ def _app_verbs(ident: CliIdentity, opener: SessionOpener) -> list[VerbSpec]:
 def _system_verbs(ident: CliIdentity, opener: SessionOpener) -> list[VerbSpec]:
     force_jobs = _flag(("--force-with-jobs",), "Allow a system action to proceed with listed running jobs; typed confirmation remains required.", "SAFETY")
     delay = _value(("--delay",), "Delay before reboot or shutdown, in seconds (0–86400).", "SECONDS", "WORKFLOW", type=int)
-    update_registry = CliRegistry(ident, prog="tnt system update", description="Check and apply v27 system updates.",
+    update_registry = CliRegistry(ident, prog="tnt system update", description="Check, select, download, and apply v27 system updates.",
                                   unexpected_exceptions="report", expected_exceptions=(TntError,))
     update_registry.register(VerbSpec("check", None, "Check for an update and show train, versions, and release notes.",
                                       group=VerbGroup.EXPLORATION.value, options=HOST_OPTIONS,
                                       handler=lambda args, runtime: _workflow_read(
                                           args, runtime, opener, lambda session: session.workflows.update_check())))
     update_registry.register(VerbSpec(
-        "apply", None, "Apply the exact currently available update as a destructive job; reboot is separate.",
+        "profiles", None, "Show the current update profile and profiles TrueNAS marks available.",
+        group=VerbGroup.EXPLORATION.value, options=HOST_OPTIONS,
+        handler=lambda args, runtime: _workflow_read(
+            args, runtime, opener, lambda session: session.workflows.update_profiles())))
+    update_registry.register(VerbSpec(
+        "versions", None, "List exact available update train/version pairs across TrueNAS trains.",
+        group=VerbGroup.EXPLORATION.value, options=HOST_OPTIONS,
+        handler=lambda args, runtime: _workflow_read(
+            args, runtime, opener, lambda session: session.workflows.update_versions())))
+    update_registry.register(VerbSpec(
+        "select", None, "Select one exact available update profile as a typed destructive plan.",
         group=VerbGroup.MODIFICATION.value,
-        arguments=(ArgumentSpec("version", "Exact available target version; also the typed confirmation.", metavar="VERSION"),),
+        arguments=(ArgumentSpec("profile", "Exact available profile ID; also the typed confirmation.", metavar="PROFILE"),),
         options=HOST_OPTIONS + ACTION_OPTIONS + (force_jobs,),
         handler=lambda args, runtime: _system_action(
             args, runtime, opener,
-            lambda session: session.workflows.update_apply_action(args.version, force_with_jobs=args.force_with_jobs))))
+            lambda session: session.workflows.update_select_profile_action(
+                args.profile, force_with_jobs=args.force_with_jobs))))
+    update_registry.register(VerbSpec(
+        "download", None, "Download the exact currently available update as a tracked job.",
+        group=VerbGroup.MODIFICATION.value,
+        arguments=(ArgumentSpec("version", "Exact available target version; also the typed confirmation.", metavar="VERSION"),),
+        options=HOST_OPTIONS + ACTION_OPTIONS + (force_jobs,
+            _value(("--train",), "Exact train from `system update versions` when choosing beyond the check candidate.",
+                   "TRAIN", "WORKFLOW")),
+        handler=lambda args, runtime: _system_action(
+            args, runtime, opener,
+            lambda session: session.workflows.update_download_action(
+                args.version, target_train=args.train, force_with_jobs=args.force_with_jobs))))
+    update_registry.register(VerbSpec(
+        "apply", None, "Apply the exact currently available update as a destructive job; reboot is separate.",
+        group=VerbGroup.MODIFICATION.value,
+        arguments=(ArgumentSpec("version", "Exact available target version; also the typed confirmation.", metavar="VERSION"),),
+        options=HOST_OPTIONS + ACTION_OPTIONS + (force_jobs,
+            _value(("--train",), "Exact train from `system update versions` when choosing beyond the check candidate.",
+                   "TRAIN", "WORKFLOW")),
+        handler=lambda args, runtime: _system_action(
+            args, runtime, opener,
+            lambda session: session.workflows.update_apply_action(
+                args.version, target_train=args.train, force_with_jobs=args.force_with_jobs))))
+    verify = VerbSpec(
+        "verify", None, "Show the READY version, boot ID, and active boot environment, including on v28.",
+        group=VerbGroup.EXPLORATION.value, options=HOST_OPTIONS,
+        handler=lambda args, runtime: _workflow_read(
+            args, runtime, opener, lambda session: session.workflows.system_status()))
     return [
-        VerbSpec("update", None, "Check and apply a v27 system update.", group=VerbGroup.EXPLORATION.value,
+        verify,
+        VerbSpec("update", None, "Check, select, download, and apply a v27 system update.", group=VerbGroup.EXPLORATION.value,
                  delegate=update_registry.build()),
         *[VerbSpec(
             operation, None, f"{operation.title()} the host as a destructive v27 system job.",
             group=VerbGroup.MODIFICATION.value,
-            options=HOST_OPTIONS + ACTION_OPTIONS + (delay, force_jobs),
+            options=HOST_OPTIONS + ACTION_OPTIONS + (delay, force_jobs) +
+                ((_flag(("--wait",), "Reconnect after reboot and verify the new boot ID and version.", "WORKFLOW"),
+                  _value(("--expect-version",), "Exact version required after reboot (optional).", "VERSION", "WORKFLOW"))
+                 if operation == "reboot" else ()),
             handler=lambda args, runtime, op=operation: _system_action(
                 args, runtime, opener,
                 lambda session: session.workflows.system_power_action(
@@ -1374,6 +1527,10 @@ def build_cli(cli_identity: CliIdentity | None = None, opener: SessionOpener = o
                                options=HOST_OPTIONS,
                                handler=lambda args, runtime: _core_view_read(args, runtime, opener, "services")))
     _workflow_group(registry, ident, "storage", "Read pool and disk health.", [
+        VerbSpec("pools", None, "Show read-only inventory and scan state for storage pools.",
+                 group=VerbGroup.EXPLORATION.value, examples=("tnt storage pools --host lab --json",),
+                 options=HOST_OPTIONS,
+                 handler=lambda args, runtime: _core_view_read(args, runtime, opener, "pools")),
         VerbSpec("health", None, "Show pool health and disk inventory without write actions.",
                  group=VerbGroup.EXPLORATION.value, examples=("tnt storage health --host lab --json",),
                  options=HOST_OPTIONS,

@@ -28,6 +28,15 @@ def session(server):
 class MemoryHost:
     def __init__(self, results=None):
         self.results = dict(results or {})
+        self.results.setdefault("app.query", [])
+        self.results.setdefault("container.query", [])
+        self.results.setdefault("vm.supports_virtualization", True)
+        self.results.setdefault("kmip.config", {
+            "id": 1, "enabled": False, "manage_sed_disks": False, "manage_zfs_keys": False,
+            "certificate": None, "certificate_authority": None, "port": 5696, "server": None,
+            "ssl_version": "PROTOCOL_TLSv1_2",
+        })
+        self.results.setdefault("enclosure2.query", [{"id": "test-enclosure"}])
         self.calls = []
         self.vm = None
         self.vm_devices = []

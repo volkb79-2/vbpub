@@ -1,5 +1,22 @@
 # debian-install-v2 — TODO / backlog
 
+## DONE (root-cap follow-ups, 2026-11-02)
+
+`root_max_size_gb` requires `swap_policy=on` and managed tail-swap partitions
+directly after root, so neither the first reboot nor stage-two `growpart` can
+consume the cap. Stage one installs cloud-init and initramfs growth guards
+after the capped tail-swap plan validates and before any initramfs shrink hook
+is installed; stage two repeats them. The cap is measured from the root
+partition start without rounding its configured length down to an absolute
+1 MiB boundary. User-facing examples retain uncapped and capped layouts.
+
+## DONE (requirements naming, 2026-11-02): name the optional wizard dependency by use case
+
+Renamed the ad-hoc wizard manifest to `requirements-wizard.txt` and updated
+the installer, tests, generated CLI surface, and adoption/design docs. Future
+tool manifests are inventoried in the release-program requirements naming
+report and will migrate in separate tool-scoped changes.
+
 ## OPEN (MDT-016 / D-HS-01-2, 2026-10-19): the io.cost generator measures through the hypervisor cache
 
 `tools/iocost_coef_gen.py` (patched copy of the Linux generator, built by `tools/build-iocost-generator.py`)
@@ -96,7 +113,7 @@ Operator asked (2026-09-08, netcup live-test session) whether the scp-api/
 debian-install-v2 tooling could adopt nyxloom's Telegram/Mattermost
 notification adapter (`nyxloom/src/nyxloom/notify.py`) instead of
 maintaining its own separate Telegram-only sender, since nyxloom now has a
-running Mattermost stack on main (`mattermost-server/`).
+running Mattermost stack on main (`voice-screen-share/mattermost-server/`).
 
 **Investigated. Findings:**
 
@@ -148,3 +165,35 @@ for this round.
 Not designed or scoped beyond the above; no code written yet.
 
 _Captured 2026-09-08 from the netcup live-test session per operator request._
+
+## DONE (root cap, 2026-11-02): write the boot growth guards only after the cap is validated
+
+Stage one now installs the cloud-init and initramfs growth guards only after the planner accepts the capped tail-swap
+layout, just before stage two is installed and the first reboot. The stage-one guard test covers capped, uncapped, and
+refused-cap installs, asserting that refusal writes neither guard file.
+
+## DONE (root cap, 2026-11-03): install growth guards before the initramfs shrink hook
+
+Stage one resolves the root-shrink plan before writing anything that could
+change boot behavior, then writes the cap guards before `_plan_root_shrink`
+installs the hook and rebuilds initramfs images. An unplanned reboot during
+`update-initramfs -k all` therefore has the guards already in place. The
+recorded dry-run test asserts both guard writes precede the hook write and
+initramfs rebuild; refused and uncapped paths remain covered.
+
+## OPEN (operator decision 2026-11-04): the TrueNAS part of the seed-ISO recipe becomes a pointer to tnt
+
+debian-install-v2 stays the seed-ISO builder only; no TrueNAS API code goes into it. The TrueNAS/Proxmox mention in
+`docs/CONSUMERS.md` ("Build a private VM seed ISO", the paragraph naming TrueNAS SCALE, and the VM attach step) does not
+say how the cloud image reaches the NAS. Change it so that the TrueNAS steps are a pointer to tnt (TNT-61 imports the cloud image
+into a zvol, TNT-60 manages the devices), as:
+
+1. Put the Debian cloud image and the seed ISO (and their `.sha256` files) in the repo-level `downloads/`.
+2. `tnt files put <name> <dataset-dir>` (API upload from `downloads/` only, verified against the sha256; TNT-61 stage 1).
+3. `tnt vm disk import <dataset-path> --zvol <pool/zvol>` (TNT-61 stage 2, with its capability probe).
+4. `tnt vm create --iso <seed>`.
+5. `tnt vm device add` (and `tnt vm device list/update/delete`, TNT-60, to inspect or fix the devices).
+
+The Proxmox and Hyper-V mentions stay as they are. Acceptance: the section links tnt's CONSUMERS and names no TrueNAS API method; a
+docs test (if the file has one) still passes; the existing recipe is kept as the manual fallback until tnt TNT-61 ships. Depends on tnt
+TNT-60 and TNT-61 (`truenas/tnt/BACKLOG.md`).

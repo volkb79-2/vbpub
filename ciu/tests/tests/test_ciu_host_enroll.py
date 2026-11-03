@@ -13,7 +13,7 @@ Oracle map (handoff `ciu-P52-ciu93-host-enroll.md` Work item 6):
   implementations, each pinned as its own test against the SPECIFIC oracle it
   must break (row-before-check, key material on stdout, whole-file rewrite).
 * **O6** — `TestRenderedInstaller`: the committed `ciu/get.py`'s `enroll --help`
-  flag set, its byte-identity with a fresh `cmru get-py ciu` render (template +
+  flag set, its byte-identity with a fresh `cmru installer render ciu` render (template +
   the ciu-owned `installer/enroll.py` extension fragment),
   and the release coordinates baked into `host_enroll` vs ciu's own `cmru.toml`.
 

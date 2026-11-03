@@ -714,7 +714,7 @@ def _expected_r2_artifact(
                 for item in mutation.get(bucket_name, []):
                     item["resource_limit_evidence"] = zero_resource_limit_evidence
                     item["process_tree_evidence"] = {
-                        "protocol": "assay-process-tree/1",
+                        "protocol": "assay-process-tree/2",
                         "leader_status": (
                             "timeout-killed"
                             if bucket_name in {"budget_exceeded", "hung"}
@@ -723,7 +723,8 @@ def _expected_r2_artifact(
                         "group_signalled_before_reap": False,
                         "outliving_descendants": 0,
                         "descendants_signalled": 0,
-                        "cleanup_seconds": 0.0,
+                        "signal": None,
+                        "descendants": [],
                         "clean": True,
                     }
             mutation["candidate_ids"] = [
@@ -811,6 +812,9 @@ def _expected_r2_artifact(
                 # few places that pins the producer against a REAL run rather
                 # than a hand-built model object.
                 "producer": "native",
+                "attribution": (
+                    "serial" if jobs == 1 else "overlap-conservative"
+                ),
                 # (B091/RW-36) present unconditionally -- "a reader sees
                 # what ran" even on the lanes this module runs, none of
                 # which invoke pytest.
@@ -923,10 +927,11 @@ def _assert_complete(real: dict, expected: dict) -> None:
                     "group_signalled_before_reap",
                     "outliving_descendants",
                     "descendants_signalled",
-                    "cleanup_seconds",
+                    "signal",
+                    "descendants",
                     "clean",
                 }
-                assert evidence["protocol"] == "assay-process-tree/1"
+                assert evidence["protocol"] == "assay-process-tree/2"
                 assert evidence["clean"] is True
                 assert evidence["outliving_descendants"] == 0
                 assert evidence["descendants_signalled"] == 0
@@ -945,9 +950,6 @@ def _assert_complete(real: dict, expected: dict) -> None:
                 if bucket == "budget_exceeded":
                     OBSERVED_BUDGET_LEADER_STATUSES.append(evidence["leader_status"])
                     evidence["leader_status"] = "timeout-killed"
-                assert isinstance(evidence["cleanup_seconds"], (int, float))
-                assert evidence["cleanup_seconds"] >= 0
-                evidence["cleanup_seconds"] = 0.0
 
     # R2 outcome data is duplicated in the top-level claims and in the
     # judgment summary. Validate and normalize both copies before comparing
@@ -1352,7 +1354,10 @@ _PKG_TEST_PASS = "from pkg.mod import f\n\n\ndef test_f():\n    assert f() == 1\
 _PKG_TEST_BROKEN = "from pkg.mod import f\n\n\ndef test_f():\n    assert f() == 'WRONG'\n"
 
 _IMPORT_BREAK_DESCRIPTION = (
-    'inserted `raise AssertionError("assay-canary-import-break")` at line 1'
+    "inserted an import-break receipt and failure at line 1; receipt matched"
+)
+_IMPORT_BREAK_NO_RECEIPT_DESCRIPTION = (
+    "inserted an import-break receipt and failure at line 1; no receipt"
 )
 _UNCOVERED_LINE_DESCRIPTION = (
     "appended never-called `def _assay_canary_unreached` "
@@ -1477,6 +1482,7 @@ def test_a_real_r3_lane_proves_the_canary_and_passes_through_the_wheel(
                             "target": "pkg/mod.py",
                             "description": _IMPORT_BREAK_DESCRIPTION,
                             "disposition": "attempted",
+                            "cause": "receipt",
                             "control_outcome": "PASS",
                             "transformed_outcome": "FAIL",
                             "expected_reason_code": "COMMAND_FAILED",
@@ -1573,6 +1579,7 @@ def test_a_real_r3_lane_with_a_broken_control_is_inconclusive_through_the_wheel(
                                 "of a failing lane"
                             ),
                             "disposition": "attempted",
+                            "cause": None,
                             "control_outcome": "FAIL",
                         }
                     ],
@@ -1636,8 +1643,9 @@ def test_a_real_r3_lane_whose_bad_case_unexpectedly_passes_survives_through_the_
                     "attempts": [
                         {
                             "target": "pkg/mod.py",
-                            "description": _IMPORT_BREAK_DESCRIPTION,
+                            "description": _IMPORT_BREAK_NO_RECEIPT_DESCRIPTION,
                             "disposition": "attempted",
+                            "cause": "absent",
                             "control_outcome": "PASS",
                             "transformed_outcome": "PASS",
                             "expected_reason_code": "COMMAND_FAILED",
@@ -1905,6 +1913,7 @@ def test_a_real_r3_lane_proves_the_uncovered_line_canary_through_the_wheel(
                             "target": "pkg/mod.py",
                             "description": _UNCOVERED_LINE_DESCRIPTION,
                             "disposition": "attempted",
+                            "cause": None,
                             "control_outcome": "PASS",
                             "transformed_outcome": "FAIL",
                             "expected_reason_code": "UNCOVERED_LINES",
@@ -1919,10 +1928,11 @@ def test_a_real_r3_lane_proves_the_uncovered_line_canary_through_the_wheel(
     assert git_repo.git("status", "--porcelain") == ""
 
 
-def test_a_real_r3_lane_whose_bad_case_fails_for_the_wrong_cause_survives(
+def test_a_real_r3_lane_whose_target_is_never_imported_is_inconclusive(
     standalone: Standalone, git_repo: GitRepo, validator: Draft202012Validator
 ):
-    """Work item 6's "wrong cause" shape, through the real, un-mocked
+    """Work item 6's "wrong cause" shape (WP3: a module nothing imports never writes the
+    import-break receipt, so the canary is INCONCLUSIVE rather than credited), through the real, un-mocked
     adapter and registry: ``import-break`` expects ``COMMAND_FAILED``, and
     the transformed half genuinely FAILS -- but ``UNCOVERED_LINES``,
     because the lane's own tests never import the broken module and R1
@@ -1948,7 +1958,7 @@ def test_a_real_r3_lane_whose_bad_case_fails_for_the_wrong_cause_survives(
 
     proc = _run_assay(standalone, lane_file)
 
-    assert proc.returncode == 1, proc.stderr  # Outcome.FAIL.exit_code
+    assert proc.returncode == 5, proc.stderr  # Outcome.INCONCLUSIVE.exit_code
     real = json.loads(proc.stdout)
     assert why_invalid(validator, real) == []
     _assert_complete(
@@ -1958,9 +1968,9 @@ def test_a_real_r3_lane_whose_bad_case_fails_for_the_wrong_cause_survives(
             base_rev=base_rev,
             mechanism="import-break",
             target="pkg/lonely.py",
-            outcome="FAIL",
-            reason_code="CANARY_SURVIVED",
-            exit_code=1,
+            outcome="INCONCLUSIVE",
+            reason_code="CANARY_INCONCLUSIVE",
+            exit_code=5,
             r1_claim={
                 "rigor": "R1",
                 "source": "computed",
@@ -1997,9 +2007,9 @@ def test_a_real_r3_lane_whose_bad_case_fails_for_the_wrong_cause_survives(
             r3_claim={
                 "rigor": "R3",
                 "source": "computed",
-                "status": "FAIL",
+                "status": "INCONCLUSIVE",
                 "verified_by_assay": True,
-                "reason_code": "CANARY_SURVIVED",
+                "reason_code": "CANARY_INCONCLUSIVE",
                 "canary": {
                     "mechanism": "import-break",
                     "attempts": [
@@ -2010,12 +2020,13 @@ def test_a_real_r3_lane_whose_bad_case_fails_for_the_wrong_cause_survives(
                             # exactly the case where a target copied from the
                             # wrong place would have gone unnoticed under v3.
                             "target": "pkg/lonely.py",
-                            "description": _IMPORT_BREAK_DESCRIPTION,
+                            "description": _IMPORT_BREAK_NO_RECEIPT_DESCRIPTION,
                             "disposition": "attempted",
+                            "cause": "absent",
                             "control_outcome": "PASS",
-                            "transformed_outcome": "FAIL",
+                            "transformed_outcome": "INCONCLUSIVE",
                             "expected_reason_code": "COMMAND_FAILED",
-                            "observed_reason_code": "UNCOVERED_LINES",
+                            "observed_reason_code": "CANARY_INCONCLUSIVE",
                         }
                     ],
                 },

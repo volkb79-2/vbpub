@@ -1523,14 +1523,14 @@ class TestRG78ClosedExitTable:
             "ephemeral"
 
     def test_observer_refusal_follows_assay_a494_r2_only_shape(self):
-        """RG-104 is superseded by Assay A-494/A-496 (verdict v16, Assay >=
-        10.0.0): a missing cgroup hierarchy invalidates ONLY native R2. The
+        """RG-104 is superseded by Assay A-494/A-496 (verdict v17, Assay >=
+        11.0.0): a missing cgroup hierarchy invalidates ONLY native R2. The
         artifact keeps completed R0/R1 claims and the independent R3 claim and
         stamps `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE` on R2 alone,
         which is the one shape Run-Gate accepts as an environment refusal.
         The earlier whole-lane shape (every requested rigor stamped, before R0)
         is no longer produced and is refused as a malformed claim set."""
-        provenance = {"name": "assay", "version": "10.0.0", "artifact": "wheel",
+        provenance = {"name": "assay", "version": "11.0.0", "artifact": "wheel",
                       "digest_algorithm": "sha256", "digest": "a" * 64}
 
         def claims(**statuses):
@@ -1786,7 +1786,8 @@ class TestRG78ClosedExitTable:
                    and isinstance(node.value.func, ast.Name)
                    and node.value.func.id in {"LaneResult", "operation_result",
                                               "_dispatch_sequence",
-                                              "_dispatch_admission"}
+                                              "_dispatch_admission",
+                                              "run_workers_measurement"}
                    for node in dispatch_returns)
         sequence = next(node for node in tree.body
                         if isinstance(node, ast.FunctionDef)
@@ -2419,12 +2420,12 @@ class TestArgvConstruction:
             "docker", "run", "--rm", "--init", "--cgroup-parent",
         ]
         assert argv[argv.index("--user") + 1] == "1001:1002"
-        assert ["-v", "/host/cache:/cache"] == argv[
-            argv.index("/host/cache:/cache") - 1:
-            argv.index("/host/cache:/cache") + 1]
-        assert ["-v", "/host/data:/data"] == argv[
-            argv.index("/host/data:/data") - 1:
-            argv.index("/host/data:/data") + 1]
+        cache_mount = "type=bind,source=/host/cache,target=/cache"
+        data_mount = "type=bind,source=/host/data,target=/data"
+        assert ["--mount", cache_mount] == argv[
+            argv.index(cache_mount) - 1:argv.index(cache_mount) + 1]
+        assert ["--mount", data_mount] == argv[
+            argv.index(data_mount) - 1:argv.index(data_mount) + 1]
 
     def test_assay_lane_inner_shape_and_verdict_line(self, tmp_path, monkeypatch):
         repo = make_repo(tmp_path)
@@ -2897,8 +2898,10 @@ class TestCentralDefaults:
                             lambda p, **k: Path("/phys"))
         proc = run_tool(proj, "suite")
         assert proc.returncode == 0, proc.stderr
-        assert "CGROUP_PARENT_DEV_BACKGROUND=dev-background.slice" in \
-            docker_runs(log)[0]
+        lane_run = docker_runs(log)[0]       # RG-117a: name only on argv
+        assert lane_run[lane_run.index("CGROUP_PARENT_DEV_BACKGROUND") - 1] \
+            == "-e"
+        assert "dev-background.slice" not in "\n".join(lane_run)
 
     def test_project_shadows_central_by_name(self, tmp_path, monkeypatch):
         repo = make_repo(tmp_path)
@@ -3472,8 +3475,10 @@ class TestExtraMounts:
         proc = run_tool(proj, "s")
         assert proc.returncode == 0, proc.stderr
         run_call = docker_runs(log)[0]
-        mounts = sorted(run_call[i + 1] for i, p in enumerate(run_call) if p == "-v")
-        assert "/var/run/docker.sock:/var/run/docker.sock" in mounts
+        mounts = [run_call[i + 1] for i, p in enumerate(run_call)
+                  if p == "--mount"]
+        assert ("type=bind,source=/var/run/docker.sock,target="
+                "/var/run/docker.sock") in mounts
 
     def test_extra_mounts_malformed_entry_rejected(self, tmp_path, monkeypatch):
         repo, proj = self._simple_ephemeral(tmp_path)
@@ -3496,6 +3501,45 @@ class TestExtraMounts:
         monkeypatch.setenv(run_gate.EXTRA_MOUNT_ENV_VAR, value)
         with pytest.raises(run_gate.GateError, match=re.escape(message)):
             run_gate.extra_mount_flags()
+
+    def test_extra_mount_flags_use_mount_form_for_missing_source_refusal(
+            self, monkeypatch):
+        monkeypatch.setenv(run_gate.EXTRA_MOUNT_ENV_VAR,
+                           "/missing/source=/container/source")
+        assert run_gate.extra_mount_flags() == [
+            "--mount",
+            "type=bind,source=/missing/source,target=/container/source"]
+
+    @pytest.mark.parametrize("value", ("/a,readonly=/b", "/a=/b\nextra"))
+    def test_extra_mount_flags_refuse_mount_spec_delimiters(
+            self, monkeypatch, value):
+        monkeypatch.setenv(run_gate.EXTRA_MOUNT_ENV_VAR, value)
+        with pytest.raises(run_gate.GateError,
+                           match="RUN_GATE_EXTRA_MOUNTS.*invalid"):
+            run_gate.extra_mount_flags()
+
+    def test_container_runner_refuses_extra_mount_injection_before_container_start(
+            self, tmp_path, monkeypatch):
+        monkeypatch.setenv(run_gate.EXTRA_MOUNT_ENV_VAR, "/a,readonly=/b")
+        docker_checks = []
+        lookups = []
+        monkeypatch.setattr(run_gate.shutil, "which",
+                            lambda name: lookups.append(name) or "/bin/docker")
+        monkeypatch.setattr(run_gate, "resolve_inflight",
+                            lambda *_args, **_kwargs:
+                            docker_checks.append("resolve_inflight") or None)
+
+        with pytest.raises(run_gate.GateError,
+                           match="RUN_GATE_EXTRA_MOUNTS.*invalid"):
+            run_gate.run_container_lane(
+                {"kind": "command", "argv": ["true"]}, "unit",
+                tmp_path, tmp_path, tmp_path,
+                {"mode": "ephemeral", "image": "runner:local"},
+                "fixture", "dev-gates.slice", "fixture", dry_run=True,
+                resource_settings={"io_sync": "strict",
+                                   "cowtree": {"mode": "off"}})
+        assert lookups == ["docker"]
+        assert docker_checks == ["resolve_inflight"]
 
 
 class TestRG99LockFreeSafeDirectory:
@@ -4049,6 +4093,158 @@ exit 64
         done, calls = self._run_inner(tmp_path, None)
         assert done.returncode == 0, done.stderr
         assert calls == ["run", "analyze", "analyze"]
+
+    # -- RG-139: the declared coverage artifact reaches the analyzer --------
+
+    _COV = ".assay/coverage-unit.json"
+
+    def _cov_lane(self, fake, declared=_COV):
+        lane = {"assay_lane": "unit", "assay_command": [str(fake)],
+                "pins": {}}
+        if declared is not None:
+            lane["_assay_inventory"] = {"entry": {"coverage": {
+                "format": "coverage-py-json", "artifact": declared}},
+                "assay_version": "12.0.0"}
+        return lane
+
+    def _run_cov(self, tmp_path, *, knows_coverage=True, artifact=True,
+                 declared=_COV):
+        """Run the real inner script against a recording fake judge. The
+        fake writes the verdict on `run`, answers `analyze campaign --help`
+        like a judge that does or does not know `--coverage`, and records
+        every analyze call's full argv."""
+        project = tmp_path / "proj"
+        (project / ".assay").mkdir(parents=True)
+        (tmp_path / ".run-gate").mkdir()
+        if artifact:
+            (project / ".assay" / "coverage-unit.json").write_text("{}")
+        log = tmp_path / "calls.log"
+        help_text = "--coverage PATH" if knows_coverage else "--progress P"
+        fake = tmp_path / "fake-assay"
+        fake.write_text(
+            "#!/bin/sh\n"
+            f'if [ "$1" = run ]; then echo run >> {log}; '
+            ": > .assay/verdict-unit.json; exit 0; fi\n"
+            f'for a in "$@"; do [ "$a" = --help ] && '
+            f"{{ echo '{help_text}'; exit 0; }}; done\n"
+            f'echo "$*" >> {log}\nexit 0\n')
+        fake.chmod(0o755)
+        inner = run_gate.build_assay_inner(
+            self._cov_lane(fake, declared), project, tmp_path,
+            closeout_commit=self._COMMIT)
+        done = subprocess.run(["bash", "-c", inner], cwd=project,
+                              capture_output=True, text=True, timeout=60)
+        assert done.returncode == 0, done.stderr
+        return [line for line in log.read_text().splitlines()
+                if line.startswith("analyze")]
+
+    def test_the_closeout_forwards_the_declared_coverage_artifact(
+            self, tmp_path):
+        calls = self._run_cov(tmp_path)
+        assert len(calls) == 2
+        for call in calls:
+            assert f"--coverage {self._COV}" in call
+            assert "--verdict .assay/verdict-unit.json" in call
+
+    def test_a_judge_without_coverage_support_gets_the_old_closeout(
+            self, tmp_path):
+        calls = self._run_cov(tmp_path, knows_coverage=False)
+        assert len(calls) == 2 and all("--coverage" not in c for c in calls)
+
+    def test_a_missing_coverage_artifact_is_not_forwarded(self, tmp_path):
+        calls = self._run_cov(tmp_path, artifact=False)
+        assert len(calls) == 2 and all("--coverage" not in c for c in calls)
+
+    def test_a_lane_declaring_no_coverage_forwards_none(self, tmp_path):
+        calls = self._run_cov(tmp_path, declared=None)
+        assert len(calls) == 2 and all("--coverage" not in c for c in calls)
+
+    @pytest.mark.parametrize("bad", ["/abs/cov.json", "../up/cov.json", ""])
+    def test_only_a_plain_relative_declared_artifact_is_forwarded(self, bad):
+        lane = self._cov_lane("x", bad)
+        assert run_gate.assay_closeout_coverage_artifact(lane) is None
+
+    def test_a_reverified_coverage_artifact_is_retained_as_evidence(
+            self, tmp_path, monkeypatch):
+        verdict = self._seed(tmp_path, self._doc(coverage={
+            "artifact_status": "parsed_and_reverified_r1"}))
+        (verdict.parent / "coverage-unit.json").write_text('{"files": {}}')
+        monkeypatch.setenv(run_gate.EVIDENCE_DIR_ENV_VAR,
+                           str(tmp_path / "evidence"))
+        closeout = run_gate.collect_assay_closeout(
+            self._cov_lane("x"), "unit", "run1", self._COMMIT, verdict,
+            run_gate.LaneResult("FAIL", 1, assay_outcome="FAIL"), None)
+        assert closeout["coverage_status"] == "parsed_and_reverified_r1"
+        retained = Path(closeout["coverage_path"])
+        assert retained.name == "run1.coverage.json"
+        assert retained.read_bytes() == b'{"files": {}}'
+        assert retained.stat().st_mode & 0o777 == 0o600
+
+    def test_a_retained_coverage_artifact_is_named_in_the_disclosure(
+            self, tmp_path, monkeypatch, capsys):
+        verdict = self._seed(tmp_path, self._doc(coverage={
+            "artifact_status": "parsed_and_reverified_r1"}))
+        (verdict.parent / "coverage-unit.json").write_text("{}")
+        monkeypatch.setenv(run_gate.EVIDENCE_DIR_ENV_VAR,
+                           str(tmp_path / "evidence"))
+        closeout = run_gate.finish_assay_closeout(
+            self._cov_lane("x"), "unit", {"run_id": "r"}, self._COMMIT,
+            verdict, run_gate.LaneResult("FAIL", 1, assay_outcome="FAIL"),
+            None)
+        out = capsys.readouterr().out
+        assert "coverage artifact parsed_and_reverified_r1" in out
+        assert f"(retained {closeout['coverage_path']})" in out
+
+    @pytest.mark.parametrize("shape", ["absent", "unreadable"])
+    def test_a_coverage_artifact_that_cannot_be_read_is_not_retained(
+            self, tmp_path, monkeypatch, shape):
+        verdict = self._seed(tmp_path, self._doc(coverage={
+            "artifact_status": "parsed_and_reverified_r1"}))
+        if shape == "unreadable":
+            (verdict.parent / "coverage-unit.json").mkdir()
+        monkeypatch.setenv(run_gate.EVIDENCE_DIR_ENV_VAR,
+                           str(tmp_path / "evidence"))
+        closeout = run_gate.collect_assay_closeout(
+            self._cov_lane("x"), "unit", "run1", self._COMMIT, verdict,
+            run_gate.LaneResult("FAIL", 1, assay_outcome="FAIL"), None)
+        assert closeout["coverage_path"] is None
+        assert closeout["status"] == "incomplete"
+        if shape == "unreadable":
+            assert "not retained" in closeout["coverage_status"]
+
+    def test_an_unsupplied_coverage_artifact_is_named_in_the_disclosure(
+            self, tmp_path, monkeypatch, capsys):
+        verdict = self._seed(tmp_path, self._doc(coverage={
+            "artifact_status": "not_supplied"}))
+        monkeypatch.setenv(run_gate.EVIDENCE_DIR_ENV_VAR,
+                           str(tmp_path / "evidence"))
+        result = run_gate.LaneResult("FAIL", 1, assay_outcome="FAIL")
+        closeout = run_gate.finish_assay_closeout(
+            self._cov_lane("x"), "unit", {"run_id": "r"}, self._COMMIT,
+            verdict, result, None)
+        assert closeout["coverage_status"] == "not_supplied"
+        assert closeout["coverage_path"] is None
+        assert "coverage artifact not_supplied" in capsys.readouterr().out
+
+    # -- RG-115: a follower does not collect the closeout --------------------
+
+    def test_a_disowned_follower_record_skips_the_closeout(
+            self, tmp_path, monkeypatch, capsys):
+        verdict = self._seed(tmp_path)
+        monkeypatch.setenv(run_gate.EVIDENCE_DIR_ENV_VAR,
+                           str(tmp_path / "evidence"))
+        record = {"run_id": "r"}
+        run_gate.disown_run_record(record)
+        result = run_gate.LaneResult("FAIL", 1, assay_outcome="FAIL")
+        closeout = run_gate.finish_assay_closeout(
+            {"assay_lane": "unit"}, "unit", record, self._COMMIT, verdict,
+            result, None)
+        out = capsys.readouterr()
+        assert closeout["status"] == "not_applicable"
+        assert "the owning client records it" in out.out
+        assert out.err == ""
+        assert "closeout" not in record
+        assert not (tmp_path / "evidence").exists()
 
     # -- the host collector (no shell) --------------------------------------
 
@@ -4809,7 +5005,8 @@ class TestExecDisclosure:
         assert ("slice dev-gates.slice "
                 "($CGROUP_PARENT_DEV_GATES, naming-only)") in proc.stdout
         assert "docker argv:" in proc.stdout
-        assert "SECRET_TOKEN=<redacted>" in proc.stdout
+        # RG-117a: the argv names the key only; the value is never on it.
+        assert "-e SECRET_TOKEN " in proc.stdout
         assert "hunter2" not in proc.stdout + proc.stderr
 
     def test_dry_run_prints_same_argv_and_execs_nothing(
@@ -4824,7 +5021,7 @@ class TestExecDisclosure:
         proc = run_tool(proj, "suite", "--worktree", str(repo), "--dry-run")
         assert proc.returncode == 0, proc.stderr
         assert "docker argv:" in proc.stdout
-        assert "SECRET_TOKEN=<redacted>" in proc.stdout
+        assert "-e SECRET_TOKEN " in proc.stdout
         assert "hunter2" not in proc.stdout + proc.stderr
         assert "DRY RUN — the argv above is what a live run would exec" \
             in proc.stdout
@@ -6270,8 +6467,10 @@ def test_exec_lane_forwards_declared_environment_values(tmp_path, monkeypatch):
     proc = run_tool(proj, "suite", "--worktree", str(repo))
     assert proc.returncode == 0, proc.stderr
     call = docker_execs(log)[0]
-    assert "SCHEMA_GATE_DSN=postgresql://example/db" in call
-    assert "MOCK_MODE=true" in call
+    # RG-117a: names on argv, values in the docker client's environment.
+    assert call[call.index("SCHEMA_GATE_DSN") - 1] == "-e"
+    assert call[call.index("MOCK_MODE") - 1] == "-e"
+    assert "postgresql://example/db" not in "\n".join(call)
 
 
 def test_environment_rejects_invalid_forward_env_name(tmp_path):
@@ -7875,8 +8074,9 @@ class TestExecModeMutex:
             raise RuntimeError("evidence collection exploded")
         monkeypatch.setattr(run_gate, "print_lane_artifacts", _boom)
 
-        with pytest.raises(RuntimeError):
-            run_gate.main(["suite"])
+        # RG-117d: the escaped exception is an ERROR (exit 2), not a traceback
+        # exit 1; the lock is released all the same.
+        assert run_gate.main(["suite"]) == 2
 
         probe = os.open(self._lock_path(), os.O_CREAT | os.O_RDWR, 0o666)
         try:
@@ -10280,6 +10480,9 @@ class TestResourceObserverLane:
     @pytest.mark.parametrize("kind", ["assay", "command"])
     def test_container_argv_wires_the_opted_in_observer(
             self, tmp_path, monkeypatch, kind):
+        # An ambient MDT_COW_ROOT (set inside the selftest container) adds a
+        # CoW --mount ahead of the observer mount; this test pins the latter.
+        monkeypatch.delenv("MDT_COW_ROOT", raising=False)
         socket_path = tmp_path / "resource-observer.sock"
         monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
                             str(socket_path))
@@ -10667,6 +10870,49 @@ class TestRG66SelectiveAssayRequests:
         assert "require an R2 lane" in capsys.readouterr().err
         assert not [call for call in docker_runs(log) if "-d" in call]
 
+    def _profile_record(self, proj, ids):
+        path = run_gate.profile_sidecar_path(
+            run_gate.history_dir(proj), "ui-unit")
+        run_gate.append_profile_record(path, {
+            "schema": "lane-profile/1", "lane": "ui-unit", "run_id": "r",
+            "contamination": {"flagged": False, "reasons": []},
+            "contaminated_budget_exceeded_ids": ids, "subjects": []})
+
+    def test_rejudge_contaminated_selects_the_latest_runs_ids_serially(
+            self, tmp_path, monkeypatch, capsys):
+        _repo, proj, log = self._project(
+            tmp_path, monkeypatch, rigors=["R0", "R2"])
+        self._profile_record(proj, ["hot-1", "hot-2"])
+        code = run_gate.main(["ui-unit", "--dry-run",
+                              "--rejudge-contaminated"])
+        captured = capsys.readouterr()
+        assert "rejudging 2 candidate(s) serially (--jobs 1)" in captured.out
+        # this fixture lane is an ingested (non-native) R2 lane, so the
+        # forced --jobs 1 is refused by the existing native-R2 check: proof
+        # that the serial request really reaches jobs selection.
+        assert code == 2
+        assert "requires a native R2 mutation lane" in captured.err
+
+    def test_rejudge_contaminated_without_candidates_refuses(
+            self, tmp_path, monkeypatch, capsys):
+        _repo, proj, log = self._project(
+            tmp_path, monkeypatch, rigors=["R0", "R2"])
+        self._profile_record(proj, [])
+        assert run_gate.main(["ui-unit", "--rejudge-contaminated"]) == 2
+        assert "no contaminated budget_exceeded candidate" in \
+            capsys.readouterr().err
+
+    def test_rejudge_contaminated_refuses_combinations_and_verbs(
+            self, tmp_path, monkeypatch, capsys):
+        _repo, proj, log = self._project(
+            tmp_path, monkeypatch, rigors=["R0", "R2"])
+        for argv in (["--rejudge-contaminated"],
+                     ["history", "--rejudge-contaminated"],
+                     ["ui-unit", "--rejudge-contaminated", "--rejudge", "x"],
+                     ["ui-unit", "--rejudge-contaminated", "--jobs", "2"]):
+            assert run_gate.main(argv) == 2, argv
+            assert "rejudge-contaminated" in capsys.readouterr().err
+
     def test_command_lane_rejects_assay_flags_by_name(self, tmp_path,
                                                        monkeypatch, capsys):
         repo = make_repo(tmp_path)
@@ -10675,6 +10921,8 @@ class TestRG66SelectiveAssayRequests:
         monkeypatch.setattr(sys, "argv", ['run-gate'])
         assert run_gate.main(["suite", "--reuse-from", "prior.json"]) == 2
         assert "assay-only flags" in capsys.readouterr().err
+        assert run_gate.main(["suite", "--rejudge-contaminated"]) == 2
+        assert "applies only to an assay R2 lane" in capsys.readouterr().err
 
     def test_reuse_path_outside_the_mounted_worktree_refuses(self, tmp_path,
                                                               monkeypatch,
@@ -12306,7 +12554,9 @@ class TestWheelPackaging:
         assert scm["git_describe_command"][-2:] == ["--match", "run-gate-v*"]
         assert proj["scripts"] == {"run-gate": "run_gate:main"}
         assert cfg["tool"]["setuptools"]["py-modules"] == [
-            "run_gate", "run_gate_admission"]
+            "run_gate", "run_gate_admission", "run_gate_profile"]
+        assert cfg["project"]["entry-points"]["pytest11"] == {
+            "run_gate_profile": "run_gate_profile"}
         assert proj["dependencies"] == []
         assert (RUN_GATE_DIR / "run_gate.py").is_file()
         assert not (RUN_GATE_DIR / "run-gate.py").exists()
@@ -13734,13 +13984,14 @@ SUMMARY_V1 = json.loads(
 def record_profiled_run(proj: Path, repo: Path, resources: dict | None, *,
                         lane: str = "suite", exit_code: int | None = 0,
                         seconds: float = 1.0, keep: int = 10,
-                        profile_error: str | None = None) -> dict:
+                        profile_error: str | None = None,
+                        io_sync: str = "strict") -> dict:
     """`record_run`'s exact recipe (real git repo, real ignore check, real
     lock, real atomic write; only the clock substituted), PLUS the three
     profiling fields `run_container_lane`/`run_exec_lane` actually set on a
     real record -- `record_run` never touches them (schema-1-shaped, the
     'never profiled' baseline these tests need a contrasting fixture to)."""
-    rec = run_gate.start_run_record(lane, repo, repo)
+    rec = run_gate.start_run_record(lane, repo, repo, io_sync=io_sync)
     rec["_started_monotonic"] = time.monotonic() - seconds
     run_gate.finish_run_record(rec, exit_code=exit_code)
     rec["resources"] = resources
@@ -13831,6 +14082,7 @@ class TestFootprintManifestBuild:
             "from_commit": "deadbeef", "keep": 10,
             "lanes": {"suite": {
                 "runs": 1, "completed_runs": 1,
+                "io_sync": "strict",
                 "scope": "container-shared", "method": "daemon",
                 "source": "sampled-max",
                 # RW-46b: a daemon-path Summary (SUMMARY_V1) carries no
@@ -13939,6 +14191,185 @@ FOOTPRINT_LANE = """\
 
 def read_footprint(proj: Path) -> dict:
     return json.loads((proj / run_gate.FOOTPRINT_FILE_NAME).read_text())
+
+
+def _peak_summary(peak_mib: int) -> dict:
+    """SUMMARY_V1 with only the memory peak replaced."""
+    out = json.loads(json.dumps(SUMMARY_V1))
+    out["memory"]["peak_bytes"] = peak_mib * MIB
+    return out
+
+
+class TestFootprintIoModeSeparation:
+    """RG-136: display, `doctor` and the manifest read ONE I/O mode's
+    statistics, never the strict+relaxed mixture."""
+
+    STRICT_MIB, RELAXED_MIB = 700, 100
+
+    def _mixed(self, tmp_path, config=FOOTPRINT_LANE):
+        repo, proj = make_history_repo(tmp_path, config=config)
+        record_profiled_run(proj, repo, _peak_summary(self.STRICT_MIB),
+                            io_sync="strict")
+        record_profiled_run(proj, repo, _peak_summary(self.RELAXED_MIB),
+                            io_sync="relaxed")
+        return repo, proj
+
+    def _entries(self):
+        def entry(mode, mib):
+            return {"commit": "a", "outcome": "pass", "duration_seconds": 1.0,
+                    "history_eligible": True, "io_sync": mode,
+                    "started_at": "2026-01-01T00:00:00Z",
+                    "resources": _peak_summary(mib)}
+        return [entry("strict", self.STRICT_MIB),
+                entry("relaxed", self.RELAXED_MIB)]
+
+    def test_manifest_policy_mode_selects_only_that_modes_statistics(self):
+        store = {"schema": 2, "lanes": {"suite": {
+            "latest": None, "history": self._entries()}}}
+        for mode, mib in (("strict", self.STRICT_MIB),
+                          ("relaxed", self.RELAXED_MIB)):
+            lane = run_gate.build_footprint_manifest(
+                store, {"suite": {}}, 10, "H",
+                io_modes={"suite": mode})["lanes"]["suite"]
+            assert lane["io_sync"] == mode
+            assert lane["runs"] == 1
+            assert lane["completed_runs"] == 1
+            assert lane["memory_peak_bytes"]["median"] == mib * MIB
+
+    def test_manifest_without_policy_mode_uses_latest_profiled_mode(self):
+        store = {"schema": 2, "lanes": {"suite": {
+            "latest": None, "history": self._entries()}}}
+        lane = run_gate.build_footprint_manifest(
+            store, {"suite": {}}, 10, "H")["lanes"]["suite"]
+        assert lane["io_sync"] == "relaxed"
+        assert lane["memory_peak_bytes"]["median"] == self.RELAXED_MIB * MIB
+
+    def test_footprint_verb_writes_the_lane_policy_mode(
+            self, tmp_path, monkeypatch, capsys):
+        # The lane policy says relaxed even though strict ran last.
+        repo, proj = make_history_repo(
+            tmp_path,
+            config=FOOTPRINT_LANE + '\n    [lanes.suite.resources]\n'
+                                    '    io_sync = "relaxed"\n')
+        record_profiled_run(proj, repo, _peak_summary(self.RELAXED_MIB),
+                            io_sync="relaxed")
+        record_profiled_run(proj, repo, _peak_summary(self.STRICT_MIB),
+                            io_sync="strict")
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
+        assert run_gate.main(["footprint", "--write"]) == 0, \
+            capsys.readouterr().err
+        lane = read_footprint(proj)["lanes"]["suite"]
+        assert lane["io_sync"] == "relaxed"
+        assert lane["memory_peak_bytes"]["median"] == self.RELAXED_MIB * MIB
+
+    def test_footprint_verb_falls_back_when_the_lane_settings_do_not_resolve(
+            self, tmp_path, monkeypatch, capsys):
+        # relaxed requires an ephemeral environment: resolution refuses, so
+        # the verb uses the latest profiled run's mode instead of failing.
+        config = """\
+            schema_version = 1
+
+            [environments.bare-host]
+            mode = "host"
+
+            [lanes.suite]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["true"]
+            clean_tree = false
+
+            [lanes.suite.resources]
+            io_sync = "relaxed"
+            """
+        repo, proj = make_history_repo(tmp_path, config=config)
+        record_profiled_run(proj, repo, _peak_summary(self.STRICT_MIB),
+                            io_sync="strict")
+        record_profiled_run(proj, repo, _peak_summary(self.RELAXED_MIB),
+                            io_sync="relaxed")
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
+        assert run_gate.main(["footprint", "--json"]) == 0, \
+            capsys.readouterr().err
+        out = json.loads(capsys.readouterr().out)
+        assert out["lanes"]["suite"]["io_sync"] == "relaxed"
+        assert out["lanes"]["suite"]["memory_peak_bytes"]["median"] \
+            == self.RELAXED_MIB * MIB
+
+    def test_footprint_line_compares_with_the_runs_own_mode(
+            self, tmp_path, capsys):
+        _, proj = self._mixed(tmp_path)
+        run_gate.print_footprint_line("suite", proj,
+                                      _peak_summary(self.STRICT_MIB))
+        strict_out = capsys.readouterr().out
+        assert "history median peak 700 MiB (1 runs)" in strict_out
+        run_gate.print_footprint_line("suite", proj,
+                                      _peak_summary(self.RELAXED_MIB),
+                                      "relaxed")
+        relaxed_out = capsys.readouterr().out
+        assert "history median peak 100 MiB (1 runs, io_sync=relaxed)" \
+            in relaxed_out
+
+    def test_footprint_line_refuses_a_manifest_of_another_mode(
+            self, tmp_path, capsys):
+        _, proj = self._mixed(tmp_path)
+        manifest = {"schema": 1, "lanes": {"suite": {
+            "io_sync": "strict",
+            "memory_peak_bytes": {"median": 700 * MIB, "max": 700 * MIB}}}}
+        (proj / run_gate.FOOTPRINT_FILE_NAME).write_text(json.dumps(manifest))
+        run_gate.print_footprint_line("suite", proj,
+                                      _peak_summary(self.RELAXED_MIB),
+                                      "relaxed")
+        out = capsys.readouterr().out
+        assert "| manifest not comparable (distilled under io_sync=strict)" \
+            in out
+        assert "| manifest 700 MiB" not in out
+
+    def _doctor(self, tmp_path, monkeypatch, capsys, manifest_lane):
+        _, proj = self._mixed(tmp_path)
+        manifest = {"schema": 1,
+                    "distilled_at": run_gate._iso_utc(time.time()),
+                    "lanes": {"suite": manifest_lane}}
+        (proj / run_gate.FOOTPRINT_FILE_NAME).write_text(json.dumps(manifest))
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
+        code = run_gate.main(["doctor"])
+        return code, capsys.readouterr().out
+
+    def test_doctor_drift_uses_the_manifest_entrys_mode(
+            self, tmp_path, monkeypatch, capsys):
+        # The combined median of 700 and 100 MiB is 400 MiB: it would drift
+        # from BOTH single-mode manifests; per-mode reading does not.
+        for mode, mib in (("strict", 700), ("relaxed", 100)):
+            (tmp_path / mode).mkdir()
+            code, out = self._doctor(
+                tmp_path / mode, monkeypatch, capsys,
+                {"io_sync": mode,
+                 "memory_peak_bytes": {"median": mib * MIB, "max": mib * MIB}})
+            assert "[OK] footprint drift" in out, out
+            assert "footprint drift 'suite'" not in out
+            assert "footprint manifest io_sync" not in out
+            assert code == 0
+
+    def test_doctor_flags_drift_against_the_manifest_mode_only(
+            self, tmp_path, monkeypatch, capsys):
+        code, out = self._doctor(
+            tmp_path, monkeypatch, capsys,
+            {"io_sync": "relaxed",
+             "memory_peak_bytes": {"median": 700 * MIB, "max": 700 * MIB}})
+        assert "[WARN] footprint drift 'suite'" in out
+        assert "live history median peak 100 MiB" in out
+
+    def test_doctor_treats_a_legacy_manifest_as_strict_and_names_migration(
+            self, tmp_path, monkeypatch, capsys):
+        code, out = self._doctor(
+            tmp_path, monkeypatch, capsys,
+            {"memory_peak_bytes": {"median": 700 * MIB, "max": 700 * MIB}})
+        assert "[OK] footprint drift" in out
+        assert "[INFO] footprint manifest io_sync" in out
+        assert "treated as strict" in out
+        assert "footprint --write" in out
 
 
 class TestFootprintVerbCLI:
@@ -15050,7 +15481,7 @@ class TestHistoryQueryVerb:
         assert out.returncode == 0, out.stderr
         assert "lane suite" in out.stdout
         assert "latest:  pass exit 0  100.0s" in out.stdout
-        assert "history: 2 of at most 10 commit(s)" in out.stdout
+        assert "history: 2 of at most 10 measurement(s)" in out.stdout
         assert "median 55.0s" in out.stdout      # the SERIES, not the outlier
         assert "max 100.0s" in out.stdout
 
@@ -15149,7 +15580,7 @@ class TestHistoryInProcess:
         assert "lane suite" in out
         assert "latest:  pass exit 0" in out
         assert sha[:12] in out
-        assert "history: 1 of at most 10 commit(s)" in out
+        assert "history: 1 of at most 10 measurement(s)" in out
         assert "passes: n=1 median" in out
         assert "completed (passes + fails): n=1" in out
 
@@ -16242,8 +16673,9 @@ class TestResumeAndProgressAlways:
             "runner", tmp_path / "repo", tmp_path / "worktree",
             "[environments.runner]", "dev-gates.slice", "test -w /durable")
         assert argv[argv.index("-v") + 1] == "/host/repo:/repo"
-        mount_index = argv.index("/host/state:/durable")
-        assert argv[mount_index - 1] == "-v"
+        mount = "type=bind,source=/host/state,target=/durable"
+        mount_index = argv.index(mount)
+        assert argv[mount_index - 1] == "--mount"
         user_index = argv.index("--user")
         assert argv[user_index + 1] == "1000:1000"
         assert argv.index("runner:local") > user_index
@@ -25241,13 +25673,15 @@ class TestBareHostProfilingWiring:
 
     def test_rusage_mode_never_injects_a_token(self, tmp_path, monkeypatch):
         # The rusage path starts no daemon session for a token to identify
-        # -- nothing would ever read it -- so, unlike the daemon path, the
-        # child's environment must be unchanged from the ambient one.
+        # -- nothing would ever read it. An inherited token may belong to an
+        # outer gate, so this child must not retain it; the current lane adds
+        # its own token only on the daemon path.
         # RW-43/B1: the rusage path launches via `Popen`, not
         # `subprocess.run` -- spy on `Popen` (the daemon path's own spy in
         # `test_daemon_path_targets_self_id_scope_and_injects_token` above
         # is unaffected: it still goes through `subprocess.run`).
         monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
+        monkeypatch.setenv(run_gate.PROFILE_TOKEN_ENV, "outer-profile-session")
         repo, proj = make_history_repo(tmp_path, self._config())
         monkeypatch.chdir(proj)
         monkeypatch.setattr(sys, "argv", ['run-gate'])
@@ -25262,7 +25696,9 @@ class TestBareHostProfilingWiring:
         monkeypatch.setattr(run_gate.subprocess, "Popen", spy)
         assert run_gate.main(["suite"]) == 0
         assert "env" in captured_env
-        assert captured_env["env"] is None
+        assert captured_env["env"]["RUN_GATE_IO_SYNC"] == "strict"
+        assert captured_env["env"]["COWTREE_MODE"] == "auto"
+        assert run_gate.PROFILE_TOKEN_ENV not in captured_env["env"]
 
     def test_resolve_self_container_id_raising_never_aborts_the_lane(
             self, tmp_path, monkeypatch, capsys):
@@ -27284,7 +27720,8 @@ class TestProfilerClientDegradesOnMalformedResponses:
         assert reason is not None
 
 
-PROFILE_TOKEN_ENV_NEEDLE = run_gate.PROFILE_TOKEN_ENV + "="
+# RG-117a: the token's VALUE is no longer on argv; `-e NAME` is what shows.
+PROFILE_TOKEN_ENV_NEEDLE = run_gate.PROFILE_TOKEN_ENV
 RG55_PLACEMENT_TOKEN = "profile-token"
 RG55_PLACEMENT_HOST = {"host": {"gates_slice": {
     "present": True, "cgroup": "/dev.slice/dev-gates.slice"}}}
@@ -30114,6 +30551,7 @@ class TestRG74SequenceDispatchEdges:
         values = {"worktree": None, "base": None, "fresh": False,
                   "dry_run": False, "allow_dirty": False,
                   "lock_wait": None, "json": False,
+                  "io_sync": None, "cow": None,
                   "admission_wait": None, "override_admission": False}
         values.update(overrides)
         return SimpleNamespace(**values)
@@ -30141,7 +30579,8 @@ class TestRG74SequenceDispatchEdges:
                                                  or run_gate.LaneResult("PASS")))
         args = self._dispatch_args(
             worktree=str(worktree), base="trunk", fresh=True, dry_run=True,
-            allow_dirty=True, lock_wait="5s", json=True)
+            allow_dirty=True, lock_wait="5s", json=True,
+            io_sync="relaxed", cow="off")
         lanes = {"gate": {"kind": "sequence", "lanes": ["unit"]},
                  "unit": {"kind": "command", "environment": "ephemeral",
                           "budget": "1m"}}
@@ -30154,10 +30593,55 @@ class TestRG74SequenceDispatchEdges:
         assert result.verdict == "PASS"
         assert seen == [[
             "unit", "--worktree", str(worktree), "--allow-dirty",
-            "--dry-run", "--lock-wait", "5s", "--fresh", "--base",
+            "--dry-run", "--io-sync", "relaxed", "--cow", "off",
+            "--lock-wait", "5s", "--fresh", "--base",
             "base-commit"]]
         assert "sequence 'gate' comparison base base-commit" in \
             capsys.readouterr().out
+
+    def test_mixed_sequence_io_sync_is_kept_per_member_not_in_aggregate_history(
+            self, tmp_path, monkeypatch):
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        self._patch_sequence_paths(monkeypatch, project_dir, project_dir)
+        monkeypatch.setattr(run_gate, "_sequence_delegates",
+                            lambda *_a: set())
+        monkeypatch.setattr(run_gate, "start_run_record",
+                            lambda *_a, **kw: {"io_sync": kw["io_sync"]})
+        monkeypatch.setattr(run_gate, "resolve_history_keep",
+                            lambda *_a: (10, None))
+        monkeypatch.setattr(run_gate, "_admit_lane",
+                            lambda *_a, **_kw: (None, None, None,
+                                               None, None, False))
+        monkeypatch.setattr(run_gate, "finish", lambda *_a: None)
+        monkeypatch.setattr(run_gate, "_dispatch",
+                            lambda *_a, **_kw: run_gate.LaneResult("PASS"))
+        cfg = {
+            "environments": {
+                "host": {"mode": "host"},
+                "runner": {"mode": "ephemeral", "image": "runner:v1"},
+            },
+            "lanes": {
+                "host-check": {"kind": "command", "environment": "host",
+                                "argv": ["true"],
+                                "resources": {"io_sync": "strict"}},
+                "perf": {"kind": "command", "environment": "runner",
+                         "argv": ["true"],
+                         "resources": {"io_sync": "relaxed"}},
+            },
+        }
+        args = self._dispatch_args()
+
+        result = run_gate._dispatch_sequence(
+            "gate", {"lanes": ["host-check", "perf"]}, args,
+            {"gate": {"kind": "sequence", "lanes": ["host-check", "perf"]},
+             **cfg["lanes"]}, cfg, Path("run-gate.toml"), {}, None,
+            "cfg-sha", None, project_dir)
+
+        assert result._record["io_sync"] is None
+        assert result._record["resource_settings"]["io_sync_by_member"] == {
+            "host-check": "strict", "perf": "relaxed"}
+        assert "different io_sync modes" in result._record["excluded_reason"]
 
     def test_sequence_rejects_unused_base_and_fresh_without_ephemeral_member(
             self, tmp_path, monkeypatch):
@@ -30215,7 +30699,8 @@ class TestRG74SequenceDispatchEdges:
             self._dispatch_args(),
             {"gate": {"kind": "sequence", "lanes": ["unit"]},
              "unit": {"kind": "command", "environment": "host"}},
-            {}, Path("run-gate.toml"), {}, None, "cfg", None,
+            {"environments": {"host": {"mode": "host"}}},
+            Path("run-gate.toml"), {}, None, "cfg", None,
             project_dir)
         assert result.verdict == "ERROR"
         assert "admission-ticket-release" in result.reason
@@ -30279,7 +30764,8 @@ class TestRG74SequenceDispatchEdges:
                 "gate", {"lanes": ["unit"]}, self._dispatch_args(),
                 {"gate": {"kind": "sequence", "lanes": ["unit"]},
                  "unit": {"kind": "command", "environment": "host"}},
-                {}, Path("run-gate.toml"), {}, None, "cfg", None, project_dir)
+                {"environments": {"host": {"mode": "host"}}},
+                Path("run-gate.toml"), {}, None, "cfg", None, project_dir)
         assert "could not be released while unwinding" in \
             capsys.readouterr().err
 
@@ -31896,6 +32382,11 @@ class TestUserDocumentationOracles:
         RUN_GATE_DIR / "CONSUMERS.md",
         RUN_GATE_DIR / "docs" / "DESIGN-GUIDE.md",
     )
+    IOBENCH_DOCS = (
+        RUN_GATE_DIR.parent / "libraries" / "iobench" / "README.md",
+        RUN_GATE_DIR.parent / "libraries" / "iobench" / "docs" / "CONSUMERS.md",
+        RUN_GATE_DIR.parent / "libraries" / "iobench" / "docs" / "DESIGN-GUIDE.md",
+    )
 
     @staticmethod
     def _toml_fences(path: Path):
@@ -32002,15 +32493,15 @@ class TestUserDocumentationOracles:
 
     def test_run_gate_config_examples_load_with_current_schema(self):
         parsed_examples = 0
-        for doc in self.DOCS:
+        for doc in (*self.DOCS, *self.IOBENCH_DOCS):
             for line, tagged, source in self._toml_fences(doc):
                 assert tagged, (
-                    f"{doc.relative_to(RUN_GATE_DIR)}:{line}: mark run-gate "
+                    f"{doc.relative_to(RUN_GATE_DIR.parent)}:{line}: mark run-gate "
                     "TOML examples with <!-- run-gate-config -->"
                 )
                 cfg = tomllib.loads(source)
                 assert cfg.get("schema_version") == run_gate.SCHEMA_VERSION, (
-                    f"{doc.relative_to(RUN_GATE_DIR)}:{line}: config example "
+                    f"{doc.relative_to(RUN_GATE_DIR.parent)}:{line}: config example "
                     "must declare the current schema_version"
                 )
                 central = "run-gate.root.toml" in source
@@ -32021,7 +32512,8 @@ class TestUserDocumentationOracles:
         assert parsed_examples >= 10
 
     def test_closed_public_vocabularies_are_documented(self):
-        corpus = "\n".join(path.read_text() for path in self.DOCS)
+        corpus = "\n".join(path.read_text()
+                             for path in (*self.DOCS, *self.IOBENCH_DOCS))
         vocabularies = {
             "environment mode": {"ephemeral", "exec", "host"},
             "lane kind": {"command", "assay", "sequence"},
@@ -32029,12 +32521,19 @@ class TestUserDocumentationOracles:
             "exit_map verdict": {"PASS", "FAIL", "ERROR"},
             "admission unreadable_policy": {"refuse", "unbudgeted"},
             "resource observer": {"cgprofile"},
+            "io_sync": {"strict", "relaxed", "durable"},
+            "CoW mode": {"auto", "off"},
+            "VM disk_cache": {"unsafe", "writeback"},
             "run-gate result": set(run_gate.VERDICT_EXIT_CODES),
             "NOT_RUN reason": set(run_gate.NOT_RUN_REASONS),
         }
         for name, values in vocabularies.items():
             missing = sorted(value for value in values if value not in corpus)
             assert not missing, f"docs omit {name} values: {missing}"
+
+    def test_ram_target_docs_name_the_supported_toml_surface(self):
+        consumer_docs = (RUN_GATE_DIR / "CONSUMERS.md").read_text()
+        assert "There is no `--ram-target` option" in consumer_docs
 
     def test_worktree_runner_remedy_documents_ciu_version_floor(self):
         documents = (*self.DOCS, RUN_GATE_DIR / "SPEC.md",
@@ -32046,7 +32545,7 @@ class TestUserDocumentationOracles:
             )
 
     def test_cross_document_anchors_resolve(self):
-        for source in self.DOCS:
+        for source in (*self.DOCS, *self.IOBENCH_DOCS):
             prose = self._markdown_without_fences(source)
             for match in re.finditer(r"\]\(([^)\n]+)\)", prose):
                 destination = match.group(1).split(maxsplit=1)[0].strip("<>")
@@ -32058,7 +32557,7 @@ class TestUserDocumentationOracles:
                 target = ((source.parent / target_text).resolve()
                           if target_text else source.resolve())
                 assert target.is_file(), (
-                    f"{source.relative_to(RUN_GATE_DIR)} links to missing "
+                    f"{source.relative_to(RUN_GATE_DIR.parent)} links to missing "
                     f"anchor file {target_text!r}"
                 )
                 if target.suffix.lower() != ".md":
@@ -32066,8 +32565,8 @@ class TestUserDocumentationOracles:
                 slugs = self._heading_slugs(target)
                 decoded = unquote(fragment)
                 assert decoded in slugs, (
-                    f"{source.relative_to(RUN_GATE_DIR)} links to missing "
-                    f"anchor {decoded!r} in {target.relative_to(RUN_GATE_DIR)}"
+                    f"{source.relative_to(RUN_GATE_DIR.parent)} links to missing "
+                    f"anchor {decoded!r} in {target.relative_to(RUN_GATE_DIR.parent)}"
                 )
 
 
@@ -34851,6 +35350,7 @@ class TestRunGateR1DirectCoverage:
         monkeypatch.setenv("FORWARDED", "secret-value")
         monkeypatch.setenv("EMPTY_FORWARD", "")
         monkeypatch.delenv("ABSENT_FORWARD", raising=False)
+        monkeypatch.setenv("MDT_COW_ROOT", "/mnt/cow/fixture")
         lane = {"kind": "command", "environment": "tester-unified", "argv": ["true"],
                 "resources": {"memory_swap": "2g"}}
         env = {"mode": "ephemeral", "image": "runner:local",
@@ -34863,15 +35363,22 @@ class TestRunGateR1DirectCoverage:
             "fixture environment", "dev-gates.slice", "fixture",
             dry_run=True,
             profile_plan={"enabled": False, "disabled_reason": "test",
-                          "source": "fixture"}) == 0
+                          "source": "fixture"},
+            resource_settings={"io_sync": "strict",
+                               "cowtree": {"mode": "auto"}}) == 0
 
         output = capsys.readouterr().out
         argv = next(line for line in output.splitlines()
                     if "run-gate: docker argv:" in line)
         assert "--user 1000:1000" in argv
-        assert "FORWARDED=<redacted>" in argv and "secret-value" not in argv
+        assert "-e FORWARDED " in argv and "secret-value" not in argv
         assert "EMPTY_FORWARD" not in argv and "ABSENT_FORWARD" not in argv
         assert "--memory-swap 2g" in argv
+        assert ("type=bind,source=/mnt/cow/fixture,target=/mnt/cow/fixture"
+                in argv)
+        # Resource facts ride the docker client's environment: names only.
+        assert "-e COWTREE_MODE " in argv and "COWTREE_MODE=" not in argv
+        assert "-e MDT_COW_ROOT " in argv and "MDT_COW_ROOT=" not in argv
 
     @pytest.mark.parametrize("failure", ["missing-docker", "docker-ps"])
     def test_exec_lane_refuses_missing_docker_or_failed_ps(
@@ -35163,6 +35670,1576 @@ class TestRunGateReleaseCoverageEdges:
                            match="GIT_CONFIG_COUNT is malformed"):
             run_gate.host_git_environment()
 
+
+class TestCowtreeAndIoSyncResources:
+    def test_resource_table_and_consumer_subtables_require_tables(self):
+        with pytest.raises(run_gate.GateError, match="resources.*must be a table"):
+            run_gate._validate_resource_table(
+                None, "run-gate.toml [resources]", "project")
+        with pytest.raises(run_gate.GateError,
+                           match="resources.*cowtree.*must be a table"):
+            run_gate._validate_resource_table(
+                {"cowtree": "auto"}, "run-gate.toml [resources]", "project")
+
+    def test_candidate_ram_rejects_non_size_value(self):
+        with pytest.raises(run_gate.GateError, match="candidate_ram.*size"):
+            run_gate._validate_resource_table(
+                {"candidate_ram": "unlimited"},
+                "run-gate.toml [lanes.r2.resources]", "lane")
+
+    def test_declared_environment_prefers_project_then_uses_central(self):
+        project_environment = {"mode": "host", "source": "project"}
+        central_environment = {"mode": "ephemeral", "source": "central"}
+        project = {"environments": {"project-runner": project_environment}}
+        central = {"environments": {"central-runner": central_environment}}
+
+        assert run_gate.declared_environment(
+            {"environment": "project-runner"}, project, central
+        ) is project_environment
+        assert run_gate.declared_environment(
+            {"environment": "central-runner"}, project, central
+        ) is central_environment
+
+    def test_cow_auto_unset_root_adds_nothing(self, monkeypatch):
+        monkeypatch.delenv("MDT_COW_ROOT", raising=False)
+        settings = {"io_sync": "strict", "cowtree": {"mode": "auto"}}
+
+        assert run_gate.cowtree_mount_flags(settings, "ephemeral") == []
+        assert run_gate.resource_forwarded_env(settings, "ephemeral") == {
+            "COWTREE_MODE": "auto", "RUN_GATE_IO_SYNC": "strict"}
+
+    def test_cow_auto_same_path_mount_and_env(self, monkeypatch):
+        root = "/mnt/cow/rg"
+        monkeypatch.setenv("MDT_COW_ROOT", root)
+        settings = {"io_sync": "strict", "cowtree": {"mode": "auto"}}
+
+        assert run_gate.cowtree_mount_flags(settings, "ephemeral") == [
+            "--mount", f"type=bind,source={root},target={root}"]
+        assert run_gate.resource_forwarded_env(settings, "ephemeral") == {
+            "COWTREE_MODE": "auto", "MDT_COW_ROOT": root,
+            "RUN_GATE_IO_SYNC": "strict"}
+
+    def test_cow_off_sets_no_bind(self, monkeypatch):
+        monkeypatch.setenv("MDT_COW_ROOT", "/mnt/cow/rg")
+        settings = {"io_sync": "strict", "cowtree": {"mode": "off"}}
+
+        assert run_gate.cowtree_mount_flags(settings, "ephemeral") == []
+        assert run_gate.resource_forwarded_env(settings, "ephemeral") == {
+            "COWTREE_MODE": "off", "RUN_GATE_IO_SYNC": "strict"}
+
+    def test_cow_refuses_bad_root_value(self, monkeypatch):
+        for value in ("", "relative/path", "/", "//", "//..",
+                      "/mnt/cow/../elsewhere"):
+            monkeypatch.setenv("MDT_COW_ROOT", value)
+            with pytest.raises(
+                    run_gate.GateError,
+                    match="MDT_COW_ROOT.*absolute.*normalized"):
+                run_gate.cowtree_mount_flags(
+                    {"cowtree": {"mode": "auto"}}, "ephemeral")
+
+    def test_cow_refuses_mount_spec_delimiters(self, monkeypatch):
+        for value in ("/mnt/cow,readonly", "/mnt/cow:other",
+                      "/mnt/cow\nother", "/mnt/cow\rother"):
+            monkeypatch.setenv("MDT_COW_ROOT", value)
+            with pytest.raises(run_gate.GateError,
+                               match="MDT_COW_ROOT.*invalid"):
+                run_gate.cowtree_mount_flags(
+                    {"cowtree": {"mode": "auto"}}, "ephemeral")
+
+    def test_resource_resolution_rejects_invalid_cow_root_early(
+            self, monkeypatch):
+        monkeypatch.setenv("MDT_COW_ROOT", "/mnt/cow,readonly")
+        with pytest.raises(run_gate.GateError,
+                           match="MDT_COW_ROOT.*invalid"):
+            run_gate.resolve_resource_settings(
+                {}, {}, {}, {}, mode="ephemeral")
+
+    @pytest.mark.parametrize("dry_run", (True, False))
+    def test_container_runner_refuses_bad_cow_root_before_docker_lookup(
+            self, tmp_path, monkeypatch, dry_run):
+        monkeypatch.setenv("MDT_COW_ROOT", "/mnt/cow,readonly")
+        lookups = []
+        monkeypatch.setattr(run_gate.shutil, "which",
+                            lambda name: lookups.append(name) or "/bin/docker")
+
+        with pytest.raises(run_gate.GateError,
+                           match="MDT_COW_ROOT.*invalid"):
+            run_gate.run_container_lane(
+                {"kind": "command", "argv": ["true"]}, "unit",
+                tmp_path, tmp_path, tmp_path,
+                {"mode": "ephemeral", "image": "runner:local"},
+                "fixture", "dev-gates.slice", "fixture", dry_run=dry_run,
+                resource_settings={"io_sync": "strict",
+                                   "cowtree": {"mode": "auto"}})
+        assert lookups == []
+
+    @pytest.mark.parametrize("relative", ("repo,with-comma", "repo:with-colon",
+                                           "repo\nwith-newline"))
+    @pytest.mark.parametrize("dry_run", (True, False))
+    def test_container_runner_refuses_repo_mount_delimiters_before_docker(
+            self, tmp_path, monkeypatch, relative, dry_run):
+        docker_checks = []
+        monkeypatch.setattr(run_gate.shutil, "which", lambda _name: "/bin/docker")
+        monkeypatch.setattr(run_gate, "resolve_inflight",
+                            lambda *_args, **_kwargs:
+                            docker_checks.append("resolve_inflight"))
+
+        with pytest.raises(run_gate.GateError,
+                           match="repo path.*invalid"):
+            run_gate.run_container_lane(
+                {"kind": "command", "argv": ["true"]}, "unit",
+                tmp_path, tmp_path / relative, tmp_path,
+                {"mode": "ephemeral", "image": "runner:local"},
+                "fixture", "dev-gates.slice", "fixture", dry_run=dry_run,
+                resource_settings={"io_sync": "strict",
+                                   "cowtree": {"mode": "off"}})
+        assert docker_checks == []
+
+    def test_container_runner_refuses_translated_repo_mount_delimiter_early(
+            self, tmp_path, monkeypatch):
+        lookups = []
+        monkeypatch.setattr(run_gate.shutil, "which",
+                            lambda name: lookups.append(name) or "/bin/docker")
+        monkeypatch.setattr(run_gate, "physical_path",
+                            lambda *_args, **_kwargs: Path("/host,repo"))
+
+        with pytest.raises(run_gate.GateError,
+                           match="repo path host source.*invalid"):
+            run_gate.run_container_lane(
+                {"kind": "command", "argv": ["true"]}, "unit",
+                tmp_path, tmp_path, tmp_path,
+                {"mode": "ephemeral", "image": "runner:local"},
+                "fixture", "dev-gates.slice", "fixture", dry_run=True,
+                resource_settings={"io_sync": "strict",
+                                   "cowtree": {"mode": "off"}})
+        assert lookups == []
+
+    def test_resource_override_values_are_closed(self):
+        for kwargs, expected in (
+                ({"io_sync_override": "unknown"}, "io_sync override"),
+                ({"cow_override": "unknown"}, "CoW override")):
+            with pytest.raises(run_gate.GateError, match=expected):
+                run_gate.resolve_resource_settings(
+                    {}, {}, {}, {}, mode="ephemeral", **kwargs)
+
+    def test_durable_lane_refuses_even_strict_override(self):
+        with pytest.raises(run_gate.GateError,
+                           match="durable lane cannot be overridden"):
+            run_gate.resolve_resource_settings(
+                {"resources": {"io_sync": "durable"}}, {}, {}, {},
+                mode="ephemeral", io_sync_override="strict")
+
+    def test_cow_no_stat_no_translate(self, monkeypatch):
+        monkeypatch.setenv("MDT_COW_ROOT", "/mnt/cow/rg")
+
+        def forbidden(*_args, **_kwargs):
+            raise AssertionError("CoW root must not be statted or translated")
+
+        monkeypatch.setattr(run_gate, "physical_path", forbidden)
+        monkeypatch.setattr(Path, "stat", forbidden)
+        assert run_gate.cowtree_mount_flags(
+            {"cowtree": {"mode": "auto"}}, "ephemeral") == [
+                "--mount", "type=bind,source=/mnt/cow/rg,target=/mnt/cow/rg"]
+
+    def test_probe_containers_same_binds(self, tmp_path, monkeypatch):
+        root = "/mnt/cow/probe"
+        monkeypatch.setenv("MDT_COW_ROOT", root)
+        monkeypatch.setattr(run_gate, "container_mount_flags",
+                            lambda *_a, **_k: [])
+        monkeypatch.setattr(run_gate, "extra_mount_flags", lambda: [])
+        lane_settings = {"cowtree": {"mode": "auto"}, "io_sync": "strict"}
+
+        argv = run_gate.build_env_probe_argv(
+            "docker", {"mode": "ephemeral", "image": "tester:local"},
+            "tester", tmp_path, tmp_path, "fixture", "dev-gates.slice",
+            "true", resource_settings=lane_settings)
+
+        assert "--mount" in argv
+        assert f"type=bind,source={root},target={root}" in argv
+        assert f"COWTREE_MODE=auto" in argv
+        assert f"MDT_COW_ROOT={root}" in argv
+
+    def test_cow_precedence_table(self):
+        central = {"resources": {"cowtree": {"mode": "auto"}}}
+        project = {"resources": {"cowtree": {"mode": "off"}}}
+        environment = {"resources": {"cowtree": {"mode": "auto"}}}
+        lane = {"resources": {"cowtree": {"mode": "off"}}}
+
+        effective, sources = run_gate.resolve_resource_settings(
+            lane, project, central, environment, mode="ephemeral")
+
+        assert effective["cowtree"]["mode"] == "off"
+        assert sources["cowtree.mode"] == "lane"
+
+    def test_resources_scopes_and_precedence_table(self):
+        project = {"resources": {"io_sync": "relaxed",
+                                  "ram_target": "75%",
+                                  "cowtree": {"mode": "auto"}}}
+        central = {"resources": {"io_sync": "strict",
+                                 "cowtree": {"mode": "off"}}}
+        environment = {"resources": {"io_sync": "strict",
+                                      "cowtree": {"mode": "off"}}}
+        lane = {"resources": {"io_sync": "strict",
+                               "cowtree": {"mode": "auto"}}}
+
+        effective, sources = run_gate.resolve_resource_settings(
+            lane, project, central, environment, mode="ephemeral")
+
+        assert effective["io_sync"] == "strict"
+        assert sources["io_sync"] == "lane"
+        assert effective["ram_target"] == "75%"
+        assert effective["cowtree"]["mode"] == "auto"
+        assert sources["cowtree.mode"] == "lane"
+
+    def test_unknown_consumer_subtable_refused(self):
+        with pytest.raises(run_gate.GateError, match="unknown consumer"):
+            run_gate._validate_config(
+                {"schema_version": 1,
+                 "resources": {"assay": {"jobs": 2}}},
+                Path("run-gate.toml"), central=False)
+
+    def test_subtable_forwarded_only_as_own_prefix(self):
+        settings = {"io_sync": "strict", "cowtree": {"mode": "off"},
+                    "vm": {"disk_cache": "unsafe"}}
+
+        cowtree = run_gate.resource_forwarded_env(settings, "host",
+                                                  consumer="cowtree")
+        vm = run_gate.resource_forwarded_env(settings, "host", consumer="vm")
+
+        assert cowtree == {"COWTREE_MODE": "off",
+                           "RUN_GATE_IO_SYNC": "strict"}
+        assert vm == {"VM_DISK_CACHE": "unsafe",
+                      "RUN_GATE_IO_SYNC": "strict"}
+        assert "VM_DISK_CACHE" not in cowtree
+        assert "COWTREE_MODE" not in vm
+
+    def test_no_consumer_receives_another_subtable(self):
+        settings = {"cowtree": {"mode": "off"},
+                    "vm": {"disk_cache": "writeback"}}
+        assert run_gate.resource_forwarded_env(
+            settings, "host", consumer="cowtree") == {"COWTREE_MODE": "off"}
+        assert run_gate.resource_forwarded_env(
+            settings, "host", consumer="vm") == {"VM_DISK_CACHE": "writeback"}
+
+    def test_cross_cutting_ram_target_never_forwarded_raw(self):
+        settings = {"io_sync": "strict", "ram_target": "12g",
+                    "candidate_ram": "300m",
+                    "cowtree": {"mode": "auto"}}
+        forwarded = run_gate.resource_forwarded_env(settings, "ephemeral")
+        assert "RAM_TARGET" not in forwarded
+        assert "CANDIDATE_RAM" not in forwarded
+        assert all("ram_target" not in value for value in forwarded.values())
+
+    def test_unknown_key_and_bad_value_refused_per_scope(self):
+        for resources in ({"io_sync": "maybe"},
+                          {"ram_target": "0%"},
+                          {"cowtree": {"mode": "copy"}}):
+            with pytest.raises(run_gate.GateError):
+                run_gate._validate_config(
+                    {"schema_version": 1, "resources": resources},
+                    Path("run-gate.toml"), central=False)
+
+    def test_strict_default_no_bind_fact_set(self, monkeypatch):
+        monkeypatch.delenv("MDT_COW_ROOT", raising=False)
+        effective, _sources = run_gate.resolve_resource_settings(
+            {}, {}, {}, {}, mode="ephemeral")
+
+        assert effective["io_sync"] == "strict"
+        assert run_gate.cowtree_mount_flags(effective, "ephemeral") == []
+        assert run_gate.resource_forwarded_env(effective, "ephemeral")[
+            "RUN_GATE_IO_SYNC"] == "strict"
+
+    def test_relaxed_binds_generated_preload_readonly(self, tmp_path,
+                                                      monkeypatch):
+        monkeypatch.setattr(
+            run_gate.subprocess, "run",
+            lambda *_a, **_k: SimpleNamespace(
+                returncode=0,
+                stdout="/usr/lib/x86_64-linux-gnu/libeatmydata.so.1\n",
+                stderr=""))
+        monkeypatch.setattr(run_gate, "physical_path", lambda path, **_k: path)
+
+        flags, preload_file = run_gate.relaxed_io_sync_mount_flags(
+            "docker", "tester:local", tmp_path)
+        try:
+            assert flags[0] == "--mount"
+            assert "target=/etc/ld.so.preload" in flags[1]
+            assert "readonly" in flags[1]
+            assert Path(preload_file.name).read_text() == (
+                "/usr/lib/x86_64-linux-gnu/libeatmydata.so.1\n")
+            assert stat.S_IMODE(Path(preload_file.name).stat().st_mode) == 0o444
+        finally:
+            preload_path = Path(preload_file.name)
+            preload_file.close()
+        assert not preload_path.exists()
+
+    def test_relaxed_refused_without_label(self, monkeypatch):
+        monkeypatch.setattr(
+            run_gate.subprocess, "run",
+            lambda *_a, **_k: SimpleNamespace(
+                returncode=0, stdout="<no value>\n", stderr=""))
+        with pytest.raises(run_gate.GateError, match="eatmydata-lib"):
+            run_gate.inspect_eatmydata_library("docker", "tester:unlabelled")
+
+    def test_durable_refuses_override_and_scope_relaxation(self):
+        for override in ("strict", "relaxed"):
+            with pytest.raises(run_gate.GateError,
+                               match="durable.*cannot be overridden"):
+                run_gate.resolve_resource_settings(
+                    {"resources": {"io_sync": "durable"}},
+                    {"resources": {"io_sync": "relaxed"}}, {}, {},
+                    mode="ephemeral", io_sync_override=override)
+
+        effective, _sources = run_gate.resolve_resource_settings(
+            {"resources": {"io_sync": "durable"}},
+            {"resources": {"io_sync": "relaxed"}}, {}, {},
+            mode="ephemeral")
+        assert effective["io_sync"] == "durable"
+
+    def test_relaxed_refused_for_exec_mode(self):
+        with pytest.raises(run_gate.GateError, match="ephemeral"):
+            run_gate.resolve_resource_settings(
+                {"resources": {"io_sync": "relaxed"}}, {}, {}, {},
+                mode="exec")
+        effective, sources = run_gate.resolve_resource_settings(
+            {}, {}, {}, {}, mode="ephemeral",
+            io_sync_override="relaxed", cow_override="off")
+        assert effective["io_sync"] == "relaxed"
+        assert effective["cowtree"]["mode"] == "off"
+        assert sources["io_sync"] == sources["cowtree.mode"] == "command line"
+
+    def test_cli_resource_overrides_are_lane_scoped_and_reach_runner(
+            self, tmp_path, monkeypatch, capsys):
+        assert run_gate.main(["--io-sync", "relaxed", "--list"]) == 2
+        assert "apply to a lane run only" in capsys.readouterr().err
+
+        repo = make_repo(tmp_path)
+        project = repo / "run-gate-project"
+        project.mkdir()
+        (project / "run-gate.toml").write_text(textwrap.dedent("""\
+            schema_version = 1
+
+            [environments.runner]
+            mode = "ephemeral"
+            image = "tester:local"
+            cgroup_slice = "dev-gates.slice"
+
+            [lanes.suite]
+            kind = "command"
+            environment = "runner"
+            argv = ["true"]
+            clean_tree = false
+            profile = false
+            """))
+        monkeypatch.chdir(project)
+        monkeypatch.setattr(run_gate, "run_lane_with_cgroup_event_guard",
+                            lambda _name, run, **_kw: run())
+        seen = []
+        monkeypatch.setattr(
+            run_gate, "run_container_lane",
+            lambda *_args, **kwargs: seen.append(kwargs["resource_settings"]) or 0)
+        assert run_gate.main(["suite", "--dry-run", "--io-sync", "relaxed",
+                              "--cow", "off"]) == 0
+        assert seen[0]["io_sync"] == "relaxed"
+        assert seen[0]["cowtree"]["mode"] == "off"
+
+    def test_override_marked_not_history_eligible(self):
+        record = {
+            "_started_monotonic": time.monotonic(), "duration_seconds": None,
+            "dirty": False, "git_operation": None, "commit": "abc123",
+            "verdict": "PASS", "io_sync": "relaxed",
+            "io_sync_override": True,
+        }
+
+        finished = run_gate.finish_run_record(record, exit_code=0)
+
+        assert finished["history_eligible"] is False
+        assert "override" in finished["excluded_reason"]
+
+    def test_start_record_persists_effective_io_sync_override(self, tmp_path):
+        repo = make_repo(tmp_path)
+        record = run_gate.start_run_record(
+            "unit", repo, repo, io_sync="relaxed", io_sync_override=True)
+        assert record["io_sync"] == "relaxed"
+        assert record["io_sync_override"] is True
+
+    def test_history_split_by_io_sync(self):
+        store = run_gate._empty_history_store()
+        for record in (
+                {"lane": "unit", "commit": "abc", "outcome": "pass",
+                 "duration_seconds": 10.0, "history_eligible": True,
+                 "io_sync": "strict"},
+                {"lane": "unit", "commit": "abc", "outcome": "pass",
+                 "duration_seconds": 4.0, "history_eligible": True,
+                 "io_sync": "relaxed"}):
+            run_gate._apply_record(store, record, keep=10)
+
+        report = run_gate.lane_history_report(store, "unit")
+
+        assert len(report["history"]) == 2
+        assert report["stats"]["by_io_sync"]["strict"]["completed"][
+            "median_seconds"] == 10.0
+        assert report["stats"]["by_io_sync"]["relaxed"]["completed"][
+            "median_seconds"] == 4.0
+
+    def test_config_resources_parse_at_project_environment_and_lane_scopes(self):
+        config = {
+            "schema_version": 1,
+            "resources": {"io_sync": "relaxed", "ram_target": "75%",
+                          "cowtree": {"mode": "auto"}},
+            "environments": {"runner": {
+                "mode": "ephemeral", "image": "tester:local",
+                "resources": {"io_sync": "strict",
+                              "cowtree": {"mode": "off"}}}},
+            "lanes": {"r2": {
+                "kind": "assay", "environment": "runner",
+                "assay_lane": "r2",
+                "resources": {"candidate_ram": "300m",
+                              "ram_target": "12g",
+                              "io_sync": "durable"}}},
+        }
+        assert run_gate._validate_config(
+            config, Path("run-gate.toml"), central=False) is config
+
+    def test_lane_only_resource_keys_refuse_default_scopes(self):
+        for resources in ({"io_sync": "durable"},
+                          {"candidate_ram": "300m"}):
+            with pytest.raises(run_gate.GateError):
+                run_gate._validate_config(
+                    {"schema_version": 1, "environments": {}, "lanes": {},
+                     "resources": resources},
+                    Path("run-gate.toml"), central=False)
+
+    def test_vm_disk_cache_only_host_modes(self):
+        with pytest.raises(run_gate.GateError, match="host or bare-host"):
+            run_gate.resolve_resource_settings(
+                {"resources": {"vm": {"disk_cache": "unsafe"}}},
+                {}, {}, {}, mode="ephemeral")
+        effective, _sources = run_gate.resolve_resource_settings(
+            {"resources": {"vm": {"disk_cache": "writeback"}}},
+            {}, {}, {}, mode="host")
+        assert effective["vm"]["disk_cache"] == "writeback"
+
+    def test_vm_consumer_scope_and_project_default_validation(self):
+        project = {"schema_version": 1,
+                   "resources": {"vm": {"disk_cache": "unsafe"}}}
+        assert run_gate._validate_config(
+            project, Path("run-gate.toml"), central=False) is project
+        with pytest.raises(run_gate.GateError, match="project/lane-only"):
+            run_gate._validate_config(
+                {"schema_version": 1,
+                 "resources": {"vm": {"disk_cache": "unsafe"}}},
+                Path("central.toml"), central=True)
+        with pytest.raises(run_gate.GateError, match="project/lane-only"):
+            run_gate._validate_config(
+                {"schema_version": 1,
+                 "environments": {"runner": {
+                     "mode": "host",
+                     "resources": {"vm": {"disk_cache": "unsafe"}}}}},
+                Path("run-gate.toml"), central=False)
+        effective, sources = run_gate.resolve_resource_settings(
+            {}, {"resources": {"vm": {"disk_cache": "unsafe"}}}, {}, {},
+            mode="ephemeral")
+        assert "vm" not in effective
+        assert "vm.disk_cache" not in sources
+
+    def test_ram_metadata_rejects_zero_size(self):
+        for resources in ({"candidate_ram": "0m"}, {"ram_target": "0g"}):
+            with pytest.raises(run_gate.GateError, match="positive"):
+                run_gate._validate_resource_table(
+                    resources, "run-gate.toml [resources]", "lane")
+
+    def test_cow_empty_root_is_invalid_and_non_ephemeral_skips_bind(
+            self, monkeypatch):
+        settings = {"cowtree": {"mode": "auto"}}
+        monkeypatch.setenv("MDT_COW_ROOT", "")
+        with pytest.raises(run_gate.GateError, match="MDT_COW_ROOT"):
+            run_gate.cowtree_mount_flags(settings, "ephemeral")
+        monkeypatch.setenv("MDT_COW_ROOT", "/mnt/cow/rg")
+        assert run_gate.cowtree_mount_flags(settings, "host") == []
+
+    def test_image_label_errors_stay_distinct(self, monkeypatch):
+        monkeypatch.setattr(
+            run_gate.subprocess, "run",
+            lambda *_a, **_k: SimpleNamespace(
+                returncode=0, stdout="relative/libeatmydata.so\n", stderr=""))
+        with pytest.raises(run_gate.GateError, match="invalid.*eatmydata-lib"):
+            run_gate.inspect_eatmydata_library("docker", "tester:bad-label")
+        monkeypatch.setattr(
+            run_gate.subprocess, "run",
+            lambda *_a, **_k: SimpleNamespace(
+                returncode=1, stdout="", stderr="daemon unavailable"))
+        with pytest.raises(run_gate.GateInfraError,
+                           match="cannot inspect image.*daemon unavailable"):
+            run_gate.inspect_eatmydata_library("docker", "tester:missing")
+
+    def test_preload_mount_cleanup_on_physical_path_failure(
+            self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            run_gate.subprocess, "run",
+            lambda *_a, **_k: SimpleNamespace(
+                returncode=0,
+                stdout="/usr/lib/x86_64-linux-gnu/libeatmydata.so.1\n",
+                stderr=""))
+        monkeypatch.setattr(
+            run_gate, "physical_path",
+            lambda *_a, **_k: (_ for _ in ()).throw(
+                run_gate.GateError("planned path failure")))
+        with pytest.raises(run_gate.GateError, match="planned path failure"):
+            run_gate.relaxed_io_sync_mount_flags(
+                "docker", "tester:local", tmp_path)
+        assert list((tmp_path / ".run-gate").iterdir()) == []
+
+
+class TestR2JobsPR3:
+    @pytest.mark.parametrize(
+        "cpu_cap,memory_budget,candidate_ram,remaining,expected",
+        [
+            (2, 8 * 1024, 512, 20, 2),  # CPU cap is the tightest input.
+            (8, 1024, 300, 20, 3),      # Floor of the memory ratio is 3.
+            (8, 8 * 1024, 512, 2, 2),   # Do not schedule beyond candidates.
+        ],
+    )
+    def test_auto_derivation_uses_each_cap(
+            self, cpu_cap, memory_budget, candidate_ram, remaining, expected):
+        selected = run_gate.select_r2_jobs(
+            "auto", jobs_max=8, cpu_cap=cpu_cap,
+            memory_budget_bytes=memory_budget,
+            candidate_ram_bytes=candidate_ram,
+            candidate_ram_samples=4, candidates_remaining=remaining,
+            cheap_clone=True)
+        assert selected["jobs"] == expected
+        assert selected["source"] == "auto"
+
+    def test_r2_worker_selection_rejects_invalid_inputs(self):
+        with pytest.raises(run_gate.GateError, match="invalid mutation.jobs_max"):
+            run_gate.select_r2_jobs(None, jobs_max=0)
+        with pytest.raises(run_gate.GateError, match="sample count"):
+            run_gate.select_r2_jobs(None, jobs_max=1,
+                                    candidate_ram_samples=-1)
+        with pytest.raises(run_gate.GateError, match="requires integer CPU"):
+            run_gate.select_r2_jobs(
+                "auto", jobs_max=2, cpu_cap=0, memory_budget_bytes=100,
+                candidate_ram_bytes=10, candidates_remaining=2,
+                cheap_clone=True)
+        with pytest.raises(run_gate.GateError, match="R2 jobs request"):
+            run_gate.select_r2_jobs("2", jobs_max=2)
+
+    def test_auto_falls_back_to_one_without_cheap_clone(self):
+        selected = run_gate.select_r2_jobs(
+            "auto", jobs_max=8, cpu_cap=8,
+            memory_budget_bytes=8 * 1024,
+            candidate_ram_bytes=512,
+            candidate_ram_samples=4, candidates_remaining=20,
+            cheap_clone=False)
+        assert selected["jobs"] == 1
+        assert selected["cheap_clone"] is False
+
+    def test_explicit_jobs_above_assay_ceiling_refuse(self):
+        with pytest.raises(run_gate.GateError,
+                           match=r"--jobs 5 exceeds.*jobs_max \(4\)"):
+            run_gate.select_r2_jobs(
+                5, jobs_max=4, cpu_cap=8,
+                memory_budget_bytes=8 * 1024,
+                candidate_ram_bytes=512,
+                candidate_ram_samples=4, candidates_remaining=20,
+                cheap_clone=True, source="cli")
+
+    def test_explicit_parallel_jobs_refuse_without_cheap_clone(self):
+        with pytest.raises(run_gate.GateError,
+                           match="requires a cheap-clone workspace"):
+            run_gate.select_r2_jobs(
+                2, jobs_max=4, cpu_cap=8,
+                memory_budget_bytes=8 * 1024,
+                candidate_ram_bytes=512,
+                candidate_ram_samples=4, candidates_remaining=20,
+                cheap_clone=False, source="toml")
+
+    def test_one_explicit_worker_is_allowed_without_cheap_clone(self):
+        selected = run_gate.select_r2_jobs(
+            1, jobs_max=4, cpu_cap=8,
+            memory_budget_bytes=8 * 1024,
+            candidate_ram_bytes=512,
+            candidate_ram_samples=0, candidates_remaining=20,
+            cheap_clone=False, source="cli")
+        assert selected["jobs"] == 1
+        assert selected["source"] == "cli"
+
+    def test_default_is_serial(self):
+        selected = run_gate.select_r2_jobs(
+            None, jobs_max=4, cpu_cap=8,
+            memory_budget_bytes=8 * 1024,
+            candidate_ram_bytes=512,
+            candidate_ram_samples=0, candidates_remaining=20,
+            cheap_clone=False)
+        assert selected["jobs"] == 1
+        assert selected["source"] == "default"
+
+    @pytest.mark.parametrize("value, expected", [
+        (None, None), ("1", 1), ("12", 12), ("auto", "auto"),
+    ])
+    def test_cli_jobs_parser_accepts_only_documented_forms(self, value, expected):
+        assert run_gate.parse_r2_jobs_cli(value) == expected
+
+    @pytest.mark.parametrize("value", ["0", "-1", "+2", "1.5", "AUTO", "2x"])
+    def test_cli_jobs_parser_refuses_malformed_forms(self, value):
+        with pytest.raises(run_gate.GateError,
+                           match="--jobs must be a positive integer or 'auto'"):
+            run_gate.parse_r2_jobs_cli(value)
+
+    def test_auto_zero_remaining_candidates_keeps_assay_positive_job_count(self):
+        selected = run_gate.select_r2_jobs(
+            "auto", jobs_max=4, cpu_cap=4,
+            memory_budget_bytes=4096, candidate_ram_bytes=512,
+            candidate_ram_samples=1, candidates_remaining=0,
+            cheap_clone=True)
+        assert selected["jobs"] == 1
+        assert selected["candidates_remaining"] == 0
+
+    @pytest.mark.parametrize("jobs", [1, 2])
+    def test_lane_jobs_is_rejected_on_command_lanes(self, jobs):
+        with pytest.raises(run_gate.GateError,
+                           match="jobs.*only for native R2 assay lanes"):
+            run_gate._validate_lane(
+                "r2", {"kind": "command", "environment": "runner",
+                       "argv": ["true"], "jobs": jobs}, "fixture")
+
+    def test_assay_progress_history_supplies_candidate_ram_and_remaining(self,
+                                                                        tmp_path):
+        progress = tmp_path / "progress.jsonl"
+        events = [
+            {"event": "orphan", "commit": "ignored-before-run"},
+            {"event": "run", "commit": "current"},
+            {"event": "candidates", "candidate_total": 8,
+             "pending_total": 4},
+            {"event": "phase", "name": "between-candidates"},
+            {"event": "candidate", "candidate_id": "a",
+             "resources": {"peak_rss_bytes": 512}},
+            {"event": "candidate", "candidate_id": "b",
+             "resources": {"peak_rss_bytes": 256}},
+            {"event": "candidate", "candidate_id": "invalid",
+             "resources": {"peak_rss_bytes": True}},
+            {"event": "candidate"},
+            {"event": "candidate", "candidate_index": 2},
+            {"event": "run", "commit": "older"},
+            {"event": "candidates", "candidate_total": 12,
+             "pending_total": 12},
+            {"event": "candidate", "candidate_id": "old",
+             "peak_rss_bytes": 2048},
+        ]
+        progress.write_text("not json\n" + "".join(
+            json.dumps(event) + "\n" for event in events))
+        assert run_gate.assay_progress_candidate_ram(
+            progress, commit="current") == (512, 2)
+        assert run_gate.assay_progress_candidate_ram(progress) == (2048, 3)
+        assert run_gate.assay_progress_candidates_remaining(
+            progress, "current", 100) == (0, "matching-progress")
+        assert run_gate.assay_progress_candidates_remaining(
+            progress, "new", 100) == (12, "prior-progress-plan-estimate")
+
+    def test_assay_progress_candidate_ram_uses_nearest_rank_p95(self, tmp_path):
+        progress = tmp_path / "progress.jsonl"
+        events = [{"event": "run", "commit": "current"}]
+        events.extend({"event": "candidate", "peak_rss_bytes": size}
+                      for size in range(1, 21))
+        progress.write_text("".join(json.dumps(event) + "\n"
+                                      for event in events))
+        assert run_gate.assay_progress_candidate_ram(progress) == (19, 20)
+
+    def test_progress_reader_closes_non_regular_files_and_handles_read_errors(
+            self, tmp_path, monkeypatch):
+        fifo = tmp_path / "progress.fifo"
+        os.mkfifo(fifo)
+        assert run_gate._assay_progress_segments(fifo) == []
+
+        progress = tmp_path / "non-object.jsonl"
+        progress.write_text("[]\n")
+        assert run_gate._assay_progress_segments(progress) == []
+        progress.write_text("{}\n")
+        monkeypatch.setattr(
+            run_gate.os, "fdopen",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                UnicodeError("invalid progress stream")))
+        assert run_gate._assay_progress_segments(progress) == []
+
+    def test_candidate_remaining_uses_max_mutants_then_one_as_bounds(
+            self, tmp_path):
+        progress = tmp_path / "empty.jsonl"
+        assert run_gate.assay_progress_candidates_remaining(
+            progress, "commit", 7) == (7, "assay-max_mutants-upper-bound")
+        assert run_gate.assay_progress_candidates_remaining(
+            progress, "commit", 0) == (1, "conservative-one-candidate")
+
+    def test_candidate_remaining_ignores_invalid_progress_plan(
+            self, tmp_path):
+        progress = tmp_path / "invalid-plan.jsonl"
+        progress.write_text("\n".join((
+            json.dumps({"event": "run", "commit": "commit"}),
+            json.dumps({"event": "candidates", "pending_total": "many"}),
+            "",
+        )))
+        assert run_gate.assay_progress_candidates_remaining(
+            progress, "commit", 7) == (
+                7, "assay-max_mutants-upper-bound")
+
+    def test_candidate_remaining_falls_back_when_matching_run_has_no_plan(
+            self, tmp_path):
+        progress = tmp_path / "run-without-plan.jsonl"
+        progress.write_text(json.dumps({"event": "run", "commit": "commit"})
+                            + "\n")
+        assert run_gate.assay_progress_candidates_remaining(
+            progress, "commit", 7) == (
+                7, "assay-max_mutants-upper-bound")
+
+    def test_finish_record_persists_selected_jobs_and_candidate_ram(
+            self, tmp_path):
+        commit = "a" * 40
+        progress = tmp_path / "progress.jsonl"
+        progress.write_text("\n".join((
+            json.dumps({"event": "run", "commit": commit}),
+            json.dumps({"event": "candidate", "resources": {
+                "peak_rss_bytes": 600}}),
+            json.dumps({"event": "candidate", "peak_rss_bytes": 400}),
+            "",
+        )))
+        record = {
+            "_started_monotonic": run_gate.time.monotonic(),
+            "_r2_progress_path": str(progress),
+            "r2_jobs": {"jobs": 3, "mode": "auto"},
+            "dirty": False, "git_operation": None, "commit": commit,
+            "verdict": "PASS", "excluded_reason": None,
+        }
+        finished = run_gate.finish_run_record(record, exit_code=0)
+        assert finished["r2_jobs"] == {"jobs": 3, "mode": "auto"}
+        assert finished["r2_candidate_ram_p95_bytes"] == 600
+        assert finished["r2_candidate_ram_samples"] == 2
+        assert "_r2_progress_path" not in finished
+        assert finished["history_eligible"] is True
+
+    def test_finish_r2_record_omits_empty_candidate_history(self, tmp_path):
+        progress = tmp_path / "empty-progress.jsonl"
+        progress.write_text(json.dumps({"event": "run", "commit": "c"})
+                            + "\n")
+        record = {
+            "_started_monotonic": run_gate.time.monotonic(),
+            "_r2_progress_path": str(progress),
+            "r2_jobs": {"jobs": 1, "mode": "default"},
+            "dirty": False, "git_operation": None, "commit": "c",
+            "verdict": "PASS", "excluded_reason": None,
+        }
+        finished = run_gate.finish_run_record(record, exit_code=0)
+        assert "r2_candidate_ram_p95_bytes" not in finished
+        assert "r2_candidate_ram_samples" not in finished
+
+    def test_attached_r2_run_keeps_original_selection_and_progress_path(self):
+        selection = {"jobs": 2, "mode": "auto"}
+        lane = {"_r2_jobs_selection": {"jobs": 1}}
+        record = {"r2_jobs": {"jobs": 1}}
+        run_gate.adopt_inflight_r2_jobs(
+            lane, record, {"r2_jobs": selection, "progress": ".assay/progress.jsonl"})
+        assert lane["_r2_jobs_selection"] is selection
+        assert record["r2_jobs"] is selection
+        assert record["_r2_progress_path"] == ".assay/progress.jsonl"
+
+        run_gate.adopt_inflight_r2_jobs(lane, record, {})
+        assert "_r2_jobs_selection" not in lane
+        assert "r2_jobs" not in record
+        assert "_r2_progress_path" not in record
+
+        detached_lane = {}
+        run_gate.adopt_inflight_r2_jobs(
+            detached_lane, None, {"r2_jobs": selection})
+        assert detached_lane["_r2_jobs_selection"] is selection
+
+        no_progress_record = {}
+        run_gate.adopt_inflight_r2_jobs(
+            {}, no_progress_record, {"r2_jobs": selection, "progress": ""})
+        assert no_progress_record == {"r2_jobs": selection}
+
+    def test_record_r2_jobs_selection_persists_selection_and_progress(self,
+                                                                    tmp_path):
+        record = {}
+        lane = {"assay_lane": "iobench"}
+        selection = {"jobs": 3, "mode": "auto"}
+        run_gate.record_r2_jobs_selection(record, lane, selection, tmp_path)
+        assert record["r2_jobs"] is selection
+        assert record["_r2_progress_path"] == str(
+            tmp_path / ".assay/progress-iobench.jsonl")
+
+        empty_record = {}
+        run_gate.record_r2_jobs_selection(empty_record, lane, None, tmp_path)
+        assert empty_record == {}
+
+    def test_candidate_ram_history_prefers_run_gate_history_then_progress(
+            self, tmp_path):
+        project = tmp_path / "project"
+        project.mkdir()
+        progress = project / "progress.jsonl"
+        progress.write_text("\n".join((
+            json.dumps({"event": "run", "commit": "c"}),
+            json.dumps({"event": "candidate", "peak_rss_bytes": 500}),
+        )))
+        run_gate.history_dir(project).mkdir()
+        store = {"schema": run_gate.HISTORY_SCHEMA, "lanes": {
+            "r2": {"latest": None, "history": [{
+                "r2_candidate_ram_p95_bytes": 1000,
+                "r2_candidate_ram_samples": 2,
+            }, {
+                "r2_candidate_ram_p95_bytes": "unknown",
+                "r2_candidate_ram_samples": 1,
+            }]}}}
+        run_gate._write_json_atomic(store, run_gate.history_store_path(project))
+        assert run_gate.candidate_ram_from_history(
+            project, "r2", progress) == (1000, 2, "measured p95")
+        assert run_gate.candidate_ram_from_history(
+            project, "r2", progress, declared_candidate_ram_bytes=1200) == (
+                1200, 2, "declared")
+        assert run_gate.candidate_ram_from_history(
+            project, "r2", progress, declared_candidate_ram_bytes=900) == (
+                1000, 2, "measured p95")
+        run_gate._write_json_atomic(run_gate._empty_history_store(),
+                                    run_gate.history_store_path(project))
+        assert run_gate.candidate_ram_from_history(
+            project, "r2", progress) == (500, 1, "measured p95")
+        assert run_gate.candidate_ram_from_history(
+            project, "r2", progress, declared_candidate_ram_bytes=600) == (
+                600, 1, "declared")
+        progress.unlink()
+        assert run_gate.candidate_ram_from_history(
+            project, "r2", progress) == (
+                run_gate.R2_CONSERVATIVE_CANDIDATE_RAM_BYTES, 0,
+                "default")
+        assert run_gate.candidate_ram_from_history(
+            project, "r2", progress, declared_candidate_ram_bytes=2048) == (
+                2048, 0, "declared")
+        with pytest.raises(run_gate.GateError,
+                           match="declared candidate RAM must be a positive"):
+            run_gate.candidate_ram_from_history(
+                project, "r2", progress, declared_candidate_ram_bytes=0)
+
+    @pytest.mark.parametrize(
+        "event,expected",
+        [
+            ({"resources": {"peak_rss_bytes": 7}}, 7),
+            ({"peak_rss_bytes": 7.9}, 7),
+            ({"peak_rss_bytes": 0}, None),
+            ({"peak_rss_bytes": -1}, None),
+            ({"peak_rss_bytes": True}, None),
+            ({"peak_rss_bytes": "7"}, None),
+            ({"peak_rss_bytes": float("inf")}, None),
+            ({"peak_rss_bytes": float("nan")}, None),
+            ({"peak_rss_bytes": 10**1000}, 10**1000),
+        ],
+    )
+    def test_candidate_peak_rss_accepts_only_positive_finite_sizes(
+            self, event, expected):
+        assert run_gate._candidate_peak_rss(event) == expected
+
+    @pytest.mark.parametrize(
+        "lane,env,capacity,expected",
+        [
+            ({"resources": {"memory": "2g"}}, {"mode": "ephemeral"},
+             {"memory_cap_bytes": 1024},
+             (1024, "enforced lane memory cap and observed cgroup limit")),
+            ({"memory": "2g"}, {"mode": "ephemeral"}, None,
+             (2 * 1024**3, "enforced lane memory cap")),
+            ({"resources": {"memory": "3g"}}, {"mode": "host"}, None,
+             (None, "no enforced lane memory cap")),
+            ({}, {"mode": "ephemeral"}, {"memory_cap_bytes": 4096},
+             (None, "no enforced lane memory cap")),
+            ({}, {"mode": "exec"}, {"memory_cap_bytes": 4096},
+             (4096, "exec container memory.max")),
+            ({}, {"mode": "exec"}, None,
+             (None, "no enforced lane memory cap")),
+        ],
+    )
+    def test_memory_cap_uses_only_enforced_lane_or_exec_container_limits(
+            self, lane, env, capacity, expected):
+        assert run_gate._r2_memory_cap(lane, capacity, env) == expected
+
+    @pytest.mark.parametrize(
+        "lane,env,capacity,expected",
+        [
+            ({"resources": {"cpus": "4"}}, {"mode": "ephemeral"}, {"cpu_count": 2},
+             (2, "lane resources.cpus; environment affinity 2")),
+            ({"resources": {"cpus": "2.5"}}, {"mode": "ephemeral"}, None,
+             (2, "lane resources.cpus")),
+            ({}, {"mode": "ephemeral", "resources": {"cpus": "3"}}, None,
+             (3, "environment resources.cpus")),
+            ({}, {"mode": "ephemeral"}, {"cpu_count": 7},
+             (1, "no declared CPU cap; one-worker cap")),
+            ({}, {"mode": "exec", "resources": {"cpus": "3"}},
+             {"cpu_count": 7}, (1, "no enforced CPU cap; one-worker cap")),
+            ({}, {"mode": "ephemeral"}, None,
+             (1, "no declared CPU cap; one-worker cap")),
+        ],
+    )
+    def test_cpu_cap_uses_declared_and_observed_capacity(
+            self, lane, env, capacity, expected):
+        assert run_gate._r2_cpu_cap(lane, env, capacity) == expected
+
+    @pytest.mark.parametrize(
+        "stdout,returncode,expected",
+        [
+            ('{"cpu_count": 2, "memory_cap_bytes": 4096, '
+             '"cheap_clone": true, "backend": "btrfs", '
+             '"filesystem": "btrfs"}', 0, True),
+            ("not-json", 0, False),
+            ("[]", 0, False),
+            ('{"cpu_count": 0, "cheap_clone": false}', 0, False),
+            ('{"memory_cap_bytes": 0, "cheap_clone": false}', 0, False),
+            ('{"cheap_clone": "yes"}', 0, False),
+            ('{"cheap_clone": false, "backend": "copy"}', 0, False),
+            ('{"cheap_clone": false, "filesystem": 2}', 0, False),
+            ('{"cheap_clone": true, "backend": "reflink", '
+             '"filesystem": "xfs"}', 0, False),
+        ],
+    )
+    def test_capacity_probe_validates_its_response_and_preserves_environment(
+            self, monkeypatch, stdout, returncode, expected):
+        seen = {}
+        monkeypatch.setattr(run_gate, "assay_source_setup",
+                            lambda *_args: ["source assay"])
+        monkeypatch.setattr(run_gate, "_probe_slice", lambda *_args: "slice")
+        monkeypatch.setattr(
+            run_gate, "build_env_probe_argv",
+            lambda *args, **kwargs: seen.update(env=args[1], script=args[7])
+            or ["probe"])
+        monkeypatch.setattr(
+            run_gate.subprocess, "run",
+            lambda *_args, **_kwargs: SimpleNamespace(
+                returncode=returncode, stdout=stdout, stderr=""))
+        result = run_gate.r2_capacity_probe(
+            None, {"assay_lane": "mut"}, {"mode": "host"}, "host",
+            "fixture", Path("/repo"), Path("/repo"), Path("/repo/proj"),
+            {})
+        assert (result is not None) is expected
+        assert seen["env"] == {"mode": "host"}
+        assert "cowtree.detect" in seen["script"]
+        assert "SC_PHYS_PAGES" not in run_gate._R2_CAPACITY_PROBE_CODE
+
+    @pytest.mark.parametrize("failure", [
+        run_gate.GateError("probe construction failed"),
+        OSError("probe did not start"),
+    ])
+    def test_capacity_probe_unavailable_fails_closed(
+            self, monkeypatch, failure):
+        monkeypatch.setattr(run_gate, "build_env_probe_argv",
+                            lambda *_args, **_kwargs: (_ for _ in ()).throw(failure))
+        assert run_gate.r2_capacity_probe(
+            None, {}, {}, "bare-host", "fixture", Path("/repo"),
+            Path("/repo"), Path("/repo/proj"), {}) is None
+
+    def test_capacity_probe_uses_explicit_python_assay_command(
+            self, monkeypatch):
+        seen = {}
+        monkeypatch.setattr(run_gate, "build_env_probe_argv",
+                            lambda *args, **_kwargs: seen.update(script=args[7])
+                            or ["probe"])
+        monkeypatch.setattr(
+            run_gate.subprocess, "run",
+            lambda *_args, **_kwargs: SimpleNamespace(
+                returncode=1, stdout="", stderr="no capacity"))
+        result = run_gate.r2_capacity_probe(
+            None, {"assay_command": ["/opt/venv/bin/python3", "-m", "assay"]},
+            {}, "bare-host", "fixture", Path("/repo"), Path("/repo"),
+            Path("/repo/proj"), {})
+        assert result is None
+        assert "/opt/venv/bin/python3 -I -c" in seen["script"]
+
+        run_gate.r2_capacity_probe(
+            None, {"assay_command": ["assay", "run"]}, {}, "bare-host",
+            "fixture", Path("/repo"), Path("/repo"), Path("/repo/proj"),
+            {})
+        assert "python3 -I -c" in seen["script"]
+
+    @pytest.mark.parametrize(
+        "ram_target,cap,expected",
+        [("75%", 1000, 750), ("12g", 4 * 1024**3, 4 * 1024**3),
+         ("1g", 2 * 1024**3, 1024**3), ("75%", None, 0),
+         ("1g", 0, 0)],
+    )
+    def test_ram_target_resolves_inside_the_memory_cap(
+            self, ram_target, cap, expected):
+        assert run_gate.r2_memory_budget_bytes(ram_target, cap) == expected
+
+    @pytest.mark.parametrize(
+        "declared,estimate,samples,source,expected_jobs",
+        [("256b", 256, 0, "declared", 3),
+         (None, 300, 4, "measured p95", 2),
+         (None, run_gate.R2_CONSERVATIVE_CANDIDATE_RAM_BYTES, 0,
+          "default", 1)],
+    )
+    def test_configure_auto_jobs_binds_inventory_history_and_caps(
+            self, tmp_path, monkeypatch, capsys,
+            declared, estimate, samples, source, expected_jobs):
+        resources = {"cpus": "3", "memory": "2g"}
+        if declared is not None:
+            resources["candidate_ram"] = declared
+        lane = {"kind": "assay", "assay_lane": "mutation",
+                "environment": "runner", "jobs": "auto",
+                "resources": resources,
+                "_assay_inventory": {"entry": {
+                    "rigor": ["R0", "R2"],
+                    "mutation": {"jobs_max": 4, "max_mutants": 20},
+                }, "assay_version": "11.0.0"}}
+        monkeypatch.setattr(run_gate, "head_commit", lambda _worktree: "commit")
+        def candidate_history(*_args, **kwargs):
+            assert kwargs["declared_candidate_ram_bytes"] == (
+                256 if declared is not None else None)
+            return estimate, samples, source
+        monkeypatch.setattr(run_gate, "candidate_ram_from_history",
+                            candidate_history)
+        monkeypatch.setattr(run_gate, "assay_progress_candidates_remaining",
+                            lambda *_args: (6, "matching-progress"))
+        monkeypatch.setattr(run_gate, "r2_capacity_probe", lambda *_args: {
+            "cpu_count": 3, "memory_cap_bytes": 1024,
+            "cheap_clone": True, "backend": "btrfs",
+            "filesystem": "btrfs", "cheap_clone_reason": "supported-btrfs",
+        })
+        selected = run_gate.configure_r2_jobs(
+            lane, "r2", None, {"ram_target": "75%"},
+            {"mode": "ephemeral"}, "runner",
+            tmp_path, tmp_path, tmp_path)
+        assert selected["jobs"] == expected_jobs
+        assert selected["candidate_ram_source"] == source
+        assert selected["candidate_ram_bytes"] == estimate
+        assert lane["_r2_jobs_selection"] is selected
+        record = {}
+        run_gate.record_r2_jobs_selection(
+            record, {"assay_lane": "mutation"}, selected, tmp_path)
+        assert record["r2_jobs"]["candidate_ram_source"] == source
+        run_gate.disclose_r2_jobs("r2", selected)
+        output = capsys.readouterr().out
+        assert output.count("run-gate: R2 jobs:") == 1
+        assert f"N={expected_jobs}" in output and "jobs_max=4" in output
+        assert f"candidate_ram_estimate_bytes={estimate}" in output
+        assert f"({source}, n={samples})" in output
+        assert "candidates_remaining=6" in output
+
+    def test_configured_explicit_jobs_are_used_without_cli(
+            self, tmp_path, monkeypatch):
+        lane = {"kind": "assay", "assay_lane": "mutation",
+                "environment": "runner", "jobs": 2,
+                "_assay_inventory": {"entry": {
+                    "rigor": ["R2"], "mutation": {"jobs_max": 4},
+                }, "assay_version": "11.0.0"}}
+        monkeypatch.setattr(run_gate, "head_commit", lambda _worktree: "commit")
+        monkeypatch.setattr(run_gate, "candidate_ram_from_history",
+                            lambda *_args, **_kwargs: (300, 4, "measured p95"))
+        monkeypatch.setattr(run_gate, "assay_progress_candidates_remaining",
+                            lambda *_args: (6, "matching-progress"))
+        monkeypatch.setattr(run_gate, "r2_capacity_probe", lambda *_args: {
+            "cpu_count": 3, "memory_cap_bytes": 1024,
+            "cheap_clone": True, "backend": "btrfs",
+            "filesystem": "btrfs", "cheap_clone_reason": "supported-btrfs",
+        })
+        selected = run_gate.configure_r2_jobs(
+            lane, "r2", None, {"ram_target": "75%"}, {}, "runner",
+            tmp_path, tmp_path, tmp_path)
+        assert selected["jobs"] == 2
+        assert selected["source"] == "toml"
+        assert selected["forward"] is True
+
+    def test_default_jobs_stays_serial_without_capacity_probe(
+            self, tmp_path, monkeypatch):
+        lane = {"kind": "assay", "assay_lane": "mutation",
+                "_assay_inventory": {"entry": {
+                    "rigor": ["R2"],
+                    "mutation": {"jobs_max": 4, "max_mutants": 12},
+                }}}
+        monkeypatch.setattr(run_gate, "head_commit", lambda _worktree: None)
+        monkeypatch.setattr(run_gate, "candidate_ram_from_history",
+                            lambda *_args, **_kwargs: (1024, 0, "default"))
+        monkeypatch.setattr(run_gate, "r2_capacity_probe",
+                            lambda *_args: pytest.fail("default must not probe"))
+        selected = run_gate.configure_r2_jobs(
+            lane, "r2", None, {}, {}, "runner", tmp_path, tmp_path, tmp_path)
+        assert selected["jobs"] == 1
+        assert selected["forward"] is False
+        assert selected["candidates_remaining"] == 12
+        assert selected["candidate_remaining_source"] == \
+            "assay-max_mutants-upper-bound"
+
+    def test_missing_assay_jobs_max_uses_assay_default_ceiling(
+            self, tmp_path, monkeypatch):
+        lane = {"kind": "assay", "assay_lane": "mutation",
+                "_assay_inventory": {"entry": {
+                    "rigor": ["R2"], "mutation": {"jobs_max": None},
+                }}}
+        monkeypatch.setattr(run_gate, "head_commit", lambda _worktree: None)
+        selected = run_gate.configure_r2_jobs(
+            lane, "r2", None, {}, {}, "runner",
+            tmp_path, tmp_path, tmp_path)
+        assert selected["jobs_max"] == 1
+        assert selected["jobs"] == 1
+
+    @pytest.mark.parametrize(
+        "version,supported",
+        [("10.9.9", False), ("11.0.0", True), ("11.0.1", True),
+         (None, False)],
+    )
+    def test_assay_jobs_forwarding_obeys_inventory_version(
+            self, tmp_path, monkeypatch, version, supported):
+        lane = {"kind": "assay", "assay_lane": "mutation",
+                "jobs": "auto", "environment": "runner",
+                "resources": {"cpus": "8", "memory": "4g"},
+                "_assay_inventory": {
+                    "entry": {"rigor": ["R2"], "mutation": {
+                        "jobs_max": 4, "max_mutants": 10}},
+                    "assay_version": version,
+                }}
+        monkeypatch.setattr(run_gate, "head_commit", lambda _worktree: None)
+        monkeypatch.setattr(run_gate, "candidate_ram_from_history",
+                            lambda *_args, **_kwargs: (100, 1, "measured p95"))
+        monkeypatch.setattr(run_gate, "assay_progress_candidates_remaining",
+                            lambda *_args: (8, "plan"))
+        if supported:
+            monkeypatch.setattr(run_gate, "r2_capacity_probe", lambda *_args: {
+                "cpu_count": 8, "memory_cap_bytes": 4 * 1024**3,
+                "cheap_clone": True, "backend": "btrfs",
+                "filesystem": "btrfs", "cheap_clone_reason": "supported-btrfs",
+            })
+        else:
+            monkeypatch.setattr(run_gate, "r2_capacity_probe",
+                                lambda *_args: pytest.fail(
+                                    "unsupported Assay must not be probed"))
+        selected = run_gate.configure_r2_jobs(
+            lane, "r2", None, {}, {"mode": "ephemeral"}, "runner",
+            tmp_path, tmp_path, tmp_path)
+        assert selected["jobs"] == (4 if supported else 1)
+        assert selected["forward"] is supported
+        assert selected["assay_version"] == version
+
+    @pytest.mark.parametrize("version", ["10.9.9", None])
+    def test_explicit_parallel_jobs_require_assay_110(
+            self, tmp_path, version):
+        lane = {"kind": "assay", "assay_lane": "mutation",
+                "_assay_inventory": {
+                    "entry": {"rigor": ["R2"], "mutation": {"jobs_max": 4}},
+                    "assay_version": version,
+                }}
+        with pytest.raises(run_gate.GateError,
+                           match="requires assay >= 11\\.0\\.0"):
+            run_gate.configure_r2_jobs(
+                lane, "r2", 2, {}, {"mode": "ephemeral"}, "runner",
+                tmp_path, tmp_path, tmp_path)
+
+    def test_unsupported_assay_keeps_explicit_one_serial_and_unforwarded(
+            self, tmp_path, monkeypatch):
+        lane = {"kind": "assay", "assay_lane": "mutation", "jobs": 1,
+                "_assay_inventory": {
+                    "entry": {"rigor": ["R2"], "mutation": {"jobs_max": 4}},
+                    "assay_version": "10.9.9",
+                }}
+        monkeypatch.setattr(run_gate, "head_commit", lambda _worktree: None)
+        selected = run_gate.configure_r2_jobs(
+            lane, "r2", None, {}, {}, "runner",
+            tmp_path, tmp_path, tmp_path)
+        assert selected["jobs"] == 1
+        assert selected["forward"] is False
+
+    @pytest.mark.parametrize(
+        "request_value,entry,match",
+        [
+            (None, {"rigor": ["R1"]}, None),
+            ("auto", None, "cannot verify native R2"),
+            ("auto", {"rigor": ["R2"], "mutation": {"format": "sarif"}},
+             "requires a native R2 mutation lane"),
+            ("auto", {"rigor": ["R2"], "mutation": {"jobs_max": "4"}},
+             "invalid mutation.jobs_max"),
+        ],
+    )
+    def test_configure_r2_jobs_handles_unsupported_inventory(
+            self, tmp_path, monkeypatch, request_value, entry, match):
+        lane = {"kind": "assay", "assay_lane": "fixture",
+                "_assay_inventory": {"entry": entry}}
+        if match is None:
+            assert run_gate.configure_r2_jobs(
+                lane, "fixture", request_value, {}, {}, "runner",
+                tmp_path, tmp_path, tmp_path) is None
+        else:
+            with pytest.raises(run_gate.GateError, match=match):
+                run_gate.configure_r2_jobs(
+                    lane, "fixture", request_value, {}, {}, "runner",
+                    tmp_path, tmp_path, tmp_path)
+
+    def test_auto_uses_no_memory_cap_when_lane_has_none(
+            self, tmp_path, monkeypatch, capsys):
+        lane = {"kind": "assay", "assay_lane": "mutation", "jobs": "auto",
+                "environment": "runner",
+                "_assay_inventory": {"entry": {
+                    "rigor": ["R2"], "mutation": {"jobs_max": 8},
+                }, "assay_version": "11.0.0"}}
+        monkeypatch.setattr(run_gate, "head_commit", lambda _worktree: "commit")
+        monkeypatch.setattr(run_gate, "candidate_ram_from_history",
+                            lambda *_args, **_kwargs: (100, 1, "measured p95"))
+        monkeypatch.setattr(run_gate, "assay_progress_candidates_remaining",
+                            lambda *_args: (8, "plan"))
+        monkeypatch.setattr(run_gate, "r2_capacity_probe", lambda *_args: {
+            "cpu_count": 8, "memory_cap_bytes": 1024,
+            "cheap_clone": True, "backend": "btrfs", "filesystem": "btrfs",
+        })
+        selected = run_gate.configure_r2_jobs(
+            lane, "r2", None, {"ram_target": "50%"},
+            {"mode": "ephemeral", "resources": {"cpus": "8"}}, "runner",
+            tmp_path, tmp_path, tmp_path)
+        assert selected["memory_cap_bytes"] is None
+        assert selected["memory_cap_source"] == "no enforced lane memory cap"
+        assert selected["memory_budget_bytes"] == 0
+        assert selected["jobs"] == 1
+        run_gate.disclose_r2_jobs("r2", selected)
+        assert "no enforced lane memory cap" in capsys.readouterr().out
+
+    def test_cli_request_overrides_toml_jobs(self, tmp_path, monkeypatch):
+        lane = {"kind": "assay", "assay_lane": "mutation",
+                "environment": "runner", "jobs": 1,
+                "_assay_inventory": {"entry": {
+                    "rigor": ["R2"], "mutation": {"jobs_max": 4},
+                }, "assay_version": "11.0.0"}}
+        monkeypatch.setattr(run_gate, "head_commit", lambda _worktree: "commit")
+        monkeypatch.setattr(run_gate, "candidate_ram_from_history",
+                            lambda *_args, **_kwargs: (100, 0, "default"))
+        monkeypatch.setattr(run_gate, "assay_progress_candidates_remaining",
+                            lambda *_args: (1, "fallback"))
+        monkeypatch.setattr(run_gate, "r2_capacity_probe", lambda *_args: {
+            "cpu_count": 4, "memory_cap_bytes": 1024,
+            "cheap_clone": True, "backend": "btrfs", "filesystem": "btrfs",
+        })
+        selected = run_gate.configure_r2_jobs(
+            lane, "r2", 3, {"ram_target": "75%"}, {}, "runner",
+            tmp_path, tmp_path, tmp_path)
+        assert selected["jobs"] == 3
+        assert selected["source"] == "cli"
+        assert selected["requested"] == 3
+
+    def test_r2_job_option_requires_native_inventory_and_jobs_max(self,
+                                                                 tmp_path,
+                                                                 monkeypatch):
+        lane = {"kind": "assay", "assay_lane": "coverage",
+                "_assay_inventory": {"entry": {
+                    "rigor": ["R0", "R1"], "mutation": {}}}}
+        with pytest.raises(run_gate.GateError,
+                           match="requires an Assay lane that declares native R2"):
+            run_gate.configure_r2_jobs(
+                lane, "coverage", 2, {}, {}, "runner",
+                tmp_path, tmp_path, tmp_path)
+        lane["_assay_inventory"]["entry"] = {
+            "rigor": ["R0", "R2"], "mutation": {"jobs_max": 1}}
+        lane["_assay_inventory"]["assay_version"] = "11.0.0"
+        monkeypatch.setattr(run_gate, "r2_capacity_probe",
+                            lambda *_args: pytest.fail("ceiling checked before probe"))
+        with pytest.raises(run_gate.GateError, match=r"jobs value 2 exceeds.*\(1\)"):
+            run_gate.configure_r2_jobs(
+                lane, "r2", 2, {}, {}, "runner",
+                tmp_path, tmp_path, tmp_path)
+        lane["_assay_inventory"] = {"entry": None}
+        lane["_assay_inventory_error"] = "assay lanes probe failed"
+        with pytest.raises(run_gate.GateError,
+                           match="cannot verify native R2.*assay lanes probe failed"):
+            run_gate.configure_r2_jobs(
+                lane, "r2", "auto", {}, {}, "runner",
+                tmp_path, tmp_path, tmp_path)
+
+    def test_assay_inner_passes_the_selected_worker_count(self):
+        lane = {"assay_lane": "mutation", "pins": {},
+                "_r2_jobs_selection": {"jobs": 3, "forward": True}}
+        inner = run_gate.build_assay_inner(
+            lane, Path("/repo/project"), Path("/repo"))
+        assert "--jobs 3" in inner
+
+    def test_assay_inner_keeps_assay_default_when_unconfigured(self):
+        lane = {"assay_lane": "mutation", "pins": {}}
+        inner = run_gate.build_assay_inner(
+            lane, Path("/repo/project"), Path("/repo"))
+        assert "--jobs" not in inner
+
+    def test_assay_inner_omits_unavailable_jobs_flag(self):
+        lane = {"assay_lane": "mutation", "pins": {},
+                "_r2_jobs_selection": {"jobs": 1, "forward": False}}
+        inner = run_gate.build_assay_inner(
+            lane, Path("/repo/project"), Path("/repo"))
+        assert "--jobs" not in inner
+
+    def test_disclose_explicit_and_default_jobs_once(self, capsys):
+        for selection in (
+                run_gate.select_r2_jobs(None, jobs_max=4),
+                run_gate.select_r2_jobs(2, jobs_max=4, cheap_clone=True,
+                                        source="toml")):
+            run_gate.disclose_r2_jobs("r2", selection)
+        output = capsys.readouterr().out
+        assert output.count("run-gate: R2 jobs:") == 2
+        assert "N=1 mode=default" in output
+        assert "N=2 mode=explicit" in output
+        assert "cheap_clone=True" in output
+
+    def test_lane_jobs_config_accepts_positive_count_and_auto(self):
+        for jobs in (1, 4, "auto"):
+            run_gate._validate_lane(
+                "r2", {"kind": "assay", "assay_lane": "mutation",
+                       "jobs": jobs}, "fixture")
+
+    def test_jobs_cli_refuses_non_assay_lane_and_non_lane_verb(
+            self, tmp_path, monkeypatch, capsys):
+        project = tmp_path / "project"
+        project.mkdir()
+        config = """schema_version = 1
+
+[environments.runner]
+mode = "ephemeral"
+image = "runner:local"
+
+[lanes.suite]
+kind = "command"
+environment = "runner"
+argv = ["true"]
+"""
+        (project / "run-gate.toml").write_text(config)
+        monkeypatch.chdir(project)
+        assert run_gate.main(["--jobs", "2", "suite"]) == 2
+        error = capsys.readouterr().err
+        assert "--jobs applies only to native R2 assay lanes" in error
+        assert run_gate.main(["--jobs", "2", "--list"]) == 2
+        assert "--jobs applies to a lane run only" in capsys.readouterr().err
+
+    @pytest.mark.parametrize("jobs", [0, -1, True, 1.5, "2", "AUTO", "max"])
+    def test_lane_jobs_config_is_closed_and_typed(self, jobs):
+        with pytest.raises(run_gate.GateError, match="jobs.*positive integer.*auto"):
+            run_gate._validate_lane(
+                "r2", {"kind": "assay", "assay_lane": "mutation",
+                       "jobs": jobs}, "fixture")
+
+    def test_relaxed_container_dry_run_constructs_readonly_preload_bind(
+            self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(run_gate.shutil, "which", lambda _name: "/bin/docker")
+        monkeypatch.setattr(run_gate, "resolve_inflight", lambda *_a, **_k: None)
+        monkeypatch.setattr(run_gate, "container_mount_flags",
+                            lambda *_a, **_k: [])
+        monkeypatch.setattr(run_gate, "extra_mount_flags", lambda: [])
+        monkeypatch.setattr(run_gate, "resource_observer_docker_flags",
+                            lambda *_a: [])
+        monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda *_a: None)
+        monkeypatch.setattr(run_gate, "build_command_inner", lambda *_a: "true")
+        monkeypatch.setattr(run_gate, "physical_path", lambda path, **_k: path)
+        monkeypatch.setattr(
+            run_gate.subprocess, "run",
+            lambda *_a, **_k: SimpleNamespace(
+                returncode=0,
+                stdout="/usr/lib/x86_64-linux-gnu/libeatmydata.so.1\n",
+                stderr=""))
+        assert run_gate.run_container_lane(
+            {"kind": "command", "environment": "runner", "argv": ["true"]},
+            "unit", tmp_path, tmp_path, tmp_path,
+            {"mode": "ephemeral", "image": "tester:local"}, "fixture",
+            "dev-gates.slice", "fixture", dry_run=True,
+            profile_plan={"enabled": False, "disabled_reason": "test",
+                          "source": "test fixture"},
+            resource_settings={"io_sync": "relaxed",
+                               "cowtree": {"mode": "off"}}) == 0
+        output = capsys.readouterr().out
+        argv = next(line for line in output.splitlines()
+                    if "run-gate: docker argv:" in line)
+        assert "target=/etc/ld.so.preload,readonly" in argv
+        assert "-e RUN_GATE_IO_SYNC " in argv
+        assert "RUN_GATE_IO_SYNC=" not in argv
+        assert list((tmp_path / ".run-gate").glob("ld.so.preload.*")) == []
+
+    def test_relaxed_preload_file_closes_when_docker_run_fails(
+            self, tmp_path, monkeypatch):
+        monkeypatch.setattr(run_gate.shutil, "which", lambda _name: "/bin/docker")
+        monkeypatch.setattr(run_gate, "resolve_inflight", lambda *_a, **_k: None)
+        monkeypatch.setattr(run_gate, "container_mount_flags",
+                            lambda *_a, **_k: [])
+        monkeypatch.setattr(run_gate, "extra_mount_flags", lambda: [])
+        monkeypatch.setattr(run_gate, "resource_observer_docker_flags",
+                            lambda *_a: [])
+        monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda *_a: None)
+        monkeypatch.setattr(run_gate, "build_command_inner", lambda *_a: "true")
+        monkeypatch.setattr(run_gate, "save_container_logs", lambda *_a: None)
+
+        real_mount_flags = run_gate.relaxed_io_sync_mount_flags
+        preload_files = []
+
+        def capture_preload_file(*args, **kwargs):
+            flags, preload_file = real_mount_flags(*args, **kwargs)
+            preload_files.append(preload_file)
+            return flags, preload_file
+
+        monkeypatch.setattr(run_gate, "relaxed_io_sync_mount_flags",
+                            capture_preload_file)
+
+        def docker_run(argv, **_kwargs):
+            if argv[1:3] == ["image", "inspect"]:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout="/usr/lib/x86_64-linux-gnu/libeatmydata.so.1\n",
+                    stderr="")
+            if argv[1] == "run":
+                return SimpleNamespace(returncode=125, stdout="",
+                                       stderr="docker run failed")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(run_gate.subprocess, "run", docker_run)
+        with pytest.raises(run_gate.GateInfraError, match="docker run failed"):
+            run_gate.run_container_lane(
+                {"kind": "command", "environment": "runner", "argv": ["true"]},
+                "unit", tmp_path, tmp_path, tmp_path,
+                {"mode": "ephemeral", "image": "tester:local"}, "fixture",
+                "dev-gates.slice", "fixture", profile_plan={"enabled": False},
+                resource_settings={"io_sync": "relaxed"})
+
+        assert len(preload_files) == 1
+        preload_path = Path(preload_files[0].name)
+        assert preload_files[0].closed
+        assert not preload_path.exists()
+
+    def test_exec_lane_forwards_resource_environment(self, tmp_path,
+                                                    monkeypatch, capsys):
+        monkeypatch.setattr(run_gate.shutil, "which", lambda _name: "/bin/docker")
+        monkeypatch.setattr(
+            run_gate.subprocess, "run",
+            lambda argv, **_kwargs: subprocess.CompletedProcess(
+                argv, 0, "runner\n", ""))
+        assert run_gate.run_exec_lane(
+            {"kind": "command", "environment": "runner", "argv": ["true"]},
+            "unit", tmp_path, tmp_path, tmp_path,
+            {"mode": "exec", "forward_env": []}, "fixture", "runner",
+            "fixture", "start", None, "no slice", dry_run=True,
+            profile_plan={"enabled": False, "disabled_reason": "test",
+                          "source": "test fixture"},
+            resource_settings={"io_sync": "strict",
+                               "cowtree": {"mode": "off"}}) == 0
+        output = capsys.readouterr().out
+        argv = next(line for line in output.splitlines()
+                    if "run-gate: docker argv:" in line)
+        assert "-e RUN_GATE_IO_SYNC " in argv
+        assert "-e COWTREE_MODE " in argv
+        assert "=<redacted>" not in argv and "COWTREE_MODE=" not in argv
+
+    def test_host_lane_passes_resource_environment_to_child(
+            self, tmp_path, monkeypatch):
+        real_popen = subprocess.Popen
+        captured = {}
+
+        def capture(argv, **kwargs):
+            captured.update(kwargs)
+            return real_popen(argv, **kwargs)
+
+        monkeypatch.setattr(run_gate.subprocess, "Popen", capture)
+        assert run_gate.run_bare_host_lane(
+            {"kind": "command", "argv": ["true"]}, "unit",
+            tmp_path, tmp_path, tmp_path,
+            profile_plan={"enabled": False, "disabled_reason": "test"},
+            resource_settings={"io_sync": "strict",
+                               "cowtree": {"mode": "off"}}) == 0
+        assert captured["env"]["RUN_GATE_IO_SYNC"] == "strict"
+        assert captured["env"]["COWTREE_MODE"] == "off"
+
+    def test_resource_env_logging_discloses_names_not_values(self, capsys):
+        run_gate.log_resource_forwarded_env(
+            {"COWTREE_MODE": "auto", "MDT_COW_ROOT": "/private/root"})
+        output = capsys.readouterr().out
+        assert "COWTREE_MODE" in output and "MDT_COW_ROOT" in output
+        assert "/private/root" not in output
+        run_gate.log_resource_forwarded_env({})
+        assert capsys.readouterr().out == ""
+
+    def test_assay_probe_dry_run_redacts_resource_values(
+            self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv(run_gate.MDT_COW_ROOT_ENV_VAR,
+                           "/private/cow/root")
+        monkeypatch.setattr(
+            run_gate, "build_env_probe_argv",
+            lambda *_a, **_k: ["docker", "run", "-e",
+                               "MDT_COW_ROOT=/private/cow/root"])
+        run_gate.assure_assay_state_root(
+            "/bin/docker", {"kind": "assay", "assay_lane": "unit"},
+            {"mode": "ephemeral", "state_root": "/tmp/assay-state"},
+            "runner", "fixture", tmp_path, tmp_path, tmp_path,
+            "dev-gates.slice", dry_run=True,
+            resource_settings={"cowtree": {"mode": "auto"}})
+        output = capsys.readouterr().out
+        assert "MDT_COW_ROOT=<redacted>" in output
+        assert "/private/cow/root" not in output
+
+    def test_exec_probe_forwards_consumer_environment(self, tmp_path,
+                                                      monkeypatch):
+        monkeypatch.setattr(run_gate, "resolve_container_name",
+                            lambda *_a, **_k: ("runner", "fixture", "start"))
+        argv = run_gate.build_env_probe_argv(
+            "docker", {"mode": "exec"}, "runner", tmp_path, tmp_path,
+            "fixture", "", "true",
+            resource_settings={"io_sync": "strict",
+                               "cowtree": {"mode": "off"}})
+        assert argv[:5] == ["docker", "exec", "-e", "RUN_GATE_IO_SYNC=strict",
+                            "-e"]
+        assert "COWTREE_MODE=off" in argv
+        assert "--mount" not in argv
+
+    def test_history_human_report_separates_io_sync_modes(self, capsys):
+        store = run_gate._empty_history_store()
+        for mode, seconds in (("strict", 10.0), ("relaxed", 4.0)):
+            run_gate._apply_record(store, {
+                "lane": "unit", "commit": "abc", "outcome": "pass",
+                "duration_seconds": seconds, "history_eligible": True,
+                "io_sync": mode}, keep=10)
+        report = run_gate.lane_history_report(store, "unit")
+        run_gate._print_lane_history("unit", report, 10)
+        output = capsys.readouterr().out
+        assert "io_sync=strict" in output and "io_sync=relaxed" in output
+        assert "10.0s" in output and "4.0s" in output
+        assert "IO_SYNC" in output and "strict" in output and "relaxed" in output
+
+    def test_history_human_report_counts_mode_measurements(self, capsys):
+        store = run_gate._empty_history_store()
+        for mode in ("strict", "relaxed"):
+            run_gate._apply_record(store, {
+                "lane": "unit", "commit": "same-commit", "outcome": "pass",
+                "duration_seconds": 1.0, "history_eligible": True,
+                "io_sync": mode}, keep=10)
+
+        run_gate._print_lane_history(
+            "unit", run_gate.lane_history_report(store, "unit"), 10)
+
+        assert "history: 2 of at most 10 measurement(s)" in capsys.readouterr().out
+
+    def test_cow_cli_override_is_not_history_eligible(self):
+        record = {
+            "_started_monotonic": time.monotonic(), "duration_seconds": None,
+            "dirty": False, "git_operation": None, "commit": "abc123",
+            "verdict": "PASS", "io_sync": "strict", "cow_override": True,
+        }
+
+        finished = run_gate.finish_run_record(record, exit_code=0)
+
+        assert finished["history_eligible"] is False
+        assert "CoW override" in finished["excluded_reason"]
+
+    def test_sequence_lane_cannot_declare_ignored_resources(self):
+        config = {
+            "schema_version": 1,
+            "environments": {
+                "runner": {"mode": "ephemeral", "image": "runner:local"},
+            },
+            "lanes": {
+                "gate": {"kind": "sequence", "lanes": ["unit"],
+                         "resources": {"io_sync": "durable"}},
+                "unit": {"kind": "command", "environment": "runner",
+                         "argv": ["true"]},
+            },
+        }
+
+        with pytest.raises(run_gate.GateError,
+                           match="sequence does not accept resources.*members"):
+            run_gate._validate_config(
+                config, Path("run-gate.toml"), central=False)
+
+    def test_relaxed_preload_is_mapped_in_test_process(self):
+        if os.environ.get("RUN_GATE_IO_SYNC") != "relaxed":
+            return
+        maps = Path("/proc/self/maps").read_text(encoding="utf-8")
+        assert "libeatmydata" in maps
+
     def test_slice_resolution_and_cgroupfs_path_derivation(self, monkeypatch):
         assert run_gate.resolve_slice(
             {"cgroup_slice": "dev-gates.slice"}, "fixture") == (
@@ -35181,7 +37258,9 @@ class TestRunGateReleaseCoverageEdges:
         assert run_gate.slice_cgroupfs_dir("dev-gates.slice") == Path(
             "dev.slice/dev-gates.slice")
         assert run_gate.slice_cgroupfs_dir("dev-test-gates.slice") == Path(
-            "dev.slice/test.slice/dev-test-gates.slice")
+            "dev.slice/dev-test.slice/dev-test-gates.slice")
+        assert run_gate.slice_cgroupfs_dir("a-b-c-d.slice") == Path(
+            "a.slice/a-b.slice/a-b-c.slice/a-b-c-d.slice")
         assert run_gate.slice_cgroupfs_dir("gates.slice") == Path("gates.slice")
 
     def test_slice_memory_admission_warns_refuses_and_admits_from_cgroup_files(
@@ -35473,3 +37552,816 @@ class TestRunGateReleaseCoverageEdges:
                in lane_error
         assert str(tmp_path) in lane_error
         assert "loads config from the current working directory" in lane_error
+
+    def test_host_cow_root_pass_through_does_not_apply_docker_delimiters(
+            self, monkeypatch):
+        root = "/host/cow,zone:archive"
+        monkeypatch.setenv(run_gate.MDT_COW_ROOT_ENV_VAR, root)
+
+        settings, _sources = run_gate.resolve_resource_settings(
+            {}, {}, {}, {}, mode="host")
+        forwarded = run_gate.resource_forwarded_env(settings, "host")
+
+        assert forwarded[run_gate.MDT_COW_ROOT_ENV_VAR] == root
+        assert run_gate.cowtree_mount_flags(settings, "host") == []
+
+    def test_attached_ephemeral_lane_ignores_unused_extra_mounts(
+            self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        project = repo / "run-gate-project"
+        project.mkdir()
+        (project / "run-gate.toml").write_text(textwrap.dedent("""\
+            schema_version = 1
+
+            [environments.runner]
+            mode = "ephemeral"
+            image = "runner:local"
+            cgroup_slice = "dev-gates.slice"
+
+            [lanes.suite]
+            kind = "command"
+            environment = "runner"
+            argv = ["true"]
+            clean_tree = false
+            profile = false
+            """))
+        monkeypatch.chdir(project)
+        monkeypatch.setenv(run_gate.EXTRA_MOUNT_ENV_VAR,
+                           "/source,readonly=/target")
+        monkeypatch.setattr(run_gate.shutil, "which",
+                            lambda _name: "/bin/docker")
+        monkeypatch.setattr(run_gate, "resolve_inflight",
+                            lambda *_args, **_kwargs: 0)
+        monkeypatch.setattr(run_gate, "run_lane_with_cgroup_event_guard",
+                            lambda _name, run, **_kwargs: run())
+
+        assert run_gate.main(["suite"]) == 0
+
+    def test_container_mount_flags_missing_worktree_is_a_gate_error(
+            self, tmp_path):
+        with pytest.raises(run_gate.GateError,
+                           match="worktree path.*filesystem path"):
+            run_gate.container_mount_flags(
+                tmp_path, None, {"mode": "ephemeral"})
+
+    @pytest.mark.parametrize("value", [b"/bytes/path", ""])
+    def test_mount_path_must_be_non_empty_text(self, value):
+        with pytest.raises(run_gate.GateError,
+                           match="label must be a non-empty filesystem path"):
+            run_gate.validate_docker_mount_path(value, "label")
+
+    def test_dual_mount_alias_namespace_is_validated_once(
+            self, tmp_path, monkeypatch):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        namespace = "/workspaces/repo"
+        monkeypatch.setenv(run_gate.MOUNT_ALIAS_ENV_VAR,
+                           f"{repo}={namespace}")
+        real_validate = run_gate.validate_docker_mount_path
+        calls = []
+
+        def observe(path, label):
+            calls.append((os.fspath(path), label))
+            return real_validate(path, label)
+
+        monkeypatch.setattr(run_gate, "validate_docker_mount_path", observe)
+        assert run_gate.dual_mount_flags(repo, repo) == [
+            "-v", f"{repo}:{repo}", "-v", f"{repo}:{namespace}"]
+        assert sum(value == namespace for value, _label in calls) == 1
+
+    def test_relaxed_preload_rejects_translated_source_delimiters(
+            self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            run_gate.subprocess, "run",
+            lambda *_a, **_k: SimpleNamespace(
+                returncode=0,
+                stdout="/usr/lib/x86_64-linux-gnu/libeatmydata.so.1\n",
+                stderr=""))
+        monkeypatch.setattr(
+            run_gate, "physical_path",
+            lambda *_a, **_k: Path("/host/run-gate,readonly/preload"))
+
+        with pytest.raises(run_gate.GateError,
+                           match="preload source.*invalid for Docker mount syntax"):
+            run_gate.relaxed_io_sync_mount_flags(
+                "docker", "tester:local", tmp_path)
+
+        assert list((tmp_path / ".run-gate").iterdir()) == []
+
+
+# ---------------------------------------------------------------------------
+# RG-144 / RG-145 -- contamination and resource profiles
+# ---------------------------------------------------------------------------
+
+def _prof_summary(*, stall=0.0, high=0, oom=0, ancestors=None, wall=100.0,
+                  start="2026-11-03T10:00:00Z", end="2026-11-03T10:01:40Z"):
+    summary = {"schema": 1, "started_at": start, "ended_at": end,
+               "duration_seconds": wall,
+               "memory": {"peak_bytes": 300 * MIB},
+               "cpu": {"seconds": 50.0, "cores_avg": 0.5},
+               "pressure": {"memory_full_stall_seconds": stall},
+               "events": {"oom_kill": oom, "limit_drift": 0,
+                          "memory_high_breach": high},
+               "host": {"memory_full_stall_seconds": 0.0}}
+    if ancestors is not None:
+        summary["ancestors_memory_events_local"] = ancestors
+    return summary
+
+
+def _prof_event(cid, rss=None, *, bucket="killed", legacy=True, elapsed=2.0,
+                context=None, status="MEASURED"):
+    event = {"event": "candidate", "candidate_id": cid,
+             "outcome_bucket": bucket, "elapsed_seconds": elapsed,
+             "worker_index": 0}
+    if legacy:
+        if rss is not None:
+            event["resources"] = {"peak_rss_bytes": rss, "cpu_seconds": 1.5,
+                                  "write_bytes": 10}
+        return event
+    metrics = {"rss_peak_bytes": rss, "cpu_seconds": 1.5,
+               "io_write_bytes": 10}
+    profile = {"schema": "resource-profile/1", "status": status,
+               "reason": None, "wall_seconds": elapsed, "metrics": metrics}
+    if context is not None:
+        profile["context"] = context
+    event["profile"] = profile
+    return event
+
+
+def _ignored_progress(proj):
+    """A progress path inside the git-ignored .run-gate/ (a progress file in
+    the tree would make it dirty and the run history-ineligible)."""
+    (proj / ".run-gate").mkdir(exist_ok=True)
+    return proj / ".run-gate" / "progress.jsonl"
+
+
+def _write_progress(path, segments):
+    lines = []
+    for commit, events in segments:
+        lines.append({"event": "run", "commit": commit})
+        lines.extend(events)
+    path.write_text("".join(json.dumps(e) + "\n" for e in lines))
+
+
+class TestContaminationRule:
+    GUARD_WINDOW = ("2026-11-03T10:00:00Z", "2026-11-03T10:01:40Z")
+
+    def classify(self, summary, guard=None, tmp_path=None):
+        return run_gate.classify_summary(
+            summary, guard_path=guard or Path("/nonexistent/guard.jsonl"))
+
+    def test_no_summary_is_not_classified(self):
+        assert run_gate.classify_summary(None) is None
+
+    def test_lane_stall_flags(self):
+        verdict = self.classify(_prof_summary(stall=2.5))
+        assert verdict["flagged"] is True
+        assert "2.5 s memory stall" in verdict["reasons"][0]
+        assert verdict["self_limited"]["flagged"] is False
+
+    def test_stall_below_threshold_is_clean(self):
+        verdict = self.classify(_prof_summary(stall=1.9))
+        assert verdict["flagged"] is False and verdict["reasons"] == []
+
+    def test_threshold_scales_with_wall_time(self):
+        # 0.5% of 1000 s = 5 s dominates the 2 s floor.
+        assert self.classify(_prof_summary(stall=4.9, wall=1000.0))[
+            "flagged"] is False
+        assert self.classify(_prof_summary(stall=5.0, wall=1000.0))[
+            "flagged"] is True
+
+    def test_ancestor_reclaim_flags(self):
+        verdict = self.classify(_prof_summary(ancestors=[
+            {"path": "/dev.slice/dev-gates.slice", "high": 1, "max": 0},
+            None]))
+        assert verdict["flagged"] is True
+        assert "dev-gates.slice" in verdict["reasons"][0]
+        assert verdict["ancestor_events"] == "known"
+
+    def test_ancestors_without_events_are_clean_and_known(self):
+        verdict = self.classify(_prof_summary(ancestors=[
+            {"path": "/dev.slice", "high": 0, "max": 0}, "garbage"]))
+        assert verdict["flagged"] is False
+        assert verdict["ancestor_events"] == "known"
+
+    def test_missing_ancestor_data_neither_flags_nor_clears(self):
+        verdict = self.classify(_prof_summary())
+        assert verdict["flagged"] is False
+        assert verdict["ancestor_events"] == "unknown"
+
+    def test_guard_overlap_flags_and_outside_does_not(self, tmp_path):
+        guard = tmp_path / "events.jsonl"
+        guard.write_text("\n".join([
+            "not json", "[]",
+            json.dumps({"ts": "2026-11-03T10:00:30Z", "action": "cpu-weight"}),
+            json.dumps({"ts": 1, "action": "ancient"}),
+            json.dumps({"action": "no-ts"})]) + "\n")
+        verdict = self.classify(_prof_summary(), guard)
+        assert verdict["flagged"] is True
+        assert "PSI guard acted 1 time" in verdict["reasons"][0]
+        guard.write_text(json.dumps(
+            {"ts": 1792000000.0, "action": "later"}) + "\n")
+        assert self.classify(_prof_summary(), guard)["flagged"] is False
+        epoch = run_gate._iso_epoch("2026-11-03T10:00:30Z")
+        guard.write_text(json.dumps({"ts": epoch}) + "\n")
+        assert self.classify(_prof_summary(), guard)["flagged"] is True
+
+    def test_guard_without_known_window_is_ignored(self, tmp_path):
+        guard = tmp_path / "events.jsonl"
+        guard.write_text(json.dumps({"ts": 5}) + "\n")
+        summary = _prof_summary()
+        summary["started_at"] = None
+        assert self.classify(summary, guard)["flagged"] is False
+        assert run_gate._iso_epoch(123) is None
+        assert run_gate._iso_epoch("yesterday") is None
+
+    def test_self_limit_with_stall_is_not_contamination(self):
+        verdict = self.classify(_prof_summary(stall=10.0, high=3))
+        assert verdict["flagged"] is False
+        assert verdict["self_limited"] == {"flagged": True,
+                                           "memory_limit_events": 3}
+
+    def test_flags_are_independent(self):
+        verdict = self.classify(_prof_summary(
+            stall=10.0, oom=1,
+            ancestors=[{"path": "/dev.slice", "high": 0, "max": 2}]))
+        assert verdict["flagged"] is True
+        assert verdict["self_limited"]["flagged"] is True
+
+    def test_malformed_summary_sections_are_tolerated(self):
+        verdict = run_gate.classify_summary(
+            {"events": 7, "pressure": "x", "ancestors_memory_events_local": 4},
+            guard_path=Path("/nonexistent"))
+        assert verdict["flagged"] is False
+
+    def test_subject_inherits_run_flag_and_has_its_own_context(self):
+        run = {"flagged": True, "reasons": ["host reclaim"]}
+        clean = {"context": {}}
+        assert run_gate.classify_subject(clean, run) == {
+            "flagged": True, "reasons": ["host reclaim"]}
+        own = {"wall_seconds": 10.0, "context": {
+            "container_psi_memory_full_seconds": 3.0,
+            "container_memory_events_local": {"high": 0, "max": 0}}}
+        verdict = run_gate.classify_subject(own, None)
+        assert verdict["flagged"] is True
+        limited = {"context": {
+            "container_psi_memory_full_seconds": 3.0,
+            "container_memory_events_local": {"high": 1}}}
+        assert run_gate.classify_subject(limited, None)["flagged"] is False
+        anc = {"context": {"ancestors_memory_events_local": [
+            {"path": "/dev.slice", "high": 2}]}}
+        assert run_gate.classify_subject(anc, None)["flagged"] is True
+        # the same reason arriving from run and subject is not duplicated
+        reason = run_gate.classify_subject(anc, None)["reasons"][0]
+        both = run_gate.classify_subject(
+            anc, {"flagged": True, "reasons": [reason]})
+        assert both["reasons"] == [reason]
+
+    def test_entry_contamination_predicate(self):
+        assert run_gate.entry_is_contaminated(
+            {"contamination": {"flagged": True}})
+        assert not run_gate.entry_is_contaminated(
+            {"contamination": {"flagged": False}})
+        assert not run_gate.entry_is_contaminated({})
+        assert not run_gate.entry_is_contaminated("x")
+
+
+class TestFootprintContaminationText:
+    def resources(self, **kw):
+        res = _prof_summary(**kw)
+        res["memory"] = {"peak_bytes": 100 * MIB, "p90_bytes": 90 * MIB}
+        res["cpu"] = {"cores_avg": 0.5}
+        res["host"] = {"memory_full_stall_seconds": 7.0}
+        return res
+
+    def test_contaminated_line_is_golden(self, tmp_path, capsys):
+        run_gate.print_footprint_line(
+            "suite", tmp_path, self.resources(stall=2.2))
+        assert ("run-gate: footprint suite: peak 100 MiB, p90 90 MiB, "
+                "0.50 cores avg, measurement contaminated (2.2 s memory "
+                "stall not explained by the lane's own limit); excluded "
+                "from sizing; history median peak - (0 runs)"
+                in capsys.readouterr().out)
+
+    def test_self_limited_line_names_the_count_not_a_contamination(
+            self, tmp_path, capsys):
+        run_gate.print_footprint_line(
+            "suite", tmp_path, self.resources(stall=9.0, high=4))
+        out = capsys.readouterr().out
+        assert "7.0 s stalled on memory (full) | memory limit reached 4 " \
+               "times" in out
+        assert "contaminated" not in out
+
+    def test_clean_line_keeps_the_context_figure(self, tmp_path, capsys):
+        run_gate.print_footprint_line(
+            "suite", tmp_path, self.resources(stall=0.1))
+        out = capsys.readouterr().out
+        assert "7.0 s stalled on memory (full); history" in out
+        assert "contaminated" not in out and "limit reached" not in out
+
+
+class TestProfileIngestion:
+    def test_assay12_and_legacy_progress_give_the_same_distribution(self):
+        sizes = [100, 200, 300, 400]
+        new = [run_gate.profile_from_progress_event(
+            _prof_event(f"c{i}", s, legacy=False), lane="r2")
+            for i, s in enumerate(sizes)]
+        old = [run_gate.profile_from_progress_event(
+            _prof_event(f"c{i}", s), lane="r2")
+            for i, s in enumerate(sizes)]
+        assert run_gate.profile_distributions(new) == \
+            run_gate.profile_distributions(old)
+        dist = run_gate.profile_distributions(old)["rss_peak_bytes"]
+        assert dist == {"p50": 200, "p95": 400, "max": 400, "n": 4}
+        assert run_gate.profile_distributions(old)["wall_seconds"]["n"] == 4
+        assert old[0]["status"] == "MEASURED"
+        assert new[0]["subject"]["id"] == "c0"
+
+    def test_no_measurement_counts_but_never_enters_distributions(self):
+        subjects = [
+            run_gate.profile_from_progress_event(_prof_event("a", 100)),
+            run_gate.profile_from_progress_event(_prof_event("b")),
+            run_gate.profile_from_progress_event(
+                {"event": "candidate", "candidate_index": 3}),
+            run_gate.profile_from_progress_event(
+                _prof_event("c", 5, legacy=False, status="BOGUS")),
+        ]
+        assert [s["status"] for s in subjects] == [
+            "MEASURED", "NO_MEASUREMENT", "NO_MEASUREMENT",
+            "NO_MEASUREMENT"]
+        assert subjects[1]["reason"] == "OBSERVER_UNAVAILABLE"
+        assert subjects[2]["subject"]["id"] == "3"
+        assert subjects[3]["reason"] == "OBSERVER_ERROR"
+        assert run_gate.profile_status_counts(subjects) == {
+            "MEASURED": 1, "PARTIAL": 0, "NO_MEASUREMENT": 3}
+        assert run_gate.profile_distributions(subjects)[
+            "rss_peak_bytes"]["n"] == 1
+        assert run_gate.profile_distributions(subjects[1:])[
+            "wall_seconds"]["n"] == 0
+
+    def test_legacy_without_rss_is_partial(self):
+        event = {"event": "candidate", "candidate_id": "x",
+                 "peak_rss_bytes": True, "cpu_seconds": 2.0}
+        profile = run_gate.profile_from_progress_event(event)
+        assert profile["status"] == "PARTIAL"
+        assert profile["metrics"]["rss_peak_bytes"] is None
+        assert profile["missing"]["rss_peak_bytes"] == "OBSERVER_UNAVAILABLE"
+        assert run_gate.profile_distributions([profile])[
+            "rss_peak_bytes"]["n"] == 0
+
+    def test_assay12_profile_keeps_its_own_subject_and_wall(self):
+        event = _prof_event("c9", 7, legacy=False)
+        event["profile"]["subject"] = {"kind": "r2-candidate", "id": "c9",
+                                       "workers": 3, "commit": None}
+        del event["profile"]["wall_seconds"]
+        profile = run_gate.profile_from_progress_event(event, commit="abc")
+        assert profile["subject"]["workers"] == 3
+        assert profile["subject"]["commit"] == "abc"
+        assert profile["wall_seconds"] == 2.0
+
+    def test_number_filter_rejects_bool_nonfinite_negative_and_text(self):
+        for bad in (True, float("nan"), float("inf"), -1, "5", None):
+            assert run_gate._profile_number(bad) is None
+        assert run_gate._profile_number(0) == 0
+        assert run_gate._profile_number(2.5) == 2.5
+
+    def test_head_tree_is_none_when_git_cannot_run(self, tmp_path,
+                                                   monkeypatch):
+        def boom(*a, **k):
+            raise OSError("no git")
+        monkeypatch.setattr(run_gate.subprocess, "run", boom)
+        assert run_gate.head_tree(tmp_path) is None
+
+    def test_distribution_edges(self):
+        assert run_gate.distribution([]) == {
+            "p50": None, "p95": None, "max": None, "n": 0}
+        assert run_gate.distribution([5]) == {
+            "p50": 5, "p95": 5, "max": 5, "n": 1}
+        assert run_gate.clean_rss_p95([]) == (None, 0)
+
+    def test_lane_status_mix(self):
+        measured = {"status": "MEASURED"}
+        none = {"status": "NO_MEASUREMENT"}
+        assert run_gate._lane_profile_status([], True) == "MEASURED"
+        assert run_gate._lane_profile_status([], False) == "NO_MEASUREMENT"
+        assert run_gate._lane_profile_status([measured], False) == "MEASURED"
+        assert run_gate._lane_profile_status([none], False) == \
+            "NO_MEASUREMENT"
+        assert run_gate._lane_profile_status([none], True) == "PARTIAL"
+        assert run_gate._lane_profile_status([measured, none], False) == \
+            "PARTIAL"
+
+
+class TestProfileSidecar:
+    def record(self, run_id, n=1, *, flagged=False, rss=100):
+        subjects = [{"subject": {"id": f"{run_id}-{i}"}, "status": "MEASURED",
+                     "wall_seconds": 1.0, "metrics": {"rss_peak_bytes": rss},
+                     "contamination": {"flagged": False, "reasons": []}}
+                    for i in range(n)]
+        return {"schema": "lane-profile/1", "lane": "suite",
+                "run_id": run_id,
+                "contamination": {"flagged": flagged, "reasons": []},
+                "status_counts": {"MEASURED": n},
+                "contaminated_subjects": 0, "subjects": subjects}
+
+    def test_path_is_sanitised(self, tmp_path):
+        assert run_gate.profile_sidecar_path(tmp_path, "a/b c") == \
+            tmp_path / "profiles" / "a_b_c.jsonl"
+
+    def test_rotation_bounds_subjects_with_25000_subjects(self, tmp_path):
+        path = tmp_path / "profiles" / "suite.jsonl"
+        run_gate.append_profile_record(path, self.record("old", 10))
+        run_gate.append_profile_record(path, self.record("big", 25_000))
+        records = run_gate.read_profile_records(path)
+        assert [r["run_id"] for r in records] == ["big"]
+        assert len(records[0]["subjects"]) == run_gate.PROFILE_MAX_SUBJECTS
+        assert records[0]["subjects_truncated"] == 5_000
+        # the newest subjects survive (oldest-first rotation)
+        assert records[0]["subjects"][-1]["subject"]["id"] == "big-24999"
+        assert not list(path.parent.glob("*.tmp.*"))
+
+    def test_rotation_bounds_runs_oldest_first(self, tmp_path):
+        path = tmp_path / "suite.jsonl"
+        for i in range(205):
+            run_gate.append_profile_record(path, self.record(f"r{i}"))
+        records = run_gate.read_profile_records(path)
+        assert len(records) == run_gate.PROFILE_MAX_RUNS == 200
+        assert records[0]["run_id"] == "r5"
+        assert records[-1]["run_id"] == "r204"
+
+    def test_subject_total_drops_oldest_records(self, tmp_path):
+        path = tmp_path / "suite.jsonl"
+        for i in range(3):
+            run_gate.append_profile_record(
+                path, self.record(f"r{i}", 6), max_subjects=15)
+        assert [r["run_id"] for r in run_gate.read_profile_records(path)] \
+            == ["r1", "r2"]
+
+    def test_reader_skips_torn_and_foreign_lines(self, tmp_path):
+        path = tmp_path / "suite.jsonl"
+        path.write_text(json.dumps(self.record("ok")) + "\n{torn\n"
+                        + json.dumps({"schema": "other"}) + "\n[1]\n")
+        assert [r["run_id"] for r in run_gate.read_profile_records(path)] \
+            == ["ok"]
+        assert run_gate.read_profile_records(tmp_path / "missing") == []
+
+    def test_cross_run_percentiles_match_a_reference_computation(
+            self, tmp_path):
+        import random
+        rng = random.Random(7)
+        records, pool = [], []
+        for i in range(8):
+            rec = self.record(f"r{i}", 0)
+            for j in range(rng.randint(3, 40)):
+                value = rng.randint(1, 10**9)
+                rec["subjects"].append(
+                    {"subject": {"id": f"{i}-{j}"}, "status": "MEASURED",
+                     "wall_seconds": float(value % 97),
+                     "metrics": {"rss_peak_bytes": value},
+                     "contamination": {"flagged": False, "reasons": []}})
+                pool.append(value)
+            records.append(rec)
+        records.append(self.record("dirty", 3, flagged=True, rss=10**12))
+        view = run_gate.profile_history_view(records)
+        ordered = sorted(pool)
+        n = len(ordered)
+        dist = view["distributions"]["rss_peak_bytes"]
+        assert dist["n"] == n
+        assert dist["p95"] == ordered[-(-95 * n // 100) - 1]
+        assert dist["p50"] == ordered[-(-50 * n // 100) - 1]
+        assert dist["max"] == ordered[-1] != 10**12
+        assert view["runs"] == 9 and view["runs_contaminated"] == 1
+        assert view["status_counts"]["MEASURED"] == 3
+
+    def test_history_view_counts_self_limited_and_contaminated_subjects(self):
+        rec = self.record("a", 2)
+        rec["self_limited"] = {"flagged": True}
+        rec["contaminated_subjects"] = 2
+        rec["status_counts"] = {"MEASURED": 1, "BOGUS": 4, "PARTIAL": "x"}
+        view = run_gate.profile_history_view([rec])
+        assert view["runs_self_limited"] == 1
+        assert view["subjects_contaminated"] == 2
+        assert view["status_counts"] == {"MEASURED": 1, "PARTIAL": 0,
+                                         "NO_MEASUREMENT": 0}
+
+    def test_history_written_paths_name_the_sidecar_for_the_ignore_check(
+            self, tmp_path):
+        paths = run_gate.history_written_paths(tmp_path, "suite")
+        assert tmp_path / ".run-gate" / "profiles" / "suite.jsonl" in paths
+        assert len(paths) == 5
+        assert len(run_gate.history_written_paths(tmp_path)) == 3
+
+    def test_sidecar_write_failure_keeps_the_history_entry(
+            self, tmp_path, capsys, monkeypatch):
+        repo, proj = make_history_repo(tmp_path)
+        commit = new_commit(repo, "a")
+        progress = _ignored_progress(proj)
+        _write_progress(progress, [(commit, [_prof_event("a", 100)])])
+        def boom(*a, **k):
+            raise OSError("disk full")
+        monkeypatch.setattr(run_gate, "append_profile_record", boom)
+        self.run(proj, repo, progress, _prof_summary())
+        assert "lane profile not recorded: disk full" in \
+            capsys.readouterr().err
+        assert lane_slot(proj)["history"][0]["commit"] == commit
+
+    @staticmethod
+    def run(proj, repo, progress, summary, *, lane="suite", seconds=3.0):
+        rec = run_gate.start_run_record(lane, repo, repo)
+        rec["_duration_seconds"] = seconds
+        rec["r2_jobs"] = {"jobs": 1}
+        rec["_r2_progress_path"] = str(progress)
+        rec["resources"] = summary
+        run_gate.finish_run_record(rec, exit_code=0)
+        run_gate.record_invocation(proj, repo, rec, 10)
+        return rec
+
+
+class TestProfilesInHistoryAndSizing:
+    """End to end through the real recorder, real git repo, real files."""
+
+    run = staticmethod(TestProfileSidecar.run)
+
+    def three_runs(self, tmp_path, *, dirty_first=True):
+        repo, proj = make_history_repo(tmp_path)
+        (proj / ".run-gate").mkdir()
+        progress = proj / ".run-gate" / "progress.jsonl"
+        commits = [new_commit(repo, t) for t in "abc"]
+        _write_progress(progress, [
+            (commits[0], [_prof_event("a1", 9 * 1024**3),
+                          _prof_event("a2", 9 * 1024**3)]),
+            (commits[1], [_prof_event("b1", 100 * MIB),
+                          _prof_event("b2", 120 * MIB)]),
+            (commits[2], [_prof_event("c1", 110 * MIB, legacy=False),
+                          _prof_event("c2", 130 * MIB, legacy=False)])])
+        # a run records its candidates of the CURRENT commit only, so move
+        # HEAD through the three commits to record each segment in turn.
+        outcomes = []
+        for index, commit in enumerate(commits):
+            subprocess.run(["git", "-C", str(repo), "checkout", "-q", commit],
+                           check=True)
+            summary = _prof_summary(
+                ancestors=[{"path": "/dev.slice", "high": 5, "max": 0}]
+                if index == 0 and dirty_first else None)
+            outcomes.append(self.run(proj, repo, progress, summary))
+        subprocess.run(["git", "-C", str(repo), "checkout", "-q", "-"],
+                       check=True)
+        return repo, proj, progress, outcomes
+
+    def test_history_entry_gains_flags_summary_and_clean_p95_only(
+            self, tmp_path):
+        repo, proj, progress, outcomes = self.three_runs(tmp_path)
+        entries = lane_slot(proj)["history"]
+        assert entries[0]["contamination"]["flagged"] is True
+        assert "r2_candidate_ram_p95_bytes" not in entries[0]
+        assert entries[0]["profile_summary"]["contamination"]["flagged"]
+        assert "subjects" not in entries[0]["profile_summary"]
+        assert entries[1]["r2_candidate_ram_p95_bytes"] == 120 * MIB
+        assert entries[1]["r2_candidate_ram_samples"] == 2
+        assert entries[2]["r2_candidate_ram_p95_bytes"] == 130 * MIB
+        assert entries[1]["profile_summary"]["per_candidate"][
+            "rss_peak_bytes"]["n"] == 2
+        sidecar = proj / ".run-gate" / "profiles" / "suite.jsonl"
+        records = run_gate.read_profile_records(sidecar)
+        assert [r["run_id"] for r in records] == [
+            o["run_id"] for o in outcomes]
+        assert len(records[0]["subjects"]) == 2
+        assert records[0]["tree"] and len(records[0]["tree"]) == 40
+        assert store_schema(proj) == 2
+
+    def test_clean_runs_win_the_sizing_basis(self, tmp_path):
+        repo, proj, progress, _ = self.three_runs(tmp_path)
+        ram, samples, source = run_gate.candidate_ram_from_history(
+            proj, "suite", progress)
+        # pooled clean subjects: 100,120,110,130 MiB -> nearest-rank p95
+        assert (ram, samples, source) == (130 * MIB, 4, "measured p95")
+
+    def test_all_contaminated_falls_back_to_declared_or_default(
+            self, tmp_path):
+        repo, proj = make_history_repo(tmp_path)
+        progress = _ignored_progress(proj)
+        commit = new_commit(repo, "a")
+        _write_progress(progress, [(commit, [_prof_event("a", 9 * 1024**3)])])
+        self.run(proj, repo, progress, _prof_summary(
+            ancestors=[{"path": "/dev.slice", "high": 1, "max": 1}]))
+        assert run_gate.candidate_ram_from_history(
+            proj, "suite", progress) == (
+                run_gate.R2_CONSERVATIVE_CANDIDATE_RAM_BYTES, 0, "default")
+        assert run_gate.candidate_ram_from_history(
+            proj, "suite", progress, declared_candidate_ram_bytes=777) == (
+                777, 0, "declared")
+
+    def test_progress_file_is_used_only_before_any_profile_record(
+            self, tmp_path):
+        _, proj = make_history_repo(tmp_path)
+        progress = _ignored_progress(proj)
+        _write_progress(progress, [("x", [_prof_event("a", 500)])])
+        assert run_gate.candidate_ram_from_history(
+            proj, "suite", progress) == (500, 1, "measured p95")
+
+    def test_legacy_history_entries_keep_the_max_of_p95_rule(self, tmp_path):
+        repo, proj = make_history_repo(tmp_path)
+        commit = new_commit(repo, "a")
+        rec = run_gate.start_run_record("suite", repo, repo)
+        rec["_duration_seconds"] = 1.0
+        rec["r2_candidate_ram_p95_bytes"] = 4096
+        rec["r2_candidate_ram_samples"] = 3
+        run_gate.finish_run_record(rec, exit_code=0)
+        run_gate.record_invocation(proj, repo, rec, 10)
+        flagged = run_gate.start_run_record("suite", repo, repo)
+        flagged["_duration_seconds"] = 1.0
+        flagged["r2_candidate_ram_p95_bytes"] = 10**12
+        flagged["r2_candidate_ram_samples"] = 3
+        flagged["contamination"] = {"flagged": True, "reasons": ["x"]}
+        run_gate.finish_run_record(flagged, exit_code=0)
+        flagged["commit"] = commit + "-other"
+        run_gate.record_invocation(proj, repo, flagged, 10)
+        assert run_gate.candidate_ram_from_history(
+            proj, "suite", proj / "none.jsonl") == (4096, 3, "measured p95")
+
+    def test_contaminated_runs_are_not_in_duration_or_resource_medians(
+            self, tmp_path):
+        repo, proj, progress, _ = self.three_runs(tmp_path)
+        store = read_store(proj)
+        report = run_gate.lane_history_report(store, "suite")
+        assert len(report["history"]) == 3
+        assert report["stats"]["passes"]["count"] == 2
+        assert report["stats"]["completed"]["count"] == 2
+
+    def test_runs_without_summary_or_candidates_add_nothing(self, tmp_path):
+        repo, proj = make_history_repo(tmp_path)
+        new_commit(repo, "a")
+        record_run(proj, repo)
+        entry = lane_slot(proj)["latest"]
+        assert "profile_summary" not in entry
+        assert "contamination" not in entry
+        assert not (proj / ".run-gate" / "profiles").exists()
+
+    def test_non_r2_run_with_a_summary_stores_the_lane_numbers(
+            self, tmp_path):
+        repo, proj = make_history_repo(tmp_path)
+        new_commit(repo, "a")
+        rec = run_gate.start_run_record("suite", repo, repo)
+        rec["_duration_seconds"] = 5.0
+        rec["resources"] = _prof_summary()
+        run_gate.finish_run_record(rec, exit_code=0)
+        run_gate.record_invocation(proj, repo, rec, 10)
+        stored = run_gate.read_profile_records(
+            proj / ".run-gate" / "profiles" / "suite.jsonl")[0]
+        assert stored["lane_cgroup"]["memory_peak_bytes"] == 300 * MIB
+        assert stored["lane_cgroup"]["cpu_seconds"] == 50.0
+        assert stored["status"] == "MEASURED" and "per_worker" in stored
+        assert stored["subjects"] == []
+
+    def test_history_command_prints_distributions_and_counts(
+            self, tmp_path, capsys):
+        repo, proj, progress, _ = self.three_runs(tmp_path)
+        run_gate.cmd_history({"suite": {}}, proj, {"lanes": {}},
+                             proj / "run-gate.toml", {}, None, "suite", False)
+        out = capsys.readouterr().out
+        assert "profiles: 3 run(s) (1 contaminated, 0 self-limited)" in out
+        assert "MEASURED 6, PARTIAL 0, NO_MEASUREMENT 0, 2 contaminated" in out
+        assert "rss_peak_bytes  p50 110 MiB  p95 130 MiB  max 130 MiB  n=4" \
+            in out
+        assert "io_write_bytes  p50 0 KiB" in out
+        run_gate.cmd_history({"suite": {}}, proj, {"lanes": {}},
+                             proj / "run-gate.toml", {}, None, "suite", True)
+        data = json.loads(capsys.readouterr().out)
+        view = data["lanes"]["suite"]["profiles"]
+        assert view["distributions"]["rss_peak_bytes"]["p95"] == 130 * MIB
+        assert view["runs_contaminated"] == 1
+
+    def test_profile_view_formatting_edges(self):
+        assert run_gate._fmt_profile_view(None) == []
+        assert run_gate._fmt_profile_view({"runs": 0}) == []
+        assert run_gate._fmt_bytes_short(None) == "-"
+        assert run_gate._fmt_bytes_short(True) == "-"
+        assert run_gate._fmt_bytes_short(3 * MIB) == "3 MiB"
+        view = run_gate.profile_history_view([TestProfileSidecar().record(
+            "a", 0)])
+        lines = run_gate._fmt_profile_view(view)
+        assert lines[1].split() == ["rss_peak_bytes", "none"]
+
+
+def store_schema(proj):
+    return read_store(proj)["schema"]
+
+
+class TestContaminatedCloseout:
+    def build(self, tmp_path):
+        repo, proj = make_history_repo(tmp_path)
+        commit = new_commit(repo, "a")
+        progress = _ignored_progress(proj)
+        stalled = {"container_psi_memory_full_seconds": 6.0,
+                   "container_memory_events_local": {"high": 0, "max": 0}}
+        _write_progress(progress, [(commit, [
+            _prof_event("hot", 1, bucket="budget_exceeded", legacy=False,
+                        context=stalled),
+            _prof_event("fine", 1, bucket="budget_exceeded", legacy=False,
+                        context={}),
+            _prof_event("killed-hot", 1, bucket="killed", legacy=False,
+                        context=stalled),
+            _prof_event("legacy-timeout", 1, bucket="budget_exceeded"),
+        ])])
+        rec = TestProfileSidecar.run(proj, repo, progress, None)
+        return repo, proj, rec
+
+    def test_lists_exactly_the_contaminated_budget_exceeded_ids(
+            self, tmp_path, capsys):
+        repo, proj, rec = self.build(tmp_path)
+        assert lane_slot(proj)["latest"]["rejudge_contaminated"] == ["hot"]
+        assert run_gate.latest_contaminated_budget_exceeded(
+            proj, "suite") == ["hot"]
+        run_gate.report_contaminated_budget_exceeded(rec)
+        out = capsys.readouterr().out
+        assert "1 budget_exceeded candidate(s)" in out
+        assert "  run-gate suite --jobs 1 --rejudge hot" in out
+        assert "killed-hot" not in out and "fine" not in out
+
+    def test_nothing_is_printed_without_contaminated_candidates(
+            self, tmp_path, capsys):
+        run_gate.report_contaminated_budget_exceeded({"lane": "x"})
+        assert capsys.readouterr().out == ""
+        assert run_gate.latest_contaminated_budget_exceeded(
+            tmp_path, "suite") == []
+
+    def test_flush_prints_the_closeout_lines(self, tmp_path, capsys):
+        repo, proj = make_history_repo(tmp_path)
+        commit = new_commit(repo, "a")
+        progress = _ignored_progress(proj)
+        _write_progress(progress, [(commit, [
+            _prof_event("hot", 1, bucket="budget_exceeded", legacy=False,
+                        context={"container_psi_memory_full_seconds": 9.0})])])
+        rec = run_gate.start_run_record("suite", repo, repo)
+        rec["_project_dir"] = proj
+        rec["_keep"] = 10
+        rec["r2_jobs"] = {"jobs": 1}
+        rec["_r2_progress_path"] = str(progress)
+        run_gate.flush_run_record(rec, exit_code=0)
+        assert "--rejudge hot" in capsys.readouterr().out
+
+    def test_cli_flag_validation(self, tmp_path):
+        _, proj = make_history_repo(tmp_path)
+        for argv in (["--rejudge-contaminated"],
+                     ["history", "--rejudge-contaminated"],
+                     ["suite", "--rejudge-contaminated", "--rejudge", "x"],
+                     ["suite", "--rejudge-contaminated", "--jobs", "2"]):
+            out = run_tool(proj, *argv)
+            assert out.returncode != 0, argv
+            assert "rejudge-contaminated" in out.stderr, argv
+
+    def test_flag_requires_an_assay_lane_with_a_contaminated_candidate(
+            self, tmp_path):
+        repo, proj = make_history_repo(tmp_path)
+        out = run_tool(proj, "suite", "--rejudge-contaminated")
+        assert out.returncode != 0
+        assert "applies only to an assay R2 lane" in out.stderr
+
+
+class TestHistoryStoreReadableByTheReleasedReader:
+    """RG-145: `history.json` stays schema 2; a store written by this
+    version (with `profile_summary` and `contamination`) must be read without
+    error by the released 24.3.0 code. The released source is taken from the
+    `run-gate-v24.3.0` tag, the exact tree the wheel was built from."""
+
+    def released_module(self, tmp_path):
+        src = tmp_path / "released"
+        src.mkdir()
+        for name in ("run_gate.py", "run_gate_admission.py"):
+            shown = subprocess.run(
+                ["git", "-C", str(RUN_GATE_DIR), "show",
+                 f"run-gate-v24.3.0:run-gate-project/{name}"],
+                capture_output=True, text=True)
+            assert shown.returncode == 0, (
+                "the run-gate-v24.3.0 tag is required for the compatibility "
+                f"test: {shown.stderr}")
+            (src / name).write_text(shown.stdout)
+        spec = importlib.util.spec_from_file_location(
+            "run_gate_released", src / "run_gate.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_released_reader_reads_the_new_store(self, tmp_path, capsys):
+        sized = TestProfilesInHistoryAndSizing()
+        repo, proj, progress, _ = sized.three_runs(tmp_path)
+        assert "profile_summary" in lane_slot(proj)["history"][0]
+        released = self.released_module(tmp_path)
+        store = released.load_history_store(
+            released.history_store_path(proj))
+        report = released.lane_history_report(store, "suite")
+        assert len(report["history"]) == 3
+        assert store["schema"] == 2
+        released.cmd_history({"suite": {}}, proj, {"lanes": {}},
+                             proj / "run-gate.toml", {}, None, "suite", False)
+        assert "history: 3 of at most" in capsys.readouterr().out
+        released.cmd_history({"suite": {}}, proj, {"lanes": {}},
+                             proj / "run-gate.toml", {}, None, "suite", True)
+        data = json.loads(capsys.readouterr().out)
+        assert data["schema"] == 2
+        # the released reader must also be able to WRITE over the new store
+        entry = released.start_run_record("suite", repo, repo)
+        entry["_duration_seconds"] = 1.0
+        released.finish_run_record(entry, exit_code=0)
+        assert released.record_invocation(proj, repo, entry, 10)
+        assert len(read_store(proj)["lanes"]["suite"]["history"]) >= 3

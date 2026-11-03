@@ -21,10 +21,12 @@ from assay.adapters.python import PythonAdapter
 from assay.cli import main
 from assay.errors import LaneConfigError, Outcome, ReasonCode
 from assay.verdict import CLAIM_DETAIL_BYTES
-from conftest import GitRepo, PROJECT_ROOT, process_tree_evidence_dict
+from conftest import GitRepo, PROJECT_ROOT
 
 
-def _seed_pilot_repo(repo: GitRepo) -> tuple[Path, tuple[int, ...]]:
+def _seed_pilot_repo(
+    repo: GitRepo, *, timeout_mutant: bool = False
+) -> tuple[Path, tuple[int, ...]]:
     repo.write("src/mod.py", "def base():\n    return 0\n")
     base = repo.commit_all("add base source")
     source = (
@@ -43,7 +45,23 @@ def _seed_pilot_repo(repo: GitRepo) -> tuple[Path, tuple[int, ...]]:
         f"grep -Fqx {json.dumps(f'    return {name} > 0')} src/mod.py"
         for name in ("a", "b", "c")
     )
-    argv = json.dumps(["/bin/sh", "-c", command])
+    if timeout_mutant:
+        # The first selected compare-swap changes one expected source line.
+        # Sleep in the lane process itself so the real timeout crosses the
+        # window-host boundary without leaving a shell child to classify.
+        command = (
+            "from pathlib import Path\n"
+            "import time\n"
+            "text = Path('src/mod.py').read_text(encoding='utf-8')\n"
+            "expected = ('    return a > 0', '    return b > 0', '    return c > 0')\n"
+            "if not all(line in text for line in expected):\n"
+            "    time.sleep(5)\n"
+            "raise SystemExit(0 if all(line in text for line in expected) else 1)\n"
+        )
+        argv = json.dumps([sys.executable, "-c", command])
+    else:
+        argv = json.dumps(["/bin/sh", "-c", command])
+    candidate_budget = "0.5s" if timeout_mutant else "30s"
     common = f'''\
 scope = "S1"
 enforcement = "gate"
@@ -65,7 +83,7 @@ base = "{base}"
 jobs = 1
 max_mutants = 32
 operators = ["python:compare-swap"]
-budget_per_candidate = "30s"
+budget_per_candidate = "{candidate_budget}"
 '''
     config = (
         "schema_version = 2\n\n"
@@ -1553,32 +1571,12 @@ def test_validated_resume_reads_state_records_from_admitted_directory_fd(
 
 
 def test_real_candidate_timeout_record_is_valid_but_not_a_completed_pilot(
-    git_repo: GitRepo, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    git_repo: GitRepo, tmp_path: Path
 ):
-    lane_file, lines = _seed_pilot_repo(git_repo)
+    lane_file, lines = _seed_pilot_repo(git_repo, timeout_mutant=True)
     selected = _ids_by_line(_plan(lane_file))[lines[0]]
     candidates = _candidate_file(tmp_path / "one.txt", [selected])
     state_dir, progress = tmp_path / "state", tmp_path / "progress.jsonl"
-    baseline_source = (lane_file.parent / "src/mod.py").read_bytes()
-    original_execute_plan = cli.runner.execute_plan
-    fixed_time = "2026-10-08T00:00:00+00:00"
-
-    def timeout_mutant(plan, *, cwd, **kwargs):
-        if (cwd / "src/mod.py").read_bytes() != baseline_source:
-            return cli.runner.CommandResult(
-                plan=plan,
-                outcome=Outcome.BUDGET_EXCEEDED,
-                reason_code=ReasonCode.LANE_TIMEOUT,
-                returncode=None,
-                started=fixed_time,
-                ended=fixed_time,
-                process_tree_evidence=process_tree_evidence_dict(
-                    leader_status="not-started"
-                ),
-            )
-        return original_execute_plan(plan, cwd=cwd, **kwargs)
-
-    monkeypatch.setattr(cli.runner, "execute_plan", timeout_mutant)
     code, stdout, stderr = _run_pilot(
         lane_file, candidates, state_dir, progress
     )
@@ -1648,30 +1646,10 @@ def test_real_candidate_timeout_record_is_valid_but_not_a_completed_pilot(
 def test_malformed_terminal_evidence_refuses_before_pilot_summary(
     git_repo: GitRepo, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    lane_file, lines = _seed_pilot_repo(git_repo)
+    lane_file, lines = _seed_pilot_repo(git_repo, timeout_mutant=True)
     selected = _ids_by_line(_plan(lane_file))[lines[0]]
     candidates = _candidate_file(tmp_path / "one.txt", [selected])
     state_dir, progress = tmp_path / "state", tmp_path / "progress.jsonl"
-    baseline_source = (lane_file.parent / "src/mod.py").read_bytes()
-    original_execute_plan = cli.runner.execute_plan
-    fixed_time = "2026-10-08T00:00:00+00:00"
-
-    def timeout_mutant(plan, *, cwd, **kwargs):
-        if (cwd / "src/mod.py").read_bytes() != baseline_source:
-            return cli.runner.CommandResult(
-                plan=plan,
-                outcome=Outcome.BUDGET_EXCEEDED,
-                reason_code=ReasonCode.LANE_TIMEOUT,
-                returncode=None,
-                started=fixed_time,
-                ended=fixed_time,
-                process_tree_evidence=process_tree_evidence_dict(
-                    leader_status="not-started"
-                ),
-            )
-        return original_execute_plan(plan, cwd=cwd, **kwargs)
-
-    monkeypatch.setattr(cli.runner, "execute_plan", timeout_mutant)
     original_build_summary = cli._build_pilot_summary
 
     def corrupt_terminal_before_summary(*args, **kwargs):
@@ -1699,41 +1677,22 @@ def test_malformed_terminal_evidence_refuses_before_pilot_summary(
 def test_resume_reexecutes_incomplete_budget_record(
     git_repo: GitRepo,
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
     missing_field: str,
 ):
-    lane_file, lines = _seed_pilot_repo(git_repo)
+    lane_file, lines = _seed_pilot_repo(git_repo, timeout_mutant=True)
     selected = _ids_by_line(_plan(lane_file))[lines[0]]
     candidates = _candidate_file(tmp_path / "one.txt", [selected])
     state_dir, progress = tmp_path / "state", tmp_path / "progress.jsonl"
-    baseline_source = (lane_file.parent / "src/mod.py").read_bytes()
-    original_execute_plan = cli.runner.execute_plan
-    fixed_time = "2026-10-08T00:00:00+00:00"
-    mutant_runs = 0
-
-    def timeout_mutant(plan, *, cwd, **kwargs):
-        nonlocal mutant_runs
-        if (cwd / "src/mod.py").read_bytes() != baseline_source:
-            mutant_runs += 1
-            return cli.runner.CommandResult(
-                plan=plan,
-                outcome=Outcome.BUDGET_EXCEEDED,
-                reason_code=ReasonCode.LANE_TIMEOUT,
-                returncode=None,
-                started=fixed_time,
-                ended=fixed_time,
-                process_tree_evidence=process_tree_evidence_dict(
-                    leader_status="not-started"
-                ),
-            )
-        return original_execute_plan(plan, cwd=cwd, **kwargs)
-
-    monkeypatch.setattr(cli.runner, "execute_plan", timeout_mutant)
     first_code, _first_stdout, first_stderr = _run_pilot(
         lane_file, candidates, state_dir, progress
     )
     assert first_code == 4, first_stderr
-    assert mutant_runs == 1
+    first_retries = [
+        event for event in _events(progress) if event.get("event") == "candidate_retry"
+    ]
+    assert len(first_retries) == 1
+    assert first_retries[0]["first_bucket"] == "budget_exceeded"
+    assert first_retries[0]["final_bucket"] == "budget_exceeded"
 
     record_path = state_dir / f"{selected}.json"
     broken_record = json.loads(record_path.read_text(encoding="utf-8"))
@@ -1748,7 +1707,11 @@ def test_resume_reexecutes_incomplete_budget_record(
         extra=("--resume",),
     )
     assert resumed_code == 4, resumed_stderr
-    assert mutant_runs == 2, "an incomplete timeout cache must execute the candidate again"
+    all_events = _events(progress)
+    assert len([event for event in all_events if event.get("event") == "candidate"]) == 2
+    assert len(
+        [event for event in all_events if event.get("event") == "candidate_retry"]
+    ) == 2
     assert json.loads(resumed_stdout)["unresolved"] == []
     assert any(
         event.get("event") == "resume" and event.get("rejected_total") == 1

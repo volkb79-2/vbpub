@@ -40,7 +40,7 @@ runner_name() {
 qmp() {  # qmp <run> '<json body>'  -> prints the reply
     local run="$1" body="$2" runner state
     runner="$(runner_name)"; [ -n "$runner" ] || die "cannot determine the runner container name"
-    state="$(docker exec "$runner" printenv MDT_VM_STATE_DIR)"; [ -n "$state" ] || die "runner has no MDT_VM_STATE_DIR"
+    state=/vm-lab   # fixed in-runner mount point of <project>/artifacts/vm-lab
     docker exec -i "$runner" bash -c \
         "printf '{\"execute\":\"qmp_capabilities\"}\n%s\n' '$body' | timeout 10 socat -t2 - UNIX-CONNECT:$state/runs/$run/qmp.sock"
 }

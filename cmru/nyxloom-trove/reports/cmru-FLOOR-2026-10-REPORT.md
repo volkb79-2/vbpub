@@ -21,8 +21,9 @@ three files that merged cleanly and carry integration-branch edits: `SPEC.md`, `
 
 Reason recorded at the declaration (`cmru/pyproject.toml:15-19`): 0.3.0 is the first release whose
 `register_skills_verbs` forwards the consumer's global options to the skills child registry
-(CLI-EXT-26), which cmru's `skills` group needs (KI-61). Root `requirements.txt` has no
-cli-extended entry (nothing to change there). `cmru/build-initial-standalone.sh` and `doctor.py`
+(CLI-EXT-26), which cmru's `skills` group needs (KI-61). The root
+`requirements-runtime.txt` and `requirements-test.txt` have no cli-extended
+entry (nothing to change there). `cmru/build-initial-standalone.sh` and `doctor.py`
 read the floor from `pyproject.toml` (no literal, no edit).
 
 | file:line (final tree) | old | new |

@@ -4,7 +4,65 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Added
+- Backlog MDT-049 to MDT-052 filed from a live runner reinstall: the BuildKit shim rewrites an explicit `BUILDX_BUILDER=default`
+  (`MDT_BUILDX_PASSTHROUGH=1` is the workaround), the example `DEV_INTERACTIVE_MEMORY_LOW`, `mdt-host-check.sh` `auto` noise, and the
+  missing UID remap in the docker-run form of the host-folder cockpit.
+- Backlog: the older duplicates of MDT-032 and MDT-033 are renumbered MDT-060 (cmru release smoke lane) and
+  MDT-061 (build inputs in `/tmp`); MDT-032 and MDT-033 now each name one entry. The stale "not on main yet" note is gone.
+- The finalize step attaches a recreated or rebuilt devcontainer to the network of an already
+  running PWMCP stack (filtered `docker ps`, `docker inspect --type container`, alias `pwmcp`;
+  idempotent, non-fatal). The stack is selected by exact name: `PWMCP_STACK_CONTAINER` override, else the
+  shipped instance `/srv/pwmcp-instance` (its `ciu.env`, or the running stack labelled with that compose
+  working dir), else `INSTANCE_ID` from the environment or the workspace `ciu.env`; other stacks on the host
+  are never joined, an unknown or unmatched identity joins nothing and logs how to choose, and a failing
+  `docker ps` is a warning, not "no stack". So `PWMCP_MCP_URL=http://pwmcp:8931/mcp` resolves without a manual
+  `docker network connect`. With no running stack it logs how to start it.
+- The Python version of a release is a top-level input: `LATEST_KNOWN_PYTHON=3.15 cmru release mdt-cockpit`
+  (the environment wins over the `docker-bake.hcl` default, as `docker buildx bake` itself resolves
+  variables) publishes `trixie-py3.15-php8.5-<date>` and its `-latest` next to the default variant.
+  `DEVCONTAINERS_IGNORE_NEW_RELEASES=true` skips the newer-base stop when a release intentionally stays
+  on an older base.
+
 ### Changed
+- host-setup: the capacity unavailable to MDT drives sizing and protection (MDT-033). The operator names
+  three numbers, `MDT_EXCLUDED_RAM`, `MDT_EXCLUDED_SWAP` (disk swap only, zswap ignored) and
+  `MDT_EXCLUDED_CPU_CORES` (fractions allowed), plus `DEV_TIER_EXCLUDED_CPU_CORES`, `MDT_PROTECTED_UNITS` and
+  `MDT_HOST_SWAP_MARGIN` (512M). The wizard proposes tiers from `RAM_MDT = MemTotal - MDT_EXCLUDED_RAM`
+  (dev.slice 100%/92%; tiers 60/45, 70/50, 70/50, 35/25 percent, overcommitted by design), `dev.slice`
+  `MemorySwapMax` is `SwapTotal - MDT_EXCLUDED_SWAP - MDT_HOST_SWAP_MARGIN`, and the CPU quotas derive from
+  `nproc - MDT_EXCLUDED_CPU_CORES`. The install refuses `RAM_MDT < 1G` and `CPU_MDT < 0.5`, and asks to
+  confirm (`--confirm-no-disk-swap`) when MDT would get no disk swap. `mdt-host-check.sh` and the wizard warn
+  when the named units' `memory.min` does not cover the excluded RAM, when children exceed the parent, or when
+  their weights are below 4x `dev.slice`; `install.sh --apply-protection` (opt-in, confirmed) writes
+  `50-mdt-protection.conf` drop-ins for exactly those units. The new `mdt_capacity.py` module holds the
+  one implementation.
+- host-setup ships `mdt-psi-guard` (MDT-033.e): a stdlib service outside `dev.slice` that watches the
+  protected units' memory and CPU pressure and the host's memory `full` pressure. `MDT_PSI_GUARD=report`
+  (shipped) only writes `/run/mdt/psi-guard/events.jsonl`; `enforce` sets the tier weights to 1 and then
+  lowers `MemoryHigh` of the gates and background tiers, reverting on release, stop and the next start;
+  `off` disables the service. `mdt-dev-governance-reconcile.sh` only logs the keys the guard owns (it writes none of them);
+  the real overwriter is systemd re-applying unit values on `daemon-reload` (see the Known limit in `mdt-psi-guard.py`).
+- host-setup keys renamed outright, with no alias: `DEV_CPU_RESERVE_CORES` is `MDT_EXCLUDED_CPU_CORES`,
+  `DEV_SUBSLICE_CPU_RESERVE_CORES` is `DEV_TIER_EXCLUDED_CPU_CORES` (`max(0, k - c)`), `DEV_MEMORY_RESERVE` is
+  `MDT_EXCLUDED_RAM`. The installer, the wizard and `mdt-host-check.sh` refuse the old names with a message
+  naming the new key; the rename table is in the host-setup README ("Renamed keys (2026-11)"). The
+  operator renames `/etc/mdt/host-setup.env` before the next install; the shipped defaults move from
+  "1 and 3 cores withheld" to 0.
+- The default CoW root is renamed `/srv/devcontainers-cow/<user>/` to `/srv/mdt-cockpit-cow/<user>/`
+  (templates, `.devcontainer/devcontainer.json`, docs, `MDT_COW_ROOT` examples); there is no alias and no
+  fallback to the old path. Existing hosts must rename the mountpoint: `findmnt /srv/devcontainers-cow`
+  to see the mount, `umount` it, `chattr -i /srv/devcontainers-cow` (BTRFS-COW §3.1 sets the immutable
+  flag, which makes `mv` fail with EPERM), `mv /srv/devcontainers-cow /srv/mdt-cockpit-cow` (the empty
+  mountpoint directory), `chattr +i /srv/mdt-cockpit-cow` (still unmounted), edit the fstab entry's
+  mountpoint field to `/srv/mdt-cockpit-cow` (the LV and filesystem
+  label may keep their names), `systemctl daemon-reload && mount /srv/mdt-cockpit-cow`, and check that
+  the per-user directory `/srv/mdt-cockpit-cow/<user>/` is still owned by the user
+  (`mdt-cow-init-user.sh`). Already-running devcontainers keep the old bind mount until they are
+  recreated. Migrate the host **before** the next rebuild of a container whose CoW mount is active
+  (vbpub's own devcontainer): `--mount` refuses a missing source, so the rebuild fails closed otherwise.
+  A `DEV_BUILDKITD_CACHE` host path under the old root needs the same update in
+  `/etc/mdt/host-setup.env`.
 - The devcontainer templates mount one home and one `/tmp` **per checkout**:
   `${localEnv:HOME}/mdt-cockpit-${localWorkspaceFolderBasename}-home/` and `-tmp/` (the vendored
   initializer expands the variable to the checkout's folder name). The shared `~/mdt-cockpit-home/`
@@ -24,6 +82,55 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   policy minimum instead of the installed file's own value.
 
 <!-- cmru: release history -->
+
+## [source-c08b5b89f8a9] - 2026-11-03
+<!-- cmru: generated -->
+<!-- cmru: source-end=c08b5b89f8a97919b7913dda7259884a8c953145 -->
+
+### Added
+- feat(mdt-cockpit): iomon sync.bt (eatmydata proof), preload check, IO-MONITORING-SETUP doc, analyze fixes (ef7c7e5a9)
+- feat(mdt-cockpit): iomon eBPF collector (bpftrace block/stall/iocost/writeback/swap) and merged analyze (d1a19a159)
+- feat(mdt-cockpit): iogov v1, a recommend-only recorder of long-term storage-capability shifts (raw 4 KiB reads, adaptive scratch write bench, CUSUM recognizer, covariates, distress episodes); design note and tests (2db1712aa)
+- feat(mdt-cockpit): iomon - stdlib IO/latency/PSI monitor with active O_DSYNC probe and analyze command (5aba27feb)
+
+### Fixed
+- fix(mdt-cockpit): iogov re-review (sysfs hook only with --destdir, fail-closed udev ID_PATH check, LC_ALL=C, detect() unresolved names, longest same-majmin mount, dm/md and .. refusals, stale old/new package recovery, README) (99d163421)
+- fix(mdt-cockpit): iogov review findings (unresolved stacked devices, st_dev mount preference, installer path/value validation, whole-disk and ID_PATH cross-checks, atomic package swap, docs) (8d2bfbb70)
+- fix(mdt-cockpit): iogov install blockers (btrfs/LVM/md device resolution, explicit-device existence, preflight, install.sh, deployment options) (bec3e7877)
+- fix(mdt-cockpit): iomon review findings (locked Writer, surviving readers, capped bpf log, run.sh validation and --mount, opt-in ptrace/apparmor, stop warnings, 64-hex ids, tests, host-agnostic docs) (0dd5e5583)
+- fix(mdt-cockpit): iogov residual review notes (clock rollback keeps the budget spent, strict ASCII fullmatch for the budget day) (c73ab1521)
+- fix(cmru): orphan-sidecar abandon withholds on publication evidence; build-push callers report an unsynced package; cleanup --policy precondition documented (review round 1) (336938cab)
+- fix(mdt-cockpit): iogov final-review follow-up for f2aa25ee3 (huge-int validator crash, budget fails closed, repair-once with preserved unknown keys, future-dated timestamps, sticky-aware symlink chain, hop limit tested) (a155c03de)
+- fix(mdt-cockpit): iogov fifth-review follow-up for c3e018efb (one schema for the persisted state, trusted symlink chain for the config, interpreter-agnostic unit verification) (f2aa25ee3)
+- fix(mdt-cockpit): review round 2 — manifest version normaliser, host-setup oracles, per-checkout home docs (555e0ad9a)
+- fix(mdt-cockpit): iogov fourth-review follow-up for 4e6f87f37 (oneshot units bound by TimeoutStartSec and verified with systemd-analyze, refused state load leaves the file untouched, tolerant resets.log, byte-counted journal limits, NaN-safe schedules, root-owned symlinked config, error note in the journal) (c3e018efb)
+- fix(mdt-cockpit): host-setup script defects and docs that disagreed with the code (440f5f258)
+- fix(mdt-cockpit): iogov third-review follow-up for 9708c6f8a (no open can block or flood a reader, typed state and journal reads, kill-switch race, rate-limited passive-on-skip, read contract, hung-flush backstop, deprecated config keys) (4e6f87f37)
+- fix(mdt-cockpit): manifest records real versions and the full inventory; age policy split pinned (25d8480fb)
+- fix(mdt-cockpit): smoke lane green again (5 failures on main since 5a0517dc0/b3b1a0366) (ef271fcff)
+- fix(mdt-cockpit): iogov second-review follow-up for 7f38a7743 (operator-uid reports, budget rollover, 4 KiB lane watchdog, fd-verified raw reader, passive evidence on gated ticks, memory pressure in episodes, dead code, docs agree with code) (9708c6f8a)
+- fix(mdt-cockpit): iogov review follow-up for 2db1712aa (crash-safe reserved budget and bench backoff, streaming recognizer with persisted baselines and closed windows only, no-follow/TOCTOU-safe files, locks, hard clamps, flush watchdog, container cache, mutant-killing tests, hardened units) (7f38a7743)
+
+### Changed
+- Merge iogov install fixes: btrfs/LVM/md device resolution, preflight, install.sh, deployment options — vbpub@99d163421 (8aa3fdd3a)
+- Merge iogov v1, iomon, cmru post-7.0.0 fixes onto main (recovering merges made on a detached HEAD) (877499fa0)
+- Merge cmru post-7.0.0 fixes: KI-86/91/97, orphan sidecar withhold, cleanup max_age, dockerignore artifacts — vbpub@869473a03 (ea3ce6291)
+- Merge iomon sampler + bpftrace container, setup doc and findings (reviewed, fixes folded) — vbpub@0dd5e5583 (039ff443d)
+
+### Documentation
+- docs(mdt-cockpit): MDT-033 revision 2 (set-aside RAM + expected prod swap are the two inputs) (c08b5b89f)
+- docs(mdt-cockpit): MDT-033 revision (overcommit via zswap, weights, memory.min on host services, PSI control) (aef6747c7)
+- docs(mdt-cockpit): file MDT-033 (RAM reserve drives host-setup memory sizing) (7494d68cf)
+- docs(mdt-cockpit): file MDT-032 (iogov prevention test depends on live disk fill) (457a31c35)
+- docs(mdt-cockpit): backlog MDT-032..MDT-043 from the 2026-10-27 deep review (MDT-028..031 are the iogov branch's) (e9de4be55)
+- docs(mdt-cockpit): backlog MDT-028..MDT-031 from the iogov v1 second review (per-cgroup swap counters in episodes, protected-process canary, gate reachability on a never-calm host, iobench ceilings bridge) (df1846f22)
+- docs(mdt-cockpit): host-setup README restart note for the preserved runtime directory (review round 1); CHANGES wording (383e83ccf)
+- docs(mdt-cockpit): land the unmerged parts of MDT-008 (directory bind-mount identity design, README/CONSUMERS notes, docker-api-socket comment); re-point examples at pwmcp 1.64.0-r4; retire the stale UNRELEASED CHANGES block; MDT-027 status (cc0408e46)
+
+### Testing
+- test(mdt): avoid pipefail false negative in renderer gate (32c2aa7fb)
+- test(mdt-cockpit): pin Docker API socket bind-mount identity in test-render.sh (bcdc57122)
+- test(mdt-cockpit): shellcheck is required, not optional, in the HOME-PERSISTENCE snippet lint (c0139e54e)
 
 ## [source-1bc10c5a6b68] - 2026-10-27
 <!-- cmru: generated -->

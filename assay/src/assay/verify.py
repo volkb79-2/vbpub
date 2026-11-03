@@ -127,6 +127,7 @@ from .verdict import (
     R2BaselineFacts,
     R2Command,
     ResourceLimitEvidence,
+    UnderlyingOutcome,
     MutationProducerTool,
     Outcome,
     ReasonCode,
@@ -2185,10 +2186,21 @@ def _check_b145_resource_limit_evidence(
                 "per-execution resource_limit_evidence"
             )
         return
-    raw = entry.get("resource_limit_evidence")
+    if "resource_limit_evidence" not in entry:
+        # Candidate-window resource sampling is telemetry after the required
+        # preflight. An unavailable or unstable window is represented by an
+        # omitted optional field. PASS remains final; a killed candidate also
+        # needs an independent, clean failed-call report.
+        if bucket == "killed" and not _has_clean_failed_call_report(entry):
+            failures.append(
+                "native mutation.killed without resource_limit_evidence "
+                "requires a clean failed-call witness"
+            )
+        return
+    raw = entry["resource_limit_evidence"]
     if not isinstance(raw, dict):
         failures.append(
-            f"native mutation.{bucket} entry requires resource_limit_evidence"
+            f"native mutation.{bucket} entry resource_limit_evidence must be an object"
         )
         return
     if set(raw) != {"cgroup_version", "pids_events", "memory_events"}:
@@ -2253,11 +2265,42 @@ def _check_b145_resource_limit_evidence(
         positive_limit_delta = positive_limit_delta or (
             invalidates_candidate and delta > 0
         )
-    if positive_limit_delta and bucket != "crashed":
+    if positive_limit_delta and bucket == "killed":
         failures.append(
             f"native mutation.{bucket} entry has a positive failed-fork or OOM "
-            "counter delta; it cannot be classified as a test kill or survival"
+            "counter delta; it cannot be classified as a test kill"
         )
+
+
+def _has_clean_failed_call_report(entry: dict[str, Any]) -> bool:
+    """Independently recognize a normal failed-call report for kill precedence."""
+    execution = entry.get("execution")
+    witness = execution.get("witness") if isinstance(execution, dict) else None
+    process_tree = entry.get("process_tree_evidence")
+    return (
+        isinstance(witness, dict)
+        and set(witness)
+        == {
+            "node_id",
+            "when",
+            "outcome",
+            "session_exit_status",
+            "process_exit_status",
+        }
+        and isinstance(witness.get("node_id"), str)
+        and bool(witness.get("node_id"))
+        and witness.get("when") == "call"
+        and witness.get("outcome") == "failed"
+        and type(witness.get("session_exit_status")) is int
+        and witness.get("session_exit_status") == 1
+        and type(witness.get("process_exit_status")) is int
+        and witness.get("process_exit_status") == 1
+        and isinstance(process_tree, dict)
+        and process_tree.get("leader_status") == "exited"
+        and type(process_tree.get("outliving_descendants")) is int
+        and process_tree.get("outliving_descendants") == 0
+        and process_tree.get("clean") is True
+    )
 
 
 def _check_b162_process_tree_evidence(
@@ -2277,14 +2320,15 @@ def _check_b162_process_tree_evidence(
         return
     required = {
         "protocol", "leader_status", "group_signalled_before_reap",
-        "outliving_descendants", "descendants_signalled", "cleanup_seconds", "clean",
+        "outliving_descendants", "descendants_signalled", "signal",
+        "descendants", "clean",
     }
     if set(raw) != required:
         failures.append(
             f"native mutation.{bucket} entry has invalid process_tree_evidence fields"
         )
         return
-    if raw.get("protocol") != "assay-process-tree/1":
+    if raw.get("protocol") != "assay-process-tree/2":
         failures.append(
             f"native mutation.{bucket} entry has an unsupported process-tree protocol"
         )
@@ -2312,20 +2356,120 @@ def _check_b162_process_tree_evidence(
             f"native mutation.{bucket} entry has more signalled descendants "
             "than outliving descendants"
         )
-    cleanup = raw.get("cleanup_seconds")
-    if (
-        isinstance(cleanup, bool)
-        or not isinstance(cleanup, (int, float))
-        or not math.isfinite(cleanup)
-        or cleanup < 0
-    ):
+    leader_signal = raw.get("signal")
+    if leader_signal is not None and (not _is_int(leader_signal) or leader_signal < 1):
         failures.append(
-            f"native mutation.{bucket} entry has invalid process-tree cleanup_seconds"
+            f"native mutation.{bucket} entry has invalid process-tree signal"
+        )
+    if raw.get("leader_status") == "signaled" and leader_signal is None:
+        failures.append(
+            f"native mutation.{bucket} entry has a signaled leader that requires a signal"
+        )
+    if leader_signal is not None and raw.get("leader_status") not in {
+        "signaled", "timeout-killed"
+    }:
+        failures.append(
+            f"native mutation.{bucket} entry records a signal for a non-signaled leader"
+        )
+    descendants = raw.get("descendants")
+    if not isinstance(descendants, list):
+        failures.append(
+            f"native mutation.{bucket} entry has invalid process-tree descendants"
+        )
+        descendants = []
+    descendant_pids: list[int] = []
+    for descendant in descendants:
+        if not isinstance(descendant, dict) or set(descendant) != {"pid", "ppid", "comm"}:
+            failures.append(
+                f"native mutation.{bucket} entry has malformed descendant identity"
+            )
+            continue
+        pid, ppid, comm = (
+            descendant.get("pid"), descendant.get("ppid"), descendant.get("comm")
+        )
+        if not _is_int(pid) or pid < 1:
+            failures.append(f"native mutation.{bucket} entry has invalid descendant pid")
+        else:
+            descendant_pids.append(pid)
+        if (ppid is None) != (comm is None):
+            failures.append(
+                f"native mutation.{bucket} entry has incomplete descendant identity"
+            )
+        elif ppid is not None and (not _is_int(ppid) or ppid < 1):
+            failures.append(f"native mutation.{bucket} entry has invalid descendant ppid")
+        elif comm is not None and (not isinstance(comm, str) or not comm):
+            failures.append(f"native mutation.{bucket} entry has invalid descendant comm")
+    if descendant_pids != sorted(descendant_pids) or len(set(descendant_pids)) != len(descendant_pids):
+        failures.append(
+            f"native mutation.{bucket} entry descendant pids must be unique and sorted"
+        )
+    if _is_int(raw.get("outliving_descendants")) and len(descendants) != raw["outliving_descendants"]:
+        failures.append(
+            f"native mutation.{bucket} entry descendant identities do not match outliving_descendants"
         )
     if raw.get("clean") is not True:
         failures.append(
             f"native mutation.{bucket} entry does not prove a clean process tree"
         )
+    underlying = entry.get("underlying_outcome")
+    requires_underlying = (
+        raw.get("leader_status") == "exited"
+        and _is_int(raw.get("outliving_descendants"))
+        and raw["outliving_descendants"] > 0
+    )
+    if requires_underlying and underlying is None:
+        failures.append(
+            f"native mutation.{bucket} completed process-tree leak requires underlying_outcome"
+        )
+    elif underlying is not None:
+        if bucket != "crashed":
+            failures.append(
+                f"native mutation.{bucket} cannot carry underlying_outcome; "
+                "a process-tree leak remains crashed"
+            )
+        if (
+            not isinstance(underlying, dict)
+            or set(underlying) - {"outcome", "returncode", "report_summary"}
+            or not {"outcome", "returncode"}.issubset(underlying)
+        ):
+            failures.append(
+                f"native mutation.{bucket} entry has malformed underlying_outcome"
+            )
+        else:
+            outcome = underlying.get("outcome")
+            returncode = underlying.get("returncode")
+            summary = underlying.get("report_summary")
+            expected_outcome = (
+                "PASS" if returncode == 0
+                else "FAIL" if _is_int(returncode) and returncode > 0
+                else None
+            )
+            if summary is not None:
+                valid_summary = (
+                    isinstance(summary, dict)
+                    and set(summary) == {"format", "total", "failed", "finished"}
+                    and isinstance(summary.get("format"), str)
+                    and bool(summary.get("format"))
+                    and _is_int(summary.get("total"))
+                    and summary["total"] > 0
+                    and _is_int(summary.get("failed"))
+                    and 0 <= summary["failed"] <= summary["total"]
+                    and summary.get("finished") is True
+                )
+                if not valid_summary:
+                    failures.append(
+                        f"native mutation.{bucket} entry has invalid underlying report_summary"
+                    )
+                else:
+                    expected_outcome = "PASS" if summary["failed"] == 0 else "FAIL"
+            if (
+                outcome not in {None, "PASS", "FAIL"}
+                or not _is_int(returncode)
+                or outcome != expected_outcome
+            ):
+                failures.append(
+                    f"native mutation.{bucket} entry has inconsistent underlying_outcome"
+                )
     if bucket in {"killed", "survived", "equivalent"} and (
         raw.get("leader_status") != "exited"
         or raw.get("outliving_descendants") != 0
@@ -2670,6 +2814,7 @@ def _reconstruct_judgment_r2(raw: dict) -> JudgmentR2:
             raw, "lines_without_candidates"
         ),
         jobs=raw.get("jobs"),
+        attribution=raw.get("attribution"),
         max_mutants=raw.get("max_mutants"),
         operators=None if operators is None else tuple(operators),
         kill_attribution=raw["kill_attribution"],
@@ -2770,6 +2915,7 @@ def _reconstruct_canary_attempt(raw: dict) -> CanaryAttempt:
         description=raw["description"],
         disposition=raw["disposition"],
         not_attempted_reason=raw.get("not_attempted_reason"),
+        cause=raw["cause"],
         control_outcome=Outcome(control) if control is not None else None,
         transformed_outcome=Outcome(transformed) if transformed is not None else None,
         expected_reason_code=ReasonCode(expected_rc) if expected_rc is not None else None,
@@ -2843,6 +2989,11 @@ def _reconstruct_mutant_outcome(raw: dict) -> MutantOutcome:
         process_tree_evidence=(
             ProcessTreeEvidence.from_dict(raw["process_tree_evidence"])
             if isinstance(raw.get("process_tree_evidence"), dict)
+            else None
+        ),
+        underlying_outcome=(
+            UnderlyingOutcome.from_dict(raw["underlying_outcome"])
+            if isinstance(raw.get("underlying_outcome"), dict)
             else None
         ),
         evidence=(
@@ -3453,6 +3604,12 @@ def _judge_one_attempt(attempt: Any) -> tuple[Outcome, ReasonCode | None]:
         return Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE
     if attempt.transformed_outcome is Outcome.PASS:
         return Outcome.FAIL, ReasonCode.CANARY_SURVIVED
+    if (
+        attempt.expected_reason_code is ReasonCode.COMMAND_FAILED
+        and attempt.observed_reason_code is attempt.expected_reason_code
+        and attempt.cause != "receipt"
+    ):
+        return Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE
     if attempt.observed_reason_code != attempt.expected_reason_code:
         return Outcome.FAIL, ReasonCode.CANARY_SURVIVED
     return Outcome.PASS, None

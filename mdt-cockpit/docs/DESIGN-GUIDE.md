@@ -66,6 +66,28 @@ and the devcontainer template exports `PWMCP_MCP_URL`. The CLI lives outside
 the network resource explicit; each agent harness still owns its MCP registration
 format.
 
+**Network join on create.** `ciu up` attaches only the container that ran it, and the
+stack (`restart: unless-stopped`) outlives a devcontainer that is recreated or rebuilt,
+which starts on the default bridge alone, so `pwmcp` would not resolve. The finalize step
+(`postCreateCommand`, so on every create and rebuild; a plain restart keeps its networks)
+therefore runs `join_pwmcp_network`. Several PWMCP stacks are normal on one host (instance,
+worktree, gate, other users'), all named `pwmcp-<INSTANCE_ID>-pwmcp` with the alias `pwmcp`, so
+the step never picks "the first": it derives the exact container name of THIS workspace's stack
+from `PWMCP_STACK_CONTAINER` (explicit override, e.g. in `remoteEnv`), else the `INSTANCE_ID` of
+the shipped instance (`/srv/pwmcp-instance/ciu.env` or `.ciu/ciu.env`; `PWMCP_INSTANCE_DIR`
+changes the directory), else the running stack whose compose working-dir label is that instance
+directory (the instance keeps no `ciu.env` after `ciu up`), else `INSTANCE_ID` from the
+environment, else the `INSTANCE_ID` line of `<workspace>/ciu.env` (this workspace's own ciu
+instance, normally NOT the PWMCP stack's id). It finds that container with a
+filtered `docker ps` (name `^pwmcp-`, compose service label `pwmcp`), inspects it with
+`docker inspect --type container`, and `docker network connect`s this container to a network on
+which it carries the alias, unless already attached. Unknown identity or no exact match joins
+nothing and logs one INFO line naming the override. A failing `docker ps` is a WARN with its
+error. It assumes `$HOSTNAME` resolves this container (`--hostname` equals `--name`, or the
+default ID hostname); otherwise it skips. It is idempotent and never fails finalize; with no
+running stack it logs one INFO line pointing at `cd /srv/pwmcp-instance && ciu up` (which then
+attaches the container itself). It does not use ciu, only Docker labels and aliases.
+
 ## The home is user state; image assets live outside it
 
 The devcontainer persists one host directory at `/home/vscode`
@@ -97,7 +119,8 @@ clean up". Because nothing the image ships needs to reach the home, **the
 finalizer has almost nothing to do**: a new home stays empty, a second run
 changes nothing, and the one stub it may write (a comment-only `~/.zshrc`,
 because zsh's new-user wizard cannot be disabled system-wide) is only ever
-created, never edited.
+created, never edited. The other thing it may write is the first-party CLIs'
+own agent skills ([below](#agent-skills-of-the-first-party-clis)).
 
 **Why a fresh home and no migration.** mdt-cockpit is an opt-in fork, not an
 upgrade of the original image. A migrator has to decide, file by file, which of
@@ -112,6 +135,25 @@ Named volumes were not chosen as the default because operators need to see and
 back up the complete user home as an ordinary host directory. Individual
 mounts were not retained because each new tool would require another persistence
 decision and could again leave user state behind.
+
+### Agent skills of the first-party CLIs
+
+The first-party CLIs that package agent skills (`cmru`, `ciu`, `pwmcp`, `topos`;
+the constant `SKILLS_CLIS` in `finalize_container_environment.py`) install them
+with `<cli> skills install` into `~/.claude/skills` and `~/.agents/skills`, which
+are user state, so the image cannot ship them. A fresh home has none, and
+`cmru doctor` then reports "skills not current". The finalizer therefore has one
+more generic step: for each of those CLIs found on `PATH` it runs
+`<cli> skills check` (exit 0 = current, exit 1 = not current, any other exit = this
+version has no `skills` verb, skipped) and, only when not current, `<cli> skills
+install`. `install` writes only the stamped skill directories the tool owns
+(`<root>/skills/<skill>/`) and removes only orphans of the same tool; it never
+replaces or extends any other user file, so the idempotence rule holds: a second
+run finds every skill current, runs no `install`, and leaves the home
+byte-identical. A failure of either command is a warning, never a failed
+container start. Tests: `scripts/test_finalize_agent_skills.py` (fake CLIs on a
+temporary `PATH`) and the home assertions in `tests/runtime/test_fresh_home.py`,
+which allow exactly these trees.
 
 ## The `mdt` group
 

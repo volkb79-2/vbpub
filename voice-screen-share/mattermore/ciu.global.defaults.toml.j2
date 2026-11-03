@@ -1,0 +1,31 @@
+# ==========================================================================
+# mattermore — CIU ROOT global (standalone tryout, single stack)
+# ==========================================================================
+# Own ciu root (root marker = this file). The instance id is derived from the
+# physical path of THIS folder, so it differs from the live Mattermost root
+# (voice-screen-share/mattermost-server) and every container, network, volume
+# and compose project name below differs too: the two cannot collide.
+# Values copied from voice-screen-share/mattermost-server/ciu.global.defaults.toml.j2
+# (ciu v7 roots are islands).
+[deploy]
+project_name = "mattermore"
+environment_tag = "$INSTANCE_ID"
+network_name = "$DOCKER_NETWORK_INTERNAL"
+log_level = "INFO"
+
+[deploy.env.shared]
+CONTAINER_UID = "$CONTAINER_UID"
+CONTAINER_GID = "$DOCKER_GID"
+DOCKER_GID = "$DOCKER_GID"
+
+[governance]
+enabled = true
+cgroup_parent = "dev-background.slice"
+mem_limit = "2g"
+device = "/dev/vda"
+
+[ciu]
+standalone_root = true
+require_certs = false
+require_fqdn = false
+auto_connect_network = false

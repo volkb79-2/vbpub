@@ -1,8 +1,9 @@
-"""B129 / W10 step 1: characterization of the inline scalar guards in ``config``.
+"""B129 / W10 step 1: characterization of inline scalar guards in ``config``.
 
 Pins accept and refuse, with the exact message, for the non-empty-string,
 strict-int, real-number and percentage guards in the lane loader. Run against
-the UNCHANGED source; never edited to follow the refactor.
+the implementation contract. A declared ``jobs`` alias supplies the native
+ceiling while the runtime worker count remains unset until execution.
 """
 
 from __future__ import annotations
@@ -198,7 +199,9 @@ def test_mutation_jobs_refuse_a_bool_or_non_int(tmp_path, value):
 
 
 def test_mutation_jobs_accept_one_and_refuse_zero(tmp_path):
-    assert _mutation(tmp_path, jobs=1)().jobs == 1
+    mutation = _mutation(tmp_path, jobs=1)()
+    assert mutation.jobs is None
+    assert mutation.jobs_max == 1
     refusal(
         _mutation(tmp_path, jobs=0),
         "W: 'judge.mutation.jobs' must be a positive integer, got 0",

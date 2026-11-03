@@ -15,7 +15,9 @@ import struct
 import sys
 import threading
 import types
+from dataclasses import FrozenInstanceError
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -63,7 +65,9 @@ class Sidecar:
                 parts = urlsplit(self.path)
                 body = self.rfile.read(int(self.headers["Content-Length"]))
                 outer.requests.append({"path": parts.path, "query": parse_qs(parts.query, keep_blank_values=True),
-                                       "body": body, "content_type": self.headers["Content-Type"]})
+                                       "body": body, "content_type": self.headers["Content-Type"],
+                                       "host_headers": self.headers.get_all("Host") or [],
+                                       "accept_encoding": self.headers.get("Accept-Encoding")})
                 status, payload = outer.reply
                 self.send_response(status)
                 for key, value in outer.reply_headers.items():
@@ -141,6 +145,13 @@ def test_recognize_sends_defaults_and_the_image_untouched(sidecar: Sidecar) -> N
     assert request["path"] == "/v1/ocr" and request["body"] == PNG and request["content_type"] == "image/png"
     # no min_conf unless one was asked for: the sidecar must not be told to assess against an invented threshold
     assert request["query"] == {"engine": ["tesseract"], "lang": ["eng"], "psm": ["6"], "scale": ["1"]}
+
+
+def test_internal_post_has_one_host_header_and_no_encoding_negotiation(sidecar: Sidecar) -> None:
+    ocr.recognize(PNG, sidecar_url=sidecar.url)
+    (request,) = sidecar.requests
+    assert request["host_headers"] == [urlsplit(sidecar.url).netloc]
+    assert request["accept_encoding"] is None
 
 
 def test_recognize_sends_every_option(sidecar: Sidecar) -> None:
@@ -251,6 +262,22 @@ def test_an_older_sidecar_without_the_low_conf_fields_is_still_understood() -> N
     assert result.completeness_unknown is True
 
 
+def test_direct_result_defaults_do_not_claim_filtering_or_incompleteness() -> None:
+    result = ocr.OcrResult("tesseract", None, "eng", 6, 1, 1, 0, "", (), ())
+    assert result.drop_low_conf is False
+    assert result.completeness_unknown is False
+
+
+def test_ocr_value_objects_cannot_be_changed_after_construction() -> None:
+    word = ocr.OcrWord("screen", 90.0, (0, 0, 6, 1), 0)
+    line = ocr.OcrLine("screen", 90.0, (0, 0, 6, 1))
+    result = ocr.OcrResult("tesseract", None, "eng", 6, 6, 1, 0, "screen", (line,), (word,))
+    for value, field in ((word, "text"), (line, "text"), (result, "text")):
+        with pytest.raises(FrozenInstanceError):
+            setattr(value, field, "changed")
+    assert (word.text, line.text, result.text) == ("screen", "screen", "screen")
+
+
 def test_low_confidence_words_are_flagged_in_the_result_and_the_tsv() -> None:
     doubtful = {**CANNED, "text": "Continue? [y/N]", "low_conf_words": 1, "min_conf_applied": 50.0,
                 "lines": [{"text": "Continue? [y/N]", "conf": 53.0, "conf_mean": 53.0, "conf_min": 10.0,
@@ -273,7 +300,8 @@ def test_tsv_neutralises_whitespace_inside_words() -> None:
 # ------------------------------------------------------------------ review follow-up
 
 
-@pytest.mark.parametrize("url", ["http://user:s3cret@host:1", "http://:s3cret@host:1/x", "https://user@host", "http://a@b@host"])
+@pytest.mark.parametrize("url", ["http://user:s3cret@host:1", "http://:s3cret@host:1/x", "https://user@host",
+                                  "http://a@b@host", "http://@host:1"])
 def test_credentials_in_the_sidecar_url_are_refused_without_echoing_them(url: str) -> None:
     with pytest.raises(ocr.OcrError) as caught:
         ocr.resolve_sidecar_url(url)
@@ -322,6 +350,13 @@ def test_a_redirect_is_an_error_and_the_image_is_never_sent_elsewhere(sidecar: S
         assert again.value.code == "redirect" and elsewhere.requests == []
     finally:
         elsewhere.close()
+
+
+def test_http_status_300_is_reported_as_a_redirect(sidecar: Sidecar) -> None:
+    sidecar.reply = (300, b"")
+    with pytest.raises(ocr.OcrError) as caught:
+        ocr.recognize(PNG, sidecar_url=sidecar.url)
+    assert (caught.value.code, caught.value.status) == ("redirect", 300)
 
 
 def test_redirect_through_the_cli_is_a_clean_failure(work: Path, sidecar: Sidecar, capsys: pytest.CaptureFixture[str]) -> None:
@@ -483,6 +518,25 @@ def test_an_oversized_answer_is_refused(monkeypatch: pytest.MonkeyPatch, sidecar
     with pytest.raises(ocr.OcrError) as caught:
         ocr.recognize(PNG, sidecar_url=sidecar.url)
     assert caught.value.code == "bad_response" and "oversized" in str(caught.value)
+
+
+def test_a_response_exactly_at_the_byte_cap_is_accepted_with_both_framings(
+    monkeypatch: pytest.MonkeyPatch, sidecar: Sidecar
+) -> None:
+    payload = json.dumps(CANNED).encode()
+    monkeypatch.setattr(ocr, "MAX_RESPONSE_BYTES", len(payload))
+    sidecar.reply = (200, payload)  # Content-Length exactly equals the limit.
+    assert ocr.recognize(PNG, sidecar_url=sidecar.url).engine == "tesseract"
+
+    def behave(conn: socket.socket) -> None:
+        _read_request(conn)
+        conn.sendall(b"HTTP/1.0 200 OK\r\n\r\n" + payload)  # close-delimited at the same exact boundary
+
+    server = RawServer(behave)
+    try:
+        assert ocr.recognize(PNG, sidecar_url=server.url, timeout=5).engine == "tesseract"
+    finally:
+        server.close()
 
 
 def test_a_close_delimited_answer_is_read_up_to_the_cap(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -777,6 +831,11 @@ def test_cli_usage_errors(work: Path, sidecar: Sidecar, capsys: pytest.CaptureFi
     assert sidecar.requests == []
 
 
+def test_missing_ocr_input_shows_the_usage(work: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert run("ocr") == 2
+    assert "usage:" in capsys.readouterr().err.lower()
+
+
 # ------------------------------------------------------------------ CLI (page element capture)
 
 
@@ -902,6 +961,11 @@ def test_element_capture_sends_the_element_png(work: Path, sidecar: Sidecar, bro
     assert calls["connect"]["label"] == "pwmcp-ocr"
 
 
+def test_element_capture_selects_a_visible_match(work: Path, sidecar: Sidecar, browser: Browser) -> None:
+    assert run("ocr", URL, "--selector", "canvas", "--sidecar-url", sidecar.url) == 0
+    assert browser.calls["visible"] == [True, "visible"]
+
+
 def test_element_capture_wait_and_https_option(work: Path, sidecar: Sidecar, browser: Browser) -> None:
     assert run("ocr", URL, "--selector", "canvas", "--sidecar-url", sidecar.url, "--wait-ms", "1500",
                "--ignore-https-errors") == 0
@@ -914,6 +978,15 @@ def test_region_clip_is_relative_to_the_element(work: Path, sidecar: Sidecar, br
     assert kind == ["scroll", "page"]
     assert browser.calls["screens"][1][1] == {"type": "png", "timeout": 30000,
                                               "clip": {"x": 15.0, "y": 26.0, "width": 100, "height": 50}}
+
+
+@pytest.mark.parametrize("region", ["0,0,640,100", "0,0,100,400"])
+def test_a_region_may_end_exactly_at_an_element_edge(
+    work: Path, sidecar: Sidecar, browser: Browser, region: str
+) -> None:
+    assert run("ocr", URL, "--selector", "canvas", "--sidecar-url", sidecar.url, "--region", region) == 0
+    assert sidecar.requests[0]["body"] == b"element-png"
+    assert browser.calls["screens"][-1][0] == "page"
 
 
 @pytest.mark.parametrize("region", ["1,2,3", "a,b,c,d", "0,0,0,5", "0,0,5,0", "-1,0,5,5", "1,2,3,4,5"])

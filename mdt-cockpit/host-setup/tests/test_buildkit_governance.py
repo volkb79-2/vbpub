@@ -862,14 +862,13 @@ esac
             proposals = WIZARD.propose_memory_tiers(avail_kib, avail_kib)
             self.assertEqual(
                 proposals["DEV_MEMORY_HIGH"],
-                WIZARD.kib_to_size_str(max(1, avail_kib * 75 // 100)),
+                WIZARD.kib_to_size_str(max(1, avail_kib * 92 // 100)),
             )
             self.assertLessEqual(
                 WIZARD.parse_size_to_kib(proposals["DEV_MEMORY_HIGH"]),
                 WIZARD.parse_size_to_kib(proposals["DEV_MEMORY_MAX"]),
             )
             for prefix in ("DEV_INTERACTIVE", "DEV_BACKGROUND", "DEV_GATES", "DEV_BUILDKITD"):
-                self.assertNotIn(f"{prefix}_MEMORY_LOW", proposals)
                 self.assertLessEqual(
                     WIZARD.parse_size_to_kib(proposals[f"{prefix}_MEMORY_HIGH"]),
                     WIZARD.parse_size_to_kib(proposals[f"{prefix}_MEMORY_MAX"]),
@@ -935,7 +934,7 @@ esac
             self.assertIn("No configuration was written", error.getvalue())
             self.assertEqual(output.read_text(), "DEV_CPU_QUOTA=700%\nnot-an-assignment\n")
 
-    def test_slice_flow_passes_reserve_validators_as_validators(self) -> None:
+    def test_slice_flow_passes_excluded_capacity_validators_as_validators(self) -> None:
         example = WIZARD.parse_env_file((ROOT / "host-setup.env.example").read_text())
         calls = {}
 
@@ -950,9 +949,9 @@ esac
                 {"MemTotal": 16 * 1024 * 1024, "MemAvailable": 16 * 1024 * 1024},
                 {}, example,
             )
-        self.assertIs(calls["DEV_CPU_RESERVE_CORES"][1], WIZARD.validate_nonneg_int)
-        self.assertIs(calls["DEV_SUBSLICE_CPU_RESERVE_CORES"][1], WIZARD.validate_nonneg_int)
-        self.assertNotIn("<function", calls["DEV_CPU_RESERVE_CORES"][0])
+        for key in ("MDT_EXCLUDED_CPU_CORES", "DEV_TIER_EXCLUDED_CPU_CORES"):
+            self.assertIs(calls[key][1], WIZARD.mdt_capacity.validate_cores)
+            self.assertNotIn("<function", calls[key][0])
         auto_keys = {
             "DEV_CPU_QUOTA", "DEV_SWAP_MAX",
             "DEV_INTERACTIVE_CPU_QUOTA", "DEV_BACKGROUND_CPU_QUOTA",
@@ -1215,8 +1214,9 @@ done
                 )
             rendered = output.read_text()
             self.assertNotIn("<function", rendered)
-            self.assertIn("DEV_CPU_RESERVE_CORES=1", rendered)
-            self.assertIn("DEV_SUBSLICE_CPU_RESERVE_CORES=3", rendered)
+            self.assertIn("MDT_EXCLUDED_CPU_CORES=0", rendered)
+            self.assertIn("DEV_TIER_EXCLUDED_CPU_CORES=0", rendered)
+            self.assertNotIn("RESERVE_CORES", rendered)
             transcript_text = transcript.getvalue()
             self.assertLess(
                 transcript_text.index("-- install map: what this creates and enables --"),
@@ -1529,9 +1529,8 @@ done
 
     def test_wizard_enforces_memory_order_without_live_availability_budget(self) -> None:
         proposals = WIZARD.propose_memory_tiers(16 * 1024 * 1024, 2500 * 1024)
-        self.assertEqual(proposals["DEV_MEMORY_HIGH"], "12G")
+        self.assertEqual(proposals["DEV_MEMORY_HIGH"], "14.5G")
         for prefix in ("DEV_INTERACTIVE", "DEV_BACKGROUND", "DEV_GATES", "DEV_BUILDKITD"):
-            self.assertNotIn(f"{prefix}_MEMORY_LOW", proposals)
             self.assertLessEqual(
                 WIZARD.parse_size_to_kib(proposals[f"{prefix}_MEMORY_HIGH"]),
                 WIZARD.parse_size_to_kib(proposals[f"{prefix}_MEMORY_MAX"]),
@@ -1565,7 +1564,7 @@ done
         self.assertIsNone(WIZARD.validate_buildkit_image("registry:5000/team/buildkit@sha256:abc123"))
         self.assertIsNotNone(WIZARD.validate_buildkit_image("$(touch /tmp/pwned)"))
         # the cache source: a Docker volume name or an absolute host path, shell-safe, empty keeps the volume
-        for good in ("", "mdt-buildkitd-cache", "/srv/devcontainers-cow/buildkitd-cache"):
+        for good in ("", "mdt-buildkitd-cache", "/srv/mdt-cockpit-cow/buildkitd-cache"):
             self.assertIsNone(WIZARD.validate_buildkit_cache(good), good)
         for bad in ("relative/dir", "/srv/a b", "$(touch /tmp/pwned)", "/srv/x;rm", "-v"):
             self.assertIsNotNone(WIZARD.validate_buildkit_cache(bad), bad)

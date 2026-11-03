@@ -154,8 +154,10 @@
     },
     "campaign": {
       "type": "object", "additionalProperties": false,
-      "required": ["planned_total", "selected_total", "completed_total", "pending_total", "resumed_total", "rejudged_total", "per_run_resumed_total", "per_run_rejudged_total", "execution_mode_counts", "selection_sha256", "outcomes"],
+      "required": ["jobs", "attribution", "planned_total", "selected_total", "completed_total", "pending_total", "resumed_total", "rejudged_total", "per_run_resumed_total", "per_run_rejudged_total", "execution_mode_counts", "selection_sha256", "outcomes"],
       "properties": {
+        "jobs": {"oneOf": [{"type": "integer", "minimum": 1}, {"type": "null"}]},
+        "attribution": {"oneOf": [{"enum": ["serial", "overlap-conservative"]}, {"type": "null"}]},
         "planned_total": {"oneOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
         "selected_total": {"oneOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
         "completed_total": {"oneOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
@@ -167,7 +169,12 @@
         "execution_mode_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
         "selection_sha256": {"oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
         "outcomes": {"oneOf": [{"$ref": "#/$defs/bucketCounts"}, {"type": "null"}]}
-      }
+      },
+      "allOf": [
+        {"if": {"properties": {"jobs": {"const": null}}, "required": ["jobs"]}, "then": {"properties": {"attribution": {"const": null}}}},
+        {"if": {"properties": {"jobs": {"const": 1}}, "required": ["jobs"]}, "then": {"properties": {"attribution": {"const": "serial"}}}},
+        {"if": {"properties": {"jobs": {"type": "integer", "minimum": 2}}, "required": ["jobs"]}, "then": {"properties": {"attribution": {"const": "overlap-conservative"}}}}
+      ]
     },
     "shard": {
       "oneOf": [

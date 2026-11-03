@@ -4,13 +4,13 @@
 
 The edge-proxy stack runs a single Traefik instance that:
 - terminates TLS for all consumer services on this host
-- routes requests by subdomain (preferred) or by external port (fallback)
+- routes requests by host name (one host name per service, all on port 443)
 - discovers consumer services automatically from Docker labels
 - exposes nothing by default; containers must opt in
 
-Port 80 is **off by default**.  The edge is TLS-only.  There is no
-HTTP→HTTPS redirect unless the operator enables it.  Always publish
-`https://` URLs.
+Port 80 is **on by default**: it carries the permanent HTTP→HTTPS redirect and
+ACME HTTP-01 challenges.  It can be disabled (`tls_edge.ports.expose_http =
+false`).  Always publish `https://` URLs.
 
 Consumers attach to the shared `ingress_public` network and declare routing
 via Compose labels.  No access to the edge-proxy stack itself is needed.
@@ -19,41 +19,20 @@ via Compose labels.  No access to the edge-proxy stack itself is needed.
 
 ## Installing tls-edge
 
-If tls-edge is not already installed on the host, bootstrap it in one command:
+The edge is installed as a self-contained instance (bundled `ciu`, no network
+needed after the download) under `/srv/tls-edge-instance`.  The full procedure
+(install, certificates, update, rollback, migrating a hand-made deployment) is
+in [`docs/INSTALL.md`](docs/INSTALL.md); in short:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/volkb79-2/vbpub/main/tls-edge/get.py \
-  | sudo python3 - install
+sudo python3 get.py install --variant py313     # py314 on a 3.14 host
+cd /srv/tls-edge-instance/stack && sudo ./ciu up
 ```
 
-This downloads the latest release artifact from GitHub Releases, verifies its
-SHA256 checksum, and extracts it to `/opt/tls-edge-src/tls-edge`.
-
-**Pin a specific version** (recommended in production):
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/volkb79-2/vbpub/main/tls-edge/get.py \
-  | sudo python3 - install --version tls-edge-v0.2.0
-```
-
-**Update to a newer release**:
-
-```sh
-tls-edge update
-```
-
-User config (`ciu-stack/ciu.toml.j2`, `edge-proxy/.env`) is backed up and
-restored automatically across updates.
-
-**Air-gapped / dev installs** (no GitHub Releases access):
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/volkb79-2/vbpub/main/tls-edge/get.py \
-  | sudo python3 - install --via git
-```
-
-This falls back to a sparse git clone (no artifact download, no checksum
-verification). Requires `git`.
+Container names of an installed instance are `tls-edge-<id>-traefik` and
+`tls-edge-<id>-dockerproxy` (the network alias `traefik` is kept).  The log
+and restart commands below say `edge-traefik` (the name of the plain-compose
+render in `edge-proxy/`); substitute your container's name.
 
 ---
 
@@ -64,11 +43,11 @@ verification). Requires `git`.
    # Standalone (pre-rendered default — acme-tls mode, no tooling required):
    cd tls-edge/edge-proxy && docker compose up -d
 
-   # Via installer:
-   tls-edge/scripts/install.sh
+   # Installed instance (get.py, bundled ciu; docs/INSTALL.md):
+   cd /srv/tls-edge-instance/stack && ./ciu up
 
-   # Via ciu v2 (renders + deploys from templates):
-   cd tls-edge/ciu-stack && ciu
+   # Interactive installer for the plain-compose render:
+   tls-edge/scripts/install.sh
    ```
 
 2. The shared ingress network exists (created by the edge-proxy stack):
@@ -121,24 +100,17 @@ labels:
 resolver are configured at the entrypoint level by the edge proxy.  They are
 harmless if present, but omitting them keeps labels clean.
 
-### Port-based routing (fallback)
+### One host name per service (no port-based routing)
 
-Use when a subdomain cannot be made to resolve to this host, or (in static
-mode) is not in the certificate SAN list.  The service is reached at
-`https://my.domain:8443`.
+Every service gets its own host name on port 443; the edge has no alternate
+HTTPS port.  The public ports are exactly 80/tcp (optional redirect and
+ACME HTTP-01), 443/tcp (all HTTPS), and 8443 tcp+udp (Mattermost Calls media).
+Point one DNS name per service at the host (a wildcard record is fine) and
+route by `Host()`.
 
-```yaml
-labels:
-  - traefik.enable=true
-  - traefik.http.routers.<name>.rule=Host(`my.domain`)
-  - traefik.http.routers.<name>.entrypoints=websecure-alt
-  - traefik.http.services.<name>.loadbalancer.server.port=<container-port>
-```
-
-> Only one service can own the combination of hostname + entrypoint.
-> Two services on `my.domain` + `websecure-alt` would conflict.
-> Add a path matcher to distinguish them:
-> `- traefik.http.routers.<name>.rule=Host(`my.domain`) && PathPrefix(`/svcA`)`
+> Only one service can own the combination of hostname + entrypoint.  To
+> share one host name between two services add a path matcher:
+> `- traefik.http.routers.<name>.rule=Host(`svc.my.domain`) && PathPrefix(`/svcA`)`
 
 ### Router and service naming
 
@@ -147,7 +119,7 @@ not just within the stack.  Two stacks declaring the same router name will
 conflict, and Traefik will drop or misroute one of them.
 
 **Convention**: `<stack>-<service>` — for example `pattern-a-app`,
-`pattern-b-api`, `pattern-c-app`.  The consumer examples follow this pattern.
+`pattern-d-app`, `pattern-e-app`.  The consumer examples follow this pattern.
 
 ---
 
@@ -180,7 +152,7 @@ Checklist:
 
 ### Pattern B – Public service with private backends
 
-**File**: `consumer-examples/pattern-b-public-and-private/docker-compose.yml`
+(Label recipe only; no shipped example stack. The shipped examples are A, D and E.)
 
 The public-facing service joins both `ingress_public` and `private`.
 Backend services (databases, caches, workers) join only `private`.
@@ -209,7 +181,7 @@ membership minimal.
 
 ### Pattern C – Public API with ops endpoint isolated to sidecar
 
-**File**: `consumer-examples/pattern-c-public-and-ops-sidecar/docker-compose.yml`
+(Label recipe only; no shipped example stack.)
 
 The app binds its ops/metrics endpoint to `127.0.0.1` (loopback) inside
 the container.  A sidecar joins the app's network namespace via
@@ -394,9 +366,6 @@ curl -v https://svc.my.domain/
 # Dev mode: trust the local CA or skip verification
 curl --cacert /path/to/local-ca.crt https://svc.my.domain/
 curl -k https://svc.my.domain/        # insecure; dev only
-
-# Port-based routing check
-curl -v https://my.domain:8443/
 ```
 
 Note: port 80 is off by default.  `curl http://svc.my.domain/` will be
@@ -433,8 +402,7 @@ docker run --rm --network <your-stack>_private alpine \
 Docker host port collisions (two containers try to `ports: - "443:..."` directly):
 - Docker rejects the second `docker compose up` with an error like:
   `Bind for 0.0.0.0:443 failed: port is already allocated`
-- Only the edge-proxy stack should ever publish ports 443 and 8443 (and
-  optionally 80).
+- Only the edge-proxy stack should ever publish ports 80, 443 and 8443.
 - Consumer stacks must NOT publish their own ports on those numbers.
 
 Traefik router rule collisions (two services declare the same hostname + entrypoint):
@@ -567,7 +535,7 @@ or when adding new domains.
 |---|---|---|
 | `traefik.enable=true` | yes | Opt this container into Traefik routing |
 | `traefik.http.routers.<n>.rule` | yes | Routing rule, e.g. `Host(...)` |
-| `traefik.http.routers.<n>.entrypoints` | yes | `websecure` (443) or `websecure-alt` (default 8443; host override may differ) |
+| `traefik.http.routers.<n>.entrypoints` | yes | `websecure` (443); Calls media uses TCP/UDP `calls` entrypoints (8443), see `consumer-examples/pattern-e-media-udp` |
 | `traefik.http.services.<n>.loadbalancer.server.port` | yes | Container port to forward to |
 | `traefik.http.routers.<n>.tls=true` | no | TLS is enabled at the entrypoint level — not needed |
 | `traefik.http.routers.<n>.tls.certresolver` | no | Cert resolver is set at the entrypoint level — not needed |
@@ -618,14 +586,13 @@ tls-edge/
   consumer-examples/
     pattern-a-public-only/
       docker-compose.yml
-    pattern-b-public-and-private/
-      docker-compose.yml
-    pattern-c-public-and-ops-sidecar/
-      docker-compose.yml
     pattern-d-guarded/
       docker-compose.yml
-      .env.example
       README.md
+    pattern-e-media-udp/
+      docker-compose.yml
+    README.md                       ←   label-by-label explanation
+    .env.example
 ```
 
 To change any configuration value, edit `ciu-stack/ciu.toml.j2` (create it if

@@ -15,7 +15,8 @@ wall-clock wait: both are exercised here only through the INJECTED
 
 from __future__ import annotations
 
-import inspect
+import io
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,10 +28,20 @@ from assay import runner
 from assay.contention import ContentionObservation
 from assay.errors import Outcome, ReasonCode
 from assay.mutation_witness import WITNESS_FD_ENV, ReceiptCapture
+from assay.termination import Termination
 from assay.verdict import Claim, Coverage
+from termination_table import LIMITS_CLEAR, LIMITS_HIT
 
 MOMENT_A = datetime(2026, 8, 7, 12, 0, 0, tzinfo=timezone.utc)
 MOMENT_B = datetime(2026, 8, 7, 12, 0, 1, tzinfo=timezone.utc)
+
+
+def _contention_observation(status, limit_hit, reasons):
+    if status == "clear":
+        limits = LIMITS_HIT if limit_hit else LIMITS_CLEAR
+    else:
+        limits = None
+    return ContentionObservation(status, limits=limits, reasons=reasons)
 
 
 # --- exit 0 is PASS -----------------------------------------------------------
@@ -82,8 +93,8 @@ def test_build_r0_claim_reflects_a_fail_result(tmp_path: Path):
     ("status", "resource_limit_hit", "expected_outcome"),
     [
         ("clear", False, Outcome.FAIL),
-        ("affected", True, Outcome.ERROR),
-        ("unknown", False, Outcome.ERROR),
+        ("clear", True, Outcome.ERROR),
+        ("unavailable", False, Outcome.ERROR),
     ],
 )
 def test_gate_mode_failed_r0_is_not_withheld_for_psi_or_throttling(
@@ -94,9 +105,9 @@ def test_gate_mode_failed_r0_is_not_withheld_for_psi_or_throttling(
     expected_outcome: Outcome,
 ):
     class Window:
-        observation = ContentionObservation(
+        observation = _contention_observation(
             status,
-            resource_limit_hit=resource_limit_hit,
+            resource_limit_hit,
             reasons=(
                 "cgroup_psi.cpu.some_us=5340037",
                 "cgroup_cpu.throttled_usec=500",
@@ -118,12 +129,9 @@ def test_gate_mode_failed_r0_is_not_withheld_for_psi_or_throttling(
     monkeypatch.setattr(contention_module, "ContentionWindow", lambda **kwargs: Window())
     lane = make_lane(argv=("/bin/sh", "-c", "exit 9"))
 
-    contention_kwargs = (
-        {"classify_resource_contention": True}
-        if "classify_resource_contention" in inspect.signature(runner.execute_command).parameters
-        else {}
+    result = runner.execute_command(
+        lane, cwd=tmp_path, classify_resource_contention=True
     )
-    result = runner.execute_command(lane, cwd=tmp_path, **contention_kwargs)
 
     assert result.outcome is expected_outcome
     assert result.reason_code is (
@@ -140,8 +148,8 @@ def test_gate_mode_failed_r0_is_not_withheld_for_psi_or_throttling(
     ("status", "resource_limit_hit", "expected_outcome"),
     [
         ("clear", False, Outcome.PASS),
-        ("affected", True, Outcome.PASS),
-        ("unknown", False, Outcome.PASS),
+        ("clear", True, Outcome.PASS),
+        ("unavailable", False, Outcome.PASS),
     ],
 )
 def test_gate_mode_pass_verdict_has_no_stderr_tail(
@@ -152,9 +160,9 @@ def test_gate_mode_pass_verdict_has_no_stderr_tail(
     expected_outcome: Outcome,
 ):
     class Window:
-        observation = ContentionObservation(
+        observation = _contention_observation(
             status,
-            resource_limit_hit=resource_limit_hit,
+            resource_limit_hit,
             reasons=(
                 "cgroup_psi.cpu.some_us=5340037",
                 "cgroup_cpu.throttled_usec=500",
@@ -176,18 +184,15 @@ def test_gate_mode_pass_verdict_has_no_stderr_tail(
     monkeypatch.setattr(contention_module, "ContentionWindow", lambda **kwargs: Window())
     lane = make_lane(argv=("/bin/sh", "-c", "exit 0"))
 
-    contention_kwargs = (
-        {"classify_resource_contention": True}
-        if "classify_resource_contention" in inspect.signature(runner.execute_command).parameters
-        else {}
+    result = runner.execute_command(
+        lane, cwd=tmp_path, classify_resource_contention=True
     )
-    result = runner.execute_command(lane, cwd=tmp_path, **contention_kwargs)
 
     assert result.outcome is expected_outcome
     assert result.reason_code is (
         ReasonCode.EXEC_FAILED if expected_outcome is Outcome.ERROR else None
     )
-    assert getattr(result, "resource_contention", None) is Window.observation
+    assert result.observation is Window.observation
     assert result.stderr_tail is None
 
 
@@ -229,78 +234,6 @@ def _coverage_claim(status: Outcome) -> Claim:
     )
 
 
-def test_r1_claim_ignores_psi_and_throttling_but_retains_direct_limits():
-    adjust = getattr(runner, "_withhold_r1_claim_for_contention", None)
-    assert callable(adjust), "R1 must retain the R0 resource window for attribution"
-
-    pressured_failure = adjust(
-        _coverage_claim(Outcome.FAIL),
-        ContentionObservation("clear", reasons=("cgroup_cpu.throttled_usec=1",)),
-        diagnostics=None,
-    )
-    assert pressured_failure.status is Outcome.FAIL
-    assert pressured_failure.reason_code is ReasonCode.UNCOVERED_LINES
-    assert pressured_failure.coverage is not None
-
-    affected_pass = _coverage_claim(Outcome.PASS)
-    assert adjust(
-        affected_pass,
-        ContentionObservation("clear", reasons=("cgroup_cpu.throttled_usec=1",)),
-        diagnostics=None,
-    ) is affected_pass
-
-    direct_limit_pass = adjust(
-        _coverage_claim(Outcome.PASS),
-        ContentionObservation("affected", resource_limit_hit=True),
-        diagnostics=None,
-    )
-    assert direct_limit_pass.status is Outcome.PASS
-    assert direct_limit_pass.coverage is not None
-
-    direct_limit_fail = adjust(
-        _coverage_claim(Outcome.FAIL),
-        ContentionObservation("affected", resource_limit_hit=True),
-        diagnostics=None,
-    )
-    assert direct_limit_fail.status is Outcome.ERROR
-    assert direct_limit_fail.reason_code is ReasonCode.EXEC_FAILED
-    assert direct_limit_fail.detail is None
-
-    unknown_pass = adjust(
-        _coverage_claim(Outcome.PASS),
-        ContentionObservation("unknown"),
-        diagnostics=None,
-    )
-    assert unknown_pass.status is Outcome.PASS
-
-    no_observation = _coverage_claim(Outcome.FAIL)
-    assert adjust(no_observation, None, diagnostics=None) is no_observation
-
-    already_infrastructure = Claim(
-        rigor="R1",
-        source="computed",
-        status=Outcome.ERROR,
-        verified_by_assay=True,
-        reason_code=ReasonCode.EXEC_FAILED,
-    )
-    assert adjust(
-        already_infrastructure,
-        ContentionObservation("unknown"),
-        diagnostics=None,
-    ) is already_infrastructure
-
-    with pytest.raises(TypeError, match="claim must be an R1 Claim"):
-        adjust(object(), ContentionObservation("clear"), diagnostics=None)
-
-
-def test_r1_contention_adjustment_is_wired_after_coverage_judgement():
-    source = inspect.getsource(runner._run_prepared_lane)
-    assert "_withhold_r1_claim_for_contention(" in source
-    assert source.index("r1_claim = evaluate_r1(") < source.index(
-        "r1_claim = _withhold_r1_claim_for_contention("
-    ) < source.index("claims += (r1_claim,)")
-
-
 # --- a missing executable is ERROR/EXEC_FAILED, via the INJECTED seam only ---
 
 
@@ -324,6 +257,209 @@ def test_missing_executable_is_error_exec_failed_via_injection(tmp_path: Path):
     assert result.outcome is Outcome.ERROR
     assert result.reason_code is ReasonCode.EXEC_FAILED
     assert result.returncode is None
+    assert result.stderr_tail == ""
+
+
+def _window_with_observation(monkeypatch, observation):
+    class Window:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    window = Window()
+    window.observation = observation
+    monkeypatch.setattr(runner.contention, "ContentionWindow", lambda **kwargs: window)
+    monkeypatch.setenv("ASSAY_RESOURCE_OBSERVER_SOCKET", "/observer.sock")
+
+
+def _completed(returncode: int, *, stdout: str = "", stderr: str = ""):
+    return subprocess.CompletedProcess(["fake-command"], returncode, stdout, stderr)
+
+
+def test_r0_external_sigkill_is_exec_failed_with_detail(tmp_path: Path):
+    result = runner.execute_command(
+        make_lane(argv=("fake-command",)),
+        cwd=tmp_path,
+        process_runner=lambda argv, **kwargs: _completed(
+            -9, stderr="the command's final output\n"
+        ),
+        classify_r0_termination=True,
+    )
+
+    assert result.outcome is Outcome.ERROR
+    assert result.reason_code is ReasonCode.EXEC_FAILED
+    assert result.termination is Termination.KILLED_EXTERNALLY
+    claim = runner.build_r0_claim(result)
+    assert claim.detail == "killed-by-signal:9"
+    assert "the command's final output" not in claim.detail
+
+
+def test_r0_sigsegv_stays_fail_with_self_signaled_termination(tmp_path: Path):
+    result = runner.execute_command(
+        make_lane(argv=("fake-command",)),
+        cwd=tmp_path,
+        process_runner=lambda argv, **kwargs: _completed(-11),
+        classify_r0_termination=True,
+    )
+
+    assert result.outcome is Outcome.FAIL
+    assert result.reason_code is ReasonCode.COMMAND_FAILED
+    assert result.termination is Termination.SELF_SIGNALED
+
+
+def test_r0_pass_with_limit_event_is_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    observation = _contention_observation(
+        "clear", True, reasons=("pids_events_max=1",)
+    )
+    _window_with_observation(monkeypatch, observation)
+
+    result = runner.execute_command(
+        make_lane(argv=("fake-command",)),
+        cwd=tmp_path,
+        process_runner=lambda argv, **kwargs: _completed(0),
+        classify_resource_contention=True,
+        classify_r0_termination=True,
+    )
+
+    assert result.outcome is Outcome.PASS
+    assert result.reason_code is None
+    assert result.termination is Termination.PASSED
+    assert runner.build_r0_claim(result).status is Outcome.PASS
+
+
+@pytest.mark.parametrize(
+    ("baseline", "r1_outcome", "expected_outcome"),
+    [
+        (None, Outcome.FAIL, Outcome.FAIL),
+        (Termination.PASSED, Outcome.FAIL, Outcome.FAIL),
+        (Termination.FAILED, Outcome.FAIL, Outcome.FAIL),
+        # A self-inflicted signal is a judged R0 FAIL (blocking judgeable),
+        # so R1 keeps its own coverage judgement instead of inheriting ERROR.
+        (Termination.SELF_SIGNALED, Outcome.FAIL, Outcome.FAIL),
+        (Termination.NOT_RUN, Outcome.FAIL, Outcome.ERROR),
+        (Termination.KILLED_EXTERNALLY, Outcome.FAIL, Outcome.ERROR),
+        (Termination.LEAKED, Outcome.PASS, Outcome.ERROR),
+        (Termination.LIMIT_EVENT, Outcome.FAIL, Outcome.ERROR),
+        (Termination.UNOBSERVED, Outcome.FAIL, Outcome.ERROR),
+        (Termination.TIMED_OUT, Outcome.FAIL, Outcome.FAIL),
+        (Termination.HUNG, Outcome.FAIL, Outcome.FAIL),
+        (Termination.INCONCLUSIVE, Outcome.FAIL, Outcome.ERROR),
+    ],
+)
+def test_r1_inherits_r0_infrastructure(
+    baseline: Termination | None,
+    r1_outcome: Outcome,
+    expected_outcome: Outcome,
+):
+    claim = _coverage_claim(r1_outcome)
+
+    adjusted = runner._r1_after_r0(claim, baseline)
+
+    assert adjusted.status is expected_outcome
+    assert adjusted.reason_code is (
+        ReasonCode.EXEC_FAILED
+        if expected_outcome is Outcome.ERROR
+        else claim.reason_code
+    )
+    assert adjusted.coverage is (None if expected_outcome is Outcome.ERROR else claim.coverage)
+
+
+@pytest.mark.parametrize(
+    ("outcome", "pressure", "diagnostics_available", "expected_lines"),
+    [
+        (Outcome.FAIL, True, True, 1),
+        (Outcome.PASS, True, True, 0),
+        (Outcome.FAIL, False, True, 0),
+        (Outcome.FAIL, True, False, 0),
+        (Outcome.ERROR, True, True, 0),
+    ],
+)
+def test_fail_under_pressure_prints_one_advisory_line_and_stays_fail(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    outcome: Outcome,
+    pressure: bool,
+    diagnostics_available: bool,
+    expected_lines: int,
+):
+    observation = _contention_observation(
+        "clear",
+        False,
+        reasons=("cgroup pressure sample",) if pressure else (),
+    )
+    observation = ContentionObservation(
+        observation.status,
+        limits=observation.limits,
+        pressure_us=(
+            {
+                "cgroup_psi.cpu.some_us": 100_000,
+                "cgroup_cpu.throttled_usec": 50_000,
+            }
+            if pressure
+            else {}
+        ),
+        reasons=observation.reasons,
+    )
+    _window_with_observation(monkeypatch, observation)
+    returncode = {
+        Outcome.FAIL: 7,
+        Outcome.PASS: 0,
+        Outcome.ERROR: None,
+    }[outcome]
+
+    def process_runner(argv, **kwargs):
+        if returncode is None:
+            raise FileNotFoundError(2, "not found", argv[0])
+        return _completed(returncode, stderr="command-tail\n")
+
+    result = runner.execute_command(
+        make_lane(argv=("fake-command",)),
+        cwd=tmp_path,
+        process_runner=process_runner,
+        classify_resource_contention=True,
+        classify_r0_termination=True,
+    )
+    diagnostics = io.StringIO() if diagnostics_available else None
+
+    runner._announce_r0_pressure(result, diagnostics=diagnostics)
+
+    assert result.outcome is outcome
+    lines = [] if diagnostics is None else diagnostics.getvalue().splitlines()
+    assert len(lines) == expected_lines
+    if expected_lines:
+        assert "advisory" in lines[0].lower()
+        assert "cgroup_psi.cpu.some_us" in lines[0]
+        assert "throttled_usec" in lines[0]
+
+
+def test_command_tail_is_never_appended_by_assay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    observation = ContentionObservation(
+        "clear",
+        limits=LIMITS_CLEAR,
+        pressure_us={"cgroup_psi.cpu.some_us": 100_000},
+    )
+    _window_with_observation(monkeypatch, observation)
+    result = runner.execute_command(
+        make_lane(argv=("fake-command",)),
+        cwd=tmp_path,
+        process_runner=lambda argv, **kwargs: _completed(
+            7, stderr="the command's final output\n"
+        ),
+        classify_resource_contention=True,
+        classify_r0_termination=True,
+    )
+
+    claim = runner.build_r0_claim(result)
+
+    assert result.outcome is Outcome.FAIL
+    assert result.stderr_tail == "the command's final output\n"
+    assert claim.detail is None
 
 
 def _raise_permission_error(argv, *, env, cwd, timeout):
@@ -365,7 +501,9 @@ def test_process_tree_oserror_is_lane_fatal_not_a_candidate_result(
     monkeypatch.setattr(ProcessTreeProcessRunner, "__call__", raise_monitor_error)
     lane = make_lane(argv=("/bin/true",))
 
-    with pytest.raises(AssayError, match="native R2 process execution infrastructure failed"):
+    with pytest.raises(
+        AssayError, match="^process execution infrastructure failed"
+    ):
         runner.execute_command(
             lane,
             cwd=tmp_path,

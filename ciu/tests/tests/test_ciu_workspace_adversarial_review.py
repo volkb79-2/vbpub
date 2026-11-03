@@ -1138,28 +1138,105 @@ def _removal_fixture(monkeypatch, tmp_path):
     monkeypatch.setattr(worktree, "find_worktree", lambda *_args: wt)
     monkeypatch.setattr(worktree, "_ciu_root_offset", lambda _root: Path("."))
     monkeypatch.setattr(worktree, "_clean_in", lambda *_args, **_kwargs: 0)
+    # The synthetic checkout is not a Git repository; CIU-138 discovery of
+    # sibling committed roots has its own real-Git tests.
+    monkeypatch.setattr(worktree, "_sibling_committed_roots", lambda *_args: [])
     monkeypatch.setattr(worktree, "release_own_lease", lambda *_args: None)
+    monkeypatch.setattr(worktree, "_ignored_state_summary", lambda _path: [])
+    monkeypatch.setattr(worktree, "_worktree_change_paths", lambda *_args: [])
+    monkeypatch.setattr(
+        worktree,
+        "_branch_removal_plan",
+        lambda *_args, **_kwargs: {
+            "name": "demo", "tip": "a" * 8, "outcome": "kept-unmerged",
+            "delete": False, "reason": "synthetic checkout",
+        },
+    )
     return repo, path
 
 
 def test_remove_reports_shared_ownership_lookup_failure(monkeypatch, tmp_path):
     repo, _path = _removal_fixture(monkeypatch, tmp_path)
-    monkeypatch.setattr(worktree, "_shared_worktree", lambda: SimpleNamespace(
-        discover_git_context=lambda _path: (_ for _ in ()).throw(RuntimeError("ownership unavailable"))
-    ))
-    with pytest.raises(worktree.WorktreeError, match="could not inspect shared"):
+    shared_error = worktree._shared_worktree().WorkspaceError
+    shared = SimpleNamespace(
+        WorkspaceError=shared_error,
+        discover_git_context=lambda _path: (_ for _ in ()).throw(
+            shared_error("ownership unavailable")
+        ),
+    )
+    monkeypatch.setattr(worktree, "_shared_worktree", lambda: shared)
+    with pytest.raises(
+        worktree.WorktreeError,
+        match="cannot inspect shared worktree records.*ownership unavailable",
+    ):
         worktree.remove(repo, "demo")
 
 
 def test_remove_reports_shared_legacy_removal_failure(monkeypatch, tmp_path):
     repo, _path = _removal_fixture(monkeypatch, tmp_path)
+    shared_error = worktree._shared_worktree().WorkspaceError
+    temporary = SimpleNamespace(
+        workspace_id="temporary-id",
+        worktree_path=_path,
+        physical_worktree_path=_path,
+        git_common_dir=repo / ".git",
+        source_git_root=repo,
+        branch="demo",
+        record_path=repo / ".git" / "temporary-record.json",
+        metadata={},
+    )
     shared = SimpleNamespace(
-        discover_git_context=lambda _path: (repo, repo / ".git", "demo", "a" * 40),
-        find_workspace=lambda _common, _path: None,
-        remove_unrecorded_workspace=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        WorkspaceError=shared_error,
+        discover_git_context=lambda selected: (
+            Path(selected).resolve(), repo / ".git", "demo", "a" * 8
+        ),
+        list_workspaces=lambda _common: (),
+        mounts_under=lambda *_args, **_kwargs: [],
+        find_workspace=lambda _common, selected: temporary if Path(selected) == _path else None,
+        adopt_workspace=lambda *_args, **_kwargs: temporary,
+        remove_workspace=lambda *_args, **_kwargs: (_ for _ in ()).throw(
             RuntimeError("remove failed")
         ),
     )
+    monkeypatch.setattr(worktree, "_checkout_admin_identity", lambda *_args: {
+        "path": str(repo / ".git" / "worktrees" / "demo"),
+        "device": 1, "inode": 2, "gitdir_link": str(_path / ".git"),
+        "checkout_gitfile": f"gitdir: {repo / '.git' / 'worktrees' / 'demo'}",
+    })
+    monkeypatch.setattr(worktree, "_store_removal_checkpoint", lambda *_args: None)
     monkeypatch.setattr(worktree, "_shared_worktree", lambda: shared)
-    with pytest.raises(worktree.WorktreeError, match="shared legacy workspace removal failed"):
+    with pytest.raises(
+        worktree.WorktreeError,
+        match="shared worktree removal failed: remove failed",
+    ):
         worktree.remove(repo, "demo")
+
+
+def test_forced_cleanup_failure_uses_the_legacy_unrecorded_removal_adapter(
+    monkeypatch, tmp_path
+):
+    repo, path = _removal_fixture(monkeypatch, tmp_path)
+    calls = []
+    shared_error = worktree._shared_worktree().WorkspaceError
+    shared = SimpleNamespace(
+        WorkspaceError=shared_error,
+        discover_git_context=lambda selected: (
+            Path(selected).resolve(), repo / ".git", "demo", "a" * 8
+        ),
+        list_workspaces=lambda _common: (),
+        mounts_under=lambda *_args, **_kwargs: [],
+        find_workspace=lambda *_args: None,
+        remove_unrecorded_workspace=lambda *args, **kwargs: calls.append((args, kwargs)),
+        adopt_workspace=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("forced failed cleanup must not create removal evidence")
+        ),
+    )
+    monkeypatch.setattr(worktree, "_shared_worktree", lambda: shared)
+    monkeypatch.setattr(worktree, "_clean_in", lambda *_args, **_kwargs: 1)
+
+    result = worktree.remove(repo, "demo", force=True)
+
+    assert result == path
+    assert len(calls) == 1
+    assert calls[0][1]["purpose"] == "ciu-legacy"
+    assert calls[0][1]["force"] is True

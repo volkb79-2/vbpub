@@ -79,7 +79,7 @@ defines both once ([One PATH order](../docs/DESIGN-GUIDE.md#one-path-order)).
 ## Optional: btrfs copy-on-write area
 
 Both variants ship two commented-out lines for a per-user btrfs area (snapshots, reflinks, per-directory
-compression for tools such as assay and ciu): one `mounts` entry binding `/srv/devcontainers-cow/<user>` and
+compression for tools such as assay and ciu): one `mounts` entry binding `/srv/mdt-cockpit-cow/<user>` and
 `MDT_COW_ROOT` in `containerEnv`. They are off because they need a host prerequisite; follow
 [BTRFS-COW.md](../docs/BTRFS-COW.md) on the host, then uncomment both lines.
 

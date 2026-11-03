@@ -171,6 +171,27 @@ def _commit(path: Path, name: str) -> None:
     subprocess.run(["git", "commit", "-qm", name], cwd=path, check=True, capture_output=True)
 
 
+def test_private_clone_includes_the_same_repo_cowtree_source(tmp_path: Path):
+    repo = _repo(tmp_path / "r")
+    assay_init = repo / "assay" / "src" / "assay" / "__init__.py"
+    cowtree_init = repo / "libraries" / "cowtree" / "src" / "cowtree" / "__init__.py"
+    assay_init.parent.mkdir(parents=True)
+    cowtree_init.parent.mkdir(parents=True)
+    assay_init.write_text("", encoding="utf-8")
+    cowtree_init.write_text("", encoding="utf-8")
+    (repo / "ciu" / "private.py").parent.mkdir(parents=True)
+    (repo / "ciu" / "private.py").write_text("", encoding="utf-8")
+    _commit(repo, "add-packages.txt")
+
+    scratch = tmp_path / "scratch"
+    build_release.make_exact_oid_clone(repo, scratch)
+
+    clone = scratch / "clone"
+    assert (clone / "assay" / "src" / "assay" / "__init__.py").is_file()
+    assert (clone / "libraries" / "cowtree" / "src" / "cowtree" / "__init__.py").is_file()
+    assert not (clone / "ciu").exists()
+
+
 def test_head_release_tag_finds_a_matching_tag_on_head(tmp_path: Path):
     repo = _repo(tmp_path / "r")
     subprocess.run(["git", "tag", "-a", "assay-v1.2.3", "-m", "r"], cwd=repo,
@@ -540,8 +561,7 @@ def test_the_zipapp_propagates_a_nonzero_exit_from_a_failing_lane(built, tmp_pat
 
 
 def test_the_zipapp_runs_analyze_from_the_one_archive(built):
-    """(A-478) One zipapp holds both packages: `analyze` finds `assay_analysis`
-    inside the archive, prints the headline, and keeps its exit codes."""
+    """(A-478) The zipapp carries Assay's packages and can import them alone."""
     artifacts = built["first"]
 
     # `-S`: no site-packages, so an `assay_analysis` installed in the running
@@ -569,12 +589,24 @@ def test_the_zipapp_runs_analyze_from_the_one_archive(built):
     assert origin.returncode == 0, origin.stderr
     assert str(artifacts.zipapp) in origin.stdout, origin.stdout
 
+    cowtree_origin = subprocess.run(
+        [sys.executable, "-S", "-c", "import cowtree; print(cowtree.__file__)"],
+        env={"PYTHONPATH": str(artifacts.zipapp), "PATH": "/usr/bin:/bin"},
+        capture_output=True, text=True, timeout=120,
+    )
+    assert cowtree_origin.returncode == 0, cowtree_origin.stderr
+    assert str(artifacts.zipapp) in cowtree_origin.stdout, cowtree_origin.stdout
 
-def test_the_wheel_holds_both_packages_their_schemas_and_no_tests(built):
+
+def test_the_wheel_holds_all_packages_their_schemas_and_no_tests(built):
     with zipfile.ZipFile(built["first"].wheel) as archive:
         names = set(archive.namelist())
 
     for required in (
+        "cowtree/__init__.py",
+        "cowtree/detect.py",
+        "cowtree/run.py",
+        "cowtree/space.py",
         "assay_analysis/__init__.py",
         "assay_analysis/campaign.py",
         "assay_analysis/cli.py",

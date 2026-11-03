@@ -148,7 +148,7 @@ cmru gate-snapshots --remove --dry-run   # preview which retained gate snapshots
 cmru dependencies --write --dry-run  # preview the generated block; without --write nothing is written
 cmru standards --update --dry-run    # refresh CMRU-owned revision markers
 cmru tool-deps --refresh ciu --dry-run   # re-vendor a provider's latest artifact
-cmru get-py ciu --output-dir dist --dry-run  # emit a standalone get.py installer
+cmru installer render ciu --output-dir dist --dry-run  # emit a standalone get.py installer (get-py is a deprecated alias)
 cmru versions init --dry-run         # derive version targets from manifests
 cmru versions resolve --dry-run      # resolve and write version records
 cmru init --root . --layout single --dry-run # guided adoption; never overwrites an existing config

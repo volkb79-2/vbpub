@@ -81,6 +81,7 @@ WIZARD_SECTIONS = (
         "Root, swap, and memory policy",
         (
             WizardField("root_resize_policy", "Root partition policy", "choice", ("resize", "untouched", "grow-only")),
+            WizardField("root_max_size_gb", "Maximum root partition size in GiB (blank for no cap)", "optional-integer"),
             WizardField("swap_policy", "Swap policy", "choice", ("on", "off", "untouched")),
             WizardField("swap_disk_total_gb", "Total swap capacity in GiB (blank or auto derives from disk and RAM)", "optional-integer"),
             WizardField("swap_partition_count", "Number of swap partitions", "integer"),
@@ -176,7 +177,7 @@ WIZARD_SECTIONS = (
 _FIXED_FIELDS = {"schema_version", "fresh_install"}
 _SECRET_FIELDS = {"telegram_bot_token", "mattermost_webhook_url"}
 _SUMMARY_HIDDEN_FIELDS = _SECRET_FIELDS | {"controller_ssh_pubkey", "ssh_authorized_keys"}
-_WIZARD_REQUIREMENTS = Path(__file__).resolve().parents[1] / "wizard-requirements.txt"
+_WIZARD_REQUIREMENTS = Path(__file__).resolve().parents[1] / "requirements-wizard.txt"
 
 
 def wizard_field_names() -> frozenset[str]:

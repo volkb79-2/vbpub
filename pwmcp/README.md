@@ -474,20 +474,22 @@ bare `pytest.importorskip` / `skipif(... is None)`. On a developer machine witho
 skip. The one deliberate exception is the real-Tesseract test: `tesseract` legitimately exists only in the
 sidecar image, so it skips with an explicit reason, and fails instead when `PWMCP_REQUIRE_TESSERACT=1` (set it
 only in a lane that runs inside the OCR image; none exists today, the gate runs in the tester image).
-Until the tester image is rebuilt the lanes are RED by design. The judged Python targets are the client
-package (`__init__`, `cli`, `contract`, `diagnostics`, `ocr`, `session`, `user_agent`), `build-push.py`,
+The same module's `optional_local_data` helper handles optional local fixtures: it skips only when the
+loader reports that no data was selected, while invalid selected data remains an error. The console
+corpus tests use this helper with `PWMCP_REQUIRE_CONSOLE_CORPUS=1` to make an absent local corpus fail.
+The gate image carries this declared test dependency set. The judged Python targets are the client package
+(`__init__`, `cli`, `contract`, `diagnostics`, `ocr`, `session`, `user_agent`), `build-push.py`,
 `scripts/resolve-playwright-version.py` and `containers/ocr/ocr_service.py`. The Node code
 (`containers/pwmcp/ua-override/index.js`, the run-server and MCP gateways, the admin server) is outside the
 Python judge entirely and is exercised only by the subprocess tests.
 
-**The sidecar image exists from the NEXT pwmcp release.** `pwmcp.ocr.image.tag` defaults to the
-resolver-managed pwmcp coordinate, and the current published release (`1.64.0-r3`) shipped WITHOUT the
-OCR image: with `pwmcp.ocr.enabled = true` against it, the image pull fails. Until a release that
-includes it is published, build it locally and point the config at it:
+**OCR sidecar image (`1.64.0-r4`).** The `1.64.0-r4` release publishes the `pwmcp-ocr` image
+alongside the main pwmcp image. It remains opt-in: `pwmcp.ocr.enabled` defaults to false. With the
+defaults, enabling `pwmcp.ocr` selects that published image. For local development or changes to the
+sidecar image, build it from `pwmcp/` and use the coordinate rendered by your config:
 
 ```bash
-# from the pwmcp/ directory; tag it with the coordinate your config renders (the default is shown)
-docker build -f containers/ocr/Dockerfile -t ghcr.io/volkb79-2/pwmcp-ocr:1.64.0-r3 .
+docker build -f containers/ocr/Dockerfile -t ghcr.io/volkb79-2/pwmcp-ocr:1.64.0-r4 .
 ```
 
 Compose renders `image: <registry>/<namespace>/<name>:<tag>` from `[pwmcp.ocr.image]` with
@@ -495,10 +497,10 @@ Compose renders `image: <registry>/<namespace>/<name>:<tag>` from `[pwmcp.ocr.im
 To use a different name instead, set `registry`, `namespace`, `name` and `tag` under `[pwmcp.ocr.image]`
 in your `ciu.toml.j2` (together with `enabled = true` under `[pwmcp.ocr]`).
 
-**What was and was not verified.** See `KNOWN_ISSUES_TODO_BACKLOG.md` PWMCP-11: the service,
-client, CLI and compose rendering are tested offline against a fake `tesseract`; real
-Tesseract accuracy on console frames, the TSV column layout of the packaged Tesseract, the
-image build, the second-image release wiring and the wiring under a real `ciu up` are not verified until an image is built and a release is cut.
+**Release verification.** The post-release smoke for `1.64.0-r4` verifies the image's health,
+confirms `/v1/engines` reports Tesseract available (and `glyphgrid` unavailable), and checks that a
+generated PNG request returns recognized text and confidence. It does not assess OCR accuracy on
+real console frames; the gateway `/contract` reports release `1.64.0-r4`.
 
 ## KSM Opt-In (default on)
 
@@ -599,15 +601,16 @@ Releases up to and including `1.64.0-r2` carry the bundle without the `v`
 (`pwmcp-<version>.tar.xz`). The installer (`get.py`) requests only the `v`-prefixed name, so it
 cannot install those releases (PWMCP-08); pin a later release.
 
-**Two images, one release.** (The OCR image exists from the NEXT release after `1.64.0-r3`.) A release builds and pushes BOTH `ghcr.io/volkb79-2/pwmcp:<tag>` and the
-optional OCR sidecar `ghcr.io/volkb79-2/pwmcp-ocr:<tag>` (and their `latest`) with the same `<tag>`
-(`1.64.0-r3` style) in one `docker buildx bake all`; the bundle's `ciu.defaults.toml.j2` pins both
+**Two images, one release.** The `1.64.0-r4` release builds and pushes both
+`ghcr.io/volkb79-2/pwmcp:<tag>` and the OCR sidecar `ghcr.io/volkb79-2/pwmcp-ocr:<tag>` (and their
+`latest`) with the same release coordinate (`1.64.0-r4` for this release) in one `docker buildx bake all`;
+the bundle's `ciu.defaults.toml.j2` pins both
 (`[pwmcp.unified.image] tag` and `[pwmcp.ocr.image] tag`, kept equal by
 `scripts/resolve-playwright-version.py`), so a consumer that enables `pwmcp.ocr.enabled` gets the sidecar
 built with that release. The sidecar's `debian:trixie-slim` base is pinned by manifest digest like the
 Playwright base: `--refresh` re-resolves it and `--check` refuses a tag-only or inconsistent pin.
-`pwmcp.contract.json` carries no image coordinates and is unchanged. Not yet exercised by a real release
-(see `KNOWN_ISSUES_TODO_BACKLOG.md` PWMCP-11). `bake all --push` builds and pushes the two targets CONCURRENTLY, so no order is guaranteed. A PARTIAL push
+`pwmcp.contract.json` records the release and Playwright version but carries no image coordinates; the
+resolver updates its version fields alongside the image pins. `bake all --push` builds and pushes the two targets CONCURRENTLY, so no order is guaranteed. A PARTIAL push
 looks like this: one image (and its `latest`) is in GHCR and the other is missing or stale, the step fails
 and no GitHub release or git tag has been made yet. Recovery: fix the cause (token scope, network, builder)
 and re-run the push step of the SAME prepared transaction; pushing is idempotent for identical content. Do
@@ -680,6 +683,10 @@ ciu-build -d . push-images
 - [docs/USAGE.md](docs/USAGE.md) — consumer connect() and MCP usage details
 - [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md) — why standalone roots and client bundles use these boundaries
 - [docs/CONSUMERS.md](docs/CONSUMERS.md) — installation, updates, CLI inspection, MCP, and release gates
+- [GlyphGrid development tools](tools/glyphgrid/README.md) — local font atlases,
+  reference-checked reads, and deterministic synthetic images; offline tooling
+  only, with the service engine still HTTP 501. See the [design rationale](docs/DESIGN-GUIDE.md#glyphgrid-development-tooling)
+  and [pasteable examples](docs/CONSUMERS.md#glyphgrid-development-tooling).
 
 ## Testing
 
@@ -693,6 +700,18 @@ with branch coverage recorded in `coverage.json`. The slower mutation lane is
 `run-gate r2`; it is resumable and may be run separately before a release.
 PWMCP has no HTTP/OpenAPI contract, so Hypothesis is used for the pure upstream
 version-intersection invariant and Schemathesis is not applicable.
+
+### Local console corpus
+
+The repository keeps selected public, anonymous console screenshots as curated
+fixtures. The full 242-frame TrueNAS capture stays in a local directory and is
+never published. Set `PWMCP_CONSOLE_CORPUS_DIR` to an absolute path containing
+`frames/` to let the two full-corpus checks verify each frame and the pinned,
+deterministic tar digest. With no path, those checks skip with an explicit
+reason; `PWMCP_REQUIRE_CONSOLE_CORPUS=1` makes a missing corpus fail during a
+focused run. The registered gate lanes do not include or require the full
+capture. See the [design rationale](docs/DESIGN-GUIDE.md#local-console-corpus)
+and [local verification example](docs/CONSUMERS.md#local-console-corpus).
 
 ### CLI diagnostics
 

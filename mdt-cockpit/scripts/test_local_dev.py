@@ -24,7 +24,7 @@ import install_pwmcp_instance as pwmcp_installer  # noqa: E402
 import local_dev  # noqa: E402
 import manifest_sections  # noqa: E402
 
-WHEEL_NAMES = ["cli-extended", "ciu", "cmru", "topos", "nyxloom"]
+WHEEL_NAMES = ["cli-extended", "ciu", "cmru", "topos", "nyxloom", "run-gate"]
 PWMCP_VERSION = "1.64.0-r2"
 
 
@@ -559,8 +559,7 @@ def test_local_dev_tag_plan_accepts_dev_tags_and_refuses_a_release_tag(
 def test_the_build_mode_is_in_the_environment_before_the_tag_plan_is_computed(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """The bake file emits dev-only tags only in local-dev mode, so the plan must be
-    computed with the mode already set (the first real run caught this order bug)."""
+    """Bake tag preflight sees local-dev mode and the registry CMRU will use."""
     seen: dict[str, str | None] = {}
     # do_local_dev_build exports several variables with plain os.environ[...] writes; work
     # on a private copy so none of them can leak into another test (the gate caught one
@@ -573,12 +572,18 @@ def test_the_build_mode_is_in_the_environment_before_the_tag_plan_is_computed(
     monkeypatch.setattr(build_push, "run_resolver", lambda: {})
     monkeypatch.setattr(build_push.local_dev, "stage", lambda *_a, **_k: None)
     monkeypatch.setattr(build_push, "ensure_manifests_dir", lambda: None)
+    monkeypatch.setattr(
+        build_push,
+        "prepare_project_environment",
+        lambda _path: os.environ.__setitem__("REGISTRY", "ghcr.io"),
+    )
     monkeypatch.setattr(build_push, "save_build_env", lambda *_a, **_k: None)
     monkeypatch.setattr(build_push, "run_step", lambda *_a, **_k: None)
     monkeypatch.setattr(build_push, "verify_local_dev_images", lambda _plan: None)
 
     def plan(requested, build_date):
         seen["mode"] = os.environ.get("MDT_BUILD_MODE")
+        seen["registry"] = os.environ.get("REGISTRY")
         return {"t": DEV_TAGS}
 
     monkeypatch.setattr(build_push, "local_dev_tag_plan", plan)
@@ -588,6 +593,19 @@ def test_the_build_mode_is_in_the_environment_before_the_tag_plan_is_computed(
     build_push.do_local_dev_build(False, manifest, ["t"])
 
     assert seen["mode"] == "local-dev"
+    assert seen["registry"] == "ghcr.io"
+
+
+def test_prepare_project_environment_uses_registered_registry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The local-dev preflight derives its image prefix from the CMRU config."""
+    # The real API writes REGISTRY and other keys with plain os.environ[...] assignments;
+    # a private copy (restored by monkeypatch) keeps them out of every later test.
+    private_environ = {key: value for key, value in os.environ.items() if key != "REGISTRY"}
+    monkeypatch.setattr(os, "environ", private_environ)
+    build_push.prepare_project_environment(ROOT / "cmru.toml")
+    assert os.environ["REGISTRY"] == "ghcr.io"
 
 
 # ── the bake wrapper: no publishing flow is reachable with local-dev state ───

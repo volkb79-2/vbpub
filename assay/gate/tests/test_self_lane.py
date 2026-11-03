@@ -192,7 +192,8 @@ def test_analysis_r2_is_a_bounded_separate_whole_target_lane():
     )
     assert not set(judge.targets) & {target for target in lane_file.lane(QUALIFICATION_ID).judge.targets}
     assert judge.mutation is not None
-    assert judge.mutation.jobs == 1
+    assert judge.mutation.jobs_max == 1
+    assert judge.mutation.jobs is None
     assert judge.mutation.max_mutants == 10000
     assert judge.mutation.operators == (
         "python:compare-swap",
@@ -378,7 +379,8 @@ def test_self_qualification_is_full_source_r0_through_r3():
     assert lane.judge.require_branch is True
     assert lane.judge.fail_under == 100.0
     assert lane.judge.mutation is not None
-    assert lane.judge.mutation.jobs == 1
+    assert lane.judge.mutation.jobs_max == 1
+    assert lane.judge.mutation.jobs is None
     assert lane.judge.mutation.max_mutants == 10000
     assert lane.judge.mutation.shard_index is None
     assert lane.judge.mutation.shard_count is None
@@ -1842,18 +1844,21 @@ def test_self_qualification_gate_budget_matches_nyxloom_timeout():
     assert preflight_run_gate["budget"] == "75m"
 
 
-def test_preflight_measures_the_same_complete_source_inventory_before_r2():
+def test_self_qualification_judges_share_the_complete_source_inventory():
     lane_file = load_lane_file(SELF_LANE_FILE)
     qualification = lane_file.lane(QUALIFICATION_ID)
     preflight = lane_file.lane(PREFLIGHT_ID)
 
     assert preflight.rigor == ("R0", "R1")
-    assert preflight.judge is not None
     assert qualification.judge is not None
+    for lane_id in (QUALIFICATION_ID, PREFLIGHT_ID, PROVISIONAL_ID):
+        lane = lane_file.lane(lane_id)
+        assert lane.judge is not None
+        assert lane.judge.targets == qualification.judge.targets
+
     assert preflight.judge.mode == "whole_target"
     assert preflight.judge.fail_under == qualification.judge.fail_under == 100.0
     assert preflight.judge.require_branch is True
-    assert preflight.judge.targets == qualification.judge.targets
     assert tuple(
         argument.replace(
             "self-qualification-preflight", "self-qualification"
@@ -2031,7 +2036,14 @@ def test_the_postponement_marker_is_keyed_windowed_and_cleared_by_the_full_lane(
 
     assert 'TRACKING_ID = "B169"' in body
     assert "operator decision 2026-10-27" in body
-    assert "WINDOW = ((10, 0, 0), (10, 1, 0))" in body
+    assert "extended by operator on 2026-10-31" in body
+    assert "extended by operator on 2026-10-31 and" in body and "2026-11-04" in body
+    assert "WINDOW = ((10, 0, 0), (12, 1, 0))" in body
+    # one source: the window text and the refusal message derive from WINDOW
+    assert body.count("(12, 1, 0)") == 1 and "11.1.0" not in body and "12.1.0" not in body.replace(
+        "`< 12.1.0`", ""
+    )
+    assert '"window": WINDOW_TEXT' in body and "{WINDOW_TEXT}" in body
     assert '"result": "provisional"' in body and '"rigor_postponed": "R2"' in body
     assert '"cmru_release_gate_version_bound": transaction_version is not None' in body
     assert "not an R2 pass" in body
@@ -2176,16 +2188,31 @@ def test_the_postponement_marker_records_a_provisional_result_inside_its_window(
 
 
 def test_the_postponement_is_refused_once_the_window_has_closed(tmp_path):
-    proc, marker = _run_postponement(tmp_path, ["assay-v10.0.0", "assay-v10.1.0"])
+    proc, marker = _run_postponement(tmp_path, ["assay-v10.0.0", "assay-v12.1.0"])
 
     assert proc.returncode != 0
-    assert "valid only below assay 10.1.0" in proc.stderr
+    assert "valid only below assay 12.1.0" in proc.stderr
     assert not marker.exists()
+
+
+def test_an_existing_11_1_0_tag_no_longer_closes_the_window(tmp_path):
+    import json
+
+    proc, marker = _run_postponement(tmp_path, ["assay-v11.1.0"], "12.0.0")
+
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(marker.read_text(encoding="utf-8"))["window"] == (
+        "assay >= 10.0.0, < 12.1.0"
+    )
 
 
 @pytest.mark.parametrize(
     "prepared_version,allowed",
-    [("10.0.0", True), ("10.0.1", True), ("10.1.0", False), ("9.9.9", False)],
+    [
+        ("10.0.0", True), ("10.0.1", True), ("10.1.0", True), ("10.2.0", True),
+        ("10.3.0", True), ("11.0.0", True), ("11.0.1", True), ("12.0.0", True), ("12.0.9", True),
+        ("11.1.0", True), ("12.1.0", False), ("13.0.0", False), ("9.9.9", False),
+    ],
 )
 def test_the_prepared_release_version_must_be_inside_the_postponement_window(
     tmp_path, prepared_version, allowed,
@@ -2197,7 +2224,7 @@ def test_the_prepared_release_version_must_be_inside_the_postponement_window(
     assert (proc.returncode == 0) is allowed, proc.stderr
     assert marker.exists() is allowed
     if not allowed:
-        assert "authorized only for assay >= 10.0.0, < 10.1.0" in proc.stderr
+        assert "authorized only for assay >= 10.0.0, < 12.1.0" in proc.stderr
     if allowed:
         import json
 

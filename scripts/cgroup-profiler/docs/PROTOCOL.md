@@ -183,7 +183,7 @@ listener. `exec` is `true` by construction — the exec carrier is permanent
 The additive `resource_observer` field reports the distinct observer listener:
 
 ```json
-"resource_observer": {"contract": 2,
+"resource_observer": {"contract": 2, "contracts": [2, 3],
                        "path": "/run/cgprofile/observer/resource-observer.sock",
                        "listening": true}
 ```
@@ -201,8 +201,12 @@ exit code 2 over the exec carrier (§1.3). Codes: `bad-argument`,
 `report-unavailable`, `report-failed`, `stop-incomplete` (a `stop` whose
 sampling worker did not exit within 10 s: the session is NOT finalized, keeps
 its placement and DAMON resources, and `stop` may be retried; the third
-consecutive incomplete attempt finalizes anyway with `stop_forced`), and from §8.8 `peer-refused`,
-`place-refused:*`, `bad-policy`, `not-streaming`.
+consecutive incomplete attempt finalizes anyway with `stop_forced`; also
+answered when finalization itself failed, naming the error, in which case the
+session is reopened and a retry is safe), `busy` (additive, contract stays 1:
+the daemon is at an admission bound, 32 connections reading a request line, 16
+verbs running, 2 `report` verbs running or 32 `watch` streams, or is shutting down; retry shortly), and
+from §8.8 `peer-refused`, `place-refused:*`, `bad-policy`, `not-streaming`.
 
 Additive optional Summary keys (cgprofile 1.1.0; the contract number stays 1
 and the Summary schema stays v1.1; full definitions in
@@ -215,6 +219,15 @@ and the Summary schema stays v1.1; full definitions in
   finalized while its sampling worker was still alive (the third consecutive
   `stop-incomplete`, or daemon shutdown); the manifest is then `aborted` with
   the same reason. Absent otherwise.
+* `summary.ancestors_memory_events_local` — the local `memory.events` deltas of
+  the target's ancestors, so a consumer can tell reclaim driven from above the
+  lane from the lane's own limit (the lane's own events stay in `events`):
+  `[{path, high, max, oom, oom_kill}, ...]`, ordered from the target's parent
+  up to and including `/dev.slice`. Each counter is the increase over the
+  session. An ancestor whose `memory.events.local` could not be read at either
+  end keeps its `path` and carries `null` counters. A session recovered after
+  a daemon restart has no start reading, so the key is absent. Golden:
+  `tests/fixtures/rg55/summary-v1.1-ancestors.json`.
 
 ## 7. Goldens
 
@@ -274,3 +287,86 @@ Assay configures this socket explicitly and consults it only after its local
 reader proves that ancestors are hidden. Any other local failure, invalid
 response, identity mismatch, incomplete hierarchy, or positive shared-ancestor
 local event without a candidate event remains a fail-closed lane error.
+
+## 9. Observer contract 3: measurement windows
+
+Contract 3 adds two verbs to the observer socket of section 8. It is additive:
+`resource-limits` and contract 2 are unchanged for every 1.x release, a
+contract-2 client sees no difference, and `version.resource_observer` reports
+`"contract": 2` with `"contracts": [2, 3]`. The same framing rules apply: one
+request line of at most 4096 bytes including the newline, one connection, a
+five-second deadline, `SO_PEERCRED` required, the `CGPROFILE_ALLOW_UIDS`
+policy. Contract-3 replies, including errors, carry `"contract": 3`; a
+contract-2 request cannot reach the window verbs, and a contract-3 request
+cannot reach `resource-limits`.
+
+The daemon is the single source of per-subject resource numbers. A consumer
+that gets no number records `NO_MEASUREMENT` with a reason code (see
+[the consumer rules](CONSUMERS.md#measurement-windows-observer-contract-3)); it
+never reads procfs or cgroupfs itself.
+
+```json
+{"verb":"window-open","args":{"thread_id":1234,"root_pid":5678,"mode":"process-tree","interval_ms":250},"contract":3}
+{"ok":true,"contract":3,"window":"w-0123456789abcdef0123456789abcdef","mode":"process-tree","started_at":"2026-11-03T10:00:00Z","kernel":{"peak_reset":false}}
+{"verb":"window-close","args":{"thread_id":1234,"window":"w-0123456789abcdef0123456789abcdef"},"contract":3}
+```
+
+`thread_id` is the caller's native TID, proven exactly as for contract 2.
+`root_pid` is in the caller's PID namespace. `interval_ms` is optional
+(default 250) and must be 100-5000. The window id is 128 bits of hex: a
+per-daemon epoch and random bits. Fixtures (one request and its reply each):
+`tests/fixtures/rg55/observer-window-v3-open.json` and
+`observer-window-v3-close-{process-tree,cgroup,shared}.json`.
+
+**Binding.** `root_pid` must be the caller or a live descendant of it (parent
+chain), in the caller's cgroup or one below it; its start time is rechecked.
+The caller must be below the gates slice, as for contract 2. A window belongs
+to the opening process; a close from another process gets `peer-refused`.
+
+**Modes.**
+
+* `process-tree` works in a shared container. Every interval the daemon walks
+  the descendants of `root_pid`: `rss_peak_bytes` is the largest summed
+  `statm` resident size (`sampled-sum-rss`); `io_read_bytes`/`io_write_bytes`
+  sum `/proc/<pid>/io`, keeping an exited process's last value
+  (`proc-io-lower-bound`); CPU is the root's `utime+stime+cutime+cstime` at
+  close, labelled `proc-stat-exact` for an unreaped zombie root,
+  `proc-stat-live` for a running root, `proc-stat-sampled` for a reaped one
+  (its last sampled value). Everything only a cgroup can answer is
+  `REQUIRES_CGROUP_MODE`. Close a window after `waitid(WEXITED|WNOWAIT)` and
+  before reaping the root to get exact CPU.
+* `cgroup` reads the leaf that holds the root: `memory.peak` and
+  `memory.swap.peak` through file descriptors opened and reset at open
+  (per-file reset, Linux 6.12 or later; otherwise `PEAK_RESET_UNSUPPORTED` and
+  `kernel.peak_reset` is false), `cpu.stat`, `io.stat` summed over devices and
+  PSI totals, all as deltas from open. `rss_peak_bytes` is sampled as in
+  process-tree mode. `attribution.baseline_bytes` is `memory.current` at open;
+  `memory_peak_bytes - baseline_bytes` is the subject's increment (an upper
+  estimate). A file the leaf does not expose gives `CONTROLLER_DISABLED`.
+  Every interval the daemon reads `cgroup.procs`; a PID that is not in the
+  root's tree, not the caller and not one of the caller's ancestors is
+  foreign. `attribution.foreign_pids_max > 0` makes every cgroup-sourced
+  metric null with `SHARED_CGROUP`.
+
+All fifteen metric keys are always present in `metrics`; each null has its
+reason in `missing`, and each non-null has its label in `sources`.
+`attribution` is `{mode, foreign_pids_max, tree_pids_max, samples,
+baseline_bytes}` (`foreign_pids_max` is 0 and `baseline_bytes` null in
+process-tree mode). `context` is not attributed to the subject: the containing
+cgroup's PSI (`container_psi_*_seconds`) and local `memory.events` deltas
+(`container_memory_events_local`), the host's `/proc/pressure` deltas
+(`host_psi_*_seconds`), and `ancestors_memory_events_local`, the same list as
+the Summary's, over the window.
+
+**Errors.** `bad-argument` (malformed request, bad mode or interval, an unknown
+or already-closed window), `peer-refused` (no credentials, or a close from
+another process), `observer-refused` (the peer or `root_pid` cannot be bound),
+`window-refused` with `"reason":"limit"` (64 open windows per process, 4096 per
+daemon, or no file descriptors left), `window-lost` (a well-formed id the
+daemon no longer holds: it restarted, the window expired, or its process
+died), `daemon-error`.
+
+**Bounds.** A window expires after 6 hours. One daemon thread samples every
+window; request handlers only open and read, so a slow window never delays
+another peer's answer. A window keeps running maxima and sums only. Open
+windows are not persisted: after a restart a close gets `window-lost`.

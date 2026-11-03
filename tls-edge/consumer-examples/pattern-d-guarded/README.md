@@ -46,7 +46,7 @@ that Compose emits a single `$` for Traefik.
 | Context | Write |
 |---|---|
 | Directly in `docker-compose.yml` label value | `$$2y$$12$$...` (double every `$`) |
-| In `.env` via `${GUARD_HASH}` variable substitution | `$2y$12$...` (single `$`; Compose handles escaping) |
+| In `.env` via `${GUARD_HASH}` variable substitution | `GUARD_HASH='user:$2y$12$...'` (single `$`, value in single quotes) |
 
 The `.env.example` file uses the variable-substitution approach, which is
 easier to get right because you copy the hash from `gen-guard-secret.sh`
@@ -63,13 +63,14 @@ output directly — no manual doubling needed.
    # Output:  user:$2y$12$xyz...
    # Copy the output line:
    cp .env.example .env
-   # Edit .env and set GUARD_HASH=<copied line> (single $ — Compose handles escaping)
+   # Edit .env: GUARD_HASH='<copied line>'  (single $, but keep the SINGLE QUOTES
+   # so Compose does not read $2y / $12 as variable references)
    ```
 
 2. Update `docker-compose.yml`:
 
    - Replace `your-image:tag` with your actual image.
-   - Replace `guarded.my.domain` with your actual subdomain.
+   - Replace `guarded.example.test` with your actual subdomain.
    - Replace the placeholder hash with `${GUARD_HASH}` or a `$$`-escaped literal.
 
 3. Start:
@@ -93,10 +94,10 @@ With valid credentials:
 
 ```sh
 # curl
-curl -u user:mysecret https://guarded.my.domain/
+curl -u user:mysecret https://guarded.example.test/
 
 # Authorization header
-curl -H "Authorization: Basic $(printf 'user:mysecret' | base64)" https://guarded.my.domain/
+curl -H "Authorization: Basic $(printf 'user:mysecret' | base64)" https://guarded.example.test/
 
 # Browser: shows a login popup; enter username and password
 ```
@@ -114,7 +115,7 @@ not have a built-in basic-auth option.
 Two options for WebSocket access behind a basicAuth guard:
 
 - **URL-embedded credentials** (RFC 3986): some WS client libraries honour
-  `wss://user:secret@guarded.my.domain/`.  Traefik accepts this form because
+  `wss://user:secret@guarded.example.test/`.  Traefik accepts this form because
   it extracts and validates the credentials from the URL.  Check that your
   client library actually sends these as an `Authorization: Basic` header on
   the upgrade request — not all do.

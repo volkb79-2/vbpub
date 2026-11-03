@@ -1,0 +1,2 @@
+-e ../../../../../libraries/cli-extended
+truenas_api_client @ git+https://github.com/truenas/api_client.git@2a04491953d38c13f13f40729d2a4966a77c6297

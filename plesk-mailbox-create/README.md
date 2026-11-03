@@ -14,7 +14,7 @@
 
 ```
 # Install dependencies
-pip install -r requirements.txt
+pip install -r requirements-runtime.txt
 
 # Dry run first
 python plesk_email_creator.py emails.csv --dry-run

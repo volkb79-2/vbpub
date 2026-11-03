@@ -570,7 +570,7 @@ def _r1_with(mode, targets):
 
 def _r2_with(mode, targets):
     return JudgmentR2(
-        jobs=1,
+        jobs=1, attribution="serial",
         max_mutants=50,
         operators=("python:compare-swap",),
         mode=mode,

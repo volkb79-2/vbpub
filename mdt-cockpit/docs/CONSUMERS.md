@@ -16,7 +16,13 @@ cd /srv/pwmcp-instance
 ciu up
 ```
 
-The connected devcontainer joins the instance network. Configure an MCP client
+The connected devcontainer joins the instance network: `ciu up` attaches the container it
+runs in, and when the devcontainer is later recreated or rebuilt while the stack still runs,
+the finalize step re-attaches it automatically (no manual `docker network connect`), but only to
+the stack of the shipped instance `/srv/pwmcp-instance` (its own `ciu.env`, or the running stack
+labelled with that compose working dir; fallbacks: `INSTANCE_ID` from the environment or the
+workspace `ciu.env`); when other PWMCP stacks run on the host or the identity is unknown it joins
+nothing, and `PWMCP_STACK_CONTAINER=<container name>` in the container environment chooses one. Configure an MCP client
 inside it with:
 
 ```json
@@ -791,7 +797,7 @@ MDT_RUNTIME_IMAGE_NATIVE=<native -dev- tag> MDT_RUNTIME_IMAGE_VSC=<vsc -dev- tag
 MDT_RUNTIME_LOCAL_DEV_MANIFEST=$PWD/local-dev-artifacts.toml run-gate image-runtime
 ```
 
-Allowed names are the packages in `pip/wheels.list` (`cli-extended`, `ciu`, `cmru`, `topos`, `nyxloom`) plus
+Allowed names are the packages in `pip/wheels.list` (`cli-extended`, `ciu`, `cmru`, `topos`, `nyxloom`, `run-gate`) plus
 `pwmcp-installer` and `pwmcp-bundle`.
 An unknown, missing, unreadable or hash-mismatched entry refuses the build and names it; names you
 do not list still come from their releases. The images are loaded into your local Docker daemon as
@@ -855,7 +861,7 @@ recorded version and no age window.
 
 **First-party wheels and PWMCP have no age window either** (operator decision 2026-10-27: the 14-day
 buffer is for third-party tools and dependencies only). The wheels in `pip/wheels.list` (`cli-extended`,
-`ciu`, `cmru`, `topos`, `nyxloom`) always install their newest published `<name>-v*` release, and the
+`ciu`, `cmru`, `topos`, `nyxloom`, `run-gate`) always install their newest published `<name>-v*` release, and the
 PWMCP bundle is the release named by `pwmcp/pwmcp.contract.json` at the source commit (`get.py` verifies
 it). The third-party staged tools (`gdu`, `dust`, `ov`, `dry`, `yazi`, `sss`) take the newest release at
 least `MDT_TOOL_MIN_AGE_DAYS` old (default: the estate's `versions.age_window_days`).

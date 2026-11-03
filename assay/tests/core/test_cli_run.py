@@ -39,7 +39,7 @@ from assay import attestation, cli as cli_module
 from assay import git, provenance, verdict as verdict_module
 from assay.cli import _built_in_registry, main
 from assay.config import RIGOR_LEVELS
-from assay.errors import AssayError, Outcome, ReasonCode
+from assay.errors import AssayError, LaneConfigError, Outcome, ReasonCode
 from assay.mutation import select_mutation_shard
 from assay.output import reserve_verdict_output
 from assay.verify import verify_document
@@ -53,6 +53,136 @@ from assay.vocabulary import WITHDRAWN_MUTATION_OPERATORS
 #: all vs. metadata with no PEP 610 wheel record), so it is not pinned here;
 #: the bracketing wording IS pinned, because it is what an operator reads.
 JUDGE_PROVENANCE_ABSENT_PREFIX = "assay: no judge_provenance recorded -- "
+
+
+def test_run_parser_accepts_jobs_override():
+    args = cli_module.build_parser().parse_args(["run", "package", "--jobs", "3"])
+
+    assert args.jobs == 3
+
+
+def test_run_rejects_jobs_above_the_declared_cap_before_lane_execution(tmp_path):
+    (tmp_path / "src").mkdir()
+    lane_file = tmp_path / "assay.toml"
+    lane_file.write_text(
+        '''\
+schema_version = 2
+
+[lanes.package]
+scope = "S1"
+rigor = ["R0", "R2"]
+enforcement = "gate"
+argv = ["/bin/true"]
+env = {}
+env_passthrough = ["PATH"]
+budget = "1m"
+allow_argv_append = false
+
+[lanes.package.isolation]
+snapshot_selection = "repository"
+
+[lanes.package.judge]
+language = "python"
+source_roots = ["src"]
+base = "main"
+
+[lanes.package.judge.mutation]
+jobs_max = 2
+max_mutants = 10
+operators = ["python:bool-const-flip"]
+''',
+        encoding="utf-8",
+    )
+    args = SimpleNamespace(file=lane_file, lane="package", jobs=3)
+
+    with pytest.raises(LaneConfigError, match=r"judge.mutation.jobs_max \(2\)"):
+        cli_module._cmd_run(args, [], io.StringIO(), io.StringIO())
+
+
+def test_run_rejects_jobs_override_for_a_non_native_r2_lane(tmp_path):
+    lane_file = tmp_path / "assay.toml"
+    lane_file.write_text(R0_LANE, encoding="utf-8")
+    args = SimpleNamespace(file=lane_file, lane="package", jobs=1)
+
+    with pytest.raises(LaneConfigError, match="--jobs requires a native R2 mutation lane"):
+        cli_module._cmd_run(args, [], io.StringIO(), io.StringIO())
+
+
+def test_run_rejects_a_nonpositive_jobs_override_before_lane_execution(tmp_path):
+    (tmp_path / "src").mkdir()
+    lane_file = tmp_path / "assay.toml"
+    lane_file.write_text(
+        "schema_version = 2\n\n"
+        "[lanes.package]\n"
+        'scope = "S1"\n'
+        'rigor = ["R0", "R2"]\n'
+        'enforcement = "gate"\n'
+        'argv = ["/bin/true"]\n'
+        "env = {}\n"
+        'env_passthrough = ["PATH"]\n'
+        'budget = "1m"\n'
+        "allow_argv_append = false\n\n"
+        "[lanes.package.isolation]\n"
+        'snapshot_selection = "repository"\n\n'
+        "[lanes.package.judge]\n"
+        'language = "python"\n'
+        'source_roots = ["src"]\n'
+        'base = "main"\n\n'
+        "[lanes.package.judge.mutation]\n"
+        "jobs_max = 2\n"
+        "max_mutants = 10\n"
+        'operators = ["python:bool-const-flip"]\n',
+        encoding="utf-8",
+    )
+    args = SimpleNamespace(file=lane_file, lane="package", jobs=0)
+
+    with pytest.raises(LaneConfigError, match="--jobs must be a positive integer"):
+        cli_module._cmd_run(args, [], io.StringIO(), io.StringIO())
+
+
+def test_run_rejects_jobs_override_for_candidate_pilot(tmp_path):
+    (tmp_path / "src").mkdir()
+    lane_file = tmp_path / "assay.toml"
+    lane_file.write_text(
+        '''\
+schema_version = 2
+
+[lanes.package]
+scope = "S1"
+rigor = ["R0", "R2"]
+enforcement = "gate"
+argv = ["/bin/true"]
+env = {}
+env_passthrough = ["PATH"]
+budget = "1m"
+allow_argv_append = false
+
+[lanes.package.isolation]
+snapshot_selection = "repository"
+
+[lanes.package.judge]
+language = "python"
+source_roots = ["src"]
+base = "main"
+
+[lanes.package.judge.mutation]
+jobs_max = 2
+max_mutants = 10
+operators = ["python:bool-const-flip"]
+''',
+        encoding="utf-8",
+    )
+    args = SimpleNamespace(
+        file=lane_file,
+        lane="package",
+        jobs=2,
+        candidates_file=tmp_path / "missing-candidates.json",
+        state_dir=tmp_path / "state",
+        pilot_jobs=None,
+    )
+
+    with pytest.raises(LaneConfigError, match="--jobs cannot be combined with --candidates-file"):
+        cli_module._cmd_run(args, [], io.StringIO(), io.StringIO())
 JUDGE_PROVENANCE_ABSENT_SUFFIX = (
     "; pass --require-judge-provenance to refuse instead of proceeding\n"
 )
@@ -417,6 +547,7 @@ operators = ["python:compare-swap"]
         # max_mutants/operators policy that only a native run has.
         "producer": "native",
         "jobs": 1,
+        "attribution": "serial",
         "max_mutants": 50,
         "operators": ["python:compare-swap"],
         # P33/V5-4: DERIVED from `kill_signal_artifact`'s absence (A-223b),
@@ -1358,7 +1489,10 @@ def test_run_refuses_sql_at_r1_the_language_is_registered_r2_only(
 
 
 def test_a_go_r1_lane_now_resolves_and_is_refused_for_the_TOOLCHAIN_not_the_registry(
-    git_repo: GitRepo, tmp_path: Path, validator: Draft202012Validator
+    git_repo: GitRepo,
+    tmp_path: Path,
+    validator: Draft202012Validator,
+    monkeypatch: pytest.MonkeyPatch,
 ):
     """**This test INVERTED in Wave C (A-394), and the inversion is the
     point.** It used to assert ``ERROR``/``BAD_LANE_CONFIG`` -- "go is not in
@@ -1370,8 +1504,9 @@ def test_a_go_r1_lane_now_resolves_and_is_refused_for_the_TOOLCHAIN_not_the_regi
     ``NO_MEASUREMENT``/``MISSING_EXTERNAL_TOOL`` (exit 3, not 2) is A-253's
     preflight over ``GoAdapter.external_tools == ("go",)``, and it is the
     property that makes A-394's registration safe in an environment with no
-    Go toolchain -- this devcontainer, and the registered gate's own
-    ``tester-unified`` image, are both such environments. The distinction the
+    Go toolchain. The standard ``tester-unified`` image now includes Go for
+    downstream consumers, so this test explicitly simulates the absent-tool
+    environment. The distinction the
     two reason codes draw is real and worth keeping sharp:
     ``BAD_LANE_CONFIG`` says *assay cannot judge this language*, which is a
     statement about the build and is answered by shipping an adapter;
@@ -1410,6 +1545,22 @@ def test_a_go_r1_lane_now_resolves_and_is_refused_for_the_TOOLCHAIN_not_the_regi
     path = _write_and_commit_lane(git_repo, lane)
     for name in ("src", "scripts"):
         (git_repo.path / name).mkdir(exist_ok=True)
+
+    # Keep this missing-tool case independent of toolchains provided by the
+    # tester-unified image. The real CLI still runs; only the Go prerequisite
+    # lookup sees Go as absent.
+    import shutil
+
+    from assay import runner as runner_module
+
+    real_which = shutil.which
+    monkeypatch.setattr(
+        runner_module.shutil,
+        "which",
+        lambda tool, *args, **kwargs: (
+            None if tool == "go" else real_which(tool, *args, **kwargs)
+        ),
+    )
 
     code, out, err = run(["run", "package", "--file", str(path), "--verdict-json", "-"])
 

@@ -1400,11 +1400,13 @@ def test_run_mutation_auto_budget_is_derived_and_drives_enforcement(tmp_path):
 
     assert result is not None and not isinstance(result, str)
     # This fake runner proves the derived timeout is delivered and reported;
-    # the real-child test below separately proves the child wait enforces it.
+    # AP-5 retries the one budget-exceeded candidate once, while the surviving
+    # candidate runs once. The real-child test below separately proves that
+    # each child wait enforces the timeout.
     assert len(result.budget_exceeded) == 1
     assert len(result.survived) == 1
     assert result.budget_per_candidate_derived_s == expected
-    assert candidate_timeouts == [expected, expected]
+    assert candidate_timeouts == [expected, expected, expected]
 
     events = [
         json.loads(line)
@@ -1423,8 +1425,10 @@ def test_auto_budget_timeout_terminates_a_real_candidate_child(tmp_path, monkeyp
     formula test above pins the shipped derivation. The blocked candidate
     starts a detached descendant and records its PID before waiting forever;
     the isolated runner must time out the leader, then kill and reap that
-    descendant before returning. A five-second candidate bound gives the
-    child interpreter time to start under host load.
+    descendant before returning. WP1 classifies the candidate as crashed
+    because a descendant outlived its leader, even though cleanup proved the
+    final process tree empty. A five-second candidate bound gives the child
+    interpreter time to start under host load.
     """
     repo = _repo(tmp_path)
     scratch = tmp_path / "scratch"
@@ -1446,7 +1450,8 @@ def test_auto_budget_timeout_terminates_a_real_candidate_child(tmp_path, monkeyp
         "    descendant = subprocess.Popen([sys.executable, '-c', "
         "'import os,time; os.setsid(); time.sleep(600)'], "
         "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
-        f"    Path({str(pid_file)!r}).write_text(str(descendant.pid))\n"
+        f"    with Path({str(pid_file)!r}).open('a', encoding='ascii') as output:\n"
+        "        output.write(str(descendant.pid) + '\\n')\n"
         "    signal.pause()\n"
         "else:\n"
         "    print('FAST', flush=True)\n"
@@ -1489,18 +1494,24 @@ def test_auto_budget_timeout_terminates_a_real_candidate_child(tmp_path, monkeyp
         )
 
     assert result is not None and not isinstance(result, str)
-    assert len(result.budget_exceeded) == 1
+    assert len(result.crashed) == 1
+    assert len(result.budget_exceeded) == 0
     assert len(result.survived) == 1
     assert result.budget_per_candidate_derived_s == derived_timeout
-    assert candidate_timeouts == [derived_timeout, derived_timeout]
-    assert pid_file.is_file(), "candidate did not start its detached child"
-    descendant_pid = int(pid_file.read_text(encoding="ascii"))
-    assert not still_running(descendant_pid), (
+    # One candidate survives; the timed-out candidate runs twice under AP-5.
+    assert candidate_timeouts == [derived_timeout, derived_timeout, derived_timeout]
+    assert pid_file.is_file(), "candidate did not start its detached children"
+    descendant_pids = [
+        int(line)
+        for line in pid_file.read_text(encoding="ascii").splitlines()
+    ]
+    assert len(descendant_pids) == 2
+    assert all(not still_running(pid) for pid in descendant_pids), (
         "isolated runner returned while a detached candidate descendant lived"
     )
-    assert result.budget_exceeded[0].process_tree_evidence is not None
-    assert result.budget_exceeded[0].process_tree_evidence.leader_status == "timeout-killed"
-    assert result.budget_exceeded[0].process_tree_evidence.outliving_descendants >= 1
+    assert result.crashed[0].process_tree_evidence is not None
+    assert result.crashed[0].process_tree_evidence.leader_status == "timeout-killed"
+    assert result.crashed[0].process_tree_evidence.outliving_descendants >= 1
 
 
 def test_run_mutation_refuses_auto_and_an_explicit_seconds_together(tmp_path):

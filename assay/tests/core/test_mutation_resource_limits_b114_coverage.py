@@ -69,6 +69,10 @@ def _read(tree) -> ResourceLimitCounters:
     return read_current_cgroup_counters(cgroup_file=tree[3], mountinfo_file=tree[4])
 
 
+def _between(before, after):
+    return ResourceLimitEvidence.between(before, after)[0]
+
+
 def _clean_evidence() -> ResourceLimitEvidence:
     before = ResourceLimitCounters(
         pids_max=4, memory_oom=8, memory_max=6,
@@ -78,7 +82,7 @@ def _clean_evidence() -> ResourceLimitEvidence:
         pids_max=4, memory_oom=8, memory_max=6,
         memory_oom_kill=10, memory_oom_group_kill=12,
     )
-    return ResourceLimitEvidence.between(before, after)
+    return _between(before, after)
 
 
 def test_valid_combined_process_and_memory_observation_round_trips(cgroup_tree):
@@ -90,9 +94,10 @@ def test_valid_combined_process_and_memory_observation_round_trips(cgroup_tree):
         memory_oom_kill=10,
         memory_oom_group_kill=12,
         limit_signature=(
-            (str(cgroup_tree[2]), 31, True, 16, True, 4096, True, True, True, True, False, False),
-            (str(cgroup_tree[1]), 31, True, 16, True, 4096, True, True, True, True, False, False),
+            (str(cgroup_tree[2]), 31, True, True, True, True, True, True, False, False),
+            (str(cgroup_tree[1]), 31, True, True, True, True, True, True, False, False),
         ),
+        limit_values=((16, 4096), (16, 4096)),
         path_event_counters=(
             (str(cgroup_tree[2]), 2, 3, 4, 5, 6, 2, 3, 4, 5, 6),
             (str(cgroup_tree[1]), 2, 3, 4, 5, 6, 2, 3, 4, 5, 6),
@@ -102,7 +107,7 @@ def test_valid_combined_process_and_memory_observation_round_trips(cgroup_tree):
     (cgroup_tree[2] / "memory.events").write_text(
         "max 4\noom 4\noom_kill 5\noom_group_kill 7\n", encoding="ascii"
     )
-    evidence = ResourceLimitEvidence.between(before, _read(cgroup_tree))
+    evidence = _between(before, _read(cgroup_tree))
     assert evidence.limit_hit is True
     assert evidence.pids_events_max.delta == 1
     assert evidence.memory_events_max.delta == 1
@@ -118,17 +123,18 @@ def test_hierarchical_sibling_delta_does_not_invalidate_candidate(cgroup_tree):
         "max 4\noom 4\noom_kill 5\noom_group_kill 6\n", encoding="ascii"
     )
 
-    evidence = ResourceLimitEvidence.between(before, _read(cgroup_tree))
+    evidence = _between(before, _read(cgroup_tree))
 
     assert evidence.limit_hit is False
 
 
-def test_parent_local_event_without_candidate_event_withholds_outcome(cgroup_tree):
+def test_parent_local_event_without_candidate_event_counts_as_limit_hit(cgroup_tree):
     before = _read(cgroup_tree)
     (cgroup_tree[1] / "pids.events.local").write_text("max 3\n", encoding="ascii")
 
-    with pytest.raises(ResourceLimitObservationError, match="shared ancestor resource event"):
-        ResourceLimitEvidence.between(before, _read(cgroup_tree))
+    evidence = _between(before, _read(cgroup_tree))
+    assert evidence.limit_hit is True
+    assert evidence.pids_events_max.delta == 1
 
 
 def test_reader_binds_localevents_mode_and_requires_candidate_leaf(cgroup_tree):
@@ -161,7 +167,7 @@ def test_localevents_on_inactive_candidate_controller_does_not_block_child(cgrou
     assert counters.path_event_counters[0][6] is None
 
 
-def test_localevents_regular_counter_supplies_local_ancestor_evidence(cgroup_tree):
+def test_localevents_regular_counter_attributes_local_ancestor_event(cgroup_tree):
     root, parent, _candidate, _cgroup, mountinfo = cgroup_tree
     mountinfo.write_text(
         f"31 23 0:28 / {root} ro - cgroup2 cgroup rw,pids_localevents\n",
@@ -172,8 +178,9 @@ def test_localevents_regular_counter_supplies_local_ancestor_evidence(cgroup_tre
     before = _read(cgroup_tree)
     (parent / "pids.events").write_text("max 3\n", encoding="ascii")
 
-    with pytest.raises(ResourceLimitObservationError, match="shared ancestor resource event"):
-        ResourceLimitEvidence.between(before, _read(cgroup_tree))
+    evidence = _between(before, _read(cgroup_tree))
+    assert evidence.limit_hit is True
+    assert evidence.pids_events_max.delta == 1
 
 
 @pytest.mark.parametrize("name", ["pids.events.local", "memory.events.local"])
@@ -277,9 +284,9 @@ def test_inactive_child_controller_keeps_valid_parent_evidence(cgroup_tree):
     counters = _read(cgroup_tree)
     assert (counters.pids_max, counters.memory_max, counters.memory_oom) == (2, 3, 4)
     assert counters.limit_signature[0] == (
-        str(child), 31, False, None, False, None,
-        False, False, False, False, False, False,
+        str(child), 31, False, False, False, False, False, False, False, False,
     )
+    assert counters.limit_values[0] == (None, None)
 
 
 @pytest.mark.parametrize(
@@ -634,10 +641,12 @@ def test_evidence_model_refuses_untyped_delta():
 @pytest.mark.parametrize(
     "entry",
     [
-        ("/lane", 0, True, 16, True, 4096, True, True, True, True, False, False),
-        ("/lane", 31, False, 16, True, 4096, True, True, True, True, False, False),
-        ("/lane", 31, True, 16, True, 4096, False, True, True, True, False, False),
-        ("/lane", 31, True, 16, True, 4096, True, False, True, True, False, False),
+        ("/lane", 0, True, True, True, True, True, True, False, False),
+        ("/lane", 31, True, True, False, True, True, True, False, False),
+        ("/lane", 31, True, 1, True, True, True, True, False, False),
+        ("/lane", 31, True, True, True, "yes", True, True, False, False),
+        ("/lane", 31, True, True, True, True, False, True, False, False),
+        ("/lane", 31, True, True, True, False, True, True, False, False),
     ],
 )
 def test_counter_signature_refuses_unbound_or_missing_limit_evidence(entry):
@@ -646,4 +655,59 @@ def test_counter_signature_refuses_unbound_or_missing_limit_evidence(entry):
             pids_max=0, memory_oom=0, memory_max=0,
             memory_oom_kill=0, memory_oom_group_kill=0,
             limit_signature=(entry,),
+        )
+
+
+_ACTIVE_LIMIT_SIGNATURE = (
+    "/lane", 31, True, True, True, True, True, True, False, False
+)
+_PIDS_ABSENT_LIMIT_SIGNATURE = (
+    "/lane", 31, False, True, False, True, False, True, False, False
+)
+
+
+@pytest.mark.parametrize(
+    ("signature", "values"),
+    [
+        pytest.param((), [], id="values-not-a-tuple"),
+        pytest.param((_ACTIVE_LIMIT_SIGNATURE,), (), id="missing-row"),
+        pytest.param((), ((12, 4096),), id="extra-row"),
+    ],
+)
+def test_counter_limit_values_refuse_shape_mismatch(signature, values):
+    with pytest.raises(
+        ValueError, match="limit_values must match the limit_signature entries"
+    ):
+        ResourceLimitCounters(
+            pids_max=0,
+            memory_oom=0,
+            memory_max=0,
+            memory_oom_kill=0,
+            memory_oom_group_kill=0,
+            limit_signature=signature,
+            limit_values=values,
+        )
+
+
+@pytest.mark.parametrize(
+    ("signature", "values"),
+    [
+        pytest.param((_ACTIVE_LIMIT_SIGNATURE,), ((12,),), id="wrong-value-pair-size"),
+        pytest.param((_ACTIVE_LIMIT_SIGNATURE,), ((True, 4096),), id="boolean-value"),
+        pytest.param((_ACTIVE_LIMIT_SIGNATURE,), ((-1, 4096),), id="negative-value"),
+        pytest.param(
+            (_PIDS_ABSENT_LIMIT_SIGNATURE,), ((12, 4096),), id="value-for-absent-limit"
+        ),
+    ],
+)
+def test_counter_limit_values_refuse_malformed_entries(signature, values):
+    with pytest.raises(ValueError, match="limit_values entries are malformed"):
+        ResourceLimitCounters(
+            pids_max=0,
+            memory_oom=0,
+            memory_max=0,
+            memory_oom_kill=0,
+            memory_oom_group_kill=0,
+            limit_signature=signature,
+            limit_values=values,
         )

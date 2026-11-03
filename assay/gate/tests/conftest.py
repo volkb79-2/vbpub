@@ -44,7 +44,7 @@ def standalone(tmp_path_factory) -> Standalone:
     fetch from, nothing to leak in.
 
     The copied source tree is deliberately ``pyproject.toml`` + ``src/`` +
-    ``analysis/src/`` only,
+    ``analysis/src/`` + the declared same-repository cowtree source,
     with no MANIFEST and no VCS plugin available, so a data file reaches the
     wheel ONLY if ``[tool.setuptools.package-data]`` puts it there. That is what
     makes the packaging oracle able to fail.
@@ -63,6 +63,13 @@ def standalone(tmp_path_factory) -> Standalone:
     shutil.copytree(
         PROJECT_ROOT / "analysis" / "src",
         source / "analysis" / "src",
+        ignore=shutil.ignore_patterns("__pycache__", "*.egg-info"),
+    )
+    standalone_cowtree_src = source.parent / "libraries" / "cowtree" / "src"
+    standalone_cowtree_src.parent.mkdir(parents=True)
+    shutil.copytree(
+        PROJECT_ROOT.parent / "libraries" / "cowtree" / "src",
+        standalone_cowtree_src,
         ignore=shutil.ignore_patterns("__pycache__", "*.egg-info"),
     )
 
@@ -103,7 +110,7 @@ def standalone(tmp_path_factory) -> Standalone:
         env=_clean_env(),
     )
     assert installed.returncode == 0, (
-        "offline install failed — with zero runtime dependencies there is "
-        f"nothing to resolve:\n{installed.stdout}\n{installed.stderr}"
+        "offline install failed — the distribution has no external runtime "
+        f"requirements to resolve:\n{installed.stdout}\n{installed.stderr}"
     )
     return Standalone(venv=venv, wheel=candidates[0])

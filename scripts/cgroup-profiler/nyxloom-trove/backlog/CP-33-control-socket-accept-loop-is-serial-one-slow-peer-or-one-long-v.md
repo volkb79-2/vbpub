@@ -3,7 +3,7 @@ kind: backlog-entry
 schema_version: 1
 id: CP-33
 title: "Control-socket accept loop is serial: one slow peer or one long verb (stop-incomplete, report) blocks every other verb; watch threads are unbounded"
-status: open
+status: fixed
 type: "bugfix"
 severity: "medium"
 component: "daemon"
@@ -56,3 +56,5 @@ independent of the sampler-owned-stop redesign and can be fixed on its own.
 ## Folds / depends
 
 Supersedes nothing; CP-24 absorbs it when it lands (its admission numbers are reused here on purpose).
+
+FIXED 2026-11-04 (05ea66bda). `_accept_loop` hands every connection to its own thread (`_admit_connection`); a reader slot (32) covers only the request-line read, a handler slot (16) wraps `_dispatch` (`_dispatch_admitted`), a watch slot (32) is held for the life of a stream; a connection over a cap, or one the OS cannot give a thread, is answered `busy` (`_refuse_busy`, bounded 0.2 s send). Verb dispatch is concurrent: the registry RLock and per-session locks already guard all shared state (`version`/`host`/`status`/`gc` are read-only snapshots). Shutdown sets `_stopping`, waits up to 12 s for in-flight verbs, then finalizes sessions, so a late `start` cannot land after finalization. `busy` is documented in `docs/PROTOCOL.md` section 6, `docs/CONSUMERS.md` and both byte-identical copies of the run-gate contract. Tests: `test_cp33_*` in `tests/test_serve.py` (stalled peer does not delay `version`; a long `host` verb does not delay `version`; handler cap answers `busy` and returns its slot; failing handler returns its slot; reader cap; watch cap and slot return; thread-start failure for both paths; shutdown drain and its bound). Delta review 2026-11-04 (fix-cgp-20261104c): `report` now has its own pool of 2 (`MAX_REPORT_JOBS`, separate from the 16 shared handler slots), and the shutdown drain is 4 s (join 4 s, forced finalize lock wait 1 s) so it fits docker's 10 s stop grace; the ciu template sets `stop_grace_period: 30s`. Note: the oracle "a `stop` that returns `stop-incomplete` after 10 s while `version` is answered within 1 s" is covered by the long-verb test with a blocking dispatch stand-in rather than a real 10 s wait.

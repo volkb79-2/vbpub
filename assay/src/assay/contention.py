@@ -1,46 +1,79 @@
 """Sample cgroup resource events around one completed Assay command window.
 
-PSI and CPU throttling remain observations, but they do not make a window
-``affected`` or change a verdict. ``affected`` means a direct pids or memory
-OOM limit event was observed in the command's cgroup subtree.
+PSI and CPU throttling are advisory. Direct resource-limit counters and sample
+availability are retained for the caller's verdict decision.
 """
 
 from __future__ import annotations
 
 import os
 from collections.abc import Callable, Mapping
-from typing import Any, Self
+from dataclasses import field
+from types import MappingProxyType
+from typing import Any, Literal, Self
 
 from . import liveness_resources, resource_limits
-from .errors import Outcome
 from .records import positional_record
+
 
 @positional_record
 class ContentionObservation:
-    status: str
-    resource_limit_hit: bool = False
+    """Captured resource evidence and pressure telemetry for one command.
+
+    ``clear`` means the direct counters were sampled successfully; it does not
+    mean they recorded no limit event. Check ``limits.limit_hit`` for that.
+    The read-only ``pressure_us`` mapping makes instances unhashable.
+    """
+
+    status: Literal["unobserved", "clear", "unavailable"]
+    limits: resource_limits.ResourceLimitEvidence | None = None
+    pressure_us: Mapping[str, int] = field(default_factory=dict)
     reasons: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        if self.status not in {"unobserved", "clear", "affected", "unknown"}:
+        if self.status not in {"unobserved", "clear", "unavailable"}:
             raise ValueError("contention status is invalid")
-        if type(self.resource_limit_hit) is not bool:
-            raise ValueError("resource_limit_hit must be a bool")
-        if (self.status == "affected") != self.resource_limit_hit:
-            raise ValueError("affected status must match resource_limit_hit")
+        if self.limits is not None and not isinstance(
+            self.limits, resource_limits.ResourceLimitEvidence
+        ):
+            raise ValueError("limits must be ResourceLimitEvidence or None")
+        if (self.status == "clear") != (self.limits is not None):
+            raise ValueError("clear status must match the presence of limits evidence")
+        if not isinstance(self.pressure_us, Mapping) or any(
+            not isinstance(name, str)
+            or not name
+            or type(value) is not int
+            or value < 0
+            for name, value in self.pressure_us.items()
+        ):
+            raise ValueError(
+                "pressure_us must map non-empty names to non-negative integers"
+            )
+        object.__setattr__(self, "pressure_us", MappingProxyType(dict(self.pressure_us)))
         if type(self.reasons) is not tuple or any(
             not isinstance(reason, str) or not reason for reason in self.reasons
         ):
             raise ValueError("contention reasons must be non-empty strings")
 
 
+def observation_input(
+    obs: ContentionObservation,
+) -> Literal["clear", "unavailable", "not_requested"]:
+    """Map an observation status to the termination classifier's vocabulary."""
+    return {
+        "unobserved": "not_requested",
+        "clear": "clear",
+        "unavailable": "unavailable",
+    }[obs.status]
+
+
 class ContentionWindow:
     """Capture this process cgroup's counters immediately around one command.
 
     The observer socket is optional for Assay consumers. B105 provides it,
-    which makes an unavailable direct-counter pre/post sample an explicit
-    unknown rather than a claim that the run was unaffected. PSI and CPU-stat
-    sample availability remains advisory and does not affect classification.
+    which makes an unavailable direct-counter pre/post sample explicit.
+    PSI and CPU-stat samples remain advisory telemetry and do not affect
+    classification.
     """
 
     def __init__(
@@ -129,7 +162,7 @@ class ContentionWindow:
             reasons.append(counter_error)
         elif self._before_counters is not None and after_counters is not None:
             try:
-                limit_evidence = resource_limits.ResourceLimitEvidence.between(
+                limit_evidence, _ = resource_limits.ResourceLimitEvidence.between(
                     self._before_counters, after_counters
                 )
             except Exception as sample_error:  # noqa: BLE001 -- preserve pressure evidence
@@ -150,127 +183,20 @@ class ContentionWindow:
                     self._before_pressure, after_pressure
                 )
             )
+            pressure_deltas = {
+                name: delta
+                for name, delta in pressure_deltas.items()
+                if name != "cgroup_cpu.nr_throttled"
+            }
             if pressure_status == "unknown":
                 reasons.append("cgroup-pressure-window-unavailable")
         else:
             reasons.append("cgroup-pressure-window-unavailable")
 
-        resource_limit_hit = bool(
-            limit_evidence is not None and limit_evidence.limit_hit
+        self.observation = ContentionObservation(
+            "clear" if limit_evidence is not None else "unavailable",
+            limits=limit_evidence,
+            pressure_us=pressure_deltas,
+            reasons=tuple(reasons),
         )
-        if resource_limit_hit and limit_evidence is not None:
-            reasons.extend(
-                f"{name}={counter.delta}"
-                for name, counter in (
-                    ("pids_events_max", limit_evidence.pids_events_max),
-                    ("memory_events_max", limit_evidence.memory_events_max),
-                    ("memory_events_oom", limit_evidence.memory_events_oom),
-                    ("memory_events_oom_kill", limit_evidence.memory_events_oom_kill),
-                    (
-                        "memory_events_oom_group_kill",
-                        limit_evidence.memory_events_oom_group_kill,
-                    ),
-                )
-                if counter.delta > 0
-            )
-        if pressure_status == "stalled":
-            reasons.extend(
-                f"{name}={value}" for name, value in sorted(pressure_deltas.items())
-            )
-
-        if resource_limit_hit:
-            self.observation = ContentionObservation(
-                "affected",
-                resource_limit_hit=True,
-                reasons=tuple(reasons),
-            )
-        elif limit_evidence is not None:
-            # PSI and CPU-stat sampling are advisory. Once the direct
-            # pids/OOM counters are readable, their result alone determines
-            # whether a failed command can be classified.
-            self.observation = ContentionObservation("clear", reasons=tuple(reasons))
-        else:
-            self.observation = ContentionObservation("unknown", reasons=tuple(reasons))
         return False
-
-
-def withhold_canary_result(
-    observation: ContentionObservation,
-    *,
-    outcome: Outcome,
-    require_observation: bool = False,
-) -> bool:
-    """Whether a canary result is unclassifiable from its resource window.
-
-    A cgroup OOM or pids-limit event can directly prevent a command from
-    completing when the command failed. A required unavailable direct-counter
-    sample also prevents classifying a failed control or transform, while
-    completed passes remain usable without a sample. PSI and CPU throttling do
-    not change the result. Command timeouts and other incomplete outcomes are
-    already infrastructure.
-    """
-    if not isinstance(observation, ContentionObservation):
-        raise TypeError("observation must be a ContentionObservation")
-    if not isinstance(outcome, Outcome):
-        raise TypeError("outcome must be an Outcome")
-    if type(require_observation) is not bool:
-        raise TypeError("require_observation must be a bool")
-    if outcome is not Outcome.FAIL:
-        return False
-    if observation.resource_limit_hit:
-        return True
-    if observation.status == "unobserved":
-        return require_observation
-    return observation.status in {"affected", "unknown"}
-
-
-def withhold_r0_result(
-    observation: ContentionObservation,
-    *,
-    outcome: Outcome,
-    require_observation: bool = False,
-) -> bool:
-    """Whether an R0 result is unclassifiable from its resource window.
-
-    A direct pids/OOM event makes a failed R0 measurement incomplete.
-    Completed PASS results stay final. A failed command with an unavailable
-    required direct-counter observation is incomplete. PSI and throttling do
-    not affect the result. Command-budget expiry is already an incomplete
-    outcome.
-    """
-    if not isinstance(observation, ContentionObservation):
-        raise TypeError("observation must be a ContentionObservation")
-    if not isinstance(outcome, Outcome):
-        raise TypeError("outcome must be an Outcome")
-    if type(require_observation) is not bool:
-        raise TypeError("require_observation must be a bool")
-    if outcome is not Outcome.FAIL:
-        return False
-    if observation.resource_limit_hit:
-        return True
-    return observation.status in {"affected", "unknown"} or (
-        require_observation and observation.status == "unobserved"
-    )
-
-
-def withhold_r1_result(
-    observation: ContentionObservation,
-    *,
-    outcome: Outcome,
-) -> bool:
-    """Whether an R1 coverage claim is incomplete under its R0 window.
-
-    A direct pids/OOM event can make a failed R0 command or coverage result
-    incomplete. Completed PASS results stay final. PSI and throttling do not
-    affect a completed coverage claim; an unavailable direct-counter
-    observation withholds a failed claim.
-    """
-    if not isinstance(observation, ContentionObservation):
-        raise TypeError("observation must be a ContentionObservation")
-    if not isinstance(outcome, Outcome):
-        raise TypeError("outcome must be an Outcome")
-    if outcome is not Outcome.FAIL:
-        return False
-    return observation.resource_limit_hit or observation.status in {
-        "unknown", "unobserved"
-    }

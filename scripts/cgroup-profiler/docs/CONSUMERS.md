@@ -401,6 +401,55 @@ Assay's own fail-closed attribution; it is evidence that the live daemon
 reports the distinction at all. Until this has been run against the released
 daemon, CP-20 stays `carved`.
 
+## Measurement windows (observer contract 3)
+
+cgprofile 1.2.0 and later also answer `window-open` and `window-close` on the
+same observer socket (contract 3; contract 2 and `resource-limits` are
+unchanged). A window returns one subject's resource numbers: peak RSS, CPU, I/O
+bytes and operations, memory and swap peaks and PSI stall time. The daemon is
+the single source of these numbers. A consumer that obtains none records an
+explicit `NO_MEASUREMENT` with one reason code and never reads procfs or
+cgroupfs to fill the gap. The wire is in
+[the observer protocol](PROTOCOL.md#9-observer-contract-3-measurement-windows).
+
+Choose the mode by what the subject shares:
+
+- **`process-tree`** works in a shared container (a pytest worker, an Assay
+  candidate at jobs above 1). RSS and I/O bytes are sampled lower bounds and CPU
+  is exact when the window is closed after `waitid(WEXITED|WNOWAIT)` and before
+  the root is reaped. IOPS, PSI and cgroup peaks are `REQUIRES_CGROUP_MODE`.
+- **`cgroup`** is exact but attributable only while nothing else runs in the
+  subject's leaf: use it at jobs=1 in a tester container. A foreign process seen
+  during the window turns every cgroup-sourced number into `SHARED_CGROUP`.
+  Per-file `memory.peak` reset needs Linux 6.12 or later, otherwise the two peak
+  metrics are `PEAK_RESET_UNSUPPORTED`.
+
+What a consumer does when no window is available:
+
+| Situation | Record |
+|---|---|
+| Socket path absent or not mounted | `NO_MEASUREMENT` / `OBSERVER_UNAVAILABLE` |
+| `version.resource_observer.contracts` lacks 3, or the verbs get `bad-argument` | `NO_MEASUREMENT` / `OBSERVER_CONTRACT_UNSUPPORTED`; ask once per run |
+| `peer-refused` or `observer-refused` | `NO_MEASUREMENT` / `OBSERVER_REFUSED` |
+| `window-refused`, `daemon-error`, timeout or a malformed reply | `NO_MEASUREMENT` / `OBSERVER_ERROR`; after 3 consecutive failures stop asking |
+| `window-lost` on close (daemon restart, expiry) | `NO_MEASUREMENT` / `WINDOW_LOST` |
+
+A missing measurement never changes a verdict, a bucket or an exit code. A
+non-null metric with a `missing` entry elsewhere in the same reply makes the
+profile `PARTIAL`, not `NO_MEASUREMENT`.
+
+Windows are not persisted and are released when the daemon stops. Close every
+window; an unclosed one counts against the per-process limit of 64 until it
+expires after 6 hours or its process exits.
+
+The Summary of a lane session also gains an optional
+`ancestors_memory_events_local` key: the increase in the local `high`, `max`,
+`oom` and `oom_kill` counters of each ancestor up to `dev.slice`. A positive
+`high` or `max` there means reclaim was driven from above the lane, which a
+consumer classifies as contamination rather than as the lane's own limit. The
+same list is in a window's `context`. Host-wide `/proc/pressure` figures are
+context only: on a shared host they are high for reasons unrelated to the lane.
+
 ## Resolve a target from a cockpit
 
 In helper mode, `self` means the invoking container. The caller resolves its
@@ -440,6 +489,7 @@ The version response has the current wire shape:
   },
   "resource_observer": {
     "contract": 2,
+    "contracts": [2, 3],
     "path": "/run/cgprofile/observer/resource-observer.sock",
     "listening": true
   }
@@ -483,6 +533,48 @@ left `running` as an orphan.
 `serve` refuses to run anywhere but inside a container whose cgroup is under a
 bounded top-level `cgprofile.slice` (see `infra/README.md`); a non-container or
 development `serve` run is refused too. Pre-creation proof is CIU-150.
+
+**When `ctl` cannot reach the daemon** (CP-31), the `could not reach the daemon`
+line on stderr (exit 3) ends in a `[cause: ...]` that names which of three
+situations applies, using only what the calling process can see:
+
+- `socket-not-mounted`: the socket's directory does not exist in this
+  environment (a nested or sandboxed lane without the `/run/cgprofile` bind).
+- `socket-missing`: the directory exists but the socket node is gone (the
+  daemon container is not running, or the node was removed).
+- `daemon-refusing`: the node exists and nothing listens (the daemon exited or is
+  restarting; a daemon that refuses to start, for example on the
+  `cgprofile.slice` guard above, restarts forever and leaves exactly this).
+  `socket-permission` is the fourth, separate case: the node exists but this
+  user may not connect.
+
+A running daemon also checks every few seconds that its socket path still holds
+its own listener. It rebinds when the node was removed or replaced, and exits 3
+(so `restart: unless-stopped` recreates it) when it cannot. At start it never
+deletes a non-socket node and never replaces a socket another daemon still
+answers on: `serve` exits 2 and names the path (CP-34).
+
+**Concurrency and `busy`** (CP-33). Every connection is served on its own
+thread, so a client that sends its request line slowly, or a long verb (`report`,
+a `stop` against a wedged worker), no longer delays other verbs. Admission is
+bounded: 32 connections reading a request line, 16 verbs running, 32 open
+`watch` streams, and a separate pool of 2 running `report` verbs (a report is
+a heavy subprocess, so it cannot starve `status` or `stop`). A request over a
+bound is answered
+`{"ok": false, "error": {"code": "busy", ...}}`; the code is additive (contract
+stays 1) and the right reaction is to retry shortly. `version`, `host`,
+`status` and `gc` are read-only snapshots; `start`, `stop` and `report` are
+guarded by the registry and session locks.
+
+**Stopping the daemon.** On SIGTERM the daemon waits up to 4 s for running
+verbs, up to 4 s for the sampling workers, then finalizes the live sessions
+(forced, with a 1 s session-lock wait), so a normal stop ends in about 9 s.
+Live sessions are finalized as `aborted: "daemon-stopped"`; a daemon that exits
+3 after losing its control socket aborts them the same way. Docker's default
+stop grace is 10 s, too close for a wedged session, so run the daemon with
+`stop_grace_period: 30s` (the ciu project sets it) or `docker stop --time 30`.
+A session that could not be finalized in time is recovered as an orphan at the
+next start.
 
 A stopped session whose DAMON owner was closed carries
 `summary.damon_cleanup: {"confirmed": <bool>, "slot": <int|null>,

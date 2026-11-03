@@ -301,7 +301,7 @@ def build_inconclusive() -> Verdict:
                 base="0000000000000000000000000000000000000a",
             ),
             r2=JudgmentR2(
-                jobs=1,
+                jobs=1, attribution="serial",
                 max_mutants=50,
                 operators=("python:compare-swap",),
                 kill_attribution="unattributed",

@@ -65,4 +65,6 @@ def test_graph_ignores_unrendered_selection_and_does_not_render(monkeypatch, tmp
     assert deploy.action_graph(
         tmp_path, Profile(), [{"path": "apps/not-rendered"}], {}, fmt="json"
     ) == 0
-    assert "No stacks with requires/provides — nothing to graph" in capsys.readouterr().out
+    captured = capsys.readouterr()
+    assert "No stacks with requires/provides — nothing to graph" in captured.err
+    assert captured.out == ""

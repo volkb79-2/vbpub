@@ -1,0 +1,14 @@
+# cowtree source qualification runs in tester-unified; it is embedded by consumers.
+schema_version = 1
+
+[lanes.cowtree]
+kind = "assay"
+assay_lane = "cowtree"
+environment = "tester-unified"
+resource_observer = "cgprofile"
+budget = "180m"
+
+[lanes.cowtree.resources]
+pids = 4096
+memory = "2g"
+memory_swap = "4g"

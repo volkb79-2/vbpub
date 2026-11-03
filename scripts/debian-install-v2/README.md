@@ -31,9 +31,10 @@ that operation's required settings and full invocation syntax.
 
 The settings wizard writes a validated mode-0600 JSON file. The same shipped
 configuration loader validates both wizard output and hand-authored files; the
-wizard is not a second schema. Adoption, safe install examples, and remote
-bootstrap steps are in [docs/CONSUMERS.md](docs/CONSUMERS.md); command and
-wizard design rationale is in [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md).
+wizard is not a second schema. Its optional Questionary prompts are installed
+from `requirements-wizard.txt`; see [docs/CONSUMERS.md](docs/CONSUMERS.md)
+for adoption and install steps and [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md)
+for the [prompt library boundary](docs/DESIGN-GUIDE.md#prompt-library-boundary).
 Verbs that consume settings require exactly one of `--config FILE` and
 `--config-json JSON`; their generated usage shows that required choice.
 The generated remote custom-script launcher uses Python’s standard-library
@@ -133,6 +134,14 @@ adjacent commits. This small launch-time race is accepted; after the Git fetch,
 the installer code and released profile are read from the same checked-out
 tree. See the [design rationale](docs/DESIGN-GUIDE.md#private-vm-seed-iso-and-moving-profiles).
 
+The seed ISO can also boot the installer on a self-hosted VM: use a Debian
+Trixie cloud image as the boot disk and attach the seed ISO as a NoCloud data
+CD-ROM. Step-by-step setup for TrueNAS, Proxmox with ZFS storage, and Hyper-V
+is in [the hypervisor consumer guide](docs/CONSUMERS.md#boot-a-debian-cloud-vm-with-the-private-seed-iso).
+The boot-disk/seed split and the reason disk capacity must be chosen explicitly
+are in the [design guide](docs/DESIGN-GUIDE.md#hypervisor-boot-disk-and-nocloud-seed).
+For TrueNAS API-managed VM lifecycle, use [`tnt`](../../truenas/tnt/README.md).
+
 ## Cloud-init cache cleanup policy
 
 The shared config/profile key `cloud_init_cleanup_mode` controls cloud-init
@@ -171,6 +180,13 @@ default, `root_resize_policy: "resize"` sizes the ext root partition to the
 largest safe extent after the configured swap area; it may grow online or
 shrink offline in an initramfs pre-mount hook. `grow-only` can use available
 space but never shrinks root. `untouched` forbids root geometry changes.
+Set `root_max_size_gb` to cap the root partition while keeping space after
+root and configured swap unallocated for a later data partition. A cap requires
+`swap_policy: "on"` and at least one managed tail swap partition directly after
+root; layouts without that boundary are refused. This limit is not a request to
+format or mount that space. See the
+[root sizing design](docs/DESIGN-GUIDE.md#root-and-swap-policies) and the
+[consumer example](docs/CONSUMERS.md#root-and-swap-policy).
 
 `swap_policy: "on"` (default) replaces the guest's configured swap setup with
 native GPT swap partitions. It disables all active swap, removes configured
@@ -204,7 +220,7 @@ provider capacities (decimal GB; actual sizing uses bytes):
 | 256 GB | 8 | 16 | 32 | 48 | 48 | 48 |
 | 512 GB | 8 | 16 | 32 | 64 | 95 | 95 |
 
-Core layout settings are:
+The default root and swap layout settings are:
 
 ```json
 {
@@ -216,6 +232,36 @@ Core layout settings are:
   "preserve_root_size_gb": 10
 }
 ```
+
+To cap root and choose a fixed managed swap size, use:
+
+```json
+{
+  "schema_version": 1,
+  "root_resize_policy": "resize",
+  "root_max_size_gb": 40,
+  "swap_policy": "on",
+  "swap_disk_total_gb": 8,
+  "swap_partition_count": 4,
+  "preserve_root_size_gb": 10
+}
+```
+
+`root_max_size_gb` is an optional upper bound in GiB. With `resize`, a larger
+current root is shrunk safely and a smaller root can grow up to the cap. The
+cap must be at least `preserve_root_size_gb`. `grow-only` and `untouched`
+refuse a current root larger than the cap because honoring it would require a
+shrink. A cap requires `swap_policy: "on"` and at least one managed tail swap
+partition directly after root. Swap off, untouched swap, or a plan where
+retained pre-root swap needs no tail partition is refused because cloud-init or
+stage-two growth could otherwise consume the cap. The cap measures root
+partition length from its existing start, so a non-MiB-aligned start does not
+reduce the configured limit. When a cap is set, stage one installs and stage
+two repeats guards against automatic root growth by writing
+`/etc/cloud/cloud.cfg.d/99-debian-install-v2-root-cap.cfg` with
+`growpart: {mode: off}` and `resize_rootfs: false`, and creating
+`/etc/growroot-disabled` for initramfs growroot. The remaining space after
+root and managed swap stays unallocated across later boots.
 
 When `swap=on` cannot fit without shrinking, `root=untouched` and
 `root=grow-only` fail with the requested and available space rather than
@@ -455,7 +501,7 @@ only, 2 attempts / 10 s timeout, 4xx other than 429 is not retried, after 3 fail
 look like `✅ **netcup-1** (`vmi123`) | run `ab12cd34` | stage1 | done`; a
 failure carries a short redacted log tail as a fenced block. Telegram
 (`telegram_bot_token`/`telegram_chat_id`, `telegram_verbose_progress`) keeps
-working. Both include host facts. See `mattermost-server/CONSUMER.md` for the
+working. Both include host facts. See `voice-screen-share/mattermost-server/CONSUMER.md` for the
 producer contract. The webhook URL is never printed (only its host), is
 redacted in `--debug`/`--debug-raw`, and is not written to `state.json`. An ephemeral controller
 SSH pubkey (`controller_ssh_pubkey`) is installed for external monitoring
@@ -540,9 +586,21 @@ scope, not ongoing config management, so it plausibly still belongs here.
 
 ## Testing
 
-`testing/` — a privileged systemd container for `inuse_partition_editor.py`'s
-real `--commit`/loop-device partition tests (never run real `swapon` there —
-see `testing/README.md`). `testing/vm/` — a genuinely unprivileged QEMU/TCG
-VM harness for anything that needs a real, separate guest kernel (real swap
-activation, eventually the full installer run end-to-end); see
-`testing/vm/README.md` and `testing/vm/DESIGN.md`.
+`testing/` documents the isolation boundary and ordinary mocked tests.
+`testing/vm/` is a genuinely unprivileged QEMU/TCG VM harness for anything
+that needs a real, separate guest kernel (real swap activation and full
+installer acceptance); see the [harness reference](testing/vm/README.md),
+[usage/testing guide](testing/vm/USAGE-TESTING.md), and
+[design rationale](testing/vm/DESIGN.md). The guide also describes a manual
+Geekbench 6 comparison between a four-vCPU TCG guest and a native host run
+pinned to four CPUs. It locks guest egress after download, with an optional narrow Browser
+upload allowlist, and documents host-side per-phase resource profiling; the
+benchmark has a three-hour bound. The free Geekbench binary uploads results
+automatically and needs connectivity to print its score summary, so the guide
+calls out the publication implications for both guest and native runs. See the
+[benchmark design rationale](docs/DESIGN-GUIDE.md#qemu-validation-and-host-cgroup-visibility)
+for the placement, score-comparability, and measurement trade-offs. The
+current procedure uses the cloud-init `case-b` image; Debian's NoCloud image
+needs a separate first-boot credential path (see the guide's [image-choice
+notes](testing/vm/USAGE-TESTING.md#image-choice)). Geekbench reports the guest
+CPU as `QEMU TCG CPU`; it does not pretend to be the physical EPYC host.

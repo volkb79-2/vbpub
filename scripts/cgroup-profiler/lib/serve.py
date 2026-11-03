@@ -55,8 +55,10 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 from . import access, damon as damon_mod, events as events_mod, metrics, sampler as sampler_mod
 from . import store, subtree, summary, targets as targets_mod, util
 from . import (
+    ancestor_events as ancestor_events_mod,
     limits as limits_mod,
     liveness as liveness_mod,
+    observer_windows as observer_windows_mod,
     placement as placement_mod,
     resource_observer as resource_observer_mod,
 )
@@ -66,6 +68,10 @@ CONTRACT_VERSION = 1
 RESOURCE_OBSERVER_CONTRACT_VERSION = (
     resource_observer_mod.RESOURCE_OBSERVER_CONTRACT_VERSION
 )
+# Contract 3 adds the measurement-window verbs next to contract 2's
+# `resource-limits`; `RESOURCE_OBSERVER_CONTRACT_VERSION` stays 2 for 1.x so a
+# contract-2 client sees no difference.
+RESOURCE_OBSERVER_CONTRACTS = (2, 3)
 CGPROFILE_VERSION = runtime_version("0.0.0-dev")
 
 DEFAULT_SOCKET_PATH = "/run/cgprofile/ctl.sock"
@@ -204,6 +210,36 @@ STOP_JOIN_SECONDS = 10.0
 STOP_FORCE_AFTER_ATTEMPTS = 3
 STOP_FORCED_REASON = "sampler-still-running"
 
+#: CP-33: bounded admission on the control socket (the numbers CP-24 D-33
+#: reserves). One thread serves each accepted connection; these caps keep a
+#: slow or looping client from growing the thread count without bound, and a
+#: connection over a cap is answered with the additive `busy` error.
+MAX_REQUEST_READERS = 32
+MAX_CONTROL_HANDLERS = 16
+MAX_WATCH_STREAMS = 32
+#: `report` runs a matplotlib/pandas subprocess on a load-sensitive host: it
+#: has its own cap, separate from MAX_CONTROL_HANDLERS.
+MAX_REPORT_JOBS = 2
+#: How long the accept thread waits to deliver a `busy` line to a peer it is
+#: refusing (it must never block the accept loop on a peer that never reads).
+BUSY_SEND_TIMEOUT_SECONDS = 0.2
+#: Daemon shutdown budget. docker's default stop grace is 10 s, so the sum of
+#: the in-flight drain, the worker join and one forced finalize must stay
+#: under it on the normal path (4 + 4 + 1 = 9 s); the ciu project also sets
+#: `stop_grace_period: 30s` so a wedged session still finalizes before SIGKILL.
+#: In-flight verbs, then the sampling workers, each get a bounded wait.
+SHUTDOWN_DRAIN_SECONDS = 4.0
+SHUTDOWN_JOIN_SECONDS = 4.0
+#: Session-lock wait for a forced finalize at shutdown (the process is exiting).
+SHUTDOWN_LOCK_SECONDS = 1.0
+
+#: CP-31: how often the accept loop verifies that the control socket path
+#: still holds THIS daemon's listener (same inode). 0 disables the check.
+SOCKET_CHECK_INTERVAL_SECONDS = 5.0
+#: `serve_forever` exit status when the control socket was lost and could
+#: not be rebound: non-zero so the restart policy recreates the daemon.
+EXIT_SOCKET_LOST = 3
+
 
 def daemon_slice_problem(cgroup_root: str, proc_root: str) -> Optional[str]:
     """Why the daemon is not provably contained, or None when it is (Sol B4).
@@ -247,6 +283,30 @@ def daemon_slice_bounded(cgroup_root: str, proc_root: str) -> bool:
     return daemon_slice_problem(cgroup_root, proc_root) is None
 
 
+class _RestoreClosedOnError:
+    """Context manager for the finalize section (CP-27 N9): on an exception
+    it clears ``sess.closed`` (and a forced-finalize mark), records the error
+    and SUPPRESSES it so the caller can report "not finalized". It must nest
+    inside the held session lock so the restore happens under it."""
+
+    def __init__(self, sess: Any, *, was_forced: bool) -> None:
+        self._sess = sess
+        self._was_forced = was_forced
+        self.error: Optional[BaseException] = None
+
+    def __enter__(self) -> "_RestoreClosedOnError":
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, _tb: Any) -> bool:
+        if exc is None or not isinstance(exc, Exception):
+            return False
+        self._sess.closed = False
+        if self._was_forced:
+            self._sess.stop_forced = False
+        self.error = exc
+        return True
+
+
 class _HeldLock:
     """Context manager that releases an ALREADY-acquired lock on exit, so the
     finalize section can acquire with a timeout and still read as a ``with``."""
@@ -269,6 +329,12 @@ class RequestError(Exception):
         super().__init__(message)
         self.code = code
         self.message = message
+
+
+class ControlSocketError(OSError):
+    """The control socket path cannot be bound safely (CP-34): it holds a
+    non-socket node or another daemon still answers there. `cgprofile serve`
+    turns this into a refusal to start (exit 2) with the message."""
 
 
 class HostWriteError(RuntimeError):
@@ -308,6 +374,12 @@ class _Session:
     stop_event: threading.Event = field(default_factory=threading.Event)
     stop_attempts: int = 0
     stop_forced: bool = False
+    # Why the last `_finalize_session_locked` returned False: "worker" (the
+    # sampling thread is still alive) or "lock" (the session lock stayed
+    # busy); "" when it did not. Lets `stop` say which (CP-27 N8).
+    finalize_refusal: str = ""
+    # With `finalize_refusal == "error"`: the exception text (CP-27 N9).
+    finalize_error: str = ""
     # Set under ``lock`` BEFORE placement is released and DAMON is closed
     # (Sol S6). Every sample-side action that touches those resources or the
     # session's records re-checks it under the same lock, so a wedged worker
@@ -320,6 +392,10 @@ class _Session:
     live_memory_peak_bytes: Optional[int] = None
     live_cpu_cores_recent: Optional[float] = None
     live_damon_hot_bytes_recent: Optional[int] = None
+    # CP-40: the ancestors' local memory.events at session start; the delta
+    # to the read at finalization is the Summary's
+    # `ancestors_memory_events_local`.
+    ancestor_events_start: Optional[Dict[str, Any]] = None
     last_mono: Optional[float] = None
     last_discovery_mono: Optional[float] = None
     sampler_origin_mono: Optional[float] = None
@@ -415,6 +491,11 @@ class SessionServer:
         request_line_timeout: float = REQUEST_LINE_TIMEOUT_SECONDS,
         max_request_line_bytes: int = MAX_REQUEST_LINE_BYTES,
         request_clock: Callable[[], float] = time.monotonic,
+        max_request_readers: int = MAX_REQUEST_READERS,
+        max_control_handlers: int = MAX_CONTROL_HANDLERS,
+        max_watch_streams: int = MAX_WATCH_STREAMS,
+        max_report_jobs: int = MAX_REPORT_JOBS,
+        socket_check_interval: float = SOCKET_CHECK_INTERVAL_SECONDS,
         report_python: Optional[str] = None,
         report_script: Optional[str] = None,
         report_timeout: float = DEFAULT_REPORT_TIMEOUT,
@@ -450,6 +531,13 @@ class SessionServer:
         # use the REAL `/proc` for pid/subtree resolution but wants a
         # controlled host-pressure reading overrides this separately.
         self.host_proc_root = host_proc_root if host_proc_root is not None else proc_root
+        self.windows = observer_windows_mod.WindowRegistry(
+            proc_root=self.proc_root,
+            host_proc_root=self.host_proc_root,
+            cgroup_root=self.cgroup_root,
+            mountinfo_path=os.path.join(self.proc_root, "self", "mountinfo"),
+            gates_slice_name=self.gates_slice_name,
+        )
         self.daemon_name = daemon_name
         self.clock = clock
         self.sampler_clock = sampler_clock
@@ -506,6 +594,22 @@ class SessionServer:
         self._observer_socket_identity: Optional[Tuple[int, int]] = None
         self._observer_thread: Optional[threading.Thread] = None
         self._stopping = False
+        # CP-34/CP-31: the (dev, inode) of the control listener this process
+        # bound, so shutdown and the periodic self-check act only on its own
+        # node, never on a successor's.
+        self._sock_identity: Optional[Tuple[int, int]] = None
+        self.socket_check_interval = socket_check_interval
+        self._socket_lost = False
+        # CP-33: bounded admission. Non-blocking acquires only.
+        self._reader_slots = threading.BoundedSemaphore(max_request_readers)
+        self._handler_slots = threading.BoundedSemaphore(max_control_handlers)
+        self._watch_slots = threading.BoundedSemaphore(max_watch_streams)
+        # `report` is a heavy subprocess (matplotlib/pandas): its own small
+        # class, so a slow report can neither run 16 at once nor make the
+        # cheap verbs (`status`, `stop`) answer `busy`.
+        self._report_slots = threading.BoundedSemaphore(max_report_jobs)
+        self._inflight = 0
+        self._inflight_cond = threading.Condition()
 
         self.started_at = self._iso(self.clock())
         self._guard_path(self.sessions_dir)
@@ -866,6 +970,7 @@ class SessionServer:
             # that supports the contract-2 R2 observer from an older daemon.
             "resource_observer": {
                 "contract": RESOURCE_OBSERVER_CONTRACT_VERSION,
+                "contracts": list(RESOURCE_OBSERVER_CONTRACTS),
                 "path": self.observer_socket_path,
                 "listening": observer_listening,
             },
@@ -1276,6 +1381,9 @@ class SessionServer:
                 ),
                 placement=placement_obj,
                 sampler_origin_mono=sampler_origin_mono,
+                ancestor_events_start=ancestor_events_mod.read_ancestors(
+                    self.cgroup_root, ancestor_events_mod.ancestor_paths(cgroup),
+                ),
             )
             # Sample zero is the liveness baseline as well as the summary's
             # initial sample, so status and later deltas share one observation.
@@ -1518,7 +1626,10 @@ class SessionServer:
                 if not sess.finished:
                     sess.error = str(exc)
                     # Runs on the session's own thread: the join is skipped,
-                    # so this cannot return False (Sol B2).
+                    # so it cannot return False for a live worker (Sol B2). It
+                    # CAN return False when the bounded session-lock acquire
+                    # times out; the return is ignored here and the failure is
+                    # logged inside `_finalize_session_locked` (CP-27 N6).
                     self._finalize_session_locked(sess, aborted_reason=f"session-error:{exc}")
 
     def _on_topology_noop(self, appeared: List[str], disappeared: List[str]) -> None:
@@ -1793,11 +1904,16 @@ class SessionServer:
             sess.damon_status = f"unavailable:{reason}"
             sess.damon_unavailable_reason = reason
             sess.summary_acc.mark_damon_unavailable(reason)
-
-        sess.damon_cleanup = self._close_damon_session(
-            damon_session, session_id=sess.session_id,
-            context=f"runtime failure ({reason})",
-        )
+            # CP-27 N10: close WHILE holding the session lock. Finalization
+            # takes the same lock before it reads `damon_session` and
+            # `damon_cleanup`, so it either sees the session still attached
+            # (and closes it itself) or waits and reads the finished
+            # disposition; the Summary can no longer omit `damon_cleanup`,
+            # and the late close can no longer land after the manifest.
+            sess.damon_cleanup = self._close_damon_session(
+                damon_session, session_id=sess.session_id,
+                context=f"runtime failure ({reason})",
+            )
         self._log(f"session {sess.session_id}: DAMON disabled after runtime failure: {reason}")
 
     # ── CP-8: liveness, the watch state machine, enforcement (§8.4) ──────
@@ -1977,7 +2093,11 @@ class SessionServer:
         with self._lock:
             if not sess.finished:
                 # Called from the session's own sampler thread: the join is
-                # skipped, so this cannot return False (Sol B2).
+                # skipped, so it cannot return False for a live worker (Sol
+                # B2). It CAN return False when the bounded session-lock
+                # acquire times out; the return is ignored here and the
+                # failure is logged inside `_finalize_session_locked`
+                # (CP-27 N6).
                 self._finalize_session_locked(sess, aborted_reason=None)
         self._run_retention()
 
@@ -2220,6 +2340,24 @@ class SessionServer:
                 # The worker finalized itself while we waited.
                 return self._stop_response(session_id, sess.summary_doc, already_stopped=True)
             if not self._finalize_session_locked(sess, aborted_reason=None, prejoined=True):
+                if sess.finalize_refusal == "error":
+                    raise RequestError(
+                        "stop-incomplete",
+                        f"session {session_id} could not be finalized: "
+                        f"{sess.finalize_error}; it keeps its resources and "
+                        f"was NOT finalized; retry stop",
+                    )
+                if sess.finalize_refusal == "lock":
+                    # The worker exited but the session lock stayed busy
+                    # (a short-lived verb, or a wedged locked action):
+                    # not the "worker did not exit" case (CP-27 N8).
+                    raise RequestError(
+                        "stop-incomplete",
+                        f"session {session_id} could not be finalized: the "
+                        f"session lock was busy for {STOP_JOIN_SECONDS:g}s "
+                        f"(another verb or action holds it), so it was NOT "
+                        f"finalized and its resources are still held; retry stop",
+                    )
                 # Sol B2: the sampling worker did not exit in time. The
                 # session stays live and owns its placement and DAMON
                 # resources; no finished manifest was written. The caller can
@@ -2270,6 +2408,8 @@ class SessionServer:
         worker holds the session lock the forced path still returns False
         rather than deadlock the daemon."""
         sess.stop_event.set()
+        sess.finalize_refusal = ""
+        sess.finalize_error = ""
         worker_alive = False
         if sess.thread is not None and sess.thread is not threading.current_thread():
             # `prejoined`: the caller already waited a full bound outside the
@@ -2285,6 +2425,7 @@ class SessionServer:
                         f"DAMON resources (attempt {sess.stop_attempts} of "
                         f"{STOP_FORCE_AFTER_ATTEMPTS})"
                     )
+                    sess.finalize_refusal = "worker"
                     return False
                 worker_alive = True
         # Take the session lock ONCE, bounded, and keep it for the whole
@@ -2292,13 +2433,15 @@ class SessionServer:
         # lock while a worker wedged inside a locked action never lets go.
         # On timeout nothing has changed; the caller falls back to the
         # documented orphan recovery.
-        if not sess.lock.acquire(timeout=STOP_JOIN_SECONDS):
+        lock_wait = SHUTDOWN_LOCK_SECONDS if force else STOP_JOIN_SECONDS
+        if not sess.lock.acquire(timeout=lock_wait):
             self._log(
                 f"session {sess.session_id}: the session lock is held "
                 f"(a worker is wedged inside a locked action) for "
-                f"{STOP_JOIN_SECONDS:g}s; cannot finalize, the session keeps "
+                f"{lock_wait:g}s; cannot finalize, the session keeps "
                 f"its resources and a restart recovers it as an orphan"
             )
+            sess.finalize_refusal = "lock"
             return False
         if worker_alive:
             sess.stop_forced = True
@@ -2309,7 +2452,13 @@ class SessionServer:
                 f"are released and the manifest is aborted"
             )
         ended_at = self._iso(self.clock())
-        with _HeldLock(sess.lock):
+        # CP-27 N9: `closed` is set first (below) so a wedged worker cannot
+        # act on resources under release; when the section raises, the guard
+        # restores it (under the still-held session lock) and the failure is
+        # reported as "not finalized" instead of leaving a session that is
+        # neither sampled nor finalized.
+        guard = _RestoreClosedOnError(sess, was_forced=worker_alive)
+        with _HeldLock(sess.lock), guard:
             sess.closed = True      # before release/close; see _Session.closed
             if sess.summary_acc.sample_count == 0:
                 # Stopped before a single tick landed — contract §1.5 still
@@ -2348,6 +2497,22 @@ class SessionServer:
             if sess.placement is not None:
                 sess.placement.release()
                 summary_doc["placement"] = sess.placement.block()
+            if sess.ancestor_events_start is not None:
+                summary_doc["ancestors_memory_events_local"] = ancestor_events_mod.deltas(
+                    sess.ancestor_events_start,
+                    ancestor_events_mod.read_ancestors(
+                        self.cgroup_root, list(sess.ancestor_events_start),
+                    ),
+                )
+        if guard.error is not None:
+            self._log(
+                f"session {sess.session_id}: finalization failed "
+                f"({type(guard.error).__name__}: {guard.error}); the session "
+                f"is reopened and keeps its resources, a later stop retries"
+            )
+            sess.finalize_refusal = "error"
+            sess.finalize_error = f"{type(guard.error).__name__}: {guard.error}"
+            return False
         if sess.damon_session is not None:
             # Sol B3: an unverified (possibly still active) kdamond must not
             # look like "DAMON off" to the consumer. The disposition travels
@@ -2613,7 +2778,7 @@ class SessionServer:
 
     @staticmethod
     def _requested_observer_contract(payload: bytes) -> int:
-        """Use the only supported observer contract for error envelopes."""
+        """The contract an error envelope uses: the requested one when supported."""
         try:
             request = json.loads(payload.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError):
@@ -2621,22 +2786,87 @@ class SessionServer:
         if not isinstance(request, dict):
             return RESOURCE_OBSERVER_CONTRACT_VERSION
         contract = request.get("contract")
-        if type(contract) is int and contract == RESOURCE_OBSERVER_CONTRACT_VERSION:
+        if type(contract) is int and contract in RESOURCE_OBSERVER_CONTRACTS:
             return contract
         return RESOURCE_OBSERVER_CONTRACT_VERSION
 
-    def _bind(self) -> None:
+    def _clear_control_socket_path(self) -> None:
+        """CP-34: make the control socket path free for a bind, or refuse.
+
+        Nothing is unlinked blindly: a non-socket node (regular file,
+        directory, symlink) is refused with its type named, and a socket
+        node is removed only when one bounded ``connect()`` proves it dead
+        (ECONNREFUSED). A peer that still accepts is another daemon; stealing
+        its path would leave it running, unreachable, with its sessions."""
+        path = self.socket_path
+        try:
+            existing = os.lstat(path)
+        except FileNotFoundError:
+            return
+        if not stat.S_ISSOCK(existing.st_mode):
+            kind = (
+                "a directory" if stat.S_ISDIR(existing.st_mode)
+                else "a symlink" if stat.S_ISLNK(existing.st_mode)
+                else "a regular file" if stat.S_ISREG(existing.st_mode)
+                else f"a non-socket node (mode {stat.S_IFMT(existing.st_mode):o})"
+            )
+            raise ControlSocketError(
+                errno.EEXIST,
+                f"refusing to replace {path}: it is {kind}, not a socket",
+                path,
+            )
+        probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        probe.settimeout(0.5)
+        try:
+            probe.connect(path)
+        except FileNotFoundError:
+            return
+        except ConnectionRefusedError:
+            pass
+        except OSError as exc:
+            raise ControlSocketError(
+                errno.EADDRINUSE,
+                f"cannot prove the socket at {path} is stale ({exc}); not removing it",
+                path,
+            ) from exc
+        else:
+            raise ControlSocketError(
+                errno.EADDRINUSE,
+                f"another daemon answers at {path}; refusing to replace it",
+                path,
+            )
+        finally:
+            probe.close()
+        current = os.lstat(path)
+        if (current.st_dev, current.st_ino) != (existing.st_dev, existing.st_ino):
+            raise ControlSocketError(
+                errno.EADDRINUSE,
+                f"the socket at {path} changed while checking it; not removing it",
+                path,
+            )
+        os.unlink(path)
+        self._log(f"removed a stale control socket node at {path}")
+
+    def _bind_control_socket(self) -> None:
         socket_dir = os.path.dirname(self.socket_path)
         if socket_dir:
             os.makedirs(socket_dir, exist_ok=True)
-        if os.path.exists(self.socket_path):
-            os.unlink(self.socket_path)
+        self._clear_control_socket_path()
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.bind(self.socket_path)
-        sock.listen(16)
-        sock.settimeout(self.accept_timeout)
+        try:
+            sock.bind(self.socket_path)
+            bound = os.lstat(self.socket_path)
+            sock.listen(16)
+            sock.settimeout(self.accept_timeout)
+        except BaseException:
+            sock.close()
+            raise
         self._sock = sock
+        self._sock_identity = (bound.st_dev, bound.st_ino)
         self._assert_socket_permissions(socket_dir)
+
+    def _bind(self) -> None:
+        self._bind_control_socket()
         try:
             self._bind_observer_socket()
         except OSError as exc:
@@ -2917,17 +3147,68 @@ class SessionServer:
             return False
         return uid == 0 or uid in self.allow_uids
 
+    def _unlink_control_socket_if_owned(self) -> None:
+        """Remove the control socket node only when it is the one this
+        process bound (CP-34/CP-31): a successor's node is never touched."""
+        identity = self._sock_identity
+        self._sock_identity = None
+        if identity is None:
+            return
+        try:
+            current = os.lstat(self.socket_path)
+        except OSError:
+            return
+        if not stat.S_ISSOCK(current.st_mode) or (current.st_dev, current.st_ino) != identity:
+            return
+        try:
+            os.unlink(self.socket_path)
+        except OSError:
+            pass
+
+    def _check_control_socket(self) -> None:
+        """CP-31: verify the control path still holds THIS daemon's
+        listener, and rebind when it does not (the node was removed or
+        replaced while the container stayed up). When it cannot be rebound,
+        flag the loss so the daemon exits non-zero and the restart policy
+        recreates it, rather than serve unreachable."""
+        identity = self._sock_identity
+        try:
+            current = os.lstat(self.socket_path)
+        except OSError:
+            current = None
+        if (
+            current is not None and stat.S_ISSOCK(current.st_mode)
+            and (current.st_dev, current.st_ino) == identity
+        ):
+            return
+        self._log(
+            f"control socket {self.socket_path} is "
+            f"{'missing' if current is None else 'no longer this daemon listener'}; rebinding"
+        )
+        old = self._sock
+        self._sock = None
+        self._sock_identity = None   # the node, if any, is not ours to unlink
+        if old is not None:
+            old.close()
+        try:
+            self._bind_control_socket()
+        except OSError as exc:
+            self._log(
+                f"could not rebind the control socket ({type(exc).__name__}: {exc}); "
+                f"exiting so the restart policy recreates the daemon"
+            )
+            self._socket_lost = True
+            self._stopping = True
+        else:
+            self._log(f"control socket {self.socket_path} rebound")
+
     def _close_socket(self) -> None:
         if self._sock is not None:
             try:
                 self._sock.close()
             finally:
                 self._sock = None
-        if os.path.exists(self.socket_path):
-            try:
-                os.unlink(self.socket_path)
-            except OSError:
-                pass
+        self._unlink_control_socket_if_owned()
         owned_observer_socket = self._observer_sock is not None
         observer_identity = self._observer_socket_identity
         if owned_observer_socket:
@@ -2939,8 +3220,91 @@ class SessionServer:
         if owned_observer_socket:
             self._unlink_observer_socket_if_owned(observer_identity)
 
-    def _handle_connection(self, conn: socket.socket) -> None:
+    def _admit_connection(self, conn: socket.socket) -> None:
+        """CP-33: hand one accepted connection to its own thread, so a slow
+        peer or a long verb never stalls the accept loop. A connection over
+        the request-reader cap (or one the OS cannot give a thread) is
+        answered `busy` and closed."""
+        if not self._reader_slots.acquire(blocking=False):
+            self._refuse_busy(conn, "too many connections are being read")
+            return
+        try:
+            threading.Thread(
+                target=self._handle_connection, args=(conn,),
+                kwargs={"reader_slot": True}, daemon=True,
+                name="cgprofile-conn",
+            ).start()
+        except RuntimeError:
+            self._reader_slots.release()
+            self._refuse_busy(conn, "the daemon could not start a handler thread")
+
+    def _refuse_busy(self, conn: socket.socket, why: str) -> None:
+        """Best-effort `busy` line, then close; never blocks for long."""
+        try:
+            conn.settimeout(BUSY_SEND_TIMEOUT_SECONDS)
+            self._send_line(conn, self._error_response(
+                "busy", f"{why}; retry shortly",
+            ))
+        except OSError:
+            pass
+        finally:
+            conn.close()
+
+    def _drain_inflight(self) -> None:
+        deadline = time.monotonic() + SHUTDOWN_DRAIN_SECONDS
+        with self._inflight_cond:
+            while self._inflight > 0:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    self._log(
+                        f"{self._inflight} verb(s) still running after "
+                        f"{SHUTDOWN_DRAIN_SECONDS:g}s at shutdown"
+                    )
+                    return
+                self._inflight_cond.wait(remaining)
+
+    def _begin_inflight(self) -> bool:
+        with self._inflight_cond:
+            if self._stopping:
+                return False
+            self._inflight += 1
+            return True
+
+    def _end_inflight(self) -> None:
+        with self._inflight_cond:
+            self._inflight -= 1
+            self._inflight_cond.notify_all()
+
+    def _dispatch_admitted(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        """`_dispatch` under the bounded-handler admission (CP-33). Verbs run
+        concurrently across connections; the registry/session locks already
+        guard every piece of shared state (`version`, `host`, `status` and
+        `gc` are read-only snapshots), and the cap answers `busy`. `report`
+        draws from its own small pool (`MAX_REPORT_JOBS`), never from the
+        shared handler pool."""
+        # A non-object request is refused by `_dispatch`, inside a slot.
+        verb = req.get("verb") if isinstance(req, dict) else None
+        slots = self._report_slots if verb == "report" else self._handler_slots
+        if not slots.acquire(blocking=False):
+            return self._error_response(
+                "busy",
+                "too many reports are running; retry shortly"
+                if slots is self._report_slots
+                else "too many verbs are running; retry shortly",
+            )
+        try:
+            if not self._begin_inflight():
+                return self._error_response("busy", "the daemon is shutting down")
+            try:
+                return self._dispatch(req)
+            finally:
+                self._end_inflight()
+        finally:
+            slots.release()
+
+    def _handle_connection(self, conn: socket.socket, *, reader_slot: bool = False) -> None:
         handed_off = False
+        holding_reader = reader_slot
         try:
             uid = self._peer_uid(conn)
             peer_allowed = self._peer_allowed(uid)
@@ -2982,6 +3346,11 @@ class SessionServer:
                     # dispatched operation.
                     return
                 data.extend(chunk)
+            if holding_reader:
+                # The request line is in: the reader slot guards only the
+                # slow part (waiting for a peer's bytes).
+                holding_reader = False
+                self._reader_slots.release()
             if not peer_allowed:
                 # Wait for the bounded request line before replying. Closing
                 # with the peer's write still in flight can reset AF_UNIX and
@@ -3011,15 +3380,28 @@ class SessionServer:
                 # session being watched) for the life of the stream.
                 verb, args, wire_error = self._validate_wire(req)
                 if wire_error is None and verb in STREAMING_VERBS:
+                    if not self._watch_slots.acquire(blocking=False):
+                        self._send_line(conn, self._error_response(
+                            "busy", "too many watch streams are open; retry shortly",
+                        ))
+                        return
                     thread = threading.Thread(
-                        target=self._watch_connection, args=(conn, args), daemon=True,
+                        target=self._watch_connection, args=(conn, args),
+                        kwargs={"watch_slot": True}, daemon=True,
                         name=f"cgprofile-watch-{args.get('session')}",
                     )
                     handed_off = True
-                    thread.start()
+                    try:
+                        thread.start()
+                    except RuntimeError:
+                        handed_off = False
+                        self._watch_slots.release()
+                        self._send_line(conn, self._error_response(
+                            "busy", "the daemon could not start a watch thread; retry shortly",
+                        ))
                     return
                 try:
-                    resp = self._dispatch(req)
+                    resp = self._dispatch_admitted(req)
                 except Exception as exc:  # noqa: BLE001 - RG-55 live acceptance
                     # An unanticipated bug in ONE handler must never take
                     # down the whole accept loop — that would silently kill
@@ -3050,6 +3432,8 @@ class SessionServer:
                     return
             conn.sendall((json.dumps(resp) + "\n").encode("utf-8"))
         finally:
+            if holding_reader:
+                self._reader_slots.release()
             if not handed_off:
                 conn.close()
 
@@ -3059,7 +3443,9 @@ class SessionServer:
     def _send_line(conn: socket.socket, doc: Dict[str, Any]) -> None:
         conn.sendall((json.dumps(doc) + "\n").encode("utf-8"))
 
-    def _watch_connection(self, conn: socket.socket, args: Dict[str, Any]) -> None:
+    def _watch_connection(
+        self, conn: socket.socket, args: Dict[str, Any], *, watch_slot: bool = False,
+    ) -> None:
         """One `watch` connection, on its own thread, start to `end`."""
         try:
             conn.settimeout(None)
@@ -3080,6 +3466,8 @@ class SessionServer:
                 file=sys.stderr, flush=True,
             )
         finally:
+            if watch_slot:
+                self._watch_slots.release()
             conn.close()
 
     def _watch_prepare(self, args: Dict[str, Any]) -> Tuple[_Session, float]:
@@ -3164,6 +3552,19 @@ class SessionServer:
         self._stopping = True
 
     def _stop_all_sessions(self, *, aborted_reason: str) -> None:
+        # CP-27 N11: ask every worker to stop and wait for them OUTSIDE the
+        # daemon-wide lock (one shared STOP_JOIN_SECONDS budget), as `stop`
+        # does; the locked section then only re-checks liveness.
+        with self._lock:
+            pending = [
+                (s, s.thread) for s in self._sessions.values() if not s.finished
+            ]
+        for sess, _thread in pending:
+            sess.stop_event.set()
+        deadline = time.monotonic() + SHUTDOWN_JOIN_SECONDS
+        for _sess, thread in pending:
+            if thread is not None and thread is not threading.current_thread():
+                thread.join(timeout=max(0.0, deadline - time.monotonic()))
         with self._lock:
             live = [s for s in self._sessions.values() if not s.finished]
             for sess in live:
@@ -3171,6 +3572,7 @@ class SessionServer:
                 # strand placement and DAMON, so shutdown forces (Sol S1).
                 if not self._finalize_session_locked(
                     sess, aborted_reason=aborted_reason, force=True,
+                    prejoined=True,
                 ):
                     self._log(
                         f"session {sess.session_id}: could not be finalized at "
@@ -3197,15 +3599,26 @@ class SessionServer:
             )
             self._observer_thread.start()
         try:
+            next_check = time.monotonic() + self.socket_check_interval
             while not self._stopping:
+                if self.socket_check_interval > 0 and time.monotonic() >= next_check:
+                    next_check = time.monotonic() + self.socket_check_interval
+                    self._check_control_socket()
+                    if self._stopping:
+                        break
                 try:
                     conn, _addr = self._sock.accept()
                 except socket.timeout:
                     continue
                 except OSError:
                     break
-                self._handle_connection(conn)
+                self._admit_connection(conn)
         finally:
+            # No new verb may start from here on; wait for the ones in
+            # flight so a late `start` cannot land after the sessions were
+            # finalized (CP-33: verbs now run on their own threads).
+            self._stopping = True
+            self._drain_inflight()
             try:
                 self._stop_all_sessions(aborted_reason="daemon-stopped")
             finally:
@@ -3219,6 +3632,7 @@ class SessionServer:
                                 "resource observer accept thread did not stop within 6 seconds"
                             )
                         self._observer_thread = None
+                    self.windows.shutdown()
                     try:
                         pool_closed = self.damon_pool.close()
                     except Exception as exc:  # noqa: BLE001 - shutdown remains best-effort
@@ -3340,10 +3754,12 @@ class SessionServer:
     def _observer_dispatch(
         self, payload: bytes, peer: Optional[Tuple[int, int, int]]
     ) -> Dict[str, Any]:
+        envelope_contract = self._requested_observer_contract(payload)
+
         def error(code: str, message: str) -> Dict[str, Any]:
             return {
                 "ok": False,
-                "contract": RESOURCE_OBSERVER_CONTRACT_VERSION,
+                "contract": envelope_contract,
                 "error": {"code": code, "message": message},
             }
 
@@ -3354,8 +3770,8 @@ class SessionServer:
         if not isinstance(req, dict) or any(not isinstance(key, str) for key in req):
             return error("bad-argument", "request must be a JSON object")
         contract = req.get("contract")
-        if type(contract) is not int or contract != RESOURCE_OBSERVER_CONTRACT_VERSION:
-            return error("bad-argument", "resource observer supports contract 2 only")
+        if type(contract) is not int or contract not in RESOURCE_OBSERVER_CONTRACTS:
+            return error("bad-argument", "resource observer supports contracts 2 and 3 only")
 
         if set(req) != {"verb", "args", "contract"}:
             return error(
@@ -3368,6 +3784,8 @@ class SessionServer:
             return error("bad-argument", "request 'verb' must be a string")
         if not isinstance(args, dict):
             return error("bad-argument", "request 'args' must be a JSON object")
+        if contract == 3:
+            return self._observer_window_verb(verb, args, peer, error)
         if verb != "resource-limits":
             return error(
                 "bad-argument", "resource observer socket accepts only 'resource-limits'"
@@ -3399,9 +3817,70 @@ class SessionServer:
             return error("observer-refused", str(exc))
         return {"ok": True, "contract": contract, **body}
 
-    def serve_forever(self) -> None:
+    def _observer_window_verb(
+        self,
+        verb: str,
+        args: Dict[str, Any],
+        peer: Optional[Tuple[int, int, int]],
+        error: Callable[[str, str], Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Contract 3: ``window-open`` and ``window-close``.
+
+        The bind, sampling and result live in :mod:`lib.observer_windows`; this
+        method validates the wire shape and maps refusals to error codes.
+        """
+        def is_int(value: object) -> bool:
+            return type(value) is int and value > 0
+
+        if verb == "window-open":
+            allowed = {"thread_id", "root_pid", "mode", "interval_ms"}
+            required = {"thread_id", "root_pid", "mode"}
+            if not required <= set(args) <= allowed:
+                return error(
+                    "bad-argument",
+                    "window-open takes thread_id, root_pid, mode and optional interval_ms",
+                )
+            interval = args.get("interval_ms", observer_windows_mod.DEFAULT_INTERVAL_MS)
+            if not is_int(args["thread_id"]) or not is_int(args["root_pid"]):
+                return error("bad-argument", "thread_id and root_pid must be positive integers")
+            if type(interval) is not int or not isinstance(args["mode"], str):
+                return error("bad-argument", "mode must be a string and interval_ms an integer")
+            call = lambda: self.windows.open(  # noqa: E731 - one call, two verbs
+                peer_pid=None if peer is None else peer[0],
+                peer_uid=None if peer is None else peer[1],
+                thread_id=args["thread_id"], root_pid=args["root_pid"],
+                mode=args["mode"], interval_ms=interval,
+            )
+        elif verb == "window-close":
+            if set(args) != {"thread_id", "window"}:
+                return error("bad-argument", "window-close takes exactly thread_id and window")
+            if not is_int(args["thread_id"]) or not isinstance(args["window"], str):
+                return error("bad-argument", "thread_id must be a positive integer, window a string")
+            call = lambda: self.windows.close(  # noqa: E731
+                peer_pid=None if peer is None else peer[0],
+                peer_uid=None if peer is None else peer[1],
+                thread_id=args["thread_id"], window_id=args["window"],
+            )
+        else:
+            return error(
+                "bad-argument",
+                "contract 3 accepts only 'window-open' and 'window-close'",
+            )
+        try:
+            body = call()
+        except observer_windows_mod.WindowError as exc:
+            response = error(exc.code, str(exc))
+            if exc.reason is not None:
+                response["error"]["reason"] = exc.reason
+            return response
+        return {"ok": True, "contract": 3, **body}
+
+    def serve_forever(self) -> int:
         """Blocks until :meth:`request_shutdown` is called or a signal
         arrives; stops every live session (``aborted: "daemon-stopped"``)
-        and closes the socket before returning."""
+        and closes the socket before returning. Returns 0, or
+        :data:`EXIT_SOCKET_LOST` when the control socket vanished and could
+        not be rebound (CP-31), so the restart policy recreates the daemon."""
         self._install_signals()
         self._accept_loop()
+        return EXIT_SOCKET_LOST if self._socket_lost else 0

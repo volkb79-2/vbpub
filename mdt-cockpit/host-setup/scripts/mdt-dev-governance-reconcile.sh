@@ -290,6 +290,18 @@ if [ -r "${MDT_PROC_ROOT:-/proc}/swaps" ] && [ -e "$CG/dev.slice/io.max" ]; then
   fi
 fi
 
+# --- PSI guard state (informational) -------------------------------------------
+# mdt-psi-guard temporarily owns the tier CPUWeight/IOWeight/MemoryHigh while the protected
+# units are under pressure and lists the keys in its state file. This sweep writes none of
+# those keys, so it neither skips nor overwrites anything; it only logs what the guard owns.
+# The real overwriter is systemd itself (daemon-reload / set-property re-apply the unit
+# values); see the "Known limit" in scripts/mdt-psi-guard.py.
+_psi_guard_state="${MDT_PSI_GUARD_STATE:-/run/mdt/psi-guard/state.json}"
+if [ -r "$_psi_guard_state" ]; then
+  _guard_owned=$(python3 -c 'import json,sys; print(" ".join(sorted(json.load(open(sys.argv[1])).get("owned", {}))))' "$_psi_guard_state" 2>/dev/null || true)
+  [ -n "$_guard_owned" ] && log "psi-guard currently owns: $_guard_owned"
+fi
+
 # --- slice zswap writeback policies -------------------------------------------
 # Raw cgroupfs write: fallback for systemd < 256 (no MemoryZSwapWriteback=
 # directive) and for slices activated before their unit carried the directive.

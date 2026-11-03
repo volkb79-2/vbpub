@@ -582,7 +582,7 @@ trap cleanup EXIT
 echo "B105_PHASE=clone-exact-source"
 assay_git clone --no-local --no-checkout --quiet "$worktree" "$scratch/source"
 assay_git -C "$scratch/source" sparse-checkout init --cone
-assay_git -C "$scratch/source" sparse-checkout set assay
+assay_git -C "$scratch/source" sparse-checkout set assay libraries/cowtree
 assay_git -C "$scratch/source" checkout --quiet --detach "$source_commit"
 [[ "$(assay_git -C "$scratch/source" rev-parse HEAD)" == "$source_commit" ]] \
   || die "private clone HEAD differs from selected source commit"
@@ -812,8 +812,16 @@ from pathlib import Path
 
 marker, commit, tree, version = sys.argv[1:]
 TRACKING_ID = "B169"
-DECISION = "operator decision 2026-10-27: R2 mutation waived for the release wave"
-WINDOW = ((10, 0, 0), (10, 1, 0))  # `>= 10.0.0`, `< 10.1.0`
+DECISION = (
+    "operator decision 2026-10-27; extended by operator on 2026-10-31 and "
+    "2026-11-04 (D1, 12.x; R2 to run later with --jobs on the scratch host): "
+    "R2 mutation waived for the release wave"
+)
+# The single source of the window: every message and the marker text derive from it.
+WINDOW = ((10, 0, 0), (12, 1, 0))  # `>= 10.0.0`, `< 12.1.0`
+WINDOW_TEXT = (
+    f"assay >= {'.'.join(map(str, WINDOW[0]))}, < {'.'.join(map(str, WINDOW[1]))}"
+)
 VERSION_RE = re.compile(
     r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
 )
@@ -884,7 +892,7 @@ def version_tuple(value):
 release_version_tuple = version_tuple(prepared_release_version)
 if not WINDOW[0] <= release_version_tuple < WINDOW[1]:
     raise SystemExit(
-        "the R2 postponement B169 is authorized only for assay >= 10.0.0, < 10.1.0; "
+        f"the R2 postponement B169 is authorized only for {WINDOW_TEXT}; "
         f"prepared changelog release is {prepared_release_version}. "
         "Run the full self-qualification lane."
     )
@@ -927,7 +935,7 @@ document = {
     "rigor_postponed": "R2",
     "tracking_id": TRACKING_ID,
     "decision": DECISION,
-    "window": "assay >= 10.0.0, < 10.1.0",
+    "window": WINDOW_TEXT,
     "target_version": prepared_release_version,
     "cmru_release_gate_version_bound": transaction_version is not None,
     "commit": commit,

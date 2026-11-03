@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 from assay.adapters.python import PythonAdapter
-from assay.errors import AssayError, Outcome, ReasonCode
+from assay.errors import AssayError, LaneConfigError, Outcome, ReasonCode
 from assay.mutation import MutationDiscoveryError, MutationStateError
 from assay.verdict import Mutation
 from conftest import completed_process
@@ -68,12 +68,13 @@ def _record(job=None):
         "mutated_file_sha256": hashlib.sha256(mutated).hexdigest(),
         "resource_limit_evidence": zero_resource_limit_evidence_dict(),
         "process_tree_evidence": {
-            "protocol": "assay-process-tree/1",
+            "protocol": "assay-process-tree/2",
             "leader_status": "exited",
             "group_signalled_before_reap": False,
             "outliving_descendants": 0,
             "descendants_signalled": 0,
-            "cleanup_seconds": 0.001,
+            "signal": None,
+            "descendants": [],
             "clean": True,
         },
     }
@@ -608,8 +609,12 @@ def test_mutation_worker_rechecks_deadline_after_successful_integrity_return(
     assert not any(event.get("event") == "candidate" for event in progress)
 
 
+@pytest.mark.parametrize("termination_requested", [False, True])
 def test_mutation_worker_keeps_the_first_fatal_error_when_another_worker_fails(
+    monkeypatch, termination_requested
 ):
+    from assay import _window_host
+
     errors = [
         AssayError(
             f"worker {index} failed",
@@ -634,7 +639,44 @@ def test_mutation_worker_keeps_the_first_fatal_error_when_another_worker_fails(
         def submit(self, _function, position):
             return Future(errors[position])
 
+    class Prepared:
+        cheap_clone = True
+
+    remaining_calls = []
+
+    class Deadline:
+        def remaining(self):
+            remaining_calls.append(True)
+            return 30.0
+
+    monkeypatch.setattr(_window_host, "can_host", lambda *_args: True)
+    monkeypatch.setattr(
+        runner, "termination_requested", lambda: termination_requested
+    )
+
     with pytest.raises(AssayError) as caught:
+        mutation._execute_mutation_jobs(
+            job_list=(_job(), _job()),
+            deadline=Deadline(),
+            jobs=2,
+            prepared=Prepared(),
+            plan=make_plan(make_lane(argv=("check",))),
+            process_runner=lambda *_args, **_kwargs: None,
+            clock=lambda: datetime(2026, 9, 26, tzinfo=timezone.utc),
+            executor_factory=lambda _jobs: Executor(),
+            write_progress=None,
+            execute_plan=runner.execute_plan,
+            resolve_run_cwd=lambda root, _plan: root,
+            total=2,
+            candidate_count=2,
+        )
+
+    assert caught.value is errors[0]
+    assert remaining_calls == ([True] if termination_requested else [])
+
+
+def test_parallel_mutation_scheduler_refuses_a_missing_workspace_cleanly():
+    with pytest.raises(LaneConfigError, match="cheap_clone"):
         mutation._execute_mutation_jobs(
             job_list=(_job(), _job()),
             deadline=make_deadline(),
@@ -643,15 +685,12 @@ def test_mutation_worker_keeps_the_first_fatal_error_when_another_worker_fails(
             plan=make_plan(make_lane(argv=("check",))),
             process_runner=lambda *_args, **_kwargs: None,
             clock=lambda: datetime(2026, 9, 26, tzinfo=timezone.utc),
-            executor_factory=lambda _jobs: Executor(),
             write_progress=None,
-            execute_plan=lambda *_args, **_kwargs: None,
+            execute_plan=runner.execute_plan,
             resolve_run_cwd=lambda root, _plan: root,
             total=2,
             candidate_count=2,
         )
-
-    assert caught.value is errors[0]
 
 
 def test_run_mutation_returns_unsupported_before_using_the_snapshot():

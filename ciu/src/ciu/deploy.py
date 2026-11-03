@@ -2083,6 +2083,38 @@ def apply_mem_min_injections(
             )
 
 
+_COMPOSE_CGROUP_PARENT_RE = re.compile(
+    r"""^\s*cgroup_parent:\s*["']?([A-Za-z0-9_.@:\\-]+\.slice)["']?\s*(?:#.*)?$""",
+    re.MULTILINE,
+)
+#: Slices every systemd host already has; naming one is not a governance claim.
+_DEFAULT_SLICES = frozenset({"-.slice", "system.slice", "user.slice", "machine.slice"})
+
+
+def _compose_authored_slices(repo_root: Path, entry: dict) -> list[str]:
+    """CIU-150: literal named slices a stack's compose file authors itself.
+
+    Scans the committed compose text (``ciu.compose.yml.j2`` or the shipped
+    ``docker-compose.yml``) for a literal ``cgroup_parent: <name>.slice``.
+    Templated values (``{{ ... }}``) do not match and are left to the
+    governance table path. Default systemd slices are ignored.
+    """
+    from .config_constants import CIU_COMPOSE_TEMPLATE, SHIPPED_COMPOSE
+
+    stack_dir = repo_root / entry["path"]
+    names = (SHIPPED_COMPOSE,) if phases_pkg.service_shipped(entry["service"]) else (CIU_COMPOSE_TEMPLATE,)
+    found: list[str] = []
+    for name in names:
+        path = stack_dir / name
+        if not path.is_file():
+            continue
+        for match in _COMPOSE_CGROUP_PARENT_RE.finditer(path.read_text(encoding="utf-8")):
+            slice_name = match.group(1)
+            if slice_name not in _DEFAULT_SLICES and slice_name not in found:
+                found.append(slice_name)
+    return found
+
+
 def governance_slice_preflight(
     repo_root: Path,
     profile: profiles_pkg.Profile,
@@ -2140,6 +2172,7 @@ def governance_slice_preflight(
     # slice_name -> max declared mem_min in bytes across stacks sharing it
     mem_min_required: dict[str, int] = {}
     mem_min_sources: dict[str, list[str]] = {}
+    compose_authored: set[str] = set()
 
     for entry in selection:
         rel = entry["path"]
@@ -2149,6 +2182,11 @@ def governance_slice_preflight(
         # names a slice explicitly nor picks up the ambient env var — that is
         # exactly the "misconfigured, must not deploy" case this preflight
         # exists to catch, so let it propagate.
+        # CIU-150: a compose-authored cgroup_parent places containers outside
+        # the governance table; it needs the same loaded-slice proof.
+        for authored in _compose_authored_slices(repo_root, entry):
+            checked.setdefault(authored, []).append(rel)
+            compose_authored.add(authored)
         resolved = _resolve_entry_governance(entry, rendered, config)
         if resolved is None:
             continue
@@ -2175,7 +2213,19 @@ def governance_slice_preflight(
     for slice_name, stacks in checked.items():
         exists, note = governance_mod.check_slice_unit(slice_name)
         if exists is None:
-            info(f"[INFO] [S15.G9-1] {note}")
+            if compose_authored:
+                # CIU-150: an unprovable host (cockpit, no systemd PID 1) is
+                # not a refusal, but a compose-authored slice goes unchecked,
+                # so say so loudly instead of an INFO line.
+                warn_policy.warn_or_raise(
+                    "[S15.G9-1] cannot prove compose-authored cgroup_parent "
+                    f"slice(s) {sorted(compose_authored)} are loaded on the "
+                    f"Docker host — an absent slice is auto-created "
+                    f"UNBOUNDED: {note}",
+                    severity="WARN", config=config,
+                )
+            else:
+                info(f"[INFO] [S15.G9-1] {note}")
             return  # inconclusive/no-systemd applies to every slice equally
         if exists:
             info(f"[INFO] [S15.G9-1] governance slice OK — {note}")
@@ -4291,6 +4341,11 @@ def action_graph(
     """
     from . import provisioning as provisioning_pkg
 
+    def _diag(prefix: str, msg: str) -> None:
+        # CIU-86: stdout carries only the graph (S13.5); notices and errors
+        # go to stderr for every format.
+        print(f"[{prefix}] {msg}", file=sys.stderr, flush=True)
+
     stacks: dict[str, dict] = {}
     for entry in selection:
         rel = entry["path"]
@@ -4300,7 +4355,7 @@ def action_graph(
         try:
             root_key = config_model.validate_stack_shape(stack_cfg)
         except ValueError as exc:
-            error(str(exc))
+            _diag("ERROR", str(exc))
             return 2
         root_section = stack_cfg.get(root_key, {})
         requires = root_section.get("requires", [])
@@ -4315,7 +4370,7 @@ def action_graph(
         try:
             config_model.validate_stack_provisioning(stack_cfg, source=rel)
         except ValueError as exc:
-            error(str(exc))
+            _diag("ERROR", str(exc))
             return 2
         # NOTE: deliberately NOT threading `provides_container` (CIU-89) into
         # this dict — unlike provisioning_graph()/action_check()'s own
@@ -4327,7 +4382,7 @@ def action_graph(
         stacks[rel] = {"requires": requires, "provides": provides}
 
     if not stacks:
-        info("No stacks with requires/provides — nothing to graph")
+        _diag("INFO", "No stacks with requires/provides — nothing to graph")
         return 0
 
     print(provisioning_pkg.render_graph(stacks, fmt=fmt))
@@ -4411,17 +4466,46 @@ def _refuse_if_protected(config: dict, args: argparse.Namespace, action_label: s
     return 1
 
 
-def action_stop(config: dict) -> int:
-    """--stop: stop all project containers (volumes preserved) — S7.8 / B4.
+def action_stop(
+    config: dict,
+    *,
+    repo_root: Optional[Path] = None,
+    selection: Optional[list[dict]] = None,
+) -> int:
+    """--stop: stop project containers (volumes preserved) — S7.8 / B4.
 
-    Anchored prefix match via ``docker ps --filter name=`` + a Python regex
-    re-filter, then ONE batched ``docker stop c1 c2 ...``. No infra_containers
-    NameError (the v1 B4 path is gone).
+    Bare (``selection`` None): anchored prefix match via ``docker ps --filter
+    name=`` + a Python regex re-filter, then ONE batched ``docker stop c1 c2
+    ...``. No infra_containers NameError (the v1 B4 path is gone).
+
+    Restricted (CIU-146; ``selection`` given because ``--profile`` or
+    ``--phases`` was passed): stops ONLY the containers, running or exited,
+    of the selected stacks, enumerated by the exact
+    ``com.docker.compose.project`` label of each stack's resolved compose
+    project. An empty selection refuses (returns 1) rather than falling back
+    to the whole project: a narrowed teardown never silently widens.
     """
     info("=" * 60)
     info("STOP: stopping project containers (volumes preserved)")
     info("=" * 60)
-    containers = _matching_containers(config)
+    if selection is not None:
+        if repo_root is None:
+            error("[CIU-146] restricted --stop needs the repo root; refusing to widen to the whole project")
+            return 1
+        if not selection:
+            error(
+                "[CIU-146] --profile/--phases selected no stacks; refusing to "
+                "stop anything (a restricted --stop never widens to the whole project)"
+            )
+            return 1
+        try:
+            projects = _stack_compose_projects(repo_root, config, selection)
+            containers = _stack_project_containers(projects)
+        except ValueError as exc:
+            error(f"[CIU-146] cannot resolve the selected stacks' containers: {exc}")
+            return 1
+    else:
+        containers = _matching_containers(config)
     if not containers:
         info("No matching containers running")
         return 0
@@ -4791,7 +4875,11 @@ def _remove_identity_networks(
 
 
 def action_clean_identity(
-    repo_root: Path, instance_id: str, *, yes: bool = False
+    repo_root: Path,
+    instance_id: str,
+    *,
+    yes: bool = False,
+    expected_checkout: str | Path | None = None,
 ) -> int:
     """Remove Docker resources carrying one retired CIU identity.
 
@@ -4831,7 +4919,42 @@ def action_clean_identity(
     )
 
     network_names = {f"{repo_name}-{instance_id}-network"}
-    expected_checkout: str | None = None
+    requested_checkout: str | None = None
+    if expected_checkout is not None:
+        requested_checkout = os.path.normpath(os.fspath(expected_checkout))
+        if not os.path.isabs(requested_checkout):
+            error("--expected-checkout must be an absolute CIU root path")
+            return 2
+        try:
+            current = read_generated_facts(repo_root, allow_repair=False)
+        except WorkspaceEnvError as exc:
+            error(
+                f"cannot verify the primary CIU identity in {repo_root}; "
+                f"refusing expected-checkout cleanup: {exc}"
+            )
+            return 1
+        primary_id = current.get("instance_id")
+        primary_checkout_physical = current.get("physical_repo_root")
+        if not primary_id or not primary_checkout_physical:
+            error(
+                f"cannot verify the primary CIU identity in {repo_root}; "
+                "refusing expected-checkout cleanup"
+            )
+            return 1
+        if instance_id == primary_id:
+            error(
+                f"refusing to clean identity {instance_id}: it is the primary "
+                f"checkout's current identity at {primary_checkout_physical}"
+            )
+            return 1
+        if requested_checkout == os.path.normpath(primary_checkout_physical):
+            error(
+                f"refusing to clean identity {instance_id}: expected checkout "
+                "is the primary CIU root"
+            )
+            return 1
+
+    old_checkout: str | None = None
     try:
         outdated = outdated_generated_identity(repo_root)
     except WorkspaceEnvError as exc:
@@ -4842,10 +4965,14 @@ def action_clean_identity(
         outdated = None
     if outdated and outdated.get("instance_id") == instance_id:
         network_names.add(outdated.get("network", ""))
-        expected_checkout = outdated.get("physical_repo_root") or None
+        old_checkout = outdated.get("physical_repo_root") or None
     network_names.discard("")
 
-    if expected_checkout is None:
+    if requested_checkout is not None:
+        expected_checkout = requested_checkout
+    elif old_checkout is not None:
+        expected_checkout = old_checkout
+    else:
         try:
             current = read_generated_facts(repo_root, allow_repair=False)
         except WorkspaceEnvError:
@@ -5876,7 +6003,13 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
             ac = action_list_profiles(profile.config)
         elif action == "stop":
             refusal = _refuse_if_protected(profile.config, args, "stop")
-            ac = refusal if refusal is not None else action_stop(profile.config)
+            if refusal is not None:
+                ac = refusal
+            elif cli_profiles or cli_phases:
+                # CIU-146: a narrowed down stops only the selected stacks.
+                ac = action_stop(profile.config, repo_root=repo_root, selection=selection)
+            else:
+                ac = action_stop(profile.config)
         elif action == "clean":
             refusal = _refuse_if_protected(profile.config, args, "clean")
             ac = refusal if refusal is not None else action_clean(

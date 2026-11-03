@@ -22,5 +22,6 @@ certs-dev/
 consumer-examples/**/secrets/*
 !consumer-examples/**/secrets/.gitignore
 
-# Release artifacts (build-artifact.sh output)
+# Release artifacts (build-artifact.sh output) and staged wheels (stage-wheels.py)
 /dist/
+/vendor/

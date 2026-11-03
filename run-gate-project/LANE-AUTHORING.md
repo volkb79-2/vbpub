@@ -204,8 +204,11 @@ with sqlfluff in a command lane if the project wants it.
 - **No xdist on a shared host.** `-n` on 8 cores shared with a production
   workload is how the load reached 85 on 2026-09-02; serial under
   `nice -n 19 ionice -c 3` is the standing rule (`AGENTS.md`). Where xdist
-  is needed for a dedicated host, keep coverage xdist-safe and declare it
-  in the lane's description.
+  is needed, declare `workers`, `workers_max` and `xdist_safe = true` with
+  the `{workers}` token (README "xdist workers for command lanes"): run-gate
+  then requires enforced caps, sizes `auto` from measured per-worker numbers,
+  re-runs an N>1-only failure serially (`XDIST_ISOLATION`), and
+  `--xdist-parity`/`--scaling` produce the evidence. Never hard-code `-n`.
 
 **Exit-code truth.** The command fails on the failure it exists for.
 
@@ -292,6 +295,20 @@ with sqlfluff in a command lane if the project wants it.
   count is decided by the CONTAINER's visible CPU count (which nothing
   capped) while the actual budget is decided by whatever else is running
   on the shared host; `doctor` names the gap when it sees one.
+- Resource policy and consumer facts share `[resources]` on member lanes;
+  sequence lanes have no runner of their own and reject a `resources` table.
+  Use
+  `io_sync = "durable"` for any lane that judges fsync, crash consistency,
+  or storage durability; it is lane-only and rejects every `--io-sync`
+  override, including `strict`. Use
+  `io_sync = "relaxed"` only for ephemeral performance lanes that accept the
+  eatmydata shim. `[resources.cowtree] mode` selects `auto` or `off`; with
+  `auto`, an ephemeral lane passes `MDT_COW_ROOT` through at its unchanged
+  same-path bind. CoW and repository bind paths cannot contain commas, colons,
+  or newlines. See the [resource settings consumer contract](CONSUMERS.md#combined-resource-settings)
+  for precedence and examples. `ram_target` and lane-only `candidate_ram`
+  are parsed resource metadata and do not currently select workers or change
+  container capacity.
 - **Let `run-gate.footprint.json` set the budget, not a guess (RG-55).**
   Every lane kind is profiled now, bare-host included (RG-57) — a
   bare-host lane without the cgroup-profiler daemon reachable gets a

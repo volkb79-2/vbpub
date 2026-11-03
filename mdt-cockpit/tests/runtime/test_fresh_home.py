@@ -24,6 +24,8 @@ import harness
 # run (measured, then justified). Anything else appearing there fails the test.
 TOOL_CREATED_NATIVE = {
     ".zshrc": "the comment-only stub the finalizer writes (and only that content)",
+    ".claude": "root of the skills the finalizer's skills step installs for the first-party CLIs (`.claude/skills/<skill>`)",
+    ".agents": "root of the skills the finalizer's skills step installs for the first-party CLIs (`.agents/skills/<skill>`)",
 }
 TOOL_CREATED_VSC = {
     **TOOL_CREATED_NATIVE,
@@ -42,6 +44,14 @@ SNAPSHOT = (
 )
 
 
+SKILL_ROOTS = (".claude", ".agents")
+
+
+def _is_skill_entry(path: str) -> bool:
+    relative = path.removeprefix("./")
+    return relative in SKILL_ROOTS or any(relative.startswith(f"{root}/skills") for root in SKILL_ROOTS)
+
+
 class Contract:
     @contextmanager
     def fresh_home(self):
@@ -57,10 +67,15 @@ class Contract:
     def finalize(self, volume: str) -> harness.Completed:
         return self.in_home(volume, harness.template_post_create_command())
 
-    def snapshot(self, volume: str) -> list[str]:
+    def snapshot(self, volume: str, *, skills: bool = False) -> list[str]:
+        """The home's entries; the agent-skill trees the finalizer's skills step may write
+        (`.claude/skills/<skill>`, `.agents/skills/<skill>`, owned by the first-party CLIs that
+        have a `skills` verb) are left out unless ``skills`` is true. Which CLIs of the image have
+        the verb depends on their versions, so the trees are checked by shape, not by content."""
         result = self.in_home(volume, SNAPSHOT)
         self.assertOk(result, "home snapshot")
-        return result.stdout.splitlines()
+        lines = result.stdout.splitlines()
+        return lines if skills else [line for line in lines if not _is_skill_entry(line.split("|")[0])]
 
     def test_a_fresh_home_receives_only_the_zshrc_stub(self) -> None:
         with self.fresh_home() as volume:
@@ -73,13 +88,19 @@ class Contract:
             content = self.in_home(volume, "cat ~/.zshrc").stdout
             code = [line for line in content.splitlines() if line.strip() and not line.startswith("#")]
             self.assertEqual(code, [], "the stub must be comment-only")
+            # Anything else is the skills step: only `<root>/skills/<skill>/...` below ~/.claude
+            # and ~/.agents, nothing beside the skills directory.
+            extra = [e.split("|")[0] for e in self.snapshot(volume, skills=True) if _is_skill_entry(e.split("|")[0])]
+            stray = [p for p in extra if p not in {f"./{r}" for r in SKILL_ROOTS} | {f"./{r}/skills" for r in SKILL_ROOTS}
+                     and p.split("/")[2:3] != ["skills"]]
+            self.assertEqual(stray, [], "the skills step wrote outside <root>/skills/<skill>")
 
     def test_a_second_finalizer_run_leaves_the_home_byte_identical(self) -> None:
         with self.fresh_home() as volume:
             self.assertOk(self.finalize(volume))
-            first = self.snapshot(volume)
+            first = self.snapshot(volume, skills=True)
             self.assertOk(self.finalize(volume))
-            self.assertEqual(self.snapshot(volume), first)
+            self.assertEqual(self.snapshot(volume, skills=True), first)
 
     def test_user_files_with_sentinel_content_are_never_replaced(self) -> None:
         with self.fresh_home() as volume:
@@ -132,9 +153,12 @@ class Contract:
             self.assertIn("wrote the comment-only ~/.zshrc stub", first.output)
             self.assertIn("base-image tools verified", first.output)
 
-            home_after_first = self.snapshot(home)
+            home_after_first = self.snapshot(home, skills=True)
             created = {entry.split("|")[0].removeprefix("./") for entry in home_after_first}
-            self.assertEqual(created, {".zshrc"} | self.BUILDX_STATE, "\n".join(home_after_first))
+            self.assertEqual(
+                {path for path in created if not _is_skill_entry(path)},
+                {".zshrc"} | self.BUILDX_STATE, "\n".join(home_after_first),
+            )
             workspace_tree = harness.sh(
                 self.image.ref,
                 f"cd {self.WORKSPACE} && find . -mindepth 1 | LC_ALL=C sort && cat .vscode/settings.json",
@@ -148,7 +172,7 @@ class Contract:
             self.assertIn(self.BUILDER_REFUSAL, second.output)
             self.assertNotIn("created .vscode/settings.json", second.output)
             self.assertNotIn("wrote the comment-only", second.output)
-            self.assertEqual(self.snapshot(home), home_after_first, "the home changed on the second run")
+            self.assertEqual(self.snapshot(home, skills=True), home_after_first, "the home changed on the second run")
             self.assertEqual(
                 harness.sh(
                     self.image.ref, f"cd {self.WORKSPACE} && find . -mindepth 1 | LC_ALL=C sort && cat .vscode/settings.json",

@@ -91,6 +91,10 @@ class Config:
     swap_partition_count: int = 4
     swap_priority: int = 10
     swap_discard: bool = True
+    # Optional upper bound for the ext root partition. Unlike
+    # preserve_root_size_gb, this is a sizing target that leaves disk space
+    # after the configured swap layout available for a later data partition.
+    root_max_size_gb: int | None = None
     preserve_root_size_gb: int = 10
     zswap_compressor: Literal["zstd", "lz4", "lzo-rle"] = "zstd"
     zswap_pool_percent: int = 25
@@ -346,6 +350,10 @@ def validate_config(config: Config) -> None:
         isinstance(config.swap_disk_total_gb, bool) or not isinstance(config.swap_disk_total_gb, int)
     ):
         raise ConfigError("swap_disk_total_gb must be an integer GiB value or null for auto")
+    if config.root_max_size_gb is not None and (
+        isinstance(config.root_max_size_gb, bool) or not isinstance(config.root_max_size_gb, int)
+    ):
+        raise ConfigError("root_max_size_gb must be an integer GiB value or null")
     string_names = [
         "log_dir", "state_dir", "stage2_output",
         "telegram_bot_token", "telegram_chat_id",
@@ -404,6 +412,13 @@ def validate_config(config: Config) -> None:
         value = getattr(config, name)
         if not _SIZE_RE.fullmatch(str(value)) or not 1 <= value <= 10240:
             raise ConfigError(f"{name} must be an integer from 1 to 10240")
+    if config.root_max_size_gb is not None:
+        if not 1 <= config.root_max_size_gb <= 10240:
+            raise ConfigError("root_max_size_gb must be an integer from 1 to 10240 or null")
+        if config.root_max_size_gb < config.preserve_root_size_gb:
+            raise ConfigError(
+                "root_max_size_gb must be greater than or equal to preserve_root_size_gb"
+            )
     if not 5 <= config.zswap_pool_percent <= 60:
         raise ConfigError("zswap_pool_percent must be from 5 to 60")
     if not 0 <= config.swap_priority <= 32767:

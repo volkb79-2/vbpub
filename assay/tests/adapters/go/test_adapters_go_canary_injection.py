@@ -17,6 +17,11 @@ from __future__ import annotations
 from assay.adapters.go import GoAdapter
 
 ADAPTER = GoAdapter()
+NONCE = "0123456789abcdef0123456789abcdef"
+
+
+def _inject_import_break(text: str) -> tuple[str, str]:
+    return ADAPTER.inject_import_break(text, nonce=NONCE)
 
 
 # --- inject_import_break -------------------------------------------------
@@ -25,12 +30,12 @@ ADAPTER = GoAdapter()
 def test_import_break_appends_a_panicking_init_function():
     source = "package greet\n"
 
-    new_text, description = ADAPTER.inject_import_break(source)
+    new_text, description = _inject_import_break(source)
 
     assert new_text == (
         "package greet\n"
         "\n\nfunc init() {\n"
-        '\tpanic("assay-canary-import-break")\n'
+        '\tpanic("assay-canary-import-break:0123456789abcdef0123456789abcdef")\n'
         "}\n"
     )
     assert "init()" in description
@@ -40,13 +45,13 @@ def test_import_break_appends_a_panicking_init_function():
 def test_import_break_guarantees_a_trailing_newline_before_appending():
     source = "package greet"  # deliberately no trailing newline
 
-    new_text, _ = ADAPTER.inject_import_break(source)
+    new_text, _ = _inject_import_break(source)
 
     assert new_text.startswith("package greet\n\n\nfunc init()")
 
 
 def test_import_break_is_returned_as_a_pair_and_never_touches_a_filesystem(tmp_path):
-    ADAPTER.inject_import_break("package greet\n")
+    _inject_import_break("package greet\n")
 
     assert list(tmp_path.iterdir()) == []
 
@@ -56,7 +61,7 @@ def test_import_break_appended_init_is_recognised_as_executable_code():
     already-proven `has_executable_code`: the appended `init()` really is a
     top-level function declaration with a real body."""
     source = "package greet\n"
-    new_text, _ = ADAPTER.inject_import_break(source)
+    new_text, _ = _inject_import_break(source)
 
     assert ADAPTER.has_executable_code("greet/greet.go", new_text) is True
 
@@ -121,7 +126,7 @@ def test_both_mechanisms_produce_distinct_appends():
     real-world consequences (a panic vs. an uncovered function)."""
     source = "package greet\n"
 
-    import_break_text, _ = ADAPTER.inject_import_break(source)
+    import_break_text, _ = _inject_import_break(source)
     uncovered_text, _ = ADAPTER.inject_uncovered_line(source)
 
     assert import_break_text != uncovered_text

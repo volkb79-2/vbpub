@@ -52,7 +52,7 @@ if str(ROOT / "scripts") not in sys.path:
 import local_dev  # noqa: E402
 from cmru import exit_codes  # noqa: E402
 from cmru.ghcr import GitHubPackages  # noqa: E402
-from cmru.runner import run_step  # noqa: E402
+from cmru.runner import prepare_project_environment, run_step  # noqa: E402
 
 BUILD_ENV_FILE = ROOT / ".build-env.json"
 # A local-dev build keeps its own state: it must neither clobber the saved
@@ -111,7 +111,12 @@ def parse_args() -> argparse.Namespace:
 
 
 def _read_bake_default(var_name: str) -> str | None:
-    """Read a variable default from docker-bake.hcl."""
+    """Read a variable's value: the environment first (as docker buildx bake itself resolves it), else the
+    docker-bake.hcl default. This lets one checkout release several Python variants
+    (``LATEST_KNOWN_PYTHON=3.15 cmru release mdt-cockpit``)."""
+    env_value = os.environ.get(var_name, "").strip()
+    if env_value:
+        return env_value
     bake_path = ROOT / "docker-bake.hcl"
     if not bake_path.exists():
         return None
@@ -503,6 +508,10 @@ def do_local_dev_build(
     local_dev.stage(artifacts, staging_dir=LOCAL_DEV_STAGING)
     ensure_manifests_dir()
 
+    # CMRU's project and orchestration config own the registry/repository
+    # identity. Prepare that environment before evaluating Bake tags so the
+    # pre-build plan and the runner's build step see the same references.
+    prepare_project_environment(ROOT / "cmru.toml")
     plan = local_dev_tag_plan(requested_targets, build_date)
     env_vars.update(
         {

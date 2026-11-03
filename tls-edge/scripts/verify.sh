@@ -54,6 +54,23 @@ SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
 ROOT="$(readlink -f "$SCRIPT_DIR/..")"
 STACK_DIR="$ROOT/ciu-stack"
 EDGE_PROXY="$ROOT/edge-proxy"
+
+# Container and volume names.  Plain-compose deployments use edge-traefik /
+# edge-dockerproxy / edge-proxy_acme-data; a ciu instance (get.py install)
+# names them <project>-<instance-id>-<service>.  Override with the three
+# EDGE_* variables, or let the ciu names be discovered from the compose labels.
+_discover() {  # $1 = compose service name
+    docker ps --filter "label=com.docker.compose.service=$1" \
+        --filter "name=edge-$1" --format '{{.Names}}' 2>/dev/null | head -n1
+    docker ps --filter "label=com.docker.compose.service=$1" \
+        --filter "name=tls-edge-.*-$1" --format '{{.Names}}' 2>/dev/null | head -n1
+}
+EDGE_TRAEFIK="${EDGE_TRAEFIK:-$(_discover traefik | head -n1)}"
+EDGE_DOCKERPROXY="${EDGE_DOCKERPROXY:-$(_discover dockerproxy | head -n1)}"
+EDGE_TRAEFIK="${EDGE_TRAEFIK:-edge-traefik}"
+EDGE_DOCKERPROXY="${EDGE_DOCKERPROXY:-edge-dockerproxy}"
+EDGE_ACME_VOLUME="${EDGE_ACME_VOLUME:-$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/etc/traefik/acme"}}{{.Name}}{{end}}{{end}}' "$EDGE_TRAEFIK" 2>/dev/null || true)}"
+EDGE_ACME_VOLUME="${EDGE_ACME_VOLUME:-edge-proxy_acme-data}"
 OVERRIDE_FILE="$STACK_DIR/ciu.toml.j2"
 DEFAULTS_FILE="$STACK_DIR/ciu.defaults.toml.j2"
 
@@ -169,7 +186,7 @@ fi
 
 # ─── check if containers are running ──────────────────────────────────────────
 CONTAINERS_RUNNING=true
-for _CTR in edge-traefik edge-dockerproxy; do
+for _CTR in ${EDGE_TRAEFIK} ${EDGE_DOCKERPROXY}; do
     _STATE="$(docker inspect -f '{{.State.Status}}' "$_CTR" 2>/dev/null || true)"
     if [[ -z "$_STATE" || "$_STATE" != "running" ]]; then
         CONTAINERS_RUNNING=false
@@ -189,7 +206,7 @@ else
 echo
 echo "$(_bold "3. Container health")"
 
-for _CTR in edge-traefik edge-dockerproxy; do
+for _CTR in ${EDGE_TRAEFIK} ${EDGE_DOCKERPROXY}; do
     _HEALTH="$(docker inspect -f '{{.State.Health.Status}}' "$_CTR" 2>/dev/null || true)"
     if [[ "$_HEALTH" == "healthy" ]]; then
         pass "$_CTR is healthy"
@@ -220,12 +237,12 @@ echo
 echo "$(_bold "5. Socket-proxy policy")"
 
 _PROXY_RESULT="$(docker run --rm --network traefik_internal alpine:3.20 sh -c '
-    if wget -qO- --timeout=3 http://edge-dockerproxy:2375/version >/dev/null 2>&1; then
+    if wget -qO- --timeout=3 http://${EDGE_DOCKERPROXY}:2375/version >/dev/null 2>&1; then
         GET_OK=1
     else
         GET_OK=0
     fi
-    if wget -qO- --timeout=3 --post-data=x http://edge-dockerproxy:2375/containers/create >/dev/null 2>&1; then
+    if wget -qO- --timeout=3 --post-data=x http://${EDGE_DOCKERPROXY}:2375/containers/create >/dev/null 2>&1; then
         POST_OK=1
     else
         POST_OK=0
@@ -259,7 +276,7 @@ else
     # CONTAINER port — works on a real host and under DooD, and is independent
     # of the published host port mapping.
     _HTTP_CODE="$(docker run --rm --network ingress_public curlimages/curl:8.10.1 \
-        -s -o /dev/null -w '%{http_code}' -H "Host: $DOMAIN" http://edge-traefik:80/ 2>/dev/null || true)"
+        -s -o /dev/null -w '%{http_code}' -H "Host: $DOMAIN" http://${EDGE_TRAEFIK}:80/ 2>/dev/null || true)"
     if [[ "$_HTTP_CODE" == "301" || "$_HTTP_CODE" == "308" ]]; then
         pass "HTTP redirect: got ${_HTTP_CODE} for Host: $DOMAIN"
     else
@@ -279,7 +296,7 @@ else
     # Does NOT perform full chain validation (that requires the CA bundle
     # and an internet-routable TLS handshake; use 'openssl verify' manually if needed).
     _TLS_OUT="$(docker run --rm --entrypoint sh --network ingress_public alpine/openssl -c \
-        "openssl s_client -connect edge-traefik:443 -servername $DOMAIN </dev/null 2>/dev/null \
+        "openssl s_client -connect ${EDGE_TRAEFIK}:443 -servername $DOMAIN </dev/null 2>/dev/null \
          | openssl x509 -noout -subject -issuer" 2>/dev/null || true)"
     if echo "$_TLS_OUT" | grep -qi "TRAEFIK DEFAULT CERT"; then
         fail "TLS: Traefik is serving its self-signed default cert (real cert not loaded)"
@@ -288,7 +305,7 @@ else
         pass "TLS cert loaded for $DOMAIN (not the Traefik default self-signed)"
         echo "$_TLS_OUT" | sed 's/^/     /'
     else
-        fail "TLS: no certificate response from edge-traefik:443 (servername $DOMAIN)"
+        fail "TLS: no certificate response from ${EDGE_TRAEFIK}:443 (servername $DOMAIN)"
     fi
 fi
 
@@ -299,7 +316,7 @@ echo "$(_bold "8. Mode-specific certificate check ($TLS_MODE)")"
 if is_acme_mode; then
     # acme-data volume must have a non-empty acme.json with mode 0600
     _ACME_CHECK="$(docker run --rm \
-        -v edge-proxy_acme-data:/a:ro \
+        -v ${EDGE_ACME_VOLUME}:/a:ro \
         alpine:3.20 sh -c 'test -s /a/acme.json && echo "ok" || echo "missing"' 2>/dev/null || true)"
     if [[ "$_ACME_CHECK" == "ok" ]]; then
         pass "acme.json exists and is non-empty"
@@ -308,7 +325,7 @@ if is_acme_mode; then
     fi
 
     _ACME_PERMS="$(docker run --rm \
-        -v edge-proxy_acme-data:/a:ro \
+        -v ${EDGE_ACME_VOLUME}:/a:ro \
         alpine:3.20 sh -c 'stat -c "%a" /a/acme.json 2>/dev/null || echo "?"' 2>/dev/null || true)"
     if [[ "$_ACME_PERMS" == "600" ]]; then
         pass "acme.json permissions are 0600"
@@ -318,7 +335,7 @@ if is_acme_mode; then
 
     if [[ -n "$DOMAIN" ]]; then
         _DOMAIN_COUNT="$(docker run --rm \
-            -v edge-proxy_acme-data:/a:ro \
+            -v ${EDGE_ACME_VOLUME}:/a:ro \
             alpine:3.20 sh -c "grep -ci '$DOMAIN' /a/acme.json 2>/dev/null || echo 0" 2>/dev/null || echo 0)"
         if [[ "${_DOMAIN_COUNT:-0}" -eq 0 ]]; then
             warn "acme.json does not mention $DOMAIN (issuance pending or domain mismatch)"
@@ -328,7 +345,7 @@ if is_acme_mode; then
     fi
 
     # Check traefik logs for ACME errors
-    _ACME_ERRORS="$(docker logs edge-traefik 2>&1 \
+    _ACME_ERRORS="$(docker logs ${EDGE_TRAEFIK} 2>&1 \
         | grep -iE 'acme.*(error|unable|failed)' || true)"
     if [[ -n "$_ACME_ERRORS" ]]; then
         fail "ACME errors found in traefik logs:"
@@ -342,12 +359,12 @@ elif [[ "$TLS_MODE" == "static" || "$TLS_MODE" == "dev" ]]; then
         skip "no domain — skipping static/dev cert file check"
     else
         # Try docker exec first; fall back to --volumes-from for shell-less images
-        _CERT_CMD="docker exec edge-traefik cat /certs/live/$DOMAIN/fullchain.pem"
+        _CERT_CMD="docker exec ${EDGE_TRAEFIK} cat /certs/live/$DOMAIN/fullchain.pem"
         if $_CERT_CMD >/dev/null 2>&1; then
             pass "static cert /certs/live/$DOMAIN/fullchain.pem accessible via exec"
         else
             # Fallback: shell-less variant — use alpine with volumes-from
-            if docker run --rm --volumes-from edge-traefik alpine:3.20 \
+            if docker run --rm --volumes-from ${EDGE_TRAEFIK} alpine:3.20 \
                 cat "/certs/live/$DOMAIN/fullchain.pem" >/dev/null 2>&1; then
                 pass "static cert /certs/live/$DOMAIN/fullchain.pem accessible (via volumes-from fallback)"
             else
@@ -389,7 +406,7 @@ else
     # --connect-to routes the canary hostname to the edge container directly
     # (works on host and under DooD, independent of published ports).
     _CANARY_RESP="$(docker run --rm --network ingress_public curlimages/curl:8.10.1 \
-        -ksS --connect-to "verify.$DOMAIN:443:edge-traefik:443" \
+        -ksS --connect-to "verify.$DOMAIN:443:${EDGE_TRAEFIK}:443" \
         "https://verify.$DOMAIN/" 2>/dev/null || true)"
 
     _canary_cleanup
@@ -406,7 +423,7 @@ fi
 echo
 echo "$(_bold "10. Access log JSON format")"
 
-_JSON_LOG="$(docker logs --tail 20 edge-traefik 2>/dev/null || true)"
+_JSON_LOG="$(docker logs --tail 20 ${EDGE_TRAEFIK} 2>/dev/null || true)"
 _HAS_JSON_ROUTERNAME="$(echo "$_JSON_LOG" | python3 -c '
 import sys, json
 for line in sys.stdin:

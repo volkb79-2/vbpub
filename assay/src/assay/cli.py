@@ -73,6 +73,7 @@ from typing import Any, Callable, Literal, Mapping, Sequence, TextIO, TypedDict
 
 from . import __version__
 from . import (
+    _durable,
     adjudication,
     attestation,
     diff,
@@ -297,6 +298,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="pilot-only worker override (must be 1 for native R2); requires --candidates-file",
     )
     run.add_argument(
+        "--jobs",
+        type=int,
+        default=None,
+        metavar="N",
+        help="native R2 worker count; defaults to 1 and may not exceed judge.mutation.jobs_max",
+    )
+    run.add_argument(
+        "--memory-budget-bytes",
+        type=int,
+        default=None,
+        metavar="BYTES",
+        help=(
+            "native R2 admission budget: a candidate starts only while the "
+            "predicted peak RSS of the running candidates plus its own stays "
+            "within BYTES (one candidate always runs); defaults to "
+            f"${MEMORY_BUDGET_ENV}, else no admission limit"
+        ),
+    )
+    run.add_argument(
         "--file",
         type=Path,
         default=None,
@@ -330,7 +350,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "for snapshot lanes only, admit unignored dirty paths and record "
-            "them in the v16 verdict; project isolation.dirty_ignore paths "
+            "them in the v17 verdict; project isolation.dirty_ignore paths "
             "are recorded separately. R0 lanes remain strict. This flag is "
             "independent of run-gate's own --allow-dirty policy."
         ),
@@ -344,7 +364,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="VERDICT",
         help=(
             "reuse only current pytest kill witnesses from a verified complete "
-            "native v16 verdict; v12-v15 start cold, and every uncertain candidate "
+            "native v17 verdict; v12-v16 start cold, and every uncertain candidate "
             "runs fully. Cannot be combined with --shard."
         ),
     )
@@ -566,6 +586,10 @@ def _termination_signal_handler(signum: int, frame: object) -> None:
         return
     try:
         liveness.terminate_live_process_groups()
+    except BaseException:
+        pass
+    try:
+        liveness.terminate_live_window_hosts()
     except BaseException:
         pass
     try:
@@ -1175,7 +1199,7 @@ def _ensure_pilot_state(
         with os.fdopen(temporary_fd, "wb") as stream:
             stream.write(document_bytes)
             stream.flush()
-            os.fsync(stream.fileno())
+            _durable.fsync(stream.fileno())
         try:
             os.stat("PILOT-STATE", dir_fd=root_fd, follow_symlinks=False)
         except FileNotFoundError:
@@ -1191,7 +1215,7 @@ def _ensure_pilot_state(
             dst_dir_fd=root_fd,
         )
         temporary_name = None
-        os.fsync(root_fd)
+        _durable.fsync(root_fd)
     except PilotStateError:
         raise
     except OSError as exc:
@@ -1509,10 +1533,12 @@ def _built_in_registry() -> registry.Registry:
     the property that makes this entry safe everywhere rather than only
     where a toolchain happens to exist: a Go lane is either audited against
     real statement positions or cleanly refused, and there is no third state
-    in which it is silently wrong. This devcontainer and the registered
-    gate's own image (``tester-unified``) both have no Go and both take the
-    refusal -- see ``gate/tests/qualification/`` for where the real-toolchain
-    proof lives instead (DESIGN-GUIDE §10's pattern).
+    in which it is silently wrong. The interactive cockpit and custom slim
+    gate images without Go take the refusal; the standard vbpub
+    ``tester-unified`` image includes Go. The absent-tool behavior is covered
+    by a test that explicitly simulates that environment. See
+    ``gate/tests/qualification/`` for the real-toolchain proof
+    (DESIGN-GUIDE §10's pattern).
 
     **R2 and R3 stay unregistered for Go**, which the Wave C prompt's own
     NOT-IN-SCOPE list forbids changing:
@@ -2043,7 +2069,67 @@ def _cmd_run(
     lane_file = _resolve_lane_file(args.file)
     lane: Lane = lane_file.lane(args.lane)
     _emit_lane_validation_warnings(lane_file, lane, err)
+    jobs_override = getattr(args, "jobs", None)
+    native_r2 = (
+        "R2" in lane.rigor
+        and lane.judge is not None
+        and lane.judge.mutation is not None
+        and not lane.judge.mutation.is_ingested
+    )
+    if native_r2:
+        assert lane.judge is not None and lane.judge.mutation is not None
+        effective_jobs = (
+            lane.judge.mutation.jobs
+            if lane.judge.mutation.jobs is not None
+            else 1
+        )
+        lane = replace(
+            lane,
+            judge=replace(
+                lane.judge,
+                mutation=replace(lane.judge.mutation, jobs=effective_jobs),
+            ),
+        )
+    if jobs_override is not None:
+        if not native_r2:
+            raise LaneConfigError("--jobs requires a native R2 mutation lane")
+        if jobs_override < 1:
+            raise LaneConfigError(f"--jobs must be a positive integer, got {jobs_override}")
+        assert lane.judge is not None and lane.judge.mutation is not None
+        jobs_max = lane.judge.mutation.jobs_max
+        assert jobs_max is not None
+        if jobs_override > jobs_max:
+            raise LaneConfigError(
+                f"--jobs {jobs_override} exceeds lane {lane.name!r}'s "
+                f"judge.mutation.jobs_max ({jobs_max})"
+            )
+        lane = replace(
+            lane,
+            judge=replace(
+                lane.judge,
+                mutation=replace(lane.judge.mutation, jobs=jobs_override),
+            ),
+        )
+    budget_override = _resolve_memory_budget(getattr(args, "memory_budget_bytes", None))
+    if budget_override is not None:
+        if not native_r2:
+            raise LaneConfigError("--memory-budget-bytes requires a native R2 mutation lane")
+        assert lane.judge is not None and lane.judge.mutation is not None
+        lane = replace(
+            lane,
+            judge=replace(
+                lane.judge,
+                mutation=replace(
+                    lane.judge.mutation, memory_budget_bytes=budget_override
+                ),
+            ),
+        )
     candidates_path = getattr(args, "candidates_file", None)
+    if jobs_override is not None and candidates_path is not None:
+        raise LaneConfigError(
+            "--jobs cannot be combined with --candidates-file; use "
+            "--pilot-jobs for a bounded candidate pilot"
+        )
     pilot_selection: frozenset[str] | None = None
     candidates_file_sha256: str | None = None
     pilot_jobs_override = _parse_pilot_jobs(
@@ -2944,6 +3030,25 @@ def _run_reserved(
                 budget_s=lane.budget_seconds,
                 budget_per_candidate_s=runner._declared_budget_per_candidate_seconds(
                     lane
+                ),
+                jobs=(
+                    lane.judge.mutation.jobs
+                    if lane.judge is not None and lane.judge.mutation is not None
+                    and not lane.judge.mutation.is_ingested
+                    else None
+                ),
+                attribution=(
+                    "overlap-conservative"
+                    if lane.judge is not None
+                    and lane.judge.mutation is not None
+                    and not lane.judge.mutation.is_ingested
+                    and lane.judge.mutation.jobs is not None
+                    and lane.judge.mutation.jobs > 1
+                    else "serial"
+                    if lane.judge is not None
+                    and lane.judge.mutation is not None
+                    and not lane.judge.mutation.is_ingested
+                    else None
                 ),
             )
 
@@ -4094,7 +4199,12 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO, err: TextIO | None = None) 
         else:
             per_candidate_seconds = parse_duration(per_candidate)
         serial_estimate = len(jobs) * per_candidate_seconds
-        wall_estimate = serial_estimate / max(1, lane.judge.mutation.jobs)
+        effective_jobs = (
+            lane.judge.mutation.jobs
+            if lane.judge.mutation.jobs is not None
+            else 1
+        )
+        wall_estimate = serial_estimate / effective_jobs
         candidate_rows = _plan_rows_from_jobs(
             jobs, deadline_check=deadline_check
         )
@@ -4132,7 +4242,7 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO, err: TextIO | None = None) 
             "tree": tree,
             "candidate_count": len(jobs),
             "max_mutants": lane.judge.mutation.max_mutants,
-            "jobs": lane.judge.mutation.jobs,
+            "jobs": effective_jobs,
             "shard": None if shard_index is None else f"{shard_index}/{shard_count}",
             "budget_per_candidate": per_candidate,
             "estimated_serial_seconds": round(serial_estimate, 3),
@@ -4367,6 +4477,32 @@ def _render_lanes(lane_file: LaneFile, out: TextIO) -> None:
 #: an addition (A-thread in `config.py`).
 LANE_INVENTORY_SCHEMA_VERSION = 1
 
+#: Environment spelling of ``assay run --memory-budget-bytes`` (B207).
+MEMORY_BUDGET_ENV = "ASSAY_R2_MEMORY_BUDGET_BYTES"
+
+#: Optional behaviours a caller can detect without parsing version strings.
+#: ``r2-memory-budget``: ``assay run`` accepts ``--memory-budget-bytes``.
+#: ``r2-schedule-tem``: parallel native R2 dispatches by two-ended matching.
+CAPABILITIES = ("r2-memory-budget", "r2-schedule-tem")
+
+
+def _resolve_memory_budget(flag: int | None) -> int | None:
+    """The admission budget from ``--memory-budget-bytes`` or its environment
+    spelling. The flag wins; a malformed value is refused, never ignored."""
+    if flag is not None:
+        source, raw = "--memory-budget-bytes", flag
+    else:
+        text = os.environ.get(MEMORY_BUDGET_ENV)
+        if text is None or text == "":
+            return None
+        source = MEMORY_BUDGET_ENV
+        if re.fullmatch(r"[1-9][0-9]*", text) is None:
+            raise LaneConfigError(f"{source} must be a positive integer, got {text!r}")
+        raw = int(text)
+    if raw < 1:
+        raise LaneConfigError(f"{source} must be a positive integer, got {raw}")
+    return raw
+
 
 def _render_lanes_json(lane_file: LaneFile, out: TextIO) -> None:
     """B044 -- ``assay lanes --json``: one machine-readable inventory
@@ -4416,6 +4552,7 @@ def _render_lanes_json(lane_file: LaneFile, out: TextIO) -> None:
     document = {
         "inventory_schema": LANE_INVENTORY_SCHEMA_VERSION,
         "assay_version": __version__,
+        "capabilities": list(CAPABILITIES),
         "lanes": [
             _lane_inventory_entry(
                 lane, built_in, cgroup_capability=cgroup_capability

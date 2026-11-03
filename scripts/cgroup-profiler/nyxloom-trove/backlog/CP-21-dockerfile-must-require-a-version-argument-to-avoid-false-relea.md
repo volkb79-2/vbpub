@@ -3,7 +3,7 @@ kind: backlog-entry
 schema_version: 1
 id: CP-21
 title: "Dockerfile must require a version argument to avoid false release identity"
-status: carved
+status: fixed
 type: "bugfix"
 severity: "high"
 component: "build"
@@ -44,3 +44,7 @@ The Dockerfile has no release-version or Git-revision default and fails before p
 **2026-10-13** — 2026-10-13: Protected release source identity and version arguments are implemented in the release candidate. Exact-tip gates, release build acceptance, and post-deploy revision verification remain pending.
 
 **2026-10-21** — CGP-110: the code obligations are present on main (no `ARG` default in the Dockerfile, protected CMRU commit/tag handoff, exact temporary build tree, and the dirty-source refusal in `cmru/build-initial-standalone.sh`, which the Sol review found missing at 1.0.0). What remains is EVIDENCE, to be produced at the 1.1.0 release: registered `r0-r1` and `r3` receipts from a clean exact tree (`dirty:false`, `history_eligible:true`), one live Bake build acceptance (an omitted direct build argument is refused before package installation), and the post-deploy `org.opencontainers.image.revision` check against the peeled release tag (`docs/CONSUMERS.md`, "Deploy a published daemon image with CIU"). This entry stays `carved` until those are recorded.
+
+## Resolution
+
+FIXED 2026-11-04 (fix-cgp-2-20261104, hygiene; stale entry). `Dockerfile:34` refuses an empty `CGPROFILE_VERSION` or `GIT_REVISION` build arg; `tests/test_build_push.py:309-310` pins both guards. The 1.1.0 release evidence is recorded in `nyxloom-trove/reports/cgprofile-1.1.0-RELEASE-EVIDENCE.md`.

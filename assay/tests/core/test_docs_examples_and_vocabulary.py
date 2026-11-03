@@ -174,11 +174,13 @@ def test_consumers_covers_the_latest_two_verdict_schema_cuts():
     )
 
 
-def test_readme_documents_current_native_r2_serial_constraint():
+def test_readme_documents_current_native_r2_parallel_worker_contract():
     text = re.sub(r"\s+", " ", README.read_text(encoding="utf-8"))
 
-    assert "native R2 lanes must declare `judge.mutation.jobs = 1`" in text
-    assert "a higher value refuses during load" in text
+    assert "judge.mutation.jobs_max" in text
+    assert "assay run --jobs N" in text
+    assert "overlap-conservative" in text
+    assert "each candidate event records `worker_index`" in text
     assert "Existing v2 lane files still load" not in text
 
 
@@ -977,6 +979,17 @@ def test_wave1_new_anchors_are_present_and_resolve():
         )
 
 
+def test_host_load_verdict_contract_is_linked_from_reader_docs():
+    anchor = "host-load-and-verdicts"
+    assert anchor in _design_guide_anchors()
+    assert "Credit or blocking effect" in DESIGN_GUIDE.read_text(encoding="utf-8")
+    for document in (README, CONSUMERS):
+        text = document.read_text(encoding="utf-8")
+        assert f"DESIGN-GUIDE.md#{anchor}" in text, (
+            f"{document.name} does not point to the shared host-load contract"
+        )
+
+
 def test_provisional_self_qualification_is_documented_across_the_public_docs():
     for document in DOCS:
         text = document.read_text(encoding="utf-8")
@@ -989,7 +1002,7 @@ def test_provisional_self_qualification_is_documented_across_the_public_docs():
         "the R3 canary",
         ".assay/mutation-postponed-assay.json",
         '"result": "provisional"',
-        "10.0.0 <= version < 10.1.0",
+        "10.0.0 <= version < 10.2.0",
         "CMRU's isolated `run-tests` step",
     ):
         assert required in consumer_text, f"CONSUMERS.md omits provisional lane fact {required!r}"
@@ -997,3 +1010,21 @@ def test_provisional_self_qualification_is_documented_across_the_public_docs():
     assert expected_anchor in _design_guide_anchors()
     assert expected_anchor in _document_anchors(CONSUMERS)
     assert expected_anchor in _readme_design_guide_links()
+
+
+def test_native_r2_resume_and_progress_contract_is_documented_across_public_docs():
+    build_note = (
+        "A new Assay build re-executes resumed campaign state because the Assay "
+        "version is part of the judge identity."
+    )
+    for document in DOCS:
+        text = document.read_text(encoding="utf-8")
+        assert build_note in " ".join(text.split()), (
+            f"{document.name} omits the new-build resume behavior"
+        )
+        assert "--resume --rejudge crashed" in text, (
+            f"{document.name} omits the crashed-candidate recovery command"
+        )
+        assert "resource_limit_changes" in text, (
+            f"{document.name} omits the candidate progress field"
+        )

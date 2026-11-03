@@ -148,7 +148,13 @@ def test_document_envelope(project: Project):
 
     assert doc["inventory_schema"] == 1
     assert doc["assay_version"] == __version__
-    assert list(doc.keys()) == ["assay_version", "inventory_schema", "lanes"]
+    assert list(doc.keys()) == [
+        "assay_version",
+        "capabilities",
+        "inventory_schema",
+        "lanes",
+    ]
+    assert doc["capabilities"] == ["r2-memory-budget", "r2-schedule-tem"]
 
 
 def test_an_r0_only_lane(project: Project):
@@ -274,7 +280,7 @@ def test_a_sql_r2_lane(project: Project):
             # SQL has no R1, so no coverage table exists to declare.
             "coverage": None,
             "mutation": {
-                "jobs": 1,
+                "jobs_max": 1,
                 "max_mutants": 200,
                 "operators": ["sql:drop-check", "sql:weaken-delete-action"],
                 "kill_signal_artifact": ".assay/kill-signal.txt",

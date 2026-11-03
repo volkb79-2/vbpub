@@ -3,7 +3,7 @@
 This file records consumer-facing product gaps for later triage. Normative
 behavior remains in the product specification and consumer documentation.
 
-Last updated: 2026-10-27 (PWMCP-11 OCR sidecar and console watching program, phase 1 on branch).
+Last updated: 2026-11-03 (VM layout / PWMCP-21; local console-corpus verification; R2 follow-up; GlyphGrid tooling integration; PWMCP-18 transparency gap identified during R2 survivor triage).
 
 ## PWMCP-01 — Provide a rendered-page inspection command
 
@@ -323,9 +323,18 @@ shows. Origin: a Codex session driving a TrueNAS relaxed unattended install on a
    captures. Needs the PWMCP-10 concurrency answer first, since a watcher holds the one shared browser.
 3. (OPEN) Guarded expect-and-send, OFF unless a config flag enables it.
 
+**GlyphGrid tooling update (2026-11-03).** The tooling now includes SHA-pinned console font atlases with per-font attribution, a reference-checked
+reader fast path and frame-sequence reader, and deterministic synthetic image generation with exact ground truth. These support offline
+measurement and regression testing only. Phase 2 remains OPEN: the service engine is still registered as unavailable (HTTP 501), the watcher is
+not implemented, and the larger 242-frame console series used for performance measurements remains local.
+
+**Local corpus verification (2026-11-03).** The 242-frame console corpus is local-only and is never published. Its copy is verified from an
+absolute `PWMCP_CONSOLE_CORPUS_DIR` against the committed frame index and deterministic tar SHA256. The full-corpus tests skip when the variable is
+unset; an explicitly invalid path fails. Registered gate lanes remain corpus-free.
+
 **Release wiring: FIXED-ON-BRANCH (operator decision 2026-10-27: extend the existing release so ONE pwmcp
-release builds, publishes and records BOTH images under one contract).** No release was cut and nothing was
-built, pushed or run through cmru/ciu/docker/the gate, so this stays UNVERIFIED until a real release is cut.
+release builds, publishes and records BOTH images under one contract).** The image is first published in `1.64.0-r4`; this stays
+UNVERIFIED until the post-release smoke has run.
 - Image: `ghcr.io/volkb79-2/pwmcp-ocr` (sibling of `ghcr.io/volkb79-2/pwmcp`, the repository naming
   convention), tagged `<PWMCP_VERSION>` (the SAME coordinate, e.g. `1.64.0-r3`) and `latest`.
 - Build/push: a `pwmcp-ocr` target in `docker-bake.hcl` (same context `.`, no extra platform/cache policy),
@@ -383,8 +392,7 @@ before the new `cmru.vars` keys fails closed; confirm the token has `write:packa
 (PWMCP-01); expect `pwmcp-ocr` to be created PRIVATE and unlinked and make it public once in the GHCR UI
 (the `org.opencontainers.image.source` label links it); if the visibility sync hard-fails after both images
 were pushed (cmru KI-97) re-run ONLY the sync step, never `cmru release --resume` without `--set-version`
-(the 2026-09-08 v1.0.0 incident). The sidecar image exists from the NEXT release after `1.64.0-r3`; until
-then enabling `pwmcp.ocr` needs a local build (README). The pwmcp gate lanes depend on the tester
+(the 2026-09-08 v1.0.0 incident). The sidecar image is first published in `1.64.0-r4`. The pwmcp gate lanes depend on the tester
 image carrying the pwmcp-client `test` extra (pytest, pillow, websockets, jinja2, pyyaml) plus node and sh.
 Operator policy 2026-10-27: a test needing an optional module or binary FAILS when it is missing (clear message
 naming it and the extra); skipping is the opt-in, `PWMCP_ALLOW_MISSING_TEST_DEPS=1` on a developer machine.
@@ -424,3 +432,186 @@ image rebuild and the `test` extra in `client/pyproject.toml` (not touched on th
 - Gate coverage: `client/src/pwmcp_client/ocr.py` was added to the `assay.toml` judged targets (100% line
   and branch measured locally); the sidecar `containers/ocr/ocr_service.py` is tested but deliberately NOT a
   judged target yet, and the registered gate was not run.
+
+## PWMCP-12 — the session cleanliness guard makes Git a prerequisite for the whole test suite
+
+**Status:** OPEN. Severity: P2. Filed 2026-10-30 from `reviews/pwmcp2.out`.
+
+**Observed.** The autouse session fixture in `pwmcp/conftest.py:17-30,33-38`
+invokes `git status` before and after every test session. If Git is absent, the
+snapshot is not a Git worktree, or Git rejects the checkout for dubious
+ownership, setup or teardown errors before ordinary tests run. The last case
+also depends on the gate applying `safe.directory` to the mounted checkout.
+The subprocess has no timeout.
+
+**Proposed fix.** Make the guard's repository-backed execution requirement
+explicit and bounded: either opt it in only for lanes that guarantee a Git
+checkout, or validate that prerequisite with one named, actionable diagnostic
+before the suite. Distinguish missing Git, non-worktree snapshots, and
+`safe.directory` refusal; add a subprocess timeout and keep the gate's
+identity setup in sync.
+
+## PWMCP-13 — the Git-visible cleanliness guard misses ignored and exit-time writes
+
+**Status:** OPEN. Severity: P2. Filed 2026-10-30 from `reviews/pwmcp2.out`.
+
+**Observed.** `pwmcp/conftest.py:23-29,35-42` compares `git status
+--untracked-files=all`, which omits ignored paths such as `.pytest_cache/`,
+`__pycache__/`, `.assay/`, and `coverage.json`. Coverage also writes
+`coverage.json` from its atexit handler after this fixture takes its final
+snapshot. The guard therefore cannot certify that tests left the repository
+tree unchanged.
+
+**Proposed fix.** State the narrower contract in the fixture message and docs
+if Git-visible pre-exit changes are the intended scope. If the contract is
+whole-tree cleanliness, add an ignored-path check and a post-process check that
+runs after coverage and other interpreter-exit writers complete.
+
+## PWMCP-14 — repository-wide status can blame PWMCP for another subtree's writes
+
+**Status:** OPEN. Severity: P2. Filed 2026-10-30 from `reviews/pwmcp2.out`.
+
+**Observed.** `pwmcp/conftest.py:23-29` runs `git status` from the PWMCP
+directory but supplies no pathspec, so Git reports changes anywhere in the
+vbpub worktree. A concurrent write outside `pwmcp/` is then reported by the
+PWMCP-specific assertion at `:39-43` as a PWMCP test change.
+
+**Proposed fix.** Add the `pwmcp/` subtree pathspec to both snapshots, keeping
+the assertion's scope and wording aligned.
+
+## PWMCP-15 — the session guard can report xdist workers' temporary writes as failures
+
+**Status:** OPEN. Severity: P3. Filed 2026-10-30 from `reviews/pwmcp2.out`.
+
+**Observed.** The current suite does not enable pytest-xdist, but the session
+fixture in `pwmcp/conftest.py:33-43` takes independent before/after snapshots
+in each worker. If xdist is enabled later, one worker's temporary repository
+write can fall inside another worker's snapshot window and be attributed to
+the wrong worker.
+
+**Proposed fix.** Run the comparison only in the xdist controller (or one
+designated worker) and add an oracle that proves worker-local snapshots cannot
+overlap and misattribute a write.
+
+## PWMCP-16 — the session guard walks and prints more repository state than needed
+
+**Status:** OPEN. Severity: P3. Filed 2026-10-30 from `reviews/pwmcp2.out`.
+
+**Observed.** `pwmcp/conftest.py:23-29,39-43` walks the whole monorepo twice
+per session, including nested pytest sessions, and prints complete before and
+after status listings when they differ. On a large or already-dirty worktree
+this adds avoidable cost, index-refresh contention, and noisy failure output.
+
+**Proposed fix.** Use `git --no-optional-locks status` for the scoped status
+query and report only a bounded set of added/removed entries with a count of
+omitted paths.
+
+## PWMCP-17 — the new top-level test is separated from the next statement by one blank line
+
+**Status:** OPEN. Severity: P3. Filed 2026-10-30 from `reviews/pwmcp2.out`.
+
+**Observed.** `pwmcp/tests/test_ocr_service.py:51-58` has one blank line
+between the top-level test function and the following top-level `try:` block,
+which triggers the E305 style finding and makes the import/setup section harder
+to scan.
+
+**Proposed fix.** Add the second top-level blank line or move the test below
+the module's import-time setup.
+
+## PWMCP-18 — RGB PNG color-key transparency is not composited before OCR
+
+**Status:** OPEN. Severity: P2. Filed 2026-11-02 from the PWMCP R2 survivor
+triage (`ocr_service.py:387`, `And->Or`).
+
+**Observed.** The OCR service accepts PNG images and the README says transparent
+PNGs are composited onto white. `_flatten` handles alpha-channel modes and
+palette PNGs with transparency, but an RGB PNG with a `tRNS` color key has
+`mode == "RGB"` and transparency metadata; it falls through unchanged. Its
+transparent pixels can therefore reach the engine with their stored color
+instead of white.
+
+**Proposed fix.** Add an offline Pillow fixture for an RGB PNG with a
+transparency color, composite it onto white before encoding the engine input,
+and document the supported transparency behavior in the README, design guide,
+and consumer guide. Do not add an oracle that preserves the current narrower
+behavior.
+
+## PWMCP-19 — screenshot fixtures: keep only public, agnostic ones, and prefer generated per-font alphabets
+
+**Status:** OPEN (filed 2026-11-03; operator rule 2026-11-03). Screenshots from public, agnostic, anonymous sources (vanilla Debian or TrueNAS
+installs) may be committed; the 242-frame local series stays out of git. The 24 vanilla-TrueNAS PNGs under
+`tests/corpus/console/truenas-27-vanilla/` stay as the published curated set. Test inputs should prefer the imagegen generator (alphabet
+screenshots per font, deterministic, no capture) over captured frames: move `tests/test_glyphgrid_perf.py` (~154-155, 20 captured frames) to
+generated per-font alphabets where the measurement allows, and keep the captured frames only for what only real console output can show.
+
+## PWMCP-20 — complete the R2 campaign waived for the r4 release
+
+**Status: OPEN (R2 was waived for 1.64.0-r4; follow-up is pending on the btrfs runner).** The registered r2 lane covers 384 mutation candidates
+on the changed targets. The latest campaign judged 56 candidates and retained resumable state; five hardening rows remain marked Pending R2, and
+PWMCP-18 (`containers/ocr/ocr_service.py:387`) remains an open survivor. The r4 release already shipped after its R1 gate, so this item tracks the
+separate mutation-evidence follow-up.
+
+**Runner note (2026-11-04).** `pwmcp/assay.toml` `[lanes.r2.judge.mutation]` declares `jobs = 1`, so `run-gate r2 --jobs auto` selects N=1
+(`jobs_max=1` in Run-Gate's INFO line) however many CPUs the runner has: the 384-candidate campaign runs serially. Parallel judging needs a
+declared `jobs` above 1 (or `"auto"`) in `assay.toml`, which is a pwmcp decision (candidate isolation and the OCR service tests' memory).
+
+**Close by:** resume the r2 campaign on the btrfs runner with the supported lane and parallelism, account for all candidates, triage the five pending
+rows and remaining survivors, then record the final verdict and any accepted survivors here or in the linked R2 report.
+
+## PWMCP-21 — corpus tooling should consume the per-project VM layout
+
+**Status:** OPEN (filed 2026-11-03). The console-capture launcher now defaults to
+`pwmcp/artifacts/vm-lab/<vm-name>/` and resolves bare ISO names in the repo `downloads/` directory (root `AGENTS.md`,
+"VM files and downloads"). The corpus side does not yet follow: capture output (`console_capture.py run --out`) and the
+verifier still take explicit paths, and `tools/glyphgrid/eval_glyphgrid.py` hardcodes `DEFAULT_SERIES` under a home directory.
+
+**Proposed fix.** Keep captured frames in `pwmcp/artifacts/console-corpus/` (`frames/`, `manifest.jsonl`), derived from the script
+location, and make that the documented place to point `PWMCP_CONSOLE_CORPUS_DIR` at. Do not turn it into an implicit default:
+the corpus design (`docs/DESIGN-OCR-PHASE2-3.md`) deliberately has no fallback, so an unset variable must keep raising
+`CorpusMissing`; any change there is a design decision, not a path derivation. Replace the `eval_glyphgrid.py` home-directory default with a
+location derived from the same folder, and update the corpus README, `docs/CONSUMERS.md#local-console-corpus` and this tool's README.
+
+## PWMCP-22 — unported groundwork from the 2026-10-27 canvas-capture session: xterm.js buffer reader, password-only login helper, intrinsic-bitmap canvas capture
+
+**Status:** OPEN (filed 2026-11-04 while closing out the `.claude/worktrees` session worktrees). The shipped `pwmcp ocr --selector` path
+(compositor screenshot of the element) and the console-capture tools on main superseded that session's `pwmcp canvas-capture` verb and its
+TrueNAS/Netcup scripts; three ideas from it are not on main.
+
+- **xterm.js text without OCR.** Web terminals that expose `window.term` (Proxmox serial consoles and node shells) hold exact text in
+  `term.buffer.active.getLine(i).translateToString(true)`; reading it beats OCR and a WebGL canvas's `toDataURL` is blank. Measured on one setup only.
+- **Password-only login helper.** Fill from named environment variables (values never logged or returned), submit with a real `press('Enter')`
+  (spice-html5 listens for the Enter key event, not a button click). Never run against a live prompt.
+- **Intrinsic canvas bitmap.** `canvas.toDataURL` (with `getImageData` fallback) returns the page-painted bitmap, which a glyph-grid reader needs;
+  the screenshot path returns the element as displayed (CSS pixels). The metadata records whether CSS scaling applied.
+
+**Source.** Commits `c827746d9`, `7c5b35beb`, `19a78ceb2` (modules `pwmcp_client/{canvas,login,terminal}.py`, tests, CLI-SPEC/USAGE/surface
+entries). The branch was deleted; the commits are preserved as a git bundle at
+`/workspaces/vbpub/artifacts/worktree-archive-20261104/worktree-agent-ae5983017bc3b1d7e.bundle` (gitignored, local; `git fetch <bundle> <ref>`).
+
+**Close by:** decide against the PWMCP-11 phase 2 watcher design whether the in-page bitmap read and the xterm reader belong in the watcher or as
+standalone verbs, then port the wanted pieces from the bundle onto current main (the CLI surface files conflict) or drop them with a reason here.
+<!-- Id note (2026-11-04): PWMCP-22 exists on branch finish-pwmcp-1-20261104 (not on main). The id below is PWMCP-23. -->
+
+## PWMCP-23 — find the local base image behind the release's `BUILDX_BUILDER=default` bypass, or drop the bypass
+
+**Status:** OPEN (investigation). Filed 2026-11-04.
+
+**Problem.** The pwmcp release is documented to need `BUILDX_BUILDER=default BUILDKIT_HOST=` (environment only; `build-push.py:127` requires both variables
+when building through the configured endpoint, and `docs/ARCHITECTURE.md:130` says `BUILDX_BUILDER = "mdt-managed"`). `build-push.py:115-195` supports both
+paths and no committed text says why the default builder is needed. A bypass loses governance (`dev-buildkitd.slice`), the btrfs cache and the
+fail-closed shim (mdt-cockpit MDT-056); on the host the shim may even remap `BUILDX_BUILDER=default` back to `mdt-managed` (MDT-057).
+
+**Decision record (operator, 2026-11-04).** `mdt-managed` is the only builder; local bases come in as OCI-layout build contexts pinned by digest
+(`--build-context <ref>=oci-layout://...@sha256:...`); a bypass is allowed only for the fresh-host bootstrap and is never selected by environment.
+
+**Design / steps.**
+
+1. Identify what the build needs from the local store: a `FROM <local-tag>` (a base image built by another project), a `--load` consumer, or a
+   registry-auth reason. Record the finding in this entry.
+2. If a local base exists: build it as an OCI layout and consume it with `--build-context`, following the tester-chain pilot (TB-14).
+3. If none exists: drop the bypass from the release instructions and from the script, and run the release through `mdt-managed`.
+
+**Acceptance.** The release procedure names no environment-selected bypass; a test (or the release dry-run) shows the build runs on
+`mdt-managed`; docs updated. **Non-mdt path:** the build still works with any buildx builder (document the plain-host form).
+
+**Dependencies and order.** Package 5 of MDT-056, after TB-14 and the cmru `build_contexts` option (KI-113).

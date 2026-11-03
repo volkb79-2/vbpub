@@ -26,6 +26,7 @@ from conftest import completed_process
 
 import io
 import json
+import signal
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -34,6 +35,23 @@ from assay.mutation_witness import WITNESS_FD_ENV
 from assay.runner import CommandPlan, execute_plan
 
 from assay import liveness
+
+
+def test_register_live_window_host_after_termination_signals_group(monkeypatch):
+    signalled = []
+
+    def record_signal(pgid, signum):
+        signalled.append((pgid, signum))
+
+    liveness._reset_live_groups_for_tests()
+    monkeypatch.setattr(liveness, "_killpg_group", record_signal)
+    liveness._TERMINATION.set()
+    try:
+        liveness.register_live_window_host_group(4242)
+        assert signalled == [(4242, signal.SIGTERM)]
+        assert liveness._LIVE_WINDOW_HOST_GROUPS == {4242}
+    finally:
+        liveness._reset_live_groups_for_tests()
 
 
 def _plan(

@@ -14,7 +14,8 @@ is just:
 
 Design tenets
 -------------
-- **stdlib-only, idempotent, best-effort.** The generic mdt steps below never
+- **stdlib-only, idempotent, best-effort.** (Agent skills of the first-party CLIs are
+  installed by `install_agent_skills`; see docs/DESIGN-GUIDE.md.) The generic mdt steps below never
   hard-fail finalize (they warn and continue) — a fresh container always comes up.
 - **ciu-AGNOSTIC — no hard ciu dependency.** mdt *ships and encourages* ciu, but
   this script NEVER imports, calls, or assumes ciu (or any ciu-rendered stack).
@@ -59,10 +60,12 @@ from mdt_cli import MdtArgumentParser
 import json
 import os
 import pwd
+import re
 import shutil
 import stat
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, "/usr/local/lib")
@@ -251,6 +254,96 @@ def verify_base_tools() -> None:
         ok(f"base-image tools verified ({len(expected)})")
 
 
+# First-party CLIs that package agent skills behind a `<cli> skills` verb
+# (check / install, cli-extended's skills plugin). One constant: add a CLI here and
+# nowhere else. A CLI that is absent from PATH, or whose installed version has no
+# `skills` verb yet, is skipped quietly.
+SKILLS_CLIS = ("cmru", "ciu", "pwmcp", "topos")
+SKILLS_TIMEOUT_SECONDS = 20  # per call
+SKILLS_TOTAL_BUDGET_SECONDS = 60  # whole step; a hung CLI never holds the container start longer
+# Warn-once markers (one file per CLI and kind, in the container's writable layer): a
+# user-modified skill is refused by `install` on every start, by design, and says so once.
+SKILLS_MARKER_DIR = Path("/var/devcontainer")
+
+
+def _run_skills(argv: list[str], deadline: float) -> subprocess.CompletedProcess | None:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        warn(f"{' '.join(argv)}: skipped, the agent-skills time budget ({SKILLS_TOTAL_BUDGET_SECONDS}s) is spent")
+        return None
+    try:
+        return subprocess.run(
+            argv, capture_output=True, text=True, timeout=min(SKILLS_TIMEOUT_SECONDS, remaining), check=False
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        warn(f"{' '.join(argv)}: {e}")
+        return None
+
+
+def _warn_once(cli: str, kind: str, message: str) -> None:
+    """Warn the first time per container for (cli, kind); afterwards log at INFO."""
+    marker = SKILLS_MARKER_DIR / f"agent-skills-{cli}-{kind}.warned"
+    if marker.exists():
+        info(message)
+        return
+    warn(message)
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.touch()
+    except OSError:
+        pass  # no marker, no harm: the warning may repeat
+
+
+def _crashed(proc: subprocess.CompletedProcess) -> bool:
+    return "Traceback (most recent call last)" in (proc.stderr or "")
+
+
+def install_agent_skills() -> None:
+    """Install the agent skills packaged with the first-party CLIs into the user home.
+
+    A fresh home has none of them, so `cmru doctor` would report "skills not current".
+    For each CLI of SKILLS_CLIS on PATH: `<cli> skills check` (exit 0 = current, exit 1
+    with no traceback = not current, exit 2 = the CLI has no `skills` verb; a traceback or
+    any other code = a broken CLI, skipped with a warning) and, only when not current,
+    `<cli> skills install`. A failing install (a modified skill is refused) warns once per
+    container per CLI, then logs at INFO. The whole step is bounded by
+    SKILLS_TOTAL_BUDGET_SECONDS. `install` writes only the skill directories the tool owns
+    (`~/.claude/skills/<skill>`, `~/.agents/skills/<skill>`, each stamped), so it never
+    replaces or extends a user file, and a second run on a current home changes nothing.
+    Every failure is a warning: the container start never depends on this step.
+    """
+    deadline = time.monotonic() + SKILLS_TOTAL_BUDGET_SECONDS
+    for cli in SKILLS_CLIS:
+        path = shutil.which(cli)
+        if path is None:
+            continue
+        checked = _run_skills([path, "skills", "check"], deadline)
+        if checked is None:
+            continue
+        if checked.returncode == 0:
+            info(f"{cli}: agent skills current")
+            continue
+        if checked.returncode == 2:
+            info(f"{cli}: no `skills` verb in this version; skipped")
+            continue
+        if checked.returncode != 1 or _crashed(checked):
+            _warn_once(cli, "check", f"{cli} skills check is broken (exit {checked.returncode}); skills step skipped")
+            continue
+        installed = _run_skills([path, "skills", "install"], deadline)
+        if installed is None:
+            continue
+        if installed.returncode == 0:
+            ok(f"{cli}: installed agent skills")
+        else:
+            detail = (installed.stderr or installed.stdout or "").strip().splitlines()
+            _warn_once(
+                cli,
+                "install",
+                f"{cli} skills install failed (exit {installed.returncode}): {detail[-1] if detail else 'no output'}"
+                f" (a locally modified skill is refused; `{cli} skills install --overwrite-modified` is the operator's choice)",
+            )
+
+
 # ── docker socket relay repair ──────────────────────────────────────────────
 # WHY THIS EXISTS (diagnosed 2026-07-27)
 #
@@ -401,13 +494,177 @@ def repair_docker_socket_relay() -> None:
          "unusable; fall back to DOCKER_HOST=unix:///var/run/docker-host.sock")
 
 
+# ── PWMCP network join ──────────────────────────────────────────────────────
+# `ciu up` in /srv/pwmcp-instance attaches the container that ran it to the stack
+# network, and the stack (restart: unless-stopped) outlives this container. A
+# devcontainer that is RECREATED or REBUILT starts on the default bridge only, so the
+# alias `pwmcp` (PWMCP_MCP_URL=http://pwmcp:8931/mcp) does not resolve until it is
+# attached again. postCreateCommand runs on every create/rebuild, which is exactly
+# when a network membership is lost (a plain restart keeps it). Not ciu-aware: it
+# looks only at Docker labels/aliases of the stack's own container.
+PWMCP_ALIAS = "pwmcp"
+PWMCP_DOCKER_TIMEOUT_SECONDS = 20
+
+
+def _docker(*argv: str) -> subprocess.CompletedProcess | None:
+    docker = shutil.which("docker")
+    if docker is None:
+        return None
+    try:
+        return subprocess.run(
+            [docker, *argv], capture_output=True, text=True,
+            timeout=PWMCP_DOCKER_TIMEOUT_SECONDS, check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        warn(f"docker {' '.join(argv[:2])}: {e}")
+        return None
+
+
+def _container_networks(name: str) -> dict | None:
+    """Networks of exactly the container ``name``: {network: [aliases]}, None if unknown."""
+    res = _docker("inspect", "--type", "container", "--format", "{{json .NetworkSettings.Networks}}", name)
+    if res is None or res.returncode != 0:
+        return None
+    try:
+        nets = json.loads(res.stdout.strip() or "null")
+    except ValueError:
+        return None
+    if not isinstance(nets, dict):
+        return None
+    return {k: list((v or {}).get("Aliases") or []) for k, v in nets.items()}
+
+
+PWMCP_OVERRIDE_ENV = "PWMCP_STACK_CONTAINER"
+_INSTANCE_ID_RE = re.compile(r'^\s*(?:export\s+)?INSTANCE_ID=["\']?([A-Za-z0-9_-]+)["\']?\s*$', re.M)
+
+
+PWMCP_INSTANCE_DIR_ENV = "PWMCP_INSTANCE_DIR"
+PWMCP_INSTANCE_DIR_DEFAULT = "/srv/pwmcp-instance"
+
+
+def pwmcp_instance_dir() -> Path:
+    """Directory of the shipped PWMCP instance (compose working dir of its stack)."""
+    return Path(os.environ.get(PWMCP_INSTANCE_DIR_ENV, "").strip() or PWMCP_INSTANCE_DIR_DEFAULT)
+
+
+def pwmcp_stack_container_name(workspace: Path | None = None) -> tuple[str | None, str]:
+    """The exact name of THIS cockpit's PWMCP stack container, and where it came from.
+
+    Every PWMCP stack is named `pwmcp-<INSTANCE_ID>-pwmcp`, and instance, worktree, gate and
+    other users' stacks all match a generic filter, so the name is derived from this
+    workspace's identity: PWMCP_STACK_CONTAINER (explicit override), else the INSTANCE_ID of the
+    shipped instance itself (`<instance dir>/ciu.env` or `.ciu/ciu.env`; the workspace's own
+    INSTANCE_ID is a different ciu instance and would name a stack that does not exist), else
+    INSTANCE_ID from the environment, else the INSTANCE_ID line of <workspace>/ciu.env.
+    (None, "") when unknown.
+    """
+    override = os.environ.get(PWMCP_OVERRIDE_ENV, "").strip()
+    if override:
+        return override, PWMCP_OVERRIDE_ENV
+    inst = pwmcp_instance_dir()
+    for rel in ("ciu.env", ".ciu/ciu.env"):
+        try:
+            m = _INSTANCE_ID_RE.search((inst / rel).read_text(encoding="utf-8"))
+        except OSError:
+            m = None
+        if m:
+            return f"pwmcp-{m.group(1)}-pwmcp", str(inst / rel)
+    iid = os.environ.get("INSTANCE_ID", "").strip()
+    if iid:
+        return f"pwmcp-{iid}-pwmcp", "INSTANCE_ID"
+    env_file = (workspace or Path.cwd()) / "ciu.env"
+    try:
+        m = _INSTANCE_ID_RE.search(env_file.read_text(encoding="utf-8"))
+    except OSError:
+        m = None
+    if m:
+        return f"pwmcp-{m.group(1)}-pwmcp", str(env_file)
+    return None, ""
+
+
+def join_pwmcp_network(workspace: Path | None = None) -> None:
+    """Attach this container to the network of ITS OWN running PWMCP stack. Never fails finalize.
+
+    The stack container is selected by exact name derived from this workspace's identity (see
+    pwmcp_stack_container_name), never "the first one": other stacks on the host (worktree,
+    gate, another user's) are ignored, and with no identity or no exact match nothing is
+    joined. The candidate is found with a filtered `docker ps` and inspected (`--type
+    container`); only a network on which it carries the alias `pwmcp` counts. Already
+    attached: nothing to do.
+    """
+    if shutil.which("docker") is None:
+        return
+    me = os.environ.get("HOSTNAME") or os.uname().nodename
+    expected, source = pwmcp_stack_container_name(workspace)
+    choose = (f"set {PWMCP_OVERRIDE_ENV}=<container name> (e.g. in remoteEnv) to choose the stack, "
+              "or INSTANCE_ID / ciu.env in the workspace")
+    listed = _docker(
+        "ps", "--filter", "name=^pwmcp-", "--filter", "label=com.docker.compose.service=pwmcp",
+        "--format", "{{.Names}}",
+    )
+    if listed is None or listed.returncode != 0:
+        detail = ((listed.stderr or listed.stdout) if listed else "docker unavailable").strip().splitlines()
+        warn(f"pwmcp: docker ps failed ({detail[-1] if detail else 'no output'}); skipped")
+        return
+    names = sorted(listed.stdout.split())
+    if source not in (PWMCP_OVERRIDE_ENV,) and not source.startswith(str(pwmcp_instance_dir())):
+        # The instance's generated ciu.env is not kept on disk after `ciu up`; its running stack
+        # still carries the compose working-dir label, which identifies it exactly.
+        inst = pwmcp_instance_dir()
+        by_dir = _docker(
+            "ps", "--filter", "name=^pwmcp-", "--filter", "label=com.docker.compose.service=pwmcp",
+            "--filter", f"label=com.docker.compose.project.working_dir={inst}",
+            "--format", "{{.Names}}",
+        )
+        found = sorted(by_dir.stdout.split()) if by_dir is not None and by_dir.returncode == 0 else []
+        if len(found) == 1 and found[0] in names:
+            expected, source = found[0], f"compose working dir {inst}"
+    if expected is None:
+        info(f"pwmcp: this workspace's PWMCP identity is unknown (found: {', '.join(names) or 'none'}); "
+             f"not joining any stack; {choose}")
+        return
+    matches = [n for n in names if n == expected]
+    if len(matches) != 1:
+        if names:
+            info(f"pwmcp: no running stack named {expected} (from {source}); other stacks "
+                 f"({', '.join(names)}) are not joined; {choose}")
+        else:
+            info(f"pwmcp: no running PWMCP stack found; to start it: cd /srv/pwmcp-instance && ciu up "
+                 f"(the {PWMCP_ALIAS} alias resolves once this container is on its network)")
+        return
+    mine = _container_networks(me)
+    if mine is None:
+        warn(f"pwmcp network: cannot inspect this container ({me}); skipped")
+        return
+    candidates = [net for net, aliases in (_container_networks(matches[0]) or {}).items()
+                  if PWMCP_ALIAS in aliases]
+    if not candidates:
+        info(f"pwmcp: {matches[0]} has no network carrying the alias {PWMCP_ALIAS}; skipped")
+        return
+    shared = [n for n in candidates if n in mine]
+    if shared:
+        info(f"pwmcp: already on network {shared[0]}")
+        return
+    if len(candidates) > 1:
+        warn(f"pwmcp: {matches[0]} carries the alias on several networks ({', '.join(candidates)}); "
+             f"joining {candidates[0]}")
+    res = _docker("network", "connect", candidates[0], me)
+    if res is not None and res.returncode == 0:
+        ok(f"pwmcp: joined network {candidates[0]} ({matches[0]})")
+    else:
+        detail = ((res.stderr or res.stdout) if res else "docker unavailable").strip().splitlines()
+        warn(f"pwmcp: network connect {candidates[0]} failed: {detail[-1] if detail else 'no output'}")
+
+
 def run_generic_steps(envd: dict) -> bool:
     info("generic mdt steps…")
     setup_zshrc_stub()
     setup_vscode_settings(envd["env_type"])
     repair_docker_socket_relay()
+    join_pwmcp_network()
     buildkit_ok = setup_buildkit_builder(required=envd["env_type"] == "devcontainer")
     verify_base_tools()
+    install_agent_skills()
     return buildkit_ok
 
 

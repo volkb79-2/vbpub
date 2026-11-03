@@ -210,8 +210,14 @@ See [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).
 Never the devcontainer — and in srdm's case the devcontainer could not
 pretend, having no Go toolchain. Both scripts refuse to launch until the
 host cgroup tier is *verified*, because a slice name systemd does not know
-fails open into an unlimited transient slice rather than erroring. See
-[`nyxloom-trove/GUIDE.md`](nyxloom-trove/GUIDE.md).
+fails open into an unlimited transient slice rather than erroring.
+The gate drivers also support CIU linked worktrees without a per-worktree
+host-path override: they translate the enclosing Docker mount and expose the
+worktree's common Git metadata read-only for coverage and canary comparisons.
+A required privileged E2E lane reports infrastructure failure when the Docker
+daemon refuses privileged containers, so that condition cannot become a green
+release receipt.
+See [`nyxloom-trove/GUIDE.md`](nyxloom-trove/GUIDE.md).
 
 ## Why not inside `wings-patchstack/`
 

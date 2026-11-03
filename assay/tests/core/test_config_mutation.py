@@ -9,6 +9,8 @@ one field over from ``judge.coverage.format``/``FORMAT_REGISTRY``).
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 from conftest import R0_LANE, Project, set_key
 
@@ -54,7 +56,8 @@ def test_a_minimal_valid_mutation_table_loads(project: Project):
 
     assert judge is not None
     assert judge.mutation is not None
-    assert judge.mutation.jobs == 1
+    assert judge.mutation.jobs is None
+    assert judge.mutation.jobs_max == 1
     assert judge.mutation.operators == ("python:compare-swap",)
 
 
@@ -182,20 +185,43 @@ def test_a_duplicate_operator_is_rejected(project: Project):
 
 
 @pytest.mark.parametrize("bad_jobs", ["0", "-1", "true", '"2"', "1.5"])
-def test_jobs_must_be_a_positive_integer(bad_jobs: str, project: Project):
+def test_jobs_max_must_be_a_positive_integer(bad_jobs: str, project: Project):
     lane = _lane_with_mutation(
-        f'\n[lanes.package.judge.mutation]\njobs = {bad_jobs}\nmax_mutants = 50\noperators = ["python:compare-swap"]\n'
+        f'\n[lanes.package.judge.mutation]\njobs_max = {bad_jobs}\nmax_mutants = 50\noperators = ["python:compare-swap"]\n'
     )
-    with pytest.raises(LaneConfigError, match="judge.mutation.jobs"):
+    with pytest.raises(LaneConfigError, match="judge.mutation.jobs_max"):
         load_lane_file(project.write(lane))
 
 
-def test_a_missing_jobs_field_is_rejected(project: Project):
+def test_jobs_and_jobs_max_alias_cannot_be_declared_together(project: Project):
     lane = _lane_with_mutation(
-        '\n[lanes.package.judge.mutation]\noperators = ["python:compare-swap"]\n'
+        '\n[lanes.package.judge.mutation]\njobs = 2\njobs_max = 3\n'
+        'max_mutants = 50\noperators = ["python:compare-swap"]\n'
     )
-    with pytest.raises(LaneConfigError, match="missing required field 'judge.mutation.jobs'"):
+    with pytest.raises(LaneConfigError, match="declare only one of"):
         load_lane_file(project.write(lane))
+
+
+def test_jobs_policy_stays_unset_by_default_and_jobs_is_an_alias(project: Project):
+    lane = _lane_with_mutation(
+        '\n[lanes.package.judge.mutation]\nmax_mutants = 50\noperators = ["python:compare-swap"]\n'
+    )
+    loaded = load_lane_file(project.write(lane)).lane("package").judge
+    assert loaded is not None and loaded.mutation is not None
+    assert loaded.mutation.jobs is None
+    assert loaded.mutation.jobs_max is None
+    assert "jobs_max" not in loaded.mutation.as_declared()
+
+    aliased = _lane_with_mutation(
+        '\n[lanes.package.judge.mutation]\njobs = 3\nmax_mutants = 50\n'
+        'operators = ["python:compare-swap"]\n'
+    )
+    loaded_alias = load_lane_file(
+        project.write(aliased, name="jobs-alias.toml")
+    ).lane("package").judge
+    assert loaded_alias is not None and loaded_alias.mutation is not None
+    assert loaded_alias.mutation.jobs is None
+    assert loaded_alias.mutation.jobs_max == 3
 
 
 def test_a_missing_operators_field_is_rejected(project: Project):
@@ -223,22 +249,30 @@ def test_mutation_as_declared_round_trips_exactly(project: Project):
     loaded = load_lane_file(project.write(lane)).lane("package")
 
     assert loaded.as_declared()["judge"]["mutation"] == {
-        "jobs": 1,
+        "jobs_max": 1,
         "max_mutants": 50,
         "operators": ["python:compare-swap", "python:falsy-swap"],
     }
 
+    assert loaded.judge is not None and loaded.judge.mutation is not None
+    runtime = replace(
+        loaded,
+        judge=replace(
+            loaded.judge,
+            mutation=replace(loaded.judge.mutation, jobs=3),
+        ),
+    )
+    assert runtime.as_declared() == loaded.as_declared()
 
-def test_native_mutation_rejects_overlapping_cgroup_event_windows(project: Project):
+
+def test_native_mutation_accepts_parallel_jobs_cap(project: Project):
     lane = _lane_with_mutation(
-        "\n[lanes.package.judge.mutation]\njobs = 2\nmax_mutants = 50\n"
+        "\n[lanes.package.judge.mutation]\njobs_max = 2\nmax_mutants = 50\n"
         'operators = ["python:compare-swap"]\n'
     )
-    with pytest.raises(
-        LaneConfigError,
-        match="jobs.*must be 1.*event windows must not overlap",
-    ):
-        load_lane_file(project.write(lane))
+    loaded = load_lane_file(project.write(lane)).lane("package").judge
+    assert loaded is not None and loaded.mutation is not None
+    assert loaded.mutation.jobs_max == 2
 
 
 def test_identity_exclude_is_normalized_and_round_trips_explicitly(project: Project):
@@ -476,7 +510,7 @@ def test_sql_mutation_as_declared_round_trips_both_artifact_keys(project: Projec
     loaded = load_lane_file(project.write(lane)).lane("package")
 
     assert loaded.as_declared()["judge"]["mutation"] == {
-        "jobs": 1,
+        "jobs_max": 1,
         "max_mutants": 50,
         "operators": ["sql:drop-check"],
         "equivalence_artifact": ".assay/schema-dump.sql",

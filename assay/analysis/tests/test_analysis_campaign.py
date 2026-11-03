@@ -17,12 +17,19 @@ from jsonschema import Draft202012Validator
 from analysis.tests.analysis_support import JUDGE_VERDICT_FIXTURES
 from assay.candidate_identity import candidate_id_from_fields
 from assay.cli import main
+from assay.config import load_lane_file
 from assay.verdict import MUTATION_BUCKETS
 from assay_analysis import campaign as campaign_api
 from tests.core.test_b110_pilot_select import _valid_fixture as _valid_selector_fixture
 
 
-def _repository(tmp_path: Path, document: dict) -> tuple[Path, str, Path]:
+def _repository(
+    tmp_path: Path,
+    document: dict,
+    *,
+    lane_jobs_key: str | None = "jobs_max",
+    lane_jobs_value: int | None = None,
+) -> tuple[Path, str, Path]:
     root = tmp_path / "repo"
     root.mkdir()
     for args in (
@@ -37,6 +44,13 @@ def _repository(tmp_path: Path, document: dict) -> tuple[Path, str, Path]:
     (root / "pkg").mkdir()
     (root / "pkg" / "checks.py").write_text("def check(value):\n    return value < 3\n")
     policy = document["judgment"]["r2"]
+    if lane_jobs_value is None:
+        lane_jobs_value = policy["jobs"]
+    lane_jobs = (
+        ""
+        if lane_jobs_key is None
+        else f"{lane_jobs_key} = {lane_jobs_value}\n"
+    )
     operators = ", ".join(json.dumps(item) for item in policy["operators"])
     (root / "assay.toml").write_text(
         "schema_version = 2\n\n"
@@ -57,7 +71,7 @@ def _repository(tmp_path: Path, document: dict) -> tuple[Path, str, Path]:
         'base = "main"\n'
         'mode = "changed_lines"\n\n'
         "[lanes.package.judge.mutation]\n"
-        f"jobs = {policy['jobs']}\n"
+        f"{lane_jobs}"
         f"max_mutants = {policy['max_mutants']}\n"
         f"operators = [{operators}]\n"
     )
@@ -962,11 +976,155 @@ def test_native_pilot_projection_must_use_declared_worker_count(tmp_path, monkey
     _validate(result)
     assert result["status"] == "evidence_error"
     assert result["errors"][0]["message"] == (
-        "native R2 projection jobs must equal the lane's declared mutation jobs"
+        "native R2 projection jobs exceed the lane's declared mutation jobs_max"
     )
     assert error.endswith(
-        "native R2 projection jobs must equal the lane's declared mutation jobs\n"
+        "native R2 projection jobs exceed the lane's declared mutation jobs_max\n"
     )
+
+
+@pytest.mark.parametrize(
+    ("lane_jobs_key", "lane_jobs_value", "project_jobs", "accepted"),
+    [
+        ("jobs_max", 1, 1, True),
+        ("jobs_max", 4, 2, True),
+        ("jobs", 4, 2, True),
+        (None, None, 1, True),
+        ("jobs_max", 1, 2, False),
+        (None, None, 2, False),
+    ],
+)
+def test_native_r2_projection_jobs_follow_the_declared_ceiling(
+    tmp_path, monkeypatch, lane_jobs_key, lane_jobs_value, project_jobs, accepted
+):
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    document = _fixture_document("r2_pass")
+    root, head, verdict = _repository(
+        tmp_path,
+        document,
+        lane_jobs_key=lane_jobs_key,
+        lane_jobs_value=lane_jobs_value,
+    )
+    rows = _plan_rows(document)
+    _install_plan(monkeypatch, document, rows)
+    progress = tmp_path / "progress.jsonl"
+    _write_progress(progress, head=head, document=document, plan_rows=rows)
+
+    code, output, error = _invoke(
+        root,
+        head,
+        verdict,
+        progress,
+        command_exit=0,
+        extra=("--project", "--project-jobs", str(project_jobs)),
+    )
+    result = json.loads(output)
+    _validate(result)
+    if accepted:
+        assert (code, error) == (0, "")
+        assert result["projection"]["jobs"] == project_jobs
+    else:
+        assert code == 2
+        assert result["status"] == "evidence_error"
+        assert result["errors"][0]["message"] == (
+            "native R2 projection jobs exceed the lane's declared mutation jobs_max"
+        )
+        assert error.endswith(
+            "native R2 projection jobs exceed the lane's declared mutation jobs_max\n"
+        )
+
+
+@pytest.mark.parametrize(
+    ("lane_jobs_key", "lane_jobs_value"),
+    [("jobs_max", 1), ("jobs", 1), (None, None)],
+)
+def test_native_r2_verdict_jobs_cannot_exceed_the_declared_ceiling(
+    tmp_path, lane_jobs_key, lane_jobs_value
+):
+    document = _fixture_document("r2_pass")
+    document["judgment"]["r2"]["jobs"] = 2
+    root, _head, _verdict = _repository(
+        tmp_path,
+        document,
+        lane_jobs_key=lane_jobs_key,
+        lane_jobs_value=lane_jobs_value,
+    )
+    lane = load_lane_file(root / "assay.toml").lane("package")
+
+    with pytest.raises(
+        ValueError,
+        match="R2 verdict policy jobs differs from the named lane declaration",
+    ):
+        campaign_api._check_verdict_against_lane(
+            document,
+            lane_name="package",
+            lane=lane,
+        )
+
+
+def test_native_r2_verdict_attribution_must_match_effective_workers(tmp_path):
+    document = _fixture_document("r2_pass")
+    document["judgment"]["r2"]["attribution"] = "overlap-conservative"
+    root, _head, _verdict = _repository(tmp_path, document)
+    lane = load_lane_file(root / "assay.toml").lane("package")
+
+    with pytest.raises(
+        ValueError,
+        match="R2 verdict policy attribution differs from the selected worker count",
+    ):
+        campaign_api._check_verdict_against_lane(
+            document,
+            lane_name="package",
+            lane=lane,
+        )
+
+
+def test_native_r2_campaign_uses_v17_effective_jobs_and_attribution(
+    tmp_path, monkeypatch
+):
+    document = _fixture_document("r2_pass")
+    document["judgment"]["r2"].update(
+        jobs=4, attribution="overlap-conservative"
+    )
+    root, head, verdict = _repository(
+        tmp_path, document, lane_jobs_key="jobs_max", lane_jobs_value=4
+    )
+    rows = _plan_rows(document)
+    _install_plan(monkeypatch, document, rows)
+    progress = tmp_path / "progress.jsonl"
+    _write_progress(progress, head=head, document=document, plan_rows=rows)
+
+    code, output, error = _invoke(
+        root, head, verdict, progress, command_exit=0
+    )
+    result = json.loads(output)
+    _validate(result)
+    assert (code, error) == (0, "")
+    assert result["campaign"]["jobs"] == 4
+    assert result["campaign"]["attribution"] == "overlap-conservative"
+
+
+def test_analysis_refuses_a_v16_verdict_with_exactly_one_diagnostic(
+    tmp_path, monkeypatch
+):
+    document = _fixture_document("r2_pass")
+    document["schema_version"] = 16
+    root, head, verdict = _repository(tmp_path, document)
+    rows = _plan_rows(document)
+    _install_plan(monkeypatch, document, rows)
+    progress = tmp_path / "progress.jsonl"
+    _write_progress(progress, head=head, document=document, plan_rows=rows)
+
+    code, output, error = _invoke(
+        root, head, verdict, progress, command_exit=0
+    )
+    result = json.loads(output)
+    _validate(result)
+    assert code == 2
+    assert result["status"] == "evidence_error"
+    assert len(result["errors"]) == 1
+    assert "schema_version 16" in result["errors"][0]["message"]
+    assert "schema_version 16 is not this verifier's version 17" in error
 
 
 def test_native_r2_campaign_projection_rejects_a_parallel_worker_assumption(
@@ -983,10 +1141,10 @@ def test_native_r2_campaign_projection_rejects_a_parallel_worker_assumption(
     _validate(result)
     assert result["status"] == "evidence_error"
     assert result["errors"][0]["message"] == (
-        "native R2 projection jobs must equal the lane's declared mutation jobs"
+        "native R2 projection jobs exceed the lane's declared mutation jobs_max"
     )
     assert error.endswith(
-        "native R2 projection jobs must equal the lane's declared mutation jobs\n"
+        "native R2 projection jobs exceed the lane's declared mutation jobs_max\n"
     )
 
 

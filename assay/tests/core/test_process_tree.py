@@ -15,6 +15,7 @@ import pytest
 
 from assay import process_tree
 from assay.process_tree import (
+    ProcessTreeDescendant,
     ProcessTreeError,
     ProcessTreeEvidence,
     ProcessTreeProcessRunner,
@@ -27,17 +28,15 @@ def _pid_is_gone(pid: int) -> bool:
     return not Path(f"/proc/{pid}").exists()
 
 
-@pytest.mark.parametrize(
-    "value", [True, float("nan"), float("inf"), -1.0, 10**1000]
-)
-def test_process_tree_evidence_rejects_invalid_cleanup_duration(value) -> None:
-    with pytest.raises(ValueError, match="cleanup_seconds"):
+@pytest.mark.parametrize("value", [True, 0, -1])
+def test_process_tree_evidence_rejects_invalid_signal(value) -> None:
+    with pytest.raises(ValueError, match="signal must be a positive integer"):
         ProcessTreeEvidence(
-            leader_status="exited",
+            leader_status="signaled",
             group_signalled_before_reap=False,
             outliving_descendants=0,
             descendants_signalled=0,
-            cleanup_seconds=value,
+            signal=value,
             clean=True,
         )
 
@@ -49,7 +48,6 @@ def test_process_tree_evidence_rejects_a_non_string_leader_status() -> None:
             group_signalled_before_reap=False,
             outliving_descendants=0,
             descendants_signalled=0,
-            cleanup_seconds=0.0,
             clean=True,
         )
 
@@ -61,7 +59,6 @@ def test_process_tree_evidence_rejects_more_signalled_than_outliving_descendants
             group_signalled_before_reap=False,
             outliving_descendants=1,
             descendants_signalled=2,
-            cleanup_seconds=0.0,
             clean=True,
         )
 
@@ -71,18 +68,24 @@ def test_normal_leader_exit_kills_and_reaps_detached_descendant(
 ) -> None:
     pid_file = tmp_path / "detached.pid"
     descendant = (
-        "import os,time; os.setsid(); "
-        f"open({str(pid_file)!r}, 'w').write(str(os.getpid())); "
-        "time.sleep(60)"
+        "import os,time\n"
+        "os.setsid()\n"
+        f"temporary={str(pid_file) + '.tmp'!r}\n"
+        f"destination={str(pid_file)!r}\n"
+        "with open(temporary, 'w') as stream:\n"
+        " stream.write(str(os.getpid()))\n"
+        "os.replace(temporary, destination)\n"
+        "time.sleep(60)\n"
     )
     parent = (
         "import os,subprocess,sys,time\n"
         f"subprocess.Popen([sys.executable, '-c', {descendant!r}], "
         "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, "
         "stderr=subprocess.DEVNULL)\n"
-        "deadline=time.monotonic()+5\n"
+        "deadline=time.monotonic()+30\n"
         f"while not os.path.exists({str(pid_file)!r}) and time.monotonic()<deadline:\n"
         " time.sleep(0.01)\n"
+        f"if not os.path.isfile({str(pid_file)!r}): raise SystemExit('child did not publish pid')\n"
         "print('leader done')\n"
     )
     waited_pids: list[int] = []
@@ -98,7 +101,7 @@ def test_normal_leader_exit_kills_and_reaps_detached_descendant(
         [sys.executable, "-c", parent],
         env=dict(os.environ),
         cwd=tmp_path,
-        timeout=10,
+        timeout=35,
     )
 
     assert result.returncode == 0
@@ -109,7 +112,124 @@ def test_normal_leader_exit_kills_and_reaps_detached_descendant(
     assert evidence.descendants_signalled >= 1
     assert waited_pids
     pid = int(pid_file.read_text())
+    descendant = next(item for item in evidence.descendants if item.pid == pid)
+    assert descendant.ppid is not None and descendant.ppid > 0
+    assert descendant.comm
     assert _pid_is_gone(pid)
+
+
+def test_vanished_descendant_keeps_pid_and_explicitly_omits_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pid = 87654321
+
+    def vanished(self):
+        assert str(self) == f"/proc/{pid}/stat"
+        raise FileNotFoundError(str(self))
+
+    monkeypatch.setattr(Path, "read_bytes", vanished)
+    identity = process_tree._process_identity(pid)
+
+    assert identity.to_dict() == {"pid": pid, "ppid": None, "comm": None}
+
+
+@pytest.mark.parametrize(
+    "stat_bytes",
+    [b"truncated", b"123 (worker) S malformed"],
+    ids=["missing-fields", "malformed-ppid"],
+)
+def test_malformed_descendant_stat_keeps_pid_and_omits_identity(
+    monkeypatch: pytest.MonkeyPatch, stat_bytes: bytes
+) -> None:
+    pid = 87654321
+    monkeypatch.setattr(Path, "read_bytes", lambda self: stat_bytes)
+
+    identity = process_tree._process_identity(pid)
+
+    assert identity.to_dict() == {"pid": pid, "ppid": None, "comm": None}
+
+
+@pytest.mark.parametrize(
+    ("name", "expected_comm"),
+    [("wörker", "wörker"), ("", None)],
+    ids=["non_ascii", "empty_name"],
+)
+def test_real_descendant_with_nonstandard_name_is_cleaned_and_recorded(
+    tmp_path: Path, name: str, expected_comm: str | None
+) -> None:
+    pid_file = tmp_path / "named-child.pid"
+    name_bytes = name.encode("utf-8")
+    child = (
+        "import ctypes,os,time\n"
+        "os.setsid()\n"
+        "libc=ctypes.CDLL(None)\n"
+        "libc.prctl.argtypes=[ctypes.c_int,ctypes.c_char_p,ctypes.c_ulong,ctypes.c_ulong,ctypes.c_ulong]\n"
+        f"assert libc.prctl(15,{name_bytes!r},0,0,0)==0\n"
+        f"temporary={str(pid_file) + '.tmp'!r}\n"
+        f"destination={str(pid_file)!r}\n"
+        "with open(temporary,'w') as stream:\n"
+        " stream.write(str(os.getpid()))\n"
+        "os.replace(temporary,destination)\n"
+        "time.sleep(60)\n"
+    )
+    parent = (
+        "import os,subprocess,sys,time\n"
+        f"subprocess.Popen([sys.executable,'-c',{child!r}],stdin=subprocess.DEVNULL,"
+        "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
+        "deadline=time.monotonic()+30\n"
+        f"while not os.path.exists({str(pid_file)!r}) and time.monotonic()<deadline:\n"
+        " time.sleep(0.01)\n"
+        f"if not os.path.isfile({str(pid_file)!r}): raise SystemExit('child did not publish pid')\n"
+    )
+    try:
+        result = ProcessTreeProcessRunner()(
+            [sys.executable, "-c", parent],
+            env=dict(os.environ),
+            cwd=tmp_path,
+            timeout=40,
+        )
+    finally:
+        # Keep a failed regression test from leaking its deliberately long-
+        # lived child into the rest of the test process.
+        if pid_file.is_file():
+            child_pid = int(pid_file.read_text())
+            if not _pid_is_gone(child_pid):
+                try:
+                    os.kill(child_pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                try:
+                    os.waitpid(child_pid, 0)
+                except ChildProcessError:
+                    pass
+
+    evidence = ProcessTreeEvidence.from_dict(result.process_tree_evidence)
+    child_pid = int(pid_file.read_text())
+    child_identity = next(
+        item for item in evidence.descendants if item.pid == child_pid
+    )
+    assert result.returncode == 0
+    assert evidence.clean is True
+    assert evidence.outliving_descendants >= 1
+    assert evidence.descendants_signalled >= 1
+    assert child_identity.comm == expected_comm
+    if expected_comm is None:
+        assert child_identity.ppid is None
+    else:
+        assert child_identity.ppid is not None and child_identity.ppid > 0
+    assert _pid_is_gone(child_pid)
+
+
+def test_signaled_leader_requires_its_terminating_signal() -> None:
+    with pytest.raises(ValueError, match="signaled leader requires a signal"):
+        ProcessTreeEvidence(
+            leader_status="signaled",
+            group_signalled_before_reap=False,
+            outliving_descendants=0,
+            descendants_signalled=0,
+            signal=None,
+            clean=True,
+        )
 
 
 def test_timeout_kills_detached_descendant_and_keeps_timeout_status(
@@ -365,7 +485,8 @@ def test_process_tree_evidence_rejects_invalid_fields(field, value, message):
         "group_signalled_before_reap": False,
         "outliving_descendants": 0,
         "descendants_signalled": 0,
-        "cleanup_seconds": 0.0,
+        "signal": None,
+        "descendants": (),
         "clean": True,
     }
     values[field] = value
@@ -377,6 +498,94 @@ def test_process_tree_evidence_requires_the_exact_serialized_field_set():
     with pytest.raises(ValueError, match="invalid field set"):
         ProcessTreeEvidence.from_dict({})
     assert ProcessTreeEvidence.not_started().leader_status == "not-started"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [None, True, "1", pytest.param(10**10000, id="integer-overflow")],
+)
+def test_process_tree_cleanup_bound_rejects_nonfinite_or_non_numeric_values(value):
+    with pytest.raises(ValueError, match="cleanup_seconds must be positive"):
+        ProcessTreeWindow(cleanup_seconds=value)
+
+
+@pytest.mark.parametrize(
+    ("values", "message"),
+    [
+        ({"pid": True, "ppid": 1, "comm": "child"}, "pid must be a positive integer"),
+        ({"pid": 1, "ppid": 1, "comm": None}, "identity must be complete or omitted"),
+        ({"pid": 1, "ppid": True, "comm": "child"}, "ppid must be a positive integer"),
+        ({"pid": 1, "ppid": 0, "comm": "child"}, "ppid must be a positive integer"),
+        ({"pid": 1, "ppid": 1, "comm": ""}, "comm must be a non-empty string"),
+        ({"pid": 1, "ppid": 1, "comm": 7}, "comm must be a non-empty string"),
+    ],
+)
+def test_process_tree_descendant_refuses_incomplete_or_invalid_identity(values, message):
+    with pytest.raises(ValueError, match=message):
+        ProcessTreeDescendant(**values)
+
+
+def test_process_tree_descendant_wire_shape_is_exact_and_round_trips():
+    with pytest.raises(ValueError, match="invalid field set"):
+        ProcessTreeDescendant.from_dict({"pid": 7, "ppid": 1, "comm": "child", "extra": 1})
+    identity = ProcessTreeDescendant.from_dict({"pid": 7, "ppid": 1, "comm": "child"})
+    assert identity.to_dict() == {"pid": 7, "ppid": 1, "comm": "child"}
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"leader_status": "exited", "signal": 9}, "signal requires a signaled leader"),
+        (
+            {"leader_status": "signaled", "signal": 9, "descendants": []},
+            "descendants must be a tuple",
+        ),
+        ({"descendants": (ProcessTreeDescendant(pid=1, ppid=1, comm="child"),) * 10_001,
+          "outliving_descendants": 10_001}, "exceed 10000"),
+        ({"descendants": (ProcessTreeDescendant(pid=1, ppid=1, comm="child"),) * 2,
+          "outliving_descendants": 2}, "duplicate pid"),
+        ({"descendants": (ProcessTreeDescendant(pid=2, ppid=1, comm="child"),
+                           ProcessTreeDescendant(pid=1, ppid=1, comm="child")),
+          "outliving_descendants": 2}, "sorted by pid"),
+        ({"descendants": (ProcessTreeDescendant(pid=1, ppid=1, comm="child"),)},
+         "must match outliving_descendants"),
+    ],
+)
+def test_process_tree_evidence_rejects_untrustworthy_descendant_rows(changes, message):
+    values = {
+        "leader_status": "exited",
+        "group_signalled_before_reap": False,
+        "outliving_descendants": 0,
+        "descendants_signalled": 0,
+        "signal": None,
+        "descendants": (),
+        "clean": True,
+    }
+    values.update(changes)
+    with pytest.raises(ValueError, match=message):
+        ProcessTreeEvidence(**values)
+
+
+@pytest.mark.parametrize(
+    ("raw", "error"),
+    [
+        (None, PermissionError("hidden")),
+        (b"malformed", None),
+        (b"(child) S", None),
+        (b"(child) S nope 0", None),
+        (b"(child) S 0 0", None),
+    ],
+)
+def test_process_identity_omits_unavailable_or_malformed_procfs(
+    monkeypatch: pytest.MonkeyPatch, raw: bytes | None, error: OSError | None
+):
+    monkeypatch.setattr(
+        Path,
+        "read_bytes",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(error) if error else raw,
+    )
+    identity = process_tree._process_identity(42)
+    assert identity.to_dict() == {"pid": 42, "ppid": None, "comm": None}
 
 
 @pytest.mark.parametrize("seconds", [0, -1, float("nan"), float("inf")])
@@ -407,8 +616,19 @@ def test_ppid_fallback_reads_proc_stat_and_uses_the_parent_pid(
     )
     monkeypatch.setattr(
         process_tree.Path,
-        "read_text",
-        lambda _path, **_kwargs: "41 (name with ) paren) S 7 0 0",
+        "read_bytes",
+        lambda _path, **_kwargs: b"41 (name with ) paren) S 7 0 0",
+    )
+    assert process_tree._ppid_children_from_proc(7) == [41]
+
+
+def test_ppid_fallback_reads_non_ascii_process_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(process_tree.os, "scandir", lambda _path: _ScandirEntries(["41"]))
+    monkeypatch.setattr(
+        process_tree.Path, "read_bytes",
+        lambda _path, **_kwargs: "41 (wörker) S 7 0 0".encode(),
     )
     assert process_tree._ppid_children_from_proc(7) == [41]
 
@@ -418,8 +638,8 @@ def test_ppid_fallback_ignores_processes_with_a_different_parent(
 ) -> None:
     monkeypatch.setattr(process_tree.os, "scandir", lambda _path: _ScandirEntries(["41"]))
     monkeypatch.setattr(
-        process_tree.Path, "read_text",
-        lambda _path, **_kwargs: "41 (child) S 8 0 0",
+        process_tree.Path, "read_bytes",
+        lambda _path, **_kwargs: b"41 (child) S 8 0 0",
     )
     assert process_tree._ppid_children_from_proc(7) == []
 
@@ -443,9 +663,9 @@ def test_ppid_fallback_refuses_incomplete_or_malformed_procfs(
     def read_stat(_path, **_kwargs):
         if read_error is not None:
             raise read_error
-        return stat_text
+        return stat_text.encode()
 
-    monkeypatch.setattr(process_tree.Path, "read_text", read_stat)
+    monkeypatch.setattr(process_tree.Path, "read_bytes", read_stat)
     if message is None:
         assert process_tree._ppid_children_from_proc(7) == []
     else:

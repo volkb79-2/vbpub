@@ -16,6 +16,8 @@ wiring around it.
 from __future__ import annotations
 
 import json
+import shutil
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -31,7 +33,7 @@ from conftest import (
 )
 
 from assay import git as git_module
-from assay import runner, safeio
+from assay import runner, safeio, workspace as workspace_api
 from assay.errors import AssayError, Outcome, ReasonCode
 from assay.verdict import Judgment
 
@@ -133,6 +135,98 @@ def test_run_lane_full_pass_builds_judgment_and_covers_ended_after_r1(
     # where the two genuinely differ.
     assert verdict.judgment.resolved.source_roots == judge.source_roots
     assert verdict.judgment.resolved.language == judge.language
+
+
+class _RunnerCopyingWorkspace:
+    def __init__(self, root: Path):
+        self.cheap_clone = False
+        self.trees = root / "trees"
+        self.trees.mkdir(parents=True)
+        self._next_tree = 0
+
+    def ingest_tree(self, source: Path, name: str) -> Path:
+        destination = self.trees / name
+        shutil.copytree(source, destination)
+        return destination
+
+    def make_tree(self) -> Path:
+        self._next_tree += 1
+        destination = self.trees / f"snapshot-{self._next_tree}"
+        destination.mkdir()
+        return destination
+
+    def clone_file(self, source: Path, destination: Path) -> None:
+        shutil.copyfile(source, destination)
+
+    def delete_tree(self, path: Path) -> None:
+        shutil.rmtree(path)
+
+
+def test_cow_workspace_preserves_runner_result_buckets(
+    git_repo: GitRepo, tmp_path: Path, monkeypatch
+):
+    """Only pack storage changes; the exact same R0/R1 buckets are judged."""
+    monkeypatch.delenv("MDT_COW_ROOT", raising=False)
+    monkeypatch.delenv("COWTREE_MODE", raising=False)
+    base_rev, head_rev = _seed_two_commits(git_repo)
+    judge = make_r1_judge(source_root_paths=(git_repo.path / "pkg",), base=base_rev)
+    lane = make_lane(
+        rigor=("R0", "R1"),
+        judge=judge,
+        argv=_write_cov_argv({"pkg/mod.zzz": {"executed_lines": [2, 3, 4, 5]}}),
+    )
+
+    plain = runner.run_lane(
+        lane,
+        commit=head_rev,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=ADAPTER,
+        assay_version="0.1.0",
+        clock=fixed_clock(MOMENT_A, MOMENT_B, MOMENT_C),
+    )
+
+    opened = []
+
+    @contextmanager
+    def active_workspace(estimate, *, scratch_root):
+        assert estimate.max_live_clones == 2
+        root = tmp_path / f"cow-run-{len(opened)}"
+        root.mkdir()
+        active = _RunnerCopyingWorkspace(root)
+        opened.append(active)
+        try:
+            yield active
+        finally:
+            shutil.rmtree(root)
+
+    monkeypatch.setattr(
+        workspace_api, "_cow_workspace_opener", lambda: active_workspace
+    )
+    cow = runner.run_lane(
+        lane,
+        commit=head_rev,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=ADAPTER,
+        assay_version="0.1.0",
+        clock=fixed_clock(MOMENT_A, MOMENT_B, MOMENT_C),
+    )
+
+    bucket = lambda verdict: (
+        verdict.outcome,
+        tuple(
+            (
+                claim.rigor,
+                claim.status,
+                claim.reason_code,
+                claim.coverage.pct if claim.coverage is not None else None,
+            )
+            for claim in verdict.claims
+        ),
+    )
+    assert bucket(cow) == bucket(plain)
+    assert len(opened) == 1
 
 
 def test_run_lane_sorts_nested_whole_target_paths_in_the_r1_judgment(
@@ -943,11 +1037,10 @@ def test_run_lane_r1_still_judges_coverage_when_r0_fails(git_repo: GitRepo):
     assert isinstance(verdict.judgment, Judgment), "R1 really was judged, so its policy is recorded"
 
 
-def test_run_lane_r1_renders_empty_coverage_when_r0_never_starts(git_repo: GitRepo):
-    """An unpermitted argv append means the process never launches at all
-    (A-095) -- the pre-armed reservation is never recreated, so R1 renders
-    the P20/A-174 truthful absence (NO_MEASUREMENT/EMPTY_COVERAGE) rather
-    than being silently skipped."""
+def test_inherited_r1_error_carries_r0_detail(git_repo: GitRepo):
+    """An unpermitted argv append never launches (A-095); R1 inherits the
+    R0 infrastructure termination instead of issuing a separate coverage
+    refusal from an artifact that this run could not produce."""
     base_rev, head_rev = _seed_two_commits(git_repo)
     judge = make_r1_judge(source_root_paths=(git_repo.path / "pkg",), base=base_rev)
     lane = make_lane(
@@ -970,9 +1063,10 @@ def test_run_lane_r1_renders_empty_coverage_when_r0_never_starts(git_repo: GitRe
 
     assert verdict.claims[0].status is Outcome.ERROR
     assert verdict.claims[0].reason_code is ReasonCode.EXEC_FAILED
-    assert verdict.claims[1].status is Outcome.NO_MEASUREMENT
-    assert verdict.claims[1].reason_code is ReasonCode.EMPTY_COVERAGE
-    assert verdict.outcome is Outcome.ERROR, "rollup: ERROR (R0) still outranks NO_MEASUREMENT (R1)"
+    assert verdict.claims[1].status is Outcome.ERROR
+    assert verdict.claims[1].reason_code is ReasonCode.EXEC_FAILED
+    assert verdict.claims[1].detail == "inherited from R0: not_run"
+    assert verdict.outcome is Outcome.ERROR
 
 
 def _raise_timeout(argv, *, env, cwd, timeout):
@@ -982,10 +1076,9 @@ def _raise_timeout(argv, *, env, cwd, timeout):
 def test_run_lane_r1_renders_empty_coverage_when_r0_budget_expires(
     git_repo: GitRepo,
 ):
-    """The same shape as EXEC_FAILED (no real wall-clock wait -- the fake
-    raises immediately, AUTHORING.md §3b.A): the reservation was armed but
-    the process never completed, so it was never rewritten either -- P20's
-    truthful NO_MEASUREMENT/EMPTY_COVERAGE, not an unreadable artifact."""
+    """A timeout remains its existing incomplete result; R1's absent artifact
+    is still reported as NO_MEASUREMENT/EMPTY_COVERAGE. The fake raises
+    immediately, so there is no wall-clock wait."""
     base_rev, head_rev = _seed_two_commits(git_repo)
     judge = make_r1_judge(source_root_paths=(git_repo.path / "pkg",), base=base_rev)
     lane = make_lane(rigor=("R0", "R1"), judge=judge, argv=("/bin/sh", "-c", "exit 0"))
@@ -1005,7 +1098,7 @@ def test_run_lane_r1_renders_empty_coverage_when_r0_budget_expires(
     assert verdict.claims[0].reason_code is ReasonCode.LANE_TIMEOUT
     assert verdict.claims[1].status is Outcome.NO_MEASUREMENT
     assert verdict.claims[1].reason_code is ReasonCode.EMPTY_COVERAGE
-    assert verdict.outcome is Outcome.NO_MEASUREMENT, "rollup: NO_MEASUREMENT (R1) outranks BUDGET_EXCEEDED (R0)"
+    assert verdict.outcome is Outcome.NO_MEASUREMENT
 
 
 # --- malformed coverage renders a complete claim, never propagates ------------
@@ -1092,8 +1185,8 @@ def test_run_lane_a_missing_executable_renders_a_complete_artifact(
 ):
     """O4's "missing tool" shape, through the real pipeline: the lane's own
     binary does not exist, so ``execute_command`` maps the ``OSError`` to
-    ``ERROR``/``EXEC_FAILED`` -- and R1 still renders a complete claim of
-    its own rather than the whole invocation dying (work item 3)."""
+    ``ERROR``/``EXEC_FAILED`` and R1 inherits that infrastructure result in
+    the complete verdict artifact rather than the invocation dying."""
     base_rev, head_rev = _seed_two_commits(git_repo)
     judge = make_r1_judge(source_root_paths=(git_repo.path / "pkg",), base=base_rev)
     lane = make_lane(
@@ -1115,8 +1208,8 @@ def test_run_lane_a_missing_executable_renders_a_complete_artifact(
     assert [c.rigor for c in verdict.claims] == ["R0", "R1"]
     assert verdict.claims[0].status is Outcome.ERROR
     assert verdict.claims[0].reason_code is ReasonCode.EXEC_FAILED
-    assert verdict.claims[1].status is Outcome.NO_MEASUREMENT
-    assert verdict.claims[1].reason_code is ReasonCode.EMPTY_COVERAGE
+    assert verdict.claims[1].status is Outcome.ERROR
+    assert verdict.claims[1].reason_code is ReasonCode.EXEC_FAILED
     assert verdict.claims[1].coverage is None
     assert verdict.judgment is None
     assert verdict.outcome is Outcome.ERROR

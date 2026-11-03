@@ -34,7 +34,7 @@ The checked-in level view must match the graph:
 
 ```project-order
 L0: cli-extended, cgroup-profiler, ciu, assay, topos, tls-edge, tester-base
-L1: run-gate-project, nyxloom, pwmcp, iobench
+L1: tnt, run-gate-project, nyxloom, pwmcp, iobench
 L2: cmru
 L3: modern-debian-tools-python-debug, mdt-cockpit
 ```
@@ -67,8 +67,9 @@ of them in the shell that runs these steps:
 
 Also required: the configured
 digest-pinned CMRU host-probe image pulled locally, the Python environment you
-choose to own the `cmru` command (`ESTATE_PYTHON`, below; in the estate
-cockpit `/home/vscode/.venv/bin/python`), and network access to the upstream
+choose to own the `cmru` command (`ESTATE_PYTHON`, below; in the MDT cockpit
+image the primary venv, `/opt/mdt/venv/bin/python`, which the image `PATH`
+already selects), and network access to the upstream
 Python image, PyPI build backends, and GitHub. Both the bootstrap script and
 `cmru handler wheel-build` verify that the build slice is a real host systemd
 unit (`LoadState=loaded` with a non-empty `FragmentPath`, read through the
@@ -96,6 +97,16 @@ export CMRU_TESTER_PIDS_LIMIT=4096
 export CMRU_TESTER_CGROUP_PROBE_IMAGE='debian@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132'
 docker pull debian@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132
 ```
+
+In the MDT cockpit image `/opt/mdt/venv` is image-owned and writable by group
+`mdt`, so the `pip install` steps below work there without a home venv. What
+they write lives in the container's writable layer: it survives a restart but
+not a container recreation. The durable way to carry released CLIs (`cmru`,
+`ciu`, `run-gate`, ...) is the image's wheel list (`mdt-cockpit/pip/wheels.list`),
+which bakes them in at build time; reinstall the bootstrap wheels here after
+recreating the container if the image has not yet been rebuilt with the
+released versions. See `mdt-cockpit/docs/DESIGN-GUIDE.md`, "The estate venv is
+selected by PATH".
 
 This digest is also the `CMRU_TESTER_CGROUP_PROBE_IMAGE` value in
 `cmru.orchestration.toml`. The bootstrap script builds `wheel-builder:local` from
@@ -143,17 +154,17 @@ supplies the whole-source line-and-branch qualification.
    `cli_extended-*.whl` produced above into the git-ignored
    `tester-unified/local-wheel/`. Build the Run-Gate wheel from the selected
    commit using the planned stable version (the example is for the current
-   24.1.1 release); its path is derived from what the build produced. The
+   24.3.0 release); its path is derived from what the build produced. The
    handler needs the build parent from the prerequisites
    (`$CGROUP_PARENT_DEV_BACKGROUND` or `CMRU_DOCKER_CGROUP_PARENT`):
 
    ```bash
    mkdir -p tester-unified/local-wheel
    cp "$BOOTSTRAP_CLI_EXTENDED_WHEEL" tester-unified/local-wheel/
-   SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE=24.1.1 \
+   SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE=24.3.0 \
      cmru handler wheel-build --cwd run-gate-project
    shopt -s nullglob
-   run_gate_wheels=("$PWD"/run-gate-project/dist/run_gate-24.1.1-*.whl)
+   run_gate_wheels=("$PWD"/run-gate-project/dist/run_gate-24.3.0-*.whl)
    test "${#run_gate_wheels[@]}" -eq 1
    RUN_GATE_CANDIDATE_WHEEL="${run_gate_wheels[0]}"
    CMRU_TESTER_MEMORY=1g \
@@ -187,7 +198,7 @@ supplies the whole-source line-and-branch qualification.
    uses its separately configured digest-pinned image. The
    Dockerfile explicitly installs the host-facing tools it needs, so the
    upstream Python base does not need to inherit a vbpub or MDT release. The
-   host venv install makes this exact local candidate available to the
+   `ESTATE_PYTHON` install makes this exact local candidate available to the
    registered gates and release steps; it is built from the checkout and does
    not need a published Run-Gate tag.
 
@@ -313,7 +324,7 @@ supplies the whole-source line-and-branch qualification.
    if [ "$CLI_EXTENDED_RESOLVE" = latest ]; then
      run_gate_tester_env+=(RUN_GATE_TESTER_CLI_EXTENDED_SHA256="${CLI_EXTENDED_RELEASED_SHA256:?set in step 3}")
    fi
-   env "${run_gate_tester_env[@]}" cmru release run-gate-project --set-version 24.1.1
+   env "${run_gate_tester_env[@]}" cmru release run-gate-project --set-version 24.3.0
    ```
 
    The first Run-Gate release publishes the artifact that CMRU's own release
@@ -328,10 +339,10 @@ supplies the whole-source line-and-branch qualification.
    run_gate_wheels_file="$(mktemp)"
    trap 'rm -f "$run_gate_wheels_file"' EXIT
    find run-gate-project/artifacts -type f \
-     -path '*/dist/run_gate-24.1.1-*.whl' -print > "$run_gate_wheels_file"
+     -path '*/dist/run_gate-24.3.0-*.whl' -print > "$run_gate_wheels_file"
    mapfile -t run_gate_wheels < "$run_gate_wheels_file"
    if [ "${#run_gate_wheels[@]}" -ne 1 ]; then
-     echo "Expected exactly one retained Run-Gate 24.1.1 wheel" >&2
+     echo "Expected exactly one retained Run-Gate 24.3.0 wheel" >&2
      exit 2
    fi
    RUN_GATE_RELEASE_WHEEL="${run_gate_wheels[0]}"

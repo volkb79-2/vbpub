@@ -249,6 +249,175 @@ memory = "2g"                       # required local ceiling for memory.events a
 pids = 8192                          # required local ceiling for pids.events attribution
 ```
 
+## Combined resource settings
+
+Use the same `resources` table for Run-Gate caps and consumer-specific facts.
+The precedence is CLI override, lane, project, environment, central, then
+defaults. Consumer subtables are closed: `[resources.cowtree] mode` becomes
+`COWTREE_MODE`, and `[resources.vm] disk_cache` becomes `VM_DISK_CACHE`.
+Run-Gate does not pass `ram_target` or `candidate_ram` through as raw
+environment variables.
+
+<!-- run-gate-config -->
+```toml
+schema_version = 1
+
+[resources]
+ram_target = "75%"
+
+[resources.cowtree]
+mode = "auto"
+
+[environments.tester-unified]
+mode = "ephemeral"
+image = "tester-unified:local"
+
+[environments.tester-unified.resources]
+io_sync = "strict"
+
+[environments.host]
+mode = "host"
+
+[lanes.r2]
+kind = "assay"
+environment = "tester-unified"
+assay_lane = "r2"
+
+[lanes.r2.resources]
+candidate_ram = "300m"
+io_sync = "relaxed"
+
+[lanes.iobench-r0]
+kind = "command"
+environment = "tester-unified"
+argv = ["python3", "-m", "pytest", "tests"]
+
+[lanes.iobench-r0.resources]
+io_sync = "durable"
+
+[lanes.vm-system]
+kind = "command"
+environment = "host"
+argv = ["vmctl", "run"]
+
+[lanes.vm-system.resources.vm]
+disk_cache = "unsafe"
+```
+
+`io_sync` defaults to `strict`; it adds no preload. Mark any lane that checks
+fsync, crash consistency, or storage durability as `durable`. That value is
+lane-only and rejects every `--io-sync` override, including `strict`.
+`relaxed` is for ephemeral lanes and requires
+an image carrying `org.vbpub.tester.eatmydata-lib`; Run-Gate creates and
+read-only binds `/etc/ld.so.preload` from that label. You can make a one-run
+comparison with `run-gate r2 --io-sync relaxed`; command-line I/O overrides
+are recorded and excluded from history. The `history` output keeps modes
+separate; `[history].keep` bounds the total measurements across modes. A
+sequence whose members use different modes keeps history per member and
+excludes its aggregate measurement.
+
+`[resources.cowtree] mode = "auto"` forwards `COWTREE_MODE=auto`. If
+`MDT_COW_ROOT` is set, ephemeral lane containers bind that host path to the
+same path inside the container; Run-Gate does not stat or translate it. Use
+`run-gate r2 --cow off` for a one-run CoW opt-out; command-line CoW overrides
+are recorded and excluded from history. Set `disk_cache` only on a host-mode
+VM lane; accepted values are `unsafe` and `writeback`, which Run-Gate forwards
+as `VM_DISK_CACHE`. The consumer default remains its own policy when the key
+is absent.
+`MDT_COW_ROOT` and repository paths used in bind mounts cannot
+contain commas, colons, or newlines; Run-Gate refuses them before Docker.
+
+`RUN_GATE_EXTRA_MOUNTS` uses explicit Docker `--mount type=bind` entries, so
+Docker refuses a missing host source instead of silently creating an empty
+directory. Commas and newlines in either path are refused before Docker;
+colon separates the `host=container` entries.
+
+`ram_target` accepts a size or a percentage, and `candidate_ram` accepts a
+size on a lane. Run-Gate parses both; `ram_target` also supplies the memory
+budget for an opted-in native R2 `jobs = "auto"` lane.
+There is no `--ram-target` option; configure `ram_target` in `[resources]`
+or a lane's `resources` table instead.
+
+### Native R2 worker selection
+
+Run-Gate leaves Assay's one-worker default in place unless the lane declares
+`jobs` or the invocation supplies `--jobs`. Use a positive integer to request
+that exact count, or `"auto"` to let Run-Gate derive and pass an explicit
+count. The CLI wins over the lane setting. The selected Assay lane must report
+native R2 in `assay lanes --json`, and its
+`[lanes.<name>.judge.mutation].jobs_max` is the hard ceiling.
+
+<!-- run-gate-config -->
+```toml
+schema_version = 1
+
+[resources]
+ram_target = "75%"
+
+[environments.tester]
+mode = "ephemeral"
+image = "tester-unified:local"
+
+[lanes.r2]
+kind = "assay"
+environment = "tester"
+assay_lane = "mutation"
+jobs = "auto"
+resource_observer = "cgprofile"
+
+[lanes.r2.resources]
+cpus = "3"
+memory = "1536m"
+pids = 8192
+candidate_ram = "300m"
+```
+
+An invocation override is `run-gate r2 --jobs 2`; the CLI value takes
+precedence over `jobs = "auto"`.
+
+For `jobs = "auto"`, Run-Gate chooses
+`max(1, min(jobs_max, cpu_cap, floor(memory_budget / candidate_RSS_p95), candidates_remaining))`.
+For ephemeral containers, `cpu_cap` comes from an enforced lane
+`resources.cpus` or its enforced environment fallback, bounded by visible CPU
+affinity; without a declared cap, auto uses one worker even when affinity
+shows more CPUs. Memory uses an enforced lane `resources.memory` (or legacy
+lane `memory`) cap, bounded by an observed cgroup limit when available. A
+`mode = "exec"` lane may use its target container's observed `memory.max`,
+which that container enforces. Without an enforced lane memory cap, auto uses
+one worker even if the capacity probe can see a host or parent limit.
+Candidate RAM uses the greater of declared lane `resources.candidate_ram` and
+the nearest-rank p95 of per-candidate peak RSS. Run-Gate checks its completed
+history first, then Assay's append-only progress stream. A declaration is the
+estimate when there is no history; with neither source, Run-Gate uses the
+conservative default of 1 GiB per candidate. The selected estimate and its
+source (`declared`, `measured p95`, or `default`) appear in the INFO line and
+Run-Gate evidence/history. The
+remaining-candidate input uses the matching Assay plan when resuming, a prior
+plan as an estimate for a new commit, then `max_mutants` as an upper bound.
+Assay requires a positive worker count, so a zero result from no remaining
+candidates or a budget smaller than one candidate resolves to one worker.
+The Assay inventory must report version 11.0.0 or newer before Run-Gate passes
+`--jobs`. With an older or unknown version, auto and explicit one-worker
+requests keep Assay's serial default and send no flag. An explicit request
+above one is refused with a message requiring Assay 11.0.0. The log prints one
+INFO line with the chosen count and its inputs; `history` records the
+selection, including the candidate RAM estimate source and p95 samples read
+at closeout.
+
+Parallel Assay R2 requires the prepared workspace to advertise
+`cheap_clone`. Run-Gate checks Cowtree in the lane environment and clamps
+`auto` to one worker when that fact is absent. Assay 11.0 currently advertises
+the required prepared cheap clone for its supported btrfs backend; a Cowtree
+`reflink` backend by itself does not pass Assay's native R2 preflight. An
+explicit request above one fails with Run-Gate's closed configuration error
+if the workspace cannot be confirmed. An explicit count above `jobs_max`
+also fails before the lane starts.
+
+An `auto` run, including `--dry-run`, may perform a short CPU/memory and
+Cowtree capability probe in the lane environment. Cowtree's documented probe
+can create its private metadata and temporary capability files under
+`MDT_COW_ROOT`; dry-run does not start the judged mutation lane.
+
 ### Per-invocation image selection
 
 Use `image_env` on an **ephemeral** environment when a workflow must select an
@@ -377,10 +546,12 @@ candidate bucket. Do not mount the control socket as a fallback: a read-only
 bind does not restrict the verbs accepted by its protocol. See the
 [design rationale](docs/DESIGN-GUIDE.md#private-namespace-r2-uses-a-read-only-cgroup-observer).
 
-For this project's native R2 lane, keep `[lanes.r2.judge.mutation] jobs = 1`
-in `assay.toml`: workers in the same tester container share cgroup event
-counters even with separate scratch trees. After a budget stop, rerun the
-registered lane on the same exact tree so Assay resumes its saved campaign.
+The Run-Gate project's own selftest R2 lane remains configured with a
+one-worker Assay ceiling. Assay 11.0 supports concurrent candidate windows
+with conservative attribution for overlapping resource events; projects can
+raise their lane ceiling and opt into Run-Gate's `jobs` policy independently.
+After a budget stop, rerun the registered lane on the same exact tree so
+Assay resumes its saved campaign.
 
 #### Native R2 resource observation refusals
 
@@ -581,7 +752,7 @@ Lanes that NEED a variable declare `required_env = ["SCHEMA_GATE_PW"]`: the
 gate refuses to start unless each name is present and non-empty, verifies
 container lanes can actually receive it (it must be on `forward_env`), and
 prints which forwarding keys were present at start — names only, never
-values (the docker-argv print redacts them too). Run
+values (the docker argv carries `-e NAME` only; the value rides in the docker client's environment). Run
 `run-gate --check-env` for an advisory sweep of env references in the
 project's Python sources that no lane forwards or requires.
 
@@ -1651,9 +1822,9 @@ The lane verdict and mapped exit status are untouched either way: telemetry
 is a note in the margin, never the product. The vbpub root `.gitignore` already
 carries the entry for internal projects; an external project must add it.
 
-Optionally declare how much trend to keep (default 10 commits per lane; a
-central `run-gate.root.toml` may declare it once and a project shadows it whole,
-the R-09 rule):
+Optionally declare how many history measurements to keep (default 10 per lane,
+across I/O modes; a central `run-gate.root.toml` may declare it once and a
+project shadows it whole, the R-09 rule):
 
 <!-- run-gate-config -->
 ```toml
@@ -1668,18 +1839,18 @@ keep = 20
 
 ```console
 $ run-gate history selftest
-run-gate 24.0.0 — lane invocation history
+run-gate 24.2.0 — lane invocation history
 store: /workspaces/vbpub/run-gate-project/.run-gate/history.json
 keep:  10  (default (10))
 
 lane selftest
   latest:  pass exit 0  61.4s  4c6eb2b6a1f0  2026-08-31T11:02:17Z
            worktree /workspaces/vbpub
-  history: 3 of at most 10 commit(s), oldest first
-    COMMIT        OUTCOME   DURATION  STARTED
-    9f1c0aa41b3d  pass         58.9s  2026-08-30T18:44:02Z
-    b2884e76c0d1  fail          7.2s  2026-08-31T09:15:30Z
-    4c6eb2b6a1f0  pass         61.4s  2026-08-31T11:02:17Z
+  history: 3 of at most 10 measurement(s), oldest first
+    COMMIT        IO_SYNC  OUTCOME  DURATION  STARTED
+    9f1c0aa41b3d  strict   pass       58.9s  2026-08-30T18:44:02Z
+    b2884e76c0d1  strict   fail        7.2s  2026-08-31T09:15:30Z
+    4c6eb2b6a1f0  strict   pass       61.4s  2026-08-31T11:02:17Z
     passes: n=2 median 60.2s (min 58.9s, max 61.4s)
     completed (passes + fails): n=3 median 58.9s (min 7.2s, max 61.4s)
 ```
@@ -1766,7 +1937,7 @@ run-gate history selftest --json \
 | slot | what it holds | when it updates |
 |---|---|---|
 | `latest` | the most recent invocation, **whatever happened to it** — pass, fail, tool error, Ctrl-C, dirty tree, mid-rebase | every invocation, always |
-| `history` | a curated trend series keyed by **(lane, commit)**, bounded to the last `keep` commits | only when the measurement is trustworthy (below) |
+| `history` | a curated trend series keyed by **(lane, commit, io_sync)**, bounded to the last `keep` measurements across modes | only when the measurement is trustworthy (below) |
 
 A run reaches `history` only if it **completed with its own exit status**, on
 a **clean** tree, with **no git operation in flight**, at a **resolvable
@@ -2035,6 +2206,25 @@ noticing — that boundary is the point.
   (mutation, fuzz) via the identical entrypoint; `--list` output is the
   pipeline generator's input. Design note lives in assay B009.
 
+## Runner uid: one owner for checkout, cockpit and lane
+
+`tester-unified` runs lanes as uid/gid 1003 (its venv and home belong to that uid) and Assay refuses a tree whose Git
+owner differs from the process uid (`dubious ownership`; Assay replaces Git's configuration, so `safe.directory` cannot
+be granted). Run-Gate's own host-side Git is hardened the same way and ignores global `safe.directory`. The only layout
+that works without ACLs or world-writable directories is therefore **one uid for everything that touches a checkout**:
+
+- the account that owns `/workspaces` checkouts and the CoW root (`MDT_COW_ROOT` must be owned by the lane uid),
+- the user that invokes `run-gate` (cockpit `vscode`), and
+- the lane user, uid 1003.
+
+On a developer host that is the normal case (the devcontainer maps `vscode` onto the workspace owner). On a runner host
+provisioned by hand (for example the netcup runner scripts) create the runner account as uid/gid 1003 and remap the
+cockpit's `vscode` user to it (`usermod -u 1003`); do not chown a checkout to a second uid per run. A different uid is
+only possible with `[environments.<name>] user = "invoker"` and an image whose venv that uid can write; `tester-unified`
+is not such an image. Symptoms of a mismatch: `run-gate: editable assay install failed` with `dubious ownership` in the
+build log, `Permission denied` on `<project>/.run-gate/...`, or `MDT_COW_ROOT must be owned by the non-root caller uid`.
+See RG-150.
+
 ## Distribution — installed wheel and SemVer
 
 Run-Gate is distributed as a wheel and invoked through its installed
@@ -2068,8 +2258,21 @@ The lane invokes its coverage helper this way:
 
 ```console
 python tools/coverage_gate.py --repo . --base latest-release-tag \
-  --coverage-json coverage.json --source run_gate.py
+  --coverage-json coverage.json --source run_gate.py \
+  --source run_gate_admission.py
 ```
+
+`--source` repeats; a path is judged against the first prefix that contains
+it. Changed continuation lines of a multi-line statement are judged as the
+statement's first line (the only one coverage.py lists), and a hunk body is
+delimited by its header counts, so an added line reading `++ x` is not
+mistaken for a file header.
+
+A `kind = "command"` lane that relies on `pytest --cov-fail-under` must set
+`[tool.coverage.report] precision = 2` (or pass `--cov-precision=2`):
+pytest-cov compares the total at the configured precision (default 0 digits)
+while printing it at two, so 96.94% against a 97 floor exits 0 otherwise
+(RG-122). Run-Gate maps the process exit status and never parses tool output.
 
 Only on a project's FIRST stable release, when no stable tag exists anywhere,
 may the explicit `--allow-first-release` option report this diff check as

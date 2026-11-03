@@ -4,8 +4,13 @@ All notable changes to iobench are recorded here. Entries marked `cmru: generate
 
 ## [Unreleased]
 
+### Changed
+- Run the registered R2 lane through native Run-Gate Assay dispatch with `jobs = "auto"`; raise the Assay lane ceiling from the legacy `jobs = 1` alias to canonical `jobs_max = 4`.
+- This command-to-native lane switch changes campaign storage: the old `.assay/mutation-state-r2` state directory and `.assay/progress-r2.jsonl` progress file are not reused. The native lane uses Run-Gate's durable state area under `.run-gate/` and `.assay/progress-iobench.jsonl`; a campaign already running with the old configuration does not carry over.
+
 ### Fixed
 - Keep the Assay whole-target lane measurable: exclude the docstring-only package initializer, let pytest finish the coverage run after a failure, and reap both detached subprocesses created by the bounded-reaping test.
+- Test infrastructure (`tests/conftest.py`, not shipped in the wheel): every test now runs under a CPU-time limit (`ITIMER_PROF`, 100 CPU seconds, 10x the slowest measured test, `@pytest.mark.time_limit(cpu_seconds)` overrides) so a mutant's non-terminating loop is killed while host load cannot fail a slow-but-correct test; the session registers as child subreaper to check for unreaped children, and degrades to a warning when `/proc/<pid>/task/<pid>/children` is unreadable.
 
 <!-- cmru: release history -->
 

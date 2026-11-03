@@ -75,7 +75,7 @@ pip install torch --index-url https://download.pytorch.org/whl/cpu
 pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
 
 # 3. Install other requirements (may reinstall GPU packages)
-pip install -r requirements.txt || true
+pip install -r requirements-runtime.txt || true
 
 # 4. Force reinstall CPU-only llama-cpp-python to override
 pip uninstall -y llama-cpp-binaries

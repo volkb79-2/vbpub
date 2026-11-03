@@ -374,8 +374,8 @@ def test_cleanup_oserror_replaces_the_highest_completed_rigor_claim(
     real_prepare = runner.isolation.prepare_snapshot
 
     @contextmanager
-    def prepare_then_fail_on_cleanup(spec, *, timeout):
-        with real_prepare(spec, timeout=timeout) as prepared:
+    def prepare_then_fail_on_cleanup(spec, *, timeout, workspace):
+        with real_prepare(spec, timeout=timeout, workspace=workspace) as prepared:
             yield prepared
         raise OSError("snapshot cleanup failed after the lane completed")
 

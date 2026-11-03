@@ -25,6 +25,7 @@ import tomllib
 from pathlib import Path
 
 import pytest
+from assay.verdict import VERDICT_SCHEMA_VERSION
 from gate.tests.support import PROJECT_ROOT, requires_parent_repository
 from gate.tests.test_distribution_gate import (
     HEX40,
@@ -804,26 +805,12 @@ def test_normalize_verdict_refuses_invalid_resource_counter_deltas(before: int, 
         q.normalize_verdict(actual, assay_version="9.9.9", head_oid="1" * 40, base_oid="2" * 40)
 
 
-def test_normalize_verdict_zeroes_a_valid_cleanup_time_but_keeps_other_tree_facts() -> None:
+def test_cleanup_duration_is_not_part_of_sql_witness_evidence() -> None:
     actual = _witness_as_actual()
     tree = actual["claims"][1]["mutation"]["killed"][0]["process_tree_evidence"]
     tree["cleanup_seconds"] = 0.123
-    q.compare_with_witness(actual, _WITNESS_PATH, assay_version="9.9.9", head_oid="1" * 40, base_oid="2" * 40)
-    tree["outliving_descendants"] = 1
     with pytest.raises(q.QualificationError, match="differs from the frozen witness"):
         q.compare_with_witness(actual, _WITNESS_PATH, assay_version="9.9.9", head_oid="1" * 40, base_oid="2" * 40)
-
-
-@pytest.mark.parametrize("bad", [None, "fast", -1.0, True, "missing"])
-def test_normalize_verdict_refuses_a_missing_or_invalid_cleanup_time(bad) -> None:
-    actual = _witness_as_actual()
-    tree = actual["claims"][1]["mutation"]["killed"][0]["process_tree_evidence"]
-    if bad == "missing":
-        del tree["cleanup_seconds"]
-    else:
-        tree["cleanup_seconds"] = bad
-    with pytest.raises(q.QualificationError, match="cleanup_seconds"):
-        q.normalize_verdict(actual, assay_version="9.9.9", head_oid="1" * 40, base_oid="2" * 40)
 
 
 def test_normalize_verdict_refuses_a_candidate_without_process_tree_evidence() -> None:
@@ -850,7 +837,7 @@ def test_compare_with_witness_names_the_differing_json_path() -> None:
 
 def test_the_witness_is_the_current_schema_and_says_what_it_judged() -> None:
     document = json.loads(_WITNESS_PATH.read_text(encoding="utf-8"))
-    assert document["schema_version"] == q.VERDICT_SCHEMA_VERSION
+    assert document["schema_version"] == VERDICT_SCHEMA_VERSION
     assert document["judgment"]["r2"]["mode"] == "changed_lines"
     assert document["judgment"]["resolved"]["language"] == "sql"
     assert document["judgment"]["resolved"]["source_roots"] == ["db/schema"]
@@ -879,6 +866,9 @@ def test_assay_argv_bootstraps_sys_path_and_forwards_arguments() -> None:
     argv = q._assay_argv("/usr/bin/python3", "run", "lane-name")
     assert argv[0] == "/usr/bin/python3" and argv[1] == "-c"
     assert str(q._SRC_ROOT) in argv
+    assert str(q._PROJECT_ROOT.parent / "libraries" / "cowtree" / "src") in argv
+    assert "sys.path[:0] = sys.argv[1:3]" in argv[2]
+    assert "main(sys.argv[3:])" in argv[2]
     assert argv[-2:] == ["run", "lane-name"]
 
 
@@ -968,6 +958,31 @@ def test_capture_witness_resumes_and_writes_progress_under_the_disposable_repo(t
     lane_file = Path(seen[seen.index("--file") + 1])
     assert lane_file.parent == progress.parent.parent
     assert progress == lane_file.parent / ".assay" / "progress-sql_qualification.jsonl"
+
+
+def test_capture_witness_missing_verdict_includes_assay_output_tails(tmp_path: Path, monkeypatch) -> None:
+    real_run = q._run
+    stdout_tail = "assay stdout diagnostic tail"
+    stderr_tail = "ModuleNotFoundError: No module named 'cowtree'"
+
+    def recording_run(argv, **kwargs):
+        if any("from assay.cli import main" in arg for arg in argv):
+            return subprocess.CompletedProcess(argv, 1, f"prefix\n{stdout_tail}", f"traceback\n{stderr_tail}")
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(q, "_run", recording_run)
+    with pytest.raises(q.QualificationError) as caught:
+        q.capture_witness(
+            container=q.ThrowawayPostgres(_NAME, "dev-gates.slice", _FIXTURE_ROOT, ownership_token=_OWNER_TOKEN),
+            schema_bytes=_SCHEMA_PATH.read_bytes(),
+            fixture_root=_FIXTURE_ROOT,
+            scratch=tmp_path / "witness-no-verdict",
+        )
+
+    message = str(caught.value)
+    assert "assay run wrote no verdict artifact (exit 1)" in message
+    assert stdout_tail in message
+    assert stderr_tail in message
 
 
 # =============================================================================

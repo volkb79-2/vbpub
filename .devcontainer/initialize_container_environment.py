@@ -8,21 +8,23 @@ with sane permissions. Docker's `--mount` form refuses a missing source; this
 script applies MDT's configured policy before Docker starts.
 
 Layout (fresh home; docs/HOME-PERSISTENCE.md):
-- The complete home is one real directory (template default `~/mdt-cockpit-home/`,
-  mode 0700), bind-mounted at `/home/<remoteUser>` (`/home/vscode`). Image-owned tools
-  and defaults live outside this mount, so a new home starts EMPTY and the image fills
-  in nothing but what the tools themselves create.
-- `/tmp` is a separate host-backed directory (template default `~/mdt-cockpit-tmp/`,
-  mode 1777), so worktrees survive rebuilds and are visible to the sibling test-runner
-  container.
+- The complete home is one real directory per checkout (template default
+  `~/mdt-cockpit-${localWorkspaceFolderBasename}-home/`, mode 0700), bind-mounted at
+  `/home/<remoteUser>` (`/home/vscode`). Image-owned tools and defaults live outside this
+  mount, so a new home starts EMPTY and the image fills in nothing but what the tools
+  themselves create.
+- `/tmp` is a separate host-backed directory (template default
+  `~/mdt-cockpit-${localWorkspaceFolderBasename}-tmp/`, mode 1777), so worktrees survive
+  rebuilds and are visible to the sibling test-runner container.
 - Any further mount source is named `~/mdt-cockpit-<purpose>`.
 - The host's native `~/.ssh` is read-only at `/run/mdt/host-ssh`, outside the home.
 
 The ROLE of a source (home, tmp) comes from the mount's `target`, never from the
 source's name, so a consumer that spells its own sources (for example
-`~/mdt-cockpit-vbpub-home/` -> `/home/vscode`) gets the same modes and notices as the
-template defaults. The canonical names above are used only when the sibling
-devcontainer.json cannot be read (see `fallback_bind_paths`).
+`~/mdt-cockpit-home/` -> `/home/vscode`, one home shared by every checkout) gets the same
+modes and notices as the template defaults. The template spellings above, expanded for
+the checkout this script runs in, are used only when the sibling devcontainer.json
+cannot be read (see `fallback_bind_paths`).
 
 Design: stdlib-only and idempotent. Reads the sibling `devcontainer.json` and inspects each `type=bind`
 source under the host `$HOME`. Existing regular files and directories are handled according to their
@@ -50,8 +52,17 @@ from pathlib import Path
 
 # Mount sources under the host $HOME, spelled `mdt-cockpit-<purpose>` (D2).
 SOURCE_PREFIX = "mdt-cockpit-"
-HOME_SOURCE_NAME = SOURCE_PREFIX + "home"
-TMP_SOURCE_NAME = SOURCE_PREFIX + "tmp"
+# The devcontainer variable the templates use to give every checkout its own home and
+# /tmp (`vbpub` and `dstdns` on one host never share a home); initializeCommand runs in
+# the workspace folder, so its basename is that value.
+WORKSPACE_VAR = "${localWorkspaceFolderBasename}"
+# The template spellings (templates/devcontainer.json, templates/host-folder/devcontainer.json)
+# and their expansion for THIS checkout: the fallback names when the sibling
+# devcontainer.json cannot be read, and the names the notices print.
+HOME_SOURCE_SPELLING = SOURCE_PREFIX + WORKSPACE_VAR + "-home"
+TMP_SOURCE_SPELLING = SOURCE_PREFIX + WORKSPACE_VAR + "-tmp"
+HOME_SOURCE_NAME = HOME_SOURCE_SPELLING.replace(WORKSPACE_VAR, Path.cwd().name)
+TMP_SOURCE_NAME = TMP_SOURCE_SPELLING.replace(WORKSPACE_VAR, Path.cwd().name)
 TMP_MODE = 0o1777  # persisted host-backed /tmp: sticky + world-writable, like a normal /tmp
 HOME_MODE = 0o700
 # Roles a `$HOME` source can have, derived from the mount target (see module docstring).
@@ -385,7 +396,7 @@ def _expand_local_vars(source: str) -> str:
     created as a host directory.
     """
     s = source.replace("${localEnv:HOME}", str(HOME))
-    s = s.replace("${localWorkspaceFolderBasename}", Path.cwd().name)
+    s = s.replace(WORKSPACE_VAR, Path.cwd().name)
     if s.startswith("~"):
         s = str(HOME) + s[1:]
     return s
@@ -734,7 +745,7 @@ def notify_legacy_split_state(new_home: Path | None = None) -> bool:
     Informational only (D1): the exit status never depends on it. Fires when the
     previous template's `~/mdt--mounted-folders/` holds files/symlinks AND the new
     home is absent or empty. `new_home` is the source actually mounted as the container
-    home (the canonical `~/mdt-cockpit-home` when omitted). Returns whether the line was printed.
+    home (the template default for this checkout when omitted). Returns whether the line was printed.
     """
     legacy = HOME / LEGACY_PARENT_NAME
     legacy_state = _holds_file_or_symlink(legacy)

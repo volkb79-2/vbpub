@@ -14,11 +14,34 @@ then the sibling: it may refine or define project-scoped exceptions to particula
 rules, but it does not replace the canonical document as a whole. Everything
 below is *this repo's* delta on top of that doctrine.
 
+## Conventions
+
+Every Python dependency manifest carries a use-case suffix; there is no bare `requirements.txt`. Name each set `requirements-<use-case>.txt` in lowercase kebab-case (for example `requirements-runtime.txt` for a project's general runtime set, `requirements-test.txt`, `requirements-docs.txt`, `requirements-wizard.txt`); never the suffix form `<use-case>-requirements.txt`. Update every consumer when a manifest is renamed. Existing tools migrate in separate, tool-scoped changes; the `assay/` manifests change with assay's next release.
+
 **Working on nyxloom itself?** Also read **`nyxloom/nyxloom-trove/DOCTRINE.md`**
 (its project delta: structlog reserved-key traps, and `build_dispatch`'s hard
 argv budget) and `nyxloom/nyxloom-trove/STANDING.md` (the current wave's frozen
 files). A hand-started CLI agent gets only this file — a nyxloomd-dispatched one
 gets the set injected — so check `ls nyxloom/nyxloom-trove/*.md` yourself.
+
+## Directory conventions and VM files (estate-wide)
+
+| Path | Holds | Notes |
+|---|---|---|
+| `<project>/artifacts/` | build and run outputs | gitignored (`**/artifacts/`); may be a CoW subvolume |
+| `<project>/artifacts/vm-lab/` | VM images, runs, ssh | per project, per checkout |
+| `<repo root>/downloads/` | large immutable inputs (ISOs and the like) | gitignored; `.sha256` next to each file |
+| `.worktrees/` | git worktrees | inside the checkout; gitignored |
+| `logs/`, `evidence/` | run logs, gate and test evidence | gitignored (`**/logs/`, `**/evidence/`); unclassified, removed with the worktree |
+| `.assay/`, `vol-*` | assay resume state; docker bind-mount host dirs | gitignored; protected state: `ciu worktree rm` and branch pruning need an exact-branch consent flag to discard them |
+| `.run-gate/`, `.cmru/` | tool state (lane history, gate handoff) | gitignored; regenerable |
+
+- Placeholder rule: a conventional directory that holds only ignored content is a committed placeholder: a `README.md` (what it holds, owner, regenerable) plus a `.gitignore` (`*`, `!.gitignore`, `!README.md`), added with `git add -f` because `**/artifacts/` ignores it.
+- Repo conventions, no per-user settings: each project keeps its VM files (installed disks, per-run disks, OVMF vars, serial logs) in `<project dir>/artifacts/vm-lab/` (per-VM `<vm-name>/` directories and/or shared `images/`, `runs/<run>/`, `ssh/` beside them), and large shared downloads (ISOs with their `.sha256`) in `<repo root>/downloads/`. Both are gitignored contents inside committed placeholder directories (a `README.md` plus a `.gitignore`, force-added), so the folders exist after a fresh clone.
+- Scripts use these paths relative to their own location only, and take no environment variable to relocate them. An explicit path argument is fine; a wrapper that forwards or bind-mounts these folders must honour or refuse it, never silently ignore it.
+- Worktrees: `ciu worktree` will clone the declared paths from main on CoW hosts (declared per project in the shared `libraries/cowtree` schema; planned, not yet built). On plain hosts a worktree gets empty folders and scripts print one INFO line. Anything a worktree should keep must be copied to main. For CoW to work, the checkout (including `.worktrees/`) belongs on the CoW filesystem.
+- Each VM has exactly one owning project. Another project may reference that VM by explicit path but must not keep a copy or its own state for it.
+- Warning: `git clean -x` (or `-xdf`) deletes every ignored `artifacts/` directory, including all VM disks, and `downloads/`. Never run it in a checkout that holds VM files.
 
 ## Writing a handoff / dispatch prompt — honor AUTHORING.md
 When you are asked to **start an agent for a task**, or to **write a prompt or a
@@ -126,6 +149,34 @@ git rev-parse HEAD
 git status --short
 ```
 
+## Reviews: who reviews, how, and what a review must contain (operator, 2026-10-31)
+
+- **Reviewer routing.** Reviews of merged work go to the responsible Opus
+  session for the tool (one session per topic/tool, reused with
+  `SendMessage` for follow-ups, never a fresh reviewer per round) or, when the
+  operator names it, to reasonix. Before any release, the delta since the
+  tool's last release goes through that same Opus session.
+- **A review is more than a defect list.** The reviewer may fix low-hanging
+  fruit and obvious improvements directly (on the tool's branch, never on
+  `main`), AND must critique the chosen design: say plainly when a simpler or
+  more robust alternative exists, spell it out, and say what it would change.
+  A review that only lists defects of an unquestioned design is incomplete.
+- **Reasonix + DeepSeek.** The official DeepSeek API (reasonix model
+  `deepseek-flash-max` / `deepseek-flash`) is used only during OFF-PEAK hours:
+  its off-peak rates are half of the peak rates. Peak hours are 01:00-04:00
+  and 06:00-10:00 UTC, Monday through Friday, excluding Chinese public
+  holidays; do not start DeepSeek-API work in those windows. The OpenRouter
+  route (`openrouter-deepseek-v4.1-flash-1017/...`) is a separate, credit
+  limited path; when its credits are out, do not retry it in a loop.
+- **Reasonix workspace trust.** `reasonix run` refuses shell commands and
+  edits in a folder with no recorded trust decision and no approver. Trust is
+  recorded per workspace path (`reasonix trust --dir PATH --yes`, stored in
+  `~/.reasonix/project-grants.json`) and its OS sandbox limits writes to that
+  folder plus `[sandbox] allow_write`. Review runs use a trusted tree (the
+  worktrees directory) and a read-only brief; the finer-grained controls are
+  `[permissions]` (`deny`/`ask`/`allow` rules such as `Bash(git push*)`) and
+  `[sandbox]` in `~/.reasonix/config.toml`.
+
 ## Defaults and fallbacks are hazards (MANDATORY, estate-wide)
 
 > **A default is legitimate only when it is a policy choice that is correct in
@@ -176,7 +227,10 @@ Installing pytest or Hypothesis in the cockpit venv does not make a test run a
 valid gate and must not be used as a fallback.
 
 When installing a locally built wheel for inspection, use the estate venv:
-`/home/vscode/.venv/bin/python -m pip install ...`. `/home/vscode/.local` is
+`/opt/mdt/venv/bin/python -m pip install ...` (the image's primary venv, group
+`mdt` writable; what it receives lives in the container's writable layer and is
+gone after the container is recreated, the durable way is the image wheel list
+`mdt-cockpit/pip/wheels.list`). `/home/vscode/.local` is
 not the wheel installation environment. Any test of that wheel still runs
 through a registered tester-unified gate.
 
@@ -191,7 +245,7 @@ verify the result without disrupting its session.
 
 ## Host-side Python environment
 
-MDT puts `/home/vscode/.venv/bin` ahead of system Python on the cockpit
+MDT puts `/opt/mdt/venv/bin` ahead of system Python on the cockpit
 `PATH`, so bare `python3` and `pip` use the estate venv for host-side commands
 and `bare-host` controllers. `VIRTUAL_ENV` only indicates shell activation;
 check the selected interpreter with `command -v python3` when it matters. Gates
@@ -203,8 +257,8 @@ estate venv before running host-side Python commands or a `bare-host` gate
 controller:
 
 ```bash
-. /home/vscode/.venv/bin/activate
-command -v python3   # must resolve inside /home/vscode/.venv/bin
+. /opt/mdt/venv/bin/activate
+command -v python3   # must resolve inside /opt/mdt/venv/bin
 ```
 
 An activated venv changes `PATH`; it does not change the interpreter a parent
@@ -219,7 +273,7 @@ command to use the declared environment's interpreter.
 Python's `-I` flag does not prevent a venv interpreter from loading that venv's
 installed packages. It does ignore `PYTHONPATH` and user-site packages, so an
 isolated child must use the venv interpreter itself when it needs packages
-installed in `/home/vscode/.venv` (such as `cli-extended`).
+installed in `/opt/mdt/venv` (such as `cli-extended`).
 
 This applies to host-side orchestration and `bare-host` steps only. Test suites
 still run in their declared gate container; `tester-unified` uses

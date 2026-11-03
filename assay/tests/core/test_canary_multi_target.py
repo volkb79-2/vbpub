@@ -27,6 +27,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from conftest import (
@@ -39,7 +40,7 @@ from conftest import (
     prepared_snapshot,
 )
 
-from assay import runner
+from assay import canary, runner
 from assay.adapters.python import PythonAdapter
 from assay.canary import run_isolated_canaries
 from assay.config import CanaryConfig
@@ -51,6 +52,7 @@ MOMENT = datetime(2026, 9, 3, 12, 0, 0, tzinfo=timezone.utc)
 #: The injected statement marks the transformed file so the miniature gate
 #: can model an ordinary nonzero command exit without relying on diagnostics.
 TARGETS = ("pkg/greet.py", "pkg/farewell.py")
+NONCE = "0123456789abcdef0123456789abcdef"
 
 
 def _clock() -> datetime:
@@ -142,6 +144,9 @@ class _Gate:
                 if "assay-canary-import-break" in source:
                     broken = True
                     break
+        receipt_path = env.get("ASSAY_CANARY_RECEIPT")
+        if broken and receipt_path is not None:
+            Path(receipt_path).write_text(NONCE, encoding="ascii")
         return completed_process(list(argv), 1 if broken else 0, "", "")
 
 
@@ -150,23 +155,24 @@ class _NoOpTransformAdapter(PythonAdapter):
     established "nothing to judge" shape `test_canary_p23_isolated_edges.py`
     already documents, reused here to reach the TERMINAL branch."""
 
-    def inject_import_break(self, text: str) -> tuple[str, str]:
+    def inject_import_break(self, text: str, *, nonce: str) -> tuple[str, str]:
         return text, "injected nothing at all"
 
 
 def _run(repo: GitRepo, lane, *, adapter=None, gate=None, monotonic=None):
     gate = gate if gate is not None else _Gate()
-    verdict = runner.run_lane(
-        lane,
-        commit=repo.head(),
-        repo=repo.path,
-        project_root=repo.path,
-        adapter=adapter if adapter is not None else PythonAdapter(),
-        assay_version="0.1.0",
-        process_runner=gate,
-        clock=_clock,
-        monotonic=monotonic if monotonic is not None else CountingMonotonic(),
-    )
+    with patch.object(canary.secrets, "token_hex", return_value=NONCE):
+        verdict = runner.run_lane(
+            lane,
+            commit=repo.head(),
+            repo=repo.path,
+            project_root=repo.path,
+            adapter=adapter if adapter is not None else PythonAdapter(),
+            assay_version="0.1.0",
+            process_runner=gate,
+            clock=_clock,
+            monotonic=monotonic if monotonic is not None else CountingMonotonic(),
+        )
     return verdict, gate
 
 

@@ -18,9 +18,12 @@ Everything else (``s`` single-source, ``u``, ``a``, ``x``, ``f`` fill, ``m``) is
 """
 from __future__ import annotations
 
+import contextlib
+import copy
 import io
 import json
 import math
+import os
 import time
 import unicodedata
 from collections import Counter
@@ -37,6 +40,8 @@ CONF_HOMO = "H"     # font-exact glyph whose repertoire character is unique but 
 CONF_ALIAS = "a"    # font-exact bitmap shared by several characters of the repertoire: ambiguity set, no pick
 CONF_SINGLE = "s"   # bitmap known, but confirmed by fewer than ``min_groups`` independent screens: NOT exact
 CONF_FILL = "f"     # uniform cell whose colour differs from the text background next to it (solid block, fill)
+CONF_SCALED = "z"   # font-exact bitmap read from a capture that was an undone k-fold upscale WITHOUT a complete larger-font guard: the character is
+                    # shown but NOT actionable (not in TEXTLIKE/EXACTLIKE: find_phrase/region/strict_match refuse it; opt in with ``trust_scale``)
 TEXTLIKE = (CONF_EXACT, CONF_FONT, CONF_BLANK)
 EXACTLIKE = (CONF_EXACT, CONF_FONT, CONF_HOMO)
 HIT = ("exact", "font", "homoglyph", "alias")
@@ -45,6 +50,22 @@ FONT_MIN_SHARE = 0.9   # share of ordinary ink cells a font-FILE font must read 
 PROVEN_RUNNER_UP = 0.3  # ... and no other same-size font may explain more than this share
 FILL_CHAR = "\u2588"
 MAX_PIXELS = 8_000_000
+# Speed paths.  Every fast path below is bit-identical to its reference implementation (the original pure Python/Pillow code, kept in
+# this module and selected by ``GLYPHGRID_REFERENCE=1`` or ``with reference_mode():``); tests assert the identity.  Never a behaviour switch.
+_REFERENCE = os.environ.get("GLYPHGRID_REFERENCE") == "1"
+
+
+@contextlib.contextmanager
+def reference_mode(on: bool = True):
+    """Run the unoptimised reference implementation inside the block (used by the identity tests).  NOT thread-safe: it flips a module global."""
+    global _REFERENCE
+    old, _REFERENCE = _REFERENCE, bool(on)
+    try:
+        yield
+    finally:
+        _REFERENCE = old
+
+
 RAMP_THRESHOLD = 0.04  # calibrated on the even-numbered corpus frames, tested on the odd ones (eval --probe)
 
 
@@ -63,16 +84,28 @@ def load_image(src, max_pixels: int = MAX_PIXELS) -> Image.Image:
 
 
 # --------------------------------------------------------------------------- scale probe
-def ramp_ratio(im: Image.Image) -> float:
-    """Share of edge pixels that are a three-level step (left != pixel != right, left != right).
-
-    A crisp bitmap (any palette size) has almost none: an edge is a jump between two colours.  Every
-    resampling filter blends the two colours into intermediate values, which shows up as ramps.  Unlike a
-    colour-count test this does not penalise a legitimately colour-rich 1:1 console.  Max of the
-    horizontal and vertical measure.
-    """
+def _transition_masks(im: Image.Image):
+    """(mh, mv): 255 where a pixel differs from its right / lower neighbour, as L images of size (W-1, H) and (W, H-1).
+    Shared by the scale probe and the grid detector (both used to recompute them)."""
     W, H = im.size
-    best = 0.0
+    mh = Image.frombytes("L", (W - 1, H), _mask_bytes(im.crop((0, 0, W - 1, H)), im.crop((1, 0, W, H))))
+    mv = Image.frombytes("L", (W, H - 1), _mask_bytes(im.crop((0, 0, W, H - 1)), im.crop((0, 1, W, H))))
+    return mh, mv
+
+
+def _ramp_count(a, b, c, cand) -> int:
+    hi, lo = ImageChops.lighter(a, c), ImageChops.darker(a, c)
+    viol = ImageChops.lighter(ImageChops.subtract(b, hi), ImageChops.subtract(lo, b))
+    r_, g_, b_ = viol.split()
+    viol = ImageChops.lighter(ImageChops.lighter(r_, g_), b_).point(lambda v: 0 if v else 255)
+    return ImageChops.darker(cand, viol).tobytes().count(255)
+
+
+def _ramp_parts(im: Image.Image, _masks=None):
+    """[(ramp pixels, edge pixels)] for the horizontal and the vertical direction.  Both counts are LOCAL (a pixel's value depends on
+    its 3-pixel window), which is what lets ``GlyphReader`` update them from a changed band instead of the whole frame."""
+    W, H = im.size
+    parts = []
     for horizontal in (True, False):
         if horizontal:
             a, b, c = im.crop((0, 0, W - 2, H)), im.crop((1, 0, W - 1, H)), im.crop((2, 0, W, H))
@@ -80,37 +113,54 @@ def ramp_ratio(im: Image.Image) -> float:
         else:
             a, b, c = im.crop((0, 0, W, H - 2)), im.crop((0, 1, W, H - 1)), im.crop((0, 2, W, H))
             size = (W, H - 2)
-        mab = Image.frombytes("L", size, _mask_bytes(a, b))
-        mbc = Image.frombytes("L", size, _mask_bytes(b, c))
+        if _masks is not None and not _REFERENCE:  # mab / mbc are two windows of the shared transition mask
+            m = _masks[0] if horizontal else _masks[1]
+            mab, mbc = (m.crop((0, 0, W - 2, H)), m.crop((1, 0, W - 1, H))) if horizontal else (m.crop((0, 0, W, H - 2)), m.crop((0, 1, W, H - 1)))
+        else:
+            mab = Image.frombytes("L", size, _mask_bytes(a, b))
+            mbc = Image.frombytes("L", size, _mask_bytes(b, c))
         mac = Image.frombytes("L", size, _mask_bytes(a, c))
+        if not _REFERENCE:
+            # only pixels with all three masks set can be a ramp: compute the blend test inside their bounding box (a crisp console has
+            # almost none), same count as the full-frame reference
+            cand = ImageChops.darker(ImageChops.darker(mab, mbc), mac)
+            box = cand.getbbox()
+            ramp = 0 if box is None else _ramp_count(a.crop(box), b.crop(box), c.crop(box), cand.crop(box))
+            parts.append((ramp, mab.tobytes().count(255)))
+            continue
         # the middle pixel must lie between its neighbours in every channel (a blend), not merely differ
         hi, lo = ImageChops.lighter(a, c), ImageChops.darker(a, c)
         viol = ImageChops.lighter(ImageChops.subtract(b, hi), ImageChops.subtract(lo, b))
         r_, g_, b_ = viol.split()
         viol = ImageChops.lighter(ImageChops.lighter(r_, g_), b_).point(lambda v: 0 if v else 255)
         ramp = ImageChops.darker(ImageChops.darker(ImageChops.darker(mab, mbc), mac), viol).tobytes().count(255)
-        edges = mab.tobytes().count(255)
+        parts.append((ramp, mab.tobytes().count(255)))
+    return parts
+
+
+def _ratio(parts) -> float:
+    best = 0.0
+    for ramp, edges in parts:
         best = max(best, ramp / max(edges, 1))
     return best
 
 
-def probe_scale(im: Image.Image, soft_threshold: float | None = None) -> dict:
-    """Detect blur/resampling.  THIS CANNOT PROVE THE CAPTURE IS 1:1.
+def ramp_ratio(im: Image.Image, _masks=None) -> float:
+    """Share of edge pixels that are a three-level step (left != pixel != right, left != right).
 
-    It refuses images whose edges are blended (bilinear/bicubic/lanczos at any scale, JPEG-like noise) and
-    undoes crisp integer nearest-neighbour upscales.  It does NOT catch crisp non-integer nearest scaling,
-    integer upscales with an odd offset or letterbox, or a canvas that is simply a different size than the guest
-    framebuffer; those are only contained by the font-consistency floor in ``decode``.  The capture path must
-    deliver the intrinsic bitmap, and the consumer must verify canvas width/height against the guest
-    framebuffer size independently.
+    A crisp bitmap (any palette size) has almost none: an edge is a jump between two colours.  Every
+    resampling filter blends the two colours into intermediate values, which shows up as ramps.  Unlike a
+    colour-count test this does not penalise a legitimately colour-rich 1:1 console.  Max of the
+    horizontal and vertical measure.
     """
-    thr = RAMP_THRESHOLD if soft_threshold is None else soft_threshold
-    colors = sorted(im.getcolors(im.size[0] * im.size[1]) or [], reverse=True)
-    total = im.size[0] * im.size[1]
+    return _ratio(_ramp_parts(im, _masks))
+
+
+def _probe_dict(colors, total: int, parts, up: int, thr: float) -> dict:
+    """The ``probe_scale`` result from its measurements (colours sorted descending as (count, colour), ramp parts, integer upscale)."""
     dominant = colors[0][0] if colors else total
     soft_ratio = (total - sum(n for n, _ in colors[:8])) / max(total - dominant, 1)  # evidence only
-    ramp = ramp_ratio(im)
-    up = _integer_upscale(im)
+    ramp = _ratio(parts)
     resampled = ramp > thr and up == 1
     return {
         "n_colors": len(colors),
@@ -122,16 +172,50 @@ def probe_scale(im: Image.Image, soft_threshold: float | None = None) -> dict:
     }
 
 
+def probe_scale(im: Image.Image, soft_threshold: float | None = None, _masks=None, _state=None) -> dict:
+    """Detect blur/resampling.  THIS CANNOT PROVE THE CAPTURE IS 1:1.
+
+    It refuses images whose edges are blended (bilinear/bicubic/lanczos at any scale, JPEG-like noise) and
+    undoes crisp integer nearest-neighbour upscales.  It does NOT catch crisp non-integer nearest scaling,
+    integer upscales with an odd offset or letterbox, or a canvas that is simply a different size than the guest
+    framebuffer; those are only contained by the font-consistency floor in ``decode``.  The capture path must
+    deliver the intrinsic bitmap, and the consumer must verify canvas width/height against the guest
+    framebuffer size independently.
+    """
+    thr = RAMP_THRESHOLD if soft_threshold is None else soft_threshold
+    total = im.size[0] * im.size[1]
+    colors = sorted(im.getcolors(total) or [], reverse=True)
+    parts = _ramp_parts(im, _masks)
+    up = _integer_upscale(im)
+    if _state is not None:
+        _state.update(colors=colors, parts=parts, thr=thr)
+    return _probe_dict(colors, total, parts, up, thr)
+
+
 def _integer_upscale(im: Image.Image) -> int:
     """Largest k in 2..8 such that im is exactly a nearest-neighbour k-fold upscale, else 1."""
     W, H = im.size
     for k in (8, 6, 5, 4, 3, 2):
         if W % k or H % k:
             continue
+        if not _REFERENCE and not _bands_upscaled(im, k):
+            continue
         small = im.resize((W // k, H // k), Image.NEAREST)
         if ImageChops.difference(small.resize((W, H), Image.NEAREST), im).getbbox() is None:
             return k
     return 1
+
+
+def _bands_upscaled(im: Image.Image, k: int, n: int = 6) -> bool:
+    """Necessary condition for ``im`` being an exact k-fold nearest upscale, tested on n thin full-width bands (the test is local per
+    k x k block, so a failing band proves the full test fails).  Rejects a non-upscaled screen without resizing all of it."""
+    W, H = im.size
+    for i in range(n):
+        y0 = (H // k) * i // n * k
+        band = im.crop((0, y0, W, y0 + k))
+        if ImageChops.difference(band.resize((W // k, 1), Image.NEAREST).resize((W, k), Image.NEAREST), band).getbbox() is not None:
+            return False
+    return True
 
 
 def unscale(im: Image.Image, k: int) -> Image.Image:
@@ -145,8 +229,26 @@ def _mask_bytes(a: Image.Image, b: Image.Image) -> bytes:
     return ImageChops.lighter(ImageChops.lighter(r, g), bl).point(lambda v: 255 if v else 0).tobytes()
 
 
+def _roll(img: Image.Image, sx: int, sy: int) -> Image.Image:
+    """out[x, y] = img[(x + sx) % W, (y + sy) % H]: ``ImageChops.offset(img, -sx, -sy)`` (wrap-around included) as two memcpy pastes
+    instead of Pillow's per-pixel offset loop (~100x faster on a 1280x800 mask)."""
+    W, H = img.size
+    sx %= W
+    sy %= H
+    if not sx and not sy:
+        return img
+    out = Image.new(img.mode, img.size)
+    for (ox, wx), (oy, wy) in ((a, b) for a in ((0, sx), (W - sx, 0)) for b in ((0, sy), (H - sy, 0))):
+        pw, ph = (W - sx if ox == 0 else sx), (H - sy if oy == 0 else sy)
+        if pw and ph:
+            out.paste(img.crop((wx, wy, wx + pw, wy + ph)), (ox, oy))
+    return out
+
+
 def _remove_long_runs(mask: Image.Image, k: int, horizontal: bool) -> Image.Image:
     """Drop transition pixels that belong to straight runs >= k (box sides/edges, uniform fills)."""
+    if not _REFERENCE:
+        return _remove_long_runs_fast(mask, k, horizontal)
     shifts = [(i, 0) if horizontal else (0, i) for i in range(k)]
     run = mask
     for dx, dy in shifts[1:]:
@@ -157,7 +259,25 @@ def _remove_long_runs(mask: Image.Image, k: int, horizontal: bool) -> Image.Imag
     return ImageChops.subtract(mask, grown)
 
 
-def _edge_profiles(im: Image.Image, cell_hint: int = 16):
+def _window(img: Image.Image, k: int, horizontal: bool, op, sign: int) -> Image.Image:
+    """op over img rolled by sign*0..k-1 along one axis, in O(log k) steps (min/max are idempotent, so overlapping windows are exact)."""
+    roll = (lambda im, n: _roll(im, sign * n, 0)) if horizontal else (lambda im, n: _roll(im, 0, sign * n))
+    cur, n = img, 1                      # cur covers a window of n shifts
+    while n * 2 <= k:
+        cur, n = op(cur, roll(cur, n)), n * 2
+    return cur if n == k else op(cur, roll(cur, (k - n) * 1))  # windows [0,n) and [k-n,k) cover [0,k)
+
+
+def _remove_long_runs_fast(mask: Image.Image, k: int, horizontal: bool) -> Image.Image:
+    """Same result as the reference (including wrap-around at the borders), with log-step windows and memcpy rolls."""
+    if k <= 1:
+        return ImageChops.subtract(mask, mask)
+    run = _window(mask, k, horizontal, ImageChops.darker, 1)       # run[p] = AND mask[p+i], i<k
+    grown = _window(run, k, horizontal, ImageChops.lighter, -1)   # grown[p] = OR run[p-i], i<k
+    return ImageChops.subtract(mask, grown)
+
+
+def _edge_profiles(im: Image.Image, cell_hint: int = 16, _masks=None):
     """Glyph-scale transition counts.
 
     ex[x] = rows where px(x)!=px(x+1); ey[y] = columns where px(y)!=px(y+1); straight runs longer
@@ -165,8 +285,7 @@ def _edge_profiles(im: Image.Image, cell_hint: int = 16):
     would hide the text gaps that locate the row phase.
     """
     W, H = im.size
-    mh = Image.frombytes("L", (W - 1, H), _mask_bytes(im.crop((0, 0, W - 1, H)), im.crop((1, 0, W, H))))
-    mv = Image.frombytes("L", (W, H - 1), _mask_bytes(im.crop((0, 0, W, H - 1)), im.crop((0, 1, W, H))))
+    mh, mv = _masks if (_masks is not None and not _REFERENCE) else _transition_masks(im)
     mh = _remove_long_runs(mh, 2 * cell_hint + 1, False)
     mv = _remove_long_runs(mv, 2 * 8 + 1, True)
     d = mh.tobytes()
@@ -257,6 +376,8 @@ def _mdl(cs, p, ph, phase):
 
 def _multicolor_fraction(im, p, ph, ox, oy):
     """Share of non-blank cells (whole screen) holding 3+ colours under the tiling."""
+    if not _REFERENCE and im.mode == "RGB":
+        return _multicolor_fraction_fast(im, p, ph, ox, oy)
     W, H = im.size
     n = bad = 0
     for r in range((H - oy) // ph):
@@ -268,7 +389,33 @@ def _multicolor_fraction(im, p, ph, ox, oy):
     return bad / n if n else 0.0
 
 
-def detect_grid(im: Image.Image, min_cells: int = 12, max_length: float = 0.5, hints=None) -> dict:
+def _cell_strips(im, ox, oy, w, h, cols, r):
+    """Row ``r`` of the grid as ONE column-major byte string: cell ``c`` is the contiguous slice [c*w*h*3:(c+1)*w*h*3].
+    One crop+transpose+tobytes per text row instead of one crop+tobytes per cell; two cells are equal iff their slices are."""
+    y = oy + r * h
+    return im.crop((ox, y, ox + cols * w, y + h)).transpose(Image.TRANSPOSE).tobytes()
+
+
+def _multicolor_fraction_fast(im, p, ph, ox, oy):
+    W, H = im.size
+    cols, rows = (W - ox) // p, (H - oy) // ph
+    step = p * ph * 3
+    memo = {}
+    n = bad = 0
+    for r in range(rows):
+        cm = _cell_strips(im, ox, oy, p, ph, cols, r)
+        for c in range(cols):
+            key = cm[c * step:(c + 1) * step]
+            v = memo.get(key)
+            if v is None:
+                k = len(im.crop((ox + c * p, oy + r * ph, ox + (c + 1) * p, oy + (r + 1) * ph)).getcolors(p * ph))
+                v = memo[key] = (k > 1, k > 2)
+            n += v[0]
+            bad += v[1]
+    return bad / n if n else 0.0
+
+
+def detect_grid(im: Image.Image, min_cells: int = 12, max_length: float = 0.5, hints=None, _masks=None) -> dict:
     """Find (cell_w, cell_h, origin) automatically, or report 'no fixed grid found'.
 
     Candidate row pitches come from the vertical transition profile; for each, every column pitch
@@ -282,7 +429,7 @@ def detect_grid(im: Image.Image, min_cells: int = 12, max_length: float = 0.5, h
     W, H = im.size
     out = {"status": "no_grid", "reasons": [], "cell_w": None, "cell_h": None, "origin_x": None,
            "origin_y": None, "cols": 0, "rows": 0, "length": None, "contrast": None, "candidates": []}
-    ex, ey = _edge_profiles(im)
+    ex, ey = _edge_profiles(im, _masks=_masks)
     if sum(ey) == 0:
         out["reasons"].append("uniform image")
         return out
@@ -389,6 +536,18 @@ def _pack(raw: bytes, w: int, h: int, fg: bytes) -> bytes:
     return bytes(out)
 
 
+def _pack_fast(raw: bytes, w: int, h: int, fg: bytes, bg: bytes) -> bytes:
+    """``_pack`` for a TWO-colour RGB cell: one channel in which the colours differ decides every pixel (translate -> '0'/'1' text -> int)."""
+    k = next(i for i in range(3) if fg[i] != bg[i])
+    bits = raw[k::3].translate(_TT[fg[k]])
+    rb = (w + 7) // 8
+    pad = rb * 8 - w
+    return b"".join((int(bits[y * w:(y + 1) * w], 2) << pad).to_bytes(rb, "big") for y in range(h))
+
+
+_TT = [bytes.maketrans(bytes(range(256)), bytes(49 if i == v else 48 for i in range(256))) for v in range(256)]
+
+
 def normalise_cell(crop: Image.Image, rank: dict):
     """-> (kind, key, bg, fg, ncolors).  kind: blank | glyph | multicolor.
 
@@ -396,19 +555,27 @@ def normalise_cell(crop: Image.Image, rank: dict):
     reverse video give the same bitmap).  Exact two-way ties use the frame-wide colour frequency
     (the more common colour is background).  Cells with 3+ colours are refused (``multicolor``).
     """
+    return _normalise(crop, rank)[0]
+
+
+def _normalise(crop: Image.Image, rank: dict):
+    """-> (normalise_cell value, tied).  ``tied``: the result used ``rank`` (frame-wide colour frequency), so it is valid for this frame only."""
     w, h = crop.size
     cols = crop.getcolors(w * h)
     if len(cols) == 1:
-        return "blank", b"", cols[0][1], None, 1
+        return ("blank", b"", cols[0][1], None, 1), False
     if len(cols) > 2:
         cols.sort(reverse=True)
-        return "multicolor", b"", cols[0][1], None, len(cols)
+        return ("multicolor", b"", cols[0][1], None, len(cols)), False
     (n1, c1), (n2, c2) = cols
-    if n1 == n2:
+    tied = n1 == n2
+    if tied:
         bgc, fgc = (c1, c2) if rank.get(c1, 0) >= rank.get(c2, 0) else (c2, c1)
     else:
         bgc, fgc = (c1, c2) if n1 > n2 else (c2, c1)
-    return "glyph", _pack(crop.tobytes(), w, h, bytes(fgc)), bgc, fgc, 2
+    if not _REFERENCE and crop.mode == "RGB":
+        return ("glyph", _pack_fast(crop.tobytes(), w, h, bytes(fgc), bytes(bgc)), bgc, fgc, 2), tied
+    return ("glyph", _pack(crop.tobytes(), w, h, bytes(fgc)), bgc, fgc, 2), tied
 
 
 class Extraction:
@@ -416,13 +583,58 @@ class Extraction:
         self.grid, self.rows, self.size = grid, rows, size  # rows: list[list[Cell]]
 
 
-def extract(im: Image.Image, grid: dict, row_indices=None) -> Extraction:
-    """Cells of every row (or only ``row_indices``, used for fast phase search)."""
+def _rank(im) -> dict:
+    return {c: n for n, c in (im.getcolors(im.size[0] * im.size[1]) or [])}
+
+
+class _FrameCache:
+    """Per-frame cell cache shared by the many extractions of one read (candidate origins, phase search): cell value by cell bytes + the
+    frame-wide colour ranking (computed once).  Never reused for another frame."""
+    __slots__ = ("memo", "rank")
+
+    def __init__(self, im):
+        self.memo, self.rank = {}, _rank(im)
+
+
+def _value_rows(im, grid, row_indices, memo, rank):
+    """Fast path of ``extract`` without building Cell objects: rows of normalise_cell values (equal cells share ONE tuple object).
+    ``memo`` maps the column-major cell bytes to its value and may be shared between calls on the same image and cell size."""
+    w, h, ox, oy, cols = grid["cell_w"], grid["cell_h"], grid["origin_x"], grid["origin_y"], grid["cols"]
+    step = w * h * 3
+    out = []
+    for r in row_indices:
+        if cols <= 0:
+            out.append([])
+            continue
+        cm = _cell_strips(im, ox, oy, w, h, cols, r)
+        row = []
+        for c in range(cols):
+            key = cm[c * step:(c + 1) * step]
+            v = memo.get(key)
+            if v is None:
+                x, y = ox + c * w, oy + r * h
+                v = memo[key] = _normalise(im.crop((x, y, x + w, y + h)), rank)[0]
+            row.append(v)
+        out.append(row)
+    return out
+
+
+def _cells(vrows, row_indices):
+    return [[Cell(r, c, *v) for c, v in enumerate(vr)] for r, vr in zip(row_indices, vrows)]
+
+
+def extract(im: Image.Image, grid: dict, row_indices=None, _memo=None) -> Extraction:
+    """Cells of every row (or only ``row_indices``, used for fast phase search).  ``_memo``: per-FRAME cell cache shared between calls on
+    the same image and cell size (the value of a tied cell depends on the frame's colour ranking, so never share it between frames)."""
     w, h, ox, oy = grid["cell_w"], grid["cell_h"], grid["origin_x"], grid["origin_y"]
-    rank = {c: n for n, c in (im.getcolors(im.size[0] * im.size[1]) or [])}
-    memo = {}
+    idx = list(row_indices if row_indices is not None else range(grid["rows"]))
+    if not _REFERENCE and im.mode == "RGB":
+        fc = _memo if _memo is not None else _FrameCache(im)
+        vrows = _value_rows(im, grid, idx, fc.memo, fc.rank)
+        return Extraction(grid, _cells(vrows, idx), im.size)
+    memo, rank = {}, _rank(im)
     rows = []
-    for r in (row_indices if row_indices is not None else range(grid["rows"])):
+    for r in idx:
         row = []
         for c in range(grid["cols"]):
             x, y = ox + c * w, oy + r * h
@@ -457,6 +669,29 @@ def barlike(key: bytes, w: int, h: int) -> bool:
     rb = (w + 7) // 8
     ink = [r for r in (int.from_bytes(key[y * rb:(y + 1) * rb], "big") >> (rb * 8 - w) for y in range(h)) if r]
     return bool(ink) and len(ink) <= 2 and max(bin(r).count("1") for r in ink) >= w - 2
+
+
+def reduce_cell(key: bytes, w: int, h: int, k: int):
+    """Exact inverse of a k-fold nearest-neighbour enlargement of a packed cell bitmap (row-major, MSB left): the (w//k)x(h//k) cell, or None when
+    ``key`` is not such an enlargement (some k x k block is not uniform)."""
+    if w % k or h % k:
+        return None
+    rb, nw, nh = (w + 7) // 8, w // k, h // k
+    nrb = (nw + 7) // 8
+    rows = [int.from_bytes(key[y * rb:(y + 1) * rb], "big") >> (rb * 8 - w) for y in range(h)]
+    out = []
+    for y in range(nh):
+        blk = rows[y * k:(y + 1) * k]
+        if any(r != blk[0] for r in blk):
+            return None
+        v = 0
+        for x in range(nw):
+            bits = (blk[0] >> (w - (x + 1) * k)) & ((1 << k) - 1)
+            if bits not in (0, (1 << k) - 1):
+                return None
+            v = (v << 1) | (1 if bits else 0)
+        out.append((v << (nrb * 8 - nw)).to_bytes(nrb, "big"))
+    return b"".join(out)
 
 
 class Atlas:
@@ -539,6 +774,7 @@ class Atlas:
 
     # learning
     def add(self, font: str, cell_w: int, cell_h: int, key: bytes, char: str, source: str = "", phase=None):
+        self._xcache.clear()     # cross-font / scale-twin caches are derived from the glyph tables
         f = self.fonts.setdefault(font, {"cell_w": cell_w, "cell_h": cell_h, "glyphs": {}})
         if phase is not None:
             ph = [phase[0] % cell_w, phase[1] % cell_h]
@@ -647,6 +883,43 @@ class Atlas:
     def fonts_for(self, cell_w, cell_h):
         return [n for n, f in self.fonts.items() if f["cell_w"] == cell_w and f["cell_h"] == cell_h]
 
+    def scale_twins(self, k: int, cell_w: int, cell_h: int) -> dict:
+        """Bitmaps of this cell size that a font-file font of cell ``k*cell`` ALSO produces after an exact k-fold nearest-neighbour reduction:
+        {hex of the reduced bitmap: {characters that font draws}}.  An image that ``probe_scale`` undoes as a crisp k-fold upscale may be a
+        native k*cell screen of such a font (only its k-fold-enlarged glyphs can occur in it): reading it at the reduced size must not treat
+        a bitmap as font-exact when such a font draws another character with it."""
+        ck = ("twins", k, cell_w, cell_h)
+        if ck in self._xcache:
+            return self._xcache[ck]
+        out = {}
+        W, H = cell_w * k, cell_h * k
+        for fn in self.fonts_for(W, H):
+            f = self.fonts[fn]
+            if f.get("origin", {}).get("kind") != "font-file":
+                continue
+            for hx, g in f["glyphs"].items():
+                red = reduce_cell(bytes.fromhex(hx), W, H, k)
+                if red is not None:
+                    out.setdefault(red.hex(), set()).update(g["c"])
+        self._xcache[ck] = out
+        return out
+
+    def scale_guard(self, k: int, cell_w: int, cell_h: int):
+        """-> (twins, guard_fonts, complete) for an undone k-fold upscale.  A capture that is a k-fold enlargement of the cell may be the native
+        screen of a font of ANY cell d*cell with d | k (d >= 2) shown at zoom k/d, so ``twins`` is the union of ``scale_twins(d, ...)`` over every divisor
+        d >= 2 of k (k=4: 2,4; k=6: 2,3,6; k=8: 2,4,8); ``guard_fonts`` lists the font-file fonts of those cells that were checked; ``complete`` = a font
+        exists for EVERY divisor.  ``complete`` is all the loaded atlas can say: it cannot establish that no other larger font exists."""
+        twins, fonts, complete = {}, [], True
+        for d in range(2, k + 1):
+            if k % d:
+                continue
+            found = [fn for fn in self.fonts_for(cell_w * d, cell_h * d) if self.fonts[fn].get("origin", {}).get("kind") == "font-file"]
+            fonts += found
+            complete = complete and bool(found)
+            for hx, chars in self.scale_twins(d, cell_w, cell_h).items():
+                twins.setdefault(hx, set()).update(chars)
+        return twins, sorted(fonts), complete
+
     def nearest(self, font: str, key: bytes, limit: int = 3):
         """Evidence only: [(distance, char, hex)] best first over glyphs of ``font``."""
         v = int.from_bytes(key, "big")
@@ -662,7 +935,7 @@ class Atlas:
 # --------------------------------------------------------------------------- decode
 def decode(ex: Extraction, atlas: Atlas, font: str | None = None, max_hamming: int = 0,
            return_cells: bool = False, min_groups: int = 2, min_hits: int = 8, min_share: float = 0.25,
-           margin: int = 2, rule_run: int = 4, cursor=None, font_min_share: float = FONT_MIN_SHARE) -> dict:
+           margin: int = 2, rule_run: int = 4, cursor=None, font_min_share: float = FONT_MIN_SHARE, unscaled: int | None = None) -> dict:
     """Exact lookup of every cell.  max_hamming=0 (default): no tolerant matching at all.
 
     * ``font_share`` = share of ordinary (not bar/box-like) ink cells the chosen font reads exactly.  Floor: >= ``min_hits`` cells and
@@ -672,6 +945,10 @@ def decode(ex: Extraction, atlas: Atlas, font: str | None = None, max_hamming: i
       an alias set ``a`` unless the font is proven (share >= font_min_share and no other same-size font above ``PROVEN_RUNNER_UP``).
     * ``F`` font-exact (unique code point); ``H`` unique repertoire character but other code points of the font's full coverage draw the same
       bitmap (``res["aliases"]`` holds the whole set; consumers apply a homoglyph policy); ``a`` several repertoire characters share the bitmap.
+    * ``k = unscaled`` (default: ``ex.grid["unscaled"]``, set by ``prepare`` when ``probe_scale`` undid a k-fold upscale; callers cannot forget it):
+      a font-exact bitmap that a font-file font of cell ``d*cell`` (any divisor d >= 2 of k) draws as a DIFFERENT character (``Atlas.scale_guard``) is an
+      alias set, never F/H.  ``res["scale_unverified"] = k`` and ``res["scale_guard_fonts"]`` are always set when k > 1, and unless a font exists for EVERY
+      divisor the remaining F/H cells are capped to ``z`` (CONF_SCALED: shown, not actionable; ``strict_match(trust_scale=True)`` opts in).
     * ``min_groups``: a LEARNED glyph is 'exact' only if >= this many independent screen groups confirm it, else 's'.
     * flags (``res["flags"]``): 'r' rule-line, 'c' cursor candidate: cells reading a cursor-shaped glyph (lower blocks, full block) always, a
       bar-like last inked cell of a row, or exactly the cell given by ``cursor=(row, col)`` (then the shape heuristic is off).
@@ -687,6 +964,9 @@ def decode(ex: Extraction, atlas: Atlas, font: str | None = None, max_hamming: i
             v = boxmemo[key] = boxlike(key, w, h)
         return v
 
+    k_un = g.get("unscaled", 1) if unscaled is None else unscaled
+    twins, guard_fonts, guard_complete = atlas.scale_guard(k_un, w, h) if k_un > 1 else ({}, [], True)
+    scale_cap = k_un > 1 and not guard_complete
     cands = [font] if font else atlas.fonts_for(w, h)
     fscores = {}
     for fn in cands:
@@ -706,13 +986,27 @@ def decode(ex: Extraction, atlas: Atlas, font: str | None = None, max_hamming: i
     floor_ok = bool(chosen) and fscores[chosen][0] >= min_hits and fscores[chosen][0] >= min_share * fscores[chosen][1]
     is_file = bool(chosen) and atlas.fonts[chosen].get("origin", {}).get("kind") == "font-file"
     runner_up = max([(v[0] / v[1] if v[1] else 0.0) for k, v in fscores.items() if k != chosen] or [0.0])
-    proven = is_file and share >= font_min_share and runner_up <= PROVEN_RUNNER_UP
+    # A rival font above PROVEN_RUNNER_UP blocks the proof only if it can actually change a reading on THIS screen: for a rival that is itself a
+    # font file, some inked cell bitmap must be font-exact in both fonts with DIFFERENT characters.  A rival that explains many cells but draws every
+    # one of them with the same character as the chosen font (e.g. a bold face sharing the digits) is not evidence for the rival: the readings are
+    # the same whichever font it is.  A learned (non-file) rival keeps the plain share rule.
+    blocking = []
+    for k, v in fscores.items():
+        if k == chosen or not v[1] or v[0] / v[1] <= PROVEN_RUNNER_UP:
+            continue
+        if not (chosen and atlas.fonts[k].get("origin", {}).get("kind") == "font-file" and atlas.fonts[chosen].get("origin", {}).get("kind") == "font-file"):
+            blocking.append(k)
+            continue
+        if any(_readings_differ(atlas, chosen, k, key) for key in {c.key for row in ex.rows for c in row if c.kind == "glyph"}):
+            blocking.append(k)
+    proven = is_file and share >= font_min_share and not blocking
     mixed = floor_ok and is_file and share < font_min_share
     if mixed:
         floor_ok = False
     rows, conf, unknown, cells, flags = [], [], [], [], []
     memo = {}
     aliases = {}
+    precap = {}     # (row, col) -> F | H for cells capped to class z
 
     def neighbour_text_bg_differs(row, ci, c):
         for j in (ci - 1, ci + 1):
@@ -733,10 +1027,18 @@ def decode(ex: Extraction, atlas: Atlas, font: str | None = None, max_hamming: i
                     key = (chosen, c.key)
                     r = memo.get(key)
                     if r is None:
-                        r = memo[key] = _decode_glyph(atlas, chosen, c.key, max_hamming, min_groups, margin, proven)
+                        r = memo[key] = _decode_glyph(atlas, chosen, c.key, max_hamming, min_groups, margin, proven, twins.get(c.key.hex()))
+                        if scale_cap and r[1] in (CONF_FONT, CONF_HOMO):
+                            # keep the class the cell would have had (F or H) and its homoglyph set: ``trust_scale`` restores exactly that, and the
+                            # flag pass (rule line / cursor) treats the cell as that class, so the cap never loosens any 1:1 rule
+                            r = memo[key] = (r[0], CONF_SCALED, {"reason": "font-exact after an undone %d-fold upscale; no loaded font for every divisor size, so a "
+                                                                          "larger font cannot be excluded" % k_un, "would_read": r[0], "precap": r[1],
+                                                                 **({"aliases": r[2]["aliases"]} if r[1] == CONF_HOMO else {})})
                     ch, st = r[0], r[1]
-                    if st in (CONF_ALIAS, CONF_HOMO):
+                    if st in (CONF_ALIAS, CONF_HOMO) or (st == CONF_SCALED and "aliases" in r[2]):
                         aliases[(c.row, c.col)] = r[2]["aliases"]
+                    if st == CONF_SCALED:
+                        precap[(c.row, c.col)] = r[2]["precap"]
             elif neighbour_text_bg_differs(row, ci, c):
                 ch, st = FILL_CHAR, CONF_FILL
             chars.append(ch)
@@ -751,7 +1053,9 @@ def decode(ex: Extraction, atlas: Atlas, font: str | None = None, max_hamming: i
         rows.append("".join(chars))
         conf.append("".join(cf))
     iscur = lambda st, ch: st in EXACTLIKE and ch in CURSOR_CHARS  # noqa: E731
-    for r, (row, cf) in enumerate(zip(ex.rows, conf)):
+    # flags (rule line, cursor) are computed as if the capped cells kept their pre-cap class
+    conf_eff = ["".join(precap.get((r, ci), ch) if ch == CONF_SCALED else ch for ci, ch in enumerate(cf)) for r, cf in enumerate(conf)] if precap else conf
+    for r, (row, cf) in enumerate(zip(ex.rows, conf_eff)):
         fl = ["."] * len(row)
         ci = 0
         while ci < len(row):
@@ -783,7 +1087,7 @@ def decode(ex: Extraction, atlas: Atlas, font: str | None = None, max_hamming: i
     for r, row in enumerate(ex.rows):
         for ci, c in enumerate(row):
             st = conf[r][ci]
-            if st in (CONF_UNKNOWN, CONF_CONFLICT, CONF_MULTI, CONF_SINGLE, CONF_FILL, CONF_ALIAS, CONF_HOMO):
+            if st in (CONF_UNKNOWN, CONF_CONFLICT, CONF_MULTI, CONF_SINGLE, CONF_FILL, CONF_ALIAS, CONF_HOMO, CONF_SCALED):
                 if c.kind == "glyph" and floor_ok:
                     ev = memo[(chosen, c.key)][2]
                 elif c.kind == "multicolor":
@@ -803,10 +1107,13 @@ def decode(ex: Extraction, atlas: Atlas, font: str | None = None, max_hamming: i
         status = "mixed_font" if mixed else "no_font"
     res = {"status": status,
            "grid": {k: g[k] for k in ("cell_w", "cell_h", "origin_x", "origin_y", "cols", "rows")},
-           "font": chosen, "font_is_file": is_file, "font_share": round(share, 4), "font_runner_up_share": round(runner_up, 4), "font_proven": bool(proven),
+           "font": chosen, "font_is_file": is_file, "font_share": round(share, 4), "font_runner_up_share": round(runner_up, 4), "font_proven": bool(proven), "font_rivals_blocking": blocking,
            "font_scores": {k: list(v) for k, v in fscores.items()}, "rows": rows, "conf": conf, "flags": flags,
            "unknown_cells": unknown, "max_hamming": max_hamming, "min_groups": min_groups,
            "aliases": {"%d,%d" % k: v for k, v in aliases.items()}}
+    if k_un > 1:
+        res.update(scale_unverified=k_un, scale_guard_fonts=guard_fonts, scale_capped=scale_cap,
+                   scale_precap={"%d,%d" % k: v for k, v in precap.items()})
     if status != "ok":
         res["message"] = ("no atlas font reads this screen (need >= %d ordinary cells and >= %d%% of them): every cell UNKNOWN" % (min_hits, int(min_share * 100))
                           if status == "no_font" else
@@ -821,10 +1128,21 @@ def decode(ex: Extraction, atlas: Atlas, font: str | None = None, max_hamming: i
     return res
 
 
-def _decode_glyph(atlas, font, key, max_hamming, min_groups=2, margin=2, proven=True):
+def _readings_differ(atlas, a, b, key) -> bool:
+    """Both fonts are font-exact for this bitmap and read it as different character sets."""
+    ga, gb = atlas.fonts[a]["glyphs"].get(key.hex()), atlas.fonts[b]["glyphs"].get(key.hex())
+    return bool(ga and gb and ga.get("font_exact") and gb.get("font_exact") and set(ga["c"]) != set(gb["c"]))
+
+
+def _decode_glyph(atlas, font, key, max_hamming, min_groups=2, margin=2, proven=True, twin=None):
     if font is None:
         return UNKNOWN_CHAR, CONF_UNKNOWN, {"reason": "no atlas font for this grid"}
     r = atlas.lookup(font, key, min_groups)
+    if twin and r and r[0] in ("font", "homoglyph", "alias"):
+        mine = set(atlas.fonts[font]["glyphs"][key.hex()]["c"])
+        if set(twin) != mine:
+            return UNKNOWN_CHAR, CONF_ALIAS, {"reason": "undone k-fold upscale: a font of the k-fold larger cell draws this bitmap as another character",
+                                              "aliases": sorted(mine | set(twin))}
     if r and r[0] in ("font", "homoglyph"):
         other = atlas.cross_font_chars(font, key)
         if other and not proven:
@@ -855,7 +1173,7 @@ def _decode_glyph(atlas, font, key, max_hamming, min_groups=2, margin=2, proven=
 
 
 # --------------------------------------------------------------------------- top level
-def prepare(src, auto_unscale: bool = True, grid_hints=None, atlas: "Atlas | None" = None):
+def prepare(src, auto_unscale: bool = True, grid_hints=None, atlas: "Atlas | None" = None, _state=None):
     """-> (im, probe, grid_report).  Applies the scale probe; im is None when exact matching is refused.
 
     Without explicit ``grid_hints`` the cell sizes of the atlas fonts are tried first (a screen that
@@ -864,20 +1182,30 @@ def prepare(src, auto_unscale: bool = True, grid_hints=None, atlas: "Atlas | Non
     cell (e.g. 16x16 for 8x16), which is why the known sizes come first.
     """
     im = load_image(src)
-    probe = probe_scale(im)
+    masks = _transition_masks(im) if min(im.size) >= 3 and not _REFERENCE else None
+    probe = probe_scale(im, _masks=masks, _state=_state)
+    k = 1
     if probe["integer_upscale"] > 1 and auto_unscale:
-        im = unscale(im, probe["integer_upscale"])
+        k = probe["integer_upscale"]
+        im = unscale(im, k)
+        masks = None
     elif probe["resampled"]:
         return None, probe, None
+    im, g = _prepare_grid(im, grid_hints, atlas, masks)
+    g["unscaled"] = k      # carried to every Extraction (grid_with_origin copies it): decode reads the undone scale from there
+    return im, probe, g
+
+
+def _prepare_grid(im, grid_hints, atlas, masks=None):
     if grid_hints is None and atlas is not None and atlas.fonts:
         sizes = sorted({(f["cell_w"], f["cell_h"]) for f in atlas.fonts.values()})
-        g = detect_grid(im, hints=sizes)
+        g = detect_grid(im, hints=sizes, _masks=masks)
         if g["status"] == "ok":
-            return im, probe, g
-        free = detect_grid(im)
+            return im, g
+        free = detect_grid(im, _masks=masks)
         free["hinted_attempt"] = g["reasons"][:1]
-        return im, probe, free
-    return im, probe, detect_grid(im, hints=grid_hints)
+        return im, free
+    return im, detect_grid(im, hints=grid_hints, _masks=masks)
 
 
 def choose_extraction(im, grid: dict, atlas: Atlas, font: str | None = None, max_seconds: float = 4.0):
@@ -894,19 +1222,30 @@ def choose_extraction(im, grid: dict, atlas: Atlas, font: str | None = None, max
             ph = [ph[0] % grid["cell_w"], ph[1] % grid["cell_h"]]
             if ph not in cands:
                 cands.append(ph)
-    for ox, oy in cands:
-        ex = extract(im, grid_with_origin(grid, im.size, ox, oy))
-        hits = _count_hits(ex, atlas, font)
-        if best is None or hits > best[1]:
-            best = (ex, hits)
+    memo = _FrameCache(im) if not _REFERENCE and im.mode == "RGB" else None
+    if memo is not None:
+        bestv = None
+        for ox, oy in cands:  # candidate origins are scored on shared cell values; Cell objects are built for the winner only
+            g2 = grid_with_origin(grid, im.size, ox, oy)
+            vr = _value_rows(im, g2, range(g2["rows"]), memo.memo, memo.rank)
+            hits = _count_hits_values(vr, g2, atlas, font)
+            if best is None or hits > best[1]:
+                best, bestv = (None, hits), (g2, vr)
+        best = (Extraction(bestv[0], _cells(bestv[1], range(bestv[0]["rows"])), im.size), best[1])
+    else:
+        for ox, oy in cands:
+            ex = extract(im, grid_with_origin(grid, im.size, ox, oy), _memo=memo)
+            hits = _count_hits(ex, atlas, font)
+            if best is None or hits > best[1]:
+                best = (ex, hits)
     ffonts = [fn for fn in atlas.fonts_for(grid["cell_w"], grid["cell_h"])
               if atlas.fonts[fn].get("origin", {}).get("kind") == "font-file" and (font is None or fn == font)]
     if ffonts:
-        best = _phase_search_fonts(im, grid, atlas, ffonts, best, time.monotonic() + max_seconds)
+        best = _phase_search_fonts(im, grid, atlas, ffonts, best, time.monotonic() + max_seconds, memo)
     return best
 
 
-def _phase_search_fonts(im, grid, atlas, ffonts, best, deadline=None):
+def _phase_search_fonts(im, grid, atlas, ffonts, best, deadline=None, memo=None):
     """Font-FILE atlases carry no learned phase: try every cell origin on a few dense rows and accept the winner only
     with a large, unambiguous margin (thousands of exact glyph hits cannot happen by chance at a wrong phase)."""
     ex0 = best[0]
@@ -921,16 +1260,35 @@ def _phase_search_fonts(im, grid, atlas, ffonts, best, deadline=None):
             if deadline is not None and time.monotonic() > deadline:  # budget: a hopeless input must not cost seconds per megapixel
                 return best
             g = grid_with_origin(grid, im.size, ox, oy)
-            e = extract(im, g, rows)
+            e = extract(im, g, rows, _memo=memo)
             scores.append((max(_count_hits(e, atlas, fn) for fn in ffonts), ox, oy))
     scores.sort(reverse=True)
     top = scores[0]
     second = next((x for x in scores[1:] if (x[1], x[2]) != (top[1], top[2])), (0, 0, 0))
     if top[0] >= 30 and top[0] >= 2 * second[0] + 1:
-        ex = extract(im, grid_with_origin(grid, im.size, top[1], top[2]))
+        ex = extract(im, grid_with_origin(grid, im.size, top[1], top[2]), _memo=memo)
         h = _count_hits(ex, atlas, None)
         if h > best[1]:
             return ex, h
+    return best
+
+
+def _count_hits_values(vrows, g, atlas, font):
+    """``_count_hits`` on value rows (see ``_value_rows``): every distinct cell value is looked up once per font."""
+    fonts = [font] if font else atlas.fonts_for(g["cell_w"], g["cell_h"])
+    cnt = {}
+    for vr in vrows:
+        for v in vr:
+            if v[0] == "glyph":
+                cnt[v[1]] = cnt.get(v[1], 0) + 1
+    best = 0
+    for fn in fonts:
+        n = 0
+        for key, k in cnt.items():
+            r = atlas.lookup(fn, key)
+            if r and r[0] in HIT:
+                n += k
+        best = max(best, n)
     return best
 
 
@@ -953,9 +1311,10 @@ def _count_hits(ex, atlas, font):
 
 
 def read_image(src, atlas: Atlas, font: str | None = None, max_hamming: int = 0, auto_unscale: bool = True,
-               return_cells: bool = False, grid_hints=None, **decode_kw) -> dict:
+               return_cells: bool = False, grid_hints=None, _capture=None, **decode_kw) -> dict:
     """image bytes/path/PIL image -> grid result.  Never raises on a bad grid: reports status."""
-    im, probe, g = prepare(src, auto_unscale, grid_hints, atlas)
+    state = {}
+    im, probe, g = prepare(src, auto_unscale, grid_hints, atlas, _state=state)
     if im is None:
         return {"status": "resampled", "message": "resampled: exact matching unavailable", "probe": probe,
                 "rows": [], "conf": [], "unknown_cells": []}
@@ -966,7 +1325,159 @@ def read_image(src, atlas: Atlas, font: str | None = None, max_hamming: int = 0,
     res = decode(ex, atlas, font, max_hamming, return_cells, **decode_kw)
     res["probe"] = probe
     res["grid_report"] = {k: g[k] for k in ("length", "contrast", "candidates")}
+    if _capture is not None:
+        _capture.update(im=im, probe=probe, ex=ex, state=state)
     return res
+
+
+# --------------------------------------------------------------------------- session reader (geometry cache + dirty cells)
+class _Session:
+    __slots__ = ("im", "ex", "res", "hist", "parts", "thr", "tied")
+
+
+class GlyphReader:
+    """Reads a SEQUENCE of frames of one console (the canvas-change watcher use case) and re-does only what changed.
+
+    ``read(frame)`` returns the same dict as ``read_image`` plus ``res["session"] = {"path": ..., "dirty_cells": n}``, where path is
+      ``full``         nothing reusable: the complete pipeline ran (first frame, other size, or a fallback below);
+      ``identical``    the frame equals the previous one pixel for pixel: the previous result is returned (a copy);
+      ``incremental``  same size, only some text rows changed: grid geometry and origin are REUSED, the scale-probe numbers are updated
+                       from the changed bands only, and only the changed cells are re-extracted; decode runs over the whole screen.
+    The incremental path falls back to ``full`` (never to a guess) when: no previous frame, the frame is not RGB-crisp 1:1, more than
+    ``max_dirty`` of the text rows changed, pixels outside the grid rows changed, the previous result was not ``ok``, the new frame
+    would be an integer upscale or ``resampled``, the new decode is not ``ok``, or the cell is shorter than 5 px.  The safety contract is
+    unchanged: every cell is still read by exact lookup, the evidence floor and font share are re-evaluated on the whole new screen, and a
+    stale geometry can only make cells UNKNOWN / the screen ``no_font`` (and then triggers the full path), never produce a wrong exact cell.
+    Output equality with ``read_image`` on the same frame is asserted by the tests on synthetic edits and on the real 242-frame series
+    (the whole result dict except ``session`` and ``grid_report``, which describes the search that established the cached geometry).
+
+    NOT thread-safe: an instance holds mutable per-sequence state (previous frame, cells, colour census); use one reader per sequence and
+    thread.  ``reference_mode()`` is a module global and is not thread-safe either.
+    """
+
+    def __init__(self, atlas: Atlas, font: str | None = None, max_hamming: int = 0, auto_unscale: bool = True,
+                 grid_hints=None, max_dirty: float = 0.25, **decode_kw):
+        self.atlas, self.font, self.max_hamming, self.auto_unscale = atlas, font, max_hamming, auto_unscale
+        self.grid_hints, self.max_dirty = grid_hints, max_dirty
+        self.decode_kw = decode_kw
+        self._st: _Session | None = None
+
+    def reset(self):
+        self._st = None
+
+    def read(self, src) -> dict:
+        im = load_image(src)
+        st = self._st
+        if st is not None and not _REFERENCE and im.size == st.im.size:
+            res = self._incremental(im, st)
+            if res is not None:
+                return res
+        return self._full(im)
+
+    # -- full pipeline, remembering what the incremental path needs
+    def _full(self, im) -> dict:
+        cap = {}
+        res = read_image(im, self.atlas, self.font, self.max_hamming, self.auto_unscale, grid_hints=self.grid_hints, _capture=cap,
+                         **self.decode_kw)
+        self._st = None
+        # a session only for a capture that was NOT an undone upscale: for k > 1 the stored image is the UNSCALED one, whose size can equal the next RAW frame
+        # (a 3x zoom, then the native crop): the incremental path would return the stale capped result as 'identical' instead of a fresh read
+        # (pinned by test_glyph_reader_zoomed_frame_then_native_frame_is_a_fresh_full_read)
+        if cap and cap["probe"]["integer_upscale"] == 1 and res.get("status") == "ok" and not _REFERENCE:
+            ex, state = cap["ex"], cap["state"]
+            g = ex.grid
+            if g["cell_h"] >= 5 and cap["im"].mode == "RGB":
+                st = _Session()
+                st.im, st.ex = cap["im"], ex
+                st.hist = {c: n for n, c in state["colors"]}
+                st.parts, st.thr = list(state["parts"]), state["thr"]
+                full = g["cell_w"] * g["cell_h"]
+                st.tied = {(c.row, c.col) for row in ex.rows for c in row if c.kind == "glyph" and 2 * _popcount(int.from_bytes(c.key, "big")) == full}
+                st.res = copy.deepcopy(res)
+                self._st = st
+        res["session"] = {"path": "full", "dirty_cells": None}
+        return res
+
+    # -- incremental path; None = fall back to the full pipeline
+    def _incremental(self, im, st):
+        W, H = im.size
+        g = st.ex.grid
+        w, h, ox, oy, cols, nrows = g["cell_w"], g["cell_h"], g["origin_x"], g["origin_y"], g["cols"], g["rows"]
+        diff = ImageChops.difference(im, st.im)
+        if diff.getbbox() is None:
+            res = copy.deepcopy(st.res)
+            res["session"] = {"path": "identical", "dirty_cells": 0}
+            return res
+        if (oy and diff.crop((0, 0, W, oy)).getbbox()) or (oy + nrows * h < H and diff.crop((0, oy + nrows * h, W, H)).getbbox()):
+            return None
+        dirty = {}
+        for r in range(nrows):
+            y = oy + r * h
+            if diff.crop((0, y, W, y + h)).getbbox() is None:
+                continue
+            strip = diff.crop((ox, y, ox + cols * w, y + h))
+            dirty[r] = [c for c in range(cols) if strip.crop((c * w, 0, (c + 1) * w, h)).getbbox()]
+        if len(dirty) > self.max_dirty * nrows:
+            return None
+        if _integer_upscale(im) != 1:
+            return None
+        # the cached tiling must still compress this screen the way a fresh search demands (>= 12 non-blank cells, description length <= 0.5);
+        # a sparse screen that a fresh detect_grid would call 'no fixed grid' therefore takes the full path and gets the same refusal
+        cs = _colstrips(im.convert("L"), h, oy, 8)
+        if not cs[0]:
+            return None
+        L, _, t = _mdl(cs, w, h, ox)
+        if t < 12 or L > 0.5:
+            return None
+        # scale probe and colour census, updated from the changed bands only (every number is local to a 3-pixel window)
+        parts, hist = list(st.parts), dict(st.hist)
+        rs = sorted(dirty)
+        bands, k = [], 0
+        while k < len(rs):
+            j = k
+            while j + 1 < len(rs) and rs[j + 1] == rs[j] + 1:
+                j += 1
+            bands.append((max(oy + rs[k] * h - 2, 0), min(oy + (rs[j] + 1) * h + 2, H)))
+            k = j + 1
+        for ys, ye in bands:
+            newc, oldc = im.crop((0, ys, W, ye)), st.im.crop((0, ys, W, ye))
+            for i, ((rn, en), (ro, eo)) in enumerate(zip(_ramp_parts(newc), _ramp_parts(oldc))):
+                parts[i] = (parts[i][0] + rn - ro, parts[i][1] + en - eo)
+            for sign, crop in ((1, newc), (-1, oldc)):
+                for n, c in crop.getcolors(W * (ye - ys)):
+                    hist[c] = hist.get(c, 0) + sign * n
+        hist = {c: n for c, n in hist.items() if n > 0}
+        probe = _probe_dict(sorted(((n, c) for c, n in hist.items()), reverse=True), W * H, parts, 1, st.thr)
+        if probe["resampled"]:
+            return None
+        # changed cells, then the unchanged cells whose value depended on the frame-wide colour ranking (exact ties)
+        rows = [list(row) for row in st.ex.rows]
+        tied = set(st.tied)
+        redo = {(r, c) for r, cs in dirty.items() for c in cs}
+        redo |= tied
+        tied -= redo
+        for r, c in sorted(redo):
+            x, y = ox + c * w, oy + r * h
+            v, is_tied = _normalise(im.crop((x, y, x + w, y + h)), hist)
+            rows[r][c] = Cell(r, c, *v)
+            if is_tied:
+                tied.add((r, c))
+        ex2 = Extraction(g, rows, im.size)
+        kw = dict(self.decode_kw)
+        kw.pop("max_seconds", None)
+        res = decode(ex2, self.atlas, self.font, self.max_hamming, **kw)
+        if res["status"] != "ok":
+            return None
+        # the geometry must still explain what changed: an ink cell in the changed area that the atlas does not know at all (stale phase,
+        # foreign content) sends the frame through the full pipeline instead
+        if any(res["conf"][r][c] == CONF_UNKNOWN and rows[r][c].kind == "glyph" for r, cs in dirty.items() for c in cs):
+            return None
+        res["probe"] = probe
+        res["grid_report"] = copy.deepcopy(st.res["grid_report"])
+        st.im, st.ex, st.hist, st.parts, st.tied = im, ex2, hist, parts, tied
+        st.res = copy.deepcopy(res)
+        res["session"] = {"path": "incremental", "dirty_cells": sum(len(v) for v in dirty.values())}
+        return res
 
 
 # --------------------------------------------------------------------------- consumer helpers
@@ -1090,7 +1601,25 @@ def find_phrase_ambiguous(res: dict, phrase: str, exclude_flagged: bool = True, 
     return out
 
 
-def strict_match(res: dict, phrase: str, region=None, cursor=None, homoglyphs: str = "latin-only", min_font_share: float = FONT_MIN_SHARE) -> dict:
+def trust_scale(res: dict) -> dict:
+    """Explicit opt-in for a capture that was an undone integer upscale: returns a copy of ``res`` whose capped ``z`` cells get back the class they had
+    before the cap (F, or H with its homoglyph set, so the caller's homoglyph policy applies exactly as at 1:1), and records the
+    choice (``res["trust_scale"] = True``, ``res["scale_unverified"]`` stays).  Use it only if the capture path is known to be a browser/display zoom of a
+    native 1:1 screen (the cap exists because the loaded atlas cannot exclude a larger native font)."""
+    out = dict(res)
+    pre = res.get("scale_precap")
+    for r, row in enumerate(res.get("conf", [])):
+        for ci, ch in enumerate(row):
+            if ch == CONF_SCALED and not (isinstance(pre, dict) and pre.get("%d,%d" % (r, ci)) in (CONF_FONT, CONF_HOMO)):
+                # fail CLOSED: without the recorded pre-cap class a z cell is never promoted (a guessed F would bypass the homoglyph policy and the flags)
+                raise ValueError("trust_scale: cell %d,%d is class z but res['scale_precap'] has no F/H entry for it; this result was not produced by decode()" % (r, ci))
+    out["conf"] = ["".join(pre["%d,%d" % (r, ci)] if ch == CONF_SCALED else ch for ci, ch in enumerate(row)) for r, row in enumerate(res.get("conf", []))]
+    out["trust_scale"] = True
+    return out
+
+
+def strict_match(res: dict, phrase: str, region=None, cursor=None, homoglyphs: str = "latin-only", min_font_share: float = FONT_MIN_SHARE,
+                 trust_scale: bool = False) -> dict:
     """THE decision function for a keystroke consumer.  matched = at least one occurrence whose phrase cells AND both boundary cells are
     F/e/b (homoglyph cells per policy), unflagged, not alias/single/fill/unknown, the screen status is ok and, for a font-file font,
     font_share >= ``min_font_share``.  ``region`` = (row0, row1, col0, col1) restricts the search; ``cursor`` = (row, col) is excluded.
@@ -1100,6 +1629,12 @@ def strict_match(res: dict, phrase: str, region=None, cursor=None, homoglyphs: s
         return {"matched": False, "hits": [], "candidates": [], "reasons": ["screen status %r: %s" % (res.get("status"), res.get("message", ""))]}
     if res.get("font_is_file") and res.get("font_share", 0.0) < min_font_share:
         reasons.append("font_share %.3f < %.2f" % (res["font_share"], min_font_share))
+    if res.get("scale_capped"):
+        if trust_scale:
+            res = globals()["trust_scale"](res)
+        else:
+            reasons.append("capture was an undone %d-fold upscale without a complete larger-font guard: cells are class 'z' (not actionable); "
+                           "pass trust_scale=True only if the capture path is a known zoom of a native 1:1 screen" % res["scale_unverified"])
     hits, cands = [], []
     for r, i in _occurrences(res, phrase, region):
         j = i + len(phrase)
@@ -1118,4 +1653,7 @@ def strict_match(res: dict, phrase: str, region=None, cursor=None, homoglyphs: s
             hits.append({"row": r, "col": i})
     if not cands:
         reasons.append("phrase not present in the read text")
-    return {"matched": bool(hits), "hits": hits, "candidates": cands, "reasons": reasons}
+    out = {"matched": bool(hits), "hits": hits, "candidates": cands, "reasons": reasons}
+    if res.get("scale_unverified"):
+        out.update(scale_unverified=res["scale_unverified"], trust_scale=bool(res.get("trust_scale")))
+    return out

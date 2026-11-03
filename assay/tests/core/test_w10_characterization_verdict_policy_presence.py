@@ -98,6 +98,7 @@ R1_POLICY = JudgmentR1(
 )
 R2_POLICY = JudgmentR2(
     jobs=1,
+    attribution="serial",
     max_mutants=50,
     operators=("python:compare-swap",),
     kill_attribution="unattributed",

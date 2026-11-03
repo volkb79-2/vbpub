@@ -25,7 +25,7 @@ source venv/bin/activate
 # Install requirements
 log "Installing Python dependencies..."
 pip install --upgrade pip
-pip install -r requirements.txt
+pip install -r requirements-runtime.txt
 
 # Copy environment template if needed
 if [[ ! -f ".env.sample" ]] && [[ -f ".env.example" ]]; then

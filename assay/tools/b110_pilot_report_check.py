@@ -628,7 +628,7 @@ def _verify_state(
             terminal_matches = _terminal_result_matches_bucket(
                 record,
                 cold_witness=True,
-                resource_limit_hit=resource_evidence.limit_hit,
+                resource_limit_evidence=resource_evidence,
                 process_tree_evidence=process_tree_evidence,
             )
         except (TypeError, ValueError) as exc:
@@ -1354,7 +1354,7 @@ def verify_pilot(args: argparse.Namespace) -> str:
     repo_root = args.repo_root.resolve(strict=True)
     project_root = args.project_root.resolve(strict=True)
     pinned = args.assay_fd is not None
-    project_fd = assay_fd = state_fd = -1
+    project_fd = state_fd = -1
     try:
         if pinned:
             expected_assay = (args.expected_assay_device, args.expected_assay_inode)

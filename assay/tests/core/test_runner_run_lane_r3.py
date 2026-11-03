@@ -293,7 +293,7 @@ def test_r3_canary_halves_consume_carried_bases_in_a_history_cut_snapshot(
     assert verdict.judgment.resolved.base == base_rev
 
 
-def test_r3_reports_a_real_wrong_cause_as_survived_with_the_unmocked_adapter(
+def test_r3_reports_a_real_wrong_cause_as_inconclusive_without_a_receipt(
     git_repo: GitRepo,
 ):
     """A transformed half that genuinely FAILS, for a genuinely DIFFERENT
@@ -303,8 +303,8 @@ def test_r3_reports_a_real_wrong_cause_as_survived_with_the_unmocked_adapter(
     ``import-break`` expects ``COMMAND_FAILED``. Break a module the lane's
     own tests never import and R0 keeps passing; R1 then catches the
     injected line as uncovered, so the observed reason is
-    ``UNCOVERED_LINES``. Accepting any transformed non-PASS (O3's own
-    negative) makes this green.
+    ``UNCOVERED_LINES``. The target was never imported, so there is no receipt
+    and R3 cannot attribute the failure to the import-break transform.
     """
     git_repo.write(".gitignore", "cov.json\n.coverage\n")
     git_repo.write("pkg/__init__.py", "")
@@ -336,11 +336,15 @@ def test_r3_reports_a_real_wrong_cause_as_survived_with_the_unmocked_adapter(
     )
 
     r3_claim = verdict.claims[-1]
-    assert r3_claim.status is Outcome.FAIL
-    assert r3_claim.reason_code is ReasonCode.CANARY_SURVIVED
-    assert r3_claim.canary.attempts[0].transformed_outcome is Outcome.FAIL, "it DID fail"
+    assert r3_claim.status is Outcome.INCONCLUSIVE
+    assert r3_claim.reason_code is ReasonCode.CANARY_INCONCLUSIVE
+    assert r3_claim.canary.attempts[0].transformed_outcome is Outcome.INCONCLUSIVE
     assert r3_claim.canary.attempts[0].expected_reason_code is ReasonCode.COMMAND_FAILED
-    assert r3_claim.canary.attempts[0].observed_reason_code is ReasonCode.UNCOVERED_LINES
+    assert (
+        r3_claim.canary.attempts[0].observed_reason_code
+        is ReasonCode.CANARY_INCONCLUSIVE
+    )
+    assert "no receipt" in r3_claim.canary.attempts[0].description
     assert git_repo.git("status", "--porcelain") == ""
 
 

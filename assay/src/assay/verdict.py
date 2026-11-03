@@ -61,6 +61,7 @@ import math
 import re
 from .records import record
 from .process_tree import ProcessTreeEvidence
+from .result_reports import ReportSummary
 from datetime import datetime, timezone
 from importlib.resources import files
 from types import MappingProxyType
@@ -161,6 +162,7 @@ __all__ = [
     "EquivalenceLedger",
     "ResourceLimitEvidence",
     "SnapshotPolicy",
+    "UnderlyingOutcome",
     "WorktreeIntegrity",
     "SourcePosition",
     "operator_language",
@@ -381,9 +383,11 @@ __all__ = [
 #: `[defaults].env_passthrough` and its lane-level list, including allowed
 #: names absent at run time. Present passthrough values are redacted in
 #: `env_effective` and fingerprinted in `env_effective_passthrough_sha256`.
-#: Native R2 outcomes also carry cgroup v2 process-limit and OOM event deltas;
-#: positive failed-fork or OOM-related deltas must be classified as `crashed`,
-#: while `memory.events:max` is retained as telemetry. These v14 additions
+#: Native R2 outcomes may carry cgroup v2 process-limit and OOM event deltas;
+#: post-preflight observation loss omits that optional telemetry, and a
+#: positive failed-fork or OOM-related delta cannot accompany a `killed`
+#: outcome. A clean PASS remains survived, timeouts remain incomplete, and
+#: `memory.events:max` is telemetry. These v14 additions
 #: ship together before the first v14 release; `assay verify` refuses v13.
 #:
 #: **Bumped 14 -> 15 (B114/B110 P3).** Native R2 policy records whether
@@ -393,14 +397,17 @@ __all__ = [
 #: cold/declared attempts. Liveness policy discloses its effective CPU and
 #: idle windows. Campaign deadlines bind resumed work to one commit and plan.
 #: Versions 12-15 are bounded `--reuse-from` cold starts; v11 and older remain
-#: refused. Producers emit v16, and `assay verify` refuses v15 and older.
+#: refused. Producers emit v17, and `assay verify` refuses every other version.
 #:
 #: **Bumped 15 -> 16 (B157).** Native R2 fixes `judgment.r2.jobs` at 1 because
 #: candidate cgroup-event windows share counters and overlapping runs cannot
-#: be attributed. The schema/model/verifier refuse a native verdict claiming
-#: more than one worker. Older v15 verdicts remain eligible only as cold
-#: `--reuse-from` inputs; their mutation witnesses are not reused.
-VERDICT_SCHEMA_VERSION = 16
+#: be attributed.
+#:
+#: **Bumped 16 -> 17 (WP8/B171/B180/B202).** The artifact records effective
+#: native worker count and attribution, receipt cause for R3, stable process
+#: tree identities and signal evidence, and the suite result beneath a
+#: cleanup crash. Host-varying cleanup duration is removed.
+VERDICT_SCHEMA_VERSION = 17
 
 #: (P21/A-183) the closed R1 exclusion-capability vocabulary, restoring A-008's
 #: distinction inside the artifact. `"unavailable"` means the coverage FORMAT
@@ -427,6 +434,9 @@ BRANCH_CAPABILITIES: tuple[str, ...] = ("reported", "unavailable")
 #: this discriminator exists to make that limit visible in every artifact
 #: rather than absent from all of them (A-220).
 KILL_ATTRIBUTIONS: tuple[str, ...] = ("declared", "unattributed")
+
+#: (B202/schema v17) How concurrent native R2 attempts are attributed.
+R2_ATTRIBUTIONS: tuple[str, ...] = ("serial", "overlap-conservative")
 
 #: (B079/schema v12) Why an ingested mutant was not attempted. These are
 #: assay's own wire vocabulary, not a foreign tool's open status namespace;
@@ -1327,6 +1337,9 @@ class CanaryAttempt:
     #: (B007/A-432) required under ``"not_attempted"``, FORBIDDEN under
     #: ``"attempted"``; a member of :data:`CANARY_NOT_ATTEMPTED_REASONS`.
     not_attempted_reason: str | None = None
+    #: (WP8/schema v17) Whether an import-break transform wrote its private
+    #: receipt. Null means no transformed attempt produced a receipt result.
+    cause: str | None = None
     #: Required under ``"attempted"`` (it is the run that must have happened
     #: for anything else here to mean something) and FORBIDDEN under
     #: ``"not_attempted"``: B007/A-432 moved it out of the unconditionally
@@ -1368,6 +1381,7 @@ class CanaryAttempt:
                     f"vocabulary nobody can check (A-432)"
                 )
             run_fields = (
+                ("cause", self.cause),
                 ("control_outcome", self.control_outcome),
                 ("transformed_outcome", self.transformed_outcome),
                 ("expected_reason_code", self.expected_reason_code),
@@ -1387,6 +1401,10 @@ class CanaryAttempt:
                 f"canary.attempts[{self.target}]: not_attempted_reason "
                 f"{self.not_attempted_reason!r} on an attempted entry -- the "
                 f"probe ran, so there is no reason it was skipped"
+            )
+        if self.cause not in {None, "receipt", "absent"}:
+            raise ValueError(
+                "canary.attempts[].cause must be 'receipt', 'absent' or null"
             )
         if not isinstance(self.control_outcome, Outcome):
             raise ValueError(
@@ -1433,12 +1451,23 @@ class CanaryAttempt:
                     f"{self.transformed_outcome}; valid: "
                     f"{sorted(REASON_CODES[self.transformed_outcome])}"
                 )
+        if self.transformed_outcome is None and self.cause is not None:
+            raise ValueError("canary cause requires a transformed attempt")
+        if self.expected_reason_code is ReasonCode.COMMAND_FAILED:
+            if (self.transformed_outcome is None) != (self.cause is None):
+                raise ValueError(
+                    "import-break canary cause must be present exactly when "
+                    "the transformed attempt ran"
+                )
+        elif self.cause is not None:
+            raise ValueError("canary cause is only valid for import-break attempts")
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "target": self.target,
             "description": self.description,
             "disposition": self.disposition,
+            "cause": self.cause,
         }
         if self.not_attempted_reason is not None:
             payload["not_attempted_reason"] = self.not_attempted_reason
@@ -1748,6 +1777,89 @@ class MutantEvidence:
 
 
 @record
+class UnderlyingOutcome:
+    """The completed suite result retained beneath a process cleanup crash."""
+
+    outcome: Outcome | None
+    returncode: int
+    report_summary: ReportSummary | None = None
+
+    def __post_init__(self) -> None:
+        if self.outcome not in {None, Outcome.PASS, Outcome.FAIL}:
+            raise ValueError("underlying_outcome.outcome must be PASS, FAIL or null")
+        if not is_strict_int(self.returncode):
+            raise ValueError("underlying_outcome.returncode must be an integer")
+        if self.report_summary is not None:
+            summary = self.report_summary
+            if not isinstance(summary, ReportSummary):
+                raise ValueError("underlying_outcome.report_summary has the wrong type")
+            expected = Outcome.PASS if summary.failed == 0 else Outcome.FAIL
+            if (
+                not isinstance(summary.format, str)
+                or not summary.format
+                or not is_strict_int(summary.total)
+                or summary.total <= 0
+                or not is_strict_int(summary.failed)
+                or not 0 <= summary.failed <= summary.total
+                or summary.finished is not True
+            ):
+                raise ValueError("underlying_outcome.report_summary is incomplete or invalid")
+            if self.outcome is not expected:
+                raise ValueError(
+                    "underlying_outcome disagrees with its complete report summary"
+                )
+        else:
+            expected = (
+                Outcome.PASS if self.returncode == 0
+                else Outcome.FAIL if self.returncode > 0
+                else None
+            )
+            if self.outcome is not expected:
+                raise ValueError("underlying_outcome disagrees with its returncode")
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "UnderlyingOutcome":
+        if set(value) - {"outcome", "returncode", "report_summary"}:
+            raise ValueError("underlying_outcome has unknown fields")
+        raw_summary = value.get("report_summary")
+        summary = None
+        if raw_summary is not None:
+            if not isinstance(raw_summary, Mapping) or set(raw_summary) != {
+                "format", "total", "failed", "finished"
+            }:
+                raise ValueError("underlying_outcome.report_summary has an invalid field set")
+            summary = ReportSummary(
+                format=raw_summary["format"],
+                total=raw_summary["total"],
+                failed=raw_summary["failed"],
+                finished=raw_summary["finished"],
+            )
+        return cls(
+            outcome=(
+                Outcome(value["outcome"])
+                if value["outcome"] is not None
+                else None
+            ),
+            returncode=value["returncode"],
+            report_summary=summary,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "outcome": None if self.outcome is None else self.outcome.value,
+            "returncode": self.returncode,
+        }
+        if self.report_summary is not None:
+            payload["report_summary"] = {
+                "format": self.report_summary.format,
+                "total": self.report_summary.total,
+                "failed": self.report_summary.failed,
+                "finished": self.report_summary.finished,
+            }
+        return payload
+
+
+@record
 class MutationExecution:
     """How a native candidate reached its recorded outcome."""
 
@@ -1917,20 +2029,27 @@ class MutantOutcome:
     mutated_file_sha256: str | None = None
     execution: MutationExecution | None = None
     #: (B145/schema v14) Exact cgroup v2 process-limit and OOM counter
-    #: deltas observed around this native candidate's full command. A
-    #: positive failed-fork or OOM-related delta during that command requires
-    #: the `crashed` bucket; `memory.events:max` remains telemetry. A positive
-    #: failed-fork or OOM-related delta during witness-prefix replay instead
-    #: stops the lane with payload-free `ERROR/EXEC_FAILED` before retry. A
-    #: `budget_exceeded` candidate whose full command did not start carries
+    #: deltas observed around this native candidate's full command. Omitted
+    #: when post-preflight telemetry could not be observed or compared; that
+    #: candidate is still classified from its termination. A positive
+    #: failed-fork or OOM-related delta always denies `killed` credit;
+    #: `memory.events:max` remains telemetry. A positive
+    #: failed-fork or OOM-related delta during witness-prefix replay discards
+    #: that optimization and falls back to a full command with a fresh window.
+    #: A `budget_exceeded` candidate whose full command did not start may carry
     #: the shared zero-duration sweep-close sample. Replacement materialization
     #: or a witness-prefix replay may already have run; that sample does not
-    #: describe the earlier work. Native outcomes always carry this object,
-    #: including zero deltas. Ingested outcomes have no per-candidate execution
-    #: and therefore cannot carry this field.
+    #: describe the earlier work. Ingested outcomes have no per-candidate
+    #: execution and therefore cannot carry this field.
+    #: Configured pids.max/memory.max value changes are advisory progress only
+    #: and are not serialized in this verdict evidence.
     resource_limit_evidence: ResourceLimitEvidence | None = None
-    #: B162/schema v16: process-tree proof for each native executed candidate.
+    #: B162 (current wire shape: schema v17): process-tree proof for each native executed candidate.
     process_tree_evidence: ProcessTreeEvidence | None = None
+    #: B171/schema v17: completed suite result retained when process cleanup
+    #: finds a surviving descendant. It is diagnostic and never changes the
+    #: candidate's `crashed` bucket.
+    underlying_outcome: UnderlyingOutcome | None = None
     #: (B114/schema v15) collection and started-prefix facts for a cold or
     #: declared attempt. Ingested outcomes never carry execution evidence.
     evidence: MutantEvidence | None = None
@@ -1998,6 +2117,10 @@ class MutantOutcome:
             self.process_tree_evidence, ProcessTreeEvidence
         ):
             raise ValueError("MutantOutcome.process_tree_evidence has the wrong type")
+        if self.underlying_outcome is not None and not isinstance(
+            self.underlying_outcome, UnderlyingOutcome
+        ):
+            raise ValueError("MutantOutcome.underlying_outcome has the wrong type")
         if self.evidence is not None and not isinstance(self.evidence, MutantEvidence):
             raise ValueError("MutantOutcome.evidence has the wrong type")
         b106_values = (
@@ -2038,13 +2161,8 @@ class MutantOutcome:
                 raise ValueError("ledger execution cannot carry per-execution resource evidence")
             if self.execution.mode == "ledger" and self.process_tree_evidence is not None:
                 raise ValueError("ledger execution cannot carry process-tree evidence")
-            if (
-                self.resource_limit_evidence is None
-                and self.execution.mode != "ledger"
-            ):
-                raise ValueError(
-                    "native executed MutantOutcome requires resource_limit_evidence"
-                )
+            if self.execution.mode == "ledger" and self.underlying_outcome is not None:
+                raise ValueError("ledger execution cannot carry underlying_outcome")
             if (
                 self.process_tree_evidence is None
                 and self.execution.mode != "ledger"
@@ -2052,6 +2170,16 @@ class MutantOutcome:
                 raise ValueError(
                     "native executed MutantOutcome requires process_tree_evidence"
                 )
+            if self.process_tree_evidence is not None:
+                completed_leak = (
+                    self.process_tree_evidence.outliving_descendants > 0
+                    and self.process_tree_evidence.leader_status == "exited"
+                )
+                if completed_leak != (self.underlying_outcome is not None):
+                    raise ValueError(
+                        "underlying_outcome is required exactly for a completed "
+                        "process-tree leak"
+                    )
         elif self.evidence is not None:
             raise ValueError("ingested MutantOutcome cannot carry execution evidence")
         elif self.resource_limit_evidence is not None:
@@ -2062,6 +2190,8 @@ class MutantOutcome:
             raise ValueError(
                 "ingested MutantOutcome cannot carry process_tree_evidence"
             )
+        elif self.underlying_outcome is not None:
+            raise ValueError("ingested MutantOutcome cannot carry underlying_outcome")
 
     @property
     def identity(self) -> tuple[str, int, int, str, str]:
@@ -2101,6 +2231,8 @@ class MutantOutcome:
                 payload["resource_limit_evidence"] = self.resource_limit_evidence.to_dict()
             if self.process_tree_evidence is not None:
                 payload["process_tree_evidence"] = self.process_tree_evidence.to_dict()
+            if self.underlying_outcome is not None:
+                payload["underlying_outcome"] = self.underlying_outcome.to_dict()
         if self.evidence is not None:
             payload["evidence"] = self.evidence.to_dict()
         return payload
@@ -2248,13 +2380,18 @@ class Mutation:
         for name in MUTATION_BUCKETS:
             _check_mutant_outcome_tuple(getattr(self, name), f"mutation.{name}")
             for item in getattr(self, name):
+                if item.underlying_outcome is not None and name != "crashed":
+                    raise ValueError(
+                        f"mutation.{name} cannot carry underlying_outcome; "
+                        "a process-tree leak remains crashed"
+                    )
                 if (
                     item.resource_limit_evidence is not None
                     and item.resource_limit_evidence.limit_hit
-                    and name != "crashed"
+                    and name == "killed"
                 ):
                     raise ValueError(
-                        "resource-limit-affected mutation outcomes must be in crashed"
+                        "a positive failed-fork or OOM event cannot be classified as killed"
                     )
         if self.candidate_ids is not None:
             if len(self.candidate_ids) != len(set(self.candidate_ids)):
@@ -2947,6 +3084,10 @@ class JudgmentR2:
     #: copying the foreign tool's own setting here would put that tool's
     #: configuration on the wire under assay's name.
     jobs: int | None = None
+    #: (B202/schema v17) Effective worker attribution: serial for one worker,
+    #: overlap-conservative for multiple workers whose resource windows may
+    #: overlap. Required for native R2 and absent for ingested R2.
+    attribution: str | None = None
     #: (P21/A-163) the declared candidate ceiling, in ``1..10_000``. Recorded
     #: because the limit terminal's whole evidence is arithmetic against it:
     #: ``candidate_count == max_mutants + 1``. Without the cap in the
@@ -3154,6 +3295,7 @@ class JudgmentR2:
     #: ingested one has nothing honest to put in.
     _NATIVE_REQUIRED_FIELDS: ClassVar[tuple[str, ...]] = (
         "jobs",
+        "attribution",
         "max_mutants",
         "operators",
         "cold_witness_kills",
@@ -3225,9 +3367,16 @@ class JudgmentR2:
             raise ValueError(f"judgment.r2.jobs must be an integer, got {self.jobs!r}")
         if self.jobs < 1:
             raise ValueError(f"judgment.r2.jobs must be >= 1, got {self.jobs}")
-        if self.jobs != 1:
+        if self.attribution not in R2_ATTRIBUTIONS:
             raise ValueError(
-                "judgment.r2.jobs must be 1 for native R2 event attribution"
+                f"judgment.r2.attribution must be one of {list(R2_ATTRIBUTIONS)}, "
+                f"got {self.attribution!r}"
+            )
+        expected_attribution = "serial" if self.jobs == 1 else "overlap-conservative"
+        if self.attribution != expected_attribution:
+            raise ValueError(
+                f"judgment.r2.attribution must be {expected_attribution!r} "
+                f"for jobs={self.jobs}"
             )
         if not is_strict_int(self.max_mutants):
             raise ValueError(
@@ -3431,6 +3580,7 @@ class JudgmentR2:
         }
         if self.producer == "native":
             payload["jobs"] = self.jobs
+            payload["attribution"] = self.attribution
             payload["max_mutants"] = self.max_mutants
             payload["operators"] = list(self.operators or ())
             payload["cold_witness_kills"] = self.cold_witness_kills

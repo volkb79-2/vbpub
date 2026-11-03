@@ -45,7 +45,8 @@ Retired & removed: `release-manager/`, `release-all.py`, `release-runner.py`,
   repository-root `cmru.secret.toml` (gitignored, with optional project-local
   overlays), and obsolete per-verb shell shims.
 - `scripts/` (ops scripts incl. the relocated `scripts/truenas/`), `docs/`, `.github/`,
-  `.vscode/`, `.claude/`, `install-debian.json`, `requirements.txt`.
+  `.vscode/`, `.claude/`, `install-debian.json`, `requirements-runtime.txt`,
+  `requirements-test.txt`.
 
 ## .gitignore hardening (applied)
 

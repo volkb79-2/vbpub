@@ -1357,6 +1357,110 @@ def test_cx26_skills_verbs_accept_the_consumer_global_option(pkg, tmp_path, verb
     assert code in (0, 1)
 
 
+@pytest.mark.parametrize("flag", ["--dry-run", "--json"])
+def test_cx30_consumer_legacy_global_colliding_with_a_library_flag_is_filtered(
+    pkg, tmp_path, flag
+):
+    from cli_extended import OptionSpec
+
+    registry = CliRegistry(
+        CliIdentity("MYTOOL", "1.0.0", "My tool", "mytool"),
+        prog="mytool", description="My tool.",
+        global_options=(
+            OptionSpec((flag,), "legacy", parser_kwargs={"action": "store_true"}),
+            OptionSpec(("--tag-prefix",), "prefix", parser_kwargs={"action": "store_true"}),
+        ),
+    )
+    registry.register(VerbSpec(
+        "own", description="own", handler=lambda *_: 0, include_json=False,
+    ))
+    register_skills_verbs(registry, package=pkg)
+    app = registry.build()
+    out, err = io.StringIO(), io.StringIO()
+    code = app.run(
+        argv=["skills", "list", "--tag-prefix", "--dest", str(tmp_path / "d")],
+        stdout=out, stderr=err,
+    )
+    assert "unrecognized arguments" not in err.getvalue()
+    assert code in (0, 1)
+
+
+def _registry_with_legacy(package, flags):
+    from cli_extended import OptionSpec
+
+    registry = CliRegistry(
+        CliIdentity("MYTOOL", "1.0.0", "My tool", "mytool"),
+        prog="mytool", description="My tool.",
+        global_options=(OptionSpec(
+            flags, "legacy", parser_kwargs={"action": "store_true"},
+        ),),
+    )
+    registry.register(VerbSpec(
+        "own", description="own", handler=lambda *_: 0, include_json=False,
+    ))
+    register_skills_verbs(registry, package=package)
+    return registry
+
+
+def _run_app(app, argv):
+    out, err = io.StringIO(), io.StringIO()
+    code = app.run(argv=argv, stdout=out, stderr=err)
+    return code, out.getvalue(), err.getvalue()
+
+
+@pytest.mark.parametrize("flags", [
+    ("--dry-run", "-n"), ("-n", "--dry-run"), ("--json", "-j"), ("-j", "--json"),
+])
+def test_cx30_alias_of_a_colliding_global_survives_for_skills_verbs(
+    pkg, tmp_path, flags
+):
+    alias = next(f for f in flags if not f.startswith("--"))
+    app = _registry_with_legacy(pkg, flags).build()
+    code, _out, err = _run_app(
+        app, ["skills", "list", alias, "--dest", str(tmp_path / "d")]
+    )
+    assert "unrecognized arguments" not in err
+    assert code in (0, 1)
+    code, _out, err = _run_app(
+        app, ["skills", "install", alias, "--dest", str(tmp_path / "d")]
+    )
+    assert "unrecognized arguments" not in err
+    assert code in (0, 1)
+
+
+def test_cx30_filtered_dry_run_still_works_for_install(pkg, tmp_path):
+    app = _registry_with_legacy(pkg, ("--dry-run", "-n")).build()
+    dest = tmp_path / "dest"
+    code, _out, err = _run_app(
+        app, ["skills", "install", "--dry-run", "--dest", str(dest)]
+    )
+    assert code == 0
+    assert "Dry run: no changes made." in err
+    assert not dest.exists()
+
+
+def test_cx30_filtered_json_still_works_for_list(pkg, tmp_path):
+    app = _registry_with_legacy(pkg, ("--json", "-j")).build()
+    code, out, err = _run_app(
+        app, ["skills", "list", "--json", "--dest", str(tmp_path / "d")]
+    )
+    assert "unrecognized arguments" not in err
+    assert code in (0, 1)
+    json.loads(out)
+
+
+def test_cx30_option_with_only_colliding_flags_is_dropped():
+    from cli_extended import OptionSpec
+    from cli_extended.skills import _without_library_flags
+
+    only = OptionSpec(("--json",), "x")
+    mixed = OptionSpec(("--json", "-j"), "y")
+    other = OptionSpec(("--other",), "z")
+    result = _without_library_flags((only, mixed, other))
+    assert [o.flags for o in result] == [("-j",), ("--other",)]
+    assert result[1] is other
+
+
 def test_cx26_surface_has_no_incomplete_syntax_and_lists_the_global(pkg):
     from cli_extended.surface import export_cli_surface
 

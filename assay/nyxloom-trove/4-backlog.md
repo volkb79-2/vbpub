@@ -164,6 +164,23 @@ items:
   - {id: B179, title: "Retry unresolved R2 infrastructure candidates serially at sweep end", type: feature, component: mutation, context_estimate: medium}
   - {id: B180, title: "Move remaining host-varying process evidence out of verdict v16", type: feature, component: evidence, context_estimate: medium}
   - {id: B181, title: "whole-target R2 start failures: unsorted R1 targets, coverage banner reported as the first failing test, leaked test children and maxfail in IOBench", type: bugfix, component: execution, context_estimate: medium}
+  - {id: B182, title: "R2 campaigns stop when candidate cgroup resource windows change or the observer disappears", type: bugfix, component: mutation, context_estimate: medium}
+  - {id: B186, title: "Malformed diagnostic resources in R2 state abort resume instead of causing candidate re-execution", type: bugfix, component: mutation, context_estimate: small}
+  - {id: B187, title: "R0 result classification maps observation status by hand instead of using contention.observation_input", type: refactor, component: execution, context_estimate: small}
+  - {id: B188, title: "R2 coverage exclusions are keyed by line number rather than stable source identity", type: bugfix, component: mutation, context_estimate: small}
+  - {id: B189, title: "Release and qualification sparse clones omitted the sibling cowtree source required by Assay's wheel", type: bugfix, component: distribution, context_estimate: small}
+  - {id: B190, title: "CW8 integration left B105 target ordering, workspace record, and cleanup coverage out of sync", type: bugfix, component: gate, context_estimate: small}
+  - {id: B191, title: "SQL witness source bootstrap omitted bundled cowtree and hid assay-run diagnostics", type: bugfix, component: gate, context_estimate: small}
+  - {id: B192, title: "SIGTERM launcher cancellation test timed out once under gate contention", type: bugfix, component: gate, context_estimate: small}
+  - {id: B193, title: "Use a sealed CoW base template and one cheap tree clone per snapshot unit", type: feature, component: isolation, context_estimate: medium}
+  - {id: B194, title: "b110_pilot_select refuses size 20 (per-file minimum 59) and cannot select from a small non-scanner plan", type: bugfix, component: tools, context_estimate: small}
+  - {id: B195, title: "Full self-qualification baseline ends leaked-process-tree on a bare VM (cause undiagnosed)", type: investigation, component: runner, context_estimate: small}
+  - {id: B196, title: "cowtree is imported for every higher-rigor lane even when MDT_COW_ROOT is unset", type: bugfix, component: workspace, context_estimate: small}
+  - {id: B197, title: "Dead CoW runs are not collected after SIGKILL or a container kill", type: bugfix, component: workspace, context_estimate: small}
+  - {id: B198, title: "The wheel ships a top-level cowtree package", type: bugfix, component: distribution, context_estimate: small}
+  - {id: B199, title: "Cleanup-only failures after a finished measurement are ERROR, not an advisory", type: improvement, component: runner, context_estimate: small}
+  - {id: B200, title: "CoW parity test lacks git status/index and has never run on a real btrfs area in CI", type: improvement, component: tests, context_estimate: small}
+  - {id: B201, title: "Optional packed-object reflink path on XFS", type: improvement, component: workspace, context_estimate: small}
 ---
 
 # assay — backlog
@@ -10662,6 +10679,11 @@ backlog prose).
 - Handoff: `assay/nyxloom-trove/handoffs/assay-P35-execution-interruption-boundary.md`
   on branches `assay-next-wave` (carved), `assay-b099-p35-repair` (repair
   attempt), and `review/assay-p35-execution-interruption-boundary` (review).
+- Archive (2026-11-04): the local branch `assay-b099-p35-repair` was removed
+  in the worktree close-out (operator Q6, B103 stays archived); its tip is
+  preserved as the git tag `archive/assay-b099-p35-repair` (siblings
+  `archive/assay-next-wave`, `archive/assay-p35-execution-interruption-review`).
+  Read the design with `git show archive/assay-b099-p35-repair:<path>`.
 - Branch commits of interest: `bcb70320` (carve interruption receipt
   boundary), `c132d598` (reserve next interruption package id), `40b2106e`
   (repair P35 interruption handoff), `6d34f0d7` (close P35 residual handoff
@@ -12535,32 +12557,21 @@ these event counters in R2 mutation classification.
 
 ## B157 — native R2 candidate event windows overlap when `jobs > 1`
 
-**Status: IN PROGRESS in the contract-2 release candidate (2026-10-12); exact-tip gates pending.**
+**Status: CLOSED by PR1b (2026-11-01).**
 
-Native R2 candidates execute in the same lane cgroup and sample the same
-`pids.events` and `memory.events` counters. With more than one worker, an event
-inside overlapping before/after windows can be charged to an unaffected
-candidate, changing a valid mutation outcome into an infrastructure failure.
-The candidate cgroup has no per-worker identity that could resolve the overlap.
+The shared cgroup counters still cannot name a single candidate as the source
+of an increment inside overlapping windows. PR1b replaces the serial-only
+restriction with coordinator-owned boundary samples: a positive event is
+included in every overlapping window, including visible ancestor-local
+events. AP-1 keeps PASS as survived and attributes an overlapping event on a
+failing candidate as crashed. `jobs_max` (alias `jobs`) and `assay run --jobs N`
+bound the worker count; values above one require a cheap-clone workspace. The
+bounded queue writes state and progress in candidate-index order, while WP7
+retries remain serial. Native pilot overrides remain at one. The precise
+consumer workflow and rationale are in README, DESIGN-GUIDE, and CONSUMERS.
 
-**Chosen behavior:** native R2 requires `judge.mutation.jobs = 1`, and native
-bounded pilots require `--pilot-jobs 1`. The loader and CLI refuse larger
-values before execution. Read-only `assay analyze plan-estimate --workers N`
-remains independent because it does not execute candidates. Revisit parallel
-native execution only with independently attributable per-candidate cgroups
-or equivalent evidence. The active in-repo native-R2 lane configurations and
-the CIU v8 demo config are migrated to `jobs = 1` with this release candidate;
-the custom remote-mutation audit configs keep their separate worker policy.
-
-**Oracles:** native lane files with `jobs > 1` refuse at load; jobs 1 remains a
-valid declared config and serial real-lane test; native pilot override 2
-refuses before execution; the pilot gate invokes with 1; a direct public
-`run_mutation(..., jobs=2)` call refuses before executor construction; native
-R2 verdict construction, the packaged schema, and `assay verify` all reject a
-judgment claiming `jobs > 1`; planning projection still accepts a worker count
-greater than 1. README, DESIGN-GUIDE, and CONSUMERS explain the restriction and
-its effect on throughput. The large cli-extended campaign records that its old
-parallel throughput estimate must be remeasured before it is used for planning.
+The legacy v16 verdict field remains fixed at one and does not report the
+runtime worker count. That follow-up is tracked separately as B202.
 
 ## B158 — cold-witness refusal omits the untrusted pytest hook
 
@@ -12762,8 +12773,17 @@ integration oracle.
 
 ## B165 — embedding-safe and parallel native R2 process isolation
 
-**Status: OPEN, design coordination with cgprofile CP-23 required; not a
-release blocker for the standalone CLI contract.**
+**Status: IMPLEMENTED by PR1a (serial command windows).** Each measured
+native R2 command now runs in a dedicated Assay worker, keeping the
+process-wide subreaper and SIGCHLD state out of embedding callers. The worker
+returns the existing command and process-tree evidence; the coordinator keeps
+resource-counter sampling, classification, state, and progress. Budget
+termination and KeyboardInterrupt unwind the worker's cleanup, and an abrupt
+worker exit lets the coordinator kill and verify the reported candidate
+process group. Injected `process_runner` implementations can opt in through
+the JSON-safe `assay_window_host_spec()` factory protocol. PR1b still owns
+scheduling multiple candidate windows within one campaign; this item does not
+enable `jobs > 1`.
 
 Assay's current native R2 cleanup uses process-wide child-subreaper state and
 therefore requires one isolated CLI process, one active command window, and
@@ -13137,10 +13157,22 @@ R2 pass is claimed. The CHANGES release notes say so.
 The provisional-release exception is bounded by the first dated release
 heading after `Unreleased`, which must match CMRU's protected transaction
 version, not only by tags that exist before the gate: B169 is valid for release
-versions `>= 10.0.0` and `< 10.1.0`. The gate also requires at least one
-listable stable `assay-vX.Y.Z` tag and refuses if the latest visible tag is
-10.1.0 or newer. Thus a prepared 10.1.0 release is refused before its tag is
-created, and missing or unreadable tag state cannot authorize the waiver.
+versions `>=10.0.0,<12.1.0`; the operator extended the original waiver on
+2026-10-31 (10.2.0 extension: CW8/CW9/IO2 ship under it; 11.0.0 extension: verdict v17 and --jobs ship under it). The gate also requires at least one listable stable
+`assay-vX.Y.Z` tag and refuses if the latest visible tag is 12.1.0 or newer.
+Thus a prepared 12.1.0 release is refused before its tag is created, and
+missing or unreadable tag state cannot authorize the waiver.
+
+**Decision record D1 (operator, 2026-11-04):** the window is extended to
+versions below 12.1.0 so assay 12.0.0 can pass `self-qualification-provisional`.
+Reason: the R2 campaign is to run later with `--jobs` on the scratch host
+(r1002) rather than serially on the shared host; same standing policy as for
+10.x and 11.0. The window is a single constant (`WINDOW` in
+`tools/self-qualification-gate.sh`); the marker text and refusal messages derive
+from it. Anything at or above 12.1.0 (prepared heading or an existing tag)
+stays refused and needs the full `self-qualification` lane. It closes with the
+R2 obligation below, or by the next window decision; it does not close by
+passing the provisional lane.
 
 **Close when:** one full `self-qualification` run and one `analysis-r2` run are
 completed against the exact `assay-v10.0.0` tag through the registered
@@ -13166,8 +13198,9 @@ qualification rigor runs. `self-qualification-provisional` (`assay.toml`,
 R0, R1 (whole-target 100% line and branch over `src/assay`) and the R3 canary.
 After the lane is verified it records `.assay/mutation-postponed-assay.json`
 (`result: provisional`, tracking id B169, valid only for a prepared release
-version `>= 10.0.0` and `< 10.1.0`; a newer `assay-v10.1.0` or later tag also
-refuses it). The full lane is unchanged and deletes the marker; the marker
+version `>= 10.0.0` and `< 12.1.0`; extended by operator on 2026-10-31 and
+2026-11-04; a newer `assay-v12.1.0` or later tag also refuses it). The full lane is unchanged
+and deletes the marker; the marker
 cannot satisfy an R2 request.
 
 The prepared release version is read from the first dated `CHANGES.md` heading
@@ -13206,9 +13239,10 @@ unrepresentable. R2 itself: B169.
 
 ## B171 — retain suite verdict and descendant identity when cleanup finds a leak
 
-**Status: OPEN; implementation deferred from the 2026-10-29 Run-Gate harness
-fix.** The registered Assay `tester-unified` lane is the required gate for this
-item. Do not use an R2 campaign as its implementation gate.
+**Status: IMPLEMENTED by WP8, verdict schema v17; controller-owned
+`tester-unified` acceptance is pending.** The focused branch checks cover the
+producer, verifier, malformed evidence, and crashed-bucket contract, but the
+registered lane remains the closure gate.
 
 **Observed.** In `runner.execute_command`, a completed command whose process
 tree has `outliving_descendants > 0` is returned as `ERROR/EXEC_FAILED` before
@@ -13293,37 +13327,104 @@ contract and follow-on WP1–WP8 backlog entries.
 
 ## B173 — one termination classifier for R0, R1, R2 and R3
 
-**Status: OPEN; WP1 follow-up.** Add the pure classifier and shared table from
-the Opus design so producer paths can classify process outcomes from exit,
-report, process-tree and resource-limit evidence. Preserve independent SQL
-qualification and verifier derivations. Acceptance requires a table row for
-every precedence case and 100% line and branch coverage for the classifier and
-contention sampler. See the [Opus design](reports/ASSAY-DESIGN-OPUS-2026-10-30.md),
-§§2, 6.1–6.2 and 7/WP1.
+**Status: IMPLEMENTED across AP-1, AP-3 and AP-4; exact-tip registered
+acceptance remains with the controller.** Add
+the pure classifier and shared table from the
+Opus design so producer paths can classify process outcomes from exit, report,
+process-tree and resource-limit evidence. WP1 adds the decision table and
+separates observation availability, limit evidence, and pressure telemetry.
+The table includes an explicit non-judgeable `INCONCLUSIVE` termination and a
+self-inflicted-signal-plus-limit row, where `LIMIT_EVENT` wins per §2.
+Self-inflicted means any signal outside `EXTERNAL_SIGNALS`, matching the
+classifier predicate rather than limiting the rule to five common fatal signals.
+WP2 wires R0/R1 and WP3 wires the R3 canary, which classifies both control and
+transform halves through the shared table. Preserve independent
+SQL qualification and verifier derivations. Acceptance requires a table row
+for every precedence case and 100% line and branch coverage for the classifier
+and contention sampler. The test-only preflight at `3faa7878` (Run-Gate ID
+`94b8cf0b64d974e31994c19b9a2169b2`) failed before coverage because the
+classifier had not yet been added. The implementation preflight at
+`aa3adbcf` (Run-Gate ID `c03fd9a1f89010d4e48076cd91bbdaf2`) stopped during
+collection and produced no coverage artifact; `tests/conftest.py` then raised
+while trying to archive that missing artifact. The registered
+`tester-unified` diagnostic at `6d828e37` (Run-Gate ID
+`c4a9176839db955e9e6fa67e5aa69839`) exposed the collection error: a contention
+test passed positional arguments to keyword-only `CounterDelta`, corrected in
+`b6137aed`. The next preflight at `b6137aed` completed all tests and reported
+100% R1 coverage for its configured targets, but the self-qualification target
+inventories were not all in sync and the reviewed dataclass fixture still
+pinned the previous observation shape. The correction added the module to the
+qualification and preflight inventories, but the provisional inventory
+remained short by one path. This fix round reconciles all three target lists
+and asserts equality for every self-qualification judge lane. The
+corrected-tree preflight passed on
+`3524c7a9` (Run-Gate ID `c7a4745c29ebfaadc36d8612357fccfa`, source tree
+`b5eb5777a5d8dbb453d891689c7bfeb00cfa0cbd`): R0 and R1 passed with 100% line
+and branch coverage across all 60 targets. The report measured `termination.py`
+at 64/64 lines and 36/36 branches, and `contention.py` at 129/129 lines and
+58/58 branches. See the
+[Opus design](reports/ASSAY-DESIGN-OPUS-2026-10-30.md), §§2, 6.1–6.2 and 7/WP1.
+
+WP1 implementation notes: `contention.py` filters `cgroup_cpu.nr_throttled`
+out of `pressure_us` while retaining duration telemetry such as
+`throttled_usec`. `termination.detail()` takes a fourth, optional `returncode`
+argument to render signal numbers. `termination.py` is 132 lines, above the
+design's initial ~90-line estimate. `ContentionObservation` is unhashable
+because `pressure_us` is a mapping proxy; its `clear` status means the direct
+counters were sampled, so consumers must still inspect `limits.limit_hit` to
+determine whether a limit event occurred.
+
+WP2 removes the three `withhold_*` helpers and their type guards after
+migrating their live runner and isolated-canary callers to
+`termination.classify()`. The R0 direct and snapshot-baseline paths attach the
+termination result; R1 inherits non-judgeable baseline termination. Resource
+windows are emitted on `command_finished`, and a failed R0 with pressure data
+gets one diagnostic advisory. The progress renderer is kept in `runner.py`:
+WP1's `ContentionObservation` has no `to_progress()` method, despite the
+design's initial call-site wording. WP3 requires a matching execution receipt
+for `import-break` and classifies both canary halves. AP-4 makes self-signaled
+R0 failures judgeable, adds deterministic R1 inherited detail, and records the
+`NOT_RUN` inheritance behavior. AP-1 completes WP4 mutation bucket/state
+alignment; the registered coverage preflight remains pending controller
+acceptance.
 
 ## B174 — wire load-independent termination and progress telemetry through R0/R1
 
-**Status: OPEN; WP2 follow-up.** Apply the classifier to the R0 result and
-R1's inherited baseline, place resource observations in progress, and print a
-single advisory line for a failed run with pressure measurements. Keep host
-measurements out of the verdict and command tails. Acceptance includes R0
-signal/limit rows, R1 inheritance, progress resources and full-source
-preflight. See the [Opus design](reports/ASSAY-DESIGN-OPUS-2026-10-30.md),
+**Status: IMPLEMENTED by AP-4; exact-tip registered acceptance remains with
+the controller.** Apply the classifier to the R0
+result and R1's inherited baseline, place resource observations in progress,
+and print one advisory line for a failed run with pressure measurements. Keep
+host measurements out of verdict evidence and command tails. Acceptance
+includes R0 signal/limit rows, R1 inheritance, progress resources and the
+full-source preflight. See the [Opus design](reports/ASSAY-DESIGN-OPUS-2026-10-30.md),
 §§2, 4, 6.3 and 7/WP2.
 
 ## B175 — use execution receipts to attribute import-break R3 canaries
 
-**Status: OPEN; WP3 follow-up.** Replace the temporary 10.0.0 reason-code
-contract with a per-attempt receipt written by the injected import-break
-statement. Pass only a clean expected failure with the matching receipt;
-classify accepted transforms and unrelated failures using the design's table.
-Do not parse stdout or stderr. Acceptance covers Python subprocess behavior
-and a JavaScript canary in the available gate environment. See the
+**Status: IMPLEMENTED by AP-3; exact-tip registered acceptance remains with
+the controller.**
+Replace the temporary 10.0.0 reason-code contract with a per-attempt receipt
+written by the injected import-break statement. Pass only a clean expected
+failure with the matching receipt; classify accepted transforms and unrelated
+failures using the design's table. Do not parse stdout or stderr. Behavioural
+coverage includes the shared termination table, Python's real subprocess
+pipeline through both the default and process-tree runners, real Node ESM and
+CommonJS import canaries, transform-only environment injection, receipt
+bounds/errors, adapter protocol parity, raw control-failure attribution,
+system-temp placement for the legacy path, and process-tree error forwarding.
+Python injection is one physical line and preserves PEP 263 cookie placement;
+JavaScript/TypeScript uses a one-line IIFE preceded by `// @ts-ignore`. Vitest
+is not covered by the real-runner tests and is not installed in the available
+tester image, so the Node ESM and CommonJS subprocess oracles are the
+acceptance witnesses allowed by WP3. The pre-change tester run was red on the
+receipt contract; record the final preflight/tester
+Run-Gate IDs and source-tree SHA here after they complete. See the
 [Opus design](reports/ASSAY-DESIGN-OPUS-2026-10-30.md), §§3, 6.4 and 7/WP3.
 
 ## B176 — align R2 mutation buckets and resume validation with termination evidence
 
-**Status: OPEN; WP4 follow-up.** Derive candidate buckets and state-record
+**Status: IMPLEMENTED by AP-1; registered acceptance remains with the
+controller.** Derive candidate buckets and state-record
 revalidation from the shared classifier, applying existing equivalence and
 kill-signal refinements only to judgeable results. Re-run old records whose
 bucket no longer matches. Keep SQL qualification's independent derivation.
@@ -13333,34 +13434,40 @@ the shared outcome table. See the [Opus design](reports/ASSAY-DESIGN-OPUS-2026-1
 
 ## B177 — consolidate load-verdict documentation and retire the merged-baseline regression lane
 
-**Status: OPEN; WP5 follow-up.** After WP2–WP4 land, remove the
-parallel-safety regression lane whose `origin/main` red-first premise is stale
-after merge. Keep one canonical design-guide section and synchronize the
-README, CONSUMERS, changelog and backlog with the resulting behavior. Acceptance
-runs the integrated tester and provisional qualification gates and checks all
-cross-document anchors. See the [Opus design](reports/ASSAY-DESIGN-OPUS-2026-10-30.md),
-§§6.7–6.8 and 7/WP5.
+**Status: CLOSED by AP-8 (2026-10-31).** The parallel-safety regression lane
+was removed before this consolidation because its `origin/main` red-first
+premise no longer held. The shared design section, README and CONSUMERS
+pointers, release notes and backlog now describe the integrated behavior.
+Cross-document anchors are checked by the docs suite. See the
+[Opus design](reports/ASSAY-DESIGN-OPUS-2026-10-30.md), §§6.7–6.8 and 7/WP5.
 
 ## B178 — reuse a passing lane baseline for the R3 canary control
 
-**Status: OPEN; optional WP6 follow-up.** When the same commit and plan already
-passed R0 and R1, provide that baseline result to the isolated canary and skip
-the duplicate control execution. Re-run the control when the baseline is not a
-pass. Acceptance compares command counts and outcomes for both paths. See the
-[Opus design](reports/ASSAY-DESIGN-OPUS-2026-10-30.md), §§6.3, 7/WP6.
+**Status: OPEN; deferred to 10.2.0 and not part of 10.1.0.** When the same
+commit and plan already passed R0 and R1, provide that baseline result to the
+isolated canary and skip the duplicate control execution. Re-run the control
+when the baseline is not a pass. Acceptance compares command counts and
+outcomes for both paths. See the
+[Opus design](reports/ASSAY-DESIGN-OPUS-2026-10-30.md), §§6.3 and 7.
 
 ## B179 — retry unresolved R2 infrastructure candidates serially at sweep end
 
-**Status: OPEN; optional WP7 follow-up.** Re-run each infrastructure, exceeded
-budget or uncertified candidate once, serially, after the main sweep. Classify
-the retry with the same rules and never retry already judged buckets.
-Acceptance verifies one retry per eligible candidate and no parallel retry
-execution. See the [Opus design](reports/ASSAY-DESIGN-OPUS-2026-10-30.md),
+**Status: CLOSED by AP-5 (WP7 serial tail retry).** After the first sweep,
+Assay retries once, serially, each candidate executed in the current invocation
+whose bucket is `crashed`, per-candidate `budget_exceeded`, or `hung`. Reaching
+the campaign-deadline mask closes the retry phase; masked and never-started
+candidates are excluded. The same runner and classifier produce the
+replacement result; the state record is overwritten in
+the existing schema and progress emits `candidate_retry` with the first and
+final buckets. Matching cached `crashed` records are reused on resume; operators
+select them explicitly with `--resume --rejudge crashed`. Acceptance verifies
+one retry per eligible candidate, no parallel retry execution, deadline
+handling, state replacement and resume reuse. See the [Opus design](reports/ASSAY-DESIGN-OPUS-2026-10-30.md),
 §§6.5, 7/WP7.
 
 ## B180 — move remaining host-varying process evidence out of verdict v16
 
-**Status: OPEN; WP8 follow-up with B171.** In a deliberate v17 schema change,
+**Status: CLOSED by WP8, verdict schema v17.** In the schema change,
 remove `process_tree_evidence.cleanup_seconds`, add the process-tree signal
 evidence needed by verification, and expose the canary receipt cause so the
 verifier can re-derive it. Keep `budget_per_candidate_derived_s`, because it is
@@ -13402,3 +13509,604 @@ admission attempt returned host-busy before tests ran (log:
 After the Assay lane passes and this branch is merged, retry each R2 campaign
 from a new worktree based on the integrated `origin/main`; keep the failed
 campaign worktrees untouched.
+
+## B182 — R2 campaigns stop when candidate cgroup resource windows change or the observer disappears
+
+**Status: IMPLEMENTED by AP-1; both requested local suites completed with only
+known environment-dependent failures, and registered gate acceptance remains
+with the controller.** The PWMCP log
+`/tmp/run-gate/lanes/r2/47f333762a526841379559a959b0cfbc.log` and IOBench's
+`.assay/progress-r2.jsonl` retained only the generic comparison failure, not
+the before/after signatures, so the exact field in those historical windows
+cannot be recovered. A regression using the real
+`ResourceLimitEvidence.between()` exception text reproduces the configuration
+change `cgroup[0].memory.max: 4096 -> 8192`. The old diagnostic grouped path,
+mount, controller-file, and limit changes together; the candidate executor
+then promoted comparison failure or post-preflight observer loss to
+`ERROR/EXEC_FAILED`, stopping the campaign.
+
+**Contract:** Keep the full pre-candidate cgroup capability probe fail-closed.
+After that probe, a missing sample or identity change is unobserved telemetry
+for that candidate: omit `resource_limit_evidence`, preserve the reason in
+state/progress, print one advisory line, and continue using
+`termination.classify()` without limit-event evidence. Configured
+`pids.max`/`memory.max` value changes leave the window observed, preserve event
+evidence, print one advisory line, and add only the progress key
+`resource_limit_changes`. Event-counter attribution selects cgroups
+independently of limit finiteness. PASS remains survived. Without resource
+evidence, a FAIL is `killed` only when the current run has a pytest failed-call
+witness (session and process status 1) and the process-tree proof shows a clean
+leader exit. A bare nonzero exit, a signal, or a shell-wrapped status such as
+137 has no kill credit and is `crashed`. Any observed positive failure-relevant
+delta makes a non-PASS candidate `crashed`, whether or not the failed-call
+witness is present. State revalidation and `assay verify` apply the same rule.
+A positive event during saved-witness replay discards that optimization and
+falls back to the full command with a fresh resource window. Keep verdict
+schema v16; v17 remains WP8. Operator decision D2 accepts optional
+`resource_limit_evidence` in v16 as the recorded A-477 exception; CHANGES names
+that compatibility fact.
+
+**Acceptance:** Real identity-comparison errors name the changed cgroup field;
+limit-value changes return their old/new values separately. Tests cover
+identity drift, limit-value changes, observer loss, campaign continuation,
+PASS with a positive event, unobserved bare exit-1 and shell-137
+classification, report-backed kill credit, state revalidation, positive replay
+fallback, and verifier rejection of a positive event on a witnessed kill.
+The registered `self-qualification-preflight` and `tester-unified` gates are
+controller-owned for this branch; record their run IDs after acceptance.
+
+## B183 — local-environment-only test failures in a devcontainer run
+
+**Status: OPEN (note).** Outside the registered container gate, eight tests fail
+in the devcontainer and pass in `tester-unified`: the four
+`tests/core/test_campaign_termination_real.py::test_sigterm_leaves_r2_candidate_unclassified_and_dead`
+cases (they need the cgroup observer and a SIGTERM/subreaper environment), the
+four `tests/core/test_mutation_witness_unit.py` Hypothesis-hook cases (a local
+Hypothesis version pin mismatch), and in `gate/tests` the standalone
+`test_a_real_r2_*` cases, four B105 subprocess cases (the isolated interpreter has no
+installed `assay.cli`) and one cgroup-visibility probe. The registered container gate at the
+release commit is the verdict; make these skip with a precise reason when the
+environment cannot support them, or run them only in the tester image.
+
+## B184 — synthetic 10.0.1-shape crashed and budget_exceeded resume fixtures
+
+**Status: OPEN.** `tests/fixtures/mutation-state-10.0.1/` holds real IOBench
+`killed` and `survived` records only; PWMCP left no records. Add synthetic
+`crashed` and `budget_exceeded` 10.0.1-shape records so the resume validator's
+rejection (state recorded under another assay version is re-executed, never
+raised on) is proven for every bucket.
+
+## B185 — product-definition still carries a stale "no Go toolchain" claim
+
+**Status: OPEN.** `nyxloom-trove/2-product-definition.md` (around line 285 in the
+verification ledger) still describes Go behaviour as unavailable in the judge
+environment although `tester-unified-go` runs real Go. Reconcile the claim with the Go R1
+lane that is qualified end to end (A-217).
+
+## B186 — malformed diagnostic resources make R2 state resume fatal
+
+**Status: OPEN.** In `mutation.py:2428-2484`, malformed diagnostic-only
+`resources` fields raise `MutationStateError` before judge-identity
+revalidation. Treat these fields as a cache miss so the candidate is re-run.
+
+## B187 — use the shared R0 observation mapping
+
+**Status: OPEN.** `_classify_r0_result` hand-maps observation status instead of
+using `contention.observation_input`; route it through the shared mapping.
+
+## B188 — key R2 coverage exclusions by stable source identity
+
+**Status: OPEN.** Coverage exclusions are keyed by line number, so a source
+edit can silently move an exclusion to a different site. Key exclusions by
+stable source identity.
+
+## B189 — include the same-repository cowtree source in sparse build clones
+
+**Status: CLOSED by CW8.** Assay's wheel maps `cowtree` to the sibling
+`libraries/cowtree/src` tree, but the release, tester-unified and
+self-qualification builders checked out only `assay/`. Their clean sparse
+clones therefore omitted a declared package and silently produced artifacts
+without `cowtree`. All three clone paths now include `libraries/cowtree/`;
+focused clone and real wheel/zipapp acceptance tests prove the package is
+present, while unrelated projects remain excluded.
+
+## B190 — keep CW8 workspace contracts in the B105 gate
+
+**Status: CLOSED by the CW8 gate repair (2026-10-31).** The new workspace
+estimate was declared with raw `dataclasses.dataclass` instead of Assay's
+`positional_record`; `assay.toml` placed `workspace.py` before `verify.py` and
+`vocabulary.py` in all three whole-source inventories; and the coverage
+exclusion map still named the pre-CW8 lines. The workspace cleanup branch also
+had no CoW leak test, while a runner cleanup test's monkeypatch did not accept
+the new `workspace` keyword. Aligning those contracts restores the registered
+preflight and tester checks. The sparse clone helpers already include
+`libraries/cowtree/` (B189); that was not the cause of this gate run.
+
+## B191 — include bundled cowtree in the SQL witness source bootstrap
+
+**Status: CLOSED by the CW8 round-2 repair (2026-11-01).** The SQL
+qualification witness runs the current checkout's source directly from a
+disposable repository. Its bootstrap added only `assay/src` to `sys.path`,
+while CW8's lazy workspace adapter imports the bundled sibling package when
+the higher-rigor lane prepares its snapshot. The runner therefore exited with
+`ModuleNotFoundError: No module named 'cowtree'` before writing its verdict,
+even though the source is present in the exact checkout. The bootstrap now
+adds `libraries/cowtree/src` from that same checkout. If a later run still
+fails before producing a verdict, the qualification error includes bounded
+stdout and stderr tails from the child Assay invocation.
+
+## B192 — SIGTERM launcher cancellation test timed out once under gate contention
+
+**Status: OPEN (observed once, 2026-11-01).**
+`gate/tests/test_self_qualification_container.py::test_runner_cancellation_stops_and_removes_its_owned_container`
+sends SIGTERM to the container launcher and waits 60 s for it to exit. It timed
+out once inside a `tester-unified` run (the launcher process was reaped with
+-9) while other gates and two mutation campaigns shared the host, then passed
+on a rerun of the identical commit and twice standalone in about 2 s each.
+Hypothesis: the 60 s bound is wall-clock under host contention, or the launcher
+trap races the fifo reader. Next step: make the wait deadline-driven from the
+test's own progress marker rather than a fixed 60 s, and capture the launcher
+stderr on timeout.
+
+## B193 — use a sealed CoW base template and one cheap tree clone per snapshot unit
+
+**Status: IMPLEMENTED by CW9; controller-owned 20-candidate bucket-parity
+pilot remains pending.** CW8's Level A path reflinked packed Git objects but
+still rebuilt the complete worktree for each R2 candidate. When the active
+workspace advertises `cheap_clone`, Assay now builds and verifies one inert
+base template, seals it, then makes a private `clone_tree` for every
+materialized unit. The shared `_apply_replacement` step updates the cloned Git
+index and child commit; it unlinks and rewrites the changed file, verifies the
+clone, and plants declared links only after verification. Templates and clones
+are removed on normal close, candidate failure, interruption, and leaked
+materialization cleanup. No CoW area retains the existing materialization
+path and verdict buckets. Focused fake-workspace tests cover all four native
+mutation buckets, template seal order, and cleanup; the controller runs the
+20-candidate comparison recorded in `reports/CW9-CONTINUATION.md`.
+
+## B194 — pilot selector minimum size blocks small pilots
+
+**Status: OPEN (found by the CW9 btrfs pilot, 2026-11-01).**
+`tools/b110_pilot_select.py --size 20` is refused because its minimum is the
+per-file coverage (59 for assay's own plan) plus missing-operator coverage, and
+it cannot select from a plan without scanner candidates (a small project's
+throwaway lane). The pilot instructions in `reports/CW9-CONTINUATION.md` use
+`--size 20`. The 20-candidate parity pilot used a fallback selector with the
+same BLAKE2b ordering. Next: let `--size` below the minimum fall back to a
+seeded fill that still covers every operator, or document the minimum.
+
+## B195 — leaked-process-tree on a bare VM, undiagnosed
+
+**Status: OPEN, not reproduced inside the registered gates.**
+Running assay's full `self-qualification` lane natively on a scratch VM
+(Debian, Python 3.13, non-login user, no container) ended its 377 s baseline
+pytest with R0 `ERROR/EXEC_FAILED`, detail `leaked-process-tree`, and no
+surviving PID or traceback captured. The registered gates (preflight,
+tester-unified, provisional) pass on the same commit in the tester container.
+The CW9 pilot's matched cowtree arms (plain and btrfs) did not show it. Next:
+rerun once with `ps -e --forest` captured at `command_finished` to name the
+survivor, and bisect against the pre-CW8 commit.
+
+## B196 — cowtree is imported for every higher-rigor lane even when MDT_COW_ROOT is unset
+
+**Status: OPEN (filed at 10.2.0).** P2: same failure class as B191 (a missing sibling package turns into an import error before any verdict). Import cowtree lazily only when a CoW area is configured. Source: 10.2.0 pre-release review F1.
+
+## B197 — Dead CoW runs are not collected after SIGKILL or a container kill
+
+**Status: OPEN (filed at 10.2.0).** P2: the run directory stays under MDT_COW_ROOT/runs/ and nothing collects it; run `cowtree gc` for dead runs at the start of the next run. Source: review F2.
+
+## B198 — The wheel ships a top-level cowtree package
+
+**Status: OPEN (filed at 10.2.0).** P3: collides with a separately installed cowtree and prevents building an sdist; vendor it inside assay instead. Source: review F3.
+
+## B199 — Cleanup-only failures after a finished measurement are ERROR, not an advisory
+
+**Status: OPEN (filed at 10.2.0).** P3: a Run.close failure after the verdict inputs are complete (for example files a test wrote next to the snapshot) should be an advisory. Source: review F4.
+
+## B200 — CoW parity test lacks git status/index and has never run on a real btrfs area in CI
+
+**Status: OPEN (filed at 10.2.0).** P3: add git status and the index to the plain-versus-clone parity test and run it once on a real btrfs area (a scratch VM pilot passed on 2026-11-01). Source: review F5.
+
+## B201 — Optional packed-object reflink path on XFS
+
+**Status: OPEN (filed at 10.2.0).** P3: only after a real XFS pilot. Source: review F6.
+
+## B202 — Verdict v16 did not retain the effective native R2 worker count
+
+**Status: CLOSED by WP8, verdict schema v17 (2026-11-01).**
+
+PR1b kept verdict schema v16 unchanged as required. WP8 records the effective
+worker count in `judgment.r2.jobs` and its policy in `judgment.r2.attribution`.
+The analyzer reads both values and rejects v16 artifacts consistently.
+Campaign reports expose both values. Schema and analyzer tests cover the
+serial/parallel pair and the v16 refusal.
+
+## B203 — verdict worker attribution is invocation-local on resume
+
+**Status: OPEN (filed 2026-11-01).** Native R2 `judgment.r2.jobs` and
+`judgment.r2.attribution` record the current invocation's selection. Resume
+identity intentionally allows a candidate result to be reused at a different
+worker count, while the mutation-state record does not store the count that
+produced it. A verdict can therefore combine results produced under different
+worker counts while showing only the latest invocation's attribution. Store
+the worker count in each state record, derive the campaign maximum across
+resumed and newly executed records, and update the verdict model, schema,
+verifier, analyzer, and consumer/design documentation together. Until then,
+documents and analysis must describe the v17 fields as invocation-local.
+
+
+## B204 — a flaky test failure is credited as a killed mutant without confirmation
+
+**Status: OPEN (filed 2026-11-02).** The `--jobs` pilot on a Btrfs CoW runner (56 candidates, jobs 1 versus 3) agreed on 53
+candidates; the three disagreements were killed in the `--jobs 1` arm but survived at `--jobs 3` and in fresh isolated serial
+replays. The kills stopped the `pytest -x` run at tests that also fail intermittently on the unmutated tree, so a flaky
+failure was counted as a kill. Add an opt-in kill confirmation: rerun each killed candidate's first failing test on the unmutated
+clone and withhold credit when it fails there too (report such candidates as inconclusive). Until then, treat bucket
+differences between runs as suite flakes unless an isolated serial replay reproduces them.
+
+## B205 — killed candidates do not record the failing test
+
+**Status: OPEN (filed 2026-11-02).** A killed candidate's state record and verdict entry say only FAIL with the suite return
+code; the first failing test id is not kept, so a false kill cannot be attributed after the fact. Record the failing test id in
+the progress event and the state record now; add it to the verdict as an optional field (or with schema v18).
+
+
+## B206 — resource numbers come only from the cgprofile observer (no own sampler, explicit NO_MEASUREMENT)
+
+**Status: OPEN (filed 2026-11-03).** Design: `docs/design/RESOURCE-PROFILES.md`
+§2–§4 (cross-tool). Depends on cgprofile CP-39 (observer contract 3, cgprofile 1.2.0). Ships in assay 12.0.0 together
+with B208, after run-gate RG-145/RG-148 (24.4.0, dual reader).
+
+**Problem.** Native R2 records per-candidate `cpu_seconds`, `peak_rss_bytes` and `write_bytes` from assay's own
+`/proc` sampling: the liveness resource tally, then the sidecar, then `_measured_resources` (`src/assay/mutation.py:3149`).
+It also records a point-in-time `judge_rss_bytes`. This duplicates what the cgprofile observer is for. There are no IO
+operation counts and no PSI. The numbers carry no record of their source or their failure reason: they are `None` when
+unavailable, with no reason. Run-gate sizes `jobs=auto` from them (`assay_progress_candidate_ram`).
+
+**Decision record (operator, 2026-11-03, binding).**
+
+- The cgprofile observer is the single source of per-candidate resource numbers: memory peak, CPU, `io.stat` bytes and
+  IOPS, and PSI.
+- Without cgprofile, assay records no numbers. Each profile is an explicit `NO_MEASUREMENT` with a reason code.
+- There is no fallback reader, and no duplicated functionality.
+- Old keys are not kept as aliases. This follows the operator's no-alias rule of the same day, and run-gate 24.4 reads
+  both shapes.
+
+**Design.**
+
+1. **One window per candidate.** For every started candidate the worker sends `window-open` (contract 3) right after
+   spawn, with `root_pid` set to the candidate root. The mode is `cgroup` at jobs=1 and `process-tree` at jobs>1, until
+   CP-23 per-candidate leaves exist.
+   - It sends `window-close` after `waitid(WEXITED|WNOWAIT)`, before reaping, so CPU is exact.
+   - The candidate root sets `PR_SET_CHILD_SUBREAPER`.
+2. **The profile.** The reply becomes a `resource-profile/1` object (design §2), stored as:
+   - progress `candidate` event key `profile`;
+   - optional state-record key `profile` (`MUTATION_STATE_SCHEMA_VERSION` stays 1);
+   - one line in `profile-<lane>.jsonl` next to the progress stream.
+
+   `wall_seconds` is assay's own monotonic elapsed time and is always present.
+3. **Reason codes.** These are profile reasons, never verdict outcomes:
+
+   | Code | Meaning |
+   |---|---|
+   | `OBSERVER_UNAVAILABLE` | Socket absent or not mounted |
+   | `OBSERVER_REFUSED` | `peer-refused` or `observer-refused` |
+   | `OBSERVER_CONTRACT_UNSUPPORTED` | Contract 3 not advertised; asked once per run |
+   | `OBSERVER_ERROR` | Daemon error, timeout or malformed reply; after 3 consecutive failures the run stops asking |
+   | `WINDOW_LOST` | The window was lost before close |
+   | `NOT_STARTED` | The candidate never ran |
+
+   Per-metric reasons go in `missing`: `SHARED_CGROUP`, `REQUIRES_CGROUP_MODE`, `CONTROLLER_DISABLED`,
+   `PEAK_RESET_UNSUPPORTED`. A missing measurement never changes a bucket, a verdict outcome or an exit code.
+4. **Remove the old keys outright.** The progress, state and analysis keys `peak_rss_bytes`, `cpu_seconds`,
+   `write_bytes`, `judge_rss_bytes` and the `resources` object go, along with the tally's number recording.
+   - Liveness keeps only its CPU-progress reading from `/proc/<pid>/stat`, as a hang-detection control loop. The
+     reading is not recorded (REVIEW-NOTES O1). Its RSS and IO reads are deleted.
+   - `phase_seconds` and `startup_seconds` stay: they are assay's own clock.
+5. **Unchanged.** The B145 limit-event observer requirement (`CGROUP_OBSERVATION_UNAVAILABLE` lane outcome where
+   counters are required). The profile windows share its socket and preflight.
+
+**Acceptance criteria.**
+
+- **Observer absent:** every candidate profile is `NO_MEASUREMENT/OBSERVER_UNAVAILABLE`, `metrics` are all null with
+  `missing` filled, and no numeric resource key is written anywhere (progress, state, `profile-*.jsonl`, analysis).
+- **Contract 2 only:** `OBSERVER_CONTRACT_UNSUPPORTED`, asked exactly once per run.
+- **Exact cgroup mode:** with the jobs=1 fake observer returning the golden window, the stored profile equals the
+  golden numbers (byte-equal JSON for the metrics).
+- **Parallel runs:** at jobs>1 the mode is process-tree, and IOPS and PSI are `REQUIRES_CGROUP_MODE`.
+- **Error codes:** a refused or erroring window for one candidate yields that code for that candidate only, and three
+  consecutive errors stop the asking.
+- **Exact CPU:** `window-close` is sent before the reap. A test with a fake observer asserts that the root PID is still
+  a zombie at close.
+- **Verdict and buckets** of a fixture lane are identical with the observer present, absent, and failing.
+- **Source check:** a source test asserts that no assay module except the observer client opens `/proc/*/io`,
+  `/proc/*/statm`, `/proc/*/smaps*`, `memory.peak` or `io.stat`. Liveness reads `/proc/<pid>/stat` only.
+
+**Test plan.**
+
+- **Unit tests** with a fake observer socket serving the golden contract-3 fixtures (vendored byte-identical from
+  cgprofile).
+- **One lane test per reason code.**
+- **Live:** design §9 M1 on r1002 (calibration of process-tree against cgroup at jobs=1, 50 IOBench candidates).
+
+**Dependencies and order.**
+
+1. CP-39 (cgprofile 1.2.0) for live numbers. Unit tests do not need it.
+2. Run-gate 24.4.0 (RG-145, RG-148) released and in the tester-unified image **before** assay 12.0.0.
+3. Then this item, together with B208.
+
+## B207 — two-ended-matching candidate scheduling for parallel native R2 (dispatch-order drain, admission budget)
+
+**Status: IMPLEMENTED on branch fan-assay-sched-20261103 (2026-11-03), not merged or released.** Landed without B206: predictions use `elapsed_seconds` and `peak_rss_bytes` that assay already records, kept in `.schedule-history.v1`; sources 1 and 3-6 of the design list are live, `NO_MEASUREMENT` is reported as a `reason` on `prediction_error` today and becomes the profile's reason with B206. `judgment.r2.schedule` waits for B208. Open: the live design §9 M4 A/B on r1002; `candidate_ram` history in run-gate still uses its own estimate until RG-148 passes B. (Originally filed 2026-11-03.)
+
+**Status at filing: OPEN (filed 2026-11-03).** Design §5 (specification, simulation, recommendation). Simulator:
+`docs/design/resource-profiles-sim/sched-sim.py`, with outputs in `sim-*.md` beside it. It can ship in 12.0.0 or 12.1.0, after B206.
+
+**Problem.** With `--jobs N`, candidates are submitted in canonical order (`mutation.py:5440-5458`), and nothing
+controls which candidates run together. When high-RSS candidates coincide, the running RSS sum approaches N × max
+instead of N × typical. In the replayed data, at N=6:
+
+- cli-extended's file order peaks at 1,404 MiB against 742 MiB with matching;
+- IOBench's peaks at 2,741 MiB against 2,286 MiB.
+
+The RAM need of a run is therefore unpredictable, and a long candidate that starts late leaves N−1 workers idle at the
+tail.
+
+**Decision record (operator, 2026-11-03).**
+
+- Use longest-first, with the running RSS sum kept near-constant through **two-ended matching**: at most one high runs;
+  while it runs, freed slots take lows; highs start early; lows fill the end.
+- Predictions come from the previous profile of the same candidate id, else the file median.
+- RAM is the scarce resource, and the goal is a predictable RAM need.
+- Only wall time changes, never results.
+
+**Design** (design §5.3–§5.8).
+
+- **Classes** (high, normal, low) come from the *predicted* RSS relative to the lane's mode:
+  - high > 1.5 × p95(mode);
+  - low < 0.5 × median(mode).
+
+  The factors are lane config `mutation.schedule_high_factor` and `mutation.schedule_low_factor`.
+- **Per-class queues** are ordered longest-predicted-first (TEM + LPT).
+- **Admission rule:** `Σ predicted RSS(running) + predicted RSS(next) ≤ B`. B is the new
+  `--memory-budget-bytes`/`ASSAY_R2_MEMORY_BUDGET_BYTES` from run-gate.
+  - At most one high runs at a time.
+  - A queued high that does not fit stops further filling until it fits, so highs cannot starve.
+  - One candidate always runs.
+- **Drain order.** `_CandidateEventBuffer` and `_record_ready_in_order` drain by **`dispatch_position`** rather than
+  canonical index, so progress and state are never held back by a late-dispatched low index. `candidate_index` keeps
+  its canonical meaning.
+- **Capability flag.** `assay lanes --json` advertises `capabilities: ["r2-memory-budget", "r2-schedule-tem"]`, so run-gate (RG-148) detects support without version strings.
+- **New progress keys:** `dispatch_position`, `prediction` (`{rss_peak_bytes, wall_seconds, class, source}`), and
+  `prediction_error` (`{rss_ratio, wall_ratio, class_actual}`).
+- **`schedule.json`** in the state directory records the policy, thresholds, B, N, the input digest, the source counts
+  and the error summary (p50/p95 of each ratio by source, class confusion matrix, admission-overshoot count).
+- **Prediction sources, in order:**
+  1. the same id's last profile;
+  2. the live file median after 5 completions in this run;
+  3. the latest campaign's file median;
+  4. the lane median;
+  5. operator medians (`mutation.prediction_wall_seconds`, `mutation.prediction_rss_bytes`);
+  6. none, which gives canonical order.
+- **Cold start:** run-gate's conservative jobs default, then live file medians.
+- **Order independence** (assumption and isolation requirement, design §5.8):
+  - one CoW clone and a fresh process tree per candidate;
+  - nothing written outside the clone except per-candidate temporary directories;
+  - no shared fixed ports or container names;
+  - deterministic tests.
+
+  Suite flakiness is B204's subject.
+
+**Acceptance criteria.**
+
+- On a flake-free fixture lane, canonical order and TEM + LPT order give identical judgments (buckets per id). The
+  verdict candidate list is identical, being canonically sorted.
+- With fixture predictions, the running predicted sum never exceeds B and never more than one high runs.
+- A queued high is started at the latest when the running sum has drained to `B − r̂(high)`.
+- The event and state drain follows dispatch order. Killing the run mid-way loses no completed candidate whose
+  dispatch prefix had completed.
+- `schedule.json` and the progress keys are present. `prediction_error` is null with the profile's reason when the
+  profile is `NO_MEASUREMENT`.
+- Without RSS predictions the order is canonical, and admission uses the declared or default RAM.
+- Replaying `tools/sched-sim.py` cases through the real dispatch loop (fake executor with recorded durations)
+  reproduces the simulator's dispatch order exactly.
+
+**Test plan.**
+
+- **Unit tests:** class derivation on synthetic distributions; admission and high-slot rules; drain order.
+- **Fake-executor replay:** the 1,456 cli-extended candidates.
+- **Live:** design §9 M4 on r1002, an A/B over the four policies on 150 IOBench candidates, with buckets identical
+  across policies.
+
+**Dependencies and order.** After B206: actual RSS for the error recording and for source 1 comes from profiles.
+Needs run-gate RG-148 to pass B. It is independent of the verdict cut (B208), but its summary lands in
+`judgment.r2.schedule` when shipped together.
+
+## B208 — verdict schema v18 (hard cut): profile and schedule summaries, B203 worker counts, B205 failing test id
+
+**Status: OPEN (filed 2026-11-03).** Design §4.2. This is the schema carrier for B203, B205, B206 and B207. Ships as
+assay 12.0.0.
+
+**Problem.** B203 needs per-record worker counts in the verdict model. B205 needs the failing test id. B206 and B207
+need a run-level summary of the profile status and the schedule. The v17 schema is `additionalProperties: false`, so
+each addition is a schema change for every validator.
+
+**Decision record.**
+
+- **One hard cut to v18**, refusing v17 on write (verifier and analyzer). This is assay's established practice
+  (v16 → v17, B202): one consumer migration instead of three.
+- **No per-candidate resource numbers in the verdict.** Profiles are telemetry, not judgment. They live in progress,
+  state and `profile-*.jsonl`.
+
+**Design.**
+
+- **`judgment.r2.profile`:**
+  - `{status_counts: {MEASURED, PARTIAL, NO_MEASUREMENT}, reason_counts: {<code>: n}, observer: {name, version, contracts, modes}}`.
+- **`judgment.r2.schedule`:**
+  - `{policy: canonical|tem-lpt, thresholds: {high_bytes, low_bytes, high_factor, low_factor}, memory_budget_bytes, jobs, prediction_sources: {<source>: n}, error: {rss_ratio: {p50, p95}, wall_ratio: {p50, p95}, class_confusion: {...}, admission_overshoots: n}}`.
+- **B203:** each state record stores its worker count. The verdict gives the campaign maximum and the per-count
+  candidate counts, replacing the invocation-local `judgment.r2.jobs` semantics.
+- **B205:** killed candidates carry an optional `first_failing_test` (string, or null when unknown).
+- **Analyzer:** reads v17 (archived campaigns, read-only) and v18. Writes v18 only. The analysis-campaign schema gets
+  a major bump, with candidate `profile` replacing `peak_rss_bytes` and `cpu_seconds`.
+
+**Acceptance criteria.**
+
+- The v18 schema validates golden verdicts for a measured, a partially measured and an unmeasured campaign.
+- The verifier refuses v17 output from the writer path.
+- The analyzer reads both versions.
+- A resumed campaign with mixed worker counts reports the maximum and per-count counts (B203 oracle).
+- A killed candidate with a known first failing test carries it (B205 oracle), and `null` otherwise.
+- Run-gate 24.4.0's reader accepts the golden v18 verdicts (a cross-repo fixture test).
+
+**Test plan.**
+
+- Schema, verifier and analyzer unit tests over the golden fixtures.
+- One cross-repo fixture, vendored byte-identical into run-gate's tests.
+
+**Dependencies and order.** Run-gate 24.4.0 (RG-148) first, then assay 12.0.0 with B206 and B208 (and B207 if
+ready). Closes B203 and B205 when merged.
+
+## B209 — assay under the relaxed `io_sync` default: what stays durable, and the fsync cost at high `--jobs`
+
+**Status: OPEN (filed 2026-11-03).** Pairs with run-gate RG-149 (relaxed becomes the default for ephemeral lanes).
+Operator direction: mutation campaigns run without fsync by default.
+
+**Problem.**
+
+- Under `relaxed`, the whole process tree, assay included, runs with unsynced writes. The coordinator writes about four
+  fsyncs per candidate (state record, progress, and the atomic-rename pairs). At very high `--jobs` with short
+  candidates, fsync cost was identified as the likely bottleneck (RESOURCE-PROFILES).
+- Page cache survives a process or container kill, so resume after a kill is unaffected. Only a host crash or power
+  loss loses unsynced data, and that case needs an explicit decision per file instead of an accident of the preload.
+
+**Per-file decision (to confirm in design).**
+
+| File | Loss on host crash | Decision |
+|---|---|---|
+| state record | resume re-runs unfinished candidates; a torn or absent record must be detected, never trusted | keep the existing atomic rename and a trailing integrity check; fsync optional |
+| verdict artifact | the verdict is the product; a lost verdict is regenerated from state | write once at the end; fsync it (see option A) |
+| progress stream | observability only | no fsync |
+| workspace clones | regenerable by construction | no fsync |
+
+**Design options.**
+
+- **A. Coordinator durable, workers relaxed.** Run the coordinator without the preload (or with a documented
+  `ASSAY_FSYNC=1` escape that calls fsync itself on the state and verdict writes) while candidate workers run under it.
+  Costs one fsync set per candidate in the coordinator only.
+- **B. Accept loss on host crash.** The whole run under the preload. Resume re-runs unfinished candidates; the
+  state reader must reject a torn record and never credit a candidate it cannot verify (reuse the B204 confirmation
+  stance). Cheapest, and the default if the measurement shows A costs more than a small fraction of wall time.
+- Choose by the measurement below. Whichever wins is documented in the assay design and run-gate README.
+
+**Interaction with worker counts.**
+
+- B207's scheduling and RG-146's auto worker counts were sized from strict-mode profiles. Profiles are same-mode
+  only (RG-149): the relaxed bucket is re-measured before sizing reads it.
+- If relaxed removes the fsync bottleneck, the CPU-bound optimum N moves up; the formulas in RG-148 stay unchanged and
+  consume the new numbers.
+
+**Acceptance criteria.**
+
+- The per-file table is final, with a test per row: a kill of the process (page cache intact) resumes to the same
+  verdict; a simulated torn or truncated state record is rejected and the candidate re-run.
+- The chosen option is implemented behind a documented switch and recorded in the verdict or profile summary
+  (so an analysis can tell which mode produced it).
+- A campaign under the default relaxed mode produces the same candidate outcomes as strict on the same suite
+  (outcome equivalence, excluding timing).
+
+**Measurement plan.**
+
+- Short-candidate suite (many candidates, sub-second tests), same commit, same host state.
+- Jobs N in {1, 4, 8, 16, auto} x {relaxed, strict}, three repetitions, `cgprofile` samples per RG-145.
+- Report per cell: candidates per second, coordinator CPU share, fsync count and fsync wall time (from the observer
+  or `strace -c -e fsync,fdatasync` on a sample), and p95 candidate wall.
+- Decision rule: option B unless option A's added wall time at the largest N is above a stated fraction (set in the
+  measurement report before the run); otherwise A.
+
+**Dependencies and order.** After RG-149 lands in run-gate (so the default exists), and with or after B207 (scheduling
+consumes the same profiles). Independent of the v18 verdict cut (B208), except that the mode recording lands in
+`judgment.r2.profile` if B208 is still open.
+
+## B210 — rename the assay dependency manifests to the `requirements-<use-case>.txt` convention
+
+The estate rule (root `AGENTS.md` Conventions: every dependency manifest carries a use-case suffix; never `<use-case>-requirements.txt`) says the `assay/` manifests change with assay's next release. Still suffix-form: `gate/distribution/build-requirements.txt`, `gate/distribution/lint-requirements.txt`, `nyxloom-trove/carve-assets/P24/build-requirements.txt`.
+
+**Scope (mechanical).** `git mv` the three to `requirements-build.txt`, `requirements-lint.txt` and `requirements-build.txt`; update every consumer: `gate/distribution/build_release.py`, `tools/tester-unified-gate.sh` (`-r "$distribution/..."` at the two install phases and the comment above the lint one), `tools/self-qualification-gate.sh`, `gate/tests/test_distribution_build_release.py`, `test_distribution_gate.py`, `test_self_lane.py`, the P24/P25 carve assets (README, `fixture-manifest.json`, `test_acceptance.py`, `build_release_fixture.py`), `docs/DESIGN-GUIDE.md`, and the path mentions in this file. `tester-unified/Dockerfile`'s `/tmp/internal-build-requirements.txt` is a scratch file in the image, not an assay manifest, and stays. The wheelhouse manifests (`*-wheelhouse-manifest.json`) are not renamed.
+
+**Acceptance.** A repo-wide grep for the three old paths is empty outside historical reports and handoffs; the distribution and self-lane tests plus the registered assay gate pass; the release build still reproduces the same `.pyz` bytes (B003).
+
+**Prior art.** Commit `1019655cc` on the former branch `requirements-prefix-20261014-fc11d47` did exactly this rename at an older base (its migration gate was blocked by an unrelated tester-unified socket check on 2026-10-14, never re-run); its debian-install-v2 part already landed on main as `fb071df80`. The patch is archived at `artifacts/worktree-archive-20261104/requirements-prefix-20261014/0001-refactor-prefix-specialized-requirements-files.patch` (gitignored artifacts folder of the main checkout).
+<!-- Id note (2026-11-04): B210 exists on branch finish-assay-1-20261104 (not on main). The ids below start at B211; the controller
+     resolves ordering on merge. -->
+
+## B211 — assay launchers run as the checkout owner with a generated passwd/group overlay; editable installs go to a lane prefix (lane-uid phase 3)
+
+**Status: OPEN (filed 2026-11-04).** Operator decision 2026-11-04 (binding): tester lanes run as the checkout owner with a generated read-only
+passwd/group overlay, a per-lane HOME and a read-only tester venv; the baked uid 1003 rule retires. Run-gate RG-151 is phase 1, tester-base
+TB-13 phase 2, this entry and cmru KI-114 phase 3, run-gate RG-153 the default flip.
+
+**Problem.**
+
+- `tools/*gate.sh` launch containers through the assay-owned path (`tools/tester-unified-gate.sh`, `tools/self-qualification-gate.sh`,
+  `tools/self-qualification-container.sh`) and verify identity against a hard-coded user: the B105 identity check at
+  `tools/self-qualification-container.sh:601` compares `.Config.User` with `1003`.
+- A different host owner uid reaches the same "dubious ownership" failure that RG-150 documents; assay replaces git's config and
+  setuptools-scm strips `GIT_*`, so `safe.directory` cannot help.
+- The editable assay install writes into `/opt/tester-venv`, owned by uid 1003 today.
+
+**Design.**
+
+- A small helper in `tools/` (one function, shared by the launchers, tested once) that: resolves uid:gid by `stat` of the checkout root, refuses
+  uid 0, writes a read-only `passwd` and `group` overlay (image's files read once per image id, plus one line for the owner uid with
+  `HOME=/home/lane`) into the lane directory and bind-mounts it `:ro`. Its contract matches run-gate RG-151 exactly (same overlay shape, same
+  lane HOME variables) and it is documented once in `tester-unified/docs/CONSUMERS.md`.
+- Every launcher passes `--user <owner uid:gid>`; the identity check compares against the resolved owner instead of `1003`.
+- Per-lane HOME and XDG directories; the editable install and any `pip install` target a per-lane prefix (`PYTHONUSERBASE`, or a lane
+  venv with `--system-site-packages`); the tester venv is read-only.
+- Audit assay's own gate scripts for writes under `/opt/tester-venv` and record the list.
+
+**Acceptance criteria.**
+
+- On a scratch host whose checkout owner uid is not 1003 the self-qualification and the tester-unified gate pass; the B105 identity check
+  accepts the owner uid and refuses any other.
+- The overlay is mounted read-only; the editable install lands in the lane prefix; a write into `/opt/tester-venv` is a test failure.
+- **Non-mdt path (operator criterion, 2026-11-04).** A test (fake docker, temp checkout) shows the launchers on a plain Debian host or a non-mdt
+  devcontainer: uid taken from the checkout owner, docker gid from `stat` of the socket actually mounted, and no step needs the mdt cockpit or any mdt
+  group.
+
+**Test plan.** Helper unit tests (fake `stat`, fixture passwd), launcher command-construction tests, one live tester run under a foreign uid.
+
+**Dependencies and order.** After RG-151 and TB-13; in parallel with KI-114. Then RG-153.
+
+## B212 — assay observer launchers: drop `ASSAY_GATE_HOST_DOCKER_GID`, derive gids by `stat`, assert against both docker-class gids
+
+**Status: OPEN (filed 2026-11-04).** Operator decision 2026-11-04: new fixed estate group `mdt-docker` (gid 2751) on the host relay socket and on
+`/run/cgprofile` (mdt-cockpit MDT-053, cgprofile CP-43); every consumer derives the gid by `stat` of the socket it mounts.
+
+**Problem.** `tools/resource-observer-gid.sh:56-75` (`assay_host_docker_gid`) accepts an environment override `ASSAY_GATE_HOST_DOCKER_GID`
+(passed in "from the host launcher", which is the stale host-number pattern) and otherwise reads `/run/cgprofile` and requires mode 770.
+The observer gid must differ from the docker gid. On an mdt host there are now two docker-class gids (`mdt-docker` on the cgprofile
+directory and the relay socket, and the host `docker` group); on a non-mdt host there is one and possibly no cgprofile at all.
+
+**Design.**
+
+- Remove the `ASSAY_GATE_HOST_DOCKER_GID` input entirely (no alias; a set variable is an error naming the replacement, so no stale launcher
+  silently relies on it).
+- Derive the docker-class gid by `stat` of the docker socket the launcher mounts (`DOCKER_HOST` when `unix://`, else the default) and, when
+  present, of `/run/cgprofile`.
+- Assert the observer socket gid differs from every derived docker-class gid (socket gid, `/run/cgprofile` directory gid); keep the
+  existing mode and ownership checks of the observer directory.
+- Messages name the paths read, never a group name.
+
+**Acceptance criteria.**
+
+- The helper's tests cover: observer gid equal to the socket gid refused; equal to the `/run/cgprofile` gid refused; distinct accepted; the old
+  variable set gives a clear error.
+- No `ASSAY_GATE_HOST_DOCKER_GID` remains in `assay/`, docs or tests except the refusal test.
+- **Non-mdt path.** With no `/run/cgprofile` and an arbitrary-gid docker socket the launchers work without the observer (or refuse the observer
+  feature with one clear infrastructure message when it is required) and require no mdt group.
+
+**Test plan.** `bash` helper tests with injected `stat` results, plus the existing launcher tests updated.
+
+**Dependencies and order.** After CP-43 and with MDT-053; pairs with run-gate RG-152.

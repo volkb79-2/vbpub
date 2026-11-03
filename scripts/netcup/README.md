@@ -259,7 +259,7 @@ spelling remains an alias for `--config FILE`.
 The installer supports one selected notification backend: `telegram`,
 `mattermost`, or `none`. There is no backend unless a credential or `notify_backend` is configured (then notifications are off); when `notify_backend` is unset it is inferred from the one credential present (both present is a config error). The Debian wizard offers Mattermost first. `notify_host_label` is validated (`[A-Za-z0-9 ._:/-]`, max 64) and rejected otherwise. For the
 public Mattermost deployment described by
-[`mattermost-server/CONSUMER.md`](../../mattermost-server/CONSUMER.md), use
+[`voice-screen-share/mattermost-server/CONSUMER.md`](../../voice-screen-share/mattermost-server/CONSUMER.md), use
 the producer's incoming-webhook secret in the local `.env`. The externally
 reachable host is `mattermost.gstammtisch.dchive.de`:
 
@@ -272,7 +272,7 @@ From this checkout, the local secret file can provide the value without
 committing it:
 
 ```bash
-webhook_url=$(cat ../../mattermost-server/.ciu/secrets/installer_webhook_url)
+webhook_url=$(cat ../../voice-screen-share/mattermost-server/.ciu/secrets/installer_webhook_url)
 sed -i 's/^NOTIFY_BACKEND=.*/NOTIFY_BACKEND=mattermost/' .env
 sed -i "s#^MATTERMOST_WEBHOOK_URL=.*#MATTERMOST_WEBHOOK_URL=\"$webhook_url\"#" .env
 ```
@@ -636,6 +636,12 @@ public services with private admin ports, WireGuard management, and restricted
 egress. The WireGuard example exposes only the outer UDP handshake and drops
 other provider-level ingress; a guest `wg0` interface is not a separate SCP
 NIC, so the guest firewall must enforce the actual `wg0`-only service rule.
+
+## Runner hosts
+
+[`runner/`](runner/README.md) holds the generic, reviewed scripts that turn an installed host into a parallel test runner (account, Btrfs CoW
+area, checkout sync, detached jobs, gate tools and images, cockpit, R2 campaign supervisor). Host-specific values come from a gitignored
+`runner/runner.env`. The runner account must be uid 1003 (backlog NC-04).
 
 ## CustomScript source
 

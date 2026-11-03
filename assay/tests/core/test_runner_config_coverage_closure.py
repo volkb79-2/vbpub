@@ -259,7 +259,7 @@ from conftest import completed_process, fixed_clock, make_lane
 
 from assay import runner
 from assay.errors import AssayError, Outcome, ReasonCode
-from assay.process_tree import ProcessTreeSpawnError
+from assay.process_tree import ProcessTreeEvidence, ProcessTreeSpawnError
 
 _NOW = datetime(2026, 8, 7, 12, 0, 0, tzinfo=timezone.utc)
 _LATER = datetime(2026, 8, 7, 12, 0, 1, tzinfo=timezone.utc)
@@ -298,9 +298,11 @@ def test_timeout_cleanup_survives_a_failing_reap(monkeypatch: pytest.MonkeyPatch
 
 
 def test_process_tree_spawn_error_is_a_candidate_level_exec_failure(tmp_path: Path) -> None:
+    evidence = ProcessTreeEvidence.not_started().to_dict()
+
     def spawn_fails(argv, *, env, cwd, timeout):
         error = ProcessTreeSpawnError(2, "No such file")
-        error.process_tree_evidence = {"leader_status": "not-started"}
+        error.process_tree_evidence = evidence
         raise error
 
     result = runner.execute_command(
@@ -312,13 +314,27 @@ def test_process_tree_spawn_error_is_a_candidate_level_exec_failure(tmp_path: Pa
     assert result.outcome is Outcome.ERROR
     assert result.reason_code is ReasonCode.EXEC_FAILED
     assert result.stdout_tail == "" and result.stderr_tail == ""
-    assert result.process_tree_evidence == {"leader_status": "not-started"}
+    assert result.process_tree_evidence == evidence
 
 
 def test_outliving_descendants_turn_a_zero_exit_into_exec_failed(tmp_path: Path) -> None:
+    from assay.process_tree import ProcessTreeDescendant
+
+    evidence = ProcessTreeEvidence(
+        leader_status="exited",
+        group_signalled_before_reap=False,
+        outliving_descendants=2,
+        descendants_signalled=2,
+        descendants=(
+            ProcessTreeDescendant(pid=10001, ppid=1, comm="child"),
+            ProcessTreeDescendant(pid=10002, ppid=1, comm="child"),
+        ),
+        clean=True,
+    ).to_dict()
+
     def leaves_orphans(argv, *, env, cwd, timeout):
         proc = completed_process(argv, 0, stdout="out-text", stderr="err-text")
-        proc.process_tree_evidence = {"outliving_descendants": 2, "clean": False}
+        proc.process_tree_evidence = evidence
         return proc
 
     result = runner.execute_command(
@@ -332,7 +348,7 @@ def test_outliving_descendants_turn_a_zero_exit_into_exec_failed(tmp_path: Path)
     assert result.returncode is None
     assert result.stdout_tail == "out-text"
     assert result.stderr_tail == "err-text"
-    assert result.process_tree_evidence == {"outliving_descendants": 2, "clean": False}
+    assert result.process_tree_evidence == evidence
 
 
 def test_absent_source_roots_have_no_exact_file_keys_and_nothing_to_require(tmp_path: Path) -> None:
@@ -762,3 +778,30 @@ def test_cold_witness_on_a_non_r2_lane_is_refused(git_repo: GitRepo, tmp_path):
     claim = json.loads(verdict.read_text(encoding="utf-8"))["claims"][0]
     assert claim["reason_code"] == "BAD_LANE_CONFIG"
     assert "--cold-witness requires a native Python R2 lane" in claim["detail"]
+
+
+def test_cleanup_leak_with_non_integer_returncode_has_no_underlying_terminal(
+    tmp_path: Path,
+):
+    from conftest import completed_process, make_lane, process_tree_evidence_dict
+
+    lane = make_lane()
+
+    def leaves_descendant(argv, *, env, cwd, timeout):
+        result = completed_process(argv, returncode=True, stdout="done", stderr="")
+        evidence = process_tree_evidence_dict()
+        evidence.update(
+            outliving_descendants=1,
+            descendants_signalled=1,
+            descendants=[{"pid": 1234, "ppid": 1, "comm": "child"}],
+        )
+        result.process_tree_evidence = evidence
+        return result
+
+    result = runner_module.execute_command(
+        lane, cwd=tmp_path, process_runner=leaves_descendant
+    )
+
+    assert result.outcome.value == "ERROR"
+    assert result.underlying_outcome is None
+    assert result.process_tree_evidence["outliving_descendants"] == 1

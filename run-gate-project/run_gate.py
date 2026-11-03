@@ -654,6 +654,11 @@ INFLIGHT_SCHEMA = 2
 OWNER_RACE_REPOLLS = 3            # total reads of the record, first included
 OWNER_RACE_PAUSE_SECONDS = 0.5    # -> ~1.0 s across the two extra reads
 
+# RG-117e: the host-PSI pause of an auto-bounded stall clock credits at most
+# this much silence in total, so a budgetless lane under sustained pressure
+# still stalls out instead of waiting forever.
+PRESSURE_PAUSE_MAX_SECONDS = 1800.0
+
 # RG-36: how often the container loop looks at the lane's progress file.
 # 30 s judges a 15-minute stall_timeout to within 3%. What one poll COSTS is
 # a stat(), a full read_text() and a json.loads() of every line — the file is
@@ -958,6 +963,83 @@ def _check_keys(table: dict, allowed: set, where: str) -> None:
              f"(allowed: {', '.join(sorted(allowed))})")
 
 
+RESOURCE_IO_SYNC_VALUES = frozenset({"durable", "strict", "relaxed"})
+RESOURCE_COWTREE_MODE_VALUES = frozenset({"auto", "off"})
+IO_SYNC_OVERRIDE_VALUES = frozenset({"strict", "relaxed"})
+COW_OVERRIDE_VALUES = frozenset({"off"})
+RESOURCE_CONSUMER_KEYS = {
+    "cowtree": {"mode": RESOURCE_COWTREE_MODE_VALUES},
+    "vm": {"disk_cache": {"unsafe", "writeback"}},
+}
+RESOURCE_SETTING_KEYS = {"io_sync", "ram_target", "candidate_ram",
+                        "worker_ram", *RESOURCE_CONSUMER_KEYS}
+MDT_COW_ROOT_ENV_VAR = "MDT_COW_ROOT"
+EATMYDATA_LABEL = "org.vbpub.tester.eatmydata-lib"
+
+
+def _validate_resource_table(table: object, where: str, scope: str,
+                             *, run_gate_keys: set | None = None) -> None:
+    """Validate the combined run-gate settings and closed consumer subtables."""
+    if not isinstance(table, dict):
+        fail(f"{where}: 'resources' must be a table")
+    allowed = set(run_gate_keys or ()) | RESOURCE_SETTING_KEYS
+    for consumer, keys in RESOURCE_CONSUMER_KEYS.items():
+        if consumer not in table:
+            continue
+        subtable = table[consumer]
+        if not isinstance(subtable, dict):
+            fail(f"{where} [resources.{consumer}]: must be a table")
+        _check_keys(subtable, set(keys), f"{where} [resources.{consumer}]")
+        for key, choices in keys.items():
+            if key in subtable and (not isinstance(subtable[key], str)
+                                    or subtable[key] not in choices):
+                fail(f"{where} [resources.{consumer}]: '{key}' must be one of "
+                     f"{', '.join(sorted(choices))} (got {subtable[key]!r})")
+        if consumer == "vm" and scope not in ("project", "lane"):
+            fail(f"{where} [resources.vm]: disk_cache is project/lane-only")
+    unknown_consumers = sorted(
+        key for key, value in table.items()
+        if isinstance(value, dict) and key not in RESOURCE_CONSUMER_KEYS)
+    if unknown_consumers:
+        fail(f"{where}: unknown consumer resource subtable(s): "
+             f"{', '.join(unknown_consumers)}")
+    _check_keys(table, allowed, where)
+    if "io_sync" in table:
+        value = table["io_sync"]
+        if (not isinstance(value, str)
+                or value not in RESOURCE_IO_SYNC_VALUES):
+            fail(f"{where}: 'io_sync' must be one of durable, strict, relaxed "
+                 f"(got {value!r})")
+        if value == "durable" and scope != "lane":
+            fail(f"{where}: io_sync = 'durable' is lane-only")
+    if "candidate_ram" in table:
+        value = table["candidate_ram"]
+        if scope != "lane":
+            fail(f"{where}: 'candidate_ram' is lane-only")
+        if not isinstance(value, str) or not _SIZE_RE.fullmatch(value):
+            fail(f"{where}: 'candidate_ram' must be a size like '300m' or '4g'")
+        if int(re.match(r"[0-9]+", value).group()) == 0:
+            fail(f"{where}: 'candidate_ram' must be positive")
+    if "worker_ram" in table:
+        value = table["worker_ram"]
+        if scope != "lane":
+            fail(f"{where}: 'worker_ram' is lane-only")
+        if not isinstance(value, str) or not _SIZE_RE.fullmatch(value) \
+                or int(re.match(r"[0-9]+", value).group()) == 0:
+            fail(f"{where}: 'worker_ram' must be a positive size like "
+                 "'512m' or '2g'")
+    if "ram_target" in table:
+        value = table["ram_target"]
+        if isinstance(value, str) and re.fullmatch(r"[1-9][0-9]?%|100%", value):
+            pass
+        else:
+            if not isinstance(value, str) or not _SIZE_RE.fullmatch(value):
+                fail(f"{where}: 'ram_target' must be a size like '12g' or a "
+                     "percentage from 1% through 100%")
+            if int(re.match(r"[0-9]+", value).group()) == 0:
+                fail(f"{where}: 'ram_target' must be positive")
+
+
 def _validate_environment(name: str, table: dict, where: str) -> None:
     _check_keys(table, {"image", "image_env", "cgroup_slice", "cgroup_slice_env", "mode", "container_name",
                         "forward_env", "resources", "state_root", "user"},
@@ -1044,7 +1126,9 @@ def _validate_environment(name: str, table: dict, where: str) -> None:
         res = table["resources"]
         if not isinstance(res, dict):
             fail(f"{where} [environments.{name}]: 'resources' must be a table")
-        _check_keys(res, {"cpus"}, f"{where} [environments.{name}.resources]")
+        _validate_resource_table(
+            res, f"{where} [environments.{name}.resources]", "environment",
+            run_gate_keys={"cpus"})
         if "cpus" in res:
             _validate_cpus(res["cpus"], f"{where} [environments.{name}.resources]")
 
@@ -1068,8 +1152,13 @@ LANE_KEYS = {"kind", "environment", "argv", "assay_lane", "assay_command",
              "pins", "clean_tree", "budget", "stall_timeout", "memory",
              "description", "required_env", "artifacts", "resources",
              "profile", "exit_map", "accepts_args", "lanes", "stop_on",
-             "resource_observer"}
+             "resource_observer", "jobs", "workers", "workers_max",
+             "xdist_safe"}
 PIN_KEYS = {"sha256", "version"}
+# RG-146: the declared argv token a lane with `workers` must carry.
+WORKERS_TOKEN = "{workers}"
+WORKERS_DEFAULT_MAX = 8
+R2_CONSERVATIVE_CANDIDATE_RAM_BYTES = 1024 * 1024 * 1024
 
 
 def _validate_budget(value: object, where: str, key: str = "budget") -> None:
@@ -1122,6 +1211,51 @@ def host_mode_stall_timeout_inert_reason(lane_name: str) -> str:
             f"lanes only)")
 
 
+def _validate_workers_keys(name: str, table: dict, where: str,
+                           kind: str) -> None:
+    """RG-146 load-time rules for `workers`, `workers_max`, `xdist_safe`.
+
+    The environment-dependent rules (enforced caps) need the resolved
+    environment and are checked by `configure_workers` at run time."""
+    label = f"{where} [lanes.{name}]"
+    argv = table.get("argv")
+    carries_token = isinstance(argv, list) and any(
+        isinstance(item, str) and WORKERS_TOKEN in item for item in argv)
+    present = [key for key in ("workers", "workers_max", "xdist_safe")
+               if key in table]
+    if not present:
+        if carries_token:
+            fail(f"{label}: argv carries {WORKERS_TOKEN} but the lane "
+                 "declares no 'workers'")
+        return
+    if kind != "command":
+        fail(f"{label}: {', '.join(present)} are supported only for "
+             "command lanes (pytest-xdist)")
+    if "workers" not in table:
+        fail(f"{label}: 'workers_max' and 'xdist_safe' require 'workers'")
+    workers = table["workers"]
+    if not (type(workers) is int and workers > 0) and workers != "auto":
+        fail(f"{label}: 'workers' must be a positive integer or 'auto' "
+             f"(got {workers!r})")
+    if "workers_max" in table and not (
+            type(table["workers_max"]) is int and table["workers_max"] > 0):
+        fail(f"{label}: 'workers_max' must be a positive integer "
+             f"(got {table['workers_max']!r})")
+    if "xdist_safe" in table and type(table["xdist_safe"]) is not bool:
+        fail(f"{label}: 'xdist_safe' must be a boolean")
+    if not carries_token:
+        fail(f"{label}: a lane with 'workers' must carry the declared "
+             f"{WORKERS_TOKEN} token in its argv (run-gate never rewrites "
+             "argv)")
+    if workers != 1 and table.get("xdist_safe") is not True:
+        fail(f"{label}: workers = {workers!r} requires xdist_safe = true "
+             "(the suite's isolation contract, README 'xdist workers')")
+    if type(workers) is int and workers > table.get(
+            "workers_max", WORKERS_DEFAULT_MAX):
+        fail(f"{label}: workers = {workers} exceeds workers_max "
+             f"({table.get('workers_max', WORKERS_DEFAULT_MAX)})")
+
+
 def _validate_lane(name: str, table: dict, where: str) -> None:
     _check_keys(table, LANE_KEYS, f"{where} [lanes.{name}]")
     kind = table.get("kind")
@@ -1163,6 +1297,15 @@ def _validate_lane(name: str, table: dict, where: str) -> None:
             fail(f"{where} [lanes.{name}]: sequence does not accept "
                  f"{', '.join(invalid)}; declare those settings on its members")
         return
+    if "jobs" in table:
+        jobs = table["jobs"]
+        if kind != "assay":
+            fail(f"{where} [lanes.{name}]: 'jobs' is supported only for "
+                 "native R2 assay lanes")
+        if not (type(jobs) is int and jobs > 0) and jobs != "auto":
+            fail(f"{where} [lanes.{name}]: 'jobs' must be a positive "
+                 f"integer or 'auto' (got {jobs!r})")
+    _validate_workers_keys(name, table, where, kind)
     if "lanes" in table or "stop_on" in table:
         fail(f"{where} [lanes.{name}]: 'lanes' and 'stop_on' are supported "
              "only for kind = \"sequence\"")
@@ -1238,9 +1381,11 @@ def _validate_lane(name: str, table: dict, where: str) -> None:
         res = table["resources"]
         if not isinstance(res, dict):
             fail(f"{where} [lanes.{name}]: 'resources' must be a table")
-        _check_keys(res, {"memory", "memory_max", "memory_swap", "cpu_weight",
-                          "io_weight", "shared", "cpus", "pids"},
-                    f"{where} [lanes.{name}.resources]")
+        _validate_resource_table(
+            res, f"{where} [lanes.{name}.resources]", "lane",
+            run_gate_keys={"memory", "memory_max", "memory_swap",
+                           "cpu_weight", "io_weight", "shared", "cpus",
+                           "pids"})
         if "cpus" in res:
             _validate_cpus(res["cpus"], f"{where} [lanes.{name}.resources]")
         if "pids" in res:
@@ -1625,8 +1770,12 @@ def resolve_profile_settings(lane: dict, cfg: dict, cfg_path: Path,
 def _validate_config(cfg: dict, path: Path, *, central: bool) -> dict:
     where = str(path)
     _check_keys(cfg, {"schema_version", "environments", "lanes", "history",
-                      "profile", "footprint", "project", "assay", "admission"},
+                      "profile", "footprint", "project", "assay", "admission",
+                      "resources"},
                 where)
+    if "resources" in cfg:
+        _validate_resource_table(cfg["resources"], f"{where} [resources]",
+                                 "central" if central else "project")
     if "project" in cfg:
         project = cfg["project"]
         if not isinstance(project, dict):
@@ -1679,6 +1828,198 @@ def _validate_config(cfg: dict, path: Path, *, central: bool) -> dict:
                          "is not declared in this config")
     _validate_sequence_cycles(lanes, where)
     return cfg
+
+
+def _resource_table(scope: dict) -> dict:
+    value = scope.get("resources", {})
+    return value if isinstance(value, dict) else {}
+
+
+def resolve_resource_settings(lane: dict, project: dict, central: dict,
+                              environment: dict, *, mode: str,
+                              io_sync_override: str | None = None,
+                              cow_override: str | None = None
+                              ) -> tuple[dict, dict]:
+    """Resolve resources by CLI > lane > project > environment > central > defaults."""
+    if (io_sync_override is not None
+            and (not isinstance(io_sync_override, str)
+                 or io_sync_override not in IO_SYNC_OVERRIDE_VALUES)):
+        fail(f"invalid io_sync override {io_sync_override!r}: expected one of "
+             f"{', '.join(sorted(IO_SYNC_OVERRIDE_VALUES))}")
+    if (cow_override is not None
+            and (not isinstance(cow_override, str)
+                 or cow_override not in COW_OVERRIDE_VALUES)):
+        fail(f"invalid CoW override {cow_override!r}: expected one of "
+             f"{', '.join(sorted(COW_OVERRIDE_VALUES))}")
+    effective = {"io_sync": "strict", "ram_target": "75%",
+                 "cowtree": {"mode": "auto"}}
+    sources = {"io_sync": "default", "ram_target": "default",
+               "cowtree.mode": "default"}
+    scopes = (("central", central), ("environment", environment),
+              ("project", project), ("lane", lane))
+    for source, scope in scopes:
+        table = _resource_table(scope)
+        for key in ("io_sync", "ram_target", "candidate_ram"):
+            if key in table:
+                effective[key] = table[key]
+                sources[key] = source
+        for consumer in RESOURCE_CONSUMER_KEYS:
+            subtable = table.get(consumer)
+            if not isinstance(subtable, dict):
+                continue
+            target = effective.setdefault(consumer, {})
+            for key, value in subtable.items():
+                target[key] = value
+                sources[f"{consumer}.{key}"] = source
+    lane_io_sync = _resource_table(lane).get("io_sync")
+    if io_sync_override is not None:
+        if lane_io_sync == "durable":
+            fail("durable lane cannot be overridden by --io-sync")
+        effective["io_sync"] = io_sync_override
+        sources["io_sync"] = "command line"
+    if cow_override is not None:
+        effective.setdefault("cowtree", {})["mode"] = cow_override
+        sources["cowtree.mode"] = "command line"
+    if effective.get("io_sync") == "relaxed" and mode != "ephemeral":
+        fail("io_sync = 'relaxed' requires an ephemeral environment so the "
+             "read-only preload bind is scoped to the lane")
+    if effective.get("vm", {}).get("disk_cache") is not None \
+            and mode not in ("host", "bare-host"):
+        if "vm" in _resource_table(lane):
+            fail("resources.vm.disk_cache requires a host or bare-host lane")
+        effective.pop("vm", None)
+        sources.pop("vm.disk_cache", None)
+    validate_resource_mount_inputs(effective, mode)
+    return effective, sources
+
+
+def validate_docker_mount_path(path: Path | str, label: str) -> None:
+    """Refuse host paths that Docker's comma/colon mount grammars cannot encode."""
+    try:
+        value = os.fspath(path)
+    except TypeError:
+        fail(f"{label} must be a filesystem path")
+    if not isinstance(value, str) or not value:
+        fail(f"{label} must be a non-empty filesystem path")
+    if any(char in value for char in (",", ":", "\n", "\r", "\x00")):
+        fail(f"{label} {value!r} is invalid for Docker mount syntax: paths "
+             "cannot contain commas, colons, or newlines")
+
+
+def validate_resource_mount_inputs(settings: dict, mode: str,
+                                   repo: Path | None = None,
+                                   worktree: Path | None = None) -> None:
+    """Validate paths that resource translation or container binds will use."""
+    cowtree = settings.get("cowtree", {})
+    if (mode == "ephemeral" and isinstance(cowtree, dict)
+            and cowtree.get("mode", "auto") == "auto"):
+        root = os.environ.get(MDT_COW_ROOT_ENV_VAR)
+        if root is not None:
+            _validate_cow_root(root)
+    if mode == "ephemeral":
+        for label, path in (("repo path", repo), ("worktree path", worktree)):
+            if path is None:
+                continue
+            validate_docker_mount_path(path, label)
+            validate_docker_mount_path(physical_path(path),
+                                       f"{label} host source")
+
+
+def _validate_cow_root(root: str) -> None:
+    if (not isinstance(root, str) or not root or not root.startswith("/")
+            or root.startswith("//") or "\x00" in root
+            or os.path.normpath(root) != root
+            or root == "/"):
+        fail("MDT_COW_ROOT is invalid: must be an absolute normalized path "
+             "other than '/'")
+    if any(char in root for char in (",", ":", "\n", "\r")):
+        fail("MDT_COW_ROOT is invalid as a Docker bind source: paths cannot "
+             "contain commas, colons, or newlines")
+
+
+def cowtree_mount_flags(settings: dict, mode: str) -> list[str]:
+    """Bind MDT_COW_ROOT at the identical path, without translating or statting it."""
+    cowtree = settings.get("cowtree", {})
+    if not isinstance(cowtree, dict) or cowtree.get("mode", "auto") != "auto" \
+            or mode != "ephemeral":
+        return []
+    root = os.environ.get(MDT_COW_ROOT_ENV_VAR)
+    if root is None:
+        return []
+    _validate_cow_root(root)
+    return ["--mount", f"type=bind,source={root},target={root}"]
+
+
+def resource_forwarded_env(settings: dict, mode: str,
+                           consumer: str | None = None) -> dict[str, str]:
+    """Translate effective settings to run-gate facts and consumer-owned env keys."""
+    forwarded = {}
+    if "io_sync" in settings:
+        forwarded["RUN_GATE_IO_SYNC"] = settings["io_sync"]
+    if consumer is None or consumer == "cowtree":
+        cowtree = settings.get("cowtree", {})
+        if isinstance(cowtree, dict) and "mode" in cowtree:
+            forwarded["COWTREE_MODE"] = cowtree["mode"]
+            root = os.environ.get(MDT_COW_ROOT_ENV_VAR)
+            if cowtree["mode"] == "auto" and root is not None:
+                if mode == "ephemeral":
+                    _validate_cow_root(root)
+                forwarded[MDT_COW_ROOT_ENV_VAR] = root
+    if consumer is None or consumer == "vm":
+        vm = settings.get("vm", {})
+        if isinstance(vm, dict) and "disk_cache" in vm:
+            forwarded["VM_DISK_CACHE"] = vm["disk_cache"]
+    return forwarded
+
+
+def log_resource_forwarded_env(forwarded: dict[str, str]) -> None:
+    """Disclose resource env names only; values can contain operator data."""
+    if forwarded:
+        print(f"run-gate: resource env (forwarded: "
+              f"{', '.join(sorted(forwarded))})", flush=True)
+
+
+def inspect_eatmydata_library(docker: str, image: str) -> str:
+    """Read the image's explicit preload library label, preserving inspect failures."""
+    result = subprocess.run(
+        [docker, "image", "inspect", "--format",
+         f'{{{{index .Config.Labels "{EATMYDATA_LABEL}"}}}}', image],
+        capture_output=True, text=True)
+    if result.returncode != 0:
+        detail = result.stderr.strip() or f"exit {result.returncode}"
+        fail_infra(f"cannot inspect image {image!r} for {EATMYDATA_LABEL}: {detail}")
+    library = result.stdout.strip()
+    if not library or library == "<no value>":
+        fail(f"image {image!r} has no {EATMYDATA_LABEL} label")
+    if not library.startswith("/") or "\n" in library or "\x00" in library:
+        fail(f"image {image!r} has an invalid {EATMYDATA_LABEL} label value "
+             f"{library!r}")
+    return library
+
+
+def relaxed_io_sync_mount_flags(docker: str, image: str,
+                                repo: Path) -> tuple[list[str], object]:
+    """Create the read-only preload file run-gate owns for one relaxed lane."""
+    library = inspect_eatmydata_library(docker, image)
+    state_dir = repo / HISTORY_DIR_NAME
+    state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    preload = tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", dir=state_dir,
+        prefix="ld.so.preload.")
+    try:
+        preload.write(library + "\n")
+        preload.flush()
+        os.fchmod(preload.fileno(), 0o444)
+        os.fsync(preload.fileno())
+        source = physical_path(Path(preload.name))
+        validate_docker_mount_path(source, "eatmydata preload source")
+        flags = ["--mount", f"type=bind,source={source},"
+                 "target=/etc/ld.so.preload,readonly"]
+        return flags, preload
+    except BaseException:
+        preload.close()
+        Path(preload.name).unlink(missing_ok=True)
+        raise
 
 
 def _validate_admission_policy(table: object, where: str) -> None:
@@ -2105,6 +2446,11 @@ def resolve_environment(lane: dict, lane_name: str, project: dict, central: dict
         if name == HOST_ENV and os.environ.get(HOST_IMAGE_ENV_VAR):
             resolved["image"] = os.environ[HOST_IMAGE_ENV_VAR]
             resolved.setdefault("user", f"{os.getuid()}:{os.getgid()}")
+            if "_image_selection" in resolved:
+                # RG-117e: the recorded effective image must be the one the
+                # lane runs, after this override too.
+                resolved["_image_selection"]["effective_image"] = \
+                    resolved["image"]
         return resolved, source
     # Review fix: name the file ACTUALLY searched, never a generic claim —
     # when no root config exists at all, say which root-specific filename the
@@ -2137,6 +2483,14 @@ def resolve_environment(lane: dict, lane_name: str, project: dict, central: dict
                     "name and insert its mode in the config that declares "
                     "this lane.")
     fail(message)
+
+
+def declared_environment(lane: dict, project: dict, central: dict) -> dict:
+    """Return the winning environment declaration, including host-mode defaults."""
+    name = lane.get("environment")
+    if name in project.get("environments", {}):
+        return project["environments"][name]
+    return central.get("environments", {}).get(name, {})
 
 
 def image_selection_record(env: dict, env_name: str,
@@ -4054,8 +4408,16 @@ def _fmt_stall_seconds(value: object) -> str:
         and not isinstance(value, bool) else "-"
 
 
+def record_io_sync(run_record: dict | None) -> str:
+    """RG-136: the I/O mode this invocation's run record carries (strict
+    for a missing record, as legacy history entries were)."""
+    mode = (run_record or {}).get("io_sync")
+    return mode if isinstance(mode, str) else "strict"
+
+
 def print_footprint_line(lane_name: str, project_dir: Path,
-                         resources: dict | None) -> None:
+                         resources: dict | None,
+                         io_sync: str = "strict") -> None:
     """Contract Sec 4.6, line 3 (RG-55/C5). A no-op when THIS invocation
     recorded no resources at all — disabled, or a profile error the
     WARNING line already named; there is nothing to distill a footprint
@@ -4084,26 +4446,50 @@ def print_footprint_line(lane_name: str, project_dir: Path,
     hot_seg = f", hot-set p90 {_fmt_mib(hot)}" \
         if isinstance(hot, (int, float)) and not isinstance(hot, bool) else ""
     store = load_history_store(history_store_path(project_dir))
-    hist_peak = lane_history_report(store, lane_name)["stats"]["passes"][
-        "memory_peak_bytes"]
-    manifest_peak = footprint_manifest_lane_peak_median(
-        load_footprint_manifest(project_dir), lane_name)
-    manifest_seg = f" | manifest {_fmt_mib(manifest_peak)}" \
-        if isinstance(manifest_peak, (int, float)) \
-        and not isinstance(manifest_peak, bool) else ""
+    # RG-136: compare only against runs measured under THIS run's I/O mode.
+    hist_peak = lane_mode_stats(lane_history_report(store, lane_name),
+                                io_sync)["memory_peak_bytes"]
+    manifest = load_footprint_manifest(project_dir)
+    manifest_peak = footprint_manifest_lane_peak_median(manifest, lane_name)
+    manifest_lane = (manifest or {}).get("lanes", {}).get(lane_name)
+    manifest_mode = footprint_manifest_lane_io_sync(manifest_lane) \
+        if isinstance(manifest_lane, dict) else io_sync
+    if manifest_mode != io_sync:
+        manifest_seg = (f" | manifest not comparable (distilled under "
+                        f"io_sync={manifest_mode})"
+                        if manifest_peak is not None else "")
+    else:
+        manifest_seg = f" | manifest {_fmt_mib(manifest_peak)}" \
+            if isinstance(manifest_peak, (int, float)) \
+            and not isinstance(manifest_peak, bool) else ""
+    mode_seg = f", io_sync={io_sync}" if io_sync != "strict" else ""
     # S1 + RW-46b: the SAME two caveats `_fmt_footprint_row`/`doctor`
     # already print, here on the LIVE per-run line — read far more often
     # than `footprint --write`'s own table (round-1 review S1).
     source_note = " [source: rusage-maxrss]" \
         if mem.get("source") == "rusage-maxrss" else ""
     floor_note = " (peak <= floor)" if mem.get("peak_at_floor") else ""
+    # RG-144: a stall is a contamination flag, never a capacity number next
+    # to peak/p90/cores. A flagged run says so (and that it is excluded from
+    # sizing); a run that hit its OWN limit says how often; only a run with
+    # neither keeps the plain host-stall context figure.
+    verdict = classify_summary(resources)
+    if verdict is not None and verdict["flagged"]:
+        stall_seg = (
+            f"measurement contaminated ({'; '.join(verdict['reasons'])}); "
+            "excluded from sizing")
+    else:
+        stall_seg = (f"{_fmt_stall_seconds(host.get('memory_full_stall_seconds'))}"
+                     " s stalled on memory (full)")
+    if verdict is not None and verdict["self_limited"]["flagged"]:
+        stall_seg += (" | memory limit reached "
+                      f"{verdict['self_limited']['memory_limit_events']} times")
     print(f"run-gate: footprint {lane_name}: peak {_fmt_mib(mem.get('peak_bytes'))}"
          f"{over_seg}, p90 {_fmt_mib(mem.get('p90_bytes'))}, "
          f"{_fmt_cores(cpu.get('cores_avg'))} cores avg, "
-         f"{_fmt_stall_seconds(host.get('memory_full_stall_seconds'))} "
-         f"s stalled on memory (full){hot_seg}; history median peak "
-         f"{_fmt_mib(hist_peak['median'])} ({hist_peak['count']} runs)"
-         f"{manifest_seg}{source_note}{floor_note}", flush=True)
+         f"{stall_seg}{hot_seg}; history median peak "
+         f"{_fmt_mib(hist_peak['median'])} ({hist_peak['count']} runs"
+         f"{mode_seg}){manifest_seg}{source_note}{floor_note}", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -4350,6 +4736,94 @@ def parse_size_bytes(value: str) -> int:
     return int(m.group(1)) * _SIZE_MULT[m.group(2).lower()]
 
 
+def parse_r2_jobs_cli(value: str | None) -> int | str | None:
+    """Parse the public `--jobs N|auto` request without accepting TOML forms."""
+    if value is None:
+        return None
+    if value == "auto":
+        return value
+    if not re.fullmatch(r"[1-9][0-9]*", value):
+        fail("--jobs must be a positive integer or 'auto' "
+             f"(got {value!r})")
+    return int(value)
+
+
+def select_r2_jobs(request: int | str | None, *, jobs_max: int,
+                   cpu_cap: int | None = None,
+                   memory_budget_bytes: int | None = None,
+                   candidate_ram_bytes: int | None = None,
+                   candidate_ram_samples: int = 0,
+                   candidates_remaining: int | None = None,
+                   cheap_clone: bool | None = None,
+                   cheap_clone_backend: str | None = None,
+                   source: str | None = None) -> dict:
+    """Select and validate the worker count for one native R2 lane.
+
+    The `auto` formula is intentionally owned by Run-Gate: Assay does not
+    derive a worker count. Missing or unusable caps are represented by the
+    inputs supplied by the caller, which clamps auto to one worker instead of
+    inventing capacity.
+    """
+    if type(jobs_max) is not int or jobs_max < 1:
+        fail(f"Assay inventory has invalid mutation.jobs_max {jobs_max!r}")
+    if type(candidate_ram_samples) is not int or candidate_ram_samples < 0:
+        fail("candidate RAM history sample count must be a non-negative integer")
+
+    if request is None:
+        jobs = 1
+        mode = "default"
+        request_source = "default"
+    elif request == "auto":
+        mode = "auto"
+        request_source = source or "auto"
+        inputs = (cpu_cap, memory_budget_bytes, candidate_ram_bytes,
+                  candidates_remaining)
+        if any(type(value) is not int for value in inputs) \
+                or cpu_cap < 1 or memory_budget_bytes < 0 \
+                or candidate_ram_bytes < 1 or candidates_remaining < 0:
+            fail("automatic R2 jobs selection requires integer CPU, memory, "
+                 "candidate RAM and remaining-candidate inputs")
+        memory_workers = max(1, memory_budget_bytes // candidate_ram_bytes)
+        remaining_workers = max(1, candidates_remaining)
+        jobs = min(jobs_max, cpu_cap, memory_workers, remaining_workers)
+        if cheap_clone is not True:
+            jobs = 1
+    elif type(request) is int and request > 0:
+        jobs = request
+        mode = "explicit"
+        request_source = source or "explicit"
+        if jobs > jobs_max:
+            fail(f"--jobs {jobs} exceeds Assay lane mutation.jobs_max "
+                 f"({jobs_max})")
+        if jobs > 1 and cheap_clone is not True:
+            backend = (f" (detected backend {cheap_clone_backend!r})"
+                       if cheap_clone_backend else "")
+            fail(f"--jobs {jobs} requires a cheap-clone workspace; Assay "
+                 f"could not confirm the supported btrfs CoW backend{backend}. "
+                 "Use --jobs 1 or configure the supported Cowtree btrfs area")
+    else:
+        fail("R2 jobs request must be a positive integer, 'auto', or unset "
+             f"(got {request!r})")
+
+    return {
+        "jobs": jobs,
+        "mode": mode,
+        "source": request_source,
+        "request_source": source,
+        "requested": request,
+        "jobs_max": jobs_max,
+        "cpu_cap": cpu_cap,
+        "memory_budget_bytes": memory_budget_bytes,
+        "candidate_ram_bytes": candidate_ram_bytes,
+        "candidate_ram_samples": candidate_ram_samples,
+        "candidates_remaining": candidates_remaining,
+        "cheap_clone": cheap_clone,
+        "cheap_clone_backend": cheap_clone_backend,
+        # The serial default leaves Assay's existing default in control.
+        "forward": request is not None,
+    }
+
+
 def _fmt_mb(n: int) -> str:
     return f"{n / 1024 ** 2:.0f}MB"
 
@@ -4362,7 +4836,10 @@ def slice_cgroupfs_dir(slice_name: str) -> Path:
     parts = stem.split("-")
     if len(parts) == 1:
         return Path(f"{stem}.slice")
-    return Path("/".join(p + ".slice" for p in parts[:-1])) / slice_name
+    # RG-117c: every ancestor is the cumulative dash prefix (the parent of
+    # `a-b-c.slice` is `a-b.slice`, not `b.slice`).
+    ancestors = ["-".join(parts[:n]) + ".slice" for n in range(1, len(parts))]
+    return Path("/".join(ancestors)) / slice_name
 
 
 def check_slice_memory_admission(lane: dict, lane_name: str,
@@ -4394,7 +4871,9 @@ def check_slice_memory_admission(lane: dict, lane_name: str,
 
     max_raw = _read("memory.max")
     cur_raw = _read("memory.current")
-    if max_raw is None or max_raw == "max":
+    # RG-117e: anything but ASCII digits (`max`, an empty or garbled file) is
+    # "no derivable ceiling"; a bare int() on it raised ValueError.
+    if max_raw is None or not (max_raw.isascii() and max_raw.isdigit()):
         # RG-55/C7: name WHY when the reason is a private cgroup namespace
         # (this devcontainer's own default) rather than leave a reader to
         # guess between "wrong path" and "structurally unreachable from
@@ -4409,11 +4888,11 @@ def check_slice_memory_admission(lane: dict, lane_name: str,
                    f"doctor's own 'profiler' check, RG-55/C7)")
         print(f"run-gate: admission WARNING: no derivable memory ceiling for "
               f"slice {slice_name} ({sl_dir}/memory.max "
-              f"{'absent' if max_raw is None else '= max'}; export "
+              f"{'absent' if max_raw is None else '= ' + (max_raw or 'empty')}; export "
               f"${CGROUPFS_ROOT_ENV_VAR} if the host cgroupfs hides here)"
               f"{why} — admission by shared-infra rules only", flush=True)
         return
-    if cur_raw is None or not cur_raw.isdigit():
+    if cur_raw is None or not (cur_raw.isascii() and cur_raw.isdigit()):
         print(f"run-gate: admission WARNING: slice {slice_name} current usage "
               f"unreadable ({sl_dir}/memory.current) — admission by shared-infra "
               f"rules only", flush=True)
@@ -4584,9 +5063,9 @@ def check_clean_tree(worktree: Path) -> None:
 #
 #   latest  — the most recent invocation, WHATEVER happened to it (pass, fail,
 #             tool error, Ctrl-C, dirty tree, mid-rebase). Diagnostics.
-#   history — a curated trend series keyed by (lane, commit), bounded to the
-#             last `keep` commits. ONLY runs whose (commit, duration) pairing
-#             is actually meaningful get in.
+#   history — a curated trend series keyed by (lane, commit, io_sync), bounded
+#             to the last `keep` measurements across modes. ONLY runs whose
+#             (commit, duration) pairing is actually meaningful get in.
 #
 # Letting the second inherit the first's permissiveness is the named trap: a
 # dirty-tree run's duration attributed to a commit that never ran it, silently
@@ -4600,14 +5079,20 @@ def history_store_path(project_dir: Path) -> Path:
     return history_dir(project_dir) / HISTORY_FILE_NAME
 
 
-def history_written_paths(project_dir: Path) -> list[Path]:
+def history_written_paths(project_dir: Path,
+                          lane: str | None = None) -> list[Path]:
     """EVERY path the recorder can leave in the tree — the store, the lock,
     and the temp file a crash between write and rename would strand. The
     ignore question has to be asked about all three, not just the one we
     think of first."""
     hdir = history_dir(project_dir)
-    return [hdir / HISTORY_FILE_NAME, hdir / HISTORY_LOCK_NAME,
-            hdir / f"{HISTORY_FILE_NAME}.tmp.{os.getpid()}"]
+    paths = [hdir / HISTORY_FILE_NAME, hdir / HISTORY_LOCK_NAME,
+             hdir / f"{HISTORY_FILE_NAME}.tmp.{os.getpid()}"]
+    if lane is not None:
+        sidecar = profile_sidecar_path(hdir, lane)
+        paths += [sidecar,
+                  sidecar.with_name(f"{sidecar.name}.tmp.{os.getpid()}")]
+    return paths
 
 
 def paths_are_git_ignored(worktree: Path, targets: list[Path]) -> bool | None:
@@ -4703,7 +5188,10 @@ def start_run_record(lane_name: str, worktree: Path, repo: Path, *,
                      config_path: Path | None = None,
                      config_sha256: str | None = None,
                      central_config_path: Path | None = None,
-                     central_config_sha256: str | None = None) -> dict:
+                     central_config_sha256: str | None = None,
+                     io_sync: str | None = "strict",
+                     io_sync_override: bool = False,
+                     cow_override: bool = False) -> dict:
     """Sample the state that is ABOUT to be judged, BEFORE the lane runs.
 
     Sampling afterwards would be a different tree: a lane may commit, stash,
@@ -4724,6 +5212,9 @@ def start_run_record(lane_name: str, worktree: Path, repo: Path, *,
         "git_operation": git_operation_in_progress(worktree),
         "history_eligible": False,
         "excluded_reason": None,
+        "io_sync": io_sync,
+        "io_sync_override": io_sync_override,
+        "cow_override": cow_override,
         # RG-55/C8: these are nullable telemetry facts, not verdict inputs.
         # Keeping the keys on every invocation makes history JSON shape
         # stable even when profiling is disabled or unavailable.
@@ -4764,7 +5255,10 @@ def finish_run_record(record: dict, *, exit_code: int | None = None,
     # facts used to judge and archive that run, not public history fields.
     record.pop("_verdict_path", None)
     record.pop("_progress_path", None)
+    r2_progress_path = record.pop("_r2_progress_path", None)
     record.pop("_assay_identity_mode", None)
+    attach_workers_profiles(record)
+    record.setdefault("history_eligible", False)
     # RG-35 (RW-3): a re-attached or collected run is ONE run, and its
     # duration belongs to the CONTAINER, not to the client that happened to
     # attach to it — `adopt_inflight_start` swaps this invocation's monotonic
@@ -4784,6 +5278,7 @@ def finish_run_record(record: dict, *, exit_code: int | None = None,
     else:
         record["duration_seconds"] = None if started is None \
             else round(time.monotonic() - started, 3)
+    record.setdefault("excluded_reason", None)
     if error is not None:
         record["outcome"] = "aborted" if not isinstance(error, Exception) \
             else "error"
@@ -4793,7 +5288,12 @@ def finish_run_record(record: dict, *, exit_code: int | None = None,
     else:
         record["exit_code"] = exit_code
         verdict = record.get("verdict")
-        if verdict in ("PASS", "FAIL"):
+        if verdict == "FAIL" and record.get("reason") in WORKERS_INCONCLUSIVE:
+            record["outcome"] = "inconclusive"
+            record["excluded_reason"] = (
+                f"inconclusive ({record['reason']}): the run is not a "
+                "measurement of the commit")
+        elif verdict in ("PASS", "FAIL"):
             record["outcome"] = verdict.lower()
         elif verdict == "BUDGET_EXCEEDED":
             record["outcome"] = "budget_exceeded"
@@ -4824,6 +5324,10 @@ def finish_run_record(record: dict, *, exit_code: int | None = None,
         reasons.append("HEAD did not resolve to a commit")
     if record.get("selective"):
         reasons.append("selective lane arguments do not certify the whole lane")
+    if record.get("io_sync_override"):
+        reasons.append("io_sync override is not history-eligible")
+    if record.get("cow_override"):
+        reasons.append("CoW override is not history-eligible")
     if reasons:
         record["excluded_reason"] = (record["excluded_reason"] or
                                      "; ".join(reasons))
@@ -4837,7 +5341,552 @@ def finish_run_record(record: dict, *, exit_code: int | None = None,
         # exactly the direction that makes a "cheap, always run it" call
         # wrong. run-gate hands over both series; it does not pick one.
         record["history_eligible"] = True
+    attach_lane_profile(record, r2_progress_path)
     return record
+
+
+def head_tree(worktree: Path) -> str | None:
+    try:
+        proc = subprocess.run(["git", "-C", str(worktree), "rev-parse",
+                               "--verify", "HEAD^{tree}"],
+                              capture_output=True, text=True,
+                              env=host_git_environment())
+    except OSError:
+        return None
+    sha = proc.stdout.strip()
+    return sha if proc.returncode == 0 and re.fullmatch(
+        r"(?:[0-9a-f]{40}|[0-9a-f]{64})", sha) else None
+
+
+def attach_lane_profile(record: dict, r2_progress_path: object) -> None:
+    """RG-144/RG-145: classify the run, ingest candidate profiles, and stage
+    the `lane-profile/1` record (private `_lane_profile`, written to the
+    sidecar by `_record_invocation`). The history entry gains `contamination`
+    and `profile_summary`. R2 candidate RAM p95 comes from CLEAN subjects
+    only: a contaminated run records none, so it can never be a sizing
+    basis. Nothing is added when there is neither a Summary nor candidates."""
+    summary = record.get("resources")
+    summary = summary if isinstance(summary, dict) else None
+    subjects: list[dict] = []
+    exceeded: list[str] = []
+    is_r2 = isinstance(r2_progress_path, str) and isinstance(
+        record.get("r2_jobs"), dict)
+    if is_r2:
+        for event in assay_progress_candidate_events(
+                Path(r2_progress_path), record.get("commit")):
+            subject = profile_from_progress_event(
+                event, lane=record.get("lane"), commit=record.get("commit"))
+            subjects.append(subject)
+            if event.get("outcome_bucket") == "budget_exceeded":
+                exceeded.append(subject["subject"]["id"])
+    if summary is None and not subjects:
+        return
+    lane_profile = build_lane_profile(
+        lane=record.get("lane"), run_id=record.get("run_id"),
+        commit=record.get("commit"),
+        tree=head_tree(Path(record["worktree"]))
+        if record.get("worktree") else None,
+        kind="per_candidate" if is_r2 else "per_worker", subjects=subjects,
+        summary=summary, contamination=classify_summary(summary),
+        wall_seconds=record.get("duration_seconds"),
+        outcome=record.get("outcome"),
+        history_eligible=bool(record.get("history_eligible")),
+        started_at=record.get("started_at"), budget_exceeded_ids=exceeded)
+    record["_lane_profile"] = lane_profile
+    record["contamination"] = lane_profile["contamination"]
+    record["profile_summary"] = profile_summary(lane_profile)
+    if lane_profile["contaminated_budget_exceeded_ids"]:
+        record["rejudge_contaminated"] = list(
+            lane_profile["contaminated_budget_exceeded_ids"])
+    p95, samples = clean_rss_p95(lane_profile["subjects"])
+    if p95 is not None and samples:
+        record["r2_candidate_ram_p95_bytes"] = p95
+        record["r2_candidate_ram_samples"] = samples
+
+
+# ---------------------------------------------------------------------------
+# RG-144 / RG-145 -- resource profiles (design docs/design/RESOURCE-PROFILES.md
+# sections 2, 6.1 and 6.4). Pure data handling; no docker, no cgroup reads.
+#
+# * RG-144: "time stalled on memory" is a CONTAMINATION flag, never a
+#   capacity number. One rule (`classify_contamination`), owned here.
+# * RG-145: `resource-profile/1` ingestion from assay progress events (assay
+#   12 `profile` object, or the assay <= 11 numeric keys), per-run
+#   distributions, the bounded `.run-gate/profiles/<lane>.jsonl` sidecar, and
+#   cross-run percentiles recomputed from its RAW subjects.
+# There is deliberately NO fallback reader for the cgprofile observer: a
+# subject without a profile is NO_MEASUREMENT with a reason code.
+# ---------------------------------------------------------------------------
+
+PROFILE_SCHEMA = "resource-profile/1"
+LANE_PROFILE_SCHEMA = "lane-profile/1"
+
+# Calibrated by design section 9 M5; named so one edit changes the rule.
+CONTAMINATION_STALL_FLOOR_SECONDS = 2.0
+CONTAMINATION_STALL_WALL_FRACTION = 0.005
+PSI_GUARD_EVENTS_PATH = Path("/run/mdt/psi-guard/events.jsonl")
+
+PROFILES_DIR_NAME = "profiles"
+PROFILE_MAX_RUNS = 200
+PROFILE_MAX_SUBJECTS = 20_000
+
+PROFILE_METRIC_KEYS = ("rss_peak_bytes", "cpu_seconds", "io_read_bytes",
+                       "io_write_bytes", "wall_seconds")
+PROFILE_MEASURED_STATUSES = ("MEASURED", "PARTIAL")
+PROFILE_STATUSES = ("MEASURED", "PARTIAL", "NO_MEASUREMENT")
+
+
+def _profile_number(value: object) -> float | int | None:
+    """A finite, non-negative real number or None (bools are not numbers)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value if value >= 0 else None
+
+
+def _event_count(value: object) -> int:
+    number = _profile_number(value)
+    return int(number) if number is not None else 0
+
+
+def nearest_rank(sorted_values: list, percent: int):
+    """Nearest-rank percentile of an ascending list (an actual element)."""
+    index = max(0, math.ceil(percent / 100 * len(sorted_values)) - 1)
+    return sorted_values[index]
+
+
+def _iso_epoch(value: object) -> float | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return float(calendar.timegm(time.strptime(value,
+                                                   "%Y-%m-%dT%H:%M:%SZ")))
+    except ValueError:
+        return None
+
+
+def read_guard_events(path: Path, start: float | None,
+                      end: float | None) -> list[dict]:
+    """MDT PSI-guard actions inside [start, end]; `[]` when the file is not
+    mounted, unreadable, or the window is unknown. Unparseable lines skip.
+    `ts` is epoch seconds or an ISO-8601 `...Z` string."""
+    if start is None or end is None:
+        return []
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    found = []
+    for line in text.splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        stamp = _profile_number(event.get("ts"))
+        if stamp is None:
+            stamp = _iso_epoch(event.get("ts"))
+        if stamp is not None and start <= stamp <= end:
+            found.append(event)
+    return found
+
+
+def classify_contamination(*, wall_seconds: float | None,
+                           own_limit_events: int,
+                           memory_stall_seconds: float | None,
+                           ancestor_events: list | None,
+                           guard_events: list | None) -> dict:
+    """The one rule (design 6.1). `self_limited` and `contaminated` are
+    independent: a run can be both.
+
+    `ancestor_events` is a list of {path, high, max, ...} entries (None
+    entries are unreadable and skipped), or None when the observer does not
+    report it (cgprofile CP-40 absent): the criterion is then skipped,
+    recorded as `ancestor_events: "unknown"`, and neither flags nor clears
+    the run."""
+    reasons: list[str] = []
+    for entry in ancestor_events or ():
+        if not isinstance(entry, dict):
+            continue
+        count = _event_count(entry.get("high")) + _event_count(
+            entry.get("max"))
+        if count > 0:
+            reasons.append(f"ancestor memory limit reached {count} time(s) "
+                           f"at {entry.get('path', '?')}")
+    if guard_events:
+        reasons.append(f"MDT PSI guard acted {len(guard_events)} time(s) "
+                       "during the run")
+    self_limited = own_limit_events > 0
+    stall = _profile_number(memory_stall_seconds)
+    if stall is not None and not self_limited:
+        wall = _profile_number(wall_seconds) or 0.0
+        threshold = max(CONTAMINATION_STALL_FLOOR_SECONDS,
+                        CONTAMINATION_STALL_WALL_FRACTION * wall)
+        if stall >= threshold:
+            reasons.append(f"{stall:.1f} s memory stall not explained by "
+                           "the lane's own limit")
+    return {
+        "flagged": bool(reasons),
+        "reasons": reasons,
+        "self_limited": {"flagged": self_limited,
+                         "memory_limit_events": own_limit_events},
+        "ancestor_events": "unknown" if ancestor_events is None else "known",
+    }
+
+
+def classify_summary(summary: dict | None,
+                     guard_path: Path | None = None) -> dict | None:
+    """Classify one lane run from its cgprofile Summary (schema 1); None
+    when there is no Summary. Own limit events are the leaf's
+    `events.memory_high_breach` + `oom_kill` (the Summary has no separate
+    `max`). Lane stall is `pressure.memory_full_stall_seconds`, the session's
+    own cgroup, never the host-wide figure."""
+    if not isinstance(summary, dict):
+        return None
+    events = summary.get("events")
+    events = events if isinstance(events, dict) else {}
+    pressure = summary.get("pressure")
+    pressure = pressure if isinstance(pressure, dict) else {}
+    own = _event_count(events.get("memory_high_breach")) + _event_count(
+        events.get("oom_kill"))
+    ancestors = summary.get("ancestors_memory_events_local")
+    guard = read_guard_events(
+        guard_path or PSI_GUARD_EVENTS_PATH,
+        _iso_epoch(summary.get("started_at")),
+        _iso_epoch(summary.get("ended_at")))
+    return classify_contamination(
+        wall_seconds=summary.get("duration_seconds"), own_limit_events=own,
+        memory_stall_seconds=pressure.get("memory_full_stall_seconds"),
+        ancestor_events=ancestors if isinstance(ancestors, list) else None,
+        guard_events=guard)
+
+
+def classify_subject(subject: dict, run_contamination: dict | None) -> dict:
+    """A subject is contaminated when its own context says so or when the
+    run it belongs to is flagged (the lane cgroup and the host window are
+    shared by every subject of the run)."""
+    context = subject.get("context")
+    context = context if isinstance(context, dict) else {}
+    local = context.get("container_memory_events_local")
+    local = local if isinstance(local, dict) else {}
+    own = sum(_event_count(local.get(k)) for k in ("high", "max", "oom_kill"))
+    ancestors = context.get("ancestors_memory_events_local")
+    verdict = classify_contamination(
+        wall_seconds=subject.get("wall_seconds"), own_limit_events=own,
+        memory_stall_seconds=context.get("container_psi_memory_full_seconds"),
+        ancestor_events=ancestors if isinstance(ancestors, list) else None,
+        guard_events=None)
+    reasons = list(verdict["reasons"])
+    if run_contamination and run_contamination.get("flagged"):
+        reasons.extend(r for r in run_contamination["reasons"]
+                       if r not in reasons)
+    return {"flagged": bool(reasons), "reasons": reasons}
+
+
+def entry_is_contaminated(entry: dict) -> bool:
+    """True for a history entry whose run was flagged contaminated."""
+    node = entry.get("contamination") if isinstance(entry, dict) else None
+    return isinstance(node, dict) and node.get("flagged") is True
+
+
+def _blank_profile_metrics() -> dict:
+    keys = ("rss_peak_bytes", "memory_peak_bytes", "swap_peak_bytes",
+            "cpu_seconds", "cpu_user_seconds", "cpu_system_seconds",
+            "io_read_bytes", "io_write_bytes", "io_read_ops", "io_write_ops",
+            "psi_memory_some_seconds", "psi_memory_full_seconds",
+            "psi_cpu_some_seconds", "psi_io_some_seconds",
+            "psi_io_full_seconds")
+    return {key: None for key in keys}
+
+
+def no_measurement_profile(subject: dict, wall_seconds: object,
+                           reason: str = "OBSERVER_UNAVAILABLE") -> dict:
+    return {"schema": PROFILE_SCHEMA, "subject": subject,
+            "wall_seconds": _profile_number(wall_seconds),
+            "status": "NO_MEASUREMENT", "reason": reason, "observer": None,
+            "metrics": _blank_profile_metrics(), "missing": {}, "sources": {},
+            "context": {}}
+
+
+def _legacy_profile(event: dict, subject: dict) -> dict:
+    """assay <= 11 progress numeric keys (RG-148 compatibility window)."""
+    resources = event.get("resources")
+    resources = resources if isinstance(resources, dict) else {}
+
+    def pick(name):
+        for source in (resources, event):
+            value = _profile_number(source.get(name))
+            if value is not None:
+                return value
+        return None
+
+    rss, cpu, written = pick("peak_rss_bytes"), pick("cpu_seconds"), \
+        pick("write_bytes")
+    wall = _profile_number(event.get("elapsed_seconds"))
+    if rss is None and cpu is None and written is None:
+        return no_measurement_profile(subject, wall)
+    metrics = _blank_profile_metrics()
+    metrics.update({"rss_peak_bytes": rss, "cpu_seconds": cpu,
+                    "io_write_bytes": written})
+    missing = {key: "OBSERVER_UNAVAILABLE" for key, value in metrics.items()
+               if value is None}
+    return {"schema": PROFILE_SCHEMA, "subject": subject, "wall_seconds": wall,
+            "status": "MEASURED" if rss is not None else "PARTIAL",
+            "reason": None, "observer": {"name": "assay-progress-legacy"},
+            "metrics": metrics, "missing": missing, "sources": {},
+            "context": {}}
+
+
+def profile_from_progress_event(event: dict, *, lane: str | None = None,
+                                commit: str | None = None) -> dict:
+    """One `resource-profile/1` per assay `candidate` progress event.
+
+    Assay 12 carries a `profile` object; assay <= 11 carries numeric keys.
+    Neither present: NO_MEASUREMENT (never a guess, no other reader)."""
+    identity = event.get("candidate_id")
+    if not isinstance(identity, str):
+        index = event.get("candidate_index")
+        identity = str(index) if type(index) is int else "unknown"
+    subject = {"tool": "assay", "lane": lane, "kind": "r2-candidate",
+               "id": identity, "worker_index": event.get("worker_index"),
+               "commit": commit}
+    raw = event.get("profile")
+    if isinstance(raw, dict) and raw.get("schema") == PROFILE_SCHEMA \
+            and isinstance(raw.get("metrics"), dict):
+        if raw.get("status") not in PROFILE_STATUSES:
+            return no_measurement_profile(
+                subject, event.get("elapsed_seconds"), "OBSERVER_ERROR")
+        profile = dict(raw)
+        merged = dict(subject)
+        if isinstance(raw.get("subject"), dict):
+            merged.update({k: v for k, v in raw["subject"].items()
+                           if v is not None})
+        profile["subject"] = merged
+        profile["metrics"] = {**_blank_profile_metrics(), **raw["metrics"]}
+        wall = _profile_number(raw.get("wall_seconds"))
+        profile["wall_seconds"] = wall if wall is not None \
+            else _profile_number(event.get("elapsed_seconds"))
+        return profile
+    return _legacy_profile(event, subject)
+
+
+def distribution(values: list) -> dict:
+    ordered = sorted(values)
+    if not ordered:
+        return {"p50": None, "p95": None, "max": None, "n": 0}
+    return {"p50": nearest_rank(ordered, 50), "p95": nearest_rank(ordered, 95),
+            "max": ordered[-1], "n": len(ordered)}
+
+
+def _profile_metric(subject: dict, key: str):
+    if key == "wall_seconds":
+        return _profile_number(subject.get("wall_seconds"))
+    metrics = subject.get("metrics")
+    return _profile_number(metrics.get(key)) if isinstance(metrics, dict) \
+        else None
+
+
+def profile_is_clean_measured(subject: dict) -> bool:
+    contamination = subject.get("contamination")
+    return (subject.get("status") in PROFILE_MEASURED_STATUSES
+            and not (isinstance(contamination, dict)
+                     and contamination.get("flagged")))
+
+
+def profile_distributions(subjects: list[dict]) -> dict:
+    """Distributions over clean, measured subjects only. NO_MEASUREMENT and
+    contaminated subjects never enter (they are counted in
+    `profile_status_counts`)."""
+    clean = [s for s in subjects if profile_is_clean_measured(s)]
+    return {key: distribution([v for v in (_profile_metric(s, key)
+                                           for s in clean) if v is not None])
+            for key in PROFILE_METRIC_KEYS}
+
+
+def profile_status_counts(subjects: list[dict]) -> dict:
+    counts = {status: 0 for status in PROFILE_STATUSES}
+    for subject in subjects:
+        status = subject.get("status")
+        counts[status if status in counts else "NO_MEASUREMENT"] += 1
+    return counts
+
+
+def _lane_profile_status(subjects: list[dict], lane_measured: bool) -> str:
+    counts = profile_status_counts(subjects)
+    if not subjects:
+        return "MEASURED" if lane_measured else "NO_MEASUREMENT"
+    if counts["MEASURED"] == len(subjects):
+        return "MEASURED"
+    if counts["NO_MEASUREMENT"] == len(subjects) and not lane_measured:
+        return "NO_MEASUREMENT"
+    return "PARTIAL"
+
+
+def _lane_cgroup_numbers(summary: dict | None) -> dict:
+    summary = summary if isinstance(summary, dict) else {}
+    memory = summary.get("memory")
+    cpu = summary.get("cpu")
+    pressure = summary.get("pressure")
+    memory = memory if isinstance(memory, dict) else {}
+    cpu = cpu if isinstance(cpu, dict) else {}
+    pressure = pressure if isinstance(pressure, dict) else {}
+    return {"memory_peak_bytes": memory.get("peak_bytes"),
+            "cpu_seconds": cpu.get("seconds"),
+            "psi_memory_full_seconds": pressure.get(
+                "memory_full_stall_seconds")}
+
+
+def build_lane_profile(*, lane: str, run_id: str, commit: str | None,
+                       tree: str | None, kind: str, subjects: list[dict],
+                       summary: dict | None, contamination: dict | None,
+                       wall_seconds: float | None, outcome: str | None,
+                       history_eligible: bool, started_at: str | None,
+                       workers: int | None = None,
+                       budget_exceeded_ids: list[str] | None = None) -> dict:
+    """The `lane-profile/1` record (design 6.4). Every subject gets its own
+    contamination verdict before distributions are computed. `kind` is
+    `per_candidate` or `per_worker`."""
+    annotated = []
+    for subject in subjects:
+        item = dict(subject)
+        item["contamination"] = classify_subject(item, contamination)
+        annotated.append(item)
+    run_flag = contamination or {
+        "flagged": False, "reasons": [], "ancestor_events": "unknown",
+        "self_limited": {"flagged": False, "memory_limit_events": 0}}
+    exceeded = list(budget_exceeded_ids or [])
+    by_id = {s["subject"].get("id"): s for s in annotated}
+    return {
+        "schema": LANE_PROFILE_SCHEMA, "lane": lane, "run_id": run_id,
+        "commit": commit, "tree": tree, "workers": workers,
+        "started_at": started_at, "outcome": outcome,
+        "history_eligible": history_eligible, "wall_seconds": wall_seconds,
+        "status": _lane_profile_status(annotated, isinstance(summary, dict)),
+        "contamination": {"flagged": run_flag["flagged"],
+                          "reasons": list(run_flag["reasons"])},
+        "ancestor_events": run_flag["ancestor_events"],
+        "self_limited": dict(run_flag["self_limited"]),
+        "status_counts": profile_status_counts(annotated),
+        "contaminated_subjects": sum(
+            1 for s in annotated if s["contamination"]["flagged"]),
+        kind: profile_distributions(annotated),
+        "lane_cgroup": _lane_cgroup_numbers(summary),
+        "budget_exceeded_ids": exceeded,
+        "contaminated_budget_exceeded_ids": [
+            i for i in exceeded
+            if i in by_id and by_id[i]["contamination"]["flagged"]],
+        "subjects": annotated,
+    }
+
+
+def profile_summary(record: dict) -> dict:
+    """`history.json` entry key: the distributions without the subjects."""
+    return {key: value for key, value in record.items()
+            if key not in ("subjects", "budget_exceeded_ids",
+                           "contaminated_budget_exceeded_ids", "run_id",
+                           "commit", "tree", "started_at", "lane")}
+
+
+def clean_rss_p95(subjects: list[dict]) -> tuple[int | None, int]:
+    """Nearest-rank p95 of clean candidate RSS and its sample count (positive
+    values only, the historical sample rule)."""
+    values = sorted(int(v) for v in (_profile_metric(s, "rss_peak_bytes")
+                                     for s in subjects
+                                     if profile_is_clean_measured(s))
+                    if v is not None and v > 0)
+    if not values:
+        return None, 0
+    return nearest_rank(values, 95), len(values)
+
+
+def profile_sidecar_path(history_directory: Path, lane: str) -> Path:
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", lane) or "_"
+    return history_directory / PROFILES_DIR_NAME / f"{safe}.jsonl"
+
+
+def read_profile_records(path: Path) -> list[dict]:
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    records = []
+    for line in text.splitlines():
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue  # a torn or foreign line is skipped, never fatal
+        if isinstance(record, dict) and record.get(
+                "schema") == LANE_PROFILE_SCHEMA:
+            records.append(record)
+    return records
+
+
+def _bound_profile_records(records: list[dict], max_runs: int,
+                           max_subjects: int) -> list[dict]:
+    records = records[-max_runs:]
+    newest = records[-1]
+    if len(newest.get("subjects", [])) > max_subjects:
+        newest = dict(newest)
+        newest["subjects_truncated"] = len(newest["subjects"]) - max_subjects
+        newest["subjects"] = newest["subjects"][-max_subjects:]
+        records[-1] = newest
+    while len(records) > 1 and sum(
+            len(r.get("subjects", [])) for r in records) > max_subjects:
+        records.pop(0)
+    return records
+
+
+def append_profile_record(path: Path, record: dict, *,
+                          max_runs: int = PROFILE_MAX_RUNS,
+                          max_subjects: int = PROFILE_MAX_SUBJECTS) -> None:
+    """Append one record, rotating oldest-first, rewriting atomically (the
+    caller holds the history lock; the rewrite goes through a temporary
+    sibling and `os.replace`, so a reader sees a whole old or new file)."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    records = _bound_profile_records(read_profile_records(path) + [record],
+                                     max_runs, max_subjects)
+    tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}")
+    tmp.write_text("".join(json.dumps(r, sort_keys=True) + "\n"
+                           for r in records), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def clean_profile_records(records: list[dict]) -> list[dict]:
+    return [r for r in records
+            if not (isinstance(r.get("contamination"), dict)
+                    and r["contamination"].get("flagged"))]
+
+
+def pooled_profile_subjects(records: list[dict]) -> list[dict]:
+    return [s for r in clean_profile_records(records)
+            for s in r.get("subjects", [])]
+
+
+def profile_history_view(records: list[dict]) -> dict:
+    """What `run-gate history <lane>` prints: pooled clean distributions
+    (recomputed from raw subjects, never from stored p95s) plus the status
+    and contamination counts over every stored run."""
+    counts = {status: 0 for status in PROFILE_STATUSES}
+    for record in records:
+        for status, n in (record.get("status_counts") or {}).items():
+            if status in counts and isinstance(n, int):
+                counts[status] += n
+    return {
+        "runs": len(records),
+        "runs_contaminated": len(records) - len(clean_profile_records(records)),
+        "runs_self_limited": sum(
+            1 for r in records
+            if (r.get("self_limited") or {}).get("flagged")),
+        "subjects_contaminated": sum(
+            r["contaminated_subjects"] for r in records
+            if isinstance(r.get("contaminated_subjects"), int)),
+        "status_counts": counts,
+        "distributions": profile_distributions(
+            pooled_profile_subjects(records)),
+    }
 
 
 def _empty_history_store() -> dict:
@@ -5156,11 +6205,16 @@ def _apply_record(store: dict, record: dict, keep: int) -> dict:
     if not entry["history_eligible"]:
         return store
     hist = [e for e in slot.get("history", []) if isinstance(e, dict)]
-    # Keyed by (lane, commit): a re-run of the same commit REPLACES its entry
-    # rather than adding a second — otherwise ten re-runs of one commit fill
-    # the whole window and "the last N commits" stops being true. It moves to
-    # the tail, so eviction means "least recently measured".
-    hist = [e for e in hist if e.get("commit") != entry["commit"]]
+    # A mode changes the work performed, so one commit can have one distinct
+    # measurement per io_sync value. Legacy records used strict behavior.
+    io_sync = entry.get("io_sync", "strict")
+    # RG-146: likewise one measurement per xdist worker count (`None` for a
+    # lane without workers, which keeps the old key exactly).
+    workers = (entry.get("workers") or {}).get("workers")
+    hist = [e for e in hist if not (
+        e.get("commit") == entry["commit"]
+        and e.get("io_sync", "strict") == io_sync
+        and (e.get("workers") or {}).get("workers") == workers)]
     hist.append(entry)
     slot["history"] = hist[-keep:]
     return store
@@ -5201,7 +6255,8 @@ def _acquire_store_lock(lock_path: Path, what: str) -> int:
 def _record_invocation(project_dir: Path, worktree: Path, record: dict,
                        keep: int) -> None:
     hdir = history_dir(project_dir)
-    ignored = paths_are_git_ignored(worktree, history_written_paths(project_dir))
+    ignored = paths_are_git_ignored(
+        worktree, history_written_paths(project_dir, record.get("lane")))
     if ignored is not True:
         why = ("is not fully git-ignored" if ignored is False
                else "could not be confirmed git-ignored")
@@ -5218,6 +6273,15 @@ def _record_invocation(project_dir: Path, worktree: Path, record: dict,
         _write_json_atomic(
             _apply_record(load_history_store(store_path), record, keep),
             store_path)
+        lane_profile = record.get("_lane_profile")
+        if lane_profile is not None:
+            # RG-145: a sidecar failure never costs the history entry above.
+            try:
+                append_profile_record(
+                    profile_sidecar_path(hdir, record["lane"]), lane_profile)
+            except OSError as exc:
+                print(f"{PROG}: WARNING: lane profile not recorded: {exc}",
+                      file=sys.stderr, flush=True)
     finally:
         os.close(fd)  # releases the flock
 
@@ -5257,10 +6321,39 @@ def flush_run_record(record: dict | None, *, exit_code: int | None = None,
     if record is None or record.get("_flushed"):
         return
     record["_flushed"] = True
+    finished = finish_run_record(record, exit_code=exit_code, error=error)
+    report_contaminated_budget_exceeded(finished)
     record_invocation(record["_project_dir"], Path(record["worktree"]),
-                      finish_run_record(record, exit_code=exit_code,
-                                        error=error),
-                      record["_keep"])
+                      finished, record["_keep"])
+
+
+def latest_contaminated_budget_exceeded(project_dir: Path,
+                                        lane_name: str) -> list[str]:
+    """Candidate ids to rejudge: the latest recorded run's contaminated
+    `budget_exceeded` candidates (empty when no profile record exists)."""
+    records = read_profile_records(
+        profile_sidecar_path(history_dir(project_dir), lane_name))
+    return list(records[-1].get("contaminated_budget_exceeded_ids") or []) \
+        if records else []
+
+
+def rejudge_contaminated_lines(lane_name: str, ids: list[str]) -> list[str]:
+    return [f"{PROG} {lane_name} --jobs 1 --rejudge {identity}"
+            for identity in ids]
+
+
+def report_contaminated_budget_exceeded(record: dict) -> None:
+    """RG-144 R2 closeout: `budget_exceeded` candidates whose profile is
+    contaminated are inconclusive, not product results (2026-09-14 rule).
+    Print the exact serial rejudge lines; `--rejudge-contaminated` runs them."""
+    ids = record.get("rejudge_contaminated")
+    if not ids:
+        return
+    print(f"{PROG}: {len(ids)} budget_exceeded candidate(s) ran under a "
+          "contaminated measurement and are inconclusive; rejudge serially "
+          "(or run once with --rejudge-contaminated):", flush=True)
+    for line in rejudge_contaminated_lines(record["lane"], ids):
+        print(f"  {line}", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -5945,6 +7038,24 @@ def adopt_inflight_start(run_record: dict, pending: dict) -> None:
         run_record["_started_epoch"] = epoch
 
 
+def adopt_inflight_r2_jobs(lane: dict, run_record: dict | None,
+                           pending: dict) -> None:
+    """Bind the original worker decision when a container is re-attached."""
+    recorded_jobs = pending.get("r2_jobs")
+    if isinstance(recorded_jobs, dict):
+        lane["_r2_jobs_selection"] = recorded_jobs
+        if run_record is not None:
+            run_record["r2_jobs"] = recorded_jobs
+            progress = pending.get("progress")
+            if isinstance(progress, str) and progress:
+                run_record["_r2_progress_path"] = progress
+    else:
+        lane.pop("_r2_jobs_selection", None)
+        if run_record is not None:
+            run_record.pop("r2_jobs", None)
+            run_record.pop("_r2_progress_path", None)
+
+
 def record_lost_run(project_dir: Path, worktree: Path, repo: Path,
                     lane_name: str, pending: dict, keep: int) -> None:
     """RW-3: a run whose container is GONE is recorded as `aborted`, never as
@@ -6056,6 +7167,9 @@ RESOURCE_SERIES_GETTERS = {
 
 
 def _lane_stats(entries: list[dict]) -> dict:
+    # RG-144: a contaminated run is not a sizing or duration basis; it stays
+    # in `history` (visible, flagged) but contributes to no median here.
+    entries = [e for e in entries if not entry_is_contaminated(e)]
     stats = duration_stats(entries)
     for key, getter in RESOURCE_SERIES_GETTERS.items():
         # RW-24/R-36k: byte-valued series (identified structurally by the
@@ -6078,15 +7192,48 @@ def _lane_stats(entries: list[dict]) -> dict:
     return stats
 
 
+def history_io_sync(entry: dict) -> str:
+    """RG-136: the I/O mode a history entry was measured under. Legacy
+    entries without the key were strict; a non-string value is `unknown`."""
+    mode = entry.get("io_sync", "strict")
+    return mode if isinstance(mode, str) else "unknown"
+
+
+def lane_mode_stats(report: dict, io_sync: str,
+                    kind: str = "passes") -> dict:
+    """RG-136: statistics of ONE I/O mode (`passes` or `completed`) from a
+    `lane_history_report`; empty statistics when that mode has no entries.
+    Policy consumers read this, never the combined `stats.passes`."""
+    by_mode = report["stats"].get("by_io_sync", {})
+    return (by_mode.get(io_sync) or {}).get(kind) or _lane_stats([])
+
+
+def footprint_manifest_lane_io_sync(lane_entry: dict) -> str:
+    """RG-136: the mode a manifest lane entry was distilled under. An entry
+    without a mode predates this field and is treated as strict."""
+    mode = lane_entry.get("io_sync")
+    return mode if isinstance(mode, str) else "strict"
+
+
 def lane_history_report(store: dict, lane_name: str) -> dict:
     slot = store.get("lanes", {}).get(lane_name) or {}
     hist = [e for e in slot.get("history", []) if isinstance(e, dict)]
     passes = [e for e in hist if e.get("outcome") == "pass"]
+
+    by_io_sync = {}
+    for io_sync in sorted({history_io_sync(e) for e in hist}):
+        matching = [e for e in hist if history_io_sync(e) == io_sync]
+        by_io_sync[io_sync] = {
+            "passes": _lane_stats([e for e in matching
+                                   if e.get("outcome") == "pass"]),
+            "completed": _lane_stats(matching),
+        }
     return {
         "latest": slot.get("latest"),
         "history": hist,
         "stats": {"passes": _lane_stats(passes),
-                  "completed": _lane_stats(hist)},
+                  "completed": _lane_stats(hist),
+                  "by_io_sync": by_io_sync},
     }
 
 
@@ -6163,19 +7310,67 @@ def _print_lane_history(lane_name: str, report: dict, keep: int) -> None:
     if not hist:
         print(f"  history: (empty; keep={keep})")
     else:
-        print(f"  history: {len(hist)} of at most {keep} commit(s), "
+        print(f"  history: {len(hist)} of at most {keep} measurement(s), "
               f"oldest first")
-        print(f"    {'COMMIT':<14}{'OUTCOME':<9}{'DURATION':>9}  STARTED")
+        print(f"    {'COMMIT':<14}{'IO_SYNC':<9}{'OUTCOME':<9}"
+              f"{'DURATION':>9}  STARTED")
         for entry in hist:
             print(f"    {(entry.get('commit') or '')[:12]:<14}"
+                  f"{entry.get('io_sync', 'strict'):<9}"
                   f"{str(entry.get('outcome')):<9}"
                   f"{_fmt_seconds(entry.get('duration_seconds')):>9}  "
                   f"{entry.get('started_at')}")
-        print("    " + _fmt_stats("passes", report["stats"]["passes"]))
-        print("      " + _fmt_resource_stats(report["stats"]["passes"]))
-        print("    " + _fmt_stats("completed (passes + fails)",
-                                  report["stats"]["completed"]))
-        print("      " + _fmt_resource_stats(report["stats"]["completed"]))
+        by_io_sync = report["stats"].get("by_io_sync", {})
+        if len(by_io_sync) <= 1:
+            print("    " + _fmt_stats("passes", report["stats"]["passes"]))
+            print("      " + _fmt_resource_stats(report["stats"]["passes"]))
+        else:
+            for io_sync, mode_stats in sorted(by_io_sync.items()):
+                print(f"    io_sync={io_sync} "
+                      + _fmt_stats("passes", mode_stats["passes"]))
+                print("      " + _fmt_resource_stats(mode_stats["passes"]))
+                print(f"    io_sync={io_sync} "
+                      + _fmt_stats("completed (passes + fails)",
+                                   mode_stats["completed"]))
+                print("      " + _fmt_resource_stats(mode_stats["completed"]))
+        if len(by_io_sync) <= 1:
+            print("    " + _fmt_stats("completed (passes + fails)",
+                                      report["stats"]["completed"]))
+            print("      " + _fmt_resource_stats(report["stats"]["completed"]))
+    for line in _fmt_profile_view(report.get("profiles")):
+        print(line)
+
+
+def _fmt_profile_view(view: dict | None) -> list[str]:
+    """RG-145: the profile distributions and the status/contamination counts
+    (`run-gate history <lane>`). Empty when no profile was ever recorded."""
+    if not view or not view["runs"]:
+        return []
+    counts = view["status_counts"]
+    lines = [f"  profiles: {view['runs']} run(s) "
+             f"({view['runs_contaminated']} contaminated, "
+             f"{view['runs_self_limited']} self-limited); subjects "
+             f"MEASURED {counts['MEASURED']}, PARTIAL {counts['PARTIAL']}, "
+             f"NO_MEASUREMENT {counts['NO_MEASUREMENT']}, "
+             f"{view['subjects_contaminated']} contaminated "
+             "(clean, measured subjects only below)"]
+    for key, dist in view["distributions"].items():
+        if not dist["n"]:
+            lines.append(f"    {key:<15} none")
+            continue
+        fmt = _fmt_mib if key == "rss_peak_bytes" else (
+            _fmt_bytes_short if key.startswith("io_") else _fmt_seconds)
+        lines.append(f"    {key:<15} p50 {fmt(dist['p50'])}  "
+                     f"p95 {fmt(dist['p95'])}  max {fmt(dist['max'])}  "
+                     f"n={dist['n']}")
+    return lines
+
+
+def _fmt_bytes_short(value: object) -> str:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return "-"
+    return f"{value / 1024:.0f} KiB" if value < 1024 * 1024 \
+        else f"{value / (1024 * 1024):.0f} MiB"
 
 
 def cmd_history(lanes: dict, project_dir: Path, cfg: dict, cfg_path: Path,
@@ -6200,6 +7395,14 @@ def cmd_history(lanes: dict, project_dir: Path, cfg: dict, cfg_path: Path,
     store_path = history_store_path(project_dir)
     store = load_history_store(store_path)
     selected = [lane_name] if lane_name else sorted(lanes)
+
+    def lane_report(name: str) -> dict:
+        report = lane_history_report(store, name)
+        # RG-145: distributions recomputed from the sidecar's raw subjects.
+        report["profiles"] = profile_history_view(read_profile_records(
+            profile_sidecar_path(history_dir(project_dir), name)))
+        return report
+
     if as_json:
         print(json.dumps({
             "schema": HISTORY_SCHEMA,
@@ -6208,8 +7411,7 @@ def cmd_history(lanes: dict, project_dir: Path, cfg: dict, cfg_path: Path,
             "worktree_scope": worktree_scope,
             "keep": keep,
             "keep_source": keep_source,
-            "lanes": {name: lane_history_report(store, name)
-                      for name in selected},
+            "lanes": {name: lane_report(name) for name in selected},
         }, indent=2, sort_keys=True))
         return 0
     print(f"{PROG} {installed_version()} — lane invocation history")
@@ -6224,7 +7426,7 @@ def cmd_history(lanes: dict, project_dir: Path, cfg: dict, cfg_path: Path,
         return 0
     for name in selected:
         print("")
-        _print_lane_history(name, lane_history_report(store, name), keep)
+        _print_lane_history(name, lane_report(name), keep)
     return 0
 
 
@@ -6237,17 +7439,27 @@ def cmd_history(lanes: dict, project_dir: Path, cfg: dict, cfg_path: Path,
 
 def build_footprint_manifest(store: dict, lanes: dict, keep: int,
                              from_commit: str | None, *,
-                             include_failed: bool = False) -> dict:
+                             include_failed: bool = False,
+                             io_modes: dict | None = None) -> dict:
     """Distill completed profiled runs, with FAIL added only on opt-in.
 
     A failed measurement must have completed, be history-eligible, and carry
     a resource profile. Budget stops, aborts, infrastructure errors, dirty
     runs and unprofiled failures never become measurements.
+
+    RG-136: each lane is distilled from ONE I/O mode only and records it as
+    `io_sync`. `io_modes` maps lane -> the mode its policy selects; a lane
+    not named there uses the mode of its most recent profiled measurement.
     """
     lanes_out: dict = {}
     for name in sorted(lanes):
         slot = store.get("lanes", {}).get(name) or {}
-        hist = [e for e in slot.get("history", []) if isinstance(e, dict)]
+        all_hist = [e for e in slot.get("history", []) if isinstance(e, dict)]
+        mode = (io_modes or {}).get(name)
+        if mode is None:
+            profiled = [e for e in all_hist if e.get("resources") is not None]
+            mode = history_io_sync(profiled[-1]) if profiled else "strict"
+        hist = [e for e in all_hist if history_io_sync(e) == mode]
         eligible = [e for e in hist
                     if e.get("history_eligible", True) is True]
         passes = [e for e in eligible if e.get("outcome") == "pass"]
@@ -6273,6 +7485,7 @@ def build_footprint_manifest(store: dict, lanes: dict, keep: int,
         lane_out = {
             "runs": len(passes) + (len(failures) if include_failed else 0),
             "completed_runs": len(hist),
+            "io_sync": mode,
             "scope": scope,
             "method": method,
             "source": source,
@@ -6393,8 +7606,26 @@ def cmd_footprint(lanes: dict, project_dir: Path, cfg: dict, cfg_path: Path,
     store = load_history_store(store_path)
     selected_names = merge_lanes or ([lane_name] if lane_name else sorted(lanes))
     selected = {name: lanes[name] for name in selected_names}
+    # RG-136: the mode each lane's policy selects (no command-line override
+    # exists on this verb). A sequence aggregate has no policy of its own and
+    # a lane whose settings do not resolve is left to the history fallback.
+    io_modes: dict = {}
+    for name, lane in selected.items():
+        if lane.get("kind") == "sequence" or "environment" not in lane:
+            continue
+        try:
+            env, _src = resolve_environment(
+                lane, name, cfg, central, cfg_path, central_path)
+            env_declaration = declared_environment(lane, cfg, central)
+            settings, _sources = resolve_resource_settings(
+                lane, cfg, central, env_declaration,
+                mode=env.get("mode", env_declaration.get("mode", "host")))
+        except GateError:
+            continue
+        io_modes[name] = settings["io_sync"]
     manifest = build_footprint_manifest(
-        store, selected, keep, from_commit, include_failed=include_failed)
+        store, selected, keep, from_commit, include_failed=include_failed,
+        io_modes=io_modes)
     manifest_path = footprint_manifest_path(project_dir)
     if write and merge_lanes:
         existing = load_footprint_manifest(project_dir)
@@ -6454,7 +7685,21 @@ def lane_command_argv(lane: dict, worktree: Path,
                       base: str | None = None) -> list[str]:
     """Substitute declared argv, then append request-scoped argv literally."""
     declared = substitute_worktree(lane["argv"], worktree, base)
+    selection = lane.get("_workers_selection")
+    if selection is not None:
+        declared = [item.replace(WORKERS_TOKEN, str(selection["workers"]))
+                    for item in declared]
     return [*declared, *lane.get("_request_args", [])]
+
+
+def env_flags_by_name(values: dict[str, str],
+                      carrier: dict[str, str]) -> list[str]:
+    """RG-117a: `-e KEY` flags whose VALUES travel in the docker client's own
+    environment, never on its argv (`/proc/<pid>/cmdline` is world-readable
+    for the life of `docker run`/`docker exec`). The values are recorded in
+    `carrier`; callers hand `{**os.environ, **carrier}` to the subprocess."""
+    carrier.update(values)
+    return [arg for key in values for arg in ("-e", key)]
 
 
 def redact_forwarded_values(argv: list[str], keys: list[str]) -> list[str]:
@@ -6940,12 +8185,30 @@ def save_container_logs(docker: str, name: str,
         combined = grabbed.stdout + grabbed.stderr
         if grabbed.returncode != 0 and not combined.strip():
             return None
+        own_dir = target is None
         target = target or evidence_dir() / f"{name}.log"
-        target.parent.mkdir(parents=True, exist_ok=True)
+        target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         # Review fix: container logs may echo credential material the suite
-        # exercised — owner-only, never world-readable.
-        target.write_text(combined)
-        target.chmod(0o600)
+        # exercised — owner-only, never world-readable. RG-117b: the mode is
+        # set AT creation (no world-readable window), a symlink planted at the
+        # predictable leaf is refused (O_NOFOLLOW), and a file or directory
+        # owned by someone else is refused rather than written into.
+        if target.parent.stat().st_uid != os.geteuid():
+            return None
+        if own_dir:
+            # mkdir(mode=) does not tighten an already-existing directory.
+            os.chmod(target.parent, 0o700)
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        try:
+            if os.fstat(fd).st_uid != os.geteuid():
+                return None
+            os.ftruncate(fd, 0)
+            os.fchmod(fd, 0o600)
+            view = memoryview(combined.encode("utf-8", errors="replace"))
+            while view:  # os.write may be partial on a large log
+                view = view[os.write(fd, view):]
+        finally:
+            os.close(fd)
         return target
     except OSError:
         return None
@@ -7472,7 +8735,11 @@ def extra_mount_flags() -> list[str]:
         source, target = spec.split("=", 1)
         if not source or not target:
             fail(f"invalid ${EXTRA_MOUNT_ENV_VAR} entry {spec!r}: empty path")
-        flags += ["-v", f"{source}:{target}"]
+        validate_docker_mount_path(source,
+                                  f"${EXTRA_MOUNT_ENV_VAR} source")
+        validate_docker_mount_path(target,
+                                  f"${EXTRA_MOUNT_ENV_VAR} target")
+        flags += ["--mount", f"type=bind,source={source},target={target}"]
     return flags
 
 
@@ -7585,11 +8852,15 @@ def resource_observer_version_preflight(docker: str, daemon: str) -> None:
 def build_env_probe_argv(docker: str, env: dict, env_name: str, repo: Path,
                          worktree: Path, env_source: str, slice_name: str,
                          script: str,
-                         resolved_container_name: str | None = None
+                         resolved_container_name: str | None = None,
+                         resource_settings: dict | None = None
                          ) -> list[str]:
-    """The ONE way run-gate runs a short, synchronous, read-only command
-    INSIDE a lane's environment (RG-25's `assay lanes --json` inventory and
-    its `command -v` fitness checks; RG-26's base_source query).
+    """The ONE way run-gate runs a short, synchronous probe command INSIDE
+    a lane's environment (RG-25's `assay lanes --json` inventory and its
+    `command -v` fitness checks; RG-26's base_source query; PR3's R2 capacity
+    check). The existing inventory, fitness and base probes are read-only.
+    PR3's Cowtree capability check may create Cowtree-owned metadata and
+    temporary probe files under the configured MDT_COW_ROOT.
 
     It reuses the SAME reach-an-environment machinery the lane runners use —
     `resolve_container_name()` for exec mode, `physical_path()` +
@@ -7605,6 +8876,10 @@ def build_env_probe_argv(docker: str, env: dict, env_name: str, repo: Path,
     default next to production work (AGENTS "Host cgroup placement"). Their
     bind mounts and user also match the full ephemeral lane.
     """
+    validate_resource_mount_inputs(resource_settings or {},
+                                   env.get("mode", "host"), repo, worktree)
+    extra_flags = (extra_mount_flags()
+                   if env.get("mode") == "ephemeral" else [])
     if not env:
         # The built-in 'bare-host' environment IS this machine: there is no
         # container to enter, and the same script answers the same question.
@@ -7614,14 +8889,23 @@ def build_env_probe_argv(docker: str, env: dict, env_name: str, repo: Path,
         if name is None:
             name, _src, _remedy = resolve_container_name(env_name, env, repo,
                                                          worktree, env_source)
-        return [docker, "exec", "--workdir", str(repo), name, "bash", "-c", script]
+        forwarded = resource_forwarded_env(resource_settings or {}, "exec")
+        env_flags = [arg for key, value in forwarded.items()
+                     for arg in ("-e", f"{key}={value}")]
+        return [docker, "exec", *env_flags, "--workdir", str(repo), name,
+                "bash", "-c", script]
     argv = [docker, "run", "--rm", "--init", "--cgroup-parent", slice_name,
             *container_mount_flags(repo, worktree, env, with_state=True),
-            *extra_mount_flags()]
+            *extra_flags,
+            *cowtree_mount_flags(resource_settings or {}, env.get("mode", "host"))]
     if env.get("user"):
         # A path probe must run as the same user as the real lane: image root
         # can write a root-owned synthetic parent that the app user cannot.
         argv += ["--user", env["user"]]
+    forwarded = resource_forwarded_env(resource_settings or {},
+                                       env.get("mode", "host"))
+    for key, value in forwarded.items():
+        argv += ["-e", f"{key}={value}"]
     argv += [env["image"], "bash", "-c", script]
     return argv
 
@@ -8800,6 +10084,8 @@ def plan_comparison_base(lane: dict, lane_name: str, base_flag: str | None,
     entry, assay_version, why = assay_inventory_entry(
         lane, env, env_name, repo, worktree, env_source, project_dir)
     if entry is None:
+        lane["_assay_inventory_error"] = why or "Assay lane inventory is unavailable"
+        lane.pop("_assay_inventory", None)
         if lane.get("_selective_assay"):
             fail(f"selective assay flags for lane {lane_name!r} require an "
                  f"inventory proving that it declares R2: {why}")
@@ -8812,6 +10098,7 @@ def plan_comparison_base(lane: dict, lane_name: str, base_flag: str | None,
         # Without --base nothing changes: an older judge keeps working exactly
         # as it did, and assay refuses at run time if the lane needed one.
         return None, ""
+    lane.pop("_assay_inventory_error", None)
     lane["_assay_inventory"] = {"entry": entry,
                                 "assay_version": assay_version}
     if lane.get("_selective_assay"):
@@ -9489,8 +10776,12 @@ def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
             man_median = (man_lane.get("memory_peak_bytes") or {}).get("median")
             if not isinstance(man_median, (int, float)) or man_median <= 0:
                 continue
-            live_median = lane_history_report(fp_store, name)["stats"][
-                "passes"]["memory_peak_bytes"]["median"]
+            # RG-136: compare against live history of the MANIFEST ENTRY's
+            # own I/O mode (a legacy entry without one is strict).
+            live_median = lane_mode_stats(
+                lane_history_report(fp_store, name),
+                footprint_manifest_lane_io_sync(man_lane)
+            )["memory_peak_bytes"]["median"]
             if not isinstance(live_median, (int, float)):
                 continue
             drift_pct = abs(live_median - man_median) / man_median * 100
@@ -9501,6 +10792,16 @@ def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
                        f"vs manifest {_fmt_mib(man_median)} "
                        f"({drift_pct:.0f}% > {tol_pct}% tolerance) — re-run "
                        f"'{PROG} footprint --write'")
+        legacy_mode_lanes = [
+            name for name in sorted(manifest.get("lanes", {}))
+            if isinstance(manifest["lanes"][name], dict)
+            and "io_sync" not in manifest["lanes"][name]]
+        if legacy_mode_lanes:
+            record("INFO", "footprint manifest io_sync",
+                   f"{', '.join(legacy_mode_lanes)}: no io_sync recorded "
+                   f"(written before per-mode manifests) — treated as "
+                   f"strict; migrate by re-running '{PROG} footprint "
+                   f"--write'")
         if manifest.get("lanes") and not drifted:
             record("OK", "footprint drift",
                    f"{len(manifest['lanes'])} lane(s) within {tol_pct}% of "
@@ -9896,6 +11197,1235 @@ def assay_progress_rel(assay_lane: str) -> str:
     return f".assay/progress-{assay_lane}.jsonl"
 
 
+def _assay_progress_segments(path: Path) -> list[dict]:
+    """Read regular Assay progress files without following links or FIFOs."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) \
+        | getattr(os, "O_NONBLOCK", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError:
+        return []
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return []
+        with os.fdopen(fd, "r", encoding="utf-8", errors="replace") as stream:
+            fd = -1
+            segments = []
+            current = None
+            for line in stream:
+                try:
+                    event = json.loads(line)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                if event.get("event") == "run":
+                    current = {"header": event, "events": []}
+                    segments.append(current)
+                elif current is not None:
+                    current["events"].append(event)
+            return segments
+    except (OSError, UnicodeError, ValueError):
+        return []
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
+def _candidate_peak_rss(event: dict) -> int | None:
+    resources = event.get("resources")
+    raw = resources.get("peak_rss_bytes") if isinstance(resources, dict) else None
+    if raw is None:
+        raw = event.get("peak_rss_bytes")
+    if (isinstance(raw, bool) or not isinstance(raw, (int, float))
+            or raw <= 0 or isinstance(raw, float) and not math.isfinite(raw)):
+        return None
+    return int(raw)
+
+
+def assay_progress_candidate_events(path: Path, commit: str | None = None
+                                    ) -> list[dict]:
+    """Every `candidate` progress event, restricted to the runs of `commit`
+    when one is given (the RG-145 ingestion input)."""
+    return [event for segment in _assay_progress_segments(path)
+            if commit is None or segment["header"].get("commit") == commit
+            for event in segment["events"] if event.get("event") == "candidate"]
+
+
+def assay_progress_candidate_ram(path: Path, *, commit: str | None = None
+                                ) -> tuple[int | None, int]:
+    """Return nearest-rank p95 candidate peak RSS and the sample count."""
+    samples = []
+    for segment in _assay_progress_segments(path):
+        header = segment["header"]
+        if commit is not None and header.get("commit") != commit:
+            continue
+        for event in segment["events"]:
+            if event.get("event") == "candidate":
+                peak = _candidate_peak_rss(event)
+                if peak is not None:
+                    samples.append(peak)
+    if not samples:
+        return None, 0
+    samples.sort()
+    # Nearest-rank p95 is the highest observation for histories shorter than
+    # twenty candidates, which avoids an average hiding a high-RSS candidate.
+    index = math.ceil(0.95 * len(samples)) - 1
+    return samples[index], len(samples)
+
+
+def assay_progress_candidates_remaining(path: Path, commit: str,
+                                         fallback: int
+                                         ) -> tuple[int, str]:
+    """Estimate pending candidates from the matching plan or its history.
+
+    The latest matching run's `pending_total` is exact for a resume. A new
+    commit has no plan yet, so the latest plan's total is a measured estimate;
+    before any plan exists, Assay's declared max_mutants is the upper bound.
+    """
+    segments = _assay_progress_segments(path)
+    matching = [segment for segment in segments
+                if segment["header"].get("commit") == commit]
+    if matching:
+        events = matching[-1]["events"]
+        plans = [(index, event) for index, event in enumerate(events)
+                 if event.get("event") == "candidates"]
+        if plans:
+            plan_index, plan = plans[-1]
+            pending = plan.get("pending_total")
+            if type(pending) is int and pending >= 0:
+                completed = set()
+                for event in events[plan_index + 1:]:
+                    if event.get("event") != "candidate":
+                        continue
+                    identity = event.get("candidate_id")
+                    if not isinstance(identity, str):
+                        identity = event.get("candidate_index")
+                    if type(identity) is int or isinstance(identity, str):
+                        completed.add(identity)
+                return max(0, pending - len(completed)), "matching-progress"
+    prior_plans = [event for segment in segments for event in segment["events"]
+                   if event.get("event") == "candidates"]
+    if prior_plans:
+        total = prior_plans[-1].get("candidate_total")
+        if type(total) is int and total > 0:
+            return total, "prior-progress-plan-estimate"
+    if type(fallback) is int and fallback > 0:
+        return fallback, "assay-max_mutants-upper-bound"
+    return 1, "conservative-one-candidate"
+
+
+def candidate_ram_from_history(project_dir: Path, lane_name: str,
+                               progress_path: Path, *,
+                               declared_candidate_ram_bytes: int | None = None
+                               ) -> tuple[int, int, str]:
+    """Use max(declared RSS, measured p95), or the declared/default value.
+
+    RG-144/RG-145: contaminated runs and subjects are never a basis. The
+    measured p95 is recomputed from the RAW clean subjects in the lane's
+    profile sidecar (a percentile of stored p95s is not a percentile). Legacy
+    history entries without a sidecar record keep the historical rule: the
+    highest recent stored p95, still skipping flagged entries. The assay
+    progress file is consulted only while the lane has no profile record at
+    all, because its candidates carry no contamination verdict of their own.
+    """
+    if (declared_candidate_ram_bytes is not None
+            and (type(declared_candidate_ram_bytes) is not int
+                 or declared_candidate_ram_bytes < 1)):
+        fail("declared candidate RAM must be a positive integer byte count")
+    store = load_history_store(history_store_path(project_dir))
+    entries = lane_history_report(store, lane_name)["history"]
+    records = read_profile_records(
+        profile_sidecar_path(history_dir(project_dir), lane_name))
+    sidecar_run_ids = {r.get("run_id") for r in records}
+    clean_subjects = pooled_profile_subjects(records)
+    pooled_p95, sample_count = clean_rss_p95(clean_subjects)
+    measured_p95s = [pooled_p95] if pooled_p95 is not None else []
+    for entry in entries:
+        p95 = entry.get("r2_candidate_ram_p95_bytes")
+        samples = entry.get("r2_candidate_ram_samples")
+        if (entry.get("run_id") not in sidecar_run_ids
+                and not entry_is_contaminated(entry)
+                and type(p95) is int and p95 > 0
+                and type(samples) is int and samples > 0):
+            measured_p95s.append(p95)
+            sample_count += samples
+    measured_p95 = max(measured_p95s) if measured_p95s else None
+    if measured_p95 is None and not records:
+        measured_p95, sample_count = assay_progress_candidate_ram(progress_path)
+    if measured_p95 is not None and sample_count:
+        if (declared_candidate_ram_bytes is not None
+                and declared_candidate_ram_bytes >= measured_p95):
+            return declared_candidate_ram_bytes, sample_count, "declared"
+        return measured_p95, sample_count, "measured p95"
+    if declared_candidate_ram_bytes is not None:
+        return declared_candidate_ram_bytes, 0, "declared"
+    return R2_CONSERVATIVE_CANDIDATE_RAM_BYTES, 0, "default"
+
+
+_R2_CAPACITY_PROBE_CODE = r'''import json, os, pathlib
+
+def positive_limit(raw):
+    if raw is None or raw == "max":
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if 0 < value < 2**60 else None
+
+limits = []
+for name in ("/sys/fs/cgroup/memory.max",
+             "/sys/fs/cgroup/memory/memory.limit_in_bytes"):
+    try:
+        value = positive_limit(pathlib.Path(name).read_text().strip())
+    except OSError:
+        value = None
+    if value is not None:
+        limits.append(value)
+memory_cap = min(limits) if limits else None
+try:
+    cpus = len(os.sched_getaffinity(0))
+except (OSError, AttributeError):
+    cpus = os.cpu_count()
+if type(cpus) is not int or cpus < 1:
+    cpus = None
+
+backend = None
+filesystem = None
+cheap_clone = False
+reason = "cowtree-unavailable"
+try:
+    if os.environ.get("COWTREE_MODE", "auto") == "off":
+        reason = "cowtree-off"
+    elif not os.environ.get("MDT_COW_ROOT"):
+        reason = "cow-root-unset"
+    else:
+        import cowtree
+        area = cowtree.detect(log=lambda _message: None)
+        if area is None:
+            reason = "cowtree-no-area"
+        else:
+            backend = area.caps.backend
+            filesystem = area.caps.fs_type
+            cheap_clone = (backend == "btrfs" and filesystem == "btrfs"
+                           and area.caps.cheap_clone is True)
+            reason = ("supported-btrfs" if cheap_clone
+                      else "assay-requires-btrfs")
+except Exception as exc:
+    reason = "cowtree-probe-" + type(exc).__name__
+
+print(json.dumps({"cpu_count": cpus, "memory_cap_bytes": memory_cap,
+                  "cheap_clone": cheap_clone, "backend": backend,
+                  "filesystem": filesystem, "cheap_clone_reason": reason}))'''
+
+
+def r2_capacity_probe(docker: str | None, lane: dict, env: dict,
+                      env_name: str, env_source: str, repo: Path,
+                      worktree: Path, project_dir: Path,
+                      resource_settings: dict) -> dict | None:
+    """Ask the lane's interpreter for its CPU, memory and Cowtree facts.
+
+    `cowtree.detect()` performs its documented capability probe under
+    MDT_COW_ROOT when configured. It creates Cowtree's private metadata and
+    temporary capability files exactly as the subsequent Assay run would.
+    The built-in bare-host environment is represented by an empty environment
+    object and runs locally; named environments use the shared probe builder.
+    """
+    parts = [f"cd {shlex.quote(str(project_dir))}"]
+    if lane.get("assay_command") is None:
+        parts.extend(assay_source_setup(lane, worktree, project_dir))
+        python = '"$ASSAY_PYTHON"'
+    else:
+        command = lane.get("assay_command") or []
+        first = command[0] if command else ""
+        if re.fullmatch(r"(?:.*/)?python(?:[0-9]+(?:\.[0-9]+)?)?", first):
+            python = shlex.quote(first)
+        else:
+            python = "python3"
+    parts.append(f"{python} -I -c {shlex.quote(_R2_CAPACITY_PROBE_CODE)}")
+    script = " && ".join(parts)
+    try:
+        argv = build_env_probe_argv(
+            docker or "", env, env_name, repo, worktree, env_source,
+            _probe_slice(env, env_source), script,
+            resource_settings=resource_settings)
+        result = subprocess.run(argv, capture_output=True, text=True)
+    except (GateError, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        document = json.loads(result.stdout)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(document, dict):
+        return None
+    cpus = document.get("cpu_count")
+    memory = document.get("memory_cap_bytes")
+    cheap = document.get("cheap_clone")
+    if (cpus is not None and (type(cpus) is not int or cpus < 1)) \
+            or (memory is not None
+                and (type(memory) is not int or memory < 1)) \
+            or type(cheap) is not bool:
+        return None
+    if document.get("backend") not in (None, "btrfs", "reflink"):
+        return None
+    if document.get("filesystem") is not None \
+            and not isinstance(document["filesystem"], str):
+        return None
+    if cheap and (document.get("backend") != "btrfs"
+                  or document.get("filesystem") != "btrfs"):
+        return None
+    return document
+
+
+def _r2_cpu_cap(lane: dict, env: dict,
+                capacity: dict | None) -> tuple[int, str]:
+    if env.get("mode") != "ephemeral":
+        return 1, "no enforced CPU cap; one-worker cap"
+    lane_cpus = lane.get("resources", {}).get("cpus")
+    env_cpus = env.get("resources", {}).get("cpus")
+    declared = lane_cpus or env_cpus
+    declared_source = "lane resources.cpus" if lane_cpus else "environment resources.cpus"
+    observed = capacity.get("cpu_count") if isinstance(capacity, dict) else None
+    if declared is not None:
+        cap = max(1, math.floor(float(declared)))
+        if type(observed) is int and observed > 0:
+            return min(cap, observed), f"{declared_source}; environment affinity {observed}"
+        return cap, declared_source
+    return 1, "no declared CPU cap; one-worker cap"
+
+
+def _r2_memory_cap(lane: dict, capacity: dict | None, env: dict
+                   ) -> tuple[int | None, str]:
+    observed = capacity.get("memory_cap_bytes") if isinstance(capacity, dict) else None
+    if env.get("mode") == "exec":
+        if type(observed) is int and observed > 0:
+            return observed, "exec container memory.max"
+        return None, "no enforced lane memory cap"
+    if env.get("mode") != "ephemeral":
+        return None, "no enforced lane memory cap"
+    lane_memory = lane.get("resources", {}).get("memory") or lane.get("memory")
+    if lane_memory:
+        declared_bytes = parse_size_bytes(lane_memory)
+        if type(observed) is int and observed > 0:
+            return (min(declared_bytes, observed),
+                    "enforced lane memory cap and observed cgroup limit")
+        return declared_bytes, "enforced lane memory cap"
+    return None, "no enforced lane memory cap"
+
+
+def r2_memory_budget_bytes(ram_target: str, memory_cap_bytes: int | None) -> int:
+    """Resolve a size/percentage `ram_target` against the lane's memory cap."""
+    if type(memory_cap_bytes) is not int or memory_cap_bytes <= 0:
+        return 0
+    if re.fullmatch(r"[1-9][0-9]?%|100%", ram_target):
+        target = memory_cap_bytes * int(ram_target[:-1]) // 100
+    else:
+        target = parse_size_bytes(ram_target)
+    return min(memory_cap_bytes, target)
+
+
+def configure_r2_jobs(lane: dict, lane_name: str,
+                      cli_request: int | str | None,
+                      resource_settings: dict, env: dict, env_source: str,
+                      repo: Path, worktree: Path, project_dir: Path) -> dict | None:
+    """Bind the lane/CLI request to the Assay inventory and local history."""
+    configured = lane.get("jobs")
+    request = cli_request if cli_request is not None else configured
+    request_source = ("cli" if cli_request is not None else
+                      "toml" if configured is not None else None)
+    inventory = lane.get("_assay_inventory")
+    entry = inventory.get("entry") if isinstance(inventory, dict) else None
+    if not isinstance(entry, dict):
+        if request is not None:
+            reason = lane.get("_assay_inventory_error") or \
+                "Assay lane inventory entry is unavailable"
+            fail(f"run-gate --jobs / lane jobs cannot verify native R2 for "
+                 f"lane {lane_name!r}: {reason}")
+        return None
+    rigor = entry.get("rigor") if isinstance(entry, dict) else None
+    if not isinstance(rigor, list) or "R2" not in rigor:
+        if request is not None:
+            fail(f"run-gate --jobs / lane jobs requires an Assay lane that "
+                 f"declares native R2; lane {lane_name!r} inventory reports "
+                 f"rigor {rigor!r}")
+        return None
+    mutation = entry.get("mutation")
+    if not isinstance(mutation, dict):
+        mutation = {}
+    if request is not None and (not mutation or mutation.get("format") is not None):
+        fail(f"run-gate --jobs / lane jobs requires a native R2 mutation "
+             f"lane; Assay lane {lane.get('assay_lane')!r} is ingested or "
+             "does not declare native mutation settings")
+    jobs_max = mutation.get("jobs_max", 1)
+    if jobs_max is None:
+        jobs_max = 1
+    if type(jobs_max) is not int or jobs_max < 1:
+        fail(f"Assay lane {lane.get('assay_lane')!r} inventory has invalid "
+             f"mutation.jobs_max {jobs_max!r}")
+    assay_version = inventory.get("assay_version")
+    assay_jobs_supported = (
+        isinstance(assay_version, str)
+        and assay_inventory_version_meets_floor(assay_version, (11, 0, 0)))
+    if type(request) is int and request > 1 and not assay_jobs_supported:
+        fail(f"--jobs {request} requires assay >= 11.0.0; inventory reports "
+             f"assay_version {assay_version!r}")
+    if type(request) is int and request > jobs_max:
+        fail(f"jobs value {request} exceeds Assay lane mutation.jobs_max "
+             f"({jobs_max})")
+
+    progress_path = project_dir / assay_progress_rel(lane["assay_lane"])
+    lane_resources = lane.get("resources")
+    declared_candidate_ram = (lane_resources.get("candidate_ram")
+                              if isinstance(lane_resources, dict) else None)
+    declared_candidate_ram_bytes = (parse_size_bytes(declared_candidate_ram)
+                                    if declared_candidate_ram else None)
+    candidate_ram, samples, candidate_ram_source = candidate_ram_from_history(
+        project_dir, lane_name, progress_path,
+        declared_candidate_ram_bytes=declared_candidate_ram_bytes)
+    max_mutants = mutation.get("max_mutants")
+    fallback = max_mutants if type(max_mutants) is int and max_mutants > 0 else 1
+    commit = head_commit(worktree)
+    if commit is None:
+        candidates_remaining, remaining_source = (
+            fallback, "assay-max_mutants-upper-bound")
+    else:
+        candidates_remaining, remaining_source = assay_progress_candidates_remaining(
+            progress_path, commit, fallback)
+
+    needs_probe = assay_jobs_supported and (
+        request == "auto" or (type(request) is int and request > 1))
+    capacity = None
+    if needs_probe:
+        docker = shutil.which("docker")
+        capacity = r2_capacity_probe(
+            docker, lane, env, lane_environment_name(lane), env_source,
+            repo, worktree, project_dir, resource_settings)
+    cpu_cap = None
+    cpu_source = "not used by explicit/default selection"
+    memory_cap = None
+    memory_source = "not used by explicit/default selection"
+    memory_budget = None
+    ram_target = resource_settings.get("ram_target", "75%")
+    if request == "auto":
+        if assay_jobs_supported:
+            cpu_cap, cpu_source = _r2_cpu_cap(lane, env, capacity)
+            memory_cap, memory_source = _r2_memory_cap(lane, capacity, env)
+            memory_budget = r2_memory_budget_bytes(ram_target, memory_cap)
+        else:
+            cpu_cap = 1
+            cpu_source = "Assay does not support --jobs; one-worker default"
+            memory_cap = None
+            memory_source = "no enforced lane memory cap"
+            memory_budget = 0
+    cheap_clone = capacity.get("cheap_clone") if isinstance(capacity, dict) else None
+    backend = capacity.get("backend") if isinstance(capacity, dict) else None
+    selection = select_r2_jobs(
+        request, jobs_max=jobs_max, cpu_cap=cpu_cap,
+        memory_budget_bytes=memory_budget,
+        candidate_ram_bytes=candidate_ram,
+        candidate_ram_samples=samples,
+        candidates_remaining=candidates_remaining,
+        cheap_clone=cheap_clone, cheap_clone_backend=backend,
+        source=request_source)
+    selection.update({
+        "assay_lane": lane["assay_lane"],
+        "assay_version": assay_version,
+        "assay_jobs_supported": assay_jobs_supported,
+        "candidate_ram_source": candidate_ram_source,
+        "candidate_remaining_source": remaining_source,
+        "ram_target": ram_target,
+        "memory_cap_bytes": memory_cap,
+        "memory_cap_source": memory_source,
+        "cpu_cap_source": cpu_source,
+        "cheap_clone_reason": (capacity.get("cheap_clone_reason")
+                               if isinstance(capacity, dict)
+                               else "not-probed" if not needs_probe
+                               else "capacity-probe-unavailable"),
+        "compatibility_reason": (
+            None if assay_jobs_supported or request is None else
+            "requires assay >= 11.0.0; using serial default"),
+    })
+    selection["forward"] = request is not None and assay_jobs_supported
+    lane["_r2_jobs_selection"] = selection
+    return selection
+
+
+def disclose_r2_jobs(lane_name: str, selection: dict | None) -> None:
+    """One INFO line names the selected count and every selection input."""
+    if not isinstance(selection, dict):
+        return
+    if selection["mode"] == "default":
+        inputs = (f"jobs_max={selection['jobs_max']}, request=unset, "
+                  "serial default")
+    elif selection["mode"] == "explicit":
+        inputs = (f"request={selection['requested']!r} from "
+                  f"{selection['source']}, jobs_max={selection['jobs_max']}, "
+                  f"cheap_clone={selection['cheap_clone']!r}, "
+                  f"assay_version={selection.get('assay_version')!r}, "
+                  f"assay_jobs_supported="
+                  f"{selection.get('assay_jobs_supported')!r}")
+    else:
+        inputs = (
+            f"jobs_max={selection['jobs_max']}, cpu_cap={selection['cpu_cap']} "
+            f"({selection['cpu_cap_source']}), "
+            f"memory_budget_bytes={selection['memory_budget_bytes']} "
+            f"({selection['ram_target']} of {selection['memory_cap_bytes']} "
+            f"from {selection['memory_cap_source']}), "
+            f"candidate_ram_estimate_bytes={selection['candidate_ram_bytes']} "
+            f"({selection['candidate_ram_source']}, "
+            f"n={selection['candidate_ram_samples']}), "
+            f"candidates_remaining={selection['candidates_remaining']} "
+            f"({selection['candidate_remaining_source']}), "
+            f"cheap_clone={selection['cheap_clone']!r} "
+            f"({selection['cheap_clone_reason']}), "
+            f"request_source={selection['request_source'] or 'default'}, "
+            f"assay_version={selection.get('assay_version')!r}, "
+            f"assay_jobs_supported="
+            f"{selection.get('assay_jobs_supported')!r})")
+    print(f"run-gate: R2 jobs: lane={lane_name} N={selection['jobs']} "
+          f"mode={selection['mode']} inputs=({inputs})", flush=True)
+
+
+def record_r2_jobs_selection(record: dict, lane: dict,
+                             selection: dict | None,
+                             project_dir: Path) -> None:
+    """Keep the selected count and its Assay progress source in run evidence."""
+    if selection is None:
+        return
+    record["r2_jobs"] = selection
+    record["_r2_progress_path"] = str(
+        project_dir / assay_progress_rel(lane["assay_lane"]))
+
+
+# ---------------------------------------------------------------------------
+# RG-146 / RG-147 -- pytest-xdist workers for ordinary command lanes
+# ---------------------------------------------------------------------------
+
+WORKERS_DEFAULT_RAM_BYTES = 1024 * 1024 * 1024
+WORKERS_RAM_TARGET = 0.75
+WORKERS_MIN_CORE_FRACTION = 0.25
+WORKERS_TESTS_PER_WORKER = 20
+WORKERS_MIN_RUNS = 2
+WORKERS_HISTORY_WINDOW = 5
+WORKERS_PROFILE_SUBDIR = "workers"
+WORKERS_PARITY_SUBDIR = "xdist-parity"
+WORKERS_PROFILE_SUBJECTS = ("xdist-worker", "controller")
+XDIST_ISOLATION_REASON = "XDIST_ISOLATION"
+# Run-gate's verdict table is closed (PASS/FAIL/ERROR/NOT_RUN/BUDGET_EXCEEDED;
+# Assay's INCONCLUSIVE also maps to FAIL). These reasons mark a FAIL verdict
+# that is inconclusive evidence: never a PASS, never a history measurement.
+WORKERS_INCONCLUSIVE = frozenset({XDIST_ISOLATION_REASON,
+                                  "scaling-contaminated",
+                                  "no-parity-evidence"})
+# Lane keys that describe HOW MANY workers run, not what the suite is: a
+# parity proof must survive tuning them.
+WORKERS_DIGEST_EXCLUDED_KEYS = frozenset({
+    "workers", "workers_max", "budget", "description", "stall_timeout"})
+WORKERS_CLI_FLAGS = {"--workers": 1, "--scaling": 1, "--repeat": 1,
+                     "--xdist-parity": 0}
+
+
+def parse_workers_cli(value: str | None) -> int | str | None:
+    """Parse the public `--workers N|auto` request."""
+    if value is None:
+        return None
+    if value == "auto":
+        return value
+    if not re.fullmatch(r"[1-9][0-9]*", value):
+        fail("--workers must be a positive integer or 'auto' "
+             f"(got {value!r})")
+    return int(value)
+
+
+def parse_scaling_cli(value: str | None) -> list[int] | None:
+    """`--scaling 1,2,3,4`: positive integers, strictly ascending, baseline 1
+    first (every speedup and efficiency figure is relative to N=1)."""
+    if value is None:
+        return None
+    parts = value.split(",")
+    if not all(re.fullmatch(r"[1-9][0-9]*", part) for part in parts):
+        fail("--scaling must be a comma-separated list of positive integers "
+             f"(got {value!r})")
+    counts = [int(part) for part in parts]
+    if counts[0] != 1 or counts != sorted(set(counts)):
+        fail("--scaling must start at the 1-worker baseline and ascend "
+             f"strictly (got {value!r})")
+    return counts
+
+
+def parse_repeat_cli(value: str | None, counts: list[int]) -> dict[int, int]:
+    """`--repeat 1:3,*:2`: repetitions per worker count, `*` is the default
+    for every count not named (1 when absent)."""
+    explicit: dict[int, int] = {}
+    default = 1
+    for part in (value.split(",") if value else []):
+        match = re.fullmatch(r"([1-9][0-9]*|\*):([1-9][0-9]*)", part)
+        if match is None:
+            fail(f"--repeat must look like '1:3,*:2' (got {value!r})")
+        if match.group(1) == "*":
+            default = int(match.group(2))
+        elif int(match.group(1)) not in counts:
+            fail(f"--repeat names worker count {match.group(1)}, which "
+                 "--scaling does not run")
+        else:
+            explicit[int(match.group(1))] = int(match.group(2))
+    return {count: explicit.get(count, default) for count in counts}
+
+
+def worker_nearest_rank(values: list[float], quantile: float) -> float:
+    """Nearest-rank percentile (quantile 0..1) of a non-empty list."""
+    ordered = sorted(values)
+    return ordered[max(0, math.ceil(quantile * len(ordered)) - 1)]
+
+
+def worker_distribution(values: list[float]) -> dict | None:
+    """p50 / p95 / max / n of the numeric values, None when there are none."""
+    numbers = [value for value in values
+               if isinstance(value, (int, float)) and not isinstance(value, bool)]
+    if not numbers:
+        return None
+    return {"p50": worker_nearest_rank(numbers, 0.5),
+            "p95": worker_nearest_rank(numbers, 0.95),
+            "max": max(numbers), "n": len(numbers)}
+
+
+def aggregate_worker_profiles(profiles: list[dict]) -> dict | None:
+    """Fold `resource-profile/1` objects of one lane run into the history
+    fields: per-worker distributions and the controller's own numbers.
+    Profiles that are not MEASURED contribute nothing (a missing number is
+    never a zero)."""
+    workers, controller = [], None
+    tests_collected = None
+    for profile in profiles:
+        subject = profile.get("subject")
+        if (not isinstance(subject, dict) or profile.get("status") != "MEASURED"
+                or not isinstance(profile.get("metrics"), dict)):
+            continue
+        metrics = dict(profile["metrics"], wall_seconds=profile.get("wall_seconds"))
+        if subject.get("kind") == "xdist-worker":
+            workers.append(metrics)
+        elif subject.get("kind") == "controller":
+            controller = metrics
+            if type(subject.get("tests_collected")) is int:
+                tests_collected = subject["tests_collected"]
+    if not workers:
+        return None
+    per_worker = {}
+    for key in ("rss_peak_bytes", "cpu_seconds", "io_read_bytes",
+                "io_write_bytes", "wall_seconds"):
+        dist = worker_distribution([metric.get(key) for metric in workers])
+        if dist is not None:
+            per_worker[key] = dist
+    return {
+        "per_worker": per_worker,
+        "controller": ({key: controller.get(key)
+                        for key in ("rss_peak_bytes", "cpu_seconds")}
+                       if controller else None),
+        "tests_collected": tests_collected,
+    }
+
+
+def read_worker_profiles(directory: Path) -> list[dict]:
+    """Every readable `resource-profile/1` file in the run's profile dir."""
+    profiles = []
+    for path in sorted(directory.glob("*.json")):
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            continue
+        if isinstance(document, dict) \
+                and document.get("schema") == "resource-profile/1" \
+                and (document.get("subject") or {}).get("kind") \
+                in WORKERS_PROFILE_SUBJECTS:
+            profiles.append(document)
+    return profiles
+
+
+def junit_outcomes(path: Path) -> dict[str, str] | None:
+    """`classname::name` -> passed|failed|error|skipped from a junit XML;
+    None when the file is absent or unparsable."""
+    import xml.etree.ElementTree as element_tree
+    try:
+        root = element_tree.parse(path).getroot()
+    except (OSError, element_tree.ParseError):
+        return None
+    outcomes = {}
+    for case in root.iter("testcase"):
+        outcome = "passed"
+        for child in case:
+            if child.tag in ("failure", "error", "skipped"):
+                outcome = {"failure": "failed"}.get(child.tag, child.tag)
+                break
+        outcomes[f"{case.get('classname', '')}::{case.get('name', '')}"] = outcome
+    return outcomes
+
+
+def workers_entry_is_clean(entry: dict) -> bool:
+    """RG-144: an entry is clean unless it carries a flagged `contamination`
+    object (written by `classify_contamination`). Every workers sizing basis
+    reads entries only through this function."""
+    contamination = entry.get("contamination")
+    return not (isinstance(contamination, dict)
+                and contamination.get("flagged"))
+
+
+def workers_basis_from_history(entries: list[dict]) -> dict | None:
+    """Per-worker sizing basis from clean, passing, history-eligible runs: the
+    latest scaling run alone, else the last `WORKERS_MIN_RUNS`.. runs. Stored
+    p95s cannot be recombined into a new percentile, so the highest recent
+    p95 is used (conservative, like `candidate_ram_from_history`)."""
+    usable = [entry for entry in entries
+              if entry.get("history_eligible") and entry.get("outcome") == "pass"
+              and isinstance(entry.get("per_worker"), dict)
+              and isinstance(entry["per_worker"].get("rss_peak_bytes"), dict)
+              and workers_entry_is_clean(entry)]
+    scaling = [entry for entry in usable
+               if isinstance(entry.get("workers"), dict)
+               and entry["workers"].get("scaling")]
+    chosen = scaling[-1:] if scaling else usable[-WORKERS_HISTORY_WINDOW:]
+    if not scaling and len(chosen) < WORKERS_MIN_RUNS:
+        return None
+    rss, cores, writes, controller, tests = [], [], [], [], None
+    for entry in chosen:
+        per_worker = entry["per_worker"]
+        rss.append(per_worker["rss_peak_bytes"]["p95"])
+        wall = (per_worker.get("wall_seconds") or {}).get("p50")
+        cpu = (per_worker.get("cpu_seconds") or {}).get("p50")
+        if isinstance(wall, (int, float)) and wall > 0:
+            if isinstance(cpu, (int, float)):
+                cores.append(cpu / wall)
+            write = (per_worker.get("io_write_bytes") or {}).get("p95")
+            if isinstance(write, (int, float)):
+                writes.append(write / wall)
+        ctl = (entry.get("controller") or {}).get("rss_peak_bytes")
+        if isinstance(ctl, (int, float)):
+            controller.append(ctl)
+        if type(entry.get("tests_collected")) is int:
+            tests = entry["tests_collected"]
+    return {
+        "source": "scaling" if scaling else "history",
+        "runs": len(chosen),
+        "worker_rss_p95_bytes": max(rss),
+        "controller_rss_p95_bytes": max(controller) if controller else 0,
+        "worker_core_fraction_p50": (worker_nearest_rank(cores, 0.5)
+                                     if cores else None),
+        "worker_write_bps_p95": max(writes) if writes else None,
+        "tests_collected": tests,
+    }
+
+
+def select_workers(request: int | str, *, workers_max: int,
+                   cpu_cap: float | None = None,
+                   memory_cap_bytes: int | None = None,
+                   basis: dict | None = None,
+                   ram_default_bytes: int = WORKERS_DEFAULT_RAM_BYTES,
+                   io_write_cap_bps: float | None = None,
+                   source: str | None = None) -> dict:
+    """Pick the xdist worker count for one lane run (RG-146).
+
+    `auto` is `max(1, min(workers_max, cpu term, memory term, io term, tests
+    term))` over the clean per-worker basis; no basis, or no enforced cap,
+    selects 1 and says why. An explicit integer is honoured as asked (the
+    scaling mode must be able to probe past the formula) and every term it
+    exceeds is listed in `over_capacity`."""
+    if type(workers_max) is not int or workers_max < 1:
+        fail(f"invalid workers_max {workers_max!r}")
+    basis = basis or {}
+    worker_rss = basis.get("worker_rss_p95_bytes") or ram_default_bytes
+    core = max(WORKERS_MIN_CORE_FRACTION,
+               basis.get("worker_core_fraction_p50") or 0.0)
+    terms: dict[str, int | None] = {"workers_max": workers_max}
+    terms["cpu"] = (math.floor(cpu_cap / core) if cpu_cap else None)
+    terms["memory"] = (
+        math.floor((memory_cap_bytes * WORKERS_RAM_TARGET
+                    - basis.get("controller_rss_p95_bytes", 0)) / worker_rss)
+        if memory_cap_bytes else None)
+    write_bps = basis.get("worker_write_bps_p95")
+    terms["io"] = (math.floor(io_write_cap_bps / write_bps)
+                   if io_write_cap_bps and write_bps else None)
+    tests = basis.get("tests_collected")
+    terms["tests"] = (tests // WORKERS_TESTS_PER_WORKER
+                      if type(tests) is int else None)
+    selection = {
+        "requested": request, "source": source or "toml",
+        "workers_max": workers_max, "terms": terms,
+        "basis": basis or None, "cpu_cap": cpu_cap,
+        "memory_cap_bytes": memory_cap_bytes,
+        "worker_rss_bytes": worker_rss,
+        "worker_rss_source": ("measured p95" if basis.get(
+            "worker_rss_p95_bytes") else "declared or default"),
+        "over_capacity": [], "limit": None, "reason": None,
+    }
+    if request == "auto":
+        selection["mode"] = "auto"
+        if not basis:
+            selection.update(workers=1, limit="no-clean-profile",
+                             reason="no clean per-worker profile yet "
+                                    "(needs 2 clean runs or a --scaling run)")
+        elif cpu_cap is None or memory_cap_bytes is None:
+            selection.update(workers=1, limit="no-caps",
+                             reason="no enforced cpu and memory cap")
+        else:
+            active = {key: value for key, value in terms.items()
+                      if value is not None}
+            limit = min(active, key=lambda key: (active[key], list(terms).index(key)))
+            selection.update(workers=max(1, active[limit]), limit=limit)
+    else:
+        selection["mode"] = "explicit"
+        if request > workers_max:
+            fail(f"workers {request} exceeds workers_max ({workers_max})")
+        selection.update(workers=request)
+        selection["over_capacity"] = [
+            key for key, value in terms.items()
+            if key != "workers_max" and value is not None and request > value]
+    return selection
+
+
+def lane_config_digest(lane: dict) -> str:
+    """Digest of what makes the suite what it is (argv, environment, caps ...),
+    without the worker-count tuning keys, for the parity proof."""
+    public = {key: value for key, value in lane.items()
+              if not key.startswith("_")
+              and key not in WORKERS_DIGEST_EXCLUDED_KEYS}
+    return hashlib.sha256(json.dumps(
+        public, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def xdist_parity_path(project_dir: Path, lane_name: str) -> Path:
+    return history_dir(project_dir) / WORKERS_PARITY_SUBDIR / f"{lane_name}.json"
+
+
+def load_xdist_parity(project_dir: Path, lane_name: str, digest: str) -> str:
+    """`proven` | `stale` (config changed since the proof) | `absent`."""
+    try:
+        proof = json.loads(xdist_parity_path(
+            project_dir, lane_name).read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return "absent"
+    if not isinstance(proof, dict) or proof.get("identical") is not True:
+        return "absent"
+    return "proven" if proof.get("config_sha256") == digest else "stale"
+
+
+def store_xdist_parity(project_dir: Path, lane_name: str, digest: str,
+                       workers: int, tests: int, commit: str | None) -> Path:
+    path = xdist_parity_path(project_dir, lane_name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "schema": "xdist-parity/1", "lane": lane_name, "config_sha256": digest,
+        "workers": workers, "tests": tests, "commit": commit,
+        "identical": True,
+        "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }, sort_keys=True) + "\n", encoding="utf-8")
+    return path
+
+
+def workers_caps(lane: dict, env: dict, lane_name: str
+                 ) -> tuple[float | None, int | None, str]:
+    """(cpu cap in cores, memory cap in bytes, source) a `workers != 1` lane
+    runs under. Ephemeral lanes need an enforced memory and cpus cap; any
+    other lane needs cgprofile placement, and its caps are then unknown to
+    run-gate (auto stays at 1)."""
+    if env.get("mode") == "ephemeral":
+        resources = lane.get("resources") or {}
+        memory = resources.get("memory") or lane.get("memory")
+        cpus = resources.get("cpus") or (env.get("resources") or {}).get("cpus")
+        if not memory or not cpus:
+            fail(f"lane {lane_name!r}: workers != 1 requires enforced "
+                 "[resources] memory and cpus on an ephemeral lane (the caps "
+                 "are what the worker count is divided from)")
+        return float(cpus), parse_size_bytes(memory), "enforced lane caps"
+    if lane.get("resource_observer") != "cgprofile":
+        fail(f"lane {lane_name!r}: workers != 1 on a bare-host or exec lane "
+             "requires resource_observer = 'cgprofile' placement")
+    return None, None, "cgprofile placement; caps not visible to run-gate"
+
+
+def configure_workers(lane: dict, lane_name: str, cli_request: int | str | None,
+                      env: dict, project_dir: Path,
+                      options: dict | None = None) -> dict | None:
+    """Bind the lane/CLI/internal worker request to caps and history and store
+    the selection on the lane (`_workers_selection`, `_workers_env`)."""
+    options = options or {}
+    configured = lane.get("workers")
+    request = options.get("workers", cli_request)
+    source = "internal" if "workers" in options else (
+        "cli" if cli_request is not None else "toml")
+    if request is None:
+        request = configured
+    if configured is None:
+        if request is not None:
+            fail(f"--workers applies only to a command lane that declares "
+                 f"'workers' and the {WORKERS_TOKEN} token; lane "
+                 f"{lane_name!r} does not")
+        return None
+    if request != 1:
+        if lane.get("xdist_safe") is not True:
+            fail(f"lane {lane_name!r}: workers {request!r} requires "
+                 "xdist_safe = true")
+        cpu_cap, memory_cap, caps_source = workers_caps(lane, env, lane_name)
+    else:
+        cpu_cap, memory_cap, caps_source = None, None, "not needed for 1"
+    basis = None
+    if request == "auto":
+        store = load_history_store(history_store_path(project_dir))
+        basis = workers_basis_from_history(
+            lane_history_report(store, lane_name)["history"])
+    declared = (lane.get("resources") or {}).get("worker_ram")
+    selection = select_workers(
+        request, workers_max=lane.get("workers_max", WORKERS_DEFAULT_MAX),
+        cpu_cap=cpu_cap, memory_cap_bytes=memory_cap, basis=basis,
+        ram_default_bytes=(parse_size_bytes(declared) if declared
+                           else WORKERS_DEFAULT_RAM_BYTES),
+        source=source)
+    selection["caps_source"] = caps_source
+    digest = lane_config_digest(lane)
+    selection["parity"] = (load_xdist_parity(project_dir, lane_name, digest)
+                           if selection["workers"] > 1 else "not-needed")
+    selection["scaling"] = bool(options.get("scaling"))
+    selection["rerun"] = bool(options.get("lf"))
+    lane["_workers_selection"] = selection
+    lane["_workers_env"] = {"RUN_GATE_WORKERS": str(selection["workers"])}
+    return selection
+
+
+def disclose_workers(lane_name: str, selection: dict | None) -> None:
+    """One INFO line: the count and why, plus the parity state."""
+    if not isinstance(selection, dict):
+        return
+    why = selection["limit"] or "requested"
+    detail = f" ({selection['reason']})" if selection.get("reason") else ""
+    print(f"run-gate: xdist workers: lane={lane_name} "
+          f"N={selection['workers']} mode={selection['mode']} limit={why}"
+          f"{detail} parity={selection['parity']}", flush=True)
+    if selection["workers"] > 1 and selection["parity"] != "proven":
+        print(f"run-gate: WARNING: xdist parity is {selection['parity']} for "
+              f"lane {lane_name!r}; run `run-gate {lane_name} --xdist-parity` "
+              "to prove N=1 and N=k produce identical per-test outcomes",
+              flush=True)
+    if selection["over_capacity"]:
+        print(f"run-gate: WARNING: explicit workers {selection['workers']} "
+              f"exceeds the sizing term(s): "
+              f"{', '.join(selection['over_capacity'])}", flush=True)
+
+
+def prepare_workers_run(lane: dict, record: dict, project_dir: Path,
+                        options: dict | None = None) -> None:
+    """Create the run's profile directory and fix the lane's extra env. Called
+    once the run record (and so the run id) exists, never on a dry run."""
+    selection = lane.get("_workers_selection")
+    if selection is None:
+        return
+    options = options or {}
+    directory = (history_dir(project_dir) / WORKERS_PROFILE_SUBDIR
+                 / record["run_id"])
+    directory.mkdir(parents=True, exist_ok=True)
+    try:
+        # The lane user inside the container can differ from the invoking
+        # uid (RG-150/151/153); the profile directory must stay writable.
+        os.chmod(directory, 0o777)
+    except OSError:
+        pass
+    extra = [os.environ.get("PYTEST_ADDOPTS", "")]
+    junit = directory / "junit.xml" if options.get("junit") else None
+    if junit is not None:
+        extra.append(f"--junitxml={shlex.quote(str(junit))}")
+        record["_workers_junit"] = str(junit)
+    if options.get("lf"):
+        extra.append("--lf")
+    env = lane["_workers_env"]
+    env["RUN_GATE_PROFILE_DIR"] = str(directory)
+    if any(extra[1:]):
+        env["PYTEST_ADDOPTS"] = " ".join(part for part in extra if part)
+    record["_workers_profile_dir"] = str(directory)
+    record["workers"] = {key: selection[key] for key in (
+        "workers", "mode", "requested", "source", "limit", "reason",
+        "workers_max", "terms", "worker_rss_bytes", "worker_rss_source",
+        "cpu_cap", "memory_cap_bytes", "caps_source", "parity", "scaling",
+        "rerun", "over_capacity", "basis")}
+
+
+def lane_workers_env(lane: dict) -> dict[str, str]:
+    """Env a workers lane's runner exports on top of the resource env."""
+    return dict(lane.get("_workers_env") or {})
+
+
+def attach_workers_profiles(record: dict) -> None:
+    """Fold the run's per-worker profiles into the record. Tolerant by design:
+    this runs inside `finish_run_record` and must never raise."""
+    directory = record.pop("_workers_profile_dir", None)
+    junit = record.pop("_workers_junit", None)
+    if directory is None:
+        return
+    folded = aggregate_worker_profiles(read_worker_profiles(Path(directory)))
+    record["workers_profile"] = ({"status": "MEASURED"} if folded else
+                                 {"status": "NO_MEASUREMENT",
+                                  "reason": "no measured xdist worker profile"})
+    if folded:
+        record["per_worker"] = folded["per_worker"]
+        record["controller"] = folded["controller"]
+        record["tests_collected"] = folded["tests_collected"]
+    if junit is not None:
+        outcomes = junit_outcomes(Path(junit))
+        record["workers"]["junit"] = junit
+        if outcomes is not None and record.get("tests_collected") is None:
+            record["tests_collected"] = len(outcomes)
+    else:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+FAILED_TEST_RE = re.compile(r"^FAILED (\S+)", re.MULTILINE)
+
+
+def failed_tests_from_log(log_path: str | None) -> list[str]:
+    """Node ids of pytest's `FAILED ...` summary lines in the lane log."""
+    if not log_path:
+        return []
+    try:
+        text = Path(log_path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    return list(dict.fromkeys(FAILED_TEST_RE.findall(text)))
+
+
+def xdist_isolation_recheck(result: "LaneResult", lane: dict,
+                            record: dict | None, options: dict,
+                            rerun: Callable[[], "LaneResult"]
+                            ) -> "LaneResult":
+    """A test failure at N > 1 is re-run once serially (`-n 1`, `--lf`). A
+    failure that passes serially is an isolation defect, never a PASS."""
+    selection = lane.get("_workers_selection")
+    if (record is None or not selection or selection["workers"] <= 1
+            or options.get("no_recheck") or result.verdict != "FAIL"
+            or result.exit_code != 1):
+        return result
+    failed = failed_tests_from_log(record.get("log_path"))
+    print(f"run-gate: xdist recheck: {len(failed) or 'some'} test(s) failed "
+          f"at N={selection['workers']}; re-running once with 1 worker and "
+          "--lf", flush=True)
+    serial = rerun()
+    # The serial re-run is evidence for this run, not a run of its own: its
+    # record is never flushed and its profile directory is dropped.
+    discarded = (serial._record or {}).get("_workers_profile_dir")
+    if discarded:
+        shutil.rmtree(discarded, ignore_errors=True)
+    record["xdist_recheck"] = {"failed_tests": failed,
+                               "serial_verdict": serial.verdict}
+    if serial.verdict != "PASS":
+        return result
+    names = ", ".join(failed) or "(not identifiable from the log)"
+    print(f"run-gate: INCONCLUSIVE/{XDIST_ISOLATION_REASON}: failed at "
+          f"N={selection['workers']} but passed serially: {names}",
+          flush=True)
+    return LaneResult("FAIL", result.exit_code, XDIST_ISOLATION_REASON,
+                      result.log_path)
+
+
+def strip_cli_options(arguments: list[str]) -> list[str]:
+    """Drop the worker-mode flags (and their values) from a lane argv, so a
+    measurement step can re-dispatch the same invocation."""
+    out, skip = [], 0
+    for index, item in enumerate(arguments):
+        if skip:
+            skip -= 1
+            continue
+        if item == "--":
+            out.extend(arguments[index:])
+            break
+        name = item.split("=", 1)[0]
+        if name in WORKERS_CLI_FLAGS:
+            skip = 0 if "=" in item else WORKERS_CLI_FLAGS[name]
+            continue
+        out.append(item)
+    return out
+
+
+def record_contaminated(record: dict | None) -> bool:
+    """Whether a step's measurement is contaminated (RG-144)."""
+    return bool(record) and not workers_entry_is_clean(record)
+
+
+def scaling_row(count: int, steps: list[dict], baseline_wall: float | None,
+                baseline_outcomes: dict | None) -> dict:
+    """One T2/T3 row from a worker count's steps (dicts with `record`,
+    `outcomes`, `contaminated`)."""
+    walls = [step["record"].get("duration_seconds") for step in steps]
+    walls = [wall for wall in walls if isinstance(wall, (int, float))]
+    wall = worker_nearest_rank(walls, 0.5) if walls else None
+    per_worker = [step["record"].get("per_worker") or {} for step in steps]
+
+    def merged(key: str, field: str):
+        values = [(item.get(key) or {}).get(field) for item in per_worker]
+        values = [value for value in values if value is not None]
+        if not values:
+            return None
+        return worker_nearest_rank(values, 0.5) if field == "p50" else max(values)
+
+    def lane_value(step: dict, *path: str):
+        node = step["record"].get("resources") or {}
+        for key in path:
+            node = node.get(key) if isinstance(node, dict) else None
+        return node
+
+    peaks = [lane_value(step, "memory", "peak_bytes") for step in steps]
+    peaks = [peak for peak in peaks if peak is not None]
+    stalls = [lane_value(step, "host", "memory_full_stall_seconds")
+              for step in steps]
+    stalls = [stall for stall in stalls if stall is not None]
+    speedup = (baseline_wall / wall if wall and baseline_wall else None)
+    mismatches = []
+    if baseline_outcomes is not None:
+        for step in steps:
+            outcomes = step["outcomes"] or {}
+            mismatches.extend(sorted(
+                {name for name in set(outcomes) | set(baseline_outcomes)
+                 if outcomes.get(name) != baseline_outcomes.get(name)}))
+    return {
+        "workers": count, "reps": len(steps), "wall_p50": wall,
+        "speedup": speedup,
+        "efficiency": (speedup / count if speedup is not None else None),
+        "lane_memory_peak_bytes": max(peaks) if peaks else None,
+        "rss_p50": merged("rss_peak_bytes", "p50"),
+        "rss_p95": merged("rss_peak_bytes", "p95"),
+        "rss_max": merged("rss_peak_bytes", "max"),
+        "cpu_p50": merged("cpu_seconds", "p50"),
+        "write_p95": merged("io_write_bytes", "p95"),
+        "stall_seconds": max(stalls) if stalls else None,
+        "contaminated": any(step["contaminated"] for step in steps),
+        "mismatches": sorted(set(mismatches)),
+        "identical": not mismatches,
+    }
+
+
+def _cell(value: object, fmt: str = "{:.1f}") -> str:
+    return fmt.format(value) if isinstance(value, (int, float)) \
+        and not isinstance(value, bool) else "-"
+
+
+def format_scaling_table(rows: list[dict]) -> list[str]:
+    """T2/T3: N | reps | wall p50 | speedup | efficiency | lane peak |
+    per-worker RSS p50/p95/max | CPU p50 | IO write p95 | stall |
+    contaminated | identical to N=1."""
+    header = ("N", "reps", "wall_p50_s", "speedup", "eff", "lane_peak_MiB",
+              "rss_p50_MiB", "rss_p95_MiB", "rss_max_MiB", "cpu_p50_s",
+              "write_p95_MiB", "stall_s", "contaminated", "same_as_N1")
+    mib = 1024 * 1024
+    lines = [" | ".join(header)]
+    for row in rows:
+        def scaled(key: str) -> str:
+            value = row[key]
+            return _cell(None if value is None else value / mib, "{:.0f}")
+        lines.append(" | ".join((
+            str(row["workers"]), str(row["reps"]), _cell(row["wall_p50"]),
+            _cell(row["speedup"], "{:.2f}"), _cell(row["efficiency"], "{:.2f}"),
+            scaled("lane_memory_peak_bytes"), scaled("rss_p50"),
+            scaled("rss_p95"), scaled("rss_max"), _cell(row["cpu_p50"]),
+            scaled("write_p95"), _cell(row["stall_seconds"]),
+            "yes" if row["contaminated"] else "no",
+            "yes" if row["identical"] else "NO")))
+    return lines
+
+
+def run_workers_measurement(args: argparse.Namespace, lane: dict,
+                            request_argv: list[str], project_dir: Path,
+                            commit: str | None,
+                            dispatch: Callable[..., "LaneResult"]
+                            ) -> "LaneResult":
+    """`--scaling` (RG-147) and `--xdist-parity` (RG-146): re-dispatch the same
+    invocation once per worker count, one container at a time, baseline first,
+    recording every step like an ordinary run."""
+    base_argv = strip_cli_options(request_argv)
+    if args.scaling:
+        counts = parse_scaling_cli(args.scaling)
+        repeats = parse_repeat_cli(args.repeat, counts)
+    else:
+        parity_workers = (args.workers_request
+                          if type(args.workers_request) is int
+                          else min(2, lane.get("workers_max",
+                                               WORKERS_DEFAULT_MAX)))
+        counts = [1, parity_workers]
+        repeats = {count: 1 for count in counts}
+    if lane.get("xdist_safe") is not True and counts[-1] != 1:
+        fail(f"lane {args.lane!r}: measuring workers > 1 requires "
+             "xdist_safe = true")
+    rows, failures = [], []
+    baseline_wall, baseline_outcomes = None, None
+    for count in counts:
+        steps = []
+        for _ in range(repeats[count]):
+            for _attempt in range(2):
+                step = run_workers_step(args, base_argv, count, dispatch,
+                                        scaling=bool(args.scaling))
+                if not step["contaminated"]:
+                    break
+            steps.append(step)
+            if step["result"].verdict != "PASS":
+                failures.append((count, step["result"]))
+        row = scaling_row(count, steps, baseline_wall, baseline_outcomes)
+        if count == 1:
+            baseline_wall = row["wall_p50"]
+            baseline_outcomes = steps[0]["outcomes"] or {}
+        rows.append(row)
+        if failures:
+            break
+    print(f"run-gate: {'scaling' if args.scaling else 'xdist parity'} "
+          f"results for lane {args.lane!r}", flush=True)
+    for line in format_scaling_table(rows):
+        print(line, flush=True)
+    if failures:
+        count, result = failures[0]
+        return LaneResult(result.verdict, result.exit_code,
+                          result.reason or f"step-failed-at-N={count}",
+                          result.log_path, _lane_name=args.lane)
+    mismatched = [row for row in rows if not row["identical"]]
+    if mismatched:
+        for row in mismatched:
+            print(f"run-gate: N={row['workers']} differs from N=1 in: "
+                  f"{', '.join(row['mismatches'][:20])}", flush=True)
+        return LaneResult("FAIL", None, XDIST_ISOLATION_REASON,
+                          _lane_name=args.lane)
+    if any(row["contaminated"] for row in rows):
+        print("run-gate: INCONCLUSIVE/scaling-contaminated: a step ran under "
+              "contention; the numbers are not a measurement (exit 1 is the "
+              "closed table's FAIL, the reason says inconclusive)", flush=True)
+        return LaneResult("FAIL", None, "scaling-contaminated",
+                          _lane_name=args.lane)
+    if not args.scaling:
+        if not baseline_outcomes or counts[-1] == 1:
+            print("run-gate: no per-test junit outcomes were produced (does "
+                  "the lane run pytest?) or N=1 was the only step; no parity "
+                  "proof stored", flush=True)
+            print("run-gate: INCONCLUSIVE/no-parity-evidence", flush=True)
+            return LaneResult("FAIL", None, "no-parity-evidence",
+                              _lane_name=args.lane)
+        path = store_xdist_parity(
+            project_dir, args.lane, lane_config_digest(lane), counts[-1],
+            len(baseline_outcomes), commit)
+        print(f"run-gate: xdist parity proven for N=1 vs N={counts[-1]} "
+              f"({path})", flush=True)
+    return LaneResult("PASS", 0, _lane_name=args.lane)
+
+
+def run_workers_step(args: argparse.Namespace, base_argv: list[str],
+                     count: int, dispatch: Callable[..., "LaneResult"],
+                     *, scaling: bool) -> dict:
+    """One measured step: dispatch at N, record it, read back its outcomes."""
+    result = dispatch(base_argv, _workers_options={
+        "workers": count, "junit": True, "scaling": scaling,
+        "no_recheck": True})
+    record = result._record or {}
+    finish(result)
+    junit = (record.get("workers") or {}).get("junit")
+    outcomes = junit_outcomes(Path(junit)) if junit else None
+    if junit:
+        shutil.rmtree(Path(junit).parent, ignore_errors=True)
+    return {"result": result, "record": record, "outcomes": outcomes,
+            "contaminated": record_contaminated(record)}
+
+
 def _assay_failure_summary(log_path: str | None,
                            progress_path: Path) -> tuple[list[tuple[str, str]],
                                                          str | None]:
@@ -10042,7 +12572,8 @@ def _closeout_record(status: str, reason: str | None = None, **fields) -> dict:
         raise ValueError(f"unknown closeout status {status!r}")
     record = {"status": status, "reason": reason, "analysis_status": None,
               "analysis_exit": None, "json_path": None, "text_path": None,
-              "json_sha256": None, "text_sha256": None}
+              "json_sha256": None, "text_sha256": None,
+              "coverage_status": None, "coverage_path": None}
     record.update(fields)
     return record
 
@@ -10272,6 +12803,29 @@ def collect_assay_closeout(lane: dict, lane_name: str, run_id: str,
             retained[suffix] = str(target)
         fields["json_path"] = retained["json"]
         fields["text_path"] = retained["txt"]
+        # RG-139: the analysis says whether it re-verified the lane's coverage
+        # artifact; when it did, keep that exact artifact as run evidence.
+        cov_doc = (document or {}).get("coverage")
+        cov_status = (cov_doc.get("artifact_status")
+                      if isinstance(cov_doc, dict) else None)
+        fields["coverage_status"] = cov_status if isinstance(
+            cov_status, str) else None
+        declared = assay_closeout_coverage_artifact(lane)
+        if cov_status == "parsed_and_reverified_r1" and declared:
+            content, cov_problem = _read_closeout_artifact(
+                verdict_path.parent.parent / declared,
+                ASSAY_CLOSEOUT_MAX_BYTES)
+            if content:
+                target = directory_out / f"{run_id}.coverage.json"
+                out_fd = os.open(
+                    target,
+                    os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW,
+                    0o600)
+                with os.fdopen(out_fd, "wb") as stream:
+                    stream.write(content)
+                fields["coverage_path"] = str(target)
+            elif cov_problem is not None:
+                fields["coverage_status"] = f"{cov_status} (not retained: {cov_problem})"
     except OSError as exc:
         return _closeout_record(
             "retention_error",
@@ -10292,9 +12846,15 @@ def report_assay_closeout(closeout: dict, result: "LaneResult") -> None:
     lane_part = (f"lane verdict {result.verdict} (exit {result.exit_code}) "
                  f"is unchanged")
     if status in ("complete", "incomplete"):
+        # RG-139: say what happened to the coverage artifact instead of
+        # leaving `coverage_not_reverified` unexplained.
+        cov = closeout.get("coverage_status")
+        cov_part = f"; coverage artifact {cov}" if cov else ""
+        if closeout.get("coverage_path"):
+            cov_part += f" (retained {closeout['coverage_path']})"
         print(f"{PROG}: assay closeout: campaign {status} (analysis only; "
               f"{lane_part}); json {closeout['json_path']}, "
-              f"text {closeout['text_path']}", flush=True)
+              f"text {closeout['text_path']}{cov_part}", flush=True)
         return
     where = (f"; retained json {closeout['json_path']}, "
              f"text {closeout['text_path']}" if closeout["json_path"] else "")
@@ -10308,8 +12868,17 @@ def finish_assay_closeout(lane: dict, lane_name: str, record: dict | None,
                           verdict_document: dict | None) -> dict:
     """Collect, record and disclose the closeout. NEVER raises and NEVER
     returns anything that could replace `result`: the caller keeps its own
-    LaneResult and this only attaches the closeout to the run record."""
-    run_id = (record.get("run_id") if record else None) or secrets.token_hex(16)
+    LaneResult and this only attaches the closeout to the run record.
+
+    RG-115: a follower's record is disowned (`_flushed`); the OWNING client
+    collects and records the closeout, so a follower neither reads the
+    owner's `.assay/campaign-*` files nor retains a second copy."""
+    if record is not None and record.get("_flushed"):
+        print(f"{PROG}: assay closeout: the owning client records it",
+              flush=True)
+        return _closeout_record("not_applicable",
+                                "the owning client records the closeout")
+    run_id =(record.get("run_id") if record else None) or secrets.token_hex(16)
     try:
         closeout = collect_assay_closeout(
             lane, lane_name, run_id, commit, verdict_path, result,
@@ -10538,7 +13107,8 @@ def probe_assay_state_root(docker: str | None, env: dict, env_name: str,
                            repo: Path, worktree: Path, env_source: str,
                            slice_name: str, state_root: Path,
                            state_dir: Path,
-                           resolved_container_name: str | None = None
+                           resolved_container_name: str | None = None,
+                           resource_settings: dict | None = None
                            ) -> tuple[bool | None, str | None]:
     """Return (writable, reason); None means the probe itself was unknown."""
     if not env or env.get("mode") == "host":
@@ -10560,7 +13130,8 @@ def probe_assay_state_root(docker: str | None, env: dict, env_name: str,
     argv = build_env_probe_argv(
         docker, env, env_name, repo, worktree, env_source, slice_name,
         assay_state_probe_script(state_root, state_dir),
-        resolved_container_name=resolved_container_name)
+        resolved_container_name=resolved_container_name,
+        resource_settings=resource_settings)
     try:
         result = subprocess.run(argv, capture_output=True, text=True)
     except OSError as exc:
@@ -10582,7 +13153,8 @@ def assure_assay_state_root(docker: str | None, lane: dict, env: dict,
                             project_dir: Path, worktree: Path,
                             slice_name: str,
                             resolved_container_name: str | None = None,
-                            dry_run: bool = False) -> None:
+                            dry_run: bool = False,
+                            resource_settings: dict | None = None) -> None:
     """Refuse assay execution unless its durable state mount is writable."""
     if lane.get("kind") != "assay":
         return
@@ -10609,14 +13181,19 @@ def assure_assay_state_root(docker: str | None, lane: dict, env: dict,
         probe_argv = build_env_probe_argv(
             docker or "docker", env, env_name, repo, worktree, env_source,
             slice_name, assay_state_probe_script(state_root, state_dir),
-            resolved_container_name=resolved_container_name)
+            resolved_container_name=resolved_container_name,
+            resource_settings=resource_settings)
         if dry_run:
+            probe_resource_env = resource_forwarded_env(
+                resource_settings or {}, env.get("mode", "host"))
             print(f"run-gate: assay state root preflight: "
-                  f"{shlex.join(probe_argv)}", flush=True)
+                  f"{shlex.join(redact_forwarded_values(
+                      probe_argv, probe_resource_env))}", flush=True)
             return
     ready, why = probe_assay_state_root(
         docker, env, env_name, repo, worktree, env_source, slice_name,
-        state_root, state_dir, resolved_container_name=resolved_container_name)
+        state_root, state_dir, resolved_container_name=resolved_container_name,
+        resource_settings=resource_settings)
     if ready is None:
         fail_infra(f"could not determine whether Assay state root "
                    f"'{state_root}' and state path '{state_dir}' are usable "
@@ -11100,6 +13677,9 @@ def build_assay_inner(lane: dict, project_dir: Path, repo: Path,
                 progress, "--progress-heartbeat",
                 str(ASSAY_PROGRESS_HEARTBEAT_SECONDS),
                 "--state-dir", str(state_dir)]
+    r2_jobs = lane.get("_r2_jobs_selection")
+    if isinstance(r2_jobs, dict) and r2_jobs.get("forward"):
+        run_argv += ["--jobs", str(r2_jobs["jobs"])]
     if request_base:
         # RG-26: only ever appended for a lane the INVENTORY says delegates
         # its base (base_source == "request"); assay refuses it on any other.
@@ -11141,7 +13721,8 @@ def build_assay_inner(lane: dict, project_dir: Path, repo: Path,
     if closeout_commit:
         parts.append(assay_closeout_group(
             lane, run_text, command, closeout_commit, progress,
-            verdict, state_dir, request_base))
+            verdict, state_dir, request_base,
+            assay_closeout_coverage_artifact(lane)))
     else:
         parts.append(run_text)
     return " && ".join(parts)
@@ -11152,9 +13733,27 @@ def assay_closeout_rel(assay_lane: str, suffix: str) -> str:
     return f".assay/campaign-{assay_lane}.{suffix}"
 
 
+def assay_closeout_coverage_artifact(lane: dict) -> str | None:
+    """RG-139: the lane-declared R1 coverage artifact (project-relative), read
+    from the Assay inventory entry -- never guessed. `assay analyze campaign
+    --coverage` refuses any path but the declared one, so only the declared
+    text is ever forwarded; anything not a plain relative path is dropped."""
+    inventory = lane.get("_assay_inventory")
+    entry = inventory.get("entry") if isinstance(inventory, dict) else None
+    coverage = entry.get("coverage") if isinstance(entry, dict) else None
+    artifact = coverage.get("artifact") if isinstance(coverage, dict) else None
+    if not isinstance(artifact, str) or not artifact:
+        return None
+    path = PurePosixPath(artifact)
+    if path.is_absolute() or ".." in path.parts or "\n" in artifact:
+        return None
+    return artifact
+
+
 def assay_closeout_group(lane: dict, run_text: str, command: str,
                          commit: str, progress: str, verdict: str,
-                         state_dir: Path, request_base: str | None) -> str:
+                         state_dir: Path, request_base: str | None,
+                         coverage_artifact: str | None = None) -> str:
     """The last element of an assay inner when a closeout is requested.
 
     One brace group so an earlier setup failure short-circuits the whole
@@ -11176,6 +13775,22 @@ def assay_closeout_group(lane: dict, run_text: str, command: str,
     rel = {s: shlex.quote(assay_closeout_rel(lane_name, s))
            for s in ASSAY_CLOSEOUT_SUFFIXES}
     q = shlex.quote
+    # RG-139: forward the lane's declared coverage artifact so the analyzer can
+    # re-verify R1 (without it: `coverage_not_reverified`, never `complete`).
+    # Only when the verdict exists (the analyzer refuses --coverage without
+    # one), the artifact file exists, and the judge's `analyze campaign`
+    # knows `--coverage` (feature-detected from its help, so an older judge
+    # keeps the pre-RG-139 closeout instead of an argparse refusal). Every
+    # other case leaves the argument out and the analysis reports
+    # `coverage.artifact_status` itself, which the host discloses.
+    coverage_step = ""
+    if coverage_artifact:
+        cov = q(coverage_artifact)
+        coverage_step = (
+            f"if [ -f {q(verdict)} ] && [ -f {cov} ]; then "
+            f"__rg_co_h=$({command} analyze campaign --help 2>&1); "
+            'case "$__rg_co_h" in *--coverage*) '
+            f"__rg_co_a+=(--coverage {cov});; esac; fi; ")
     base_args = ["analyze", "campaign", lane_name, "--file", "assay.toml",
                  "--expected-commit", commit, "--progress", progress,
                  "--state-dir", str(state_dir)]
@@ -11220,6 +13835,7 @@ def assay_closeout_group(lane: dict, run_text: str, command: str,
         + left + gate_open +
         "__rg_co_t=(); if command -v timeout >/dev/null 2>&1; then "
         f"__rg_co_t=(timeout {cap}); fi; "
+        + coverage_step +
         f"{run_one} json >{rel['json']} 2>{rel['err']}; __rg_co_j=$?; "
         f"if [ \"$__rg_co_j\" -eq 124 ]; then __rg_co_x=124; "
         f"printf 'closeout analysis timed out after %s s; text rendering "
@@ -11228,6 +13844,17 @@ def assay_closeout_group(lane: dict, run_text: str, command: str,
         f"printf '%s %s\\n' \"$__rg_co_j\" \"$__rg_co_x\" >{rel['exit']}; "
         + gate_close +
         'exit "$rc"; }')
+
+
+def passwd_entry_guard() -> str:
+    """RG-118 (RG-106 oracle 5): the shell prefix of a lane that runs as an
+    explicit `user`. A uid with no passwd entry makes git and pip fail with
+    `unable to look up current user`; name the real cause and refuse with exit
+    2 instead. Skipped (not failed) when the image has no `getent` at all."""
+    return ('{ command -v getent >/dev/null 2>&1 && ! getent passwd '
+            '"$(id -u)" >/dev/null && { echo "run-gate: uid $(id -u) has no '
+            'passwd entry in the image; git and pip fail obscurely without '
+            'one" >&2; exit 2; }; true; }')
 
 
 def build_command_inner(lane: dict, worktree: Path,
@@ -11246,6 +13873,8 @@ def dual_mount_flags(repo: Path, phys: Path,
     flags collapse would be a silent single mount diverging from the
     documented recipe, so the alias must be declared explicitly instead.
     """
+    validate_docker_mount_path(repo, "repo path")
+    validate_docker_mount_path(phys, "host mount source path")
     if phys != repo:
         return ["-v", f"{phys}:{phys}", "-v", f"{phys}:{repo}"]
     raw = os.environ.get(MOUNT_ALIAS_ENV_VAR, "").strip()
@@ -11261,6 +13890,9 @@ def dual_mount_flags(repo: Path, phys: Path,
     host, namespace = (part.strip() for part in raw.split("=", 1))
     if not host or not namespace:
         fail(f"invalid ${MOUNT_ALIAS_ENV_VAR} entry {raw!r}: empty path")
+    validate_docker_mount_path(host, f"${MOUNT_ALIAS_ENV_VAR} host path")
+    validate_docker_mount_path(namespace,
+                               f"${MOUNT_ALIAS_ENV_VAR} namespace path")
     root = alias_root if alias_root is not None else repo
     if Path(host) != root:
         fail(f"${MOUNT_ALIAS_ENV_VAR} declares host path {host!r} but this gate's "
@@ -11276,7 +13908,9 @@ def dual_mount_flags(repo: Path, phys: Path,
         fail(f"cannot dual-mount {repo}: it is outside the aliased root {root} "
              f"(${MOUNT_ALIAS_ENV_VAR}), so no namespace view is declared "
              f"for it")
-    return ["-v", f"{phys}:{phys}", "-v", f"{phys}:{Path(namespace) / relative}"]
+    target = Path(namespace) / relative
+    validate_docker_mount_path(target, "mount alias path")
+    return ["-v", f"{phys}:{phys}", "-v", f"{phys}:{target}"]
 
 
 # ---------------------------------------------------------------------------
@@ -11599,6 +14233,8 @@ def container_mount_flags(repo: Path, worktree: Path, env: dict | None = None,
       checkout is mounted as before, with a WARN, and the config overlay.
     `with_state` adds `<repo>/.run-gate` (durable assay state) unless the
     environment declares its own state_root."""
+    validate_docker_mount_path(repo, "repo path")
+    validate_docker_mount_path(worktree, "worktree path")
     plan = git_mount_plan(worktree, repo)
     if plan["kind"] == "plain":
         if not main_checkout_opted_in():
@@ -11837,6 +14473,7 @@ class ProgressWatch:
         paused = self._paused_total
         if self._pause_started is not None:
             paused += max(0.0, now - self._pause_started)
+        paused = min(paused, PRESSURE_PAUSE_MAX_SECONDS)
         return max(0.0, now - self._token_at - paused)
 
     def _update_pressure_pause(self, now: float) -> None:
@@ -12642,7 +15279,8 @@ def await_container(docker: str, name: str, lane: dict, lane_name: str,
                     stalled = terminal_daemon_kill(profile_result["resources"])
                 print_profile_warning(profiler)
                 print_footprint_line(lane_name, project_dir,
-                                     profile_result["resources"])
+                                     profile_result["resources"],
+                                     record_io_sync(run_record))
                 if run_record is not None:
                     run_record["resources"] = profile_result["resources"]
                     run_record["profile_error"] = profile_result["profile_error"]
@@ -13065,6 +15703,8 @@ def resolve_inflight(docker: str, lane: dict, lane_name: str,
     # that exact container.
     if lane.get("kind") == "assay" and not fresh and run_record is not None:
         run_record["_assay_identity_mode"] = pending["assay_identity_mode"]
+    if lane.get("kind") == "assay" and not fresh:
+        adopt_inflight_r2_jobs(lane, run_record, pending)
     if run_record is not None and pending.get("log_path"):
         run_record["log_path"] = pending["log_path"]
     if owner is not None:
@@ -13183,9 +15823,13 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                        profile_plan: dict | None = None,
                        budget_deadline: float | None = None,
                        budget_started_epoch: float | None = None,
-                       admission_group: str | None = None) -> int:
+                       admission_group: str | None = None,
+                       resource_settings: dict | None = None) -> int:
     # project_dir arrives already relocated into the judged worktree (RG-15):
     # pin verification, assay config, and artifacts all resolve there.
+    resource_settings = resource_settings or {}
+    validate_resource_mount_inputs(resource_settings, "ephemeral", repo,
+                                   worktree)
     docker = shutil.which("docker")
     if not docker:
         fail_infra("docker not found on PATH — container lanes need it")
@@ -13196,10 +15840,25 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     attached = resolve_inflight(docker, lane, lane_name, project_dir, repo,
                                 worktree, fresh, dry_run, run_record)
     if attached is not None:
+        disclose_r2_jobs(
+            lane_name,
+            run_record.get("r2_jobs") if run_record is not None else None)
         disclose_image_selection(
             run_record.get("image_selection") if run_record else None,
         )
         return attached
+    disclose_r2_jobs(
+        lane_name,
+        run_record.get("r2_jobs") if run_record is not None
+        else lane.get("_r2_jobs_selection"))
+    extra_flags = extra_mount_flags()
+    resource_env = {**resource_forwarded_env(resource_settings, "ephemeral"),
+                    **lane_workers_env(lane)}
+    preload_file = None
+    preload_flags = []
+    if resource_settings.get("io_sync") == "relaxed":
+        preload_flags, preload_file = relaxed_io_sync_mount_flags(
+            docker, env["image"], repo)
     if not dry_run and lane.get("resource_observer") is not None:
         resource_observer_version_preflight(
             docker,
@@ -13212,7 +15871,9 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         repo, worktree, env, with_state=lane["kind"] == "assay",
         create_state=lane["kind"] == "assay" and not dry_run,
         plan_missing_state=lane["kind"] == "assay" and dry_run),
-        *extra_mount_flags(),
+        *extra_flags,
+        *cowtree_mount_flags(resource_settings, "ephemeral"),
+        *preload_flags,
         *resource_observer_docker_flags(lane, env)]
     verify_slice_loaded(slice_name)
     inner = build_assay_inner(lane, project_dir, repo, request_base,
@@ -13221,6 +15882,8 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                               closeout_commit=head_commit(worktree)) \
         if lane["kind"] == "assay" \
         else build_command_inner(lane, worktree, request_base)
+    if env.get("user"):
+        inner = passwd_entry_guard() + " && " + inner
     name = f"run-gate-{repo.name}-{lane_name}-{os.getpid()}-{int(time.time())}"
     argv = [docker, "run", "-d", "--name", name, "--init",
             "--cgroup-parent", slice_name,
@@ -13239,16 +15902,21 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         # container writes into a bind-mounted, already-host-owned path
         # (__pycache__, coverage.json, ...) a permission-denied write.
         argv += ["--user", env["user"]]
-    for key in env.get("forward_env", []):
-        value = os.environ.get(key)
-        if value:  # empty string counts as ABSENT — matches log_forwarded_env
-            argv += ["-e", f"{key}={value}"]
+    # RG-117a: values ride in the docker client's environment, not its argv.
+    docker_env_values: dict[str, str] = {}
+    forwarded_values = {key: os.environ[key] for key in env.get("forward_env", [])
+                        if os.environ.get(key)}  # empty counts as ABSENT
+    argv += env_flags_by_name(forwarded_values, docker_env_values)
+    # run-gate facts are not secrets, but PYTEST_ADDOPTS is operator free
+    # text: names on argv, values in the client environment (RG-117a).
+    argv += env_flags_by_name(resource_env, docker_env_values)
     # RG-55/contract Sec 4.1: the token is appended in the SAME position as
     # `forward_env` values, immediately after that loop — `enabled = false`
     # (or the test-only kill switch) means no token at all, not an empty one.
     profiling = bool(profile_plan and profile_plan["enabled"])
     if profiling:
-        argv += ["-e", f"{PROFILE_TOKEN_ENV}={profile_plan['token']}"]
+        argv += env_flags_by_name(
+            {PROFILE_TOKEN_ENV: profile_plan["token"]}, docker_env_values)
     mem_cap = lane.get("resources", {}).get("memory") or lane.get("memory")
     if mem_cap:
         argv += ["--memory", mem_cap]
@@ -13276,14 +15944,17 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                  else image_selection_record(env, lane_environment_name(lane), env_source))
     disclose_image_selection(selection)
     log_forwarded_env(env, "ephemeral")  # names only, never values (RG-19)
+    log_resource_forwarded_env(resource_env)
     print_lane_bounds(lane)
     print(f"run-gate: docker argv: "
-          f"{shlex.join(redact_forwarded_values(argv, env.get('forward_env', [])))}",
+          f"{shlex.join(redact_forwarded_values(
+              argv, [*env.get('forward_env', []), *resource_env]))}",
           flush=True)
     if lane.get("kind") == "assay":
         assure_assay_state_root(
             docker, lane, env, lane_environment_name(lane), env_source,
-            repo, project_dir, worktree, slice_name, dry_run=dry_run)
+            repo, project_dir, worktree, slice_name, dry_run=dry_run,
+            resource_settings=resource_settings)
     if not dry_run:
         clear_previous_assay_verdict(lane, project_dir, repo, run_record)
     if dry_run:
@@ -13302,6 +15973,8 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         # `--dry-run` never named WHY (e.g. `RUN_GATE_PROFILE=off`).
         print_profile_plan_dry_run(profile_plan, "container")
         print("run-gate: DRY RUN — no container was started", flush=True)
+        if preload_file is not None:
+            preload_file.close()
         return 0
     # RG-55/R-45: admission is a pre-start headroom check. The daemon host
     # read and any wait therefore happen before Docker creates the lane,
@@ -13309,7 +15982,12 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     profile_preflight = (prepare_profile_start(
         lane, lane_name, project_dir, worktree, docker, profile_plan,
         "container") if profiling else None)
-    started = subprocess.run(argv, capture_output=True, text=True)
+    try:
+        started = subprocess.run(argv, capture_output=True, text=True,
+                                 env={**os.environ, **docker_env_values})
+    finally:
+        if preload_file is not None:
+            preload_file.close()
     if started.returncode != 0:
         # RG-12: a failed `docker run` may still have created the container
         # (pull/entrypoint failures) — preserve its logs, then show a REAL
@@ -13374,6 +16052,8 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         "progress": progress_path,
         "state_dir": state_dir,
         "assay_identity_mode": assay_identity_mode(lane),
+        "r2_jobs": (run_record.get("r2_jobs")
+                    if run_record is not None else None),
         "revision": __revision__,
         # RG-55/contract Sec 4.1: recorded as soon as it is known — a client
         # that dies between here and `start` still leaves enough for a
@@ -13536,7 +16216,8 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
                   run_record: dict | None = None,
                   profile_plan: dict | None = None,
                   budget_deadline: float | None = None,
-                  budget_started_epoch: float | None = None) -> int:
+                  budget_started_epoch: float | None = None,
+                  resource_settings: dict | None = None) -> int:
     """Exec into a PERSISTENT runner (started externally by CIU).
 
     project_dir arrives already relocated into the judged worktree (RG-15).
@@ -13579,14 +16260,21 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
     argv = [docker, "exec", "--workdir", str(repo)]
     # Infrastructure variables are implicit; project data inputs must be
     # declared on the environment so every consumer gets the same contract.
-    for key in (CGROUP_ENV_VAR, *env.get("forward_env", [])):
-        value = os.environ.get(key)
-        if value:
-            argv += ["-e", f"{key}={value}"]
+    # RG-117a: values ride in the docker client's environment, not its argv.
+    docker_env_values: dict[str, str] = {}
+    if os.environ.get(CGROUP_ENV_VAR):
+        argv += ["-e", f"{CGROUP_ENV_VAR}={os.environ[CGROUP_ENV_VAR]}"]
+    argv += env_flags_by_name(
+        {key: os.environ[key] for key in env.get("forward_env", [])
+         if os.environ.get(key)}, docker_env_values)
+    resource_env = {**resource_forwarded_env(resource_settings or {}, "exec"),
+                    **lane_workers_env(lane)}
+    argv += env_flags_by_name(resource_env, docker_env_values)
     # RG-55/contract Sec 4.1: same position, same rule as the ephemeral path.
     profiling = bool(profile_plan and profile_plan["enabled"])
     if profiling:
-        argv += ["-e", f"{PROFILE_TOKEN_ENV}={profile_plan['token']}"]
+        argv += env_flags_by_name(
+            {PROFILE_TOKEN_ENV: profile_plan["token"]}, docker_env_values)
     if lane.get("budget"):
         # `docker exec` disconnecting does not reliably stop the in-container
         # child, so the bound must be enforced inside the persistent runner.
@@ -13602,6 +16290,7 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
           f"slice {slice_name or '(none)'} ({slice_src})",
           flush=True)
     log_forwarded_env(env, "exec")  # names only, never values (RG-19)
+    log_resource_forwarded_env(resource_env)
     if lane.get("budget"):
         print(f"run-gate: budget {lane['budget']} (hard limit; clock starts "
               f"after admission and lock waits)", flush=True)
@@ -13610,13 +16299,15 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
     # (RG-19). The slice name itself stays visible: it is mechanics, not a
     # credential.
     print(f"run-gate: docker argv: "
-          f"{shlex.join(redact_forwarded_values(argv, env.get('forward_env', [])))}",
+          f"{shlex.join(redact_forwarded_values(
+              argv, [*env.get('forward_env', []), *resource_env]))}",
           flush=True)
     if lane.get("kind") == "assay":
         assure_assay_state_root(
             docker, lane, env, lane_environment_name(lane), env_source,
             repo, project_dir, worktree, slice_name or "",
-            resolved_container_name=name, dry_run=dry_run)
+            resolved_container_name=name, dry_run=dry_run,
+            resource_settings=resource_settings)
     if not dry_run:
         clear_previous_assay_verdict(lane, project_dir, repo, run_record)
     if dry_run:
@@ -13698,7 +16389,9 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
                 placement_barrier_shell_argv(
                     argv[exec_command_index:], barrier_nonce))
             barrier_argv.insert(2, "-i")
-            proc = spawn_placement_barrier(barrier_argv, barrier_nonce)
+            proc = spawn_placement_barrier(
+                barrier_argv, barrier_nonce,
+                env={**os.environ, **docker_env_values})
         try:
             profiler_state = start_lane_profiling(
                 lane, lane_name, project_dir, worktree, docker, profile_plan,
@@ -13759,6 +16452,8 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
         "progress": progress_path,
         "state_dir": state_dir,
         "assay_identity_mode": assay_identity_mode(lane),
+        "r2_jobs": (run_record.get("r2_jobs")
+                    if run_record is not None else None),
         "revision": __revision__,
         "profile_token": profile_plan["token"] if profiling else None,
         "profile_daemon": profile_plan["daemon"] if profiling else None,
@@ -13853,7 +16548,8 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
                 fallback_watch is not None else None)
         if proc is None:
             proc = subprocess.Popen(argv, stdout=subprocess.PIPE,
-                                    stderr=subprocess.STDOUT, bufsize=0)
+                                    stderr=subprocess.STDOUT, bufsize=0,
+                                    env={**os.environ, **docker_env_values})
         else:
             # This process exists only when the placement path already set
             # its nonce and held the wrapper at the ready barrier.
@@ -13967,6 +16663,9 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
                         f"profiling tick failed unexpectedly: {exc}"
         output_tee.join()
     finally:
+      # RG-114: like await_container's finally (RG-109), a second SIGTERM
+      # while the profiling stop runs is deferred until the record is cleared.
+      with deferred_sigterm():
         if stdin_forwarder is not None:
             stdin_forwarder.close()
         if daemon_watch is not None:
@@ -13983,7 +16682,8 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
             if stalled is None:
                 stalled = terminal_daemon_kill(profile_result["resources"])
             print_profile_warning(profiler_state)
-            print_footprint_line(lane_name, project_dir, profile_result["resources"])
+            print_footprint_line(lane_name, project_dir, profile_result["resources"],
+                                 record_io_sync(run_record))
             if run_record is not None:
                 run_record["resources"] = profile_result["resources"]
                 run_record["profile_error"] = profile_result["profile_error"]
@@ -14039,7 +16739,8 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                   run_record: dict | None = None,
                   profile_plan: dict | None = None,
                   budget_deadline: float | None = None,
-                  env_source: str = "host (mode host)") -> int:
+                  env_source: str = "host (mode host)",
+                  resource_settings: dict | None = None) -> int:
     # cwd is the project dir RELOCATED into the judged worktree (RG-15) — a
     # bare-host lane must not quietly operate on the invocation checkout
     # either.
@@ -14057,6 +16758,9 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
             else lane_command_argv(lane, worktree, request_base))
     print(f"run-gate: {installed_version()} | lane {lane_name} | env {env_source}",
           flush=True)
+    resource_env = {**resource_forwarded_env(resource_settings or {}, "host"),
+                    **lane_workers_env(lane)}
+    log_resource_forwarded_env(resource_env)
     if lane.get("kind") == "assay":
         assure_assay_state_root(
             None, lane, {}, lane_environment_name(lane), env_source,
@@ -14125,7 +16829,13 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
             "lane body was not started")
     proc = None
     barrier_nonce = None
-    run_env = None
+    # A bare-host lane may itself be running inside another profiled lane.
+    # Do not let that outer invocation's private session token leak into this
+    # child; the current lane adds its own token below only when its profiler
+    # actually starts a daemon session.
+    run_env = dict(os.environ)
+    run_env.pop(PROFILE_TOKEN_ENV, None)
+    run_env.update(resource_env)
     if not profiling:
         # RG-55/contract Sec 4 obligation 8: disabled means NO token, NO
         # daemon call and NO sampler -- same shape run_container_lane/
@@ -14138,7 +16848,7 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                               "disabled_reason", "disabled")}
     else:
         if placement_requested:
-            run_env = dict(os.environ)
+            run_env = run_env or dict(os.environ)
             run_env[PROFILE_TOKEN_ENV] = profile_plan["token"]
             barrier_nonce = secrets.token_hex(16)
             proc = spawn_bare_host_placement_barrier(
@@ -14205,7 +16915,7 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     if profiler_state["mode"] == "daemon":
         if run_env is None:
             run_env = dict(os.environ)
-            run_env[PROFILE_TOKEN_ENV] = profile_plan["token"]
+        run_env[PROFILE_TOKEN_ENV] = profile_plan["token"]
     # R-36h/RW-43 (round-1 review B1): the rusage path now launches its OWN
     # child via `Popen` + `os.wait4(pid, 0)` rather than bracketing a
     # historical rejected `getrusage(RUSAGE_CHILDREN)` snapshot around a
@@ -14443,7 +17153,8 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
             if stalled is None:
                 stalled = terminal_daemon_kill(profile_result["resources"])
             print_profile_warning(profiler_state)
-            print_footprint_line(lane_name, project_dir, profile_result["resources"])
+            print_footprint_line(lane_name, project_dir, profile_result["resources"],
+                                 record_io_sync(run_record))
             if run_record is not None:
                 run_record["resources"] = profile_result["resources"]
                 run_record["profile_error"] = profile_result["profile_error"]
@@ -14578,8 +17289,8 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "          report names it (RG-30))",
         "       run-gate history [LANE] [--worktree PATH] [--json]",
         "         (RG-27: what each lane most recently did — ANY outcome, dirty or",
-        "          aborted runs included — and its bounded per-commit duration",
-        "          series. Reads the store, runs no lane, decides no policy.",
+        "          aborted runs included — and its bounded per-commit/per-mode",
+        "          duration series. Reads the store, runs no lane, decides no policy.",
         "          --worktree redirects the READ exactly as it redirects a run:",
         "          the answer describes THAT tree\'s store, and says so)",
         "       run-gate footprint [LANE] [--worktree PATH] [--json] [--write]",
@@ -14668,6 +17379,8 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "  --reuse-from PATH assay R2 only: reuse candidates from an earlier verdict",
         "  --rejudge ID      assay R2 only; repeatable, joined for Assay",
         "  --rejudge-outcome B assay R2 only: outcome buckets for --rejudge",
+        "  --rejudge-contaminated  assay R2 only: serially rejudge the latest run's",
+        "                      contaminated budget_exceeded candidates (RG-144)",
         "  --dry-run         print the full execution plan (docker argv, mounts,",
         "                    slice, inner command) and exit 0 — every preflight",
         "                    is rehearsed and NO JUDGED lane is started. An",
@@ -14744,8 +17457,9 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "              and says so rather than dirtying the tree for the next lane)",
         "  read scope  the same one: `history --worktree B` reads B's store, never",
         "              the invoking checkout's, and names the tree in its output",
-        f"  retention   [history] keep = <int>, default {HISTORY_KEEP_DEFAULT} commits per lane;",
-        "              project [history] shadows the central one (R-09's rule)",
+        f"  retention   [history] keep = <int>, default {HISTORY_KEEP_DEFAULT} measurements per lane;",
+        "              the bound applies across I/O modes; project [history] shadows",
+        "              the central one (R-09's rule)",
         "  eligibility  history keeps COMPLETED runs (passes AND fails) on a clean,",
         "              committed tree; aborted, errored, dirty-tree and mid-rebase",
         "              runs update `latest` only, with the exclusion reason recorded",
@@ -14818,6 +17532,25 @@ def sequence_leaf_names(name: str, lanes: dict) -> list[str]:
         return [name]
     return [leaf for member in lane["lanes"]
             for leaf in sequence_leaf_names(member, lanes)]
+
+
+def sequence_io_sync_modes(name: str, lanes: dict, cfg: dict,
+                           cfg_path: Path, central: dict,
+                           central_path: Path | None,
+                           args: argparse.Namespace) -> dict[str, str]:
+    """Resolve leaf modes so a sequence aggregate cannot mislabel history."""
+    modes = {}
+    for leaf_name in sequence_leaf_names(name, lanes):
+        leaf = lanes[leaf_name]
+        env, _source = resolve_environment(
+            leaf, leaf_name, cfg, central, cfg_path, central_path)
+        env_declaration = declared_environment(leaf, cfg, central)
+        settings, _sources = resolve_resource_settings(
+            leaf, cfg, central, env_declaration,
+            mode=env.get("mode", env_declaration.get("mode", "host")),
+            io_sync_override=args.io_sync, cow_override=args.cow)
+        modes[leaf_name] = settings["io_sync"]
+    return modes
 
 
 def _sequence_delegates(name: str, lanes: dict, cfg: dict, central: dict,
@@ -15056,16 +17789,31 @@ def _dispatch_sequence(name: str, lane: dict, args: argparse.Namespace,
             fail(f"--fresh on sequence {name!r} has no ephemeral member "
                  "container to replace")
 
+    io_sync_by_member = sequence_io_sync_modes(
+        name, lanes, cfg, cfg_path, central, central_path, args)
+    io_sync_modes = set(io_sync_by_member.values())
+    sequence_io_sync = next(iter(io_sync_modes)) if len(io_sync_modes) == 1 \
+        else None
+
     record = None
     if not args.dry_run:
         record = start_run_record(
             name, worktree, repo, config_path=cfg_path,
             config_sha256=cfg_sha256,
             central_config_path=central_path,
-            central_config_sha256=central_cfg_sha256)
+            central_config_sha256=central_cfg_sha256,
+            io_sync=sequence_io_sync,
+            io_sync_override=args.io_sync is not None,
+            cow_override=args.cow is not None)
         record["_project_dir"] = effective_project
         record["_keep"] = resolve_history_keep(
             cfg, cfg_path, central, central_path)[0]
+        record["resource_settings"] = {
+            "io_sync_by_member": io_sync_by_member}
+        if sequence_io_sync is None:
+            record["excluded_reason"] = (
+                "sequence members use different io_sync modes; history is "
+                "recorded per member")
         record["sequence"] = {"stop_on": lane.get("stop_on", "FAIL"),
                               "request_base": request_base,
                               "base_source": base_source}
@@ -15104,6 +17852,10 @@ def _dispatch_sequence(name: str, lane: dict, args: argparse.Namespace,
                 member_argv.append("--allow-dirty")
             if args.dry_run:
                 member_argv.append("--dry-run")
+            if args.io_sync is not None:
+                member_argv += ["--io-sync", args.io_sync]
+            if args.cow is not None:
+                member_argv += ["--cow", args.cow]
             if args.lock_wait is not None:
                 member_argv += ["--lock-wait", args.lock_wait]
             if args.fresh:
@@ -15177,7 +17929,8 @@ def _dispatch_sequence(name: str, lane: dict, args: argparse.Namespace,
 
 def _dispatch(argv: list[str] | None = None, *,
               _admission_ticket=None,
-              _admission_managed: bool = False) -> LaneResult:
+              _admission_managed: bool = False,
+              _workers_options: dict | None = None) -> LaneResult:
     parser = RunGateArgumentParser(add_help=False, prog=PROG)
     parser.add_argument("lane", nargs="?")
     parser.add_argument("target", nargs="?")
@@ -15197,6 +17950,25 @@ def _dispatch(argv: list[str] | None = None, *,
                         "that delegates it (assay judge.base_source = "
                         "\"request\"), and for conjunction lanes carrying a "
                         "{base} token")
+    parser.add_argument("--jobs", metavar="N|auto",
+                        help="native R2 assay worker count; positive N or auto")
+    parser.add_argument("--workers", metavar="N|auto", default=None,
+                        help="RG-146: xdist worker count for a command lane "
+                             "that declares `workers` and the {workers} token")
+    parser.add_argument("--scaling", metavar="N,N,..", default=None,
+                        help="RG-147: run the lane at each worker count "
+                             "(baseline 1 first) and print the scaling table")
+    parser.add_argument("--repeat", metavar="N:R,*:R", default=None,
+                        help="--scaling only: repetitions per worker count")
+    parser.add_argument("--xdist-parity", action="store_true",
+                        help="RG-146: run N=1 and N=k (--workers k, default "
+                             "2), compare per-test outcomes and store the "
+                             "proof keyed by the lane config digest")
+    parser.add_argument("--io-sync", choices=("strict", "relaxed"),
+                        help="per-invocation fsync policy override; relaxed runs "
+                             "are excluded from history")
+    parser.add_argument("--cow", choices=("off",),
+                        help="per-invocation CoW mode override")
     parser.add_argument("--lock-wait", metavar="D", default=None,
                         help="maximum time to wait for a lane lock (default: 10m)")
     parser.add_argument("--admission-wait", metavar="D", default=None,
@@ -15229,6 +18001,11 @@ def _dispatch(argv: list[str] | None = None, *,
     parser.add_argument("--rejudge", action="append", default=[], metavar="ID",
                         help="RG-66: assay R2 only — selectively rejudge an "
                              "ID; repeatable")
+    parser.add_argument("--rejudge-contaminated", action="store_true",
+                        help="RG-144: assay R2 only — serially (--jobs 1) "
+                             "rejudge the budget_exceeded candidates of the "
+                             "lane's latest run whose measurement was "
+                             "contaminated")
     parser.add_argument("--rejudge-outcome", metavar="BUCKET",
                         help="RG-66: assay R2 only — constrain rejudge outcomes")
     parser.add_argument("--allow-dirty", action="store_true")
@@ -15244,9 +18021,10 @@ def _dispatch(argv: list[str] | None = None, *,
     parser.add_argument("--dry-run", action="store_true",
                         help="print the full execution plan and exit 0 — every "
                              "preflight is rehearsed and no JUDGED lane is "
-                             "started; an assay lane's read-only `assay lanes "
-                             "--json` inventory probe is a preflight and does "
-                             "run, in a short container of its own")
+                             "started; assay inventory probes run, and an "
+                             "opted-in R2 jobs=auto lane also probes capacity "
+                             "and Cowtree (which may create private Cowtree "
+                             "metadata under MDT_COW_ROOT)")
     parser.add_argument("--help", "-h", action="store_true")
     record = None  # RG-27: set once the lane resolves; see flush_run_record
     args = None
@@ -15261,6 +18039,43 @@ def _dispatch(argv: list[str] | None = None, *,
             lane_args = []
         args = parser.parse_args(parse_argv)
         args.lane_args = lane_args
+        args.jobs_request = parse_r2_jobs_cli(args.jobs)
+        args.workers_request = parse_workers_cli(args.workers)
+        workers_modes = [flag for flag, given in (
+            ("--workers", args.workers is not None),
+            ("--scaling", args.scaling is not None),
+            ("--repeat", args.repeat is not None),
+            ("--xdist-parity", args.xdist_parity)) if given]
+        if workers_modes and (
+                args.lane is None or args.lane in _NO_LANE_FACT_VERBS
+                or args.lane in {"doctor", "history", "footprint",
+                                 "validate-pointers", "migrate-modes",
+                                 "admission", "status"}
+                or args.list or args.check_env):
+            fail(f"{', '.join(workers_modes)} apply to a lane run only")
+        if args.scaling is not None or args.xdist_parity:
+            if args.scaling is not None and args.xdist_parity:
+                fail("--scaling and --xdist-parity are separate modes")
+            if args.scaling is not None and args.workers is not None:
+                fail("--scaling names its own worker counts; drop --workers")
+            if args.json or args.dry_run or args.fresh or lane_args:
+                fail("--scaling and --xdist-parity accept no --json, "
+                     "--dry-run, --fresh or selective arguments")
+        if args.repeat is not None and args.scaling is None:
+            fail("--repeat applies to --scaling only")
+        if args.io_sync is not None or args.cow is not None:
+            if (args.lane is None or args.lane in _NO_LANE_FACT_VERBS
+                    or args.lane in {"doctor", "history", "footprint",
+                                     "validate-pointers"}
+                    or args.list or args.check_env):
+                fail("--io-sync and --cow apply to a lane run only")
+        if args.jobs is not None and (
+                args.lane is None or args.lane in _NO_LANE_FACT_VERBS
+                or args.lane in {"doctor", "history", "footprint",
+                                 "validate-pointers", "migrate-modes",
+                                 "admission", "status"}
+                or args.list or args.check_env):
+            fail("--jobs applies to a lane run only")
         if args.allow_main_checkout:
             # Env, not a parameter: sequence members, probes and re-attached
             # lanes all reach container_mount_flags() and inherit it.
@@ -15354,6 +18169,17 @@ def _dispatch(argv: list[str] | None = None, *,
                  "--lane for a merged write, not both")
         if args.rejudge_outcome and not args.rejudge:
             fail("--rejudge-outcome requires at least one --rejudge ID")
+        if args.rejudge_contaminated:
+            if args.lane is None or args.lane in (
+                    "doctor", "history", "footprint", "validate-pointers",
+                    "status"):
+                fail("--rejudge-contaminated applies only to an assay R2 lane")
+            if (args.rejudge or args.reuse_from is not None
+                    or args.rejudge_outcome is not None
+                    or args.jobs is not None):
+                fail("--rejudge-contaminated selects its own candidates and "
+                     "runs them serially; do not combine it with --rejudge, "
+                     "--reuse-from, --rejudge-outcome or --jobs")
         if args.json and (args.lane is None or args.lane in (
                 "doctor", "validate-pointers", "history", "footprint",
                 "status")) \
@@ -15564,6 +18390,26 @@ def _dispatch(argv: list[str] | None = None, *,
                  f"{', '.join(sorted(lanes)) or '(none)'} (config: {cfg_path}"
                  f"{f'; shared: {central_path}' if central_path else ''})")
         lane = lanes[args.lane]
+        if args.rejudge_contaminated:
+            if lane.get("kind") != "assay":
+                fail(f"--rejudge-contaminated applies only to an assay R2 "
+                     f"lane; lane {args.lane!r} has kind {lane.get('kind')!r}")
+            _repo, _tree, _top = resolve_repo_and_worktree(
+                project_dir, args.worktree)
+            args.rejudge = latest_contaminated_budget_exceeded(
+                effective_project_dir(project_dir, _top, _tree), args.lane)
+            if not args.rejudge:
+                fail(f"--rejudge-contaminated: lane {args.lane!r} has no "
+                     "contaminated budget_exceeded candidate in its latest "
+                     "recorded run")
+            args.jobs_request = 1
+            assay_selective = True
+            print(f"{PROG}: --rejudge-contaminated: rejudging "
+                  f"{len(args.rejudge)} candidate(s) serially (--jobs 1)",
+                  flush=True)
+        if args.jobs_request is not None and lane.get("kind") != "assay":
+            fail(f"--jobs applies only to native R2 assay lanes; lane "
+                 f"{args.lane!r} has kind {lane.get('kind')!r}")
         if lane.get("kind") == "sequence":
             if lane_args:
                 fail(f"sequence lane {args.lane!r} cannot accept selective "
@@ -15597,6 +18443,11 @@ def _dispatch(argv: list[str] | None = None, *,
             }
         env, env_source = resolve_environment(lane, args.lane, cfg, central,
                                               cfg_path, central_path)
+        env_declaration = declared_environment(lane, cfg, central)
+        resource_settings, resource_sources = resolve_resource_settings(
+            lane, cfg, central, env_declaration,
+            mode=env.get("mode", env_declaration.get("mode", "host")),
+            io_sync_override=args.io_sync, cow_override=args.cow)
         # RG-17/19: declared inputs verified BEFORE anything runs — presence
         # in the invoking environment for every kind; for container lanes
         # also that the names are on the forward_env allowlist at all.
@@ -15615,6 +18466,9 @@ def _dispatch(argv: list[str] | None = None, *,
         # pointer recipe embeds {worktree} into bash strings regardless of
         # what this particular lane does with it.
         check_worktree_charset(worktree)
+        validate_resource_mount_inputs(resource_settings,
+                                       env.get("mode", "host"), repo,
+                                       worktree)
         # RG-1: an override the lane cannot possibly honor is a silent
         # false-PASS machine — a container command lane whose argv carries no
         # {worktree} token would let sub-steps re-derive their own tree and
@@ -15641,6 +18495,18 @@ def _dispatch(argv: list[str] | None = None, *,
             (cfg.get("project", central.get("project", {})).get("trunk")
              if isinstance(cfg.get("project", central.get("project", {})), dict)
              else None))
+        r2_jobs_selection = configure_r2_jobs(
+            lane, args.lane, args.jobs_request, resource_settings, env,
+            env_source, repo, worktree, eff_proj)
+        workers_options = _workers_options or {}
+        if args.scaling is not None or args.xdist_parity:
+            return run_workers_measurement(
+                args, lane, request_argv, eff_proj, head_commit(worktree),
+                _dispatch)
+        workers_selection = configure_workers(
+            lane, args.lane, args.workers_request, env, eff_proj,
+            workers_options)
+        disclose_workers(args.lane, workers_selection)
         if lane.get("_selective_assay"):
             selected = lane["_selective_assay"]
             if selected.get("reuse_from") is not None:
@@ -15667,8 +18533,15 @@ def _dispatch(argv: list[str] | None = None, *,
                 args.lane, worktree, repo, config_path=cfg_path,
                 config_sha256=cfg_sha256,
                 central_config_path=central_path,
-                central_config_sha256=central_cfg_sha256)
+                central_config_sha256=central_cfg_sha256,
+                io_sync=resource_settings["io_sync"],
+                io_sync_override=args.io_sync is not None,
+                cow_override=args.cow is not None)
             record["_project_dir"] = eff_proj
+            record["resource_settings"] = resource_settings
+            record["resource_sources"] = resource_sources
+            record_r2_jobs_selection(record, lane, r2_jobs_selection, eff_proj)
+            prepare_workers_run(lane, record, eff_proj, workers_options)
             image_selection = image_selection_record(
                 env, lane_environment_name(lane), env_source,
             )
@@ -15824,6 +18697,7 @@ def _dispatch(argv: list[str] | None = None, *,
             if not env:  # built-in 'bare-host' — 'host' now resolves to a
                          # non-empty synthetic env and falls through to
                          # run_container_lane() below like any named env.
+                disclose_r2_jobs(args.lane, r2_jobs_selection)
                 budget_started_epoch, budget_started_monotonic = admit_now()
                 budget_deadline = (budget_started_monotonic
                                    + budget_seconds(lane["budget"])
@@ -15840,9 +18714,11 @@ def _dispatch(argv: list[str] | None = None, *,
                         run_record=record,
                         profile_plan=profile_plan,
                         budget_deadline=budget_deadline,
-                        env_source=f"{env_source} (mode host)"),
+                        env_source=f"{env_source} (mode host)",
+                        resource_settings=resource_settings),
                     enabled=not args.dry_run)
             elif env.get("mode") == "exec":
+                disclose_r2_jobs(args.lane, r2_jobs_selection)
                 # Resolved HERE, not inside run_exec_lane: the lock key and
                 # the eventual `docker exec` target must be the SAME
                 # identity, and the lock has to be held (ordering: strictly
@@ -15873,7 +18749,8 @@ def _dispatch(argv: list[str] | None = None, *,
                         run_record=record,
                         profile_plan=profile_plan,
                         budget_deadline=budget_deadline,
-                        budget_started_epoch=budget_started_epoch),
+                        budget_started_epoch=budget_started_epoch,
+                        resource_settings=resource_settings),
                     enabled=not args.dry_run)
             else:
                 budget_started_epoch, budget_started_monotonic = admit_now()
@@ -15897,7 +18774,8 @@ def _dispatch(argv: list[str] | None = None, *,
                         budget_deadline=budget_deadline,
                         budget_started_epoch=budget_started_epoch,
                         admission_group=(admission_ticket.name
-                                         if admission_ticket else None)),
+                                         if admission_ticket else None),
+                        resource_settings=resource_settings),
                     enabled=not args.dry_run)
         finally:
             active_exception = sys.exc_info()[0] is not None
@@ -15970,7 +18848,14 @@ def _dispatch(argv: list[str] | None = None, *,
         elif lane["kind"] == "assay":
             result = LaneResult("PASS" if code == 0 else "FAIL", code)
         else:
-            result = command_lane_result(code, lane)
+            result = xdist_isolation_recheck(
+                command_lane_result(code, lane), lane, record,
+                workers_options,
+                lambda: _dispatch(
+                    request_argv, _admission_ticket=_admission_ticket,
+                    _admission_managed=_admission_managed,
+                    _workers_options={**workers_options, "workers": 1,
+                                      "lf": True, "no_recheck": True}))
         if (lane["kind"] == "assay" and not args.dry_run
                 and result.verdict != "PASS"):
             _report_failed_assay(args.lane, record, eff_proj, repo, lane,
@@ -16172,6 +19057,17 @@ def main(argv: list[str] | None = None) -> int:
                   file=sys.stderr, flush=True)
             result = LaneResult(
                 "ERROR", reason="interrupted-before-a-closed-result")
+        except Exception as exc:
+            # RG-117d: an uncaught bug is an infrastructure ERROR (exit 2),
+            # never Python's traceback status 1, which is the lane FAIL code.
+            import traceback
+            traceback.print_exc()
+            print(f"{PROG}: unexpected {type(exc).__name__}: {exc}; "
+                  "verdict ERROR, exit 2", file=sys.stderr, flush=True)
+            result = LaneResult(
+                "ERROR",
+                reason=f"unexpected-exception: {type(exc).__name__}: {exc}",
+                _json="--json" in option_argv)
         return finish(result)
     finally:
         if previous_sigterm is not None:

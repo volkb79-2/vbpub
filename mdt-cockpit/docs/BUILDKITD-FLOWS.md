@@ -22,7 +22,7 @@ flowchart LR
     subgraph SLICE["dev-buildkitd.slice (io.max / io.cost weight, cpu, memory)"]
       BK["mdt-buildkitd container<br/>rootless BuildKit, runc-overlayfs snapshotter"]
     end
-    BTRFS[("btrfs subvolume<br/>/srv/devcontainers-cow/buildkitd-cache<br/>zstd, own transaction stream")]
+    BTRFS[("btrfs subvolume<br/>/srv/mdt-cockpit-cow/buildkitd-cache<br/>zstd, own transaction stream")]
     DOCKERD["dockerd (overlay2, root ext4)"]
     GUARD["mdt-buildkit-guard<br/>(kills unapproved docker-container builders)"]
   end

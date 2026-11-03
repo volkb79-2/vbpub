@@ -461,12 +461,7 @@ def _create_bound_cmru_launcher(directory: Path) -> Path:
     worktree_root = repo_root / "libraries/worktree/src"
     if worktree_root.is_dir():
         import_roots.append(worktree_root)
-    program = (
-        "import sys; "
-        f"sys.path[:0] = {[str(path) for path in import_roots]!r}; "
-        "from cmru.cli import main; "
-        "raise SystemExit(main())"
-    )
+    program = _bound_launcher_program(import_roots)
     launcher.write_text(
         "#!/bin/sh\n"
         f"exec {shlex.quote(sys.executable)} -c {shlex.quote(program)} \"$@\"\n",
@@ -494,6 +489,28 @@ def _create_bound_cmru_launcher(directory: Path) -> Path:
     return launcher
 
 
+def _bound_launcher_program(import_roots: Sequence[Path]) -> str:
+    """The ``python -c`` program of the bound launcher.
+
+    KI-67: an import root that carries a ``*.egg-info`` (a stale dev build, or a
+    legacy editable install) would, placed first on ``sys.path``, win the
+    ``importlib.metadata`` lookup over the installed distribution and make the
+    identity check refuse every project command. Such a root is APPENDED, so the
+    installed metadata resolves first and the identity check judges the installed
+    release (a genuinely different copy is still refused, never silently run);
+    every other root keeps the first position.
+    """
+    first = [str(path) for path in import_roots if not any(Path(path).glob("*.egg-info"))]
+    last = [str(path) for path in import_roots if any(Path(path).glob("*.egg-info"))]
+    return (
+        "import sys; "
+        f"sys.path[:0] = {first!r}; "
+        f"sys.path.extend({last!r}); "
+        "from cmru.cli import main; "
+        "raise SystemExit(main())"
+    )
+
+
 def _bound_launcher_metadata_hint(import_roots: list[Path]) -> str:
     """Name where the launcher's interpreter resolves cmru's distribution metadata.
 
@@ -501,10 +518,10 @@ def _bound_launcher_metadata_hint(import_roots: list[Path]) -> str:
     ``cmru.egg-info`` under the source root shadows the installed release's metadata.
     The refusal is correct (fail closed) but its cause is otherwise invisible.
     """
+    path_setup = _bound_launcher_program(import_roots).split("from cmru.cli", 1)[0]
     probe = (
-        "import sys; "
-        f"sys.path[:0] = {[str(path) for path in import_roots]!r}; "
-        "import importlib.metadata as m; "
+        path_setup
+        + "import importlib.metadata as m; "
         "print(getattr(m.distribution('cmru'), '_path', None))"
     )
     try:
@@ -2717,12 +2734,24 @@ def _native_release_logging_scope() -> Iterator[None]:
             # TextIOWrapper may be block-buffered when stdout is a pipe. Flush
             # while fd 1/2 still point at tee or buffered release output would
             # land on the restored descriptors after this scope exits.
-            sys.stdout.flush()
-            sys.stderr.flush()
-            os.dup2(current.saved_stdout, 1)
-            os.dup2(current.saved_stderr, 2)
-            os.close(current.saved_stdout)
-            os.close(current.saved_stderr)
+            flush_error: OSError | ValueError | None = None
+            try:
+                for stream in (sys.stdout, sys.stderr):
+                    try:
+                        stream.flush()
+                    except (OSError, ValueError) as exc:
+                        # A broken pipe or closed stream must not skip the
+                        # descriptor restore below, nor mask the in-flight
+                        # exception.
+                        if flush_error is None:
+                            flush_error = exc
+            finally:
+                os.dup2(current.saved_stdout, 1)
+                os.dup2(current.saved_stderr, 2)
+                os.close(current.saved_stdout)
+                os.close(current.saved_stderr)
+            if flush_error is not None and active_exception is not None:
+                active_exception.add_note(f"release log flush failed: {flush_error!r}")
             try:
                 current.process.wait(timeout=5)
             except subprocess.TimeoutExpired as exc:
@@ -2734,6 +2763,8 @@ def _native_release_logging_scope() -> Iterator[None]:
                 if active_exception is None:
                     raise error from exc
                 active_exception.add_note(f"{error}; cleanup timeout: {exc}")
+            if flush_error is not None and active_exception is None:
+                raise flush_error
 
 
 def _release_logging_scoped(function):
@@ -6564,10 +6595,35 @@ def _release_or_status(verb: str, args, rest: List[str], runtime=None) -> None:
             github_config=github_config,
         )
     else:
-        _release_child(
-            vargs, repo_root, configs, ordered, project_order, selected_names,
-            github_config, env_config, git_auth,
-        )
+        with _resumed_dry_run_leaves_candidate_tip_unchanged(vargs, repo_root):
+            _release_child(
+                vargs, repo_root, configs, ordered, project_order, selected_names,
+                github_config, env_config, git_auth,
+            )
+
+
+@contextmanager
+def _resumed_dry_run_leaves_candidate_tip_unchanged(vargs, repo_root: Path) -> Iterator[None]:
+    """KI-102: a ``--dry-run --resume`` must leave the retained candidate's tip alone.
+
+    The dry run prepares external-version inputs and the release-body preview
+    commits the prepared outputs; on a resumed run that worktree is the retained
+    candidate, which the launcher then reports as retained unchanged. Restore
+    the tip afterwards, on every exit path.
+    """
+    if not (vargs.dry_run and getattr(vargs, "resume", None)):
+        yield
+        return
+    head_before = _git(repo_root, "rev-parse", "HEAD")
+    try:
+        yield
+    finally:
+        if _git(repo_root, "rev-parse", "HEAD") != head_before:
+            run_local_git(repo_root, "reset", "--hard", head_before, check=True)
+            log_info(
+                f"[DRY RUN] discarded the prepared-inputs commit(s); the candidate tip is "
+                f"back at {head_before[:12]}"
+            )
 
 
 def _status(vargs, runtime, repo_root: Path, configs, selected_names: List[str]) -> None:
@@ -6834,6 +6890,149 @@ def _preflight_feature_worktree_source(
     return branch, local_head
 
 
+def _release_gate_preconditions_before_dispatch(
+    repo_root: Path, config_path: Path, configs, project_names: Sequence[str], vargs, *,
+    git_auth: GitHubGitAuth | None, report: bool,
+) -> str | None:
+    """Check CMRU's dry-run gate inputs before dispatch or workspace creation."""
+    if (
+        not getattr(vargs, "dry_run", False)
+        or getattr(vargs, "resume", None)
+        or "cmru" not in project_names
+    ):
+        return None
+
+    from cmru.release_preconditions import (
+        GatePrecondition,
+        evaluate_release_gate_preconditions,
+        format_gate_precondition_report,
+        run_tests_uses_provisional_gate,
+    )
+    from cmru.version import status_records
+
+    groups = transaction.project_git_family_groups(repo_root, [configs["cmru"]])
+    source_git_root = next(iter(groups))
+    if getattr(vargs, "from_worktree", False):
+        _branch, revision = _preflight_feature_worktree_source(
+            source_git_root, repo_root, git_auth=git_auth,
+        )
+    else:
+        revision = transaction.fetch_origin_main(source_git_root, git_auth=git_auth)
+
+    cmru_project = _project_config_for_release_snapshot(
+        source_git_root, revision, config_path, configs,
+    )
+    all_families = transaction.project_git_family_groups(repo_root, list(configs.values()))
+    known_members = all_families.get(source_git_root, [cmru_project])
+    known_names = [getattr(project, "name") for project in known_members]
+    known_configs = _configs_for_git_family(configs, known_names, source_git_root)
+    records = status_records(
+        source_git_root,
+        {"cmru": cmru_project},
+        minor=getattr(vargs, "minor", False),
+        major=getattr(vargs, "major", False),
+        set_version=getattr(vargs, "set_version", None),
+        ref=revision,
+        known_projects=known_configs,
+        known_project_names=_known_project_scope_names(known_configs),
+    )
+    record = records[0]
+    next_tag = record["next_version"]
+    prefix = getattr(cmru_project, "prefix", None) or "cmru-v"
+    planned_version = (
+        next_tag[len(prefix):]
+        if record["changed"] and isinstance(next_tag, str) and next_tag.startswith(prefix)
+        else None
+    )
+    if getattr(vargs, "skip_gates", None) is not None:
+        rows = [GatePrecondition(
+            "cmru", "Release gate", "SKIPPED",
+            f"release gates were explicitly skipped: {vargs.skip_gates}",
+        )]
+    elif planned_version is None:
+        rows = [GatePrecondition(
+            "cmru", "Release gate", "SKIPPED",
+            "cmru has no CMRU-derived tagged release version in this plan.",
+        )]
+    else:
+        _config_rel, config_text = _cmru_snapshot_config_text(
+            source_git_root, revision, config_path, configs,
+        )
+        rows = evaluate_release_gate_preconditions(
+            repo_root, source_git_root, revision, {"cmru": planned_version},
+            gate_provisional=run_tests_uses_provisional_gate(config_text),
+        )
+
+    if any(row.status == "FAIL" for row in rows):
+        print(format_gate_precondition_report(rows), file=sys.stderr)
+        log_error("release gate preconditions failed; no release workspace was created")
+        raise SystemExit(exit_codes.REFUSED)
+    if report:
+        if all(row.status == "PASS" for row in rows):
+            log_info(
+                f"Release gate preconditions: PASS (cmru {planned_version})."
+            )
+        else:
+            print(format_gate_precondition_report(rows))
+    return revision
+
+
+def _cmru_snapshot_config_text(
+    source_git_root: Path, revision: str, config_path: Path,
+    configs: Mapping[str, ProjectConfig],
+) -> tuple[Path, str]:
+    """Return CMRU's project config path and text at the exact source commit."""
+    config_rel = _project_config_paths_at_snapshot(
+        source_git_root, revision, config_path, configs, ["cmru"],
+    )["cmru"]
+    content = _read_git_path_at_commit(
+        source_git_root, revision, config_rel,
+        source_label=f"release source ({revision[:12]}:{config_rel.as_posix()})",
+    )
+    return config_rel, content
+
+
+def _project_config_for_release_snapshot(
+    source_git_root: Path, revision: str, config_path: Path,
+    configs: Mapping[str, ProjectConfig],
+) -> ProjectConfig:
+    """Parse CMRU's project config from the exact source commit, without a worktree."""
+    config_rel, content = _cmru_snapshot_config_text(
+        source_git_root, revision, config_path, configs,
+    )
+    with tempfile.TemporaryDirectory(prefix="cmru-release-config-") as temporary:
+        snapshot_config = Path(temporary) / PROJECT_CONFIG_FILENAME
+        snapshot_config.write_text(content, encoding="utf-8")
+        from cmru.config import _parse_project_document
+
+        parsed, _github, _targets = _parse_project_document(
+            snapshot_config, require_repository_facts=False,
+        )
+    document = tomllib.loads(content)
+    project_raw = document["project"]
+    version = _parse_version_spec(project_raw.get("version"), "cmru")
+    artifacts, git_tag, commit_generated = _parse_release_policy(
+        project_raw, "cmru", version,
+    )
+    project_rel = config_rel.parent
+    cwd = project_rel.as_posix() if project_rel.parts else "."
+    extra_paths = list(version.paths) if version else []
+    paths = [cwd] + [
+        (project_rel / Path(path)).as_posix() if project_rel.parts else path
+        for path in extra_paths
+    ]
+    return ProjectConfig(
+        name="cmru", env=parsed.env, steps={}, template_revision=parsed.template_revision,
+        prefix=parsed.prefix, scm_dist=parsed.scm_dist, cwd=cwd, version=version,
+        paths=paths, artifacts=artifacts, git_tag=git_tag,
+        commit_generated=commit_generated, changelog=parsed.changelog,
+        project_root=source_git_root / project_rel, build_metadata=parsed.build_metadata,
+        artifact_dirs=tuple(parsed.artifact_dirs), evidence_paths=tuple(parsed.evidence_paths),
+        build_step=parsed.build_step, runtime_kind=parsed.runtime_kind,
+        tool_dependencies=tuple(parsed.tool_dependencies),
+    )
+
+
 def _release_launcher(
     rest: List[str], vargs, cfg_path: Path, repo_root: Path, configs, ordered,
     project_order, selected_names: List[str], resume_scope, git_auth,
@@ -6846,6 +7045,7 @@ def _release_launcher(
     release_scope = selected_names
     origin_main_snapshots = None
     feature_requested = bool(getattr(vargs, "from_worktree", False))
+    cmru_precondition_base = None
     if feature_requested:
         if vargs.allow_uncommitted:
             raise UsageRefusal(
@@ -6870,6 +7070,21 @@ def _release_launcher(
             origin_main_snapshots = _preflight_multi_family_release_tag_support(
                 repo_root, configs, release_scope,
                 config_path=cfg_path, git_auth=git_auth,
+            )
+        except CmruError as exc:
+            _exit_for_domain_error(exc)
+        except _DOMAIN_ERRORS as exc:
+            log_error(str(exc))
+            sys.exit(1)
+
+    if vargs.dry_run and not getattr(vargs, "resume", None) and "cmru" in release_scope:
+        try:
+            selected_families = transaction.project_git_family_groups(
+                repo_root, [configs[name] for name in release_scope],
+            )
+            cmru_precondition_base = _release_gate_preconditions_before_dispatch(
+                repo_root, cfg_path, configs, release_scope, vargs, git_auth=git_auth,
+                report=len(selected_families) <= 1,
             )
         except CmruError as exc:
             _exit_for_domain_error(exc)
@@ -6944,6 +7159,12 @@ def _release_launcher(
                         )
                         raise RuntimeError(f"{detail}\n{advice}") from exc
                     raise
+            if (
+                cmru_precondition_base is not None
+                and not feature_requested
+                and preflighted_base is None
+            ):
+                preflighted_base = cmru_precondition_base
             if preflighted_base is not None:
                 verified_base = transaction.fetch_origin_main(
                     transaction_root, git_auth=git_auth,
@@ -7071,6 +7292,14 @@ def _release_launcher(
                         transaction_root, git_auth=git_auth,
                     )
                 )
+                if (
+                    cmru_precondition_base is not None
+                    and base != cmru_precondition_base
+                ):
+                    raise RefusedBeforeChange(
+                        "the release source changed after CMRU's gate precondition check; "
+                        "rerun the dry-run against one consistent source snapshot"
+                    )
                 snapshot_config_paths = _project_config_paths_at_snapshot(
                     transaction_root, base, cfg_path, configs, release_scope,
                 )
@@ -8530,7 +8759,7 @@ def _build_cli():
     from cmru.handlers import handlers_cli
     from cmru.tester_gate import tester_gate_cli
     from cmru.resolve import resolve_cli
-    from cmru.getpy import getpy_cli
+    from cmru.getpy import getpy_cli, installer_cli
     from cmru.standards import standards_cli
     from cmru.tool_deps import tool_deps_cli
     delegated.extend((
@@ -8539,7 +8768,8 @@ def _build_cli():
         VerbSpec("handler", description="Run a concrete project-step handler.", group=VerbGroup.MODIFICATION.value, mutating=True, delegate=handlers_cli(), include_json=False, include_progress=False),
         VerbSpec("tester-gate", description="Run one command inside tester-unified.", group=VerbGroup.MODIFICATION.value, mutating=True, delegate=tester_gate_cli(), include_json=False, include_progress=False),
         VerbSpec("resolve", description="Resolve a project's latest published artifact.", group=VerbGroup.EXPLORATION.value, delegate=resolve_cli(), include_json=False, include_progress=False),
-        VerbSpec("get-py", description="Emit the standalone Python installer.", group=VerbGroup.MODIFICATION.value, mutating=True, delegate=getpy_cli(), include_json=False, include_progress=False),
+        VerbSpec("installer", description="Render or check a project's generated standalone installer (get.py).", group=VerbGroup.MODIFICATION.value, mutating=True, delegate=installer_cli(), include_json=False, include_progress=False),
+        VerbSpec("get-py", description="DEPRECATED alias of 'installer render' (removal in a later major release).", group=VerbGroup.MODIFICATION.value, mutating=True, delegate=getpy_cli(), include_json=False, include_progress=False),
         VerbSpec("standards", description="Check or update CMRU framework markers.", group=VerbGroup.MIXED.value, mutating=True, delegate=standards_cli(), include_json=False, include_progress=False),
         VerbSpec("tool-deps", description="Verify declared tool dependency integrity, authenticity, and freshness.", group=VerbGroup.MIXED.value, mutating=True, delegate=tool_deps_cli(), include_json=False, include_progress=False),
     ))

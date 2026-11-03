@@ -196,6 +196,7 @@ has is precisely the hazard §5 exists to forbid.
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from ..records import record
 from pathlib import Path
@@ -478,9 +479,10 @@ def _has_top_level_func_body(text: str) -> bool:
 #: top-level statement exists to insert one into) while still matching the
 #: SAME contract nyxloom's own mechanism established: a side effect that
 #: fires merely by the package loading/being imported.
-_IMPORT_BREAK_SNIPPET = (
-    f'\n\nfunc init() {{\n\tpanic("{_IMPORT_BREAK_MARKER}")\n}}\n'
-)
+def _import_break_snippet(nonce: str) -> str:
+    """The init panic carries the per-attempt nonce for adapter parity."""
+    message = json.dumps(f"{_IMPORT_BREAK_MARKER}:{nonce}")
+    return f"\n\nfunc init() {{\n\tpanic({message})\n}}\n"
 _UNCOVERED_CANARY_FUNC = "_assayCanaryUnreached"
 _UNCOVERED_CANARY_SNIPPET = (
     f"\n\nfunc {_UNCOVERED_CANARY_FUNC}(value int) int {{\n"
@@ -501,13 +503,13 @@ def _append_snippet(text: str, snippet: str) -> str:
     return body + snippet
 
 
-def _inject_import_break(text: str) -> tuple[str, str]:
-    """Append :data:`_IMPORT_BREAK_SNIPPET` -- a package-``init()`` that
+def _inject_import_break(text: str, *, nonce: str) -> tuple[str, str]:
+    """Append a nonce-bearing package-``init()`` that
     panics -- to *text*. Pure: returns the transformed text and a
     description; never touches a filesystem (A-010). Structurally valid,
     best-effort (A-107): not exercised by this package's own R1-only Go
     canary (see this module's docstring)."""
-    return _append_snippet(text, _IMPORT_BREAK_SNIPPET), (
+    return _append_snippet(text, _import_break_snippet(nonce)), (
         "appended a package `func init() { panic(...) }` -- Go has no "
         "executable top-level statement, so import-break is modelled as a "
         "panicking init() rather than nyxloom's bare `raise` (A-105)"
@@ -702,8 +704,8 @@ class GoAdapter:
             sensitive_values=sensitive_values,
         )
 
-    def inject_import_break(self, text: str) -> tuple[str, str]:
-        return _inject_import_break(text)
+    def inject_import_break(self, text: str, *, nonce: str) -> tuple[str, str]:
+        return _inject_import_break(text, nonce=nonce)
 
     def inject_uncovered_line(self, text: str) -> tuple[str, str]:
         return _inject_uncovered_line(text)

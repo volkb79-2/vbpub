@@ -17,10 +17,10 @@ dynamic = ["version"]
 description = "assay — how to judge a change: declared lanes, declared rigor, one machine-readable verdict"
 requires-python = ">=3.11"
 
-# ZERO RUNTIME DEPENDENCIES (decision A-005). stdlib only. This list staying
-# empty is what makes the standalone claim near-unfalsifiable and the
-# scratch-venv test in gate/tests/test_dependency_purity.py trivially offline. assay
-# consumes coverage.py's *output*; it never imports coverage.py or pytest.
+# ZERO EXTERNAL RUNTIME DEPENDENCIES (decision A-005). Assay and the bundled
+# same-repository cowtree package use only the standard library. This list
+# staying empty keeps the standalone closure trivially offline. Assay consumes
+# coverage.py's *output*; it never imports coverage.py or pytest.
 dependencies = []
 
 [project.optional-dependencies]
@@ -44,14 +44,14 @@ test = ["pytest>=8", "pytest-cov==7.1.0", "jsonschema>=4", "hypothesis==6.169.0"
 [project.scripts]
 assay = "assay.cli:main"
 
-# The wheel holds both packages (`assay` and `assay_analysis`, A-478) and their
-# schemas, and no tests. Without `package-dir` the egg-info lands at the
-# unignored project root (DIRTY_TREE).
+# The wheel holds `assay`, `assay_analysis` (A-478), and the same-repository
+# `cowtree` library, plus schemas and no tests. Without `package-dir` the
+# egg-info lands at the unignored project root (DIRTY_TREE).
 [tool.setuptools]
-package-dir = {"" = "src"}
+package-dir = {"" = "src", "cowtree" = "../libraries/cowtree/src/cowtree"}
 
 [tool.setuptools.packages.find]
-where = ["src", "analysis/src"]
+where = ["src", "analysis/src", "../libraries/cowtree/src"]
 
 # A-029: consumers validate an artifact against a JSON Schema shipped AS DATA,
 # without importing assay. Without this stanza the schema exists in the source

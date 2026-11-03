@@ -148,6 +148,7 @@ def _bootstrap_tree(tmp_path: Path) -> dict[str, object]:
         'case "$*" in\n'
         '  *"image inspect --format"*org.vbpub.tester-base.kind*) echo "$CMRU_TEST_TB_KIND"; exit 0;;\n'
         '  *"image inspect --format"*org.vbpub.tester-base.source-hash*) echo "$CMRU_TEST_TB_HASH"; exit 0;;\n'
+        '  *"image inspect --format"*org.vbpub.tester-unified.base-image*) echo "$CMRU_TEST_TB_CONSUMER"; exit 0;;\n'
         'esac\n'
         # tester-base:local is present unless CMRU_TEST_NO_TESTER_BASE is set; building it makes it appear.
         'if [ "$1" = "image" ] && [ "$2" = "inspect" ] && [ "$3" = "tester-base:local" ]; then\n'
@@ -382,6 +383,18 @@ def test_bootstrap_refuses_a_foreign_image_tagged_tester_base_local(tmp_path):
         assert "is not a tester-base build" in result.stderr
         assert "docker rmi tester-base:local" in result.stderr
         assert base_builds == [] and builder_builds == [], commands
+
+
+def test_bootstrap_refuses_a_tester_unified_image_that_inherited_the_tester_base_labels(tmp_path):
+    """TB-11: a tester-unified image built before it reset the inherited labels still carries kind=tester-base
+    and the base's source-hash; its own base-image label says it is a consumer, so it is refused."""
+    _tree, result, commands, base_builds, builder_builds = _bootstrap_with_tester_base(
+        tmp_path, CMRU_TEST_TB_CONSUMER="tester-base:local",
+    )
+    assert result.returncode == 2, result.stderr
+    assert "is a tester-unified image, not a tester-base build" in result.stderr
+    assert "docker rmi tester-base:local" in result.stderr
+    assert base_builds == [] and builder_builds == [], commands
 
 
 def test_bootstrap_names_a_missing_default_buildx_builder(tmp_path):

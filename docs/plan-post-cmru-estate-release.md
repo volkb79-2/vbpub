@@ -43,7 +43,7 @@ Completed for the CMRU project on 2026-09-19 UTC from promoted commit
   artifacts were verified;
 - the released first-party wheels for CMRU, CIU, Assay, Nyxloom, and Topos
   were force-reinstalled into the devcontainer's canonical
-  `/home/vscode/.venv` environment and verified outside editable checkouts;
+  `/opt/mdt/venv` environment and verified outside editable checkouts;
 - the first resume reached the MDT build after **1835 passed, 10 skipped**
   and stopped because the old cockpit had no `mdt-managed` builder; a
   disposable governed controller now supplies the managed BuildKit relay;

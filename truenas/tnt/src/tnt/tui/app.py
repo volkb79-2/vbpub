@@ -1,6 +1,7 @@
 """Application shell, host/session controller integration, and navigation."""
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Iterable
 
 from textual import work
@@ -13,7 +14,7 @@ from textual.widgets import Button, Footer, Header, Select, Tree
 from .. import profile as prof
 from ..errors import TntError
 from ..host_store import HostStore, load_host_store
-from ..menu import MENU, MenuItem, walk
+from ..menu import MENU, PROBED_CONDITIONAL_MENU_KEYS, MenuItem, walk
 from ..profile import ConfigPaths, Profile, SecretEntry
 from ..session import Session, SessionOpener, open_session
 from ..session_controller import SessionController, SessionTransition, WorkerDrainTimeout, WorkerLease
@@ -33,6 +34,7 @@ VIEWS = {
     "datasets": lambda session: WorkflowView(session, "datasets"),
     "snapshots": lambda session: WorkflowView(session, "snapshots"),
     "snapshot-tasks": lambda session: WorkflowView(session, "snapshot-tasks"),
+    "scrub-tasks": lambda session: WorkflowView(session, "scrub-tasks"),
     "replication": lambda session: WorkflowView(session, "replication"),
     "cloud-sync": lambda session: WorkflowView(session, "cloud-sync"),
     "containers": lambda session: WorkflowView(session, "containers"),
@@ -171,11 +173,13 @@ class TntApp(App):
                  secret_entries: dict[str, SecretEntry] | None = None, host_paths: ConfigPaths | None = None,
                  session_opener: SessionOpener = open_session, insecure_ack: bool = False,
                  initial_write: bool = False, reconnect_delays: tuple[int, ...] = (2, 4, 8, 16, 32),
+                 update_reconnect_delays: tuple[int, ...] = (2, 4, 8, 16, 32, 60, 120, 240, 300, 300),
                  worker_drain_timeout: float = 5.0):
         super().__init__()
         self.session_opener = session_opener
         self.insecure_ack = insecure_ack
         self.reconnect_delays = reconnect_delays
+        self.update_reconnect_delays = update_reconnect_delays
         self.worker_drain_timeout = worker_drain_timeout
         self.host_paths = host_paths or prof.resolve_paths()
         if session_controller is not None:
@@ -190,9 +194,11 @@ class TntApp(App):
                 initial_hosts, default_host, secret_entries or {}, session_opener,
                 insecure_ack=insecure_ack, initial_session=session, initial_write=initial_write)
         self.current: str | None = None
+        self.pending_update_verification: dict[str, object] | None = None
         self._restore_key: str | None = None
         self._quitting = False
         self._banner_message: str | None = None
+        self.conditional_capabilities: dict[str, dict[str, str | None]] | None = None
 
     @property
     def session(self) -> Session | None:
@@ -253,6 +259,8 @@ class TntApp(App):
         self.query_one("#nav", Tree).focus()
         if self.session is None:
             self.show_host_picker()
+        else:
+            self._load_conditional_capabilities()
 
     def _banner_text(self, width: int | None = None) -> str:
         session = self.session
@@ -262,7 +270,8 @@ class TntApp(App):
                 status = self.session_controller.last_status.get(active, "not connected")
                 return f"{active}  {status}  generation {self.session_controller.generation}"
             return f"No host selected  generation {self.session_controller.generation}"
-        write_mode = "WRITE ENABLED" if not session.rpc.read_only else "read-only"
+        write_mode = ("read-only verification" if getattr(session.backend, "read_only", False)
+                      else "WRITE ENABLED" if not session.rpc.read_only else "read-only")
         tls = "  TLS VERIFICATION OFF" if session.insecure_tls else ""
         result = (f"{session.profile.name}  {write_mode}  {session.backend.generation} ({session.backend.version})  "
                   f"generation {self.session_controller.generation}{tls}")
@@ -277,7 +286,14 @@ class TntApp(App):
         if item.status != "implemented":
             flags.append("planned")
         if item.conditional:
-            flags.append("conditional")
+            capability = None if self.conditional_capabilities is None else self.conditional_capabilities.get(item.key)
+            if item.key in PROBED_CONDITIONAL_MENU_KEYS and (
+                    self.conditional_capabilities is None or capability is None):
+                flags.append("checking")
+            elif capability is not None and capability.get("state") == "unavailable":
+                flags.append("unavailable")
+            else:
+                flags.append("conditional")
         if item.tnt_only:
             flags.append("tnt-only")
         label = f"{', '.join(flags)}: {item.label}" if flags else item.label
@@ -298,14 +314,86 @@ class TntApp(App):
         self.query_one("#nav", Tree).display = True
         content = self.query_one("#content")
         content.remove_children()
+        capability = None if self.conditional_capabilities is None else self.conditional_capabilities.get(item.key)
+        if item.conditional and item.key in PROBED_CONDITIONAL_MENU_KEYS and (
+                self.conditional_capabilities is None or capability is None
+                or capability.get("state") != "supported"):
+            if self.conditional_capabilities is None:
+                reason = "Checking this host's read-only v27 feature probes."
+                state = "Checking"
+            elif capability is None:
+                reason = "This host has no result for the required read-only v27 feature probe."
+                state = "Unavailable"
+            else:
+                reason = capability.get("reason") or "The v27 feature probe did not confirm availability."
+                state = "Unavailable" if capability.get("state") == "unavailable" else "Unsupported"
+            content.mount(Static(f"{state}: {item.label}\n{reason}\nThis entry has no available action until support is confirmed.",
+                                 id="conditional-unavailable"))
+            self.current = item.key
+            path = next((path for path, candidate in walk(self._visible_menu_items()) if candidate.key == item.key),
+                        (item.label,))
+            self.query_one("#location", Static).update(f"Location: TrueNAS > {' > '.join(path)}")
+            return
         factory = VIEWS.get(item.key)
         if item.key in {"reboot", "shutdown"}:
             content.mount(SystemPowerView(session, item.key))
         else:
             content.mount(factory(session) if factory else placeholder(item))
         self.current = item.key
-        path = next((path for path, candidate in walk() if candidate.key == item.key), (item.label,))
+        path = next((path for path, candidate in walk(self._visible_menu_items()) if candidate.key == item.key), (item.label,))
         self.query_one("#location", Static).update(f"Location: TrueNAS > {' > '.join(path)}")
+
+    def _visible_menu_items(self) -> tuple[MenuItem, ...]:
+        def filtered(item: MenuItem) -> MenuItem | None:
+            capability = None if self.conditional_capabilities is None else self.conditional_capabilities.get(item.key)
+            if item.conditional and capability is not None and capability.get("state") == "unsupported":
+                return None
+            children = tuple(child for original in item.children if (child := filtered(original)) is not None)
+            return replace(item, children=children)
+
+        return tuple(item for original in MENU if (item := filtered(original)) is not None)
+
+    def _rebuild_menu(self) -> None:
+        tree = self.query_one("#nav", Tree)
+        tree.root.remove_children()
+        for item in self._visible_menu_items():
+            self._add(tree.root, item)
+
+    @work(thread=True, exclusive=True)
+    def _load_conditional_capabilities(self) -> None:
+        from .session_work import run as run_session_work
+
+        run_session_work(self, lambda session: session.conditional_menu_capabilities(),
+                         "_conditional_capabilities_loaded", "_conditional_capabilities_failed")
+
+    def _conditional_capabilities_loaded(self, result: dict[str, dict[str, str | None]]) -> None:
+        self.conditional_capabilities = result
+        self._rebuild_menu()
+        if self.current in result:
+            state = result[self.current].get("state")
+            item = self._menu_item(self.current)
+            if state == "unsupported":
+                fallback = self._menu_item("dashboard")
+                if fallback is not None:
+                    self.show(fallback)
+            elif state == "unavailable":
+                original = next((candidate for _, candidate in walk() if candidate.key == self.current), None)
+                if original is not None:
+                    self.show(item or original)
+            elif state == "supported" and item is not None:
+                self.show(item)
+
+    def _conditional_capabilities_failed(self, message: str) -> None:
+        reason = self.session.job_registry.sanitize_error(message) if self.session else "host session unavailable"
+        self.conditional_capabilities = {
+            key: {"state": "unavailable", "reason": reason}
+            for _, item in walk() if item.conditional for key in (item.key,)
+        }
+        self._rebuild_menu()
+        if self.current in self.conditional_capabilities:
+            item = self._menu_item(self.current)
+            if item is not None:
+                self.show(item)
 
     def show_host_picker(self) -> None:
         self.query_one("#nav", Tree).display = self.session is not None
@@ -329,7 +417,7 @@ class TntApp(App):
     def _menu_item(self, key: str | None) -> MenuItem | None:
         if key is None or key == "__hosts__":
             return None
-        return next((item for _, item in walk() if item.key == key), None)
+        return next((item for _, item in walk(self._visible_menu_items()) if item.key == key), None)
 
     def _update_banner(self, message: str | None = None) -> None:
         banner = self.query_one("#banner", Static)
@@ -470,11 +558,15 @@ class TntApp(App):
             return
         self._update_banner()
         self.sub_title = session.profile.name if session else "Select a host"
+        self.conditional_capabilities = None
+        self._rebuild_menu()
         item = self._menu_item(restore_key)
         if item is not None and session is not None:
             self.show(item)
         else:
             self.show_host_picker()
+        if session is not None:
+            self._load_conditional_capabilities()
 
     def _host_switch_failed(self, generation: int, host_name: str | None, message: str) -> None:
         if not self.session_controller.accepts_generation(generation):
@@ -573,7 +665,7 @@ class TntApp(App):
             mode = "read-only" if self.session.rpc.read_only else "write enabled"
             yield SystemCommand(f"Toggle host write mode (currently {mode})", "Reconnect this host with the other mode",
                                 self.action_toggle_write_mode)
-        for path, item in walk():
+        for path, item in walk(self._visible_menu_items()):
             if not item.children:
                 details = [item.status, item.milestone]
                 if item.conditional:
@@ -582,7 +674,11 @@ class TntApp(App):
                     details.append("tnt-only location")
                 yield SystemCommand(f"Go to {' > '.join(path)}", ", ".join(details), lambda i=item: self.show(i))
                 factory = VIEWS.get(item.key)
-                if factory is not None and item.key != "storage/disks" and self.session is not None:
+                capability = None if self.conditional_capabilities is None else self.conditional_capabilities.get(item.key)
+                conditional_ready = (item.key not in PROBED_CONDITIONAL_MENU_KEYS
+                                     or (capability is not None and capability.get("state") == "supported"))
+                if (factory is not None and item.key != "storage/disks" and self.session is not None
+                        and conditional_ready):
                     from .workflows import OPERATIONS
                     for label, operation in OPERATIONS.get(item.key, ()):
                         yield SystemCommand(f"Plan {label} in {item.label}", "Opens the workflow action form",

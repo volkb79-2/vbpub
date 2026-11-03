@@ -271,7 +271,7 @@ W1 and W3a can run in parallel because their files are disjoint (`identity.py`/`
 - **cmru onboarding:** a `libraries/cli-extended/cmru.toml` modeled on run-gate-project's pure-wheel contract. It is registered in the root `cmru.orchestration.toml` (`project_order`, `default_projects`, `[orchestration.project.cli-extended]`) and publishes `cli-extended-latest/latest.json`.
 - **Release:** `cmru release cli-extended --set-version 0.2.0`.
 - **Deploy:**
-  - Install into `/home/vscode/.venv` and verify `cli-extended version`.
+  - Install into `/opt/mdt/venv` and verify `cli-extended version`.
   - Then verify which `cli_extended` the venv imports. Today it resolves through cmru's editable finder to the main checkout source (`libraries/cli-extended/src`). Record the result and the precedence, and keep the conflict tracked until cmru adoption (②) removes vendoring.
 
 ## W9 — first adoption: Netcup and debian-install-v2

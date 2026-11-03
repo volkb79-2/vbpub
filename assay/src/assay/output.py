@@ -40,6 +40,7 @@ import os
 import stat
 from typing import TextIO
 
+from . import _durable
 from .errors import AssayError, Outcome, ReasonCode
 
 __all__ = [
@@ -156,7 +157,7 @@ class VerdictOutput:
             with os.fdopen(handle, "wb", closefd=True) as stream:
                 stream.write(payload)
                 stream.flush()
-                os.fsync(stream.fileno())
+                _durable.fsync(stream.fileno())
             os.replace(
                 temp_name,
                 self._name,

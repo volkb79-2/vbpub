@@ -19,7 +19,8 @@ class V27(Backend):
             "pool.import_find": MethodSpec("read"), "pool.scrub.query": MethodSpec("read"),
             "pool.scrub.get_instance": MethodSpec("read"), "pool.scrub.create": MethodSpec("write"),
             "pool.scrub.update": MethodSpec("write"), "pool.scrub.run": MethodSpec("write"),
-            "pool.scrub.scrub": MethodSpec("write"), "pool.scrub.delete": MethodSpec("destructive"), "pool.create": MethodSpec("write"),
+            "pool.scrub.scrub": MethodSpec("write"), "pool.scrub.delete": MethodSpec("destructive"),
+            "zpool.scrub.run": MethodSpec("write"), "pool.create": MethodSpec("write"),
             "pool.import_pool": MethodSpec("destructive"), "pool.update": MethodSpec("write"),
             "pool.export": MethodSpec("destructive"),
             "pool.expand": MethodSpec("write"), "pool.attach": MethodSpec("destructive"),
@@ -113,10 +114,15 @@ class V27(Backend):
             "system.state": MethodSpec("read"), "system.boot_id": MethodSpec("read"),
             "system.reboot": MethodSpec("destructive"), "system.shutdown": MethodSpec("destructive"),
             "update.status": MethodSpec("read"), "update.available_versions": MethodSpec("read"),
+            "update.config": MethodSpec("read"), "update.profile_choices": MethodSpec("read"),
+            "update.update": MethodSpec("destructive"), "update.download": MethodSpec("destructive"),
             "update.run": MethodSpec("destructive"),
             "core.get_methods": MethodSpec("read"),
             "core.download": MethodSpec("write"),
             "smb.status": MethodSpec("read"),
+        },
+        "conditional-menu": {
+            "kmip.config": MethodSpec("read"), "enclosure2.query": MethodSpec("read"),
         },
         # These names are known to be absent from the v27 method index. They remain classified so an accidental
         # action cannot treat them as harmless, but supported=False keeps them out of the callable allow-list.

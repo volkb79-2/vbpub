@@ -1,5 +1,110 @@
 {
   "classes": {
+    "assay._limit_ledger.LimitWindow": {
+      "fields": {},
+      "params": {
+        "eq": true,
+        "frozen": true,
+        "init": true,
+        "kw_only": true,
+        "match_args": true,
+        "order": false,
+        "repr": true,
+        "slots": false,
+        "unsafe_hash": false,
+        "weakref_slot": false
+      }
+    },
+    "assay._limit_ledger._BoundaryRequest": {
+      "fields": {},
+      "params": {
+        "eq": true,
+        "frozen": true,
+        "init": true,
+        "kw_only": false,
+        "match_args": true,
+        "order": false,
+        "repr": true,
+        "slots": false,
+        "unsafe_hash": false,
+        "weakref_slot": false
+      }
+    },
+    "assay._limit_ledger._Snapshot": {
+      "fields": {},
+      "params": {
+        "eq": true,
+        "frozen": true,
+        "init": true,
+        "kw_only": false,
+        "match_args": true,
+        "order": false,
+        "repr": true,
+        "slots": false,
+        "unsafe_hash": false,
+        "weakref_slot": false
+      }
+    },
+    "assay._schedule.HistoryEntry": {
+      "fields": {},
+      "params": {
+        "eq": true,
+        "frozen": true,
+        "init": true,
+        "kw_only": false,
+        "match_args": true,
+        "order": false,
+        "repr": true,
+        "slots": false,
+        "unsafe_hash": false,
+        "weakref_slot": false
+      }
+    },
+    "assay._schedule.Prediction": {
+      "fields": {},
+      "params": {
+        "eq": true,
+        "frozen": true,
+        "init": true,
+        "kw_only": false,
+        "match_args": true,
+        "order": false,
+        "repr": true,
+        "slots": false,
+        "unsafe_hash": false,
+        "weakref_slot": false
+      }
+    },
+    "assay._schedule.ScheduleOptions": {
+      "fields": {},
+      "params": {
+        "eq": true,
+        "frozen": true,
+        "init": true,
+        "kw_only": false,
+        "match_args": true,
+        "order": false,
+        "repr": true,
+        "slots": false,
+        "unsafe_hash": false,
+        "weakref_slot": false
+      }
+    },
+    "assay._schedule.Thresholds": {
+      "fields": {},
+      "params": {
+        "eq": true,
+        "frozen": true,
+        "init": true,
+        "kw_only": false,
+        "match_args": true,
+        "order": false,
+        "repr": true,
+        "slots": false,
+        "unsafe_hash": false,
+        "weakref_slot": false
+      }
+    },
     "assay.adapters.base.HelperInvocation": {
       "fields": {},
       "params": {
@@ -365,11 +470,7 @@
       }
     },
     "assay.contention.ContentionObservation": {
-      "fields": {
-        "resource_limit_hit": {
-          "default": false
-        }
-      },
+      "fields": {},
       "params": {
         "eq": true,
         "frozen": true,
@@ -762,6 +863,21 @@
         "weakref_slot": false
       }
     },
+    "assay.process_tree.ProcessTreeDescendant": {
+      "fields": {},
+      "params": {
+        "eq": true,
+        "frozen": true,
+        "init": true,
+        "kw_only": true,
+        "match_args": true,
+        "order": false,
+        "repr": true,
+        "slots": false,
+        "unsafe_hash": false,
+        "weakref_slot": false
+      }
+    },
     "assay.process_tree.ProcessTreeEvidence": {
       "fields": {},
       "params": {
@@ -913,7 +1029,11 @@
       }
     },
     "assay.runner.CommandResult": {
-      "fields": {},
+      "fields": {
+        "decided_by_report": {
+          "default": false
+        }
+      },
       "params": {
         "eq": true,
         "frozen": true,
@@ -1418,6 +1538,21 @@
         "weakref_slot": false
       }
     },
+    "assay.verdict.UnderlyingOutcome": {
+      "fields": {},
+      "params": {
+        "eq": true,
+        "frozen": true,
+        "init": true,
+        "kw_only": true,
+        "match_args": true,
+        "order": false,
+        "repr": true,
+        "slots": false,
+        "unsafe_hash": false,
+        "weakref_slot": false
+      }
+    },
     "assay.verdict.Verdict": {
       "fields": {
         "env_effective_incomplete": {
@@ -1444,6 +1579,21 @@
         "frozen": true,
         "init": true,
         "kw_only": true,
+        "match_args": true,
+        "order": false,
+        "repr": true,
+        "slots": false,
+        "unsafe_hash": false,
+        "weakref_slot": false
+      }
+    },
+    "assay.workspace.WorkspaceEstimate": {
+      "fields": {},
+      "params": {
+        "eq": true,
+        "frozen": true,
+        "init": true,
+        "kw_only": false,
         "match_args": true,
         "order": false,
         "repr": true,

@@ -16,22 +16,23 @@ artifacts = ["coverage.json"]
 
 [lanes.r0-r1.resources]
 memory = "1g"
+io_sync = "durable"
 
 [lanes.r2]
-kind = "command"
+kind = "assay"
+assay_lane = "iobench"
 resource_observer = "cgprofile"
 environment = "tester-unified"
-argv = [
-  "bash", "-c",
-  "export PYTHONPATH={worktree}/assay/src && cd {worktree}/libraries/iobench && mkdir -p .assay && exec /opt/tester-venv/bin/python3 -m assay.cli run iobench --resume --state-dir .assay/mutation-state-r2 --progress .assay/progress-r2.jsonl --verdict-json .assay/verdict-r2.json",
-]
+jobs = "auto"
 clean_tree = false
 budget = "360m"
-artifacts = [".assay/verdict-r2.json", ".assay/progress-r2.jsonl"]
+artifacts = [".assay/verdict-iobench.json",
+  ".assay/progress-iobench.jsonl"]
 
 [lanes.r2.resources]
 pids = 8192
 memory = "1536m"
+io_sync = "durable"
 
 [lanes.gate]
 kind = "command"

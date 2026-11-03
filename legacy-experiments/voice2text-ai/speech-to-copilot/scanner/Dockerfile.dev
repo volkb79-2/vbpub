@@ -11,8 +11,8 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
-COPY requirements.txt ./
-RUN pip install -r requirements.txt
+COPY requirements-runtime.txt ./
+RUN pip install -r requirements-runtime.txt
 
 # Create necessary directories
 RUN mkdir -p /app/logs /app/cache

@@ -101,6 +101,7 @@ def test_a_passing_mutation_claim_alongside_a_passing_r0_claim_is_an_overall_pas
             ),
             r2=JudgmentR2(
                 jobs=1,
+                attribution="serial",
                 max_mutants=50,
                 operators=("python:compare-swap",),
                 kill_attribution="unattributed",
@@ -138,6 +139,7 @@ def test_a_failing_mutation_claim_makes_the_whole_verdict_fail_mutants_survived(
             ),
             r2=JudgmentR2(
                 jobs=1,
+                attribution="serial",
                 max_mutants=50,
                 operators=("python:compare-swap",),
                 kill_attribution="unattributed",

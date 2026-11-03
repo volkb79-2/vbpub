@@ -188,9 +188,11 @@ See [the design guide](docs/DESIGN-GUIDE.md#private-namespaces-and-host-views)
 for the namespace rationale and [the consumer guide](docs/CONSUMERS.md#resolve-a-target-from-a-cockpit)
 for a working helper-mode command.
 
-**Nothing at run time.** Dependencies are pinned in `requirements.txt` and
-built once by `./setup.sh`. No code path installs, downloads, or fetches while
-profiling — that would add exactly the load the tool exists to measure.
+**Nothing at run time.** Report dependencies are pinned in
+`requirements-report.txt` and built once by `./setup.sh`. The lock retains the
+existing install set; `pyproject.toml` remains the dependency source of truth.
+No code path installs, downloads, or fetches while profiling — that would add
+exactly the load the tool exists to measure.
 
 ## Running the daemon
 
@@ -224,8 +226,12 @@ protocol remains contract 1. The resource observer refuses a host mount using
 process tried to fork, even when an ancestor's `pids.max` rejected it, so it
 cannot attribute enforcement to the right cgroup. `memory_localevents` remains
 supported with the candidate-subgroup check described in the protocol. The
-resource observer requires contract 2; contract-1 observer requests receive an
-explicit unsupported-contract refusal.
+resource observer accepts contract 2 (`resource-limits`) and contract 3
+(`window-open` and `window-close`, per-subject measurement windows in
+process-tree or cgroup mode, see
+[the observer protocol](docs/PROTOCOL.md#9-observer-contract-3-measurement-windows)
+and [consumer rules](docs/CONSUMERS.md#measurement-windows-observer-contract-3));
+contract-1 observer requests receive an explicit unsupported-contract refusal.
 It also receives a read-only host `/proc` bind and an
 explicitly writable host cgroup-v2 view for opt-in P6 placement. The host
 system-bus socket is mounted only into the daemon; the read-only bind does not
@@ -284,6 +290,7 @@ The daemon's version response is contract major 1:
   },
   "resource_observer": {
     "contract": 2,
+    "contracts": [2, 3],
     "path": "/run/cgprofile/observer/resource-observer.sock",
     "listening": true
   }

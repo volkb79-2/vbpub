@@ -609,14 +609,7 @@ def _prepend_path_entries(entries: Optional[Iterable[Path]]) -> None:
     os.environ["PATH"] = os.pathsep.join([*prefixes, *remainder])
 
 
-def run_step(project_config_path: Path, step_name: str) -> None:
-    """Run one named step from the strict project-local ``cmru.toml``.
-
-    Supported Python API (consumed by ``modern-debian-tools-python-debug/build-push.py``).
-    This is intentionally a thin direct entry point over the same parser and
-    executor as orchestration.  There is no standalone runner configuration,
-    shell-evaluation adapter, or inferred release config to drift from it.
-    """
+def _prepare_project_environment(project_config_path: Path):
     from cmru.cli import apply_project_release_env, load_config
     from cmru.config import resolve_invocation_context
 
@@ -645,10 +638,33 @@ def run_step(project_config_path: Path, step_name: str) -> None:
             )
         project = next(iter(projects.values()))
     apply_project_release_env(github, env, project)
+    project_root = project.project_root or repo_root
+    return repo_root, project_root, project
+
+
+def prepare_project_environment(project_config_path: Path) -> None:
+    """Apply a project's declared CMRU environment without executing a step.
+
+    Supported Python API for consumers that must evaluate commands or image
+    references before calling :func:`run_step`. It uses the same nearest-config
+    and project-selection rules as ``run_step``; configuration remains the
+    authority for registry and repository identity.
+    """
+    _prepare_project_environment(project_config_path)
+
+
+def run_step(project_config_path: Path, step_name: str) -> None:
+    """Run one named step from the strict project-local ``cmru.toml``.
+
+    Supported Python API (consumed by ``modern-debian-tools-python-debug/build-push.py``).
+    This is intentionally a thin direct entry point over the same parser and
+    executor as orchestration.  There is no standalone runner configuration,
+    shell-evaluation adapter, or inferred release config to drift from it.
+    """
+    repo_root, project_root, project = _prepare_project_environment(project_config_path)
     step = project.runner_steps.get(step_name) if project.runner_steps else None
     if step is None:
         raise ValueError(f"Step '{step_name}' is not declared in {project_config_path}")
-    project_root = project.project_root or repo_root
     from cmru.cli import run_project_step
     run_project_step(
         project, step_name, repo_root, project_root / "logs" / "cmru",

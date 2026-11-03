@@ -53,7 +53,7 @@ A one-time deep review of the tool before the cut landed `3e50df9cc` on top of `
 (`metrics.py`, `summary.py`, `events.py`, `util.py`, `targets.py`, `serve.py`) and `cgprofile.py`, so the gate
 table above does NOT cover the release tree any more: **`r0-r1` and `r3` must be re-run on the final tree** (the
 cmru release gate does both) before 1.1.0 is cut. Evidence for the review commit itself, measured in a scratch venv
-built from `requirements.txt` (+ `coverage`, see CP-32) on the devcontainer, not through the registered lane:
+built from the report lock (+ `coverage`, see CP-32) on the devcontainer, not through the registered lane:
 
 | Check | Result |
 |---|---|

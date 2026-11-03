@@ -79,9 +79,9 @@ class ValidateConfigOnAnOldEnvFileTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout)
 
     def test_an_old_env_file_missing_one_required_key_is_refused_for_that_key_only(self) -> None:
-        r = self._validate(self._old_env(drop_required="DEV_CPU_RESERVE_CORES"))
+        r = self._validate(self._old_env(drop_required="MDT_EXCLUDED_CPU_CORES"))
         self.assertNotEqual(r.returncode, 0, r.stdout)
-        self.assertIn("DEV_CPU_RESERVE_CORES", r.stdout)
+        self.assertIn("MDT_EXCLUDED_CPU_CORES", r.stdout)
         for key in example_keys():
             if OPTIONAL_RE and OPTIONAL_RE.fullmatch(key):
                 self.assertNotIn(key, r.stdout, f"{key} must not be reported missing")

@@ -17,3 +17,6 @@ remote-logs/
 .venv/
 __pycache__/
 *.py[cod]
+
+# Runner host values (host-specific; copy runner/runner.env.example)
+runner/runner.env

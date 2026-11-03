@@ -67,7 +67,7 @@ Commands:
 
 Examples:
   host-escape -- systemctl show dev-interactive.slice -p MemoryMax
-  host-escape -- docker inspect dstdns-devcontainer-vb
+  host-escape -- docker inspect mdt-cockpit-<user>-<repo>
   host-escape                         # interactive host shell
   mdt host-exec --target 1234 -- ps -ef
   mdt doctor --check-only             # inspect without repairing

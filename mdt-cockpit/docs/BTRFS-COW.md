@@ -41,10 +41,10 @@ convention. Confusing them is the usual source of fstab mistakes.
 
 | Namespace | Example | Used by |
 |---|---|---|
-| LVM: VG / LV | `vg0` / `devcontainers-cow` | `lvcreate -n`; device node `/dev/vg0/devcontainers-cow` (= `/dev/mapper/vg0-devcontainers--cow`) |
-| btrfs filesystem **label** | `devcontainers-cow` (`mkfs.btrfs -L`) | `LABEL=...` in fstab and `mount`; one label per filesystem |
+| LVM: VG / LV | `vg0` / `mdt-cockpit-cow` | `lvcreate -n`; device node `/dev/vg0/mdt-cockpit-cow` (= `/dev/mapper/vg0-mdt--cockpit--cow`) |
+| btrfs filesystem **label** | `mdt-cockpit-cow` (`mkfs.btrfs -L`) | `LABEL=...` in fstab and `mount`; one label per filesystem |
 | btrfs **subvolume** name = its path below the top level | `pterodactyl`, `snapshots` | `btrfs subvolume create`, `subvol=` in fstab |
-| mountpoint | `/srv/devcontainers-cow` | where the tree appears; independent of the three above |
+| mountpoint | `/srv/mdt-cockpit-cow` | where the tree appears; independent of the three above |
 
 Keeping the LV name and the label identical makes `lsblk -f` and fstab read alike.
 
@@ -52,7 +52,7 @@ Keeping the LV name and the label identical makes `lsblk -f` and fstab read alik
 
 ```fstab
 LABEL=host-services       /var/lib/service  btrfs  subvol=service,noatime,discard=async,nofail  0 0
-LABEL=devcontainers-cow   /srv/devcontainers-cow  btrfs  noatime,discard=async,user_subvol_rm_allowed,nofail  0 0
+LABEL=mdt-cockpit-cow   /srv/mdt-cockpit-cow  btrfs  noatime,discard=async,user_subvol_rm_allowed,nofail  0 0
 ```
 
 - **`LABEL=x`** is a device lookup, independent of LVM and of subvolumes: `mkfs.btrfs -L x` writes the label
@@ -144,14 +144,14 @@ Prerequisite: `btrfs-progs` on the host (`apt install btrfs-progs`); the contain
 the fly. Names below are examples; use your own VG.
 
 ```bash
-lvcreate -L 200G -n devcontainers-cow vg0                    # sized so the VG keeps headroom; LVs grow online
-mkfs.btrfs -L devcontainers-cow -m dup -d single /dev/vg0/devcontainers-cow
+lvcreate -L 200G -n mdt-cockpit-cow vg0                    # sized so the VG keeps headroom; LVs grow online
+mkfs.btrfs -L mdt-cockpit-cow -m dup -d single /dev/vg0/mdt-cockpit-cow
 ```
 
 `/etc/fstab`:
 
 ```fstab
-LABEL=devcontainers-cow  /srv/devcontainers-cow  btrfs  noatime,discard=async,user_subvol_rm_allowed,nofail,x-systemd.device-timeout=30s  0 0
+LABEL=mdt-cockpit-cow  /srv/mdt-cockpit-cow  btrfs  noatime,discard=async,user_subvol_rm_allowed,nofail,x-systemd.device-timeout=30s  0 0
 ```
 
 - **No `compress=`**: compression is applied only where a directory opts in (section 4).
@@ -176,18 +176,25 @@ mount over it works and is writable, and after the unmount the directory is `EPE
 the flag]
 
 ```bash
-mkdir -p /srv/devcontainers-cow
-mountpoint -q /srv/devcontainers-cow && umount /srv/devcontainers-cow   # set the flag with the mount absent
-chattr +i /srv/devcontainers-cow
-lsattr -d /srv/devcontainers-cow                                         # expect: ----i---------
-mount /srv/devcontainers-cow                                             # mounting on an immutable dir
-touch /srv/devcontainers-cow/ok && rm /srv/devcontainers-cow/ok         # works: you are on btrfs
-umount /srv/devcontainers-cow; touch /srv/devcontainers-cow/x            # expect: Operation not permitted
-mount /srv/devcontainers-cow
+mkdir -p /srv/mdt-cockpit-cow
+mountpoint -q /srv/mdt-cockpit-cow && umount /srv/mdt-cockpit-cow   # set the flag with the mount absent
+chattr +i /srv/mdt-cockpit-cow
+lsattr -d /srv/mdt-cockpit-cow                                         # expect: ----i---------
+mount /srv/mdt-cockpit-cow                                             # mounting on an immutable dir
+touch /srv/mdt-cockpit-cow/ok && rm /srv/mdt-cockpit-cow/ok         # works: you are on btrfs
+umount /srv/mdt-cockpit-cow; touch /srv/mdt-cockpit-cow/x            # expect: Operation not permitted
+mount /srv/mdt-cockpit-cow
 ```
 
 Do this for every mountpoint of a btrfs filesystem, including each further `subvol=` mountpoint. To remove
 such a directory later, `chattr -i` it first.
+
+**Renaming a mountpoint** (for example the 2026-11 move `/srv/devcontainers-cow` to `/srv/mdt-cockpit-cow`):
+`umount` it, `chattr -i /srv/devcontainers-cow` (an immutable directory cannot be renamed, `mv` fails with
+EPERM), `mv` it, `chattr +i` the new directory while nothing is mounted on it, fix the fstab mountpoint
+field, then `systemctl daemon-reload && mount`. Migrate the host **before** the next rebuild of any
+container whose CoW mount is active (the vbpub devcontainer is one): `--mount` refuses a missing source,
+so the rebuild would fail closed.
 
 ### 3.2 Create the user areas
 
@@ -195,8 +202,8 @@ The top level is root-owned; each user's directory is created once by root, the 
 lazily by tools:
 
 ```bash
-host-setup/scripts/mdt-cow-init-user.sh /srv/devcontainers-cow alice            # root: user dir + shared/
-mkdir -p /srv/devcontainers-cow/alice/myrepo                                     # user, or the tool
+host-setup/scripts/mdt-cow-init-user.sh /srv/mdt-cockpit-cow alice            # root: user dir + shared/
+mkdir -p /srv/mdt-cockpit-cow/alice/myrepo                                     # user, or the tool
 ```
 
 The script refuses a mountpoint that is not a btrfs mount point and uid 0, creates `<mount>/<user>` (`0750`, owned by that user) and
@@ -361,9 +368,9 @@ breaks every rebuild, and that same behaviour is the fail-closed guarantee after
 
 ```jsonc
 // in "mounts":
-"source=/srv/devcontainers-cow/${localEnv:USER},target=/srv/devcontainers-cow/${localEnv:USER},type=bind,bind-propagation=rslave",
+"source=/srv/mdt-cockpit-cow/${localEnv:USER},target=/srv/mdt-cockpit-cow/${localEnv:USER},type=bind,bind-propagation=rslave",
 // in "containerEnv":
-"MDT_COW_ROOT": "/srv/devcontainers-cow/${localEnv:USER}",
+"MDT_COW_ROOT": "/srv/mdt-cockpit-cow/${localEnv:USER}",
 ```
 
 The shipped templates carry exactly these two lines **commented out** (the host prerequisite does not exist on
@@ -384,7 +391,7 @@ target repo (section 4).
 Details:
 
 - **Same path on both sides**, so sibling containers started through docker-outside-of-docker can bind
-  `/srv/devcontainers-cow/<user>/...` using the identical host path.
+  `/srv/mdt-cockpit-cow/<user>/...` using the identical host path.
 - **A host `umount` of the whole filesystem does not reach a bind of a subdirectory.** [R, shown both with
   `unshare` and with a real Docker container using `bind-propagation=rslave`] The host `umount` *succeeds* (it
   is not refused as busy), the container keeps reading and writing the same superblock, and after the host

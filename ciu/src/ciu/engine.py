@@ -424,13 +424,111 @@ def privileged_fs_op(physical_path: Path, op: str, *args: str) -> None:
     *op* is ``"chown"`` or ``"chmod"``; *args* are the tool arguments preceding
     the mounted ``/t`` target (e.g. ``"0:994"`` or ``"775"``).
     """
+    parent = _root_helper_cgroup_parent()
     procutil.docker(
-        ["run", "--rm", "-v", f"{physical_path}:/t", "alpine", op, *args, "/t"],
+        [
+            "run", "--rm", "--cgroup-parent", parent,
+            "-v", f"{physical_path}:/t", "alpine", op, *args, "/t",
+        ],
         check=True,
     )
 
 
-def privileged_rmtree(physical_path: Path) -> None:
+def _root_helper_cgroup_parent() -> str:
+    """Require the configured interactive tier and prove its slice is loaded."""
+    parent = os.environ.get("CGROUP_PARENT_DEV_INTERACTIVE")
+    if not parent:
+        raise RuntimeError(
+            "CGROUP_PARENT_DEV_INTERACTIVE is required for the S6.5 root helper"
+        )
+    if not parent.endswith(".slice") or "/" in parent or any(c.isspace() for c in parent):
+        raise RuntimeError(
+            f"CGROUP_PARENT_DEV_INTERACTIVE is not a slice unit name: {parent!r}"
+        )
+    loaded, note = governance.check_slice_unit(parent)
+    if loaded is not True:
+        raise RuntimeError(
+            f"S6.5 root helper cgroup parent {parent!r} is not verified loaded: {note}"
+        )
+    return parent
+
+
+def _docker_version_tuple(value: str) -> tuple[int, int, int] | None:
+    match = re.match(r"^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$", value.strip())
+    if match is None:
+        return None
+    return tuple(int(part) for part in match.groups())
+
+
+def _require_bind_recursive_support() -> None:
+    """Require a Docker CLI and Engine that support non-recursive bind mounts."""
+    try:
+        result = procutil.docker(
+            ["version", "--format", "{{.Client.Version}}|{{.Server.Version}}"],
+            check=False,
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            f"could not determine Docker CLI and Engine versions: {exc}"
+        ) from exc
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "no version output").strip()
+        raise RuntimeError(
+            f"could not determine Docker CLI and Engine versions: {detail}"
+        )
+    versions = result.stdout.strip().split("|")
+    if len(versions) != 2:
+        raise RuntimeError(
+            f"could not determine Docker CLI and Engine versions: {result.stdout!r}"
+        )
+    for label, value in zip(("CLI", "Engine"), versions, strict=True):
+        parsed = _docker_version_tuple(value)
+        if parsed is None:
+            raise RuntimeError(
+                f"could not determine Docker {label} version from {value!r}"
+            )
+        if parsed < (25, 0, 0):
+            raise RuntimeError(
+                f"Docker {label} version {value} is too old for safe worktree retry; "
+                "Docker CLI and Engine 25.0.0 or newer are required"
+            )
+
+
+def _privileged_rmtree_script() -> str:
+    """Return the helper guard; kept in one string so tests exercise the same shell."""
+    return (
+        "set -eu; target=$1; expected_target=$2; expected_parent=$3; mountinfo=$4; "
+        "if [ ! -r \"$mountinfo\" ]; then "
+        "echo \"refusing unreadable mountinfo: $mountinfo\" >&2; exit 45; fi; "
+        "mount_below=$(awk '$5 ~ /^\\/t\\// { print $5; exit }' \"$mountinfo\") "
+        "|| { echo \"could not inspect mountinfo: $mountinfo\" >&2; exit 45; }; "
+        "if [ -n \"$mount_below\" ]; then "
+        "echo \"refusing nested mount below /t: $mount_below\" >&2; exit 44; fi; "
+        "if [ ! -e \"$target\" ] && [ ! -L \"$target\" ]; then "
+        "echo \"refusing absent bind target: $target\" >&2; exit 42; fi; "
+        "if [ \"$(stat -c '%d:%i' /t)\" != \"$expected_parent\" ] || "
+        "[ \"$(stat -c '%d:%i' \"$target\")\" != \"$expected_target\" ]; then "
+        "echo \"S6.5 target or parent identity mismatch\" >&2; exit 43; fi; "
+        "exec rm -rf -- \"$target\""
+    )
+
+
+def _identity_text(identity: tuple[int, int], label: str) -> str:
+    if (
+        not isinstance(identity, tuple)
+        or len(identity) != 2
+        or any(not isinstance(value, int) or value < 0 for value in identity)
+    ):
+        raise RuntimeError(f"S6.5 root helper requires a valid {label} device:inode")
+    return f"{identity[0]}:{identity[1]}"
+
+
+def privileged_rmtree(
+    physical_path: Path,
+    *,
+    target_identity: tuple[int, int],
+    parent_identity: tuple[int, int],
+) -> None:
     """Remove a directory tree (including itself) via a root helper container (S6.5).
 
     The deletion mirror of :func:`privileged_fs_op`. ``--reset`` (S6.4) must wipe
@@ -442,11 +540,62 @@ def privileged_rmtree(physical_path: Path) -> None:
     all of its contents go regardless of owner. Module-level so tests can
     monkeypatch it.
     """
-    procutil.docker(
-        ["run", "--rm", "-v", f"{physical_path.parent}:/t", "alpine",
-         "rm", "-rf", f"/t/{physical_path.name}"],
-        check=True,
-    )
+    if not physical_path.is_absolute() or physical_path.name in {"", ".", ".."}:
+        raise RuntimeError(
+            f"S6.5 root helper requires one absolute child path, got {physical_path}"
+        )
+    parent_path = physical_path.parent
+    # Docker's legacy -v syntax silently creates a missing bind source as an
+    # empty directory. `--mount` fails if the daemon-side parent is absent;
+    # the in-container existence guard then refuses a missing leaf as well.
+    if "," in str(parent_path):
+        raise RuntimeError(
+            "S6.5 root helper cannot safely bind a parent path containing ','"
+        )
+    target_identity_text = _identity_text(target_identity, "target")
+    parent_identity_text = _identity_text(parent_identity, "parent")
+    parent = _root_helper_cgroup_parent()
+    _require_bind_recursive_support()
+    leaf = f"/t/{physical_path.name}"
+    try:
+        procutil.docker(
+            [
+                "run", "--rm", "--cgroup-parent", parent,
+                "--mount", (
+                    f"type=bind,src={parent_path},dst=/t,bind-recursive=disabled"
+                ),
+                "alpine", "sh", "-c", _privileged_rmtree_script(), "ciu-rmtree",
+                leaf, target_identity_text, parent_identity_text,
+                "/proc/self/mountinfo",
+            ],
+            check=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        if exc.returncode == 43:
+            detail = (exc.stderr or exc.output or "").strip()
+            raise RuntimeError(
+                "S6.5 helper refused because the target or parent identity changed "
+                f"(exit 43){': ' + detail if detail else ''}"
+            ) from exc
+        if exc.returncode == 44:
+            detail = (exc.stderr or exc.output or "").strip()
+            raise RuntimeError(
+                "S6.5 helper refused a nested mount below the checkout target "
+                f"(exit 44){': ' + detail if detail else ''}"
+            ) from exc
+        if exc.returncode == 42:
+            detail = (exc.stderr or exc.output or "").strip()
+            raise RuntimeError(
+                "S6.5 helper refused because the bind target is absent "
+                f"(exit 42){': ' + detail if detail else ''}"
+            ) from exc
+        if exc.returncode == 45:
+            detail = (exc.stderr or exc.output or "").strip()
+            raise RuntimeError(
+                "S6.5 helper refused because mount information could not be read "
+                f"(exit 45){': ' + detail if detail else ''}"
+            ) from exc
+        raise
 
 
 def _rmtree_with_fallback(vol_dir: Path, *, repo_root: Optional[Path]) -> None:
@@ -471,6 +620,17 @@ def _rmtree_with_fallback(vol_dir: Path, *, repo_root: Optional[Path]) -> None:
     remains.
     """
     try:
+        target_info = vol_dir.lstat()
+        parent_info = vol_dir.parent.stat()
+    except OSError as exc:
+        raise RuntimeError(
+            f"cannot verify S6.5 target identity for {vol_dir}: {exc}"
+        ) from exc
+    identities = {
+        "target_identity": (target_info.st_dev, target_info.st_ino),
+        "parent_identity": (parent_info.st_dev, parent_info.st_ino),
+    }
+    try:
         physical = to_physical_path(vol_dir, repo_root=repo_root)
     except ValueError:
         # No DooD context resolvable (REPO_ROOT/PHYSICAL_REPO_ROOT unset) —
@@ -485,7 +645,7 @@ def _rmtree_with_fallback(vol_dir: Path, *, repo_root: Optional[Path]) -> None:
             "removing via root helper container (S6.5)",
             flush=True,
         )
-        privileged_rmtree(physical)
+        privileged_rmtree(physical, **identities)
         return
 
     # Native host (S1.9): logical == physical, so a local rmtree is trustworthy.
@@ -499,7 +659,7 @@ def _rmtree_with_fallback(vol_dir: Path, *, repo_root: Optional[Path]) -> None:
         "removing via root helper container (S6.5)",
         flush=True,
     )
-    privileged_rmtree(physical)
+    privileged_rmtree(physical, **identities)
 
 
 def _require_no_compose_project_containers(
@@ -1362,8 +1522,11 @@ def scope_worktree_compose_images(
                 candidates, primary_image_references
             )
     if scoped != rendered_compose:
+        # STDERR: `ciu resolve --json` / `ciu check --json` reach this function
+        # and stdout must carry only their JSON document (S18, S13.4a; CIU-144).
         print(
             f"[CIU-117] project-built images use worktree tag suffix {suffix!r}",
+            file=sys.stderr,
             flush=True,
         )
     return scoped
@@ -1779,6 +1942,11 @@ def main_execution(
                     if s.kind == "GEN_LOCAL":
                         return secret_materialize.project_store(repo_root) / s.locator
                     return secret_materialize.stack_store(working_dir) / s.name
+            # CIU-102: a hook-persisted secret (S9.4a) has no directive, so it
+            # is found through the stack's provenance sidecar. A name never
+            # persisted still raises.
+            if name in secret_materialize.read_hook_manifest(working_dir):
+                return secret_materialize.hook_secret_store(working_dir, name)
             raise KeyError(name)
 
         # S3.12 / CIU-44: identity + selection facts on the hook context, so

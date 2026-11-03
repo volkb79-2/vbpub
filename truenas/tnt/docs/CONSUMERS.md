@@ -6,9 +6,9 @@ The v27 request shapes and the source revision they were checked against are in 
 
 ## Install from GitHub release assets
 
-The first tnt release has not been published yet. When version `0.1.0` is available, download its wheel from the
-versioned GitHub Release `tnt-v0.1.0`, along with a `cli-extended>=0.4.0` wheel from that project's GitHub Releases.
-CMRU also maintains a moving `tnt-latest` release. Keep both wheels in one directory. The pinned
+Download the wheel from a versioned GitHub Release `tnt-vX.Y.Z` (or the moving `tnt-latest`), along with a
+`cli-extended>=0.4.0` wheel from that project's GitHub Releases. CMRU also maintains a moving `tnt-latest` release.
+Keep both wheels in one directory. The pinned
 `truenas_api_client` dependency is fetched from Git when pip installs tnt.
 
 Install the shared CLI wheel first, then tnt with the TUI extra:
@@ -19,7 +19,7 @@ python -m pip install './tnt-0.1.0-py3-none-any.whl[tui]'
 ```
 
 For the scriptable CLI without Textual, remove `[tui]` from the wheel path in the second command. The TUI extra installs
-`textual>=8.0`; runtime dependencies are declared in `pyproject.toml`. The release wheel is not published to PyPI.
+`textual>=8.0`; runtime dependencies are declared in `pyproject.toml`. Release wheels are not published to PyPI.
 
 ## Configure multiple hosts
 
@@ -130,8 +130,10 @@ keyboard and mouse guide, `h` for the host picker, `r` to refresh, `s` for the c
 and `q` to quit after host work drains. `Escape` returns focus to the menu or cancels the open dialog. In tables,
 Up/Down select rows and Left/Right or Home/End inspect columns; Tab and Shift+Tab move between form fields and buttons.
 
-Planned, conditional, and tnt-only menu entries are marked in text. Destructive plan dialogs show the full target above
-the confirmation input; type it exactly as displayed. Below 48 columns or 12 rows, resize the terminal to continue.
+Planned, conditional, and tnt-only menu entries are marked in text. Apps, Containers, Virtual Machines, KMIP, and
+Enclosure are checked with read-only v27 probes for the selected host generation. Unsupported entries are hidden;
+permission or response failures remain visible as unavailable and open without actions. Destructive plan dialogs show
+the full target above the confirmation input; type it exactly as displayed. Below 48 columns or 12 rows, resize the terminal to continue.
 When no host is configured, the picker focuses Add and disables actions that need a selected host; choose Quit to exit tnt.
 See the [navigation and small-terminal design](DESIGN.md#tui-navigation-and-small-terminals).
 
@@ -207,6 +209,7 @@ tnt jobs list --host lab --limit 200 --offset 0 --json
 tnt jobs list --host lab --limit 200 --offset 200 --json
 tnt services --host lab --json
 tnt storage health --host lab --json
+tnt storage pools --host lab --json
 tnt tui --host lab
 ```
 
@@ -219,7 +222,7 @@ session. The TUI Jobs screen has Previous/Next page controls. Use `/` to focus s
 visible rows, `?` for the key guide, or its Help button for view controls. Dashboard polls every 30 seconds, Jobs every 5 seconds, and Alerts, Services, and
 Storage every 60 seconds. Refreshes do not overlap; on failure the TUI retains the last successful sample and shows a
 credential-scrubbed error. Services has no start/stop controls. The full v27 methods, role requirements, schemas, and
-unknown states are in [API method evidence](API-METHODS-V27.md#iteration-2-read-view-contract-implemented-against-the-verified-v27-reference);
+unknown states are in [API method evidence](API-METHODS-V27.md#read-view-contracts-implemented-against-the-verified-v27-reference);
 Dashboard JSON preserves v27 `system.info.uptime_seconds` as a finite, non-negative number; fractional seconds are
 valid. The job and view design is in [DESIGN.md](DESIGN.md#non-blocking-jobs-and-core-read-views).
 
@@ -342,6 +345,36 @@ run-now is typed-confirmed because a configured `allow_from_scratch` task may re
 the confirmation plan. Replication `direction` is `PUSH` or `PULL`, and `transport` is `SSH`, `SSH+NETCAT`, or `LOCAL`.
 See the [task safety decisions](DESIGN.md#data-protection-tasks) and [v27 API schemas](API-METHODS-V27.md#workflows).
 
+### Storage Pools and scrub schedules
+
+`tnt storage pools` and Storage > Pools in the TUI are read-only. The bounded pool query shows pool health, space,
+scan state, and vdev topology. Use the ID reported there in scrub schedule JSON. Scrub schedule create and update use
+v27 fields only; delete requires typing the exact pool name and schedule ID. Run-now submits a tracked full-scrub job.
+The middleware can still return successfully without starting when a pool-state validation changes after preflight, so
+the displayed job result is not proof that a scan was observed.
+
+```sh
+tnt storage pools --host lab --json
+tnt task scrub list --host lab --json
+cat > scrub-schedule.json <<'JSON'
+{"pool":1,"threshold":35,"description":"Regular integrity scan",
+ "schedule":{"minute":"00","hour":"03","dom":"*","month":"*","dow":"7"},"enabled":true}
+JSON
+tnt task scrub create --host lab --file scrub-schedule.json --allow-write
+cat > scrub-update.json <<'JSON'
+{"threshold":14,"enabled":true}
+JSON
+tnt task scrub update 1 --host lab --file scrub-update.json --allow-write
+tnt task scrub run 1 --host lab --allow-write
+tnt task scrub delete 1 --host lab --allow-write --confirm 'tank scrub schedule [1]'
+```
+
+Replace the example pool and schedule IDs with the values returned by the read commands. The schedule pool ID must
+resolve to a data pool; boot-pool schedules are refused. Vanilla v27 has no SMART test-task method, so there is no
+SMART task command or screen. The signatures and validation behavior are in
+[API method evidence](API-METHODS-V27.md#pool-scrub-tasks-and-conditional-menu-probes); the design choices are in
+[DESIGN.md](DESIGN.md#data-protection-tasks).
+
 ### Network status
 
 Inspect active addresses, interface configuration, installed routes, DNS nameservers, and default gateways with the
@@ -417,33 +450,132 @@ tree. See the [API key design](DESIGN.md#api-keys) and [v27 signatures](API-METH
 
 ### System actions
 
-Check updates first. The output shows the current train and version, the exact available target train and version, and
-the first release-notes paragraph. Apply the exact version shown; the CLI follows the update job, and reboot remains a
-separate action:
+Check updates and available profiles first. The check matches an update-status candidate to exactly one train and
+shows its release notes. `profiles` reports the current profile ID and choices; each choice has a profile ID, a
+separate display name, and an availability flag. Select only an available profile ID. Profile IDs are not update
+trains; after selection, check again to see the candidate train and version TrueNAS offers. `versions` lists exact
+train/version pairs across all update trains. Download and apply each require a separate plan and the exact target
+version as typed confirmation. Pass `--train TRAIN_FROM_VERSIONS` to bind a version from another train; without it,
+download/apply use the update-check candidate. `update.run` sets `reboot=false` and tracks its job; reboot remains a
+separate host action:
 
 ```sh
 tnt system update check --host lab --json
-tnt system update apply TrueNAS-27.0.0-RC.2 --host lab --allow-write \
-  --confirm TrueNAS-27.0.0-RC.2
+tnt system update profiles --host lab --json
+tnt system update versions --host lab --json
+tnt system update select PROFILE_FROM_PROFILES --host lab --allow-write \
+  --confirm PROFILE_FROM_PROFILES
+tnt system update check --host lab --json  # recheck after changing the profile
+tnt system update download VERSION_FROM_CHECK --host lab --allow-write \
+  --confirm VERSION_FROM_CHECK
+tnt system update apply VERSION_FROM_CHECK --host lab --allow-write \
+  --confirm VERSION_FROM_CHECK
+tnt system reboot --host lab --allow-write --confirm HOST_NAME_FROM_PLAN \
+  --wait --expect-version VERSION_FROM_CHECK
+tnt system verify --host lab --json
 ```
 
-Replace the example target with the version returned by the check. Before apply, reboot, or shutdown, tnt requires
-`FULL_ADMIN` so it can inspect all active jobs. The plan shows those jobs, running VM/container names, and active SMB
-session count. Running jobs block the action unless `--force-with-jobs` is supplied; the host name or target version
-must still be typed exactly. Reboot and shutdown accept an optional 0–86400 second delay:
+Replace placeholders with exact values from `profiles`, `check`, and the rendered reboot plan. For selection, use the
+`profile` key from an available `profiles` entry, not its display name or the target train. `download` is an explicit
+preparation step; apply can also fetch a candidate that is not already cached. Before selecting a profile,
+downloading, applying, rebooting, or shutting down, tnt requires `FULL_ADMIN` so it can inspect all active jobs. Each
+plan shows jobs, running VM/container names, and active SMB-session count. Running jobs block the action unless
+`--force-with-jobs` is supplied; exact typed confirmation remains required. Reboot and shutdown accept an optional
+0–86400 second delay:
+
+To use a version listed on a train other than the check candidate, bind both values from `versions` explicitly:
 
 ```sh
-tnt system reboot --host lab --delay 60 --allow-write --confirm HOST_NAME_FROM_PLAN
-tnt system shutdown --host lab --allow-write --confirm HOST_NAME_FROM_PLAN
-tnt system reboot --host lab --force-with-jobs --allow-write --confirm HOST_NAME_FROM_PLAN
-tnt tui --host lab  # System > Update, Reboot, or Shutdown; reboot reconnects with bounded retries
+tnt system update download VERSION_FROM_VERSIONS --train TRAIN_FROM_VERSIONS --host lab --allow-write \
+  --confirm VERSION_FROM_VERSIONS
+tnt system update apply VERSION_FROM_VERSIONS --train TRAIN_FROM_VERSIONS --host lab --allow-write \
+  --confirm VERSION_FROM_VERSIONS
 ```
 
-The TUI checks `system.state` after reboot and stops retrying after bounded attempts; an authentication failure stops
-retries immediately. If the connection closes before the reboot request returns, tnt checks the host without resending
-the action. It reports the outcome as uncertain unless a boot-state transition is observed; inspect host state before
-retrying. A lost shutdown response is also uncertain and is never resubmitted. Do not start a system action outside an
-approved maintenance window.
+```sh
+tnt system reboot --host lab --delay 60 --allow-write --confirm HOST_NAME_FROM_PLAN --wait
+tnt system shutdown --host lab --allow-write --confirm HOST_NAME_FROM_PLAN
+tnt system reboot --host lab --force-with-jobs --allow-write --confirm HOST_NAME_FROM_PLAN
+tnt tui --host lab  # System > Update shows profile IDs separately from update trains
+```
+
+`--wait` is valid only for reboot. It uses fresh read-only sessions and never resubmits the reboot request. Retries
+are bounded and retry only connection failures; authentication and schema failures stop immediately. Success requires
+READY, a new boot ID, and the expected version; `--expect-version` also requires a changed active boot environment.
+Without `--wait`, run `tnt system verify` after the host returns. v28 is supported only by the restricted read-only
+verification surface, which exposes version, readiness, boot ID, active boot environment, and acceptance dataset /
+snapshot readback. It does not expose writes. Do not start a system action outside an approved maintenance window.
+
+### Live update-survival acceptance
+
+The registered `live-update` lane runs the same tnt plan/apply and job paths against one explicitly selected host.
+It creates a uniquely named dataset under the selected non-boot data pool and a matching snapshot, then prints a
+canonical API-record dump plus SHA-256 before updating. After reboot it reads the same identity records through tnt
+and compares the dump and digest. The fixture is API-visible dataset/snapshot metadata, not a file-byte hash. The test
+also verifies tnt refuses a fixture under `boot-pool`; it does not weaken the boot-pool guard.
+
+Configure the host and secrets as mode-0600 files outside the checkout. Mount their physical host directory into the
+tester path with `RUN_GATE_EXTRA_MOUNTS`; both paths must match the forwarded `TNT_CONFIG` and `TNT_SECRETS` values.
+The gate runs inside `tester-unified`. These example assignments select the lane and show the common inputs:
+
+```bash
+export TNT_CONFIG=/private/scratch/tnt/tnt.toml
+export TNT_SECRETS=/private/scratch/tnt/tnt.secrets.toml
+export RUN_GATE_EXTRA_MOUNTS=/private/scratch/tnt=/private/scratch/tnt
+export TNT_LIVE=1
+export TNT_LIVE_PROFILE=lab
+export TNT_LIVE_POOL=tank
+export TNT_LIVE_ALLOW_SYSTEM=1
+```
+
+Run these phases in order against a disposable v1001 host. Resolve the source version from `system verify`, the target
+profile ID from `system update profiles`, and the exact train/version pair from `system update versions`. The lane
+selects the requested available profile through a typed tnt plan if needed, then verifies the exact pair is still
+available before it creates a fixture. Serialize every
+connection to v1001, including the patch pre-steps, with the estate lock:
+
+```bash
+export TNT_LIVE_UPDATE_PHASE=vanilla-v27
+export TNT_LIVE_UPDATE_SOURCE_VERSION='<exact vanilla v27 source version>'
+export TNT_LIVE_UPDATE_TARGET_PROFILE='<available profile ID, such as DEVELOPER>'
+export TNT_LIVE_UPDATE_TARGET_TRAIN='<available v27 nightly train>'
+export TNT_LIVE_UPDATE_TARGET_VERSION='<exact v27 nightly version from system update versions>'
+flock -w 3600 /home/vscode/vbpub-release-program-20261027/v1001.lock run-gate live-update
+```
+
+Next, install the v27 patch using the existing `scripts/truenas/boot-pool-patch` CLI's `live-v27-patch` lane and its
+documented install or `reapply-after-update` action. Do not reproduce the patch. The fresh install refuses a host
+with an existing `boot-disk-data` pool, `boot-pool/user-data` root, patch marker, container, or VM; use the
+companion's recovery action only when its exact stale-record guards apply. Run that command under the same `flock`
+lock. Then select the v28 train/version from tnt's update check and run the guarded tnt update phase:
+
+```bash
+export TNT_LIVE_UPDATE_PHASE=patched-v27
+export TNT_LIVE_UPDATE_SOURCE_VERSION='<exact patched v27 version>'
+export TNT_LIVE_UPDATE_TARGET_PROFILE='<available profile ID, such as DEVELOPER>'
+export TNT_LIVE_UPDATE_TARGET_TRAIN='<available v28 train>'
+export TNT_LIVE_UPDATE_TARGET_VERSION='<exact v28 nightly version from system update versions>'
+flock -w 3600 /home/vscode/vbpub-release-program-20261027/v1001.lock run-gate live-update
+```
+
+After tnt verifies the v28 boot, use the companion patch CLI's documented `live-v28-patch` install/replace action,
+again under the lock. Copy the dataset, snapshot, and `canonical_sha256` printed by the `patched-v27` run into the
+read-only v28 verification phase:
+
+```bash
+export TNT_LIVE_UPDATE_PHASE=patched-v28
+export TNT_LIVE_UPDATE_TARGET_VERSION='<exact patched v28 version>'
+export TNT_LIVE_UPDATE_DATASET='<dataset printed by patched-v27>'
+export TNT_LIVE_UPDATE_SNAPSHOT='<snapshot printed by patched-v27>'
+export TNT_LIVE_UPDATE_CANONICAL_SHA256='<SHA-256 printed by patched-v27>'
+flock -w 3600 /home/vscode/vbpub-release-program-20261027/v1001.lock run-gate live-update
+```
+
+The companion patch consumer instructions are maintained in the `truenas-restore-iso` worktree at
+`scripts/truenas/boot-pool-patch/docs/CONSUMERS.md`; its patch operation remains outside tnt. Keep the gate output for
+the three phases. The lane intentionally leaves its namespaced data-pool fixtures for inspection; the approved
+pristine-snapshot restore can remove them after acceptance. Full inputs and report fields are in
+[live-test details](LIVE-TESTING.md#update-survival-acceptance).
 
 Configuration export writes a new local `.tar` file with mode `0600`. It includes the TrueNAS secret seed. The
 destination directory must already exist and an existing file is never overwritten. The optional root authorized-keys

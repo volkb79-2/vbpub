@@ -303,6 +303,16 @@ def _scrub_ambient_identity_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _default_docker_gid(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep ordinary tests independent of the host Docker group and socket.
+
+    Tests of Docker-GID detection clear or set this value themselves, so they
+    continue to exercise each fallback explicitly.
+    """
+    monkeypatch.setenv("DOCKER_GID", "999")
+
+
+@pytest.fixture(autouse=True)
 def _ciu_test_suite_gate(monkeypatch: pytest.MonkeyPatch) -> None:
     """Re-assert the CIU-87 product-side gate for every test body.
 

@@ -11,6 +11,15 @@ warn(){ printf '  WARN %s\n' "$*"; WARN=$((WARN+1)); }
 fail(){ printf '  FAIL %s\n' "$*"; FAIL=$((FAIL+1)); }
 info(){ printf '  INFO %s\n' "$*"; }   # neither pass nor fail -- disclosure only, not counted
 
+# A retired *_RESERVE_* key is refused, never read: the message names the new key.
+# The refusal logic is mdt_capacity.py's (installed beside this script), the one
+# implementation the installer and the wizard share.
+_CAPACITY_PY="${CAPACITY_PY:-$(dirname "$0")/mdt_capacity.py}"
+if [ -f "$CONF" ] && [ -f "$_CAPACITY_PY" ]; then
+  python3 "$_CAPACITY_PY" refuse-renamed "$CONF" || { echo "result: 1 failure(s): $CONF holds retired keys"; exit 1; }
+elif [ -f "$CONF" ]; then
+  warn "$_CAPACITY_PY missing — the retired-key refusal and the capacity checks were skipped; re-run install.sh"
+fi
 # shellcheck disable=SC1090
 [ -f "$CONF" ] && . "$CONF"
 # Shared IO-governance helpers (swap coverage); installed beside this script.
@@ -87,7 +96,7 @@ _cpu_quota_check() {
   cfg="${!var:-}"
   case "$cfg" in
     "")
-      info "$var empty — CPUQuota auto-detected at install time (nproc minus the configured core reserve), not independently re-derivable here"
+      info "$var empty — CPUQuota derived at install time (nproc minus MDT_EXCLUDED_CPU_CORES, minus DEV_TIER_EXCLUDED_CPU_CORES for a tier), not independently re-derivable here"
       ;;
     *%)
       quota="${cfg%\%}"
@@ -884,6 +893,37 @@ else
   warn "$_inotify_installed missing — the value will not survive a reboot; re-run install.sh"
 fi
 # END inotify-budget
+
+echo "== capacity unavailable to MDT (disk swap, dev.slice MemoryMax vs RAM_MDT) =="
+if [ ! -f "$CONF" ] || [ ! -f "$_CAPACITY_PY" ]; then
+  info "capacity checks skipped ($CONF or $_CAPACITY_PY missing)"
+else
+  _cap_nproc=$(nproc 2>/dev/null || echo 1)
+  _cap_out=$(python3 "$_CAPACITY_PY" check-config "$CONF" --nproc "$_cap_nproc" 2>&1) || _cap_out="WARN capacity check failed to run: $_cap_out"
+  if printf '%s' "$_cap_out" | grep -q '^WARN'; then
+    while IFS= read -r _line; do
+      case "$_line" in WARN\ *) warn "${_line#WARN }" ;; esac
+    done <<<"$_cap_out"
+  else
+    ok "MDT has disk swap and dev.slice MemoryMax is within RAM_MDT"
+  fi
+fi
+
+echo "== protected units (MDT_PROTECTED_UNITS; verify only) =="
+if [ -z "${MDT_PROTECTED_UNITS:-}" ]; then
+  info "MDT_PROTECTED_UNITS is empty — no host/production unit is verified (the capacity unavailable to MDT is not checked against real protection)"
+elif [ ! -f "$_CAPACITY_PY" ]; then
+  warn "$_CAPACITY_PY missing — cannot verify MDT_PROTECTED_UNITS; re-run install.sh"
+else
+  _prot_out=$(python3 "$_CAPACITY_PY" verify-protection "$CONF" --cgroup-root "$CG" 2>&1) || _prot_out="WARN protection verification failed to run: $_prot_out"
+  if printf '%s' "$_prot_out" | grep -q '^WARN'; then
+    while IFS= read -r _line; do
+      case "$_line" in WARN\ *) warn "${_line#WARN }" ;; esac
+    done <<<"$_prot_out"
+  else
+    ok "memory.min of MDT_PROTECTED_UNITS covers MDT_EXCLUDED_RAM; weights are at least 4x dev.slice's"
+  fi
+fi
 
 echo "== container placement (informational) =="
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then

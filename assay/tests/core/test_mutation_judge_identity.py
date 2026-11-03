@@ -34,6 +34,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path, PurePosixPath
+from types import SimpleNamespace
 
 import pytest
 from conftest import GitRepo, make_lane, make_plan, zero_resource_limit_evidence_dict
@@ -546,12 +547,13 @@ def _record(job, *, judge: str, **overrides) -> dict:
         "outcome_bucket": "survived",
         "resource_limit_evidence": zero_resource_limit_evidence_dict(),
         "process_tree_evidence": {
-            "protocol": "assay-process-tree/1",
+            "protocol": "assay-process-tree/2",
             "leader_status": default_process_tree_leader,
             "group_signalled_before_reap": False,
             "outliving_descendants": 0,
             "descendants_signalled": 0,
-            "cleanup_seconds": 0.001,
+            "signal": None,
+            "descendants": [],
             "clean": True,
         },
     }
@@ -665,6 +667,125 @@ def _store(tmp_path: Path, job, payload: dict) -> Path:
     name = mutation.mutation_state_record_name(mutation.candidate_id(job))
     (root / name).write_text(json.dumps(payload), encoding="utf-8")
     return root
+
+
+def test_state_record_resources_roundtrip(tmp_path: Path):
+    job = _job()
+    resources = {
+        "cpu_seconds": 1.5,
+        "peak_rss_bytes": 2048,
+        "write_bytes": 4096,
+        "judge_rss_bytes": 8192,
+        "phase_seconds": {
+            "materialize": 0.1,
+            "command": 1.0,
+            "integrity": 0.2,
+            "teardown": 0.3,
+        },
+        "startup_seconds": {"to_session_start": 0.1, "to_first_test": 0.4},
+    }
+    root = _store(tmp_path, job, _record(job, judge="j" * 64, resources=resources))
+
+    loaded = mutation._load_validated_state_record(root, job, judge="j" * 64)
+
+    assert isinstance(loaded, dict)
+    assert loaded["resources"] == resources
+
+
+def test_state_record_resources_roundtrip_with_unavailable_measurements(
+    tmp_path: Path,
+):
+    job = _job()
+    resources = {
+        "cpu_seconds": None,
+        "peak_rss_bytes": None,
+        "write_bytes": None,
+        "judge_rss_bytes": None,
+        "phase_seconds": None,
+        "startup_seconds": {"to_session_start": None, "to_first_test": None},
+    }
+    root = _store(tmp_path, job, _record(job, judge="j" * 64, resources=resources))
+
+    loaded = mutation._load_validated_state_record(root, job, judge="j" * 64)
+
+    assert isinstance(loaded, dict)
+    assert loaded["resources"] == resources
+
+
+@pytest.mark.parametrize(
+    ("resources", "message"),
+    [
+        ("not-an-object", "resources must be an object"),
+        ({"cpu_seconds": 1.0, "unrecognized": 2}, "resources has unknown fields"),
+        (
+            {"cpu_seconds": True},
+            "resources.cpu_seconds must be a non-negative number or null",
+        ),
+        (
+            {"cpu_seconds": "not-a-number"},
+            "resources.cpu_seconds must be a non-negative number or null",
+        ),
+        (
+            {"cpu_seconds": float("inf")},
+            "resources.cpu_seconds must be a non-negative number or null",
+        ),
+        (
+            {"cpu_seconds": -1.0},
+            "resources.cpu_seconds must be a non-negative number or null",
+        ),
+        (
+            {"write_bytes": 1.5},
+            "resources.write_bytes must be a non-negative integer or null",
+        ),
+        (
+            {"write_bytes": -1},
+            "resources.write_bytes must be a non-negative integer or null",
+        ),
+        (
+            {"phase_seconds": "not-an-object"},
+            "resources.phase_seconds must be an object or null",
+        ),
+        (
+            {"phase_seconds": {}},
+            "resources.phase_seconds has missing or unknown fields",
+        ),
+        (
+            {
+                "phase_seconds": {
+                    "materialize": 0.0,
+                    "command": None,
+                    "integrity": 0.0,
+                    "teardown": 0.0,
+                }
+            },
+            "resources.phase_seconds.command must be a non-negative number",
+        ),
+        (
+            {"startup_seconds": "not-an-object"},
+            "resources.startup_seconds must be an object or null",
+        ),
+        (
+            {"startup_seconds": {}},
+            "resources.startup_seconds has missing or unknown fields",
+        ),
+        (
+            {"startup_seconds": {"to_session_start": "bad", "to_first_test": None}},
+            "resources.startup_seconds.to_session_start must be a non-negative number or null",
+        ),
+    ],
+)
+def test_state_record_resources_are_strictly_validated(
+    tmp_path: Path, resources, message: str
+):
+    job = _job()
+    root = _store(
+        tmp_path,
+        job,
+        _record(job, judge="j" * 64, resources=resources),
+    )
+
+    with pytest.raises(MutationStateError, match=message):
+        mutation._load_validated_state_record(root, job, judge="j" * 64)
 
 
 def test_hung_record_without_resource_evidence_is_rejected(tmp_path: Path):
@@ -1152,8 +1273,8 @@ def test_forced_crash_cannot_be_relabelled_as_killed(tmp_path: Path):
     ) is mutation._RECORD_REJECTED
 
 
-def test_timeout_cleanup_descendants_keep_hung_classification():
-    from assay.process_tree import ProcessTreeEvidence
+def test_timeout_cleanup_descendants_follow_shared_leak_precedence():
+    from assay.process_tree import ProcessTreeDescendant, ProcessTreeEvidence
     from assay.verify import _check_b162_process_tree_evidence
 
     job = _job()
@@ -1162,13 +1283,21 @@ def test_timeout_cleanup_descendants_keep_hung_classification():
         group_signalled_before_reap=True,
         outliving_descendants=2,
         descendants_signalled=2,
-        cleanup_seconds=0.01,
+        descendants=(
+            ProcessTreeDescendant(pid=10001, ppid=1, comm="child"),
+            ProcessTreeDescendant(pid=10002, ppid=1, comm="child"),
+        ),
         clean=True,
     )
     payload = _record(
         job,
         judge="j" * 64,
-        outcome_bucket="hung",
+        outcome_bucket="crashed",
+        terminal_result={
+            "outcome": "BUDGET_EXCEEDED",
+            "reason_code": "CANDIDATE_HUNG",
+            "returncode": None,
+        },
         process_tree_evidence=evidence.to_dict(),
     )
 
@@ -1177,13 +1306,35 @@ def test_timeout_cleanup_descendants_keep_hung_classification():
     )
     failures: list[str] = []
     _check_b162_process_tree_evidence(
-        "hung", {"process_tree_evidence": evidence.to_dict()}, failures
+        "crashed", {"process_tree_evidence": evidence.to_dict()}, failures
     )
     assert failures == []
 
 
+def test_raw_verifier_requires_signal_for_a_signaled_process_tree_leader():
+    from assay.verify import _check_b162_process_tree_evidence
+
+    evidence = {
+        "protocol": "assay-process-tree/2",
+        "leader_status": "signaled",
+        "group_signalled_before_reap": False,
+        "outliving_descendants": 0,
+        "descendants_signalled": 0,
+        "signal": None,
+        "descendants": [],
+        "clean": True,
+    }
+    failures: list[str] = []
+
+    _check_b162_process_tree_evidence(
+        "crashed", {"process_tree_evidence": evidence}, failures
+    )
+
+    assert any("signaled leader that requires a signal" in failure for failure in failures)
+
+
 def test_normal_exit_with_descendants_cannot_be_a_functional_kill():
-    from assay.process_tree import ProcessTreeEvidence
+    from assay.process_tree import ProcessTreeDescendant, ProcessTreeEvidence
 
     job = _job()
     evidence = ProcessTreeEvidence(
@@ -1191,7 +1342,7 @@ def test_normal_exit_with_descendants_cannot_be_a_functional_kill():
         group_signalled_before_reap=False,
         outliving_descendants=1,
         descendants_signalled=1,
-        cleanup_seconds=0.01,
+        descendants=(ProcessTreeDescendant(pid=10001, ppid=1, comm="child"),),
         clean=True,
     )
     payload = _record(
@@ -1228,7 +1379,7 @@ def test_present_malformed_terminal_evidence_is_corruption(
         mutation._load_validated_state_record(root, job, judge="j" * 64)
 
 
-def test_a_resource_limited_candidate_record_is_never_reused(tmp_path: Path):
+def test_a_pass_with_a_limit_event_is_reused_as_survived(tmp_path: Path):
     job = _job()
     evidence = {
         "cgroup_version": 2,
@@ -1246,10 +1397,37 @@ def test_a_resource_limited_candidate_record_is_never_reused(tmp_path: Path):
         _record(job, judge="j" * 64, resource_limit_evidence=evidence),
     )
 
-    assert (
-        mutation._load_validated_state_record(root, job, judge="j" * 64)
-        is mutation._RECORD_REJECTED
+    loaded = mutation._load_validated_state_record(root, job, judge="j" * 64)
+    assert isinstance(loaded, dict) and loaded["outcome_bucket"] == "survived"
+
+
+def test_a_crashed_pass_with_a_limit_event_is_rejected_and_rerun(tmp_path: Path):
+    job = _job()
+    evidence = {
+        "cgroup_version": 2,
+        "pids_events": {"max": {"before": 0, "after": 1, "delta": 1}},
+        "memory_events": {
+            "max": {"before": 0, "after": 0, "delta": 0},
+            "oom": {"before": 0, "after": 0, "delta": 0},
+            "oom_kill": {"before": 0, "after": 0, "delta": 0},
+            "oom_group_kill": {"before": 0, "after": 0, "delta": 0},
+        },
+    }
+    root = _store(
+        tmp_path,
+        job,
+        _record(
+            job,
+            judge="j" * 64,
+            outcome_bucket="crashed",
+            resource_limit_evidence=evidence,
+            terminal_result={"outcome": "PASS", "reason_code": None, "returncode": 0},
+        ),
     )
+
+    assert mutation._load_validated_state_record(
+        root, job, judge="j" * 64
+    ) is mutation._RECORD_REJECTED
 
 
 def test_a_current_judge_record_without_b145_evidence_is_rejected(tmp_path: Path):
@@ -1262,6 +1440,87 @@ def test_a_current_judge_record_without_b145_evidence_is_rejected(tmp_path: Path
         mutation._load_validated_state_record(root, job, judge="j" * 64)
         is mutation._RECORD_REJECTED
     )
+
+
+@pytest.mark.parametrize("bucket", ["survived", "crashed"])
+def test_unobserved_resource_record_is_reused_with_explicit_state_marker(
+    tmp_path: Path, bucket: str,
+):
+    job = _job()
+    payload = _record(job, judge="j" * 64, outcome_bucket=bucket)
+    del payload["resource_limit_evidence"]
+    payload["resource_observation"] = {
+        "status": "unobserved",
+        "reason": "memory.max changed: 4096 -> 8192",
+    }
+    root = _store(tmp_path, job, payload)
+
+    loaded = mutation._load_validated_state_record(root, job, judge="j" * 64)
+
+    assert isinstance(loaded, dict)
+    assert loaded["outcome_bucket"] == bucket
+    assert loaded["resource_observation"]["status"] == "unobserved"
+
+
+def test_unobserved_kill_record_without_clean_report_is_rejected(tmp_path: Path):
+    job = _job()
+    payload = _record(job, judge="j" * 64, outcome_bucket="killed")
+    del payload["resource_limit_evidence"]
+    payload["resource_observation"] = {
+        "status": "unobserved",
+        "reason": "memory.max changed: 4096 -> 8192",
+    }
+    root = _store(tmp_path, job, payload)
+
+    assert mutation._load_validated_state_record(
+        root, job, judge="j" * 64
+    ) is mutation._RECORD_REJECTED
+
+
+def test_unobserved_kill_record_with_clean_report_is_reused(tmp_path: Path):
+    job = _job()
+    payload = _record(
+        job,
+        judge="j" * 64,
+        outcome_bucket="killed",
+        execution={
+            "mode": "full",
+            "witness": {
+                "node_id": "tests/test_flags.py::test_case",
+                "when": "call",
+                "outcome": "failed",
+                "session_exit_status": 1,
+                "process_exit_status": 1,
+            },
+        },
+    )
+    del payload["resource_limit_evidence"]
+    payload["resource_observation"] = {
+        "status": "unobserved",
+        "reason": "memory.max changed: 4096 -> 8192",
+    }
+    root = _store(tmp_path, job, payload)
+
+    loaded = mutation._load_validated_state_record(root, job, judge="j" * 64)
+
+    assert isinstance(loaded, dict)
+    assert loaded["outcome_bucket"] == "killed"
+    assert loaded["resource_observation"]["status"] == "unobserved"
+
+
+def test_resource_state_cannot_claim_observed_and_unobserved_windows(
+    tmp_path: Path,
+):
+    job = _job()
+    payload = _record(job, judge="j" * 64)
+    payload["resource_observation"] = {
+        "status": "unobserved",
+        "reason": "observer disappeared after preflight",
+    }
+    root = _store(tmp_path, job, payload)
+
+    with pytest.raises(MutationStateError, match="cannot carry both"):
+        mutation._load_validated_state_record(root, job, judge="j" * 64)
 
 
 @pytest.mark.parametrize(
@@ -1322,7 +1581,7 @@ def test_corrupt_pre_current_b145_state_shape_is_still_an_error(tmp_path: Path):
 
 
 def test_b155_advances_judge_identity_for_event_scope_attribution():
-    assert mutation._JUDGE_DIGEST_LABEL == "assay-judge-identity/12"
+    assert mutation._JUDGE_DIGEST_LABEL == "assay-judge-identity/13"
 
 
 def test_a_different_judge_is_rejected_not_treated_as_tampering(tmp_path: Path):
@@ -1985,3 +2244,78 @@ def test_the_worst_case_record_still_fits_the_readers_own_limit():
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     assert len(encoded) < mutation.MUTATION_STATE_RECORD_LIMIT, len(encoded)
+
+
+@pytest.mark.parametrize(
+    ("fixture_name", "expected_bucket"),
+    [
+        ("iobench-killed.json", "killed"),
+        ("iobench-survived.json", "survived"),
+    ],
+)
+def test_real_10_0_1_state_records_are_rejected_for_a_new_judge(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fixture_name: str,
+    expected_bucket: str,
+):
+    """Old campaign records with either terminal bucket become routine cache misses.
+
+    The fixture retains the real persisted record. The source and replacement
+    bytes are not part of that format, so a minimal job supplies their recorded
+    digests while the terminal evidence and execution provenance are parsed as-is.
+    """
+    fixture = (
+        Path(__file__).parents[1]
+        / "fixtures"
+        / "mutation-state-10.0.1"
+        / fixture_name
+    )
+    payload = json.loads(fixture.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == mutation.MUTATION_STATE_SCHEMA_VERSION
+    assert payload["outcome_bucket"] == expected_bucket
+
+    job = SimpleNamespace(
+        candidate_id=payload["candidate_id"],
+        path=payload["path"],
+        site=SimpleNamespace(
+            operator=payload["operator"],
+            replacement=b"fixture-replacement",
+        ),
+        original_text="fixture-source",
+    )
+    real_hashlib = mutation.hashlib
+
+    def fixture_hash(data: bytes, *args, **kwargs):
+        if data == b"fixture-source":
+            digest = payload["source_sha256"]
+        elif data == b"fixture-replacement":
+            digest = payload["replacement_sha256"]
+        else:
+            return real_hashlib.sha256(data, *args, **kwargs)
+        return SimpleNamespace(hexdigest=lambda: digest)
+
+    monkeypatch.setattr(
+        mutation, "hashlib", SimpleNamespace(sha256=fixture_hash)
+    )
+    monkeypatch.setattr(
+        mutation, "candidate_id", lambda candidate: candidate.candidate_id
+    )
+
+    state_root = tmp_path / "state"
+    state_root.mkdir()
+    (state_root / f"{payload['candidate_id']}.json").write_bytes(fixture.read_bytes())
+    current_judge = "f" * 64
+    assert payload["judge_sha256"] != current_judge
+
+    try:
+        loaded = mutation._load_validated_state_record(
+            state_root, job, judge=current_judge
+        )
+    except mutation.MutationStateError as exc:
+        pytest.fail(
+            "old state record should be REJECTED for its judge mismatch, not "
+            f"raise {type(exc).__name__}: {exc}"
+        )
+
+    assert loaded is mutation._RECORD_REJECTED

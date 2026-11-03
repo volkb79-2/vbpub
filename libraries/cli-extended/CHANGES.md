@@ -174,6 +174,14 @@ Behaviour changes a consumer can see:
 
 <!-- cmru: release history -->
 
+## [Unreleased]
+
+- fix(skills): `register_skills_verbs` no longer raises when the consumer declares a legacy global `--dry-run` or `--json`; the library-owned flags win (CLI-EXT-30)
+- fix(skills): the CLI-EXT-30 collision filter removes only the colliding `--dry-run`/`--json` flag strings from a consumer global; its other aliases (`-n`, `-j`) and kwargs are kept
+- docs: AC-25 documents the 400-character piecewise window and its near-miss behaviour
+- fix(audit): AC-25 `no-path-hacks` flags a `sys.path` mutation that builds the library path from pieces such as `"libraries" / "cli-extended"` (CLI-EXT-32)
+- docs: the adoption checklist (AC-22) and README audit section name `--cli-case-partial` for focused pytest runs (CLI-EXT-31)
+
 ## [0.5.0] - 2026-10-21
 <!-- cmru: generated -->
 <!-- cmru: source-end=eaa1421fc7e2df2fbf287a4cb68243b7a73f238b -->

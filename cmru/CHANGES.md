@@ -31,13 +31,89 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
      volume); it skips it with a stderr WARN. The release-notes generator picks this up from
      the `fix(cmru): ...` commit subject. -->
 
+### Fixed
+- fix(cmru): the KI-79 R2-postponement window now covers the 7.2 patch line (`>= 7.2.0`, `< 7.3.0`) by operator decision 2026-11-04 (R2 waived for releases, run later with `--jobs` on r1002; closes with one full R2 over the 7.2 content), so cmru 7.2.0 can pass `gate-provisional`; 7.3.0 and later still refuse, and the dry-run precondition shares the gate's table (KI-79, KI-109)
+- WT-OW-01: the embedded `worktree` library refuses workspace removal (release/build worktree cleanup, `cmru abandon`) when any mount, such as a CoW subvolume or bind mount, sits at or under the checkout. It names each mount ("detach it first"), never unmounts, and `force` does not override it. Ships with the identical library copy in ciu (install ciu first, then cmru).
+- fix(cmru): the mutation campaign scales each candidate's timeout from the measured known-good control duration, `max(configured, 2 x control)`, instead of a fixed cap (KI-106)
+- fix(cmru): a failed or timed-out mutation control streams its complete output to stderr, so the lane log keeps more than the 1 MiB tail (KI-87)
+- fix(cmru): the fixture-closure test scans every repository-root path spelling with an AST walk, per function and per declared guard, and checks tracked-ness (KI-88)
+- fix(cmru): `cmru dependencies` checks first-party requirements of nested wheel `pyproject.toml` files declared in `project.wheel_pyprojects` (KI-83)
+- test(cmru): end-to-end merge-promote cases for several projects in one transaction and a project nested two levels deep (KI-57)
+<!-- cmru: pending release notes begin -->
+- fix(cmru): a `BrokenPipeError` (or closed stream) while flushing stdout/stderr at the end of the release log tee scope no longer skips the descriptor restore or masks the in-flight exception; the flush failure is attached as a note, or raised after the restore when nothing else is in flight (KI-116).
+- fix(cmru): the durable candidate backup branch on origin is re-pushed after every merge-promote retry, so a failed or interrupted promotion leaves the merged tip inspectable (KI-55).
+- fix(cmru): config validation refuses `project.release.build_step = "push"`, because the publishing step cannot sit inside the release-tag rollback window (KI-56).
+- fix(cmru): a `--dry-run --resume` restores the retained candidate tip after previewing, instead of leaving the prepared external-version inputs committed (KI-102).
+- fix(cmru): a failed repository-visibility lookup, an unsupported owner type, or a 5xx package lookup after the image push is now a warning with the one-time UI remediation, not a release failure (KI-103).
+- fix(cmru): the embedded `worktree` library now re-reads the mount table right before every deletion, including the permission-retry paths (WT-OW-01); a mount under a release or build workspace refuses removal through `cmru` cleanup and `cmru abandon` (adapter test added). The library copy is byte-identical to ciu's (one source directory, packaged by both wheels); release ciu first, then cmru.
+- fix(cmru): the bound launcher appends a source root that carries a stale `*.egg-info`, so the installed distribution metadata wins the identity check (KI-67).
+<!-- cmru: pending release notes end -->
+
+<!-- cmru: release history -->
+
+## [7.1.4] - 2026-11-03
+<!-- cmru: generated -->
+<!-- cmru: source-end=6350a31b4a35ae26982f550ba6686bbea47e4b8e -->
+
+### Added
+- feat(cmru): preflight release gate dry-runs (9d0e63687)
+
+### Fixed
+- fix(cmru): KI-79 dry-run check only when gate-provisional is configured; honest KI-111 wording (7684e3e2f)
+- fix(mdt): prepare CMRU env before local-dev tag checks (030bc97bb)
+
+### Changed
+- cmru tests: make the prepared-version-at-HEAD test hermetic (throwaway git repo; canary copy has no .git) (d902ac079)
+- Merge branch 'req-renames-20261103' (1eaaf51c3)
+- Merge branch 'r1002-mdt-fixes-20261103' (0cd520954)
+- chore: split root Python requirements (54fb70000)
+
+### Documentation
+- docs(cmru): file KI-109..111 from the 7.1.3 release attempts (b287feb4b)
+
+### Testing
+- test: isolate prepare_project_environment env in mdt-cockpit test; add cmru-side unit test (ba500e561)
+- test(cmru): cover release preflight failure branches (8346e4c10)
+
+<!-- cmru: pending release notes begin -->
+- feat(cmru): check the planned CMRU release version, Run-Gate image identity, and bootstrap guide version during `cmru release --dry-run`, before allocating a candidate worktree (KI-109, KI-111).
+- feat(cmru): `cmru installer render` and `cmru installer check` (byte-for-byte drift check), `[project.installer]` `stable_dir`, `stub_launchers`, installer self-copy to `<root>/bin/<project>-installer`, and `[[project.installer.questions]]` wizard prompts with `--unattended [--answers FILE]` (KI-112, CMRU-INST62); `cmru get-py` remains as a deprecated alias of `installer render` that prints one `[WARN]`.
+- fix(cmru): stop writing an unnamed temporary copy of failed coverage-canary control output; the complete output remains in stderr and the lane log (KI-110).
+- fix(cmru): `cmru handler wheel-build` honours the wheel-builder's baked build-backend age window and accepts a per-build `CMRU_WHEEL_BUILD_AGE_OVERRIDE_REASON` override that is logged (tester-base TB-08); the bootstrap refuses a tester-unified image tagged `tester-base:local` (TB-11).
+<!-- cmru: pending release notes end -->
+
+<!-- cmru: release history -->
+
+## [7.1.3] - 2026-11-03
+<!-- cmru: generated -->
+<!-- cmru: source-end=83c8e6f5f0a9af222b247ee53e2e4b4c2ae4f53a -->
+
+### Added
+- feat(tester-unified): install tmux for real-terminal UX checks (a2fdae2b0)
+
+### Fixed
+- fix(cmru): retain canary control output in lane logs (2dd0d8da5)
+- fix(cmru): close coverage canary fixture (0bf796a97)
+- fix(cmru): bound the mutation control and candidates at 600 s so the full-suite control can finish (09053cfde)
+- fix(patchseries): close patch stack review findings (f88ad3844)
+
+### Changed
+- test tester-unified Go and eatmydata labels (f0fdc2acb)
+
+### Testing
+- test(cmru): pin the mutation lane timeout in the regular gate; file KI-106 (c3e759231)
+- test(cmru): kill diff-scoped R2 survivors (b8d442c6a)
+
+<!-- cmru: pending release notes begin -->
 ### Testing
 - Add focused process-tree, origin-preflight, and nested release-log tests for
   the 16 non-equivalent survivors from the 7.1.0-era to 7.1.2 diff-scoped R2
   triage. Each test fails its mapped mutation in a disposable source copy;
   KI-79 records the equivalent survivors and remaining whole-source debt.
-
-<!-- cmru: release history -->
+- Keep the coverage-canary control fixture complete for module-import reads,
+  including tests skipped after import; retain failed-control output in the lane
+  log so a disposable run leaves one actionable error.
+<!-- cmru: pending release notes end -->
 
 ## [7.1.2] - 2026-10-28
 <!-- cmru: generated -->

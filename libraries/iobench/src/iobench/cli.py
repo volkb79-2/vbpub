@@ -321,7 +321,7 @@ def _ceilings_add(args: Any, runtime: CliRuntime, factory: HostFactory) -> int:
 
 def _ceilings_summary(args: Any, runtime: CliRuntime, factory: HostFactory) -> int:
     host = factory()
-    state = res.state_dir_of(host, None if args.state_dir is None else args.state_dir)
+    state = res.state_dir_of(host, args.state_dir)
     try:
         digest = _ceilings_identity_digest(host, state)
     except res.LoadError:

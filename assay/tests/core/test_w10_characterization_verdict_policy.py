@@ -140,7 +140,6 @@ def _native_outcome(**overrides) -> MutantOutcome:
             group_signalled_before_reap=False,
             outliving_descendants=0,
             descendants_signalled=0,
-            cleanup_seconds=0.001,
             clean=True,
         ),
     )
@@ -234,6 +233,7 @@ def test_mutation_derived_budget_lets_an_int_beyond_float_range_overflow():
 def _native_r2(**overrides) -> JudgmentR2:
     values = {
         "jobs": 1,
+        "attribution": "serial",
         "max_mutants": 10,
         "operators": ("python:compare-swap",),
         "kill_attribution": "unattributed",

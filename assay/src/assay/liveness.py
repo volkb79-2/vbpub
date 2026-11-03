@@ -93,13 +93,19 @@ from .errors import AssayError, Outcome, ReasonCode
 from .guards import is_int_at_least, is_real
 from .liveness_resources import compare_resource_snapshots, read_liveness_resources
 from .mutation_witness import WITNESS_FD_ENV
-from .process_tree import ProcessTreeError, ProcessTreeSpawnError, ProcessTreeWindow
+from .process_tree import (
+    ProcessTreeError,
+    ProcessTreeSpawnError,
+    ProcessTreeWindow,
+    _report_window_host_candidate_pid,
+)
 
 # B117/P6: termination is process-wide for one Assay invocation. Keep the
 # event here so the process-group registry can honor it without importing
 # runner.py (runner already imports this module).
 _TERMINATION = threading.Event()
 _LIVE_GROUPS: set[int] = set()
+_LIVE_WINDOW_HOST_GROUPS: set[int] = set()
 _LIVE_GROUPS_LOCK = threading.RLock()
 _DEFERRED_TERMINATION_SWEEP = False
 _CANDIDATE_TREE_CLEANUP_SECONDS = 10.0
@@ -131,6 +137,35 @@ def unregister_live_group(pgid: int) -> None:
             if _TERMINATION.is_set():
                 for live_pgid in tuple(_LIVE_GROUPS):
                     _killpg_group(live_pgid, signal.SIGKILL)
+
+
+def register_live_window_host_group(pgid: int) -> None:
+    """Register a host session that must unwind its command tree on SIGTERM."""
+    with _LIVE_GROUPS_LOCK:
+        _LIVE_WINDOW_HOST_GROUPS.add(pgid)
+        if _TERMINATION.is_set():
+            _killpg_group(pgid, signal.SIGTERM)
+
+
+def unregister_live_window_host_group(pgid: int) -> None:
+    """Forget a window host after it has returned or been reaped."""
+    with _LIVE_GROUPS_LOCK:
+        _LIVE_WINDOW_HOST_GROUPS.discard(pgid)
+
+
+def terminate_live_window_hosts() -> int:
+    """Ask every isolated command host to clean up and stop gracefully."""
+    acquired = _LIVE_GROUPS_LOCK.acquire(blocking=False)
+    if acquired:
+        try:
+            groups = tuple(_LIVE_WINDOW_HOST_GROUPS)
+        finally:
+            _LIVE_GROUPS_LOCK.release()
+    else:
+        groups = tuple(_LIVE_WINDOW_HOST_GROUPS.copy())
+    for pgid in groups:
+        _killpg_group(pgid, signal.SIGTERM)
+    return len(groups)
 
 
 def terminate_live_process_groups(sig: int = signal.SIGKILL) -> int:
@@ -165,6 +200,7 @@ def _reset_live_groups_for_tests() -> None:
     global _DEFERRED_TERMINATION_SWEEP
     with _LIVE_GROUPS_LOCK:
         _LIVE_GROUPS.clear()
+        _LIVE_WINDOW_HOST_GROUPS.clear()
         _DEFERRED_TERMINATION_SWEEP = False
         _TERMINATION.clear()
 
@@ -678,6 +714,42 @@ def _pid_cpu_ticks(pid: int) -> int:
     return _pid_stat(pid).ticks
 
 
+def _pid_io_write_bytes(pid: int, *, proc_root: Path = Path("/proc")) -> int | None:
+    """Return ``write_bytes`` from ``/proc/<pid>/io``, or ``None`` if absent."""
+    try:
+        raw = (proc_root / str(pid) / "io").read_text(
+            encoding="ascii", errors="replace"
+        )
+    except OSError:
+        return None
+    for line in raw.splitlines():
+        key, _, value = line.partition(":")
+        if key == "write_bytes":
+            try:
+                write_bytes = int(value.strip())
+            except ValueError:
+                return None
+            return write_bytes if write_bytes >= 0 else None
+    return None
+
+
+def process_rss_bytes(pid: int, *, proc_root: Path = Path("/proc")) -> int | None:
+    """Read one process's resident bytes from ``/proc/<pid>/statm``.
+
+    This is diagnostic-only; a missing or malformed procfs record is unknown,
+    never a candidate failure.
+    """
+    try:
+        statm = proc_root / str(pid) / "statm"
+        fields = statm.read_text(encoding="ascii", errors="replace").split()
+        resident_pages = int(fields[1])
+    except (OSError, IndexError, ValueError):
+        return None
+    if resident_pages < 0:
+        return None
+    return resident_pages * os.sysconf("SC_PAGE_SIZE")
+
+
 def _pid_children_via_task(pid: int) -> list[int]:
     """``/proc/<pid>/task/*/children`` -- the cheap, race-free enumeration
     (Linux >= 3.5) of a process's own direct children, unioned across every
@@ -779,11 +851,14 @@ class TreeSample(NamedTuple):
     monotone (a mid-walk reap, reparenting out of the tree and children
     auto-reaped under ``SIGCHLD=SIG_IGN`` all make it dip), and CPU spent
     after the last sample is missing. ``rss_bytes`` is the sum of resident
-    set sizes, which overcounts shared and copy-on-write pages.
+    set sizes, which overcounts shared and copy-on-write pages. ``write_bytes``
+    is the sum of readable ``/proc/<pid>/io`` counters across the live tree, or
+    ``None`` if any process in that sample lacks a readable counter.
     """
 
     cpu_seconds: float
     rss_bytes: int
+    write_bytes: int | None = None
 
 
 def tree_sample(root_pid: int) -> TreeSample:
@@ -791,10 +866,21 @@ def tree_sample(root_pid: int) -> TreeSample:
 
     Same walk and same raise contract as :func:`tree_cpu_seconds`.
     """
-    stats = _walk_tree(root_pid, _pid_stat)
+    samples = _walk_tree(
+        root_pid,
+        lambda pid: (_pid_stat(pid), _pid_io_write_bytes(pid)),
+    )
+    stats = [sample[0] for sample in samples]
+    write_counters = [sample[1] for sample in samples]
+    write_bytes = (
+        sum(value for value in write_counters if value is not None)
+        if all(value is not None for value in write_counters)
+        else None
+    )
     return TreeSample(
         sum(stat.ticks + stat.child_ticks for stat in stats) / os.sysconf("SC_CLK_TCK"),
         sum(stat.rss_pages for stat in stats) * os.sysconf("SC_PAGE_SIZE"),
+        write_bytes,
     )
 
 
@@ -1533,11 +1619,18 @@ class _ResourceTally:
         self.samples = 0
         self.cpu_seconds: float | None = None
         self.peak_rss_bytes: int | None = None
+        self.write_bytes: int | None = None
 
     def add(self, sample: TreeSample) -> None:
         cpu, rss = sample.cpu_seconds, sample.rss_bytes
         cpu = cpu if self.cpu_seconds is None else max(self.cpu_seconds, cpu)
         rss = rss if self.peak_rss_bytes is None else max(self.peak_rss_bytes, rss)
+        if sample.write_bytes is not None:
+            self.write_bytes = (
+                sample.write_bytes
+                if self.write_bytes is None
+                else max(self.write_bytes, sample.write_bytes)
+            )
         self.samples += 1
         self.cpu_seconds, self.peak_rss_bytes = cpu, rss
 
@@ -1659,6 +1752,31 @@ class LivenessRunner:
         # existing syscall-level tests can still monkeypatch os.killpg.
         self._process_group_killer = process_group_killer
 
+    def assay_window_host_spec(self) -> Mapping[str, object] | None:
+        """Describe a production-configured runner for an isolated host.
+
+        Injected clock, process, sampler, or signal seams cannot be serialized
+        faithfully. Such runners stay on the in-process path unless they
+        provide their own explicit host protocol.
+        """
+        if (
+            self._monotonic is not time.monotonic
+            or self._sleep is not time.sleep
+            or self._popen is not subprocess.Popen
+            or self._cpu_reader is not tree_cpu_seconds
+            or self._resource_reader is not read_liveness_resources
+            or self._sampler not in (None, tree_sample)
+            or self._process_group_killer is not None
+        ):
+            return None
+        return {
+            "kind": "liveness",
+            "events_dir": str(self._events_dir),
+            "expect_next_event_within_s": self._expect_next_event_within_s,
+            "pre_first_event_within_s": self._pre_first_event_within_s,
+            "cpu_window_s": self.cpu_window_s,
+        }
+
     def _events_path_for_cwd(self, cwd: Path) -> Path:
         return candidate_events_path(self._events_dir, cwd)
 
@@ -1722,6 +1840,7 @@ class LivenessRunner:
                             raise spawn_error from exc
                         process_tree.attach(proc)
                         register_live_group(proc.pid)
+                        _report_window_host_candidate_pid(proc.pid)
                     try:
                         result = self._monitor(
                             proc,
@@ -1837,6 +1956,7 @@ class LivenessRunner:
                         "samples": tally.samples,
                         "cpu_seconds": tally.cpu_seconds,
                         "peak_rss_bytes": tally.peak_rss_bytes,
+                        "write_bytes": tally.write_bytes,
                         "spawned_at": spawned_at,
                     }
                 )

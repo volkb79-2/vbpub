@@ -64,7 +64,7 @@ format = "coverage-py-json"
 artifact = "coverage.json"
 
 [lanes.iobench.judge.mutation]
-jobs = 1
+jobs_max = 4
 max_mutants = 10000
 operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-flip", "python:falsy-swap"]
 budget_per_candidate = "auto"

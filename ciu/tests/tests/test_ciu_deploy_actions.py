@@ -944,6 +944,97 @@ def test_governance_slice_preflight_noop_when_governance_disabled(monkeypatch, t
     deploy.governance_slice_preflight(tmp_path, profile, selection, rendered)  # must not raise
 
 
+def _compose_authored_stack(tmp_path, body: str):
+    """A stack with NO governance table whose compose template authors cgroup_parent."""
+    stack = tmp_path / "applications" / "app"
+    stack.mkdir(parents=True)
+    (stack / "ciu.compose.yml.j2").write_text(
+        "services:\n  app:\n    image: x\n" + body, encoding="utf-8"
+    )
+    selection = [
+        {
+            "phase_num": 1,
+            "phase_key": "phase_1",
+            "path": "applications/app",
+            "name": "app",
+            "service": {"path": "applications/app", "name": "app", "enabled": True},
+        }
+    ]
+    rendered = {"applications/app": {"app": {"env": {"FOO": "bar"}}}}
+    return selection, rendered
+
+
+def test_governance_slice_preflight_refuses_missing_compose_authored_slice(monkeypatch, tmp_path):
+    """CIU-150: a compose-authored cgroup_parent is checked, and a slice systemd
+    definitely reports absent refuses (exit 2)."""
+    import pytest
+
+    profile = Profile(name=None, phase_keys=None, config=_plain_config())
+    selection, rendered = _compose_authored_stack(
+        tmp_path, '    cgroup_parent: "cgprofile.slice"\n'
+    )
+    monkeypatch.setattr(
+        deploy.governance_mod, "check_slice_unit",
+        lambda name: (False, f"{name}: LoadState=not-found"),
+    )
+    with pytest.raises(ValueError) as exc_info:
+        deploy.governance_slice_preflight(tmp_path, profile, selection, rendered)
+    assert "cgprofile.slice" in str(exc_info.value)
+    assert "[S15.G9-1]" in str(exc_info.value)
+
+
+def test_governance_slice_preflight_passes_loaded_compose_authored_slice(monkeypatch, tmp_path):
+    profile = Profile(name=None, phase_keys=None, config=_plain_config())
+    selection, rendered = _compose_authored_stack(
+        tmp_path, "    cgroup_parent: cgprofile.slice\n"
+    )
+    seen: list[str] = []
+
+    def probe(name):
+        seen.append(name)
+        return True, f"{name}: LoadState=loaded"
+
+    monkeypatch.setattr(deploy.governance_mod, "check_slice_unit", probe)
+    deploy.governance_slice_preflight(tmp_path, profile, selection, rendered)
+    assert seen == ["cgprofile.slice"]
+
+
+def test_governance_slice_preflight_warns_and_continues_when_probe_inconclusive(
+    monkeypatch, tmp_path, capsys
+):
+    """CIU-150: the cockpit case (no systemd) WARNs for a compose-authored slice
+    and does not refuse."""
+    profile = Profile(name=None, phase_keys=None, config=_plain_config())
+    selection, rendered = _compose_authored_stack(
+        tmp_path, "    cgroup_parent: cgprofile.slice\n"
+    )
+    monkeypatch.setattr(
+        deploy.governance_mod, "check_slice_unit",
+        lambda name: (None, "systemd is not PID 1 here"),
+    )
+    deploy.governance_slice_preflight(tmp_path, profile, selection, rendered)  # must not raise
+    out = capsys.readouterr().out
+    assert "[WARN]" in out
+    assert "cgprofile.slice" in out
+
+
+def test_governance_slice_preflight_ignores_default_and_templated_compose_slices(
+    monkeypatch, tmp_path
+):
+    profile = Profile(name=None, phase_keys=None, config=_plain_config())
+    selection, rendered = _compose_authored_stack(
+        tmp_path,
+        "    cgroup_parent: system.slice\n"
+        "  other:\n    image: y\n    cgroup_parent: \"{{ app.slice }}\"\n",
+    )
+
+    def fail_check(name):
+        raise AssertionError("no slice should be probed")
+
+    monkeypatch.setattr(deploy.governance_mod, "check_slice_unit", fail_check)
+    deploy.governance_slice_preflight(tmp_path, profile, selection, rendered)  # must not raise
+
+
 def test_governance_slice_preflight_noop_without_governance_table(tmp_path):
     profile = Profile(name=None, phase_keys=None, config=_plain_config())
     selection = [

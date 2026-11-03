@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Sequence
@@ -72,29 +73,27 @@ def run(argv: Sequence[str] | None = None) -> int:
     source = project_root / target
     if not source.is_file() or source.is_symlink():
         raise ValueError(f"--target must be a real source file: {target}")
+    previous_log = args.evidence.with_suffix(".control.log")
+    try:
+        previous_log.unlink(missing_ok=True)
+    except OSError as exc:
+        raise RuntimeError(f"could not remove the stale control log {previous_log}: {exc}") from exc
 
     with tempfile.TemporaryDirectory(prefix="cmru-coverage-canary-") as temporary:
         copied = copy_project_fixture(
             repo_root=repo_root, project_root=project_root, workspace=Path(temporary)
         )
         control = _run(test_argv, cwd=copied)
-        log = args.evidence.with_suffix(".control.log")
         if control.returncode != 0:
-            # The tail of a pytest run is only the bare FAILED list, so keep the whole
-            # output next to the evidence and quote the cause of the first failure.
-            try:
-                log.write_text(control.stdout, encoding="utf-8")
-                where = f"full output: {log}"
-            except OSError as exc:
-                where = f"the control log {log} could not be written: {exc}"
+            sys.stderr.write("known-good canary control output follows:\n")
+            sys.stderr.write(control.stdout)
+            sys.stderr.write("\n")
+            sys.stderr.flush()
             raise RuntimeError(
                 f"known-good canary control failed with exit {control.returncode} "
-                f"({where}): {failure_excerpt(control.stdout, 2000)}"
+                "(full output is above in the lane log): "
+                f"{failure_excerpt(control.stdout, 2000)}"
             )
-        try:
-            log.unlink(missing_ok=True)  # a green control leaves no stale log from an earlier red run
-        except OSError as exc:
-            raise RuntimeError(f"could not remove the stale control log {log}: {exc}") from exc
         target_copy = copied / target
         target_copy.write_text(
             target_copy.read_text(encoding="utf-8")

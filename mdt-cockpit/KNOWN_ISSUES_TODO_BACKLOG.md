@@ -413,7 +413,7 @@ Also tracked from iobench `BACKLOG.md` (the optional IOGOV item).
 
 ## MDT-024 - move the mdt-buildkitd cache onto a compressed btrfs subvolume in `devcontainers-cow` (2026-10-23)
 
-**Status:** IMPLEMENTED 2026-10-23 as host-setup key `DEV_BUILDKITD_CACHE` (a Docker volume name, the default, or an absolute host path); the cold-cache trial on `/srv/devcontainers-cow/buildkitd-cache` passed the same day and the setting stays in use.
+**Status:** IMPLEMENTED 2026-10-23 as host-setup key `DEV_BUILDKITD_CACHE` (a Docker volume name, the default, or an absolute host path); the cold-cache trial on `/srv/mdt-cockpit-cow/buildkitd-cache` passed the same day and the setting stays in use.
 
 **Trial result (mdt-cockpit image, cold cache, 2026-10-23).**
 * **Works:** rootless BuildKit with the `runc-overlayfs` snapshotter runs on btrfs; the build succeeded in 1152 s, the same as the warm-cache ext4 builds (1082-1090 s). Those earlier builds got little from their cache, so the cold run is not slower.
@@ -424,13 +424,13 @@ Also tracked from iobench `BACKLOG.md` (the optional IOGOV item).
 * **Open:** the pool is shared with the VM harness (194 GB): set `gckeepstorage` in `buildkitd.toml` before the cache grows toward it. Today the cache is the Docker named volume `mdt-buildkitd-cache` (93 GB, snapshotter `runc-overlayfs`,
 owner 1000:1000, no userns remap) on the root ext4, so BuildKit's write bursts share the root journal with everything else
 (HOST-IO-INTERFERENCE: that shared journal is what stalled the game's fsync path). `devcontainers-cow` is a separate btrfs filesystem
-(own transaction stream, 194 GB, nearly empty, mounted `noatime,discard=async` at `/srv/devcontainers-cow`).
+(own transaction stream, 194 GB, nearly empty, mounted `noatime,discard=async` at `/srv/mdt-cockpit-cow`; the name `devcontainers-cow` in this entry is the 2026-10 host's LV/label, kept as host reality, the default mount path was renamed 2026-11-03).
 
 **Steps (host, root).**
-1. `btrfs subvolume create /srv/devcontainers-cow/buildkitd-cache` (the subvolume name is a path below the top level, BTRFS-COW.md 2.1).
-2. `btrfs property set /srv/devcontainers-cow/buildkitd-cache compression zstd` (BTRFS-COW.md policy: no `compress=` mount option; never `chattr +C`, it disables compression).
-3. `chown 1000:1000 /srv/devcontainers-cow/buildkitd-cache && chmod 2755 ...` (the rootless worker is uid 1000).
-4. host-setup: a key `DEV_BUILDKITD_CACHE` in `/etc/mdt/host-setup.env` on the HOST (value `/srv/devcontainers-cow/buildkitd-cache`; empty = the Docker
+1. `btrfs subvolume create /srv/mdt-cockpit-cow/buildkitd-cache` (the subvolume name is a path below the top level, BTRFS-COW.md 2.1).
+2. `btrfs property set /srv/mdt-cockpit-cow/buildkitd-cache compression zstd` (BTRFS-COW.md policy: no `compress=` mount option; never `chattr +C`, it disables compression).
+3. `chown 1000:1000 /srv/mdt-cockpit-cow/buildkitd-cache && chmod 2755 ...` (the rootless worker is uid 1000).
+4. host-setup: a key `DEV_BUILDKITD_CACHE` in `/etc/mdt/host-setup.env` on the HOST (value `/srv/mdt-cockpit-cow/buildkitd-cache`; empty = the Docker
    volume, the current behaviour). It is a host path, not a devcontainer path: `install.sh` renders it into `units/mdt-buildkitd.service.in` as
    `-v <host path>:/home/user/.local/share/buildkit` (the part after the colon is the path inside the buildkitd container). The key exists only so the
    unit does not hardcode a host layout (hosts without btrfs keep the volume), with an `ExecStartPre` that refuses unless a host path exists as a real directory (the mount is `nofail`, and a missing mount must not make Docker create the directory on the root ext4); install.sh also checks the owner is 1000:1000. btrfs is not required: any filesystem path works.
@@ -468,7 +468,9 @@ Fix direction: a `stage_tool_artifacts.py prune --older-than` and a unit test; n
 <!-- MDT-028..MDT-031 are taken by the iogov review branch (iogov-fable-review-20261027); the entries below
      were filed by the mdt-cockpit deep review of 2026-10-27 and start at MDT-032 to avoid a collision. -->
 
-## MDT-032 - `cmru release` never runs the smoke lane, and the release lane skips every pytest-style staging test (2026-10-27)
+## MDT-060 - `cmru release` never runs the smoke lane, and the release lane skips every pytest-style staging test (2026-10-27)
+
+*(Renumbered from MDT-032 on 2026-11-04: the id was reused by the iogov fill-test entry; MDT-032 now means that entry.)*
 
 `cmru.toml` `[steps.run-tests]` runs `run-gate release` and `run-gate oci-push` only. The `release` lane is
 `python -m unittest scripts.test_release_flow scripts.test_oci_tool_staging scripts.test_oci_push_lane`, and
@@ -480,7 +482,9 @@ waiver test, the dpkg clean-up after the final assertions) and the 2026-10-27 re
 the `release` lane run `pytest` over those modules (tester-unified has `/opt/tester-venv/bin/pytest`) or add
 `run-gate smoke` to `run-tests`; `test_release_flow.py` should assert the lane runs every test function.
 
-## MDT-033 - build inputs COPYed to `/tmp` are baked into the image layers (2026-10-27)
+## MDT-061 - build inputs COPYed to `/tmp` are baked into the image layers (2026-10-27)
+
+*(Renumbered from MDT-033 on 2026-11-04: the id was reused by the capacity entry; MDT-033 now means that entry.)*
 
 `COPY apt/packages.list`, `pip/wheels.list`, `pip/wheels/`, `requirements/`, `package-manifests-versioned/`,
 `customization/`, `scripts/mdt_cli.py`, `apt/backports.sources.in` and `build/tool-artifacts-staging/tool-versions.env`
@@ -657,3 +661,557 @@ to iobench's `seq1m|rand4k` workload names needs an explicit decision (a new wor
 **Acceptance:** a test that a journal with a confirmed downward shift yields export lines whose `plateau_bps` equals the window's median
 durable rate and whose `note` carries the recommendation key; `iobench ceilings add` accepts the printed line in a dry run; the design note's
 "v1 does NOT" list and MDT-023's "Next" paragraph point at each other.
+
+## MDT-032 - iogov: `test_prevention_checker_is_quiet_when_healthy_and_says_unknown_when_blind` reads the real filesystem fill (2026-11-02)
+
+The test builds its collectors from the live host (`covs(world)`) and asserts that no `fill` finding is raised. On a host whose
+root filesystem is above the fill threshold (observed at 74% used) the finding appears and the `smoke` lane fails although
+nothing in the change under test is related.
+
+**CLOSED 2026-11-03.** The test now injects an empty fill result before checking the unknown fstrim/provider facts, so verdicts do
+not depend on the machine's disk usage. `test_covariates_record_fill_discard_provider_queue_and_prio` continues to exercise live
+fill collection using the fixture's controlled filesystem.
+
+## MDT-033 - host-setup: the capacity unavailable to MDT (RAM, disk swap, CPU cores) drives sizing, protection and PSI control (2026-11-03)
+
+**Status:** IMPLEMENTED in the worktree (unreleased), live validation OPEN: a through e are built and tested on
+fake trees (`host-setup/mdt_capacity.py`, `scripts/mdt-psi-guard.py`, `tests/test_excluded_capacity.py`,
+`tests/test_psi_guard.py`). Still open: the live runs on r1002 (design §9 M6), the devcontainer template's
+read-only mount of `/run/mdt/psi-guard`, the run-gate RG-144 reader, and switching `MDT_PSI_GUARD` to `enforce`
+after M6. Final operator decisions of 2026-11-03 supersede every earlier wording of this entry, including the
+"reserve" and "budget = RAM minus reserve" variants. Cross-tool design:
+`docs/design/RESOURCE-PROFILES.md` §7.
+
+**Problem.**
+
+- Memory sizing uses fixed fractions of total RAM (`propose_memory_tiers`, `mdt-host-setup-wizard.py:456`). The
+  shipped README table is sized for about 16 GB: dev.slice at 12G/16G exceeds an 8 GB host.
+- CPU uses two integer-only `*_RESERVE_CORES` keys, whose word "reserve" reads as "reserved for MDT".
+- Swap takes 80% of the host total, regardless of what production services already occupy.
+- Nothing verifies that the production services are actually protected.
+- Nothing reacts to pressure.
+
+**Decision record (operator, 2026-11-03, binding).**
+
+1. **Three numbers.** The operator gives three numbers naming capacity that is **unavailable to MDT** because other
+   services on the host use it:
+   - RAM;
+   - disk swap only (swap space on the swap device);
+   - CPU cores (fractions allowed; `0` on a host without other load).
+
+   Everything else is MDT's.
+2. **Overcommit and protection.** RAM and CPU are overcommitted by design. About 500 MB of disk swap is kept for the
+   host. Protection comes from:
+   - weights (`CPUWeight`, `IOWeight`);
+   - `memory.min` on the named host or production cgroups, mirroring the RAM unavailable to MDT. The shared host's
+     reference: `wings.slice` `memory.min=6500M`, `memory.high=15000M`, two scopes at 4000M + 3000M, about 13.8 GB
+     of swap in use on average;
+   - PSI as the control signal.
+3. **Terminology.** No key name or prompt uses "reserve" or "reserved". The wording is "excluded from MDT",
+   "withheld from MDT", or "unavailable to MDT".
+4. **No backwards alias (operator update 2026-11-03).**
+   - `DEV_CPU_RESERVE_CORES`, `DEV_SUBSLICE_CPU_RESERVE_CORES` and every other `*_RESERVE_*` key are renamed
+     outright, with no mapping layer.
+   - The installer and the wizard refuse the old names with a message naming the new key.
+   - The migration is a one-time documented rename.
+5. **Live probe.** An optional probe suggests the numbers from `memory.min` and the current swap use of the named
+   services.
+
+**Design** (sub-items; they ship together in one mdt-cockpit release unless noted).
+
+- **MDT-033.a Keys and outright rename.**
+  - New keys:
+
+    | Key | Meaning | Default |
+    |---|---|---|
+    | `MDT_EXCLUDED_RAM` | size | `0` |
+    | `MDT_EXCLUDED_SWAP` | size | `0` |
+    | `MDT_EXCLUDED_CPU_CORES` | decimal, one decimal place | `0` |
+    | `DEV_TIER_EXCLUDED_CPU_CORES` | decimal; cores no single tier may use on top of the above | `0` |
+    | `MDT_PROTECTED_UNITS` | space-separated unit names | empty |
+    | `MDT_HOST_SWAP_MARGIN` | size; disk swap kept for the host | `512M` |
+
+  - Refused old keys. The rename table goes into the host-setup README section "Renamed keys (2026-11)":
+    - `DEV_CPU_RESERVE_CORES=c` → `MDT_EXCLUDED_CPU_CORES=c`;
+    - `DEV_SUBSLICE_CPU_RESERVE_CORES=k` → `DEV_TIER_EXCLUDED_CPU_CORES=max(0, k−c)`, which keeps today's tier quota (the parent's quota already caps a tier when k < c); `0`
+      is recommended.
+  - The refusal message text: `<OLD> is no longer read: rename it to <NEW> (<semantics>; your value <v> → <NEW>=<v'>).
+    See host-setup/README.md "Renamed keys (2026-11)".`
+  - Files to change:
+    - `host-setup.env.example` §2.1 and §3;
+    - the wizard validators `:829-830`, the CPU table `:2485-2512`, the help texts `:2566` and `:2603-2606`, and the
+      docstrings `:1299-1317`;
+    - `install.sh`, `units/dev-buildkitd.slice.in`, `check.sh`;
+    - `README.md`, `cgroup-cpu-swap-redesign-HANDOFF.md`;
+    - `tests/test_hs02.py`, `tests/test_buildkit_governance.py`.
+  - Not changed: the deprecated pre-rename tree.
+  - The operator renames the live `/etc/mdt/host-setup.env` with the table before the next install.
+- **MDT-033.b Derived sizing (overcommit by design).**
+
+  ```
+  RAM_MDT  = MemTotal − MDT_EXCLUDED_RAM                           (refuse < 1G)
+  SWAP_MDT = SwapTotal − MDT_EXCLUDED_SWAP − MDT_HOST_SWAP_MARGIN  (≤ 0: warn and require confirmation:
+                                                                    MDT gets no disk swap)
+  CPU_MDT  = nproc − MDT_EXCLUDED_CPU_CORES                        (refuse < 0.5)
+  ```
+
+  - **`dev.slice`:** MemoryMax = `RAM_MDT`, MemoryHigh = 92% of that, MemorySwapMax = `SWAP_MDT`, CPUQuota =
+    `CPU_MDT` × 100%.
+  - **Tiers:** MemoryMax/MemoryHigh as fractions of `RAM_MDT` (interactive 60/45%, background 70/50%, gates 70/50%,
+    buildkitd 35/25%). Their sum exceeds `RAM_MDT` on purpose, and zswap and swap absorb the cold part.
+    - Interactive MemoryLow is 15%.
+    - Tier swap = `DEV_SWAP_CASCADE_PCT`% of `SWAP_MDT` (unchanged rule).
+    - Tier CPUQuota = (`CPU_MDT` − `DEV_TIER_EXCLUDED_CPU_CORES`) × 100%.
+  - **Explicit values always win** and are the prompt defaults. The fractions are initial values, validated by design
+    §9 M6.
+  - **Disk swap only.** The excluded swap is the swap space the other services use on the swap device, read as their
+    `memory.swap.current`.
+  - **Worked examples (README):**
+
+    | Host | Inputs | Result |
+    |---|---|---|
+    | Shared host | 16 GiB RAM, 69 GiB swap, 6500M / 14G excluded | `RAM_MDT` ≈ 9.2 GiB, `SWAP_MDT` ≈ 54.5 GiB |
+    | r1002 | 4 cores, 7.75 GB, all 0 | 7.75 GB, SwapTotal − 512M, 400% |
+
+- **MDT-033.c Protection verification.** The production units are operator-owned, so this is verify-only by default.
+  `check.sh` and the wizard summary WARN when:
+  - the effective `memory.min` summed over `MDT_PROTECTED_UNITS` is below `MDT_EXCLUDED_RAM`;
+  - the children's `memory.min` sum exceeds the parent's (shared host: 7000M of scopes under a 6500M slice, so the
+    kernel scales the scopes down);
+  - a protected unit's `CPUWeight` or `IOWeight` is below 4× that of `dev.slice`.
+
+  `install.sh --apply-protection` (opt-in, interactive confirmation) writes `50-mdt-protection.conf` drop-ins with
+  `MemoryMin=`, `CPUWeight=` and `IOWeight=` for the named units.
+- **MDT-033.d Live probe.** `mdt-host-setup-wizard.py --probe-excluded [--units ...] [--seconds 600]`, read-only.
+  - **It reads, per named unit and child cgroup:**
+    - `memory.min/low/high/max/current`, `memory.swap.current`;
+    - `memory.stat` (`anon`, `file`);
+    - the `cpu.stat` usage delta;
+    - `cpu.weight`, `io.weight`.
+  - **It suggests:**
+    - RAM = the effective `memory.min` sum, rounded up to 256M. If no `memory.min` is set, the p95 of
+      `memory.current`, flagged "unprotected".
+    - Swap = the maximum of `memory.swap.current` over the window, rounded up to 512M.
+    - CPU = the p95 usage rate, rounded up to 0.5.
+  - **It prints** the table and the §c warnings, and writes nothing unless accepted.
+  - **Why it reads the files directly.** It is a one-shot configuration hint, not a resource profile, so the
+    cgprofile single-source rule does not apply. It must also run before cgprofile is installed.
+- **MDT-033.e PSI guard (`mdt-psi-guard`).** A stdlib service outside `dev.slice` that watches kernel PSI triggers:
+  - the protected units' `memory.pressure` `some` (10%);
+  - host `memory` `full` (5%);
+  - the protected units' `cpu.pressure` `some` (25%);
+  - with 10 s hold and 60 s release at half the threshold.
+
+  Actions in `enforce`, each reverted on release, on stop and at boot:
+  1. `CPUWeight` and `IOWeight` of `dev-gates`, `dev-background` and `dev-buildkitd` set to 1;
+  2. after 30 s still above, `memory.high` of `dev-gates` and `dev-background` lowered to max(floor,
+     0.9 × `memory.current`).
+
+  - It never freezes or kills: wall-clock budgets would expire and change results.
+  - `MDT_PSI_GUARD = off|report|enforce`, shipped as `report`. It switches to `enforce` after M6.
+  - Events go to `/run/mdt/psi-guard/events.jsonl`, which run-gate RG-144 reads as a contamination source. The
+    devcontainer template mounts that directory read-only.
+  - The guard state file lists the keys the guard currently owns (the reconcile sweep writes none of them and only logs the list).
+    The real overwriter of an active throttle is systemd (`daemon-reload`, `set-property`), documented as a known limit.
+  - `events.jsonl` rotates at 1 MiB to `events.jsonl.1` (tmpfs); RG-144 reads both.
+- **MDT-033.f Wizard prompt texts** (no "reserve"):
+  - `RAM unavailable to MDT — used by other services on this host (0 if none) [suggested: …]:`
+  - `Disk swap unavailable to MDT — swap space other services on this host occupy (0 if none) [suggested: …]:`
+    Help line: "Swap space on the swap device that these services use."
+  - `CPU cores unavailable to MDT — used by other services on this host, fractions allowed (0 on a host without other load) [suggested: …]:`
+  - `Host/production units to verify and probe (space-separated, empty if none) [...]:`
+  - The summary: `MDT may use: RAM <x> (overcommitted across tiers), swap <y>, CPU <z> cores. Everything else is
+    unavailable to MDT.`
+- **MDT-033.g Parallelism note (docs).** Lane workers and R2 jobs are sized by run-gate from measured per-worker
+  profiles (run-gate RG-146 and RG-148), not from these limits. The tier `MemoryMax` is the safety cap, and the
+  run-gate admission budget is the predictable need.
+
+**Open design question: soft protection via `MemoryLow` on `dev.slice`.** The wizard proposes no `MemoryLow`
+(neither on `dev.slice` nor on a tier). A `dev.slice` `memory.low` gives MDT reclaim priority over every unprotected
+host service (system.slice, the docker daemon, the game's page cache beyond its `memory.min`), about 1.4 GB on the
+shared host, so it needs an explicit operator decision before any proposal returns. A tier `MemoryLow` is ineffective
+while the parent's is unset. Until decided, an operator may still set them by hand.
+
+**Acceptance criteria.**
+
+- **Keys:** every new key validates, including fractional cores (`0.5`, `1.5`; `1.55` refused).
+- **Old keys:** each is refused by the installer, the wizard and `check.sh` with the exact rename message.
+- **Wording:** a repository test finds no `\breserve` in any host-setup key name, prompt or help text, apart from the
+  refusal message and the README rename table.
+- **Sizing:** derived values equal the worked examples on fake `/proc/meminfo` and `nproc`.
+- **Swap:** `SWAP_MDT ≤ 0` gives the no-disk-swap warning and requires confirmation.
+- **Protection:** the §c warnings on a fake cgroup tree, including children-exceed-parent. `--apply-protection` writes
+  only after confirmation and only for named units.
+- **Probe:** suggestions on a fake tree (with and without `memory.min`); it writes nothing.
+- **PSI guard:** staged actions and their revert on a fake cgroupfs with injected pressure; restore on stop and at
+  boot; a vanished source releases and a counter is keyed by path; the event file is bounded; `report` mode writes events and changes nothing.
+- **Docs:** README, `host-setup.env.example` and CONSUMERS agree (docs-in-sync test).
+
+**Test plan.**
+
+- The host-setup unit tests (`tests/test_hs02.py`, new `tests/test_excluded_capacity.py`,
+  `tests/test_psi_guard.py`), plus `host-setup/tests/test-render.sh` with the new keys.
+- **Live on r1002** (design §9 M6): the probe with all values 0 and with a simulated profile (2G / 1G / 1 core).
+  - The guard in `report` during the M5 memory-hog run, then `enforce` for one repeat.
+  - Lane verdicts and buckets must stay identical under `enforce`.
+- **Afterwards:** a shared-host dry run of the probe (read-only) for the operator's numbers.
+
+**Dependencies and order.**
+
+- Independent of the other tools' releases.
+- M6 needs r1002 host setup completed (the 2026-11-02 run stopped at the Docker restart).
+- RG-144 consumes the guard events, but optionally.
+- Flip the guard to `enforce`, and adjust the tier fractions, after M6.
+
+## MDT-044 - host-setup: provision the CoW area and the checkout location, in a fresh-host order (2026-11-03)
+
+**Status:** OPEN. Depends on `libraries/cowtree` COW-BL-01/-02 for the per-project declarations; this entry is the host half.
+
+**Decision (operator, 2026-11-03, binding).**
+
+- The checkout, with `.worktrees/`, lives on the CoW filesystem. Worktrees still come from git. Only the paths a project
+  declares in the cowtree schema become writable snapshots of main's. There is no mount-over of a folder in the checkout and no
+  `MDT_*` path override.
+- `mdt host-setup` creates and mounts the btrfs CoW area (default `/srv/mdt-cockpit-cow/<user>/`), with the
+  `user_subvol_rm_allowed` option and an fstab entry, and the per-user root inside it.
+- Both must exist **before the devcontainer starts**: Docker refuses a missing bind source, and a source it creates itself is
+  root-owned. The checkout is cloned inside the per-user root, and the devcontainer binds that path.
+- `docs/BTRFS-COW.md` §6.3 still prescribes ISOs in `<user>/shared/upstream-iso` and golden disks in `shared/vm-disks/base`.
+  Rewrite it to the project layout: VM files in `<project>/artifacts/vm-lab/`, ISOs in the repo-level `downloads/` (AGENTS.md
+  "Directory conventions and VM files"), CoW through the declared paths.
+
+**Fresh-host order (to document and to make `check.sh` verify).**
+
+1. Host-setup: CoW area (mkfs or an existing btrfs, mount, `user_subvol_rm_allowed`, fstab), then the per-user root owned by
+   the checkout user.
+2. Clone the repository inside the per-user root.
+3. Provision the declared paths in main (cowtree provision; subvolume per declared path, placeholders moved aside and back).
+4. Start the devcontainer with the per-user root as the workspace bind.
+5. Worktrees: `ciu worktree create` snapshots the declared paths (CIU-159).
+
+**Open points.** What `check.sh` reports on a host with no btrfs (one INFO line, not a failure); whether the wizard offers to
+create a loop-backed btrfs for a test host (no: a real device or an existing btrfs only, see the loop-device incident rule).
+
+**Acceptance.** The installer and `check.sh` cover steps 1-2 with fake-filesystem tests; the README gives the order; BTRFS-COW
+§6.3 matches the layout; no document names a user, host or fixed home path.
+
+## MDT-045 - Python variants: only 3.14 builds today (2026-11-03)
+
+**Status:** OPEN. `LATEST_KNOWN_PYTHON` is a release input (CHANGES, `[Unreleased]`), but only the default variant builds.
+
+**Measured.**
+
+- **3.14:** builds.
+- **3.15:** fails at the pwmcp instance install (`greenlet==3.5.6` has no matching distribution for 3.15) and at `aider-chat`
+  (requires Python below 3.15). `INSTALL_AIDER=false` skips the second; the first remains.
+- **3.11:** fails at the same `greenlet` pin.
+
+**Decision.** A Python variant needs per-Python pins; one global pin set cannot serve every variant. The pwmcp instance install
+is the consumer of the `greenlet` pin (the contract in `pwmcp/pwmcp.contract.json` owns it), so the pin must come from a
+per-interpreter constraint there, not from an mdt-cockpit override.
+
+**Next steps.**
+
+1. Per-Python constraint files (or markers) for the pwmcp instance install; file the greenlet finding in the pwmcp backlog.
+2. Decide `aider-chat` for 3.15: skip with a build-log line when `INSTALL_AIDER` is false, or pin to the last release that
+   supports it.
+3. A smoke build per supported variant in the release checklist; an unsupported variant fails early with the reason, before the
+   long layers.
+
+**Acceptance.** `LATEST_KNOWN_PYTHON=<v> cmru release mdt-cockpit` either builds each variant in the supported list or stops at
+the first step with a one-line reason. The supported list is in the README.
+
+## MDT-046 - release docs omit the `LATEST_KNOWN_PYTHON` and `DEVCONTAINERS_IGNORE_NEW_RELEASES` environment inputs (2026-11-03)
+
+**Status:** OPEN (docs). CHANGES (`[Unreleased]`) records both: `LATEST_KNOWN_PYTHON=3.15 cmru release mdt-cockpit` publishes a
+second Python variant next to the default, and `DEVCONTAINERS_IGNORE_NEW_RELEASES=true` skips the newer-base stop. The README
+mentions the bake default and `--ignore-new-releases`, but not the environment form.
+
+**Fix.** Add a "Release inputs" subsection to `docs/BUILD-ARCHITECTURE.md` under "Canonical release path" (that file owns
+the release flow): the two variables, that the environment wins over the `docker-bake.hcl` default, the published tag shape
+(`trixie-py<ver>-php<ver>-<date>` and its `-latest`), and that a variant other than the default must be listed as supported
+(MDT-045). Link it from the README sentence about `LATEST_KNOWN_*`. A docs-in-sync test asserts both variable names appear in
+`docs/BUILD-ARCHITECTURE.md`.
+
+## MDT-047 - host-setup `install.sh` restarts Docker and a running container was lost (2026-11-03)
+
+**Status:** OPEN. Found on a scratch host: after `install.sh` restarted Docker, a running container did not come back, although
+`live-restore` was configured.
+
+**Next steps.**
+
+1. Reproduce on a scratch host with one named container and `live-restore` on; record whether `docker.socket` and
+   `docker.service` restart together, and what the daemon logged.
+2. The installer must not restart Docker unless `--restart-docker` is passed (the flag exists); verify that no other path
+   restarts it (units, drop-ins, the wizard's apply step).
+3. Before any restart, list the running containers by name and require confirmation (never an all-container inventory beyond
+   the names), and print the restart-free alternative (`systemctl reload` or a reboot window) when the changed keys allow it.
+4. Document the chicken-and-egg rule: a folder inside the checkout is never mounted over by host-setup (the vm-lab mount-over
+   was dropped); CoW paths are subvolumes of the checkout filesystem declared per project (MDT-044), so no container needs a
+   restart to see them.
+
+**Acceptance.** A test on fake `systemctl` shows `install.sh` without `--restart-docker` issues no Docker restart on any path;
+the scratch-host reproduction is recorded with its cause (or "not reproducible with live-restore, restart was explicit").
+
+## MDT-048 - cgprofile client is not in the image: cgprofile releases carry no wheel (2026-11-03)
+
+**Status:** OPEN. `pip/wheels.list` resolves `<name>-v*` releases that carry a `.whl`. The `cgprofile-v*` releases
+(`scripts/cgroup-profiler/cmru.toml`: `artifacts = ["oci-image"]`) publish only the daemon image to `ghcr.io/volkb79-2/cgprofile`
+and a release note; the release has no assets, and `scripts/cgroup-profiler/pyproject.toml` (`cgroup-profiler`, stdlib-only
+collector, optional `report` extra) is not built into a wheel. So the cgprofile client (wrap/attach CLI) cannot be added to the
+image's wheel list without inventing a package.
+
+**Next steps.**
+
+1. Decide the client's distribution: add a `wheel` artifact to the cgroup-profiler release (client CLI entry point, stdlib-only
+   core, `report` extra left out of the image closure), or keep it image-less and document running it from the checkout.
+2. If a wheel is published, add `cgprofile` (the release prefix name; the wheel's distribution name must normalize to it or the
+   resolver and `scripts/check_wheel_set.py` will not match) to `pip/wheels.list`, `FIRST_PARTY_WHEEL_NAMES`, the Dockerfile
+   manifest RUN, and the tables that enumerate the wheel set (README, `docs/CONSUMERS.md`, `local-dev-artifacts.toml.example`,
+   `FIRST_PARTY_NO_AGE_WINDOW`).
+3. Any dependency of the new wheel must be in the set or `requirements/toolkit.txt`, because the image installs with `--no-index`.
+
+**Acceptance.** `cgprofile` resolves from a published wheel and `check_wheel_set` plus the manifest test pass with it declared;
+or the decision to stay image-less is recorded here with the checkout invocation.
+
+## MDT-049 - the BuildKit shim rewrites an explicit `BUILDX_BUILDER=default` to `mdt-managed`; builds FROM a locally loaded image fail (2026-11-04)
+
+**Status:** OPEN. Found while building `tester-unified` on a runner host on top of a locally loaded `tester-base:local`.
+
+**Observed.** `docker-buildx-shim.sh` treats `BUILDX_BUILDER` unset **and** `default` the same (`case ... ""|default) BUILDX_BUILDER=$MDT_BUILDER`). The
+managed builder is rootless BuildKit with its own image store; it cannot see an image that exists only in the Docker daemon's store, so
+`FROM tester-base:local` fails with `pull access denied ... repository does not exist`. A caller who selects `default` explicitly (the
+docker driver, which does see local images) is overridden without notice. The only escape is `MDT_BUILDX_PASSTHROUGH=1`, which also disables
+the cgroup/registration handling for that call.
+
+**Next steps.**
+
+1. Honor an explicit `BUILDX_BUILDER=default` (rewrite only when it is unset), or keep the rewrite and print one stderr line naming
+   `MDT_BUILDX_PASSTHROUGH=1` and `--builder` as the way to the docker driver.
+2. Document the local-base-image limitation and the passthrough workaround in `tester-unified/README.md` ("Build") and
+   `docs/BUILD-ARCHITECTURE.md`.
+3. Alternative that removes the need: build `tester-base` with `--output type=image` into the registry used by the managed builder, or pass the base as a
+   BuildKit `--build-context` of the local image.
+
+**Acceptance.** A shim test (fake buildx plugin) shows `BUILDX_BUILDER=default` is passed through unchanged, or that the hint line is printed; the
+docs name the workaround.
+
+## MDT-050 - `host-setup.env.example` ships `DEV_INTERACTIVE_MEMORY_LOW=2.5G` while the README says no MemoryLow is proposed (2026-11-04)
+
+**Status:** OPEN. The wizard warns on the shipped example: `DEV_INTERACTIVE_MEMORY_LOW` is set but `dev.slice` has no `MemoryLow` ancestor, so it is
+inert. A first live `install.sh` run needed a manual edit to the empty value.
+
+**Fix.** Set the example default to empty (line 265, `DEV_INTERACTIVE_MEMORY_LOW=`), keep the allowed-values comment, and add a test that the
+example parses with no wizard warning on a host with no `DEV_MEMORY_LOW`.
+
+## MDT-051 - `mdt-host-check.sh` warns on `auto` values it should resolve (2026-11-04)
+
+**Status:** OPEN. On a freshly installed host 10 of 12 warnings were noise: `DEV_*_CPU_QUOTA=auto is not a recognized CPUQuota form (N%%)` (the message
+also doubles the `%`) and `*_SWAP_MAX=auto is not byte-comparable`. The other two (no io baseline; IOWeight inert without io.cost) are real and expected.
+
+**Fix.** Resolve `auto` to the computed value (the same function the installer uses) before comparing, or skip the comparison with an `info` line;
+fix the doubled `%%` in the message. Test: a fake host-setup.env with `auto` for both keys yields no warning.
+
+## MDT-052 - the docker-run form of the host-folder cockpit has no UID remap, so checkouts, CoW root and lane user disagree (2026-11-04)
+
+**Status:** OPEN. Hosts without the devcontainer CLI create the cockpit with `docker run`, which skips `updateRemoteUserUID`. The container's `vscode`
+(uid 1000) then owns nothing the 1003 `tester-unified` lane user can share: a checkout owned by one uid fails Git (`dubious ownership`) or the CoW root
+check (`MDT_COW_ROOT must be owned by the non-root caller uid`) on the other side (Run-Gate RG-150).
+
+**Fix.** Ship the docker-run equivalent as a supported helper (`mdt-cockpit run-host-folder`, or a documented script) that creates the container as root,
+remaps `vscode` to the owner uid/gid of the checkouts directory (`groupmod`/`usermod`), then runs `finalize_container_environment.py` as `vscode`; document that
+the runner account must be uid 1003 (the tester-unified lane uid). Test the helper with a fake docker.
+
+**Rescope 2026-11-04 (operator decision, see MDT-055).** Step 1 is decided: the cgprofile release ships a wheel (client CLI plus
+the stdlib-only collector, `host-unit` subcommand; CP-41). The wheel serves two consumers: this image's wheel list and host-setup's
+native cgprofile service (MDT-055). The `report` extra stays out of both closures.
+
+## MDT-053 - fixed estate group `mdt-docker` (gid 2751) on the host Docker relay socket (2026-11-04)
+
+**Status:** OPEN. Packages in order: this entry first (host-setup), then MDT-054, CIU-160, NL-54 and the assay/run-gate entries.
+
+**Problem.** The relay socket `/run/docker-api/docker.sock` is `root:docker 0660` (`units/docker-api-socket.conf:56-63`) and the
+cockpit gets access through `--group-add ${localEnv:DOCKER_GID}`. That number is a host fact that must be exported in the host shell
+before `docker run`, because nothing inside the container can look it up before the container exists; ciu then persists the
+host's number into `ciu.env`, and ownership of `vol-*` directories follows it. A different host (or a reinstalled docker group)
+silently changes access and ownership. `/run/cgprofile` (`root:docker 0770`) rides on the same gid.
+
+**Decision record (operator, 2026-11-04, binding).** A new fixed estate group `mdt-docker`, gid **2751** (option A2 of the platform
+memo; the image's `mdt` group, gid 2750, is NOT reused because "may write /opt/mdt" must not also mean "root-equivalent through
+Docker"). The group lives on the host-setup relay socket. The host's own `/var/run/docker.sock` stays `root:docker`.
+
+**Design.**
+
+1. New `units/mdt-docker.sysusers`: `g mdt-docker 2751 - -`. `install.sh` runs `systemd-sysusers`, then verifies by `getent`
+   that the name resolves to gid 2751; if the gid is taken by another name, or the name exists with another gid, refuse with a
+   message naming both (no silent adoption, same pattern as the `cgprofile-observer` checks at `install.sh:155-201`).
+2. `docker-api-socket.conf` sets `SocketGroup=mdt-docker` (socket mode stays 0660). The `/run/docker-api` directory is
+   `root:mdt-docker 0750`/the existing mode with the new group.
+3. `mdt-cgprofile.conf` (`d /run/cgprofile 0770 root mdt-docker -`): the cgprofile control-socket directory moves to the same
+   group (the decision and the consequence for `cgprofile-observer` are recorded in CP-43). The observer group stays
+   `cgprofile-observer` (0751) and must differ from both `mdt-docker` and the host `docker` gid; the existing check at
+   `install.sh:201` gains the second comparison.
+4. `check.sh` assertions: group exists with gid 2751; relay socket group is `mdt-docker`; `/run/cgprofile` group is `mdt-docker`;
+   host socket still `docker`.
+5. One-time migration, documented in the README (and batched with the next host-setup restart because restarting
+   `docker.socket` is disruptive on the production-shared host): create the group, regroup the socket, restart `docker.socket`,
+   rebuild the cockpit (MDT-054), regenerate `ciu env` (CIU-160), `chgrp` existing hostdirs per the README recipe.
+
+**Acceptance.**
+
+- Fake-root `install.sh` tests: fresh host creates the group at 2751; an occupied gid, or an existing `mdt-docker` with another
+  gid, is refused with both identities named; rerun is a no-op with no docker.socket restart unless the drop-in changed.
+- `check.sh` fails when any of the four assertions is violated.
+- A live run on a scratch host (not the production-shared host first): a container whose image adds its user to `mdt-docker`
+  reaches the relay socket with no `--group-add`.
+- **Non-mdt path (operator criterion, 2026-11-04).** Nothing in repo tools requires the group: a test (or documented live check)
+  on a host without host-setup shows `ciu`, `run-gate`, `cmru`, `assay` and `nyxloom` resolving the docker gid by `stat` of the
+  socket they actually use and working for a user with only the normal docker access of that environment. This entry owns the
+  CONSUMERS statement: "`mdt-docker` is a cockpit-side access group, never a prerequisite of any repo tool".
+
+**Test plan.** Extend host-setup's existing fake-root install tests; add the check.sh cases; one scratch-host live run.
+
+## MDT-054 - cockpit image and templates: `vscode` in `mdt-docker`, no `--group-add`; finalize derives the gid from `DOCKER_HOST` (2026-11-04)
+
+**Status:** OPEN. Depends on MDT-053.
+
+**Problem.** `.devcontainer/devcontainer.json:228-231` and both templates pass `--group-add ${localEnv:DOCKER_GID}`; the r1002
+runner does the same in `start-cockpit-runner.sh:14`. `finalize_container_environment.py:143-146` stats only
+`/var/run/docker{-host,}.sock`; under `DOCKER_HOST=unix:///run/docker-api/docker.sock` it likely prints `docker_gid=?` (`:702`).
+
+**Decision record (operator, 2026-11-04).** The image creates group `mdt-docker` gid 2751 and adds `vscode` to it; Docker applies the
+image's supplementary groups, so no runArg is needed. `--group-add ${localEnv:DOCKER_GID}` is removed everywhere (no alias, no
+fallback): the devcontainer, both templates, the r1002 runner start script and its docs.
+
+**Design.**
+
+- Dockerfile: `groupadd -g 2751 mdt-docker` and `usermod -aG` for `vscode` (and for the runner remap path, which re-creates
+  `vscode` with a new uid: the supplementary group membership must survive the remap; test it).
+- Templates and `start-cockpit-runner.sh`: drop the runArg and the `DOCKER_GID` host-shell prerequisite from the docs.
+- finalize: derive and print the gid by `stat` of the socket named by `DOCKER_HOST` when it is `unix://`, else the legacy paths;
+  report both the socket gid and whether the current user is a member.
+- Image check: a test asserts `getent group mdt-docker` is 2751 and `vscode` is a member.
+
+**Acceptance.**
+
+- Image build test pins the group and membership; template tests refuse `DOCKER_GID` anywhere under `.devcontainer/`.
+- finalize prints the real gid on a fake socket path, and names `mdt-docker` as the expected group on a mismatch.
+- Live: launching without exporting `DOCKER_GID` still reaches the relay socket.
+- **Non-mdt path.** The same image used outside the mdt cockpit (plain Debian host or another devcontainer that mounts a docker
+  socket of another gid) still works: tools read the gid by `stat` of the socket mounted, and the documentation says a user
+  of another environment needs that environment's normal docker access (its own `--group-add` or group), nothing from `mdt-docker`.
+
+**Test plan.** Template/dockerfile static tests, finalize unit tests with a fake socket, one live launch.
+
+## MDT-055 - host-setup installs and pins the cgprofile host service from the released wheel (2026-11-04)
+
+**Status:** OPEN. Depends on CP-41/CP-42 (wheel release and `host-unit`) and the MDT-048 distribution decision (now made). Interim
+(RG-55 C option): until the wheel exists the ciu deployment of `cgprofile-host-daemon` stays, with the gates slice rendered from
+host config instead of hand edits (NC-06).
+
+**Problem.** The daemon runs as a ciu-managed privileged container (`scripts/cgroup-profiler/ciu.compose.yml.j2`) and depends on a
+repo checkout, ciu, and on r1002 two uncommitted hand edits (`RUNBOOK.md:52-90`). It restarts with dockerd, which is exactly the
+event it should observe (MDT-047). host-setup owns the `/run/cgprofile` directory, the `cgprofile-observer` group and the slice
+names, yet calls the daemon "out of scope" (`README.md:72-75,450-455`); `infra/cgprofile.slice` is installed by hand.
+
+**Decision record (operator, 2026-11-04).** Option B of the platform memo: a native systemd service from a RELEASED WHEEL, installed
+and pinned by host-setup the way `mdt-psi-guard` is; the ciu deployment of the host daemon is retired after one release with a
+dated migration window (no alias).
+
+**Design.**
+
+- `host-setup.env`: `CGPROFILE_WHEEL` (pinned version plus sha256; refused when empty while the service is enabled) and
+  `CGPROFILE_ENABLE`. `install.sh` installs the wheel into `/opt/cgprofile` (venv, `--no-index`, hash-checked), renders the unit
+  from `cgprofile host-unit --print` (CP-42; the unit template ships inside the wheel so cgprofile keeps a single source) with
+  host-setup's tier names (`dev-gates.slice` etc.), and restarts only on drift (wheel hash or rendered unit changed).
+- Protection of the host from a misbehaving daemon is part of the rendered unit; the values and rationale are CP-42. host-setup
+  owns `cgprofile.slice` (replacing the hand-installed `infra/cgprofile.slice`) and its env-tunable limits.
+- The daemon keeps its write rule: `cgroup.kill` only on exact gates-slice container cgroups (PROTOCOL.md section 3). The unit must
+  not widen this; no `Delegate=` beyond what the existing placement needs, reviewed in CP-42.
+- Socket paths, groups (CP-43) and the observer layout stay unchanged, so run-gate, assay and cockpits need no change.
+- README: the scope statement changes from "daemon out of scope" to "host-setup installs and pins the cgprofile service".
+- `check.sh`: service active, version equals the pin, `ctl.sock` and the observer socket present with the expected groups.
+- Retirement: after one release the ciu compose, `ciu.toml.j2` host profile and `infra/cgprofile.slice` hand-install steps are
+  deleted from `scripts/cgroup-profiler` (CP-44) and RUNBOOK edits dropped.
+
+**Acceptance.** Fake-root install tests (fresh, no-op rerun without restart, pin drift restarts once, empty pin refused);
+`systemd-analyze verify` on the rendered unit; r1002 first, then the shared host in an idle window; run-gate and assay
+`ctl`/observer probes unchanged after the swap.
+**Non-mdt path.** run-gate, assay and tools stay usable without the service on a host that never ran host-setup (existing
+`docker exec` fallback and the explicit infrastructure refusal when the observer is required): add a test per consumer, owned in
+RG-152 / B212.
+
+## MDT-056 - local base images through OCI-layout build contexts on `mdt-managed` (2026-11-04)
+
+**Status:** OPEN. Packages (memo order): tester-chain pilot (TB-14), wheel-builder, srdm (SRDM entry), cmru `build_contexts`
+(KI-113), pwmcp investigation (PWMCP-23), then docs here.
+
+**Problem.** `mdt-managed` (rootless buildkitd, `mdt-buildkitd.service`) is a remote builder and cannot see dockerd's image store,
+so `FROM <local-tag>` fails. Today the estate bypasses it with the docker driver: `cmru/build-initial-standalone.sh:312,320`,
+`tester-unified/build-image.sh` with a local base, `wheel-builder/Dockerfile:35`, srdm `go-base.sh:39`. A bypass loses the
+governance slice, the btrfs cache and GC (MDT-024), the fail-closed shim and the guard, and identifies bases by a mutable tag
+(TB-11).
+
+**Decision record (operator, 2026-11-04).** Keep `mdt-managed` as the ONLY builder. Local bases are exported as OCI layouts and passed
+as named build contexts pinned by digest: `--build-context <ref>=oci-layout://<dir>@sha256:<digest>`
+(`BUILDKITD-FLOWS.md:151` already names this; `release-repack.sh:101,113` is prior art). The bypass survives only for the fresh-host
+bootstrap (`build-initial-standalone.sh`, before `mdt-managed` exists), spelled `--builder default`, never chosen through an
+environment variable.
+
+**Design.** Pilot first: confirm that a context key with a tag (`tester-base:local`) maps a tagged `FROM tester-base:local`. Then the
+pattern rolls to each chain through its own entry. This entry owns the shim caveat (MDT-057), the docs (BUILDKITD-FLOWS section 6
+and CONSUMERS; remove the documented bypasses) and a guard test that no committed script selects the default builder by
+environment variable after the migration.
+
+**Acceptance.** Pilot on tester-base to tester-unified measured against the bypass (wall time, cache hit, slice accounting);
+digest of the base lands in the derived image's labels; docs list `--builder default` only under "fresh-host bootstrap".
+**Non-mdt path.** The same build scripts run on a plain Debian host with an ordinary buildx builder or the classic docker driver:
+the layout and context flags are accepted by both; test the script's argument construction without mdt.
+
+## MDT-057 - live check: does the shim remap `BUILDX_BUILDER=default` back to `mdt-managed` on the host? (2026-11-04)
+
+**Status:** OPEN (check only; no code change until it is run). Memo finding, derived from the code and not checked live.
+
+**Problem.** `scripts/docker-buildx-shim.sh:71-76` forces `mdt-managed` when `BUILDX_BUILDER` is unset or `default`. The documented
+bypass `BUILDX_BUILDER=default` may therefore work only inside the devcontainer; on the host it may need `--builder default` or
+`MDT_BUILDX_PASSTHROUGH=1`. Several documents and scripts (pwmcp release, tester-base docs) spell the bypass by environment.
+
+**Check steps (read-only except a throwaway build; use a trivial `FROM scratch` Dockerfile in a scratch directory; no
+all-container inventories).**
+
+1. On the host shell and inside the devcontainer: `docker buildx ls` and `docker buildx inspect` to record the effective default.
+2. `BUILDX_BUILDER=default docker buildx build --progress=plain -t mdt-shim-probe:1 <scratch>`; record which builder ran (the
+   plain output names the driver) in each location.
+3. Repeat with `--builder default` and with `MDT_BUILDX_PASSTHROUGH=1`; repeat with plain `docker build`.
+4. Record the table in `BUILDKITD-FLOWS.md` and list every committed script whose spelling does not work where it runs.
+
+**Acceptance.** The table is committed; a failing spelling is either fixed to `--builder default` (MDT-056 rule) or the shim is
+changed with a test; the documented bypass text matches measured behavior. Remove the probe image by exact name afterwards.
+
+## MDT-058 - docs: attach to a remote runner (docker context over ssh, VS Code, restricted key) (2026-11-04)
+
+**Status:** OPEN (docs). Companion of NC-07 (the key and the runner README recipe). Wait for `fix-r1002-findings-20261104` to merge.
+
+**Decision record (operator, 2026-11-04).** r1002 access is `docker context create r1002 --docker host=ssh://runner@<host>` plus VS Code
+"Attach to Running Container" for the IDE, and a restricted ssh key with a forced `command=` into the container shell for a
+terminal. No sshd in any container (a supervisor, persistent host keys, a published port and a second auth surface, with no
+isolation gained since the container already holds the Docker socket).
+
+**Design.** A section in the devcontainer docs: prerequisites (the user's key is in `runner`'s authorized_keys), creating the
+context, attaching, which uid the shell gets, and the security note that `runner` is in the docker group, so its keys belong only to
+operators and the controller. Cross-link NC-07. No code.
+
+**Acceptance.** A reader can attach from a laptop in the documented steps; the doc states the single-uid rule as it stands today and
+points at RG-151 phase 4 for the relaxed form. A docs-sync test (if the cockpit docs have one) passes.
+
+## MDT-059 - relax the "uid 1003" runner/cockpit rule after lane-uid phase 4 (MDT-052, NC-04) (2026-11-04)
+
+**Status:** BLOCKED on RG-151 phase 4 (and TB-13). Operator decision 2026-11-04: lanes run as the checkout owner; the baked uid 1003 rule retires.
+
+**Problem.** MDT-052 (a `docker run` cockpit has no automatic remap) and NC-04 (a runner account must be uid 1003) exist only
+because tester-unified bakes 1003 and git refuses a differently-owned tree.
+
+**Design / acceptance.** After phase 4, update MDT-052 and NC-04 to "any uid, as long as the checkout, the CoW root and the cockpit
+user share it"; delete the 1003 wording from the README, the runner scripts and their tests, keeping the RG-150 owner preflight as the
+safety net. Lanes that need Docker add the socket gid derived by `stat` (MDT-054). A test pins the new wording and that
+the provisioning script no longer hardcodes 1003.

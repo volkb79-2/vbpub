@@ -101,7 +101,6 @@ and avoids re-opening the same cycle purely for a type hint.
 
 from __future__ import annotations
 
-from functools import wraps
 import fnmatch
 import hashlib
 import json
@@ -109,6 +108,7 @@ import math
 import os
 import re
 import stat
+import sys
 import tempfile
 import threading
 import time
@@ -122,8 +122,9 @@ from concurrent.futures import (
 from contextlib import contextmanager, nullcontext
 from dataclasses import replace as _dataclass_replace
 from datetime import datetime
+from functools import partial, wraps
 from pathlib import Path, PurePosixPath
-from types import MappingProxyType
+from types import MappingProxyType, SimpleNamespace
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -135,14 +136,18 @@ from typing import (
     Sequence,
 )
 
+from . import _durable
+from . import _limit_ledger
+from . import _schedule
+from . import contention as _contention
 from . import git, liveness, safeio
+from . import termination as _termination
 from .candidate_identity import candidate_id_from_fields
 from .diff import AddedLines
-from .errors import AssayError, Outcome, ReasonCode
+from .errors import AssayError, LaneConfigError, Outcome, ReasonCode
 from .guards import is_finite_positive, is_int_at_least, is_nonempty_str, is_strict_int
 from .isolation import SnapshotRepository, netstring
 from .mutation_parsers.model import IngestedMutationReport
-from .process_tree import ProcessTreeError, ProcessTreeEvidence, ProcessTreeProcessRunner
 from .mutation_witness import (
     ReceiptCapture,
     ReceiptFacts,
@@ -158,6 +163,11 @@ from .mutation_witness import (
     replay_witness_from_receipt as _replay_witness_from_receipt,
 )
 from .mutation_witness import witness_from_receipt as _witness_from_receipt
+from .process_tree import (
+    ProcessTreeError,
+    ProcessTreeEvidence,
+    ProcessTreeProcessRunner,
+)
 from .records import record
 from .redaction import redact_passthrough_text as _redact_passthrough_text
 from .resource_limits import (
@@ -179,6 +189,7 @@ from .verdict import (
     MutationExecution,
     MutationProducerTool,
     MutationWitnessReceipt,
+    UnderlyingOutcome,
     SourcePosition,
     iso_utc,
 )
@@ -265,10 +276,25 @@ MUTATION_STATE_RECORD_LIMIT = 1024 * 1024
 #: on B088 rather than widened into this change.)
 MUTATION_STATE_SCHEMA_VERSION = 1
 
+_STATE_RESOURCE_KEYS = frozenset(
+    {
+        "cpu_seconds",
+        "peak_rss_bytes",
+        "write_bytes",
+        "judge_rss_bytes",
+        "phase_seconds",
+        "startup_seconds",
+    }
+)
+_STATE_RESOURCE_PHASE_KEYS = frozenset(
+    {"materialize", "command", "integrity", "teardown"}
+)
+_STATE_RESOURCE_STARTUP_KEYS = frozenset({"to_session_start", "to_first_test"})
+
 #: (B088) The serialization label folded into :func:`judge_sha256`, so a
 #: future change to WHAT the judge identity covers yields visibly different
 #: digests instead of silently comparable ones.
-_JUDGE_DIGEST_LABEL = "assay-judge-identity/12"
+_JUDGE_DIGEST_LABEL = "assay-judge-identity/13"
 
 #: (B088) Returned by :func:`_load_validated_state_record` when a record was
 #: FOUND, is well-formed, and is still not evidence about this run -- its
@@ -1211,6 +1237,7 @@ PROGRESS_EVENTS = frozenset(
         "resume",
         "baseline",
         "candidate",
+        "candidate_retry",
         "resume_merged",
         # --- mutation sweep, judged by progress not by time (B091/D-23) ---
         "plan",  # the sweep's own first record: what the baseline measured
@@ -1307,6 +1334,8 @@ class ProgressStream:
         budget_s: float | None = None,
         budget_per_candidate_s: float | None = None,
         candidate_total: int | None = None,
+        jobs: int | None = None,
+        attribution: Literal["serial", "overlap-conservative"] | None = None,
     ) -> None:
         """Emit the stream's ``run`` header, at most once.
 
@@ -1330,6 +1359,23 @@ class ProgressStream:
         """
         if self._header_emitted:
             return
+        if jobs is not None and (type(jobs) is not int or jobs < 1):
+            raise ValueError("progress run header jobs must be a positive integer")
+        if attribution is not None and attribution not in {
+            "serial",
+            "overlap-conservative",
+        }:
+            raise ValueError("progress run header attribution is invalid")
+        if (jobs is None) != (attribution is None):
+            raise ValueError(
+                "progress run header jobs and attribution must be supplied together"
+            )
+        if jobs is not None and attribution != (
+            "serial" if jobs == 1 else "overlap-conservative"
+        ):
+            raise ValueError(
+                "progress run header attribution must match the worker count"
+            )
         self._header_emitted = True
         self.emit(
             {
@@ -1340,6 +1386,7 @@ class ProgressStream:
                 "budget_s": budget_s,
                 "budget_per_candidate_s": budget_per_candidate_s,
                 "candidate_total": candidate_total,
+                **({"jobs": jobs, "attribution": attribution} if jobs is not None else {}),
                 "started": iso_utc(self._clock()),
             }
         )
@@ -1481,7 +1528,7 @@ def judge_sha256(
       result is as much a part of the judge as the suite is, and since B088
       deliberately does not bump ``MUTATION_STATE_SCHEMA_VERSION`` there
       would otherwise be NO lever that invalidates records across an assay
-      upgrade that changed ``_classify_mutant_result`` or bucket semantics
+      upgrade that changed ``_bucket_for_run`` or bucket semantics
       (round-1 review finding 6). Consumers pin a released zipapp, so this
       moves on upgrade and not otherwise.
 
@@ -1686,11 +1733,11 @@ def _write_mutation_state_record(
 
     def sync_state_directory() -> None:
         if state_root_fd is not None:
-            os.fsync(state_root_fd)
+            _durable.fsync(state_root_fd)
             return
         directory_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
         try:
-            os.fsync(directory_fd)
+            _durable.fsync(directory_fd)
         finally:
             os.close(directory_fd)
 
@@ -1732,7 +1779,7 @@ def _write_mutation_state_record(
             json.dump(dict(payload), stream, sort_keys=True, separators=(",", ":"))
             stream.write("\n")
             stream.flush()
-            os.fsync(stream.fileno())
+            _durable.fsync(stream.fileno())
         # The record becomes reusable at the atomic replacement below. Check
         # after serialization and fsync so a deadline or termination during
         # the write cannot commit a candidate outcome.
@@ -2116,7 +2163,7 @@ def _terminal_result_matches_bucket(
     baseline_equivalence_sha256: str | None = None,
     kill_signal_artifact: str | None = None,
     cold_witness: bool = False,
-    resource_limit_hit: bool = False,
+    resource_limit_evidence: ResourceLimitEvidence | None = None,
     process_tree_evidence: ProcessTreeEvidence | None = None,
 ) -> bool:
     """Validate persisted terminal facts and their classified bucket.
@@ -2154,6 +2201,10 @@ def _terminal_result_matches_bucket(
     except (TypeError, ValueError) as exc:
         raise ValueError(f"terminal_result contains an unknown outcome or reason: {exc}") from exc
     returncode = terminal["returncode"]
+    # NO_MEASUREMENT belongs to a preflight or observer boundary; a campaign
+    # candidate record must preserve the command's real terminal outcome.
+    if outcome is Outcome.NO_MEASUREMENT:
+        return False
     if outcome is Outcome.BUDGET_EXCEEDED and process_tree_evidence is not None:
         allowed_leader_statuses = (
             {"timeout-killed"}
@@ -2167,9 +2218,20 @@ def _terminal_result_matches_bucket(
     ):
         raise ValueError("PASS terminal_result requires a null reason and integer returncode")
     if outcome is Outcome.FAIL and (
-        reason is not ReasonCode.COMMAND_FAILED or type(returncode) is not int
+        reason is not ReasonCode.COMMAND_FAILED
+        or (
+            type(returncode) is not int
+            and not (
+                returncode is None
+                and process_tree_evidence is not None
+                and process_tree_evidence.leader_status == "signaled"
+            )
+        )
     ):
-        raise ValueError("FAIL terminal_result requires COMMAND_FAILED and integer returncode")
+        raise ValueError(
+            "FAIL terminal_result requires COMMAND_FAILED and integer returncode, "
+            "or a signaled process-tree leader with no returncode"
+        )
     if outcome is Outcome.ERROR and returncode is not None:
         raise ValueError("ERROR terminal_result requires a null returncode")
     if outcome is Outcome.BUDGET_EXCEEDED and (
@@ -2226,85 +2288,71 @@ def _terminal_result_matches_bucket(
             raise ValueError("kill_signal_evidence has invalid field types")
 
     bucket = payload.get("outcome_bucket")
-    completed_with_process_tree_failure = bool(
-        process_tree_evidence is not None
-        and (
-            (
-                outcome in {Outcome.PASS, Outcome.FAIL}
-                and process_tree_evidence.leader_status != "exited"
-            )
-            or (
-                process_tree_evidence.outliving_descendants > 0
-                and outcome is not Outcome.BUDGET_EXCEEDED
-            )
-        )
-    )
-    if (
-        forced_bucket == "crashed"
-        or resource_limit_hit
-        or completed_with_process_tree_failure
+    if equivalence_artifact is not None and (
+        equivalence_evidence is None
+        or baseline_equivalence_sha256 is None
+        or artifact != equivalence_artifact
+        or baseline_digest != baseline_equivalence_sha256
     ):
-        expected_bucket = "crashed"
-    elif outcome is Outcome.ERROR:
-        expected_bucket = "crashed"
-    elif outcome is Outcome.BUDGET_EXCEEDED:
-        expected_bucket = (
-            "hung" if reason is ReasonCode.CANDIDATE_HUNG else "budget_exceeded"
-        )
-    elif outcome in {Outcome.PASS, Outcome.FAIL}:
-        if equivalence_artifact is not None:
-            if (
-                equivalence_evidence is None
-                or baseline_equivalence_sha256 is None
-                or artifact != equivalence_artifact
-                or baseline_digest != baseline_equivalence_sha256
-            ):
-                return False
-            if observed_digest is None:
-                expected_bucket = "crashed"
-            elif observed_digest == baseline_equivalence_sha256:
-                expected_bucket = "equivalent"
-            else:
-                expected_bucket = (
-                    "survived" if outcome is Outcome.PASS else "killed"
-                )
-        else:
-            if equivalence_evidence is not None:
-                return False
-            expected_bucket = "survived" if outcome is Outcome.PASS else "killed"
-
-        if kill_signal_artifact is not None:
-            if (
-                not isinstance(kill_signal_evidence, Mapping)
-                or kill_signal_evidence.get("artifact") != kill_signal_artifact
-            ):
-                return False
-            if expected_bucket == "killed" and not kill_signal_evidence["present"]:
-                expected_bucket = "crashed"
-        elif kill_signal_evidence is not None:
-            return False
-
-        if cold_witness and expected_bucket == "killed":
-            execution = payload.get("execution")
-            witness = execution.get("witness") if isinstance(execution, Mapping) else None
-            if not isinstance(witness, Mapping) or set(witness) != {
-                "node_id",
-                "when",
-                "outcome",
-                "session_exit_status",
-                "process_exit_status",
-            } or (
-                not isinstance(witness.get("node_id"), str)
-                or witness.get("when") != "call"
-                or witness.get("outcome") != "failed"
-                or type(witness.get("session_exit_status")) is not int
-                or witness["session_exit_status"] != 1
-                or type(witness.get("process_exit_status")) is not int
-                or witness["process_exit_status"] != 1
-            ):
-                return False
-    else:
         return False
+    if equivalence_artifact is None and equivalence_evidence is not None:
+        return False
+    if kill_signal_artifact is not None and (
+        not isinstance(kill_signal_evidence, Mapping)
+        or kill_signal_evidence.get("artifact") != kill_signal_artifact
+    ):
+        return False
+    if kill_signal_artifact is None and kill_signal_evidence is not None:
+        return False
+
+    execution = _execution_from_state_record(payload)
+    baseline_equivalence = (
+        bytes.fromhex(baseline_equivalence_sha256)
+        if baseline_equivalence_sha256 is not None
+        else None
+    )
+    equivalence_bytes = (
+        None
+        if observed_digest is None
+        else bytes.fromhex(observed_digest)
+    )
+    # Keep this projection minimal: a new CommandResult field read in
+    # _bucket_for_run will raise AttributeError until supplied here.
+    run = _MutantRun(
+        result=SimpleNamespace(
+            outcome=outcome,
+            reason_code=reason,
+            returncode=returncode,
+            process_tree_evidence=process_tree_evidence,
+        ),
+        equivalence_bytes=equivalence_bytes,
+        kill_signal=(
+            "present"
+            if isinstance(kill_signal_evidence, Mapping)
+            and kill_signal_evidence["present"]
+            else None
+        ),
+        execution=execution,
+        resource_limit_evidence=resource_limit_evidence,
+        process_tree_evidence=process_tree_evidence,
+        forced_bucket=forced_bucket,
+    )
+    expected_bucket = _bucket_for_run(
+        run,
+        equivalence_artifact=equivalence_artifact,
+        baseline_equivalence=baseline_equivalence,
+        kill_signal_artifact=kill_signal_artifact,
+    )
+
+    if cold_witness and expected_bucket == "killed":
+        witness = execution.witness
+        if witness is None or (
+            witness.when != "call"
+            or witness.outcome != "failed"
+            or witness.session_exit_status != 1
+            or witness.process_exit_status != 1
+        ):
+            return False
     if expected_bucket in {"killed", "survived", "equivalent"} and (
         process_tree_evidence is None
         or process_tree_evidence.leader_status != "exited"
@@ -2401,6 +2449,74 @@ def _load_validated_state_record(
         # source_sha256 specifically) would discard exactly the evidence
         # this check exists to surface.
         raise MutationStateError(f"mutation-state record {identity} has stale {key}")
+    legacy_tree = payload.get("process_tree_evidence")
+    if (
+        isinstance(legacy_tree, Mapping)
+        and legacy_tree.get("protocol") == "assay-process-tree/1"
+        and (not isinstance(payload.get("judge_sha256"), str)
+             or payload.get("judge_sha256") != judge)
+    ):
+        # Verdict v16 state carries process-tree protocol /1. Its count-only
+        # leak evidence cannot be upgraded into v17 descendant identity, and
+        # the new judge label intentionally makes it a cache miss.
+        return _RECORD_REJECTED
+    if "resources" in payload:
+        raw_resources = payload["resources"]
+        if not isinstance(raw_resources, Mapping):
+            raise MutationStateError(
+                f"mutation-state record {identity} resources must be an object"
+            )
+        unknown_resource_keys = set(raw_resources) - _STATE_RESOURCE_KEYS
+        if unknown_resource_keys:
+            raise MutationStateError(
+                f"mutation-state record {identity} resources has unknown fields "
+                f"{sorted(unknown_resource_keys)}"
+            )
+        if (
+            "cpu_seconds" in raw_resources
+            and raw_resources["cpu_seconds"] is not None
+        ):
+            cpu_seconds = liveness._finite_number(raw_resources["cpu_seconds"])
+            if cpu_seconds is None or cpu_seconds < 0:
+                raise MutationStateError(
+                    f"mutation-state record {identity} resources.cpu_seconds "
+                    "must be a non-negative number or null"
+                )
+        for field in ("peak_rss_bytes", "write_bytes", "judge_rss_bytes"):
+            if field in raw_resources and raw_resources[field] is not None:
+                value = raw_resources[field]
+                if type(value) is not int or value < 0:
+                    raise MutationStateError(
+                        f"mutation-state record {identity} resources.{field} "
+                        "must be a non-negative integer or null"
+                    )
+        for field, expected_keys, nullable_values in (
+            ("phase_seconds", _STATE_RESOURCE_PHASE_KEYS, False),
+            ("startup_seconds", _STATE_RESOURCE_STARTUP_KEYS, True),
+        ):
+            if field not in raw_resources or raw_resources[field] is None:
+                continue
+            nested = raw_resources[field]
+            if not isinstance(nested, Mapping):
+                raise MutationStateError(
+                    f"mutation-state record {identity} resources.{field} "
+                    "must be an object or null"
+                )
+            if set(nested) != expected_keys:
+                raise MutationStateError(
+                    f"mutation-state record {identity} resources.{field} "
+                    "has missing or unknown fields"
+                )
+            for name, value in nested.items():
+                if value is None and nullable_values:
+                    continue
+                finite_value = liveness._finite_number(value)
+                if finite_value is None or finite_value < 0:
+                    nullable_suffix = " or null" if nullable_values else ""
+                    raise MutationStateError(
+                        f"mutation-state record {identity} resources.{field}.{name} "
+                        f"must be a non-negative number{nullable_suffix}"
+                    )
     resource_limit_evidence: ResourceLimitEvidence | None = None
     if "resource_limit_evidence" in payload:
         raw_resource_evidence = payload["resource_limit_evidence"]
@@ -2417,6 +2533,25 @@ def _load_validated_state_record(
             raise MutationStateError(
                 f"mutation-state record {identity} has invalid resource-limit evidence: {exc}"
             ) from exc
+    resource_observation = payload.get("resource_observation")
+    if "resource_observation" in payload:
+        if (
+            not isinstance(resource_observation, Mapping)
+            or set(resource_observation) != {"status", "reason"}
+            or resource_observation.get("status") != "unobserved"
+            or not isinstance(resource_observation.get("reason"), str)
+            or not resource_observation["reason"].strip()
+        ):
+            raise MutationStateError(
+                f"mutation-state record {identity} has invalid resource_observation"
+            )
+        if "resource_limit_evidence" in payload:
+            raise MutationStateError(
+                f"mutation-state record {identity} cannot carry both observed and unobserved resource evidence"
+            )
+    resource_observation_missing = (
+        "resource_observation" not in payload and resource_limit_evidence is None
+    )
     process_tree_evidence: ProcessTreeEvidence | None = None
     if "process_tree_evidence" in payload:
         raw_process_tree = payload["process_tree_evidence"]
@@ -2434,6 +2569,28 @@ def _load_validated_state_record(
         # Existing records from the previous judge identity are a routine cold
         # cache. They cannot prove cleanup and must be re-executed.
         return _RECORD_REJECTED
+    underlying_outcome: UnderlyingOutcome | None = None
+    if "underlying_outcome" in payload:
+        raw_underlying = payload["underlying_outcome"]
+        if not isinstance(raw_underlying, Mapping):
+            raise MutationStateError(
+                f"mutation-state record {identity} underlying_outcome must be an object"
+            )
+        try:
+            underlying_outcome = UnderlyingOutcome.from_dict(raw_underlying)
+        except (TypeError, ValueError, KeyError) as exc:
+            raise MutationStateError(
+                f"mutation-state record {identity} has invalid underlying_outcome: {exc}"
+            ) from exc
+    completed_leak = (
+        process_tree_evidence.leader_status == "exited"
+        and process_tree_evidence.outliving_descendants > 0
+    )
+    if completed_leak != (underlying_outcome is not None):
+        raise MutationStateError(
+            f"mutation-state record {identity} has inconsistent underlying_outcome "
+            "for its process-tree evidence"
+        )
     if "outcome_bucket" not in payload:
         raise MutationStateError(f"mutation-state record {identity} is missing outcome_bucket")
     if payload["outcome_bucket"] not in MUTATION_BUCKETS:
@@ -2441,6 +2598,16 @@ def _load_validated_state_record(
             f"mutation-state record {identity} has unknown outcome bucket "
             f"{payload['outcome_bucket']!r}"
         )
+    if underlying_outcome is not None and payload["outcome_bucket"] != "crashed":
+        raise MutationStateError(
+            f"mutation-state record {identity} has underlying_outcome outside crashed"
+        )
+    try:
+        _execution_from_state_record(payload)
+    except (TypeError, ValueError) as exc:
+        raise MutationStateError(
+            f"mutation-state record {identity} has invalid execution provenance: {exc}"
+        ) from exc
     try:
         terminal_matches_bucket = _terminal_result_matches_bucket(
             payload,
@@ -2448,10 +2615,7 @@ def _load_validated_state_record(
             baseline_equivalence_sha256=baseline_equivalence_sha256,
             kill_signal_artifact=kill_signal_artifact,
             cold_witness=cold_witness,
-            resource_limit_hit=(
-                resource_limit_evidence is not None
-                and resource_limit_evidence.limit_hit
-            ),
+            resource_limit_evidence=resource_limit_evidence,
             process_tree_evidence=process_tree_evidence,
         )
     except (TypeError, ValueError) as exc:
@@ -2485,12 +2649,6 @@ def _load_validated_state_record(
             raise MutationStateError(
                 f"mutation-state record {identity} has stale mutated_file_sha256"
             )
-    try:
-        _execution_from_state_record(payload)
-    except (TypeError, ValueError) as exc:
-        raise MutationStateError(
-            f"mutation-state record {identity} has invalid execution provenance: {exc}"
-        ) from exc
     if "evidence" in payload and payload["evidence"] is not None:
         raw_evidence = payload["evidence"]
         if not isinstance(raw_evidence, Mapping):
@@ -2513,6 +2671,11 @@ def _load_validated_state_record(
         # field is a legacy cache miss; contradictory evidence is never
         # merged into this run's outcome. Run structural validation first so
         # malformed records remain corruption errors, not cache misses.
+        return _RECORD_REJECTED
+    if resource_observation_missing:
+        # Older native state records without either form of B145 evidence do
+        # not prove the candidate's observation state. Validate the rest of
+        # the record first, then re-execute this candidate as a cache miss.
         return _RECORD_REJECTED
     # (B088) LAST, and deliberately so. Everything above asks "is this record
     # internally consistent with the identity it is filed under" -- a
@@ -2556,8 +2719,6 @@ def _load_validated_state_record(
         campaign_deadline_sha256 is not None
         and payload.get("campaign_deadline_sha256") != campaign_deadline_sha256
     ):
-        return _RECORD_REJECTED
-    if resource_limit_evidence is None or resource_limit_evidence.limit_hit:
         return _RECORD_REJECTED
     if payload["outcome_bucket"] == "hung" and not _valid_hung_resource_evidence(
         payload.get("liveness_resource_evidence")
@@ -2663,12 +2824,19 @@ def _outcome_from_record(record: Mapping[str, Any]) -> MutantOutcome:
                 if isinstance(record.get("evidence"), Mapping)
                 else None
             ),
-            resource_limit_evidence=ResourceLimitEvidence.from_dict(
-                record["resource_limit_evidence"]
+            resource_limit_evidence=(
+                ResourceLimitEvidence.from_dict(record["resource_limit_evidence"])
+                if isinstance(record.get("resource_limit_evidence"), Mapping)
+                else None
             ),
             process_tree_evidence=(
                 ProcessTreeEvidence.from_dict(record["process_tree_evidence"])
                 if isinstance(record.get("process_tree_evidence"), Mapping)
+                else None
+            ),
+            underlying_outcome=(
+                UnderlyingOutcome.from_dict(record["underlying_outcome"])
+                if isinstance(record.get("underlying_outcome"), Mapping)
                 else None
             ),
         )
@@ -2910,16 +3078,23 @@ class _MutantRun:
     #: B107: exact CPU/PSI evidence retained when the liveness runner stops
     #: a candidate. A resource stall never becomes a functional bucket.
     liveness_resource_evidence: Mapping[str, Any] | None = None
-    #: B111 diagnostic evidence (never a classification input): the sampled
-    #: tree CPU / peak sum-RSS lower bounds and the startup gaps read from
-    #: the liveness sidecar and events file (`None` off a liveness lane), and
-    #: the worker's own monotonic phase split (always measured).
+    #: B111/AP-6 diagnostic evidence (never a classification input): sampled
+    #: tree CPU, peak sum-RSS and write-byte lower bounds, startup gaps read
+    #: from the liveness sidecar and events file (`None` off a liveness lane),
+    #: one point-in-time RSS sample of the assay judge, and the worker's own
+    #: monotonic phase split (always measured).
     cpu_seconds: float | None = None
     peak_rss_bytes: int | None = None
+    write_bytes: int | None = None
+    judge_rss_bytes: int | None = None
     phase_seconds: Mapping[str, float] | None = None
     startup_seconds: Mapping[str, float | None] | None = None
     execution: MutationExecution = MutationExecution(mode="full")
     resource_limit_evidence: ResourceLimitEvidence | None = None
+    #: In-memory configured-limit changes, deliberately absent from verdict
+    #: and resume records; surfaced only as candidate progress telemetry.
+    resource_limit_changes: tuple[str, ...] = ()
+    resource_observation_reason: str | None = None
     process_tree_evidence: ProcessTreeEvidence | None = None
     evidence: MutantEvidence | None = None
     forced_bucket: str | None = None
@@ -2942,99 +3117,196 @@ def _read_candidate_resource_counters() -> ResourceLimitCounters:
 
 def _candidate_resource_limit_evidence(
     before: ResourceLimitCounters, after: ResourceLimitCounters
-) -> ResourceLimitEvidence:
-    """Bind candidate-window samples; an unstable window is a lane error."""
+) -> tuple[ResourceLimitEvidence | None, str | None, tuple[str, ...]]:
+    """Bind one candidate window, preserving comparison failures as telemetry."""
     try:
-        return ResourceLimitEvidence.between(before, after)
+        evidence, changes = ResourceLimitEvidence.between(before, after)
+        return evidence, None, changes
     except (ResourceLimitObservationError, ValueError) as exc:
-        raise AssayError(
-            "cannot compare cgroup resource-limit observations around a native "
-            f"R2 candidate command: {exc}",
-            outcome=Outcome.ERROR,
-            reason_code=ReasonCode.EXEC_FAILED,
-        ) from exc
+        return None, str(exc), ()
 
 
-def _read_candidate_resource_counters_during_campaign() -> ResourceLimitCounters:
-    """A post-preflight observer loss invalidates the R2 execution attempt."""
+def _read_candidate_resource_counters_during_campaign(
+) -> tuple[ResourceLimitCounters | None, str | None]:
+    """Read optional candidate telemetry after the required preflight probe."""
     try:
-        return _read_candidate_resource_counters()
+        return _read_candidate_resource_counters(), None
     except AssayError as exc:
-        raise AssayError(
-            "cannot observe cgroup resource-limit counters during native R2 "
-            f"candidate execution: {exc}",
-            outcome=Outcome.ERROR,
-            reason_code=ReasonCode.EXEC_FAILED,
-        ) from exc
+        return None, str(exc)
 
 
-def _zero_window_resource_limit_evidence() -> ResourceLimitEvidence:
-    """Record a zero-duration sample for a candidate that never started."""
-    sample = _read_candidate_resource_counters_during_campaign()
-    return _candidate_resource_limit_evidence(sample, sample)
+def _zero_window_resource_limit_evidence(
+) -> tuple[ResourceLimitEvidence | None, str | None]:
+    """Record an optional zero-duration sample for a candidate that never started."""
+    sample, reason = _read_candidate_resource_counters_during_campaign()
+    if sample is None:
+        return None, reason
+    evidence, reason, _changes = _candidate_resource_limit_evidence(sample, sample)
+    return evidence, reason
 
 
 def _measured_resources(
     events_path: Path,
-) -> tuple[float | None, int | None, dict[str, float | None]]:
-    """``(cpu_seconds, peak_rss_bytes, startup_seconds)`` for one liveness
-    candidate, from its resource sidecar and events file. Anything absent or
-    ill-typed is ``None``: diagnostics never fail a candidate."""
+) -> tuple[float | None, int | None, int | None, dict[str, float | None]]:
+    """``(cpu_seconds, peak_rss_bytes, write_bytes, startup_seconds)`` for
+    one liveness candidate, from its resource sidecar and events file.
+    Anything absent, negative, or ill-typed is ``None``: diagnostics never
+    fail a candidate."""
     sidecar = liveness.read_resource_sidecar(events_path) or {}
     spawned_at = liveness._finite_number(sidecar.get("spawned_at"))
     cpu_seconds = liveness._finite_number(sidecar.get("cpu_seconds"))
     peak_rss = liveness._finite_number(sidecar.get("peak_rss_bytes"))
+    write_bytes = sidecar.get("write_bytes")
+    cpu_seconds = cpu_seconds if cpu_seconds is not None and cpu_seconds >= 0 else None
     session_start, first_test = liveness.first_event_times(events_path)
+    to_session_start = (
+        None if session_start is None or spawned_at is None else session_start - spawned_at
+    )
+    to_first_test = (
+        None if first_test is None or spawned_at is None else first_test - spawned_at
+    )
     return (
         cpu_seconds,
-        peak_rss if isinstance(peak_rss, int) else None,
+        peak_rss if isinstance(peak_rss, int) and peak_rss >= 0 else None,
+        write_bytes if type(write_bytes) is int and write_bytes >= 0 else None,
         {
             "to_session_start": (
-                None if session_start is None or spawned_at is None else session_start - spawned_at
+                to_session_start
+                if to_session_start is not None and to_session_start >= 0
+                else None
             ),
             "to_first_test": (
-                None if first_test is None or spawned_at is None else first_test - spawned_at
+                to_first_test
+                if to_first_test is not None and to_first_test >= 0
+                else None
             ),
         },
     )
 
 
-def _classify_mutant_result(result: CommandResult) -> str:
-    """Map one mutant's :class:`~assay.runner.CommandResult` onto one of
-    the FOUR terminal buckets A-116/A-117 name — reusing
-    :func:`~assay.runner.execute_command`'s own already-correct
-    PASS/FAIL/ERROR/BUDGET_EXCEEDED split, never nyxloom's collapsed
-    any-non-zero-exit-is-"killed" rule (A-122, confirmed present in
-    ``mutation_gate._run_is_killed*``, deliberately not ported).
+def _has_clean_failure_report(
+    *,
+    outcome: Outcome,
+    returncode: int | None,
+    witness: MutationWitnessReceipt | None,
+    process_tree: ProcessTreeEvidence | None,
+) -> bool:
+    """Whether a normal pytest failed-call receipt independently proves FAIL."""
+    if (
+        outcome is not Outcome.FAIL
+        or returncode != 1
+        or process_tree is None
+        or process_tree.leader_status != "exited"
+        or process_tree.outliving_descendants != 0
+        or not process_tree.clean
+    ):
+        return False
+    if isinstance(witness, MutationWitnessReceipt):
+        report = witness.to_dict()
+    else:
+        return False
+    return (
+        set(report)
+        == {
+            "node_id",
+            "when",
+            "outcome",
+            "session_exit_status",
+            "process_exit_status",
+        }
+        and isinstance(report.get("node_id"), str)
+        and bool(report.get("node_id"))
+        and report.get("when") == "call"
+        and report.get("outcome") == "failed"
+        and type(report.get("session_exit_status")) is int
+        and report.get("session_exit_status") == 1
+        and type(report.get("process_exit_status")) is int
+        and report.get("process_exit_status") == returncode
+    )
 
-    An ordinary non-zero exit (FAIL/COMMAND_FAILED) means the suite caught
-    the mutant — KILLED. An exit-0 PASS means the changed behaviour was
-    never asserted — SURVIVED. ERROR/EXEC_FAILED (the process itself could
-    not even start) is CRASHED, never conflated with a genuine test
-    failure. BUDGET_EXCEEDED is its own bucket, never silently folded into
-    either kill or survival.
-    """
-    if result.outcome is Outcome.PASS:
-        return "survived"
-    if result.outcome is Outcome.FAIL:
-        return "killed"
-    if result.outcome is Outcome.BUDGET_EXCEEDED:
-        # (B091/RW-33, P7 A3) `LivenessRunner`'s monitoring loop raises the
-        # SAME `subprocess.TimeoutExpired` a genuine elapsed-budget timeout
-        # does for the "CPU-spinning mutant" case (RW-33 is explicit: that
-        # is NOT hung), but raises its own `LivenessHungExpired` subclass for
-        # an idle stall -- `runner._execute_plan_inner`'s except-clause reads
-        # that `isinstance` once and records it as `reason_code`, so this is
-        # the one place that distinction becomes a different BUCKET rather
-        # than a different exception type.
-        if result.reason_code is ReasonCode.CANDIDATE_HUNG:
-            return "hung"
-        return "budget_exceeded"
-    return "crashed"  # Outcome.ERROR -- the only remaining R0-producible outcome.
 
-
-def _classify_mutant_result_with_equivalence(
+def _process_tree_evidence_from_result(
     result: CommandResult,
+) -> ProcessTreeEvidence | None:
+    raw = result.process_tree_evidence
+    if isinstance(raw, ProcessTreeEvidence):
+        return raw
+    if isinstance(raw, Mapping):
+        return ProcessTreeEvidence.from_dict(raw)
+    return None
+
+
+def _non_exited_judgeable_terminal(
+    process_tree: ProcessTreeEvidence | None,
+    terminal: _termination.Termination,
+) -> bool:
+    return (
+        process_tree is not None
+        and process_tree.leader_status != "exited"
+        and terminal is _termination.Termination.PASSED
+    )
+
+
+def _bucket_for_run(
+    run: _MutantRun,
+    *,
+    equivalence_artifact: str | None,
+    baseline_equivalence: bytes | None,
+    kill_signal_artifact: str | None,
+) -> str:
+    """Classify one complete R2 candidate run using the shared terminal row."""
+    process_tree = run.process_tree_evidence
+    observation = _contention.observation_input(
+        _contention.ContentionObservation(
+            "clear" if run.resource_limit_evidence is not None else "unavailable",
+            limits=run.resource_limit_evidence,
+        )
+    )
+    terminal = _termination.classify(
+        outcome=run.result.outcome,
+        reason_code=run.result.reason_code,
+        returncode=run.result.returncode,
+        decided_by_report=_has_clean_failure_report(
+            outcome=run.result.outcome,
+            returncode=run.result.returncode,
+            witness=run.execution.witness,
+            process_tree=process_tree,
+        ),
+        process_tree=process_tree,
+        limits=run.resource_limit_evidence,
+        observation=observation,
+        observation_required=True,
+    )
+    if _non_exited_judgeable_terminal(process_tree, terminal):
+        return "crashed"
+    bucket = _termination.r2_bucket(terminal)
+    if terminal in _termination.CREDIT_JUDGEABLE:
+        if run.forced_bucket is not None:
+            bucket = run.forced_bucket
+        elif equivalence_artifact is None:
+            bucket = (
+                "survived"
+                if terminal is _termination.Termination.PASSED
+                else "killed"
+            )
+        else:
+            assert baseline_equivalence is not None
+            bucket = _equivalence_bucket(
+                terminal,
+                equivalence_bytes=run.equivalence_bytes,
+                baseline_equivalence=baseline_equivalence,
+            )
+    if (
+        bucket == "killed"
+        and kill_signal_artifact is not None
+        and run.kill_signal is None
+    ):
+        return "crashed"
+    return bucket
+
+
+def _equivalence_bucket(
+    terminal: _termination.Termination,
     *,
     equivalence_bytes: bytes | None,
     baseline_equivalence: bytes,
@@ -3042,10 +3314,8 @@ def _classify_mutant_result_with_equivalence(
     """(P34/A-279, carve §3.6) the SAME four-outcome split widened into a
     function of ``(outcome, artifact-present, artifact-bytes)`` -- reachable
     ONLY when the lane declares ``judge.mutation.equivalence_artifact``. The
-    caller (:func:`run_mutation`) decides BEFORE either classifier is
-    invoked which one applies, so the undeclared lane is never routed
-    through here at all (O8's own inertness: :func:`_classify_mutant_result`
-    is not merely equivalent on that path, it is the exact same call).
+    caller (:func:`run_mutation`) decides before applying this extension
+    whether the lane declares an equivalence artifact.
 
     ``PASS`` and ``FAIL`` both split the identical way: an ABSENT artifact
     means the mutated schema was never measured at all -- the lane declared
@@ -3056,34 +3326,17 @@ def _classify_mutant_result_with_equivalence(
     own artifact means the mutant provably changed nothing -- ``equivalent``,
     evidence about the MUTATION rather than about the tests. Anything else
     is the ordinary ``PASS``->``survived`` / ``FAIL``->``killed`` mapping.
-    ``ERROR``/``BUDGET_EXCEEDED`` do not consult the artifact at all --
-    unchanged from :func:`_classify_mutant_result`.
+    Non-judgeable terminations are already mapped by the shared table.
     """
-    if result.outcome is Outcome.PASS:
+    if terminal not in _termination.JUDGEABLE:
+        return _termination.r2_bucket(terminal)
+    if terminal is _termination.Termination.PASSED:
         if equivalence_bytes is None:
             return "crashed"
         return "equivalent" if equivalence_bytes == baseline_equivalence else "survived"
-    if result.outcome is Outcome.FAIL:
-        if equivalence_bytes is None:
-            return "crashed"
-        return "equivalent" if equivalence_bytes == baseline_equivalence else "killed"
-    if result.outcome is Outcome.BUDGET_EXCEEDED:
-        # (B091/RW-33, P7 A3) Same `hung`/`budget_exceeded` split as
-        # `_classify_mutant_result` -- the equivalence artifact is never
-        # consulted for either, unchanged from before this bucket existed.
-        if result.reason_code is ReasonCode.CANDIDATE_HUNG:
-            return "hung"
-        return "budget_exceeded"
-    return "crashed"  # Outcome.ERROR -- unchanged.
-
-
-def _resource_limit_bucket(
-    bucket: str, evidence: ResourceLimitEvidence | None
-) -> str:
-    """A cgroup limit event makes the candidate infrastructure-affected."""
-    if evidence is not None and evidence.limit_hit:
+    if equivalence_bytes is None:
         return "crashed"
-    return bucket
+    return "equivalent" if equivalence_bytes == baseline_equivalence else "killed"
 
 
 def _arm_artifact_reservation(
@@ -3143,11 +3396,12 @@ def _read_kill_signal(reservation: safeio.OutputReservation) -> str | None:
 def _outcome_of(
     job: MutantJob,
     *,
-    resource_limit_evidence: ResourceLimitEvidence,
+    resource_limit_evidence: ResourceLimitEvidence | None,
     kill_signal: str | None = None,
     execution: MutationExecution | None = None,
     evidence: MutantEvidence | None = None,
     process_tree_evidence: ProcessTreeEvidence | None = None,
+    underlying_outcome: UnderlyingOutcome | None = None,
 ) -> MutantOutcome:
     """The artifact projection of one attempted mutant (A-180).
 
@@ -3185,6 +3439,7 @@ def _outcome_of(
         execution=execution or MutationExecution(mode="full"),
         resource_limit_evidence=resource_limit_evidence,
         process_tree_evidence=process_tree_evidence,
+        underlying_outcome=underlying_outcome,
         evidence=evidence,
     )
 
@@ -3256,29 +3511,26 @@ def auto_budget_per_candidate_seconds(baseline_wall: float) -> float:
     return max(3.0 * baseline_wall, baseline_wall + 60.0)
 
 
-def _native_r2_serial_only(function):
-    """Keep the supported native-R2 entry point serial for event attribution.
-
-    The implementation retains its bounded queue mechanics for isolated
-    executor tests and possible future per-candidate cgroup evidence. Product
-    callers must go through :func:`run_mutation`, which refuses overlapping
-    candidate event windows.
-    """
+def _native_r2_parallel_checked(function):
+    """Require copy-on-write snapshots before enabling parallel candidates."""
 
     @wraps(function)
     def checked(*args, **kwargs):
         jobs = kwargs.get("jobs")
-        if is_strict_int(jobs) and jobs > 1:
-            raise ValueError(
-                "run_mutation jobs must be 1 for native R2 because candidate "
-                "cgroup event windows must not overlap"
+        prepared = kwargs.get("prepared")
+        if is_strict_int(jobs) and jobs > 1 and not getattr(
+            prepared, "cheap_clone", False
+        ):
+            raise LaneConfigError(
+                "native R2 --jobs greater than 1 requires a cheap_clone "
+                "snapshot workspace; run with --jobs 1 or configure btrfs CoW"
             )
         return function(*args, **kwargs)
 
     return checked
 
 
-@_native_r2_serial_only
+@_native_r2_parallel_checked
 def run_mutation(
     *,
     baseline: CommandResult,
@@ -3420,6 +3672,10 @@ def run_mutation(
     r2_baseline_s: float | None = None,
     equivalence_ledger_sha256: str | None = None,
     manifest_node_ids: Sequence[str] = (),
+    #: (B207) Candidate scheduling inputs for ``jobs`` greater than 1: the
+    #: admission budget, class factors and operator prediction medians.
+    #: Only dispatch ORDER and admission depend on it, never a result.
+    schedule: _schedule.ScheduleOptions | None = None,
 ) -> Mutation | Literal["UNSUPPORTED"] | None:
     """The R2 execution entry point (P23 exact reexecution): every mutant is
     a FRESH, INDEPENDENT P22 replacement snapshot of the same prepared seed
@@ -3465,8 +3721,11 @@ def run_mutation(
     hold a whole batch at a barrier. On deadline expiry or a fatal worker
     error, submission stops and every already-submitted future is drained so
     its snapshot context closes. Results stay POSITION-aligned with the
-    pending job list, candidate progress is emitted in index order, and the
-    three non-killed buckets remain identity-ordered without a re-sort.
+    pending job list, candidate progress is emitted in DISPATCH order (B207:
+    canonical index order for a serial run or without predictions; with
+    ``jobs > 1`` the two-ended-matching order of :mod:`assay._schedule`, whose
+    only effect is which candidate starts next), and the three non-killed
+    buckets remain identity-ordered without a re-sort.
     When several fatal worker errors are observed, the lowest candidate
     position wins; the lane's outcome, not only its reason code, can depend
     on that choice. An expiry marks that position and every unsubmitted
@@ -3475,10 +3734,9 @@ def run_mutation(
     **P34/A-279/§3.6.** *equivalence_artifact*/*kill_signal_artifact* are
     ``None`` for every lane that does not declare them (every Python/Go
     lane through this build, A-227) -- their absence is exactly what routes
-    every mutant through the UNCHANGED :func:`_classify_mutant_result`
-    rather than :func:`_classify_mutant_result_with_equivalence` (O8's own
-    inertness). When *equivalence_artifact* IS declared, *baseline_equivalence*
-    must be the caller's own already-resolved baseline artifact bytes --
+    every mutant through the shared :func:`_bucket_for_run` table. When
+    *equivalence_artifact* IS declared, *baseline_equivalence* must be the
+    caller's own already-resolved baseline artifact bytes --
     never ``None``, which this function refuses outright rather than
     silently comparing every mutant's bytes against it (a comparison that
     can never be equal, so no mutant could ever be recorded ``equivalent``,
@@ -3677,6 +3935,10 @@ def run_mutation(
                 commit=prepared.spec.commit,
                 lane=None,
                 budget_per_candidate_s=budget_per_candidate_seconds,
+                jobs=jobs,
+                attribution=(
+                    "overlap-conservative" if jobs > 1 else "serial"
+                ),
             )
         if write_progress is not None:
             # (B091/D-23) The sweep's own first record: what the baseline
@@ -4091,6 +4353,7 @@ def run_mutation(
             r2_facts=r2_facts,
             coverage_facts=coverage_facts,
             manifest_node_ids=manifest_node_ids,
+            schedule=schedule,
         )
 
         if resumed_records:
@@ -4164,8 +4427,128 @@ def run_mutation(
 
 
 # The private implementation remains available to executor-focused unit tests;
-# runtime and consumer code must use the serial-checked public entry point.
+# runtime and consumer code must use the validated public entry point.
 _run_mutation_impl = run_mutation.__wrapped__
+
+
+def _read_schedule_history(
+    state_root: Path | str | None, state_root_fd: int | None
+) -> tuple[dict[str, _schedule.HistoryEntry], str | None]:
+    """(B207) The previous campaign's per-candidate measurements, or an empty
+    history. Predictions only order work, so an unreadable side file is
+    reported and ignored, never raised."""
+    if state_root is None:
+        return {}, None
+    name = _schedule.HISTORY_FILE_NAME
+    try:
+        if state_root_fd is None:
+            raw = safeio.read_bounded_input(
+                Path(state_root), name, limit=_schedule.HISTORY_LIMIT_BYTES
+            )
+        else:
+            try:
+                descriptor = os.open(
+                    name,
+                    os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK | os.O_NOFOLLOW,
+                    dir_fd=state_root_fd,
+                )
+            except FileNotFoundError:
+                return {}, None
+            with os.fdopen(descriptor, "rb") as stream:
+                info = os.fstat(stream.fileno())
+                if not stat.S_ISREG(info.st_mode):
+                    return {}, "schedule history is not a regular file"
+                if info.st_size > _schedule.HISTORY_LIMIT_BYTES:
+                    return {}, "schedule history exceeds its size limit"
+                raw = stream.read()
+    except (AssayError, OSError) as exc:
+        return {}, f"schedule history is unreadable: {exc}"
+    return _schedule.parse_history(raw)
+
+
+def _write_state_side_file(
+    state_root: Path, state_root_fd: int | None, name: str, payload: bytes
+) -> None:
+    """Atomically replace one non-record file in the state directory."""
+    temporary_name = f".state-{os.getpid()}-{os.urandom(8).hex()}.tmp"
+    if state_root_fd is None:
+        Path(state_root).mkdir(parents=True, exist_ok=True)
+        descriptor = os.open(
+            Path(state_root) / temporary_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o600,
+        )
+    else:
+        descriptor = os.open(
+            temporary_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o600,
+            dir_fd=state_root_fd,
+        )
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            _durable.fsync(stream.fileno())
+        if state_root_fd is None:
+            os.replace(Path(state_root) / temporary_name, Path(state_root) / name)
+        else:
+            os.replace(
+                temporary_name, name, src_dir_fd=state_root_fd, dst_dir_fd=state_root_fd
+            )
+    except BaseException:
+        try:
+            if state_root_fd is None:
+                os.unlink(Path(state_root) / temporary_name)
+            else:
+                os.unlink(temporary_name, dir_fd=state_root_fd)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def _persist_schedule_side_files(
+    state_root: Path | str | None,
+    state_root_fd: int | None,
+    *,
+    history: Mapping[str, _schedule.HistoryEntry],
+    updates: Mapping[str, _schedule.HistoryEntry],
+    scheduler: _schedule.TemScheduler | None,
+    errors: Mapping[int, Mapping[str, Any]],
+    history_reason: str | None,
+) -> None:
+    """(B207) Write ``.schedule-history.v1`` (what this run measured, merged
+    over the previous history) and ``schedule-summary.v1`` (the run's policy and its
+    predicted-versus-actual summary). Both are advisory side files: a failure
+    to write one is an advisory on stderr, never a campaign failure."""
+    if state_root is None:
+        return
+    root = Path(state_root)
+    try:
+        if updates:
+            _write_state_side_file(
+                root,
+                state_root_fd,
+                _schedule.HISTORY_FILE_NAME,
+                _schedule.render_history({**history, **updates}),
+            )
+        if scheduler is not None:
+            summary = scheduler.summary(errors=errors)
+            summary["input_sha256"] = hashlib.sha256(
+                _schedule.render_history(history)
+            ).hexdigest()
+            if history_reason is not None:
+                summary["history_reason"] = history_reason
+            _write_state_side_file(
+                root,
+                state_root_fd,
+                _schedule.SCHEDULE_FILE_NAME,
+                (json.dumps(summary, sort_keys=True, indent=2) + "\n").encode("utf-8"),
+            )
+    except OSError as exc:
+        sys.stderr.write(
+            f"Assay advisory: could not write the candidate schedule side files: {exc}\n"
+        )
 
 
 def _execute_mutation_jobs(
@@ -4220,6 +4603,7 @@ def _execute_mutation_jobs(
     r2_facts: ReceiptFacts | None = None,
     coverage_facts: ReceiptFacts | None = None,
     manifest_node_ids: Sequence[str] = (),
+    schedule: _schedule.ScheduleOptions | None = None,
 ) -> tuple[Mutation, bool]:
 
     if job_list:
@@ -4274,38 +4658,67 @@ def _execute_mutation_jobs(
         )
     candidate_reuse = dict(reuse_witnesses or {}) if witness_capture_active else {}
     attempt_receipts: dict[tuple[int, str], Mapping[str, Any] | None] = {}
+    worker_index_lock = threading.Lock()
+    worker_indices: dict[int, int] = {}
+    candidate_workers: dict[int, int] = {}
 
-    def _classified_bucket(run: _MutantRun) -> str:
-        if run.process_tree_evidence is not None:
-            if (
-                run.result.outcome in {Outcome.PASS, Outcome.FAIL}
-                and run.process_tree_evidence.leader_status != "exited"
-            ):
-                return "crashed"
-            if (
-                run.process_tree_evidence.outliving_descendants > 0
-                and run.result.outcome is not Outcome.BUDGET_EXCEEDED
-            ):
-                return "crashed"
-        if run.forced_bucket is not None:
-            bucket = run.forced_bucket
-        elif equivalence_artifact is None:
-            bucket = _classify_mutant_result(run.result)
-        else:
-            assert baseline_equivalence is not None
-            bucket = _classify_mutant_result_with_equivalence(
-                run.result,
-                equivalence_bytes=run.equivalence_bytes,
-                baseline_equivalence=baseline_equivalence,
+    def _worker_index_for_current_thread() -> int:
+        identity = threading.get_ident()
+        with worker_index_lock:
+            index = worker_indices.get(identity)
+            if index is None:
+                index = len(worker_indices)
+                worker_indices[identity] = index
+            return index
+
+    window_host_run: Callable[..., CommandResult] | None = None
+    from . import _window_host
+    from . import runner as runner_module
+    coordinator_thread_id = threading.get_ident()
+
+    if (
+        execute_plan is runner_module.execute_plan
+        and _window_host.can_host(process_runner, clock)
+    ):
+        window_host_run = _window_host.run_window
+    limit_broker: _limit_ledger.LimitBoundaryBroker | None = None
+    limit_ledger: _limit_ledger.LimitLedger | None = None
+    if jobs > 1:
+        if prepared is None or not prepared.cheap_clone:
+            raise LaneConfigError(
+                "native R2 --jobs greater than 1 requires a cheap_clone "
+                "snapshot workspace; set up the supported btrfs CoW workspace "
+                "or run with --jobs 1"
             )
-        bucket = _resource_limit_bucket(bucket, run.resource_limit_evidence)
-        if (
-            bucket == "killed"
-            and kill_signal_artifact is not None
-            and run.kill_signal is None
-        ):
-            return "crashed"
-        return bucket
+        if window_host_run is None:
+            raise LaneConfigError(
+                "native R2 --jobs greater than 1 requires the isolated PR1a "
+                "window host; the configured runner or clock cannot be hosted"
+            )
+        limit_ledger = _limit_ledger.LimitLedger(
+            _read_candidate_resource_counters_during_campaign
+        )
+        limit_broker = _limit_ledger.LimitBoundaryBroker(limit_ledger)
+
+    def _start_limit_window() -> int | None:
+        if limit_ledger is None or limit_broker is None:
+            return None
+        if threading.get_ident() == coordinator_thread_id:
+            return limit_ledger.snapshot()
+        return limit_broker.start_window()
+
+    def _end_limit_window(start_sequence: int) -> _limit_ledger.LimitWindow:
+        assert limit_ledger is not None and limit_broker is not None
+        if threading.get_ident() == coordinator_thread_id:
+            end_sequence = limit_ledger.snapshot()
+            return limit_ledger.limits_for(start_sequence, end_sequence)
+        return limit_broker.end_window(start_sequence)
+    bucket_for_run = partial(
+        _bucket_for_run,
+        equivalence_artifact=equivalence_artifact,
+        baseline_equivalence=baseline_equivalence,
+        kill_signal_artifact=kill_signal_artifact,
+    )
 
     def _run_attempt(
         index: int,
@@ -4377,13 +4790,21 @@ def _execute_mutation_jobs(
                 ):
                     command_deadline = budget_per_candidate_seconds
                 command_started_monotonic = time.monotonic()
-                resource_limits_before = (
-                    _read_candidate_resource_counters_during_campaign()
-                )
+                resource_limits_before: ResourceLimitCounters | None = None
+                resource_limits_before_error: str | None = None
+                window_start_sequence = _start_limit_window()
+                if limit_broker is None:
+                    (
+                        resource_limits_before,
+                        resource_limits_before_error,
+                    ) = _read_candidate_resource_counters_during_campaign()
                 execution_error: BaseException | None = None
                 result: CommandResult | None = None
                 resource_limits_after: ResourceLimitCounters | None = None
-                resource_observation_error: AssayError | None = None
+                resource_limits_after_error: str | None = None
+                resource_limit_evidence: ResourceLimitEvidence | None = None
+                resource_observation_reason: str | None = None
+                resource_limit_changes: tuple[str, ...] = ()
                 receipt_capture = None
                 try:
                     if witness_capture_active and active_injection is not None:
@@ -4394,25 +4815,38 @@ def _execute_mutation_jobs(
                             target_node_id=target_node_id,
                             cold=cold,
                         )
-                    result = execute_plan(
-                        attempt_plan,
-                        cwd=snapshot.project_root,
-                        timeout=command_deadline,
-                        process_runner=process_runner,
-                        clock=clock,
-                    )
+                    if window_host_run is None:
+                        result = execute_plan(
+                            attempt_plan,
+                            cwd=snapshot.project_root,
+                            timeout=command_deadline,
+                            process_runner=process_runner,
+                            clock=clock,
+                        )
+                    else:
+                        result = window_host_run(
+                            attempt_plan,
+                            cwd=snapshot.project_root,
+                            timeout=command_deadline,
+                            process_runner=process_runner,
+                            clock=clock,
+                        )
                 except BaseException as exc:
                     execution_error = exc
                 finally:
-                    try:
-                        resource_limits_after = (
-                            _read_candidate_resource_counters_during_campaign()
-                        )
-                    except AssayError as exc:
-                        resource_observation_error = exc
-                    finally:
-                        if receipt_capture is not None:
-                            receipt = receipt_capture.finish()
+                    if limit_broker is None:
+                        (
+                            resource_limits_after,
+                            resource_limits_after_error,
+                        ) = _read_candidate_resource_counters_during_campaign()
+                    else:
+                        assert window_start_sequence is not None
+                        limit_window = _end_limit_window(window_start_sequence)
+                        resource_limit_evidence = limit_window.evidence
+                        resource_observation_reason = limit_window.reason
+                        resource_limit_changes = limit_window.changes
+                    if receipt_capture is not None:
+                        receipt = receipt_capture.finish()
                 # A process-tree proof failure means this attempt's cleanup
                 # is unknown. Do not let an unrelated cgroup event replace
                 # that lane-fatal infrastructure failure with a candidate
@@ -4431,31 +4865,32 @@ def _execute_mutation_jobs(
                         reason_code=ReasonCode.EXEC_FAILED,
                     ) from execution_error
 
-                # Preserve the stronger cleanup failure above. Otherwise an
-                # observer loss after candidate execution is an infrastructure
-                # error: only the initial pre-candidate probe may report
-                # NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE.
-                if resource_observation_error is not None:
-                    if execution_error is not None:
-                        raise resource_observation_error from execution_error
-                    raise resource_observation_error
-
-                # Read candidate and ancestor-local event counters immediately
-                # after execution, including exceptional exits. This single
-                # comparison distinguishes candidate/ancestor events from a
-                # hierarchical-only change caused by a sibling; a second
-                # aggregate memory.events check would invalidate the latter.
-                assert resource_limits_after is not None
-                try:
-                    resource_limit_evidence = _candidate_resource_limit_evidence(
-                        resource_limits_before, resource_limits_after
-                    )
-                except AssayError as comparison_error:
-                    if execution_error is not None:
-                        raise comparison_error from execution_error
-                    raise
+                # The pre-candidate capability probe remains fail-closed.
+                # Once a candidate starts, however, resource windows are
+                # telemetry: either missing endpoint or an uncomparable pair
+                # records an unobserved window and leaves termination to WP1.
+                if limit_broker is None:
+                    if resource_limits_before is None or resource_limits_after is None:
+                        reasons = []
+                        if resource_limits_before_error is not None:
+                            reasons.append(f"before: {resource_limits_before_error}")
+                        if resource_limits_after_error is not None:
+                            reasons.append(f"after: {resource_limits_after_error}")
+                        resource_observation_reason = "; ".join(reasons)
+                    else:
+                        (
+                            resource_limit_evidence,
+                            resource_observation_reason,
+                            resource_limit_changes,
+                        ) = _candidate_resource_limit_evidence(
+                            resource_limits_before, resource_limits_after
+                        )
                 if execution_error is not None:
-                    if resource_limit_evidence.limit_hit:
+                    if (
+                        resource_limit_evidence is not None
+                        and resource_limit_evidence.limit_hit
+                        and target_node_id is None
+                    ):
                         raise AssayError(
                             "cgroup resource-limit event during native R2 attempt; "
                             "refusing to classify this candidate",
@@ -4511,6 +4946,7 @@ def _execute_mutation_jobs(
             tests_completed: int | None = None
             cpu_seconds: float | None = None
             peak_rss_bytes: int | None = None
+            write_bytes: int | None = None
             startup_seconds: dict[str, float | None] | None = None
             if liveness_events_dir is not None:
                 candidate_events = liveness.candidate_events_path(
@@ -4518,9 +4954,12 @@ def _execute_mutation_jobs(
                     resolve_run_cwd(snapshot.project_root, plan),
                 )
                 tests_completed = liveness.count_test_events(candidate_events)
-                cpu_seconds, peak_rss_bytes, startup_seconds = _measured_resources(
-                    candidate_events
-                )
+                (
+                    cpu_seconds,
+                    peak_rss_bytes,
+                    write_bytes,
+                    startup_seconds,
+                ) = _measured_resources(candidate_events)
             integrity_started_monotonic = time.monotonic()
             # P26/A-212: the ONE lane deadline IS forwarded here, so this
             # check's own Git children are bounded by the same budget as
@@ -4575,6 +5014,7 @@ def _execute_mutation_jobs(
         # bucket until cleanup has completed within the lane budget.
         deadline.remaining()
         teardown_finished_monotonic = time.monotonic()
+        judge_rss_bytes = liveness.process_rss_bytes(os.getpid())
         run = _MutantRun(
             result=result,
             equivalence_bytes=equivalence_bytes,
@@ -4584,6 +5024,8 @@ def _execute_mutation_jobs(
             liveness_resource_evidence=result.liveness_resource_evidence,
             cpu_seconds=cpu_seconds,
             peak_rss_bytes=peak_rss_bytes,
+            write_bytes=write_bytes,
+            judge_rss_bytes=judge_rss_bytes,
             phase_seconds={
                 "materialize": entered_monotonic - started_monotonic,
                 "command": command_finished_monotonic - command_started_monotonic,
@@ -4592,11 +5034,9 @@ def _execute_mutation_jobs(
             },
             startup_seconds=startup_seconds,
             resource_limit_evidence=resource_limit_evidence,
-            process_tree_evidence=(
-                ProcessTreeEvidence.from_dict(result.process_tree_evidence)
-                if isinstance(result.process_tree_evidence, Mapping)
-                else None
-            ),
+            resource_limit_changes=resource_limit_changes,
+            resource_observation_reason=resource_observation_reason,
+            process_tree_evidence=_process_tree_evidence_from_result(result),
         )
         attempt_receipts[(index, attempt_name)] = receipt
         if target_node_id is not None:
@@ -4604,29 +5044,25 @@ def _execute_mutation_jobs(
             # verified against the saved witness. If a cgroup limit event
             # happened during that command, the replay is infrastructure-
             # affected and must not be discarded before `_run_one` falls back
-            # to a fresh full command. Stop the R2 claim instead of letting a
-            # later zero-delta retry hide this candidate's resource failure.
+            # to a fresh full command. A replay event therefore invalidates
+            # only this optimization attempt; the full command gets its own
+            # resource window.
             if (
                 run.resource_limit_evidence is not None
                 and run.resource_limit_evidence.limit_hit
             ):
-                raise AssayError(
-                    "cgroup resource-limit event during native R2 witness-prefix "
-                    "replay; refusing to retry the candidate",
-                    outcome=Outcome.ERROR,
-                    reason_code=ReasonCode.EXEC_FAILED,
+                sys.stderr.write(
+                    "Assay advisory: cgroup resource-limit event during native "
+                    "R2 witness-prefix replay; falling back to the full command\n"
                 )
+                return None
             witness = _replay_witness_from_receipt(
                 receipt,
                 process_exit_status=result.returncode,
                 target_node_id=target_node_id,
                 expected_facts=r2_facts if cold_witness else None,
             )
-            if (
-                witness is None
-                or prior_verdict_sha256 is None
-                or _classified_bucket(run) != "killed"
-            ):
+            if witness is None or prior_verdict_sha256 is None:
                 return None
             execution = MutationExecution(
                 mode="witness-prefix",
@@ -4635,6 +5071,9 @@ def _execute_mutation_jobs(
                 prior_node_id=target_node_id,
                 current_node_id=target_node_id,
             )
+            report_run = _dataclass_replace(run, execution=execution)
+            if bucket_for_run(report_run) != "killed":
+                return None
         else:
             witness = (
                 _witness_from_receipt(
@@ -4644,15 +5083,30 @@ def _execute_mutation_jobs(
                 if result.outcome is Outcome.FAIL
                 else None
             )
+            report_witness = (
+                MutationWitnessReceipt(**witness) if witness is not None else None
+            )
+            report_run = _dataclass_replace(
+                run,
+                execution=MutationExecution(mode="full", witness=report_witness),
+            )
             full_witness = (
-                MutationWitnessReceipt(**witness)
-                if witness is not None and _classified_bucket(run) == "killed"
+                report_witness
+                if report_witness is not None
+                and bucket_for_run(report_run) == "killed"
                 else None
             )
             execution = MutationExecution(mode="full", witness=full_witness)
         return _dataclass_replace(run, execution=execution)
 
-    def _run_one(index: int) -> _MutantRun:
+    def _run_one(index: int, *, worker_index: int | None = None) -> _MutantRun:
+        selected_worker_index = (
+            _worker_index_for_current_thread()
+            if worker_index is None
+            else worker_index
+        )
+        with worker_index_lock:
+            candidate_workers[index] = selected_worker_index
         job = job_list[index]
         started_total = time.monotonic()
         prior = candidate_reuse.get(candidate_id(job))
@@ -4664,7 +5118,7 @@ def _execute_mutation_jobs(
                 prior_verdict_sha256=prior_verdict_sha256,
                 attempt_name="replay",
             )
-            if replay is not None and _classified_bucket(replay) == "killed":
+            if replay is not None and bucket_for_run(replay) == "killed":
                 if cold_witness:
                     facts = receipt_facts(attempt_receipts.pop((index, "replay"), None))
                     if facts is not None and facts.duplicates == 0:
@@ -4730,17 +5184,16 @@ def _execute_mutation_jobs(
         assert cold is not None
         cold_receipt = attempt_receipts.pop((index, "cold"), None)
         cold_evidence = evidence_for(cold_receipt, command="r2")
-        if (
-            cold.resource_limit_evidence is not None
-            and cold.resource_limit_evidence.limit_hit
-        ) or (cold.result.returncode is not None and cold.result.returncode < 0):
-            return _dataclass_replace(
-                cold,
-                evidence=cold_evidence,
-                forced_bucket="crashed",
-                elapsed_seconds=max(0.0, time.monotonic() - started_total),
-            )
         if cold.result.outcome is Outcome.FAIL:
+            # A signalled or limit-affected R2 command is infrastructure
+            # evidence, not a test failure to retry against the declared
+            # plan. WP1's classifier already marks that candidate crashed.
+            if bucket_for_run(cold) == "crashed":
+                return _dataclass_replace(
+                    cold,
+                    evidence=cold_evidence,
+                    elapsed_seconds=max(0.0, time.monotonic() - started_total),
+                )
             proof = cold_witness_from_receipt(
                 cold_receipt,
                 process_exit_status=cold.result.returncode,
@@ -4748,7 +5201,7 @@ def _execute_mutation_jobs(
             )
             if proof is not None:
                 witness, started_count, failed_call_index = proof
-                if _classified_bucket(cold) != "killed":
+                if bucket_for_run(cold) != "killed":
                     return _dataclass_replace(
                         cold,
                         evidence=cold_evidence,
@@ -4797,14 +5250,7 @@ def _execute_mutation_jobs(
         assert declared is not None
         declared_receipt = attempt_receipts.pop((index, "full"), None)
         declared_evidence = evidence_for(declared_receipt, command="declared")
-        if (
-            declared.resource_limit_evidence is not None
-            and declared.resource_limit_evidence.limit_hit
-        ) or (declared.result.returncode is not None and declared.result.returncode < 0):
-            declared = _dataclass_replace(
-                declared, forced_bucket="crashed", evidence=declared_evidence
-            )
-        elif declared.result.outcome is Outcome.PASS:
+        if declared.result.outcome is Outcome.PASS:
             proven = survivor_proof_ok(
                 declared_receipt,
                 process_exit_status=declared.result.returncode,
@@ -4824,7 +5270,7 @@ def _execute_mutation_jobs(
                 manifest_node_ids=manifest_node_ids,
             )
             witness = None
-            normal_bucket = _classified_bucket(declared)
+            normal_bucket = bucket_for_run(declared)
             if (
                 proven
                 and normal_bucket == "killed"
@@ -4856,24 +5302,28 @@ def _execute_mutation_jobs(
             elapsed_seconds=max(0.0, time.monotonic() - started_total),
         )
 
-    def _record_candidate(position: int, run: _MutantRun) -> Mapping[str, Any]:
+    def _record_candidate(
+        position: int, run: _MutantRun, *, slot: int | None = None
+    ) -> Mapping[str, Any]:
         # Futures can finish before the deadline and sit ready while the
         # main thread is busy draining earlier results. Check at the actual
         # classification boundary, not only in the worker.
         deadline.remaining()
         # The same classifier decides whether a witness is reusable and which
         # terminal bucket this complete campaign records.
-        outcome_bucket = _classified_bucket(run)
+        outcome_bucket = bucket_for_run(run)
         # Classification itself is main-thread work and can cross the lane
         # boundary. Refuse before staging a candidate progress event or state.
         deadline.remaining()
-        # B111: diagnostic evidence only (never a classification input), built
-        # once so progress and state carry the identical resources object.
+        # B111/AP-6: diagnostic evidence only (never a classification input),
+        # built once so progress and state carry identical measured values.
         resources = {
             "cpu_seconds": (
                 round(run.cpu_seconds, 3) if run.cpu_seconds is not None else None
             ),
             "peak_rss_bytes": run.peak_rss_bytes,
+            "write_bytes": run.write_bytes,
+            "judge_rss_bytes": run.judge_rss_bytes,
             "phase_seconds": (
                 {name: round(value, 3) for name, value in run.phase_seconds.items()}
                 if run.phase_seconds is not None
@@ -4884,7 +5334,27 @@ def _execute_mutation_jobs(
             ),
         }
         resource_limit_evidence = run.resource_limit_evidence
-        assert resource_limit_evidence is not None
+        if run.resource_limit_changes:
+            one_line_changes = "; ".join(
+                " ".join(change.split()) for change in run.resource_limit_changes
+            )
+            sys.stderr.write(
+                "Assay advisory: cgroup limit values changed during candidate "
+                f"{candidate_id(job_list[position])}: {one_line_changes}\n"
+            )
+        resource_observation = None
+        if resource_limit_evidence is None:
+            reason = run.resource_observation_reason
+            if not isinstance(reason, str) or not reason.strip():
+                raise MutationStateError(
+                    "unobserved candidate resource-limit evidence lacks a reason"
+                )
+            resource_observation = {"status": "unobserved", "reason": reason}
+            one_line_reason = " ".join(reason.split())
+            sys.stderr.write(
+                "Assay advisory: resource-limit window unobserved for "
+                f"candidate {candidate_id(job_list[position])}: {one_line_reason}\n"
+            )
         if state_root is not None:
             # A store in play without a judge identity would write records that
             # claim to be checkable and are not. Resolve one whenever a store
@@ -4962,10 +5432,21 @@ def _execute_mutation_jobs(
                 "execution": run.execution.to_dict(),
                 "evidence": run.evidence.to_dict() if run.evidence is not None else None,
                 "resources": resources,
-                "resource_limit_evidence": resource_limit_evidence.to_dict(),
+                **(
+                    {
+                        "resource_limit_evidence": resource_limit_evidence.to_dict()
+                    }
+                    if resource_limit_evidence is not None
+                    else {"resource_observation": resource_observation}
+                ),
                 **(
                     {"process_tree_evidence": run.process_tree_evidence.to_dict()}
                     if run.process_tree_evidence is not None
+                    else {}
+                ),
+                **(
+                    {"underlying_outcome": run.result.underlying_outcome.to_dict()}
+                    if run.result.underlying_outcome is not None
                     else {}
                 ),
                 **(
@@ -5000,8 +5481,34 @@ def _execute_mutation_jobs(
                 state_root_fd=state_root_fd,
                 commit_guard=deadline.remaining,
             )
-        # State is committed as soon as the future completes. Candidate
-        # progress is staged and emitted in order by the caller below.
+        # What this candidate measured feeds the next campaign's predictions.
+        if state_root is not None and run.elapsed_seconds >= 0:
+            history_updates[candidate_id(job_list[position])] = _schedule.HistoryEntry(
+                job_list[position].path,
+                round(run.elapsed_seconds, 3),
+                run.peak_rss_bytes,
+            )
+        schedule_keys: dict[str, Any] = {}
+        if scheduler is not None and slot is not None:
+            prediction = scheduler.prediction(position)
+            error = scheduler.error(
+                position,
+                wall_seconds=run.elapsed_seconds,
+                rss_peak_bytes=run.peak_rss_bytes,
+            )
+            schedule_errors[position] = error
+            schedule_keys = {
+                "dispatch_position": slot,
+                "prediction": {
+                    "rss_peak_bytes": prediction.rss_peak_bytes,
+                    "wall_seconds": prediction.wall_seconds,
+                    "class": scheduler.predicted_class(position),
+                    "source": prediction.source,
+                },
+                "prediction_error": error,
+            }
+        # Candidate state is staged only by the coordinator after the worker
+        # result reaches its dispatch-ordered commit boundary.
         return {
             # (B064) This explicit event name replaced the old unnamed record.
             "event": "candidate",
@@ -5010,15 +5517,40 @@ def _execute_mutation_jobs(
                 candidate_total=total,
                 job=job_list[position],
             ),
+            **schedule_keys,
+            "worker_index": candidate_workers[position],
             "outcome_bucket": outcome_bucket,
             "execution_mode": run.execution.mode,
             "elapsed_seconds": round(run.elapsed_seconds, 3),
             "tests_completed": run.tests_completed,
-            **resources,
-            "resource_limit_evidence": resource_limit_evidence.to_dict(),
+            "resource_limit_changes": list(run.resource_limit_changes),
+            "resources": {
+                key: resources[key]
+                for key in ("cpu_seconds", "peak_rss_bytes", "write_bytes")
+            },
+            "judge_rss_bytes": resources["judge_rss_bytes"],
+            **{
+                key: resources[key]
+                for key in (
+                    "cpu_seconds",
+                    "peak_rss_bytes",
+                    "phase_seconds",
+                    "startup_seconds",
+                )
+            },
+            **(
+                {"resource_limit_evidence": resource_limit_evidence.to_dict()}
+                if resource_limit_evidence is not None
+                else {"resource_observation": resource_observation}
+            ),
             **(
                 {"process_tree_evidence": run.process_tree_evidence.to_dict()}
                 if run.process_tree_evidence is not None
+                else {}
+            ),
+            **(
+                {"underlying_outcome": run.result.underlying_outcome.to_dict()}
+                if run.result.underlying_outcome is not None
                 else {}
             ),
             **(
@@ -5034,70 +5566,180 @@ def _execute_mutation_jobs(
                 write_progress(event)
 
     results: list[_MutantRun | None] = [None] * total
+    executed_runs: dict[int, _MutantRun] = {}
     budget_exceeded_mask = [False] * total
     fatals: dict[int, AssayError] = {}
     stop_submitting = False
-    next_to_submit = 0
     event_buffer = _CandidateEventBuffer(total)
+    #: future -> dispatch slot. A slot is a candidate's place in dispatch
+    #: order (B207); `dispatch_order[slot]` is its canonical index. Progress
+    #: and state drain by slot, so a late-dispatched low canonical index never
+    #: holds back candidates that were dispatched, and finished, earlier.
     in_flight: dict[Future, int] = {}
+    dispatch_order: list[int] = []
+    completed_runs: dict[int, _MutantRun] = {}
+    resolved_without_event: set[int] = set()
+    record_cursor = 0
+    next_canonical = 0
+
+    candidate_pairs = [
+        (candidate_id(job_list[index]), job_list[index].path)
+        for index in range(total)
+    ]
+    schedule_options = schedule if schedule is not None else _schedule.ScheduleOptions()
+    history, history_reason = _read_schedule_history(state_root, state_root_fd)
+    history_updates: dict[str, _schedule.HistoryEntry] = {}
+    scheduler: _schedule.TemScheduler | None = None
+    schedule_errors: dict[int, Mapping[str, Any]] = {}
+    if jobs > 1 and total > 0:
+        scheduler = _schedule.TemScheduler(
+            candidate_pairs,
+            _schedule.resolve_predictions(
+                candidate_pairs,
+                history,
+                operator_wall_seconds=schedule_options.prediction_wall_seconds,
+                operator_rss_bytes=schedule_options.prediction_rss_bytes,
+            ),
+            budget_bytes=schedule_options.memory_budget_bytes,
+            workers=jobs,
+            high_factor=schedule_options.high_factor,
+            low_factor=schedule_options.low_factor,
+        )
+
+    def _pick_candidate() -> int | None:
+        nonlocal next_canonical
+        if scheduler is not None:
+            return scheduler.next_candidate(time.monotonic())
+        # The dispatch loop only asks while `len(dispatch_order) < total`.
+        next_canonical += 1
+        return next_canonical - 1
+
+    def _record_ready_in_order() -> None:
+        nonlocal record_cursor
+        while record_cursor < total:
+            run = completed_runs.pop(record_cursor, None)
+            if run is not None:
+                event_buffer.stage(
+                    record_cursor,
+                    _record_candidate(
+                        dispatch_order[record_cursor], run, slot=record_cursor
+                    ),
+                )
+            elif record_cursor in resolved_without_event:
+                event_buffer.resolve_without_event(record_cursor)
+            else:
+                break
+            record_cursor += 1
+        _emit_ready(event_buffer.drain_contiguous())
 
     try:
         with executor_factory(jobs) as pool:
-            while True:
-                while (
-                    not stop_submitting
-                    and next_to_submit < total
-                    and len(in_flight) < jobs
-                ):
-                    position = next_to_submit
-                    try:
-                        future = pool.submit(_run_one, position)
-                    except RuntimeError as exc:
-                        fatals[position] = AssayError(
-                            "could not start a native R2 candidate worker; the "
-                            "candidate sweep stopped before all mutants were run "
-                            f"({exc})",
-                            outcome=Outcome.ERROR,
-                            reason_code=ReasonCode.EXEC_FAILED,
-                        )
-                        stop_submitting = True
-                        break
-                    in_flight[future] = position
-                    next_to_submit += 1
+            try:
+                while True:
+                    while (
+                        not stop_submitting
+                        and len(dispatch_order) < total
+                        and len(in_flight) < jobs
+                    ):
+                        position = _pick_candidate()
+                        if position is None:
+                            break
+                        slot = len(dispatch_order)
+                        dispatch_order.append(position)
+                        try:
+                            future = pool.submit(_run_one, position)
+                        except RuntimeError as exc:
+                            fatals[position] = AssayError(
+                                "could not start a native R2 candidate worker; the "
+                                "candidate sweep stopped before all mutants were run "
+                                f"({exc})",
+                                outcome=Outcome.ERROR,
+                                reason_code=ReasonCode.EXEC_FAILED,
+                            )
+                            resolved_without_event.add(slot)
+                            stop_submitting = True
+                            break
+                        in_flight[future] = slot
 
-                if not in_flight:
-                    break
-                done, _ = wait(tuple(in_flight), return_when=FIRST_COMPLETED)
-                for future in sorted(done, key=in_flight.__getitem__):
-                    position = in_flight.pop(future)
-                    try:
-                        results[position] = future.result()
-                    except AssayError as exc:
-                        if (
-                            exc.outcome is Outcome.BUDGET_EXCEEDED
-                            and exc.reason_code is ReasonCode.LANE_TIMEOUT
-                        ):
-                            budget_exceeded_mask[position] = True
-                        else:
-                            fatals[position] = exc
-                        stop_submitting = True
-                    run = results[position]
-                    if run is None:
-                        event_buffer.resolve_without_event(position)
+                    if not in_flight:
+                        break
+                    if limit_broker is not None:
+                        if runner_module.termination_requested():
+                            deadline.remaining()
+                        limit_broker.service_pending()
+                    if limit_broker is None:
+                        done, _ = wait(
+                            tuple(in_flight), return_when=FIRST_COMPLETED
+                        )
                     else:
-                        event_buffer.stage(position, _record_candidate(position, run))
-                _emit_ready(event_buffer.drain_contiguous())
+                        done, _ = wait(
+                            tuple(in_flight),
+                            timeout=0.05,
+                            return_when=FIRST_COMPLETED,
+                        )
+                    if not done:
+                        continue
+                    for future in sorted(done, key=in_flight.__getitem__):
+                        slot = in_flight.pop(future)
+                        position = dispatch_order[slot]
+                        try:
+                            results[position] = future.result()
+                        except AssayError as exc:
+                            if (
+                                exc.outcome is Outcome.BUDGET_EXCEEDED
+                                and exc.reason_code is ReasonCode.LANE_TIMEOUT
+                            ):
+                                budget_exceeded_mask[position] = True
+                            else:
+                                fatals[position] = exc
+                            stop_submitting = True
+                        run = results[position]
+                        if run is None:
+                            resolved_without_event.add(slot)
+                        else:
+                            executed_runs[position] = run
+                            completed_runs[slot] = run
+                        if scheduler is not None:
+                            scheduler.complete(
+                                position,
+                                time.monotonic(),
+                                wall_seconds=(
+                                    None if run is None else run.elapsed_seconds
+                                ),
+                                rss_peak_bytes=(
+                                    None if run is None else run.peak_rss_bytes
+                                ),
+                            )
+                    _record_ready_in_order()
+            except BaseException as exc:
+                if limit_broker is not None:
+                    limit_broker.cancel_pending(exc)
+                    liveness.terminate_live_window_hosts()
+                raise
 
         if stop_submitting:
-            for leftover in range(next_to_submit, total):
+            if scheduler is not None:
+                leftovers = scheduler.remaining_indices()
+            else:
+                leftovers = list(range(next_canonical, total))
+            for leftover in leftovers:
                 budget_exceeded_mask[leftover] = True
-                event_buffer.resolve_without_event(leftover)
-        _emit_ready(event_buffer.drain_contiguous())
+                resolved_without_event.add(len(dispatch_order))
+                dispatch_order.append(leftover)
+        _record_ready_in_order()
     finally:
-        # A non-AssayError exit still leaves each already-written state record
-        # with its candidate event. Skipping unresolved gaps is allowed only
-        # on this abnormal path; remaining events are emitted in index order.
-        _emit_ready(event_buffer.drain_all_ascending())
+        # An interruption may leave a hole. Only the completed dispatch prefix
+        # is publishable; skipping a hole would reorder candidate progress/state.
+        _emit_ready(event_buffer.drain_contiguous())
+        _persist_schedule_side_files(
+            state_root,
+            state_root_fd,
+            history=history,
+            updates=history_updates,
+            scheduler=scheduler,
+            errors=schedule_errors,
+            history_reason=history_reason,
+        )
 
     # A-195: a mutant that left Git-visible dirt/HEAD drift is never folded
     # into `crashed`. After all submitted workers drain, choose the fatal at
@@ -5106,19 +5748,67 @@ def _execute_mutation_jobs(
     if fatals:
         raise fatals[min(fatals)]
 
+    # (B179/AP-5) Let every candidate get its first attempt before spending any
+    # remaining campaign time on infrastructure outcomes. A campaign-deadline
+    # mask means the sweep already reached its boundary, so it cannot open a
+    # retry window. `executed_runs` contains only candidates executed in this
+    # invocation; resumed records never enter this list.
+    if not any(budget_exceeded_mask):
+        for position in sorted(executed_runs):
+            first_run = executed_runs[position]
+            first_bucket = bucket_for_run(first_run)
+            if first_bucket not in {"crashed", "budget_exceeded", "hung"}:
+                continue
+
+            remaining = deadline.remaining()
+            if (
+                budget_per_candidate_seconds is not None
+                and remaining < budget_per_candidate_seconds
+            ):
+                break
+            retry_run = _run_one(position, worker_index=0)
+            final_bucket = bucket_for_run(retry_run)
+            results[position] = retry_run
+            # Persist the retry through the same schema and boundary as the
+            # first run. Do not duplicate the first `candidate` event; the
+            # additive retry event below names the changed classification.
+            _record_candidate(position, retry_run)
+            _emit_ready(
+                (
+                    {
+                        "event": "candidate_retry",
+                        "candidate_id": candidate_id(job_list[position]),
+                        "first_bucket": first_bucket,
+                        "final_bucket": final_bucket,
+                        "worker_index": candidate_workers[position],
+                        **(
+                            {"underlying_outcome": retry_run.result.underlying_outcome.to_dict()}
+                            if retry_run.result.underlying_outcome is not None
+                            else {}
+                        ),
+                    },
+                )
+            )
+
     # (B091/RW-33, P7 A3) Built generically from `MUTATION_BUCKETS`, matching
     # the ingested path's own construction a few hundred lines down --
     # A-228's own root cause was a hand-written literal list reaching some
     # of the sites that must agree with the closed vocabulary and not
     # others, and this is exactly the site that used to be a five-entry
     # literal missing the sixth (`hung`) bucket entirely, which would have
-    # KeyError'd the moment `_classify_mutant_result` returned it.
+    # KeyError'd the moment the shared classifier returned it.
     buckets: dict[str, list[MutantOutcome]] = {name: [] for name in MUTATION_BUCKETS}
-    unattempted_evidence = (
-        _zero_window_resource_limit_evidence()
-        if any(budget_exceeded_mask)
-        else None
-    )
+    unattempted_evidence: ResourceLimitEvidence | None = None
+    if any(budget_exceeded_mask):
+        unattempted_evidence, unattempted_observation_reason = (
+            _zero_window_resource_limit_evidence()
+        )
+        if unattempted_observation_reason is not None:
+            sys.stderr.write(
+                "Assay advisory: zero-duration resource-limit sample "
+                "unobserved for unstarted candidates: "
+                f"{' '.join(unattempted_observation_reason.split())}\n"
+            )
     complete_campaign = not any(budget_exceeded_mask)
     for position, job in enumerate(job_list):
         # Results are consumed POSITION-ALIGNED with the submitted job list,
@@ -5128,7 +5818,6 @@ def _execute_mutation_jobs(
         # `path`) -- appending in that order leaves every bucket
         # identity-ordered without a second sort.
         if budget_exceeded_mask[position]:
-            assert unattempted_evidence is not None
             buckets["budget_exceeded"].append(
                 _outcome_of(
                     job,
@@ -5141,13 +5830,11 @@ def _execute_mutation_jobs(
             deadline.remaining()
         run = results[position]
         assert run is not None
-        # `_classified_bucket` preserves O8's exact legacy classifier when
-        # no equivalence artifact is declared, and applies the declared
-        # artifact/signal rules on the extended path.
-        bucket = _classified_bucket(run)
+        # The shared classifier applies termination, equivalence and signal
+        # rules identically to revalidation and the verdict table.
+        bucket = bucket_for_run(run)
         if complete_campaign:
             deadline.remaining()
-        assert run.resource_limit_evidence is not None
         assert run.process_tree_evidence is not None
         kill_signal = run.kill_signal if bucket == "killed" else None
         buckets[bucket].append(
@@ -5158,6 +5845,7 @@ def _execute_mutation_jobs(
                 resource_limit_evidence=run.resource_limit_evidence,
                 evidence=run.evidence,
                 process_tree_evidence=run.process_tree_evidence,
+                underlying_outcome=run.result.underlying_outcome,
             )
         )
 

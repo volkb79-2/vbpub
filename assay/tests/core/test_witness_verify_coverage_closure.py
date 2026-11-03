@@ -1031,7 +1031,7 @@ def _memory(**counters):
     ("bucket", "entry", "message"),
     [
         ("equivalent", {"execution": {"mode": "ledger"}, "resource_limit_evidence": {}}, "ledger execution cannot carry"),
-        ("killed", {}, "requires resource_limit_evidence"),
+        ("killed", {"resource_limit_evidence": "not an object"}, "resource_limit_evidence must be an object"),
         ("killed", {"resource_limit_evidence": {"cgroup_version": 2}}, "invalid resource_limit_evidence fields"),
         ("killed", {"resource_limit_evidence": _resources(cgroup_version=1)}, "requires cgroup v2"),
         ("killed", {"resource_limit_evidence": _resources(pids_events=[])}, "invalid pids_events evidence"),
@@ -1041,7 +1041,6 @@ def _memory(**counters):
         ("killed", {"resource_limit_evidence": _resources(pids_events={"max": _counter(2, 1, 0)})}, "inconsistent pids_events.max counter arithmetic"),
         ("killed", {"resource_limit_evidence": _resources(pids_events={"max": _counter(0, 3, 1)})}, "inconsistent pids_events.max counter arithmetic"),
         ("killed", {"resource_limit_evidence": _resources(pids_events={"max": _counter(0, 1, 1)})}, "positive failed-fork or OOM"),
-        ("survived", {"resource_limit_evidence": _resources(memory_events=_memory(oom_kill=_counter(0, 1, 1)))}, "positive failed-fork or OOM"),
     ],
 )
 def test_b145_refusals(bucket, entry, message):
@@ -1054,6 +1053,8 @@ def test_b145_refusals(bucket, entry, message):
         ("killed", {"resource_limit_evidence": _resources()}),
         ("killed", {"resource_limit_evidence": _resources(memory_events=_memory(max=_counter(0, 4, 4)))}),
         ("crashed", {"resource_limit_evidence": _resources(pids_events={"max": _counter(0, 1, 1)})}),
+        ("survived", {"resource_limit_evidence": _resources(pids_events={"max": _counter(0, 1, 1)})}),
+        ("survived", {}),
         ("equivalent", {"execution": {"mode": "ledger"}}),
     ],
 )
@@ -1062,16 +1063,23 @@ def test_b145_accepts_consistent_counters(bucket, entry):
 
 
 def _tree(**overrides):
+    count = overrides.get("outliving_descendants", 0)
     value = {
-        "protocol": "assay-process-tree/1",
+        "protocol": "assay-process-tree/2",
         "leader_status": "exited",
         "group_signalled_before_reap": False,
         "outliving_descendants": 0,
         "descendants_signalled": 0,
-        "cleanup_seconds": 0.1,
+        "signal": None,
+        "descendants": [
+            {"pid": 10000 + index, "ppid": 1, "comm": "child"}
+            for index in range(count)
+        ],
         "clean": True,
     }
     value.update(overrides)
+    if value["leader_status"] == "signaled" and "signal" not in overrides:
+        value["signal"] = 9
     return value
 
 
@@ -1092,8 +1100,8 @@ def _tree_failures(bucket, entry):
         ("killed", {"process_tree_evidence": _tree(group_signalled_before_reap=1)}, "invalid process-tree group-signal evidence"),
         ("killed", {"process_tree_evidence": _tree(outliving_descendants=-1)}, "invalid process-tree outliving_descendants"),
         ("killed", {"process_tree_evidence": _tree(descendants_signalled=1)}, "more signalled descendants than outliving"),
-        ("killed", {"process_tree_evidence": _tree(cleanup_seconds=True)}, "invalid process-tree cleanup_seconds"),
-        ("killed", {"process_tree_evidence": _tree(cleanup_seconds=float("nan"))}, "invalid process-tree cleanup_seconds"),
+        ("killed", {"process_tree_evidence": _tree(signal=True, leader_status="signaled")}, "invalid process-tree signal"),
+        ("killed", {"process_tree_evidence": _tree(signal=15)}, "signal for a non-signaled leader"),
         ("killed", {"process_tree_evidence": _tree(clean=False)}, "does not prove a clean process tree"),
         ("killed", {"process_tree_evidence": _tree(leader_status="signaled")}, "functional outcome without a clean leader exit"),
         ("killed", {"process_tree_evidence": _tree(outliving_descendants=1, descendants_signalled=1)}, "functional outcome without a clean leader exit"),
@@ -1118,6 +1126,82 @@ def test_b162_refusals(bucket, entry, message):
 )
 def test_b162_accepts_clean_or_classified_trees(bucket, entry):
     assert _tree_failures(bucket, entry) == []
+
+
+@pytest.mark.parametrize(
+    ("raw", "message"),
+    [
+        (_tree(descendants="not-a-list"), "invalid process-tree descendants"),
+        (_tree(descendants=[{"pid": 1, "ppid": 1}]), "malformed descendant identity"),
+        (_tree(descendants=[{"pid": True, "ppid": 1, "comm": "child"}]), "invalid descendant pid"),
+        (_tree(descendants=[{"pid": 1, "ppid": None, "comm": "child"}]), "incomplete descendant identity"),
+        (_tree(descendants=[{"pid": 1, "ppid": 0, "comm": "child"}]), "invalid descendant ppid"),
+        (_tree(descendants=[{"pid": 1, "ppid": 1, "comm": ""}]), "invalid descendant comm"),
+        (
+            _tree(
+                outliving_descendants=2,
+                descendants=[
+                    {"pid": 2, "ppid": 1, "comm": "child"},
+                    {"pid": 2, "ppid": 1, "comm": "child"},
+                ],
+            ),
+            "descendant pids must be unique and sorted",
+        ),
+    ],
+)
+def test_b162_raw_descendant_validator_refuses_bad_identity_shapes(raw, message):
+    assert any(
+        message in failure
+        for failure in _tree_failures("crashed", {"process_tree_evidence": raw})
+    )
+
+
+@pytest.mark.parametrize(
+    ("underlying", "message"),
+    [
+        ([], "malformed underlying_outcome"),
+        (
+            {
+                "outcome": "PASS",
+                "returncode": 0,
+                "report_summary": {
+                    "format": "",
+                    "total": 1,
+                    "failed": 0,
+                    "finished": True,
+                },
+            },
+            "invalid underlying report_summary",
+        ),
+        ({"outcome": "FAIL", "returncode": 0}, "inconsistent underlying_outcome"),
+    ],
+)
+def test_b162_raw_underlying_outcome_is_checked_against_the_leak_and_summary(
+    underlying, message
+):
+    raw = _tree(outliving_descendants=1)
+    failures = _tree_failures(
+        "crashed",
+        {"process_tree_evidence": raw, "underlying_outcome": underlying},
+    )
+    assert any(message in failure for failure in failures)
+
+
+def test_v17_verifier_rederives_import_break_cause_before_awarding_canary_pass():
+    attempt = v.CanaryAttempt(
+        target="src/mod.py",
+        description="break an import",
+        control_outcome=v.Outcome.PASS,
+        transformed_outcome=v.Outcome.FAIL,
+        expected_reason_code=v.ReasonCode.COMMAND_FAILED,
+        observed_reason_code=v.ReasonCode.COMMAND_FAILED,
+        cause="absent",
+    )
+
+    assert v._judge_one_attempt(attempt) == (
+        v.Outcome.INCONCLUSIVE,
+        v.ReasonCode.CANARY_INCONCLUSIVE,
+    )
 
 
 def test_fixture_bases_are_not_mutated_by_parametrization():

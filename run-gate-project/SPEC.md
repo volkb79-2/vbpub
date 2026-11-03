@@ -272,14 +272,14 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   (`run-gate: config: <path>`), revision, lane name, environment source,
   resolved slice + its source (on exec lanes this is naming-only disclosure
   — `docker exec` can neither place nor cap work), and (container AND exec
-  lanes) the fully assembled docker argv with forwarded values redacted
-  (RG-19). Mechanics are visible, never buried.
+  lanes) the fully assembled docker argv; forwarded values are never on it
+  (`-e KEY`, the value rides in the docker client's environment, RG-117a). Mechanics are visible, never buried.
 
 ## 3. Config schema (both files; `schema_version` must equal 1)
 
 - `R-06` Top-level keys: `schema_version` (required), `environments`,
-  `lanes`, `history`, `profile`, `footprint`, `project`, `assay`, and
-  project-local `admission`. Unknown top-level key → error naming key + file. A
+  `lanes`, `history`, `profile`, `footprint`, `project`, `assay`, `resources`,
+  and project-local `admission`. Unknown top-level key → error naming key + file. A
   central config's `[lanes.*]` are legal (R-22). `[history]` (RG-27) takes
   one optional key, `keep` (integer ≥ 1, default 10 — a bool is refused,
   not silently read as 1); a project `[history]` shadows the central one
@@ -313,8 +313,8 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   names; values are forwarded to container lanes only when set),
   `state_root` (optional canonical absolute in-container path for durable
   Assay state; unavailable for host mode; see `R-38`), `resources`
-  (RG-48, rev 10: a table accepting `cpus` ONLY — `R-29`'s
-  environment-level fallback for a lane's own `resources.cpus`). Redefining
+  (`cpus` plus the environment defaults in `R-52`; lane-level `cpus` wins).
+  Redefining
   a config without `mode` → error naming the environment and file.
 - `R-08` `[lanes.<name>]` keys: `kind` (`"command"`|`"assay"`|`"sequence"`), `environment`
   (non-empty string), `argv` (command kind: non-empty string list),
@@ -542,10 +542,14 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   `container_name` uses its project's own deployment remedy.
 
 - `R-14b` **Extra mounts:** `$RUN_GATE_EXTRA_MOUNTS` is an optional colon-
-  separated list of `host=container` pairs appended as `-v` flags to ephemeral
-  container lanes only. Malformed entries fail fast. This exists so projects
-  that need Docker-in-Docker can pass `/var/run/docker.sock=/var/run/docker.sock`
-  without hardcoding infrastructure in the TOML config.
+  separated list of `host=container` pairs appended as explicit
+  `--mount type=bind` entries to ephemeral container lanes only. Docker
+  refuses a missing host source instead of creating an empty directory;
+  malformed entries fail fast. Commas and newlines in either path are
+  refused before Docker; colon remains the list separator. This exists so
+  projects that need Docker-in-Docker can pass
+  `/var/run/docker.sock=/var/run/docker.sock` without hardcoding infrastructure
+  in the TOML config.
 
 - `R-14` **Clean tree:** unless `clean_tree = false` or `--allow-dirty`, the
   judged worktree must have zero `git status --porcelain` entries; refusal
@@ -749,6 +753,54 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   `admission set` refuses to replace it rather than prescribing that command
   as a false repair.
 
+- `R-52` **Combined resource settings (CW4/IO1).** A central or project
+  config may declare top-level `[resources]`; environment and lane defaults
+  use `[environments.<name>.resources]` and `[lanes.<name>.resources]`.
+  Resolve per key in this order: CLI override, lane, project, environment,
+  central, built-in default. Existing lane Docker caps remain in that same
+  table; environment `cpus` remains its established fallback. Reject unknown
+  top-level keys, unknown consumer subtables, and unknown consumer keys.
+  `[resources.cowtree] mode` accepts `auto|off` at each settings scope and is
+  delivered as `COWTREE_MODE`. `auto` with `MDT_COW_ROOT` set requires an
+  absolute normalized non-root path with no comma, colon, or newline; an
+  ephemeral lane gets a same-path `--mount type=bind` and the unchanged
+  `MDT_COW_ROOT` value. Repository paths used in Docker bind mounts reject the
+  same delimiters before any Docker call. `off` adds no bind. The resolver
+  never stats or applies `physical_path()` to this host value. Container
+  probes that use lane resources receive the same CoW bind and consumer
+  environment.
+
+  `io_sync` accepts `strict|relaxed` at all defaults and `durable` on a lane
+  only; absent means `strict`. A durable lane rejects every `--io-sync`
+  override, including `--io-sync strict`; its lane declaration is absolute.
+  `strict` adds no mount. `relaxed` requires an
+  ephemeral lane and a non-empty, absolute
+  `org.vbpub.tester.eatmydata-lib` image label. Docker inspection failures
+  remain infrastructure errors; a missing or invalid label is a refusal.
+  Run-Gate writes the label value to an owner-controlled generated file,
+  flushes and fsyncs it, and bind-mounts it read-only at
+  `/etc/ld.so.preload`. It also passes `RUN_GATE_IO_SYNC=<effective value>`
+  into the lane. `--io-sync strict|relaxed` is a per-invocation override on
+  non-durable lanes; `--cow off` is a per-invocation CoW override. Either
+  command-line override makes the run ineligible for history. History
+  replacement identity is `(lane, commit, io_sync)`; `[history].keep` bounds
+  total measurements across I/O modes. Old
+  entries without the field mean
+  `strict`, and history JSON/human output separates statistics by mode.
+  A sequence with members on different modes is excluded as an aggregate
+  history measurement; its per-member records retain their respective modes.
+
+  `[resources.vm] disk_cache` accepts `unsafe|writeback` at project or lane
+  scope and is valid only for a host-mode VM lane; it is forwarded as
+  `VM_DISK_CACHE`. `ram_target` accepts a positive size or `1%` through
+  `100%` at central, project, environment, or lane scope. `candidate_ram`
+  accepts a positive size on a lane only; native R2 `jobs = "auto"` uses it
+  as its declared candidate-RAM estimate floor under `R-53`. `ram_target` is
+  also an input to that policy. Neither value is forwarded to the lane or
+  changes container capacity. `--cow off` is the only CoW CLI override.
+  `RUN_GATE_EXTRA_MOUNTS` entries use Docker's `--mount
+  type=bind` form so absent source paths are refused instead of auto-created.
+
 - `R-19a` **safe.directory scope (RG-99):** inner commands inject
   `safe.directory=*` with Git's `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_<n>`, and
   `GIT_CONFIG_VALUE_<n>` environment variables, where `<n>` is the
@@ -924,11 +976,11 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   docker's own `--cpus` grammar, `^\d+(\.\d+)?$`, strictly > 0 — `--cpus 0`
   is a Docker refusal, not "no limit"). `cpus` ALSO has an
   environment-level fallback, `[environments.<name>.resources] cpus = …`
-  (the ONLY resources key an environment accepts) — the lane's own value
-  wins when both declare one; nothing else in `resources` has an
-  environment-level counterpart (RAM budget and shared-infra collision are
-  per-invocation facts, not properties of an environment many lanes with
-  different footprints share). **Memory half:** ephemeral container lanes
+  — the lane's own value wins when both declare one. Environment `resources`
+  also accepts the `io_sync`, `ram_target` and `[resources.cowtree] mode`
+  defaults defined by `R-52`; `candidate_ram`, per-lane caps other than the
+  established `cpus` fallback, and `[resources.vm]` are not environment
+  defaults. **Memory half:** ephemeral container lanes
   account against their slice's cgroupfs truth at admission time —
   `memory.current + declared <= memory.max` read from
   `$RUN_GATE_CGROUPFS_ROOT` (default `/sys/fs/cgroup`; systemd dash-nesting:
@@ -1419,7 +1471,8 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   `tools/coverage_gate.py` (vendored from `topos/tools/`, the estate's
   thinnest copy — MIGRATION PENDING per its header, do not fork further;
   its own `--source` default is scoped to `run_gate.py` alone, not the
-  whole project, so a bare invocation can't silently reproduce the
+  whole project (the lane repeats `--source` for `run_gate_admission.py`
+  too), so a bare invocation can't silently reproduce the
   scoping bug this floor was built to prevent). Because TOTAL line+branch
   coverage measured ~47% at adoption time, the floor enforced is DIFF
   coverage at 100% (topos/nyxloom legacy-code pattern: every changed
@@ -1436,8 +1489,9 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   - **`R-36a` Two slots per lane, two different contracts.** `latest` holds
     the MOST RECENT invocation whatever happened to it — pass, fail, tool
     error, Ctrl-C, dirty tree, mid-rebase — for immediate diagnostics.
-    `history` is a curated trend series keyed by **(lane, commit)** and
-    bounded to the last `keep` commits (`[history] keep`, default 10, R-06).
+    `history` is a curated trend series keyed by **(lane, commit, io_sync)**
+    and bounded to the last `keep` measurements across I/O modes
+    (`[history] keep`, default 10, R-06).
     Letting the second inherit the first's permissiveness is the defect this
     requirement exists to prevent: a dirty-tree duration attributed to a
     commit that never ran it, silently overwriting the real measurement.
@@ -2514,8 +2568,16 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     `peak_at_floor` (RW-46b) is read the SAME way, one field over
     (`memory.peak_at_floor` of that same most-recent-profiled entry) and
     disclosed downstream ONLY when it is `true` — see `R-43i`.
+    `io_sync` (RG-136) names the single I/O mode the entry was distilled
+    from: the lane's policy mode, or for a sequence the mode of the most
+    recent profiled run. Only history entries of that mode feed `runs`,
+    `completed_runs` and every series, and the live footprint line and
+    `doctor`'s drift check compare against the SAME mode's history. An
+    entry without `io_sync` (a manifest written before this field) is
+    treated as `strict`, and `doctor` names the migration (re-run
+    `footprint --write`).
     `last_commit`/`last_at` name the single most recent
-    completed run overall, pass or fail. The five numeric series
+    completed run of that mode, pass or fail. The five numeric series
     (`duration_s`, `memory_peak_bytes`, `memory_peak_over_baseline_bytes`,
     `hot_set_bytes` as `p90_median`/`p90_max`, `cpu_cores` as
     `avg_median`/`max`, `memory_full_stall_s`) reuse `R-36j`'s own
@@ -2705,6 +2767,72 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     broker, placement authority, or namespace-sharing shortcut. The separate
     socket is required because a read-only filesystem bind does not restrict
     the verbs accepted by a Unix socket protocol.
+
+- `R-53` **Native R2 worker selection (PR3).** A native R2 Assay lane may
+  declare `jobs = N|"auto"`; the CLI `--jobs N|auto` overrides TOML. An
+  omitted value leaves Assay's serial default unchanged. Run-Gate forwards
+  `--jobs` only when the inventory's `assay_version` is a comparable release
+  at or above 11.0.0. Auto and explicit one-worker requests use the serial
+  default without a flag for older or unknown versions; an explicit count
+  above one refuses with the required Assay floor. The inventory's native
+  mutation `jobs_max` is a hard upper bound.
+  - Auto selects
+    `max(1, min(jobs_max, cpu_cap, floor(memory_budget / candidate_RSS_p95),
+    candidates_remaining))`. `cpu_cap` may exceed one only when an ephemeral
+    lane or environment declares the CPU limit Run-Gate applies to the lane;
+    observed affinity alone does not establish an enforced cap. The memory
+    budget comes from the enforced lane `resources.memory` on an ephemeral
+    container or the target container's observed `memory.max` on `mode =
+    "exec"`. Host RAM, parent limits not enforced by the lane, and an
+    uncapped probe do not raise auto above one. If either cap needed for
+    parallel selection is absent, auto selects one worker.
+  - Candidate RSS is the nearest-rank p95 of valid candidate peak RSS samples
+    from Run-Gate history, falling back to Assay progress. A lane's declared
+    `resources.candidate_ram` floors measured p95; with no history, the
+    declaration alone is used. With neither history nor declaration, the
+    estimate is 1 GiB per candidate. Run-Gate prints the selected estimate's
+    source (`declared`, `measured p95`, or `default`) in the INFO line and
+    stores it with the selected count in run evidence/history. The closeout
+    stores p95 and sample count for a later selection.
+  - Parallel selection also requires a Cowtree-confirmed btrfs cheap-clone
+    workspace. Auto clamps to one if it cannot confirm the workspace;
+    explicit counts above one refuse. `--dry-run` may perform the capacity and
+    Cowtree probes for an auto request, but does not start the judged lane.
+
+- `R-54` **xdist workers for command lanes (RG-146, RG-147).** A command
+  lane may declare `workers = N|"auto"`, `workers_max` (default 8) and
+  `xdist_safe`. Load refuses `workers` without the `{workers}` argv token (and
+  the token without `workers`), `workers != 1` without `xdist_safe = true`, a
+  count above `workers_max`, and any of the keys on a non-command lane.
+  - Run-time refusals: `workers != 1` on an ephemeral lane without enforced
+    `resources.memory` and `cpus`, and on a bare-host or exec lane without
+    `resource_observer = "cgprofile"`. `{workers}` is substituted in the
+    declared argv only; `RUN_GATE_WORKERS` is exported; `--workers N|auto`
+    overrides the lane.
+  - `auto` is `max(1, min(workers_max, cpu term, memory term, io term, tests
+    term))` over the clean per-worker basis of the latest scaling run or the
+    last two or more clean passing runs, with `cpu = floor(cpus / max(0.25,
+    p50 cpu_seconds / wall))`, `memory = floor((memory x 0.75 - controller RSS
+    p95) / worker RSS p95)` (declared `resources.worker_ram` or 1 GiB when no
+    p95 exists), `io = floor(io write cap / worker write rate p95)` only with
+    an io write cap, `tests = floor(tests_collected / 20)`. No clean profile or
+    no caps selects 1 with the reason. An explicit count is honoured and the
+    terms it exceeds are listed. The selection and basis are stored as
+    `workers`; per-worker distributions as `per_worker`, `controller` and
+    `tests_collected`. One history entry is kept per commit, io_sync and worker
+    count.
+  - A command lane run at N > 1 that exits 1 is re-run once with `{workers}` =
+    1 and `PYTEST_ADDOPTS=--lf` (no recheck during measurement steps). If the
+    serial run passes, the result is verdict `FAIL`, reason `XDIST_ISOLATION`
+    (printed `INCONCLUSIVE/XDIST_ISOLATION`), history outcome `inconclusive`,
+    excluded from history; otherwise the original FAIL stands.
+  - `--xdist-parity [--workers k]` and `--scaling N,N,.. [--repeat N:R,*:R]`
+    re-dispatch the invocation per worker count with a junit report in
+    `PYTEST_ADDOPTS`. Parity stores `.run-gate/xdist-parity/<lane>.json` (config
+    digest, k, test count) only when outcomes are identical to N=1; a mismatch
+    or missing junit evidence is a `FAIL` with reason `XDIST_ISOLATION` or
+    `no-parity-evidence`. Scaling repeats a contaminated step once, then ends
+    `FAIL`/`scaling-contaminated`.
 
 ## 6. Non-goals (unchanged from CONSUMERS)
 

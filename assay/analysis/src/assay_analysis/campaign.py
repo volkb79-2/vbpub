@@ -546,6 +546,8 @@ def _run_summary(
     events = run["events"]
     candidates: dict[str, dict] = {}
     candidate_positions: set[int] = set()
+    # (B207) Scheduled runs dispatch out of canonical order and drain by this slot.
+    dispatch_positions: list[int] = []
     candidates_event = None
     shard_event = None
     resume_event = None
@@ -622,6 +624,15 @@ def _run_summary(
             if index in candidate_positions:
                 raise ValueError(f"progress run repeats candidate_index {index}")
             candidate_positions.add(index)
+            dispatch_position = event.get("dispatch_position")
+            if dispatch_position is not None:
+                if (
+                    isinstance(dispatch_position, bool)
+                    or not isinstance(dispatch_position, int)
+                    or dispatch_position < 0
+                ):
+                    raise ValueError("progress candidate event has an invalid dispatch_position")
+                dispatch_positions.append(dispatch_position)
             elapsed = _finite_number(event.get("elapsed_seconds"), "candidate elapsed_seconds")
             emitted_at = _timestamp(event.get("emitted_at"), "candidate emitted_at")
             outcome = verdict_by_id.get(candidate_id) if compare_verdict else None
@@ -720,7 +731,17 @@ def _run_summary(
             min(candidate_positions) < 0 or max(candidate_positions) >= pending_total
         ):
             raise ValueError("progress candidate_index is outside the pending candidate range")
-        if candidate_positions and candidate_positions != set(range(len(candidate_positions))):
+        if dispatch_positions:
+            # Scheduled order (B207): candidates are dispatched out of canonical
+            # order, so the finished set is a contiguous prefix of DISPATCH
+            # positions, emitted in that order, not of canonical indexes.
+            if len(dispatch_positions) != len(candidate_positions):
+                raise ValueError("progress mixes scheduled and unscheduled candidate events")
+            if dispatch_positions != list(range(len(dispatch_positions))):
+                raise ValueError(
+                    "progress dispatch_position values are not a contiguous execution sequence"
+                )
+        elif candidate_positions and candidate_positions != set(range(len(candidate_positions))):
             raise ValueError("progress candidate_index values are not a contiguous execution sequence")
         if any(event.get("candidate_total") != pending_total for _line, event in events
                if event.get("event") == "candidate"):
@@ -1570,6 +1591,15 @@ def _native_r2(lane, r2_policy: dict | None) -> bool:
     return bool(r2_policy) and r2_policy.get("producer", "native") == "native"
 
 
+def _declared_native_jobs_max(mutation_policy) -> int:
+    """The declared native ceiling; omission leaves Assay's one-worker default."""
+    return (
+        1
+        if mutation_policy.jobs_max is None
+        else mutation_policy.jobs_max
+    )
+
+
 def _check_verdict_against_lane(verdict: dict, *, lane_name: str, lane) -> dict:
     """The verified verdict must be for this lane and declared policy; returns its R2 policy.
 
@@ -1592,7 +1622,6 @@ def _check_verdict_against_lane(verdict: dict, *, lane_name: str, lane) -> dict:
     if _native_r2(lane, r2_policy):
         mutation_policy = lane.judge.mutation
         expected_policy = {
-            "jobs": mutation_policy.jobs,
             "max_mutants": mutation_policy.max_mutants,
             "operators": list(mutation_policy.operators),
             "mode": lane.judge.mode if lane.judge.mode is not None else "changed_lines",
@@ -1602,6 +1631,19 @@ def _check_verdict_against_lane(verdict: dict, *, lane_name: str, lane) -> dict:
                 raise ValueError(
                     f"R2 verdict policy {key} differs from the named lane declaration"
                 )
+        # The lane's ``jobs_max`` is a ceiling; v17 records the selected
+        # runtime count and its conservative attribution policy.
+        if r2_policy["jobs"] > _declared_native_jobs_max(mutation_policy):
+            raise ValueError(
+                "R2 verdict policy jobs differs from the named lane declaration"
+            )
+        expected_attribution = (
+            "serial" if r2_policy["jobs"] == 1 else "overlap-conservative"
+        )
+        if r2_policy.get("attribution") != expected_attribution:
+            raise ValueError(
+                "R2 verdict policy attribution differs from the selected worker count"
+            )
     return r2_policy
 
 
@@ -1771,9 +1813,9 @@ def campaign(
         lane, r2_policy if verdict is not None else None
     )
     if project_jobs is not None and native_r2 \
-            and project_jobs != lane.judge.mutation.jobs:
+            and project_jobs > _declared_native_jobs_max(lane.judge.mutation):
         raise ValueError(
-            "native R2 projection jobs must equal the lane's declared mutation jobs"
+            "native R2 projection jobs exceed the lane's declared mutation jobs_max"
         )
     stage.name = "plan"
     plan = _reconstruct_plan(
@@ -1932,7 +1974,16 @@ def campaign(
     selected_total = None if plan_total is None else len(selection)
     completed_total = len(items) - len(never_started) if have_outcomes else None
     pending_total = None if selected_total is None else max(0, selected_total - completed_total)
-    jobs = lane.judge.mutation.jobs if native_r2 else None
+    # A newly loaded lane has no runtime selection yet, so its plan default is
+    # serial. Once a v17 verdict exists, use the recorded effective workers.
+    jobs = (
+        r2_policy["jobs"] if native_r2 and verdict is not None
+        else 1 if native_r2 else None
+    )
+    attribution = (
+        r2_policy["attribution"] if native_r2 and verdict is not None
+        else "serial" if native_r2 else None
+    )
     timing = _timing(latest, pending=pending_total, jobs=jobs)
     projection = None
     if project_jobs is not None:
@@ -2076,6 +2127,8 @@ def campaign(
             "shard": None if shard[0] is None else f"{shard[0]}/{shard[1]}",
         },
         "campaign": {
+            "jobs": jobs,
+            "attribution": attribution,
             "planned_total": plan_total,
             "selected_total": selected_total,
             "completed_total": completed_total,

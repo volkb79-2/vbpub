@@ -12,6 +12,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 TOOL_DIR = Path(__file__).resolve().parent.parent / "tools"
 _spec = importlib.util.spec_from_file_location(
     "coverage_gate", TOOL_DIR / "coverage_gate.py")
@@ -26,7 +28,10 @@ def test_arg_parser_default_source_is_run_gate_py():
     the test suite and leaving this tool itself [file unmeasured]."""
     args = coverage_gate._build_arg_parser().parse_args(
         ["--coverage-json", "x.json"])
-    assert args.source == "run-gate-project/run_gate.py"
+    assert args.source is None  # main() then judges run_gate.py alone
+    args = coverage_gate._build_arg_parser().parse_args(
+        ["--coverage-json", "x.json", "--source", "a.py", "--source", "b.py"])
+    assert args.source == ["a.py", "b.py"]
 
 
 def test_parse_added_lines_basic():
@@ -865,3 +870,186 @@ def test_git_added_lines_tracks_content_when_symlink_becomes_module(tmp_path):
     )
     assert verdict.passed
     assert verdict.changed_executable == 8
+
+
+def test_parse_added_lines_does_not_read_a_plusplus_content_line_as_a_header():
+    """RG-116 item 4: an added line whose text is `++ x` renders as `+++ x`
+    in the diff. Read as a new-file header it re-targeted the following
+    lines to a bogus path and dropped them from the denominator."""
+    diff = (
+        "diff --git a/run_gate.py b/run_gate.py\n"
+        "--- a/run_gate.py\n"
+        "+++ b/run_gate.py\n"
+        "@@ -4,0 +5,3 @@\n"
+        "+first\n"
+        "+++ x\n"
+        "+third\n"
+        "@@ -9 +11,2 @@\n"
+        "---- y\n"
+        "+kept\n"
+        "+also\n"
+    )
+    assert coverage_gate.parse_added_lines(diff) == {
+        "run_gate.py": {5, 6, 7, 11, 12}}
+
+
+def test_parse_added_lines_counts_context_lines_of_a_wider_hunk():
+    diff = (
+        "+++ b/m.py\n"
+        "@@ -1,3 +1,3 @@\n"
+        " keep\n"
+        "-old\n"
+        "+new\n"
+        " tail\n"
+        "+++ b/n.py\n"
+        "@@ -1 +1 @@\n"
+        "-a\n"
+        "+b\n"
+    )
+    assert coverage_gate.parse_added_lines(diff) == {"m.py": {2}, "n.py": {1}}
+
+
+def test_parse_added_lines_ignores_a_hunk_of_a_deleted_file_body():
+    diff = (
+        "--- a/gone.py\n"
+        "+++ /dev/null\n"
+        "@@ -1,2 +0,0 @@\n"
+        "-+ plus-looking old line\n"
+        "-b\n"
+        "+++ b/kept.py\n"
+        "@@ -0,0 +1 @@\n"
+        "+x\n"
+    )
+    assert coverage_gate.parse_added_lines(diff) == {"kept.py": {1}}
+
+
+def test_statement_heads_maps_continuations_and_headers_not_bodies():
+    source = (
+        "def f(\n"            # 1
+        "    a,\n"            # 2  continuation of the def header
+        "    b=1,\n"          # 3
+        "):\n"                # 4
+        "    # note\n"        # 5  comment inside the body: no statement
+        "    x = call(\n"     # 6
+        "        a,\n"        # 7  continuation of a simple statement
+        "        b)\n"        # 8
+        "    if (a and\n"     # 9
+        "            b):\n"   # 10 continuation of the if header
+        "        return x\n"  # 11
+        "    return None\n"   # 12
+    )
+    heads = coverage_gate.statement_heads(source)
+    assert heads == {2: 1, 3: 1, 4: 1, 7: 6, 8: 6, 10: 9}
+    assert 5 not in heads and 11 not in heads and 12 not in heads
+
+
+def test_statement_heads_rejects_unparsable_source():
+    with pytest.raises(coverage_gate.CoverageGateError, match="cannot parse"):
+        coverage_gate.statement_heads("def (:\n")
+
+
+def test_evaluate_judges_a_changed_continuation_line_as_its_statement():
+    """RG-116 item 6: coverage.json lists line 6 only; a change confined to
+    line 7 used to leave the denominator and the gate went green."""
+    source = "def f():\n    pass\n\n\nx = 1\ny = call(\n    1,\n    2)\n"
+    cov = {"m.py": {"executed_lines": [1, 5], "missing_lines": [2, 6]}}
+    v = coverage_gate.evaluate({"m.py": {7}}, cov, "m.py",
+                               read_source=lambda path: source)
+    assert v.changed_executable == 1 and v.uncovered == {"m.py": {6}}
+    assert not v.passed
+    # Without the reader the change is invisible (the old behaviour).
+    assert coverage_gate.evaluate({"m.py": {7}}, cov, "m.py").skipped
+
+
+def test_evaluate_ignores_a_continuation_whose_head_is_not_executable():
+    source = 'x = 1\n"""doc\nstring"""\n'
+    cov = {"m.py": {"executed_lines": [1], "missing_lines": []}}
+    v = coverage_gate.evaluate({"m.py": {3}}, cov, "m.py",
+                               read_source=lambda path: source)
+    assert v.skipped
+
+
+def test_evaluate_judges_every_repeated_source_once():
+    added = {"a.py": {1}, "b.py": {1}, "c.py": {1}}
+    cov = {
+        "a.py": {"executed_lines": [1], "missing_lines": []},
+        "b.py": {"executed_lines": [], "missing_lines": [1]},
+        "c.py": {"executed_lines": [], "missing_lines": [1]},
+    }
+    only_a = coverage_gate.evaluate(added, cov, "a.py")
+    assert only_a.changed_executable == 1 and only_a.passed
+    both = coverage_gate.evaluate(added, cov, ["a.py", "b.py", "a.py"])
+    assert both.changed_executable == 2 and both.covered == 1
+    assert both.uncovered == {"b.py": {1}}
+
+
+def test_main_judges_every_source_and_reads_continuation_lines(tmp_path, capsys):
+    import subprocess
+
+    def git(*args):
+        subprocess.run(["git", "-C", str(tmp_path), *args],
+                       check=True, capture_output=True, text=True)
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "test@example.invalid")
+    git("config", "user.name", "test")
+    (tmp_path / "one.py").write_text("a = 1\n", encoding="utf-8")
+    (tmp_path / "two.py").write_text("b = 1\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-q", "-m", "base")
+    (tmp_path / "one.py").write_text("a = 1\nc = f(\n    2)\n", encoding="utf-8")
+    (tmp_path / "two.py").write_text("b = 1\nd = 3\n", encoding="utf-8")
+    cov_json = tmp_path / "coverage.json"
+    cov_json.write_text(json.dumps({"files": {
+        "one.py": {"executed_lines": [1, 2], "missing_lines": []},
+        "two.py": {"executed_lines": [1], "missing_lines": [2]},
+    }}), encoding="utf-8")
+    argv = ["--repo", str(tmp_path), "--base", "main",
+            "--coverage-json", str(cov_json)]
+    assert coverage_gate.main([*argv, "--source", "one.py"]) == 0
+    assert coverage_gate.main([*argv, "--source", "one.py",
+                               "--source", "two.py"]) == 1
+    out = capsys.readouterr().out
+    assert "1/2 changed executable lines covered" in out
+    assert "  two.py: [2]" in out
+
+
+def test_source_reader_reads_and_names_an_unreadable_source(tmp_path):
+    (tmp_path / "m.py").write_text("a = 1\n", encoding="utf-8")
+    assert coverage_gate._source_reader(str(tmp_path))("m.py") == "a = 1\n"
+    with pytest.raises(coverage_gate.CoverageGateError, match="cannot read source"):
+        coverage_gate._source_reader(str(tmp_path / "nowhere"))("m.py")
+
+
+def test_statement_heads_handles_match_and_try_headers():
+    source = (
+        "match (a,\n"           # 1
+        "       b):\n"          # 2
+        "    case 1:\n"         # 3
+        "        pass\n"        # 4
+        "try:\n"                # 5
+        "    x = 1\n"           # 6
+        "finally:\n"            # 7
+        "    y = 2\n"           # 8
+    )
+    assert coverage_gate.statement_heads(source) == {2: 1}
+
+
+def test_evaluate_skips_a_file_entry_with_no_changed_lines():
+    cov = {"m.py": {"executed_lines": [1], "missing_lines": []}}
+    assert coverage_gate.evaluate({"m.py": set()}, cov, "m.py").skipped
+    assert coverage_gate.evaluate({"n.py": set()}, cov, "n.py").skipped
+
+
+def test_selftest_lane_judges_both_shipped_modules():
+    """RG-116 item 3: the lane must repeat `--source` so the wheel's
+    run_gate_admission.py is diff-judged too, not only run_gate.py."""
+    import tomllib
+
+    config = tomllib.loads(
+        (Path(__file__).resolve().parent.parent / "run-gate.toml")
+        .read_text(encoding="utf-8"))
+    command = config["lanes"]["selftest"]["argv"][-1]
+    sources = [part for part in command.split("--source ")[1:]]
+    assert [s.split()[0].rstrip('"') for s in sources] == [
+        "run_gate.py", "run_gate_admission.py", "run_gate_profile.py"]

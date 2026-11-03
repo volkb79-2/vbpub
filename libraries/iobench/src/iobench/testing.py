@@ -218,7 +218,7 @@ def mode_profile(latency_us: float, sigma: float) -> list[tuple[int, float]]:
         hi = bisect.bisect_right(_BIN_US, math.exp(mu + 4 * sigma))
         raw = []
         for i in range(lo, hi):
-            left = math.log(_BIN_US[i - 1]) if i > 0 and _BIN_US[i - 1] > 0 else mu - 8 * sigma
+            left = math.log(_BIN_US[i - 1]) if _BIN_US[i - 1] > 0 else mu - 8 * sigma  # i >= 1: _BIN_US[0] == 0 is below every bound
             right = math.log(_BIN_US[i + 1]) if i + 1 < HIST_BINS else mu + 8 * sigma
             a, b = (left + math.log(max(_BIN_US[i], 1e-9))) / 2, (right + math.log(max(_BIN_US[i], 1e-9))) / 2
             raw.append((i, _phi((b - mu) / sigma) - _phi((a - mu) / sigma)))
@@ -263,7 +263,6 @@ class FakeDevice:
         self.cache: CacheModel | None = None
         self.unwritten_reads: list[tuple[int, int]] = []
         self.log: list[tuple[str, int, int]] = []
-        self.o_direct = True
         self.write_bytes = 0
 
     @property
@@ -356,7 +355,7 @@ class FakeFio:
             if cache is not None and not job.writes:
                 h1, h2 = cache.hit_fractions(job.offset, job.end)
             iops = self._rate(d, job, h1, h2, cache)
-            if job.writes and fresh:
+            if fresh:  # 0.0 unless the job writes
                 pen = d.fresh_penalty if job.random else d.fresh_penalty_seq
                 iops /= 1 + fresh * (pen - 1)
             mult = self.s.ceiling(t0 + hi) if self.s.ceiling else 1.0
@@ -635,11 +634,7 @@ class FakeHost:
         return None
 
     def _mount_for(self, path: str) -> str:
-        best = "/"
-        for mp in self.fs_space:
-            if (path == mp or path.startswith(mp.rstrip("/") + "/")) and len(mp) > len(best):
-                best = mp
-        return best
+        return max((mp for mp in self.fs_space if path == mp or path.startswith(mp.rstrip("/") + "/")), key=len, default="/")
 
     def statfs(self, path: str) -> tuple[int, int]:
         total, free = self.fs_space[self._mount_for(path)]
@@ -774,8 +769,7 @@ class FakeHost:
         sc = self.scenario
         dirty = 0.0
         for _start, end, _bps in self.loads:
-            dirty = sc.dirty_peak_bytes if self.clock <= end else max(
-                0.0, sc.dirty_peak_bytes - sc.drain_bps * (self.clock - end))
+            dirty = max(0.0, sc.dirty_peak_bytes - sc.drain_bps * max(0.0, self.clock - end))
         return (f"MemTotal:        8126464 kB\nMemAvailable:    8126464 kB\nDirty: {int(dirty / 1024)} kB\n"
                 "Writeback:             0 kB\n")
 

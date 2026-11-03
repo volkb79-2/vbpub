@@ -12,6 +12,7 @@ import os
 import signal
 import stat
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from conftest import R0_LANE, make_lane, native_outcome
@@ -157,6 +158,27 @@ def test_signal_handler_treats_a_failing_request_as_first_and_swallows_errors(mo
     )
     cli._termination_signal_handler(signal.SIGHUP, None)
     assert [call[0] for call in calls] == ["request", "terminate", "write"]
+
+
+def test_signal_handler_swallows_window_cleanup_error_and_still_announces(monkeypatch):
+    calls = _handler_stubs(monkeypatch)
+
+    def fail_window_cleanup():
+        calls.append(("window",))
+        raise RuntimeError("cleanup failed")
+
+    monkeypatch.setattr(
+        cli.liveness, "terminate_live_window_hosts", fail_window_cleanup
+    )
+    cli._termination_signal_handler(signal.SIGTERM, None)
+    assert [call[0] for call in calls] == [
+        "request",
+        "terminate",
+        "window",
+        "write",
+    ]
+    assert calls[-1][:2] == ("write", 2)
+    assert b"termination requested (signal 15)" in calls[-1][2]
 
 
 # ------------------------------------------- signal installation and main() guards
@@ -556,13 +578,13 @@ def test_ensure_pilot_state_wraps_an_unopenable_state_directory(tmp_path):
 def test_ensure_pilot_state_refuses_a_sentinel_that_appears_during_creation(tmp_path, monkeypatch):
     root = tmp_path / "state"
     root.mkdir()
-    real_fsync = os.fsync
+    real_fsync = cli._durable.fsync
 
     def racing_fsync(fd):
         real_fsync(fd)
         (root / "PILOT-STATE").write_text("raced")
 
-    monkeypatch.setattr(cli.os, "fsync", racing_fsync)
+    monkeypatch.setattr(cli._durable, "fsync", racing_fsync)
     with pytest.raises(cli.PilotStateError, match="appeared while the pilot state was being created"):
         cli._ensure_pilot_state(root, lane="package", selection_sha256="b" * 64)
     assert [p.name for p in root.iterdir()] == ["PILOT-STATE"]  # temp file removed
@@ -596,6 +618,39 @@ def test_budget_record_lookup_without_a_valid_judge_digest_is_false(tmp_path):
     assert cli._pilot_has_budget_record(
         tmp_path, object(), judge_sha256="nothex", campaign_deadline_sha256=None, cold_witness=False
     ) is False
+
+
+def test_budget_record_lookup_preserves_terminal_evidence_corruption(
+    tmp_path, monkeypatch
+):
+    corruption = cli.mutation.MutationTerminalEvidenceError("invalid terminal proof")
+
+    def load_corrupt_record(*_args, **_kwargs):
+        raise corruption
+
+    monkeypatch.setattr(cli.mutation, "_load_validated_state_record", load_corrupt_record)
+    with pytest.raises(cli.mutation.MutationTerminalEvidenceError) as caught:
+        cli._pilot_has_budget_record(
+            tmp_path,
+            object(),
+            judge_sha256="a" * 64,
+            campaign_deadline_sha256=None,
+            cold_witness=False,
+        )
+    assert caught.value is corruption
+
+
+def test_pilot_timeout_claim_is_not_complete():
+    timeout_claim = SimpleNamespace(
+        rigor="R2",
+        mutation=object(),
+        reason_code=ReasonCode.LANE_TIMEOUT,
+    )
+    verdict = SimpleNamespace(claims=(timeout_claim,))
+
+    assert not cli._pilot_completed(
+        verdict, frozenset(), unresolved=[]
+    )
 
 
 def test_capture_pilot_judge_identity_tracks_agreement_and_conflict():
