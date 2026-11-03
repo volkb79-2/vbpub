@@ -11,7 +11,7 @@ never take a port of a live project.
 |---|---|---|
 | [`mattermost-server/`](mattermost-server/README.md) | live stack (the move into this area needs `MIGRATION.md` run once in the main checkout) | Mattermost Team Edition + Calls (on by default), provisioned for nyxloom; media via tls-edge |
 | [`mattermore/`](mattermore/README.md) | tryout, rendered/validated only, never started | Mattermost fork with group calls and other paywalled features enabled; isolated, no published ports |
-| Jitsi (planned) | not created | docker-jitsi-meet: group calls, screen share, client-side noise suppression, remote control in the Electron client |
+| [`jitsi-server/`](jitsi-server/README.md) | rendered/validated, smoke-tested up 2026-11-04 (host-side only; the worktree start used compose directly, `ciu up` needs the project in the main checkout) | docker-jitsi-meet (web, prosody, jicofo, jvb): group calls, screen share, noise suppression, remote control via Jitsi Meet Electron (`CLIENT.md`); secure-domain auth with generated users (`USERS.md`); HTTPS at `jitsi.<domain>` via tls-edge, JVB UDP 10000 on the host |
 | Mumble (planned) | not created | always-on voice channels (TeamSpeak-like), tiny |
 | Matrix + LiveKit (planned) | not created | Synapse, Element Web/Cinny, LiveKit SFU, lk-jwt-service; replaces rather than adds to chat |
 | RustDesk server (planned) | not created | remote-control sidecar usable with any chat |
@@ -31,7 +31,7 @@ Public ports are claimed in one place so projects cannot collide. The edge (tls-
 | 9443 | TCP | tls-edge | alternate HTTPS (port-based fallback) |
 | 8443 | TCP+UDP | tls-edge -> Mattermost Calls | media pair (UDP preferred, TCP fallback); internal Traefik entrypoints TCP 8444 and UDP 8443 |
 | none (default) | - | mattermore tryout | optional `media_host_port`, never one of the above |
-| 10000 | UDP | Jitsi (planned) | JVB media (single port); TCP 4443 optional fallback |
+| 10000 | UDP | Jitsi (`jitsi-server`) | JVB media (single port), published directly on the host (not via the edge); open it in host and provider firewall. No TCP fallback in the stable-11031 image |
 | 64738 | TCP+UDP | Mumble (planned) | control + voice |
 | 7881 TCP, 7882 UDP | | Matrix/LiveKit (planned) | LiveKit single-port mux; if not muxed the range UDP 50000-60000 |
 | 3478/5349 TCP+UDP, relay UDP 49152-65535 | | optional TURN (coturn) | only when direct media is blocked; the relay range is large: prefer LiveKit's built-in TURN first |
