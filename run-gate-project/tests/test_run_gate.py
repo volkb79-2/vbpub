@@ -13826,13 +13826,14 @@ SUMMARY_V1 = json.loads(
 def record_profiled_run(proj: Path, repo: Path, resources: dict | None, *,
                         lane: str = "suite", exit_code: int | None = 0,
                         seconds: float = 1.0, keep: int = 10,
-                        profile_error: str | None = None) -> dict:
+                        profile_error: str | None = None,
+                        io_sync: str = "strict") -> dict:
     """`record_run`'s exact recipe (real git repo, real ignore check, real
     lock, real atomic write; only the clock substituted), PLUS the three
     profiling fields `run_container_lane`/`run_exec_lane` actually set on a
     real record -- `record_run` never touches them (schema-1-shaped, the
     'never profiled' baseline these tests need a contrasting fixture to)."""
-    rec = run_gate.start_run_record(lane, repo, repo)
+    rec = run_gate.start_run_record(lane, repo, repo, io_sync=io_sync)
     rec["_started_monotonic"] = time.monotonic() - seconds
     run_gate.finish_run_record(rec, exit_code=exit_code)
     rec["resources"] = resources
@@ -13923,6 +13924,7 @@ class TestFootprintManifestBuild:
             "from_commit": "deadbeef", "keep": 10,
             "lanes": {"suite": {
                 "runs": 1, "completed_runs": 1,
+                "io_sync": "strict",
                 "scope": "container-shared", "method": "daemon",
                 "source": "sampled-max",
                 # RW-46b: a daemon-path Summary (SUMMARY_V1) carries no
@@ -14031,6 +14033,152 @@ FOOTPRINT_LANE = """\
 
 def read_footprint(proj: Path) -> dict:
     return json.loads((proj / run_gate.FOOTPRINT_FILE_NAME).read_text())
+
+
+def _peak_summary(peak_mib: int) -> dict:
+    """SUMMARY_V1 with only the memory peak replaced."""
+    out = json.loads(json.dumps(SUMMARY_V1))
+    out["memory"]["peak_bytes"] = peak_mib * MIB
+    return out
+
+
+class TestFootprintIoModeSeparation:
+    """RG-136: display, `doctor` and the manifest read ONE I/O mode's
+    statistics, never the strict+relaxed mixture."""
+
+    STRICT_MIB, RELAXED_MIB = 700, 100
+
+    def _mixed(self, tmp_path, config=FOOTPRINT_LANE):
+        repo, proj = make_history_repo(tmp_path, config=config)
+        record_profiled_run(proj, repo, _peak_summary(self.STRICT_MIB),
+                            io_sync="strict")
+        record_profiled_run(proj, repo, _peak_summary(self.RELAXED_MIB),
+                            io_sync="relaxed")
+        return repo, proj
+
+    def _entries(self):
+        def entry(mode, mib):
+            return {"commit": "a", "outcome": "pass", "duration_seconds": 1.0,
+                    "history_eligible": True, "io_sync": mode,
+                    "started_at": "2026-01-01T00:00:00Z",
+                    "resources": _peak_summary(mib)}
+        return [entry("strict", self.STRICT_MIB),
+                entry("relaxed", self.RELAXED_MIB)]
+
+    def test_manifest_policy_mode_selects_only_that_modes_statistics(self):
+        store = {"schema": 2, "lanes": {"suite": {
+            "latest": None, "history": self._entries()}}}
+        for mode, mib in (("strict", self.STRICT_MIB),
+                          ("relaxed", self.RELAXED_MIB)):
+            lane = run_gate.build_footprint_manifest(
+                store, {"suite": {}}, 10, "H",
+                io_modes={"suite": mode})["lanes"]["suite"]
+            assert lane["io_sync"] == mode
+            assert lane["runs"] == 1
+            assert lane["completed_runs"] == 1
+            assert lane["memory_peak_bytes"]["median"] == mib * MIB
+
+    def test_manifest_without_policy_mode_uses_latest_profiled_mode(self):
+        store = {"schema": 2, "lanes": {"suite": {
+            "latest": None, "history": self._entries()}}}
+        lane = run_gate.build_footprint_manifest(
+            store, {"suite": {}}, 10, "H")["lanes"]["suite"]
+        assert lane["io_sync"] == "relaxed"
+        assert lane["memory_peak_bytes"]["median"] == self.RELAXED_MIB * MIB
+
+    def test_footprint_verb_writes_the_lane_policy_mode(
+            self, tmp_path, monkeypatch, capsys):
+        # The lane policy says relaxed even though strict ran last.
+        repo, proj = make_history_repo(
+            tmp_path,
+            config=FOOTPRINT_LANE + '\n    [lanes.suite.resources]\n'
+                                    '    io_sync = "relaxed"\n')
+        record_profiled_run(proj, repo, _peak_summary(self.RELAXED_MIB),
+                            io_sync="relaxed")
+        record_profiled_run(proj, repo, _peak_summary(self.STRICT_MIB),
+                            io_sync="strict")
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
+        assert run_gate.main(["footprint", "--write"]) == 0, \
+            capsys.readouterr().err
+        lane = read_footprint(proj)["lanes"]["suite"]
+        assert lane["io_sync"] == "relaxed"
+        assert lane["memory_peak_bytes"]["median"] == self.RELAXED_MIB * MIB
+
+    def test_footprint_line_compares_with_the_runs_own_mode(
+            self, tmp_path, capsys):
+        _, proj = self._mixed(tmp_path)
+        run_gate.print_footprint_line("suite", proj,
+                                      _peak_summary(self.STRICT_MIB))
+        strict_out = capsys.readouterr().out
+        assert "history median peak 700 MiB (1 runs)" in strict_out
+        run_gate.print_footprint_line("suite", proj,
+                                      _peak_summary(self.RELAXED_MIB),
+                                      "relaxed")
+        relaxed_out = capsys.readouterr().out
+        assert "history median peak 100 MiB (1 runs, io_sync=relaxed)" \
+            in relaxed_out
+
+    def test_footprint_line_refuses_a_manifest_of_another_mode(
+            self, tmp_path, capsys):
+        _, proj = self._mixed(tmp_path)
+        manifest = {"schema": 1, "lanes": {"suite": {
+            "io_sync": "strict",
+            "memory_peak_bytes": {"median": 700 * MIB, "max": 700 * MIB}}}}
+        (proj / run_gate.FOOTPRINT_FILE_NAME).write_text(json.dumps(manifest))
+        run_gate.print_footprint_line("suite", proj,
+                                      _peak_summary(self.RELAXED_MIB),
+                                      "relaxed")
+        out = capsys.readouterr().out
+        assert "| manifest not comparable (distilled under io_sync=strict)" \
+            in out
+        assert "| manifest 700 MiB" not in out
+
+    def _doctor(self, tmp_path, monkeypatch, capsys, manifest_lane):
+        _, proj = self._mixed(tmp_path)
+        manifest = {"schema": 1,
+                    "distilled_at": run_gate._iso_utc(time.time()),
+                    "lanes": {"suite": manifest_lane}}
+        (proj / run_gate.FOOTPRINT_FILE_NAME).write_text(json.dumps(manifest))
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
+        code = run_gate.main(["doctor"])
+        return code, capsys.readouterr().out
+
+    def test_doctor_drift_uses_the_manifest_entrys_mode(
+            self, tmp_path, monkeypatch, capsys):
+        # The combined median of 700 and 100 MiB is 400 MiB: it would drift
+        # from BOTH single-mode manifests; per-mode reading does not.
+        for mode, mib in (("strict", 700), ("relaxed", 100)):
+            (tmp_path / mode).mkdir()
+            code, out = self._doctor(
+                tmp_path / mode, monkeypatch, capsys,
+                {"io_sync": mode,
+                 "memory_peak_bytes": {"median": mib * MIB, "max": mib * MIB}})
+            assert "[OK] footprint drift" in out, out
+            assert "footprint drift 'suite'" not in out
+            assert "footprint manifest io_sync" not in out
+            assert code == 0
+
+    def test_doctor_flags_drift_against_the_manifest_mode_only(
+            self, tmp_path, monkeypatch, capsys):
+        code, out = self._doctor(
+            tmp_path, monkeypatch, capsys,
+            {"io_sync": "relaxed",
+             "memory_peak_bytes": {"median": 700 * MIB, "max": 700 * MIB}})
+        assert "[WARN] footprint drift 'suite'" in out
+        assert "live history median peak 100 MiB" in out
+
+    def test_doctor_treats_a_legacy_manifest_as_strict_and_names_migration(
+            self, tmp_path, monkeypatch, capsys):
+        code, out = self._doctor(
+            tmp_path, monkeypatch, capsys,
+            {"memory_peak_bytes": {"median": 700 * MIB, "max": 700 * MIB}})
+        assert "[OK] footprint drift" in out
+        assert "[INFO] footprint manifest io_sync" in out
+        assert "treated as strict" in out
+        assert "footprint --write" in out
 
 
 class TestFootprintVerbCLI:
