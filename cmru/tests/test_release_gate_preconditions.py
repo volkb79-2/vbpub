@@ -429,6 +429,71 @@ def test_release_gate_identity_preflight_uses_the_current_gate_composition(tmp_p
     }
 
 
+def test_release_gate_identity_preflight_preserves_version_for_later_errors(tmp_path, monkeypatch):
+    _mock_gate_identity_config(monkeypatch)
+
+    class BrokenIdentity(dict):
+        def get(self, key, default=None):
+            if key == "tester_image":
+                raise RuntimeError("identity response was malformed")
+            return super().get(key, default)
+
+    monkeypatch.setattr(
+        release_preconditions, "_load_release_gate",
+        lambda *_args: SimpleNamespace(
+            _current_run_gate_identity=lambda _root: BrokenIdentity(version="24.3.0"),
+        ),
+    )
+
+    row = release_preconditions._run_gate_release_identity_preflight(
+        tmp_path, tmp_path, "HEAD",
+    )
+
+    assert row.status == "FAIL"
+    assert "Resolve the Run-Gate preflight error" in row.remedy
+
+
+def test_release_gate_identity_preflight_recovers_image_from_gate_diagnostic(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(
+        release_preconditions, "_selected_tester_image_from_source",
+        lambda *_args: (_ for _ in ()).throw(
+            RuntimeError("tester-unified image 'tester-unified:from-gate' is invalid")
+        ),
+    )
+
+    row = release_preconditions._run_gate_release_identity_preflight(
+        tmp_path, tmp_path, "HEAD",
+    )
+
+    assert row.status == "FAIL"
+    assert "tester-unified:from-gate" in row.detail
+    assert "Resolve the Run-Gate preflight error" in row.remedy
+
+
+def test_release_gate_identity_preflight_reports_source_config_remedy(tmp_path, monkeypatch):
+    blobs = {
+        "cmru.orchestration.toml": (
+            "[orchestration.project.cmru]\nconfig = 'cmru/cmru.toml'\n"
+        ),
+        "run-gate.root.toml": "[environments]\n",
+        "cmru/cmru.toml": "[project]\nid = 'cmru'\n",
+    }
+    monkeypatch.setattr(
+        release_preconditions, "_git_blob_text",
+        lambda _root, _revision, path: blobs[path],
+    )
+
+    row = release_preconditions._run_gate_release_identity_preflight(
+        tmp_path, tmp_path, "HEAD",
+    )
+
+    assert row.status == "FAIL"
+    assert "run-gate.root.toml" in row.detail
+    assert "Repair the Run-Gate or CMRU orchestration config" in row.remedy
+
+
 def test_release_gate_identity_preflight_calls_the_current_gate_without_extra_arguments(tmp_path, monkeypatch):
     _mock_gate_identity_config(monkeypatch)
     def current(_root):
