@@ -2193,3 +2193,111 @@ class TestL7ForbidAbsentPathNL26:
         path = self._handoff(tmp_path, forbid='"docs/archive/foo.md"')
         errors = self._l7_errors(path, sample_project)
         assert any("archived document" in f.message for f in errors)
+
+
+class TestL7SiblingProjectPathNL9:
+    """NL-9: a bare scope.touch path into a sibling project of the same
+    monorepo checkout is validated against the REAL sibling file, not
+    silently accepted as a to-be-created file under the project root."""
+
+    _h = staticmethod(TestL7ForbidAbsentPathNL26._handoff)
+    _errs = staticmethod(TestL7ForbidAbsentPathNL26._l7_errors)
+
+    def test_existing_sibling_file_passes_and_is_checked(self, sample_project, tmp_path):
+        sib = tmp_path / "pwmcp" / "ciu.global.defaults.toml.j2"
+        sib.parent.mkdir()
+        sib.write_text("x")
+        path = self._h(tmp_path, touch='"pwmcp/ciu.global.defaults.toml.j2"')
+        assert self._errs(path, sample_project) == []
+        sib.unlink()  # the pass really checked the file: now it must fail
+        errors = self._errs(path, sample_project)
+        assert any("missing sibling file" in f.message for f in errors)
+
+    def test_missing_sibling_file_errors(self, sample_project, tmp_path):
+        (tmp_path / "pwmcp").mkdir()
+        path = self._h(tmp_path, touch='"pwmcp/nope.j2"')
+        errors = self._errs(path, sample_project)
+        assert any("missing sibling file" in f.message and "pwmcp/nope.j2" in f.message
+                   for f in errors)
+
+    def test_own_project_dir_still_creatable(self, sample_project, tmp_path):
+        # 'docs' exists in the project root; a same-named sibling must not
+        # turn a to-be-created in-project file into an error.
+        (tmp_path / "docs").mkdir()
+        path = self._h(tmp_path, touch='"docs/brand-new.md"')
+        assert self._errs(path, sample_project) == []
+
+    def test_parent_traversal_still_errors(self, sample_project, tmp_path):
+        path = self._h(tmp_path, touch='"../pwmcp/x"')
+        assert any("non-resolving" in f.message
+                   for f in self._errs(path, sample_project))
+
+
+class TestL4NL28:
+    """NL-28: L4 fires once per handoff, only for identifier-shaped tokens."""
+
+    @staticmethod
+    def _l4(tmp_path, project, observables, body_extra=""):
+        oracles = "".join(
+            f"  - id: O{i}\n    observable: {obs!r}\n    negative: \"fail\"\n"
+            f"    gate: pytest-q\n" for i, obs in enumerate(observables, 1))
+        content = (
+            "---\nschema_version: 1\nid: demo-P01-test\nproject: demo\n"
+            "title: Test\ntier: flash-high\ninput_revision: \"0000000\"\n"
+            "source: {kind: roadmap}\nscope: {touch: [\"src/test.py\"]}\n"
+            f"oracles:\n{oracles}gates: [pytest-q]\nescalate_if: [\"trigger\"]\n---\n\n"
+            "Body with BLOCKED: marker.\n"
+            "worktree branch out of scope read first context to read\n"
+            + body_extra)
+        path = tmp_path / "demo-P01-test.md"
+        path.write_text(content)
+        return [f for f in lint.lint_file(path, project) if f.rule == "L4"]
+
+    def test_identifiers_warn_once(self, sample_project, tmp_path):
+        found = self._l4(tmp_path, sample_project,
+                         ["every audit record field: `outcome`, `stderr`"])
+        assert len(found) == 1
+
+    def test_file_paths_do_not_warn(self, sample_project, tmp_path):
+        found = self._l4(tmp_path, sample_project,
+                         ["every audit record field in `src/a.py` and `docs/b.md`"])
+        assert found == []
+
+    def test_many_oracles_one_finding_naming_all(self, sample_project, tmp_path):
+        obs = ["every audit record field: `outcome`, `stderr`"] * 6
+        found = self._l4(tmp_path, sample_project, obs)
+        assert len(found) == 1
+        assert all(f"O{i}" in found[0].message for i in range(1, 7))
+
+    def test_universal_phrase_in_code_fence_ignored(self, sample_project, tmp_path):
+        fence = "\n```\nevery audit record field\n```\n"
+        found = self._l4(tmp_path, sample_project,
+                         ["pass: `outcome`, `stderr`"], body_extra=fence)
+        assert found == []
+
+
+def test_coverage_floor_assert_lints_clean_and_is_distinct_nl25(tmp_path):
+    """NL-25: `coverage-floor` is a valid, distinct asserts value; unknown
+    values still fail CFG1 and it is not an alias of changed-line-coverage."""
+    from nyxloom import adapters
+    root = _write_config_project(tmp_path, VALID_CONFIG_TOML)
+    cfg = config.ProjectConfig.load(root)
+    good = VALID_CONFIG_TOML.replace(
+        "timeout_seconds = 60\n",
+        'timeout_seconds = 60\nasserts = ["tests-pass", "coverage-floor"]\n')
+    (root / "nyxloom-trove" / "nyxloom.toml").write_text(good)
+    assert lint.lint_config(cfg) == []
+    cfg2 = config.ProjectConfig.load(root)
+    gate_asserts = next(iter(cfg2.gates.values())).asserts
+    assert gate_asserts == ["tests-pass", "coverage-floor"]  # preserved verbatim
+    # not treated as the rigorous changed-line-coverage signal
+    assert "changed-line-coverage" in adapters._RIGOROUS_ASSERTS
+    assert "coverage-floor" not in adapters._RIGOROUS_ASSERTS
+    directive = adapters.compute_review_depth_directive(
+        scope_touch=["a.py"], gate_asserts=gate_asserts)
+    assert directive != ""
+
+    bad = good.replace('"coverage-floor"', '"coverage-floorz"')
+    (root / "nyxloom-trove" / "nyxloom.toml").write_text(bad)
+    assert any(f.rule == "CFG1" and f.severity == "error"
+               for f in lint.lint_config(config.ProjectConfig.load(root)))

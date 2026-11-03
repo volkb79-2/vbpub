@@ -126,6 +126,7 @@
               "enum": [
                 "tests-pass",
                 "changed-line-coverage",
+                "coverage-floor",
                 "mutation",
                 "canary-verified",
                 "assay-verdict"

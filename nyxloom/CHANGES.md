@@ -4,6 +4,10 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+- fix(nyxloom): NL-9 lint L7 validates a bare scope.touch path into a sibling monorepo project against the real file instead of accepting it unchecked
+- fix(nyxloom): NL-28 lint L4 (P78) ignores path/command-shaped tokens and code fences and reports once per handoff naming every oracle
+- feat(nyxloom): NL-25 add `coverage-floor` to the gate asserts vocabulary (schema, config docs, STANDARD.md), distinct from `changed-line-coverage`
+
 <!-- cmru: release history -->
 
 ## [0.12.0] - 2026-10-30

@@ -246,12 +246,15 @@ For a broader, risk-based catalogue of deterministic and asynchronous evidence
 
 **Gate rigor is a first-class, per-project fact.** A weak gate shifts the
 correctness burden onto the reviewer, so a project SHOULD declare what its gate
-actually asserts (the `asserts=[tests-pass|changed-line-coverage|mutation|
+actually asserts (the `asserts=[tests-pass|changed-line-coverage|coverage-floor|mutation|
 canary-verified|assay-verdict]` key on `[gates.*]`) — nyxloom surfaces it and
 routes review depth accordingly. Declaring a coverage floor is offered, not
 mandated — advisable wherever the ecosystem supports it (`cargo llvm-cov`/`nyc`,
 or your project's own declared assay/run-gate lane), but a project that runs tests
-without one is still a valid consumer; it simply leans harder on the reviewer. Full
+without one is still a valid consumer; it simply leans harder on the reviewer.
+`coverage-floor` declares that the gate enforces its own configured coverage floor
+(the gate's contract says which target and whether branches count); it is distinct
+from `changed-line-coverage` and is never aliased to it. Full
 rationale + the layered model (gate ⊕ reviewer ⊕ controller): `nyxloom-trove/
 LESSONS.md` PL2. The onboarding/verification workflow (offer to build a missing gate;
 carver re-verifies the gate still rejects a known-bad canary): `docs/plan-gate-adoption.md`.
