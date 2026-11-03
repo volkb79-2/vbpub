@@ -144,6 +144,19 @@ def _install(monkeypatch, cowtree, gc=None):
     return fake_gc
 
 
+def test_cowtree_gc_import_names_the_gc_module(monkeypatch):
+    module = object()
+    calls = []
+    monkeypatch.setattr(
+        _cow_workspace.importlib,
+        "import_module",
+        lambda name: calls.append(name) or module,
+    )
+
+    assert _cow_workspace._load_cowtree_gc() is module
+    assert calls == ["cowtree.gc"]
+
+
 def test_unconfigured_cow_root_never_imports_cowtree(tmp_path, monkeypatch):
     # B196: no MDT_COW_ROOT means no area; a missing cowtree must not matter.
     monkeypatch.delenv("MDT_COW_ROOT", raising=False)

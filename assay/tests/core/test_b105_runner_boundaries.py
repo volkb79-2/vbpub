@@ -442,6 +442,67 @@ def test_workspace_close_failure_after_the_lane_completed_is_an_advisory(
     )
 
 
+def test_workspace_close_failure_without_diagnostics_still_keeps_the_verdict(
+    git_repo: GitRepo, monkeypatch
+):
+    head, lane = _seed_r1_lane(git_repo)
+    real_prepare = runner.isolation.prepare_snapshot
+
+    @contextmanager
+    def prepare_then_fail_workspace_close(spec, *, timeout, workspace):
+        with real_prepare(spec, timeout=timeout, workspace=workspace) as prepared:
+            yield prepared
+        raise WorkspaceCleanupError(
+            "copy-on-write workspace cleanup failed",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.EXEC_FAILED,
+        )
+
+    monkeypatch.setattr(
+        runner.isolation, "prepare_snapshot", prepare_then_fail_workspace_close
+    )
+    verdict = runner.run_lane(
+        lane,
+        commit=head,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=PythonAdapter(),
+        assay_version="7.1.0",
+        process_runner=_write_coverage,
+    )
+
+    assert verdict.outcome is Outcome.PASS
+
+
+def test_workspace_failure_before_any_measurement_is_a_named_refusal(
+    git_repo: GitRepo, monkeypatch
+):
+    head, lane = _seed_r1_lane(git_repo)
+
+    def fail_before_yield(*_args, **_kwargs):
+        raise WorkspaceCleanupError(
+            "copy-on-write workspace cleanup failed: early",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.EXEC_FAILED,
+        )
+
+    monkeypatch.setattr(runner.isolation, "prepare_snapshot", fail_before_yield)
+    diagnostics = StringIO()
+    verdict = runner.run_lane(
+        lane,
+        commit=head,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=PythonAdapter(),
+        assay_version="7.1.0",
+        diagnostics=diagnostics,
+    )
+
+    assert verdict.outcome is Outcome.ERROR
+    assert verdict.reason_code is ReasonCode.EXEC_FAILED
+    assert "assay: ERROR/EXEC_FAILED: " in diagnostics.getvalue()
+
+
 def test_leaked_state_at_cleanup_still_replaces_the_completed_claim(
     git_repo: GitRepo, monkeypatch
 ):
