@@ -3,7 +3,7 @@
 This file records consumer-facing product gaps for later triage. Normative
 behavior remains in the product specification and consumer documentation.
 
-Last updated: 2026-11-03 (GlyphGrid tooling integration; PWMCP-18 transparency gap identified during R2 survivor triage).
+Last updated: 2026-11-03 (local console-corpus verification; R2 follow-up; GlyphGrid tooling integration; PWMCP-18 transparency gap identified during R2 survivor triage).
 
 ## PWMCP-01 — Provide a rendered-page inspection command
 
@@ -287,7 +287,7 @@ plainly that fetches must be serialised; today the error names a flag the servic
 
 ## PWMCP-11 — OCR sidecar and console watching (program)
 
-**Status: phase 1 FIXED-ON-BRANCH (2026-10-27), release wiring for the second image included (FIXED-ON-BRANCH, unverified until a real release is cut); phases 2 and 3 OPEN.**
+**Status: phase 1 RELEASED in 1.64.0-r4 (2026-11-02); phases 2 and 3 OPEN.**
 
 **Need.** Automating a host console through a web console. The Netcup SCP "Screen" is ONE 1280x800 `<canvas>`
 fed by a VNC WebSocket, so Playwright snapshots carry no text and an agent was interpreting screenshots
@@ -328,11 +328,18 @@ reader fast path and frame-sequence reader, and deterministic synthetic image ge
 measurement and regression testing only. Phase 2 remains OPEN: the service engine is still registered as unavailable (HTTP 501), the watcher is
 not implemented, and the larger 242-frame console series used for performance measurements remains local.
 
-**Release wiring: FIXED-ON-BRANCH (operator decision 2026-10-27: extend the existing release so ONE pwmcp
-release builds, publishes and records BOTH images under one contract).** The image is first published in `1.64.0-r4`; this stays
-UNVERIFIED until the post-release smoke has run.
+**Local corpus verification (2026-11-03).** The 242-frame series is kept outside git and is never published. Its committed pin has no release URL;
+`tools/corpus/console_corpus.py` verifies a caller-supplied absolute `PWMCP_CONSOLE_CORPUS_DIR` against the frame index and deterministic tar
+SHA256. The two full-series tests skip with a reason when no path is selected and fail on absence when `PWMCP_REQUIRE_CONSOLE_CORPUS=1` is set.
+An invalid explicit path always fails. Registered gate lanes remain corpus-free, and no tester image change is required. Curated screenshots from
+public, anonymous sources remain eligible for git; generated per-font alphabets remain the preferred input for general reader tests.
+
+**Release wiring: RELEASED in 1.64.0-r4 (2026-11-02).** The release publishes both images at one coordinate, together with the bundle and generated
+installer. The post-release smoke verified the sidecar health and engine list and returned text and confidence for a generated PNG; the deployment
+check confirmed that `/contract` reports the r4 release. The sidecar remains opt-in and off by default. Tesseract is its only available engine;
+GlyphGrid stays unavailable through the service until a later phase implements and verifies the adapter.
 - Image: `ghcr.io/volkb79-2/pwmcp-ocr` (sibling of `ghcr.io/volkb79-2/pwmcp`, the repository naming
-  convention), tagged `<PWMCP_VERSION>` (the SAME coordinate, e.g. `1.64.0-r3`) and `latest`.
+  convention), tagged `<PWMCP_VERSION>` (the same coordinate, `1.64.0-r4` for this release) and `latest`.
 - Build/push: a `pwmcp-ocr` target in `docker-bake.hcl` (same context `.`, no extra platform/cache policy),
   added to the `all` group, so the existing `build-push.py --build/--push` bake builds and pushes both.
   `GHCR_PACKAGE_NAMES` is `pwmcp,pwmcp-ocr`, so the existing visibility sync runs for both packages. The main
@@ -346,27 +353,21 @@ UNVERIFIED until the post-release smoke has run.
   (`scripts/_vars.py`) now requires the two keys, so an old `cmru.vars` fails closed. The digest was read
   from Docker Hub on 2026-10-27 (`sha256:62bd423a...`).
 - Coordinate/contract: `pwmcp.ocr.image.tag` defaults to the pwmcp tag and the resolver keeps them equal.
-  `pwmcp.contract.json` carries no image coordinates (not for the main image either) and is UNCHANGED, as is
-  `get.py`; consumers pin images through the bundle's `ciu.defaults.toml.j2`, which now has both. Neither
+  `pwmcp.contract.json` records the release and Playwright version but no image coordinates; `get.py` is
+  generated from that release. Consumers pin both images through the bundle's `ciu.defaults.toml.j2`. Neither
   mdt-cockpit (it reads only the contract `release` and `get.py`) nor `topos/pwmcp-instance/UPSTREAM.toml`
   (vendored copy at 1.61.0-r6) needs a change; topos picks the OCR defaults up on its next re-vendor.
-- STILL OPEN / decisions not made: (a) DECIDED BY DESIGN, 2026-10-27: no age window for the rolling Debian base
-  digest (a rolling OS tag whose newer digests are mostly security rebuilds, which a window would only delay);
-  the digest is whatever the tag points to at `--refresh`. (b) The second GHCR package is created on first push; the existing
-  mirror-repo-visibility sync is applied to it, which assumes the release PAT may create and administer it.
-  (c) Whether to also register `debian:trixie-slim` as a cmru `[versions.targets."oci.*"]` target (mdt-cockpit
-  has advisory ones); NOT added, because it could not be validated without running cmru and a failed load
-  would break the release. (d) cmru's own artifact accounting still lists `artifacts = ["oci-image",
-  "bundle"]`; whether it needs to enumerate the second image is not checkable without running cmru. (e) The
-  main image's unpinned `debian:bookworm-slim` KSM builder stage is untouched.
+- Release design: the rolling Debian base digest has no age window; the resolver pins the current tag digest.
+  `debian:trixie-slim` is not a separate CMRU version target, and the main image's `debian:bookworm-slim` KSM
+  builder stage remains unchanged.
 
 **Result contract (reviewed 2026-10-27).** The sidecar result is COMPLETE: `min_conf` flags words below it
 (`low_conf`, per-line `conf_mean` / `conf_min` / `low_conf_words`, top-level `low_conf_words` and
 `min_conf_applied`) and never deletes them; removal is the explicit `drop_low_conf=1` opt-in. Phases 2-3 match
 on this text and send keystrokes, so doubt must stay visible.
 
-**Phase 2-3 hazards / required inputs** (from the Opus review and the TrueNAS capture; that corpus is on another
-branch, to be merged after this one):
+**Phase 2-3 hazards / required inputs** (from the Opus review and the TrueNAS capture; the local corpus and its
+verifier are now on main):
 - (a) `text` joins a line's words with single spaces, so the console's column layout is lost. Phase 2 needs a
   grid/rows output for console frames (a fixed 160x50 character grid at 1280x800), not free text.
 - (b) `_capture_element` captures at CSS size, which RESAMPLES the exact 8x16 px cell grid. Phase 2 must capture
@@ -382,52 +383,12 @@ branch, to be merged after this one):
 - The container `mem_limit`/`cpus`/`pids_limit` keys are author-set and replace (are not clamped by) the ciu
   governance overlay's per-service value (author-set keys win): their interaction with a live overlay is UNVERIFIED.
 
-**First release of the OCR image: checklist** (also in README "Release Model"): confirm the base digest with
-`docker buildx imagetools inspect debian:trixie-slim` (and `--refresh` if it differs); a transaction prepared
-before the new `cmru.vars` keys fails closed; confirm the token has `write:packages` for a new package
-(PWMCP-01); expect `pwmcp-ocr` to be created PRIVATE and unlinked and make it public once in the GHCR UI
-(the `org.opencontainers.image.source` label links it); if the visibility sync hard-fails after both images
-were pushed (cmru KI-97) re-run ONLY the sync step, never `cmru release --resume` without `--set-version`
-(the 2026-09-08 v1.0.0 incident). The sidecar image is first published in `1.64.0-r4`. The pwmcp gate lanes depend on the tester
-image carrying the pwmcp-client `test` extra (pytest, pillow, websockets, jinja2, pyyaml) plus node and sh.
-Operator policy 2026-10-27: a test needing an optional module or binary FAILS when it is missing (clear message
-naming it and the extra); skipping is the opt-in, `PWMCP_ALLOW_MISSING_TEST_DEPS=1` on a developer machine.
-One helper (`tests/_testdeps.py`) serves every site; the lanes set nothing. The real-Tesseract test keeps an
-explicit skip (the binary exists only in the sidecar image) and fails when `PWMCP_REQUIRE_TESSERACT=1` (set only
-in a lane that runs inside the OCR image; none exists today). `client/src/pwmcp_client/user_agent.py` (PWMCP-09) and the sidecar are judged targets at 100% line and branch
-(user_agent.py was 73% before: its `_main` and platform/hint branches had no in-process tests). The Node code
-(`ua-override/index.js`, the two gateways, the admin server) is outside the Python judge and is exercised only by
-the subprocess tests. Not judged: `get.py` (generated by `cmru get-py`, 1093 statements), `installer/adapter.py`,
-`scripts/build-bundle.py`, `scripts/publish-bundle.py`, `scripts/prepare-client-wheels.py`, `scripts/_vars.py`
-(partly covered, see the report). The controller owns the tester-unified change and
-image rebuild and the `test` extra in `client/pyproject.toml` (not touched on this branch: keep it verbatim on merge).
-
-**UNVERIFIED until an image is built and run.**
-- Real Tesseract behaviour: the TSV column layout assumption (12 columns, level 5 = word, `conf` -1 for
-  layout rows) matches the documented format and the fake used by the tests, but was not checked against the
-  packaged binary; `tesseract stdin stdout ... tsv` reading from stdin and `--list-langs` / `--version`
-  output shapes are likewise assumed.
-- Recognition accuracy on real console frames (fonts, colours, `--psm 6` vs `11`, `--scale`), and whether
-  the Debian `tesseract-ocr-eng` data (fast or best) is good enough. The ONE real-engine test
-  (`tests/test_ocr_service.py::test_real_tesseract_recognises_rendered_console_lines`) skips unless
-  `tesseract`, Pillow and DejaVu Sans Mono are present; it did NOT run in the implementing worktree.
-- The release wiring end to end: `docker buildx bake all` against the managed BuildKit builder building both
-  targets (the `bake --print` plan was NOT run: no docker here), the push, the GHCR visibility sync for the
-  new `pwmcp-ocr` package, cmru's handling of the extra `commit_generated` path, and `cmru release pwmcp`
-  itself. Offline tests check the committed inputs against each other and the push loop's package list only.
-- The image build (`containers/ocr/Dockerfile`: package names on the pinned Debian release, uid 1000,
-  read-only rootfs with only `/tmp` writable, `nice` entrypoint) and the healthcheck.
-- The compose wiring under a real `ciu up` (that the narrowing `mem_limit`/`memswap_limit`/`cpus` coexist
-  with the governance overlay, that `read_only` plus tmpfs is accepted, the `$INSTANCE_ID` container name,
-  alias resolution from the pwmcp container). The offline tests render the template with plain Jinja
-  (`StrictUndefined`, as ciu does), not through ciu.
-- Element capture of a real canvas through Playwright's compositor screenshot (chosen over `toDataURL`
-  because it does not fail on tainted or WebGL canvases): the image is the DISPLAYED size, not the canvas's
-  intrinsic 1280x800 bitmap unless the page is shown at that size. The fake browser in the tests cannot
-  show this.
-- Gate coverage: `client/src/pwmcp_client/ocr.py` was added to the `assay.toml` judged targets (100% line
-  and branch measured locally); the sidecar `containers/ocr/ocr_service.py` is tested but deliberately NOT a
-  judged target yet, and the registered gate was not run.
+**r4 verification and remaining work.** The post-release smoke checked sidecar health, engine availability, and a generated PNG request; the
+deployment check confirmed `/contract` reports r4. Those checks do not measure recognition accuracy on real console frames. The 242-frame series
+remains local, and its two tests are opt-in rather than part of the registered gate lanes. The current OCR engine does not provide a GlyphGrid
+adapter, and phase 2-3 still need the intrinsic-canvas capture, exact grid response, and watcher described above. The 512 MiB limit for a 24 MP
+scaled image and the interaction between author-set resource limits and a live governance overlay remain unmeasured. R2 follow-up is tracked in
+PWMCP-20; the r4 release used its R1 gate.
 
 ## PWMCP-12 — the session cleanliness guard makes Git a prerequisite for the whole test suite
 
@@ -539,3 +500,13 @@ installs) may be committed; the 242-frame local series stays out of git. The 24 
 `tests/corpus/console/truenas-27-vanilla/` stay as the published curated set. Test inputs should prefer the imagegen generator (alphabet
 screenshots per font, deterministic, no capture) over captured frames: move `tests/test_glyphgrid_perf.py` (~154-155, 20 captured frames) to
 generated per-font alphabets where the measurement allows, and keep the captured frames only for what only real console output can show.
+
+## PWMCP-20 — complete the R2 campaign waived for the r4 release
+
+**Status: OPEN (R2 was waived for 1.64.0-r4; follow-up is pending on the btrfs runner).** The registered r2 lane covers 384 mutation candidates
+on the changed targets. The latest campaign judged 56 candidates and retained resumable state; five hardening rows remain marked Pending R2, and
+PWMCP-18 (`containers/ocr/ocr_service.py:387`) remains an open survivor. The r4 release already shipped after its R1 gate, so this item tracks the
+separate mutation-evidence follow-up.
+
+**Close by:** resume the r2 campaign on the btrfs runner with the supported lane and parallelism, account for all candidates, triage the five pending
+rows and remaining survivors, then record the final verdict and any accepted survivors here or in the linked R2 report.

@@ -159,6 +159,28 @@ separately. See the [tool README](../tools/glyphgrid/README.md) for all font,
 screen, engine, and transform choices, the [design rationale](DESIGN-GUIDE.md#glyphgrid-development-tooling),
 and [font attribution](../tools/glyphgrid/NOTICE.md).
 
+## Local console corpus
+
+The curated screenshots in the repository are public, anonymous fixtures. The
+full 242-frame TrueNAS capture is kept locally and is never published. To check
+a local copy, point PWMCP at an absolute directory containing a `frames/`
+subdirectory with the indexed frames:
+
+```bash
+cd pwmcp
+export PWMCP_CONSOLE_CORPUS_DIR=/path/to/pwmcp-console-corpus
+python3 tools/corpus/console_corpus.py verify "$PWMCP_CONSOLE_CORPUS_DIR"
+```
+
+The verifier checks the exact frame set, each frame's SHA256 and dimensions,
+and the SHA256 and size of the deterministic tar described by
+`tests/corpus/console/CORPUS-ASSETS.json`. It reads only that local directory;
+it has no download or cache path. If the variable is unset, the two tests that
+need the complete capture skip with a reason. Set
+`PWMCP_REQUIRE_CONSOLE_CORPUS=1` when running those tests in an environment
+with the local directory available to make an absent corpus fail. The release
+gate lanes remain corpus-free. See the [design rationale](DESIGN-GUIDE.md#local-console-corpus).
+
 ## Release gates
 
 Run the release-equivalent suite with:

@@ -123,12 +123,31 @@ licence attribution. Attribution uncertainty is recorded explicitly, and the
 font data has not had legal review for redistribution in an image.
 
 `imagegen` makes synthetic console frames with exact ground truth and controlled
-transforms. The integration adds no screenshots and does not copy the operator's
-larger local console corpus into these tooling changes. Generated PNGs, truth
-files, atlases, and reports belong under the ignored `scratch/` directory. See the
-[tool README](../tools/glyphgrid/README.md) for the command vocabulary and the
-[consumer examples](CONSUMERS.md#glyphgrid-development-tooling) for a working
-invocation.
+transforms. Generated PNGs, truth files, atlases, and reports belong under the
+ignored `scratch/` directory. Prefer these deterministic per-font alphabets for
+general reader tests; use real console output only where the behavior depends on
+an actual install screen. See the [tool README](../tools/glyphgrid/README.md) for
+the command vocabulary and the [consumer examples](CONSUMERS.md#glyphgrid-development-tooling)
+for a working invocation.
+
+## Local console corpus
+
+The repository may keep curated screenshots from public, anonymous, agnostic
+sources such as vanilla Debian and TrueNAS installs. The larger 242-frame
+TrueNAS series stays in a local directory and is never published. This keeps
+the public fixtures useful for review while preventing the full capture from
+becoming a release or download dependency.
+
+The committed series manifest pins each frame's name, SHA256, and dimensions.
+`CORPUS-ASSETS.json` also pins a deterministic tar digest and size, so the local
+copy can be checked without downloading it. `PWMCP_CONSOLE_CORPUS_DIR` is the
+only source: it must name an absolute directory containing `frames/`. There is
+no cache, tester-image copy, release URL, or fallback path. An unset variable
+means the optional full-corpus checks are unavailable; a bad explicit path is
+an error. The two real-corpus tests skip with a reason unless
+`PWMCP_REQUIRE_CONSOLE_CORPUS=1` makes absence a failure. Registered gate lanes
+remain corpus-free. See the [local verification example](CONSUMERS.md#local-console-corpus)
+and the [OCR phase design](DESIGN-OCR-PHASE2-3.md#1-local-console-corpus).
 
 ## Upstream version age window
 

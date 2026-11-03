@@ -462,21 +462,17 @@ If none is known, `pwmcp ocr` exits 2 with a message naming `ocr.enabled`. From 
 `pwmcp_client.ocr.recognize(image_bytes, sidecar_url=..., psm=6, scale=2)` returns an
 `OcrResult`.
 
-**Gate dependency.** The registered pwmcp gate lanes judge `containers/ocr/ocr_service.py` at 100% line and
-branch coverage and run every test that needs an optional dependency. The lanes therefore DEPEND ON THE
-TESTER IMAGE CARRYING THE `pwmcp-client` `test` extra (pytest, pillow, websockets, jinja2, pyyaml, declared in
-`client/pyproject.toml` by the tester-unified change that lands separately on main, which also rebuilds the
-image) plus `node` and `sh`. Operator policy (2026-10-27): a test that needs an optional module or binary
-FAILS when it is missing, with a message naming it and the `test` extra; skipping is the opt-in. One helper
-(`tests/_testdeps.py`, used by every site in `tests/` and `client/tests/`) implements it, and a test forbids
-bare `pytest.importorskip` / `skipif(... is None)`. On a developer machine without a dependency, set
-`PWMCP_ALLOW_MISSING_TEST_DEPS=1` to skip those tests cleanly; the gate lanes set nothing, so they cannot
-skip. The one deliberate exception is the real-Tesseract test: `tesseract` legitimately exists only in the
-sidecar image, so it skips with an explicit reason, and fails instead when `PWMCP_REQUIRE_TESSERACT=1` (set it
-only in a lane that runs inside the OCR image; none exists today, the gate runs in the tester image).
-Until the tester image is rebuilt the lanes are RED by design. The judged Python targets are the client
-package (`__init__`, `cli`, `contract`, `diagnostics`, `ocr`, `session`, `user_agent`), `build-push.py`,
-`scripts/resolve-playwright-version.py` and `containers/ocr/ocr_service.py`. The Node code
+**Gate dependencies.** The registered pwmcp gate lanes judge `containers/ocr/ocr_service.py` at 100% line and
+branch coverage and run every test that needs an optional dependency. The current `tester-unified` image
+includes the `pwmcp-client` `test` extra (pytest, pillow, websockets, jinja2, pyyaml), plus `node` and `sh`.
+The shared helper (`tests/_testdeps.py`) makes a missing optional module or binary fail with its name and
+reason; only an explicit `PWMCP_ALLOW_MISSING_TEST_DEPS=1` opt-out skips those checks on a developer machine.
+The registered gate lanes do not set that opt-out, so a missing dependency fails the gate. A test forbids bare
+`pytest.importorskip` / `skipif(... is None)`. The deliberate exception is the real-Tesseract test:
+`tesseract` exists in the sidecar image, so that test skips with an explicit reason in the tester image and
+fails instead when `PWMCP_REQUIRE_TESSERACT=1` is set in an environment that has the binary. The judged Python
+targets are the client package (`__init__`, `cli`, `contract`, `diagnostics`, `ocr`, `session`, `user_agent`),
+`build-push.py`, `scripts/resolve-playwright-version.py` and `containers/ocr/ocr_service.py`. The Node code
 (`containers/pwmcp/ua-override/index.js`, the run-server and MCP gateways, the admin server) is outside the
 Python judge entirely and is exercised only by the subprocess tests.
 
@@ -690,6 +686,18 @@ ciu-build -d . push-images
 `run-gate` is the canonical test entrypoint — `run-gate --list`
 discovers the declared lanes; definitions live in `run-gate.toml`.
 See [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).
+
+### Local console corpus
+
+The repository keeps selected public, anonymous console screenshots as curated
+fixtures. The full 242-frame TrueNAS capture stays in a local directory and is
+never published. Set `PWMCP_CONSOLE_CORPUS_DIR` to an absolute path containing
+`frames/` to let the two full-corpus checks verify each frame and the pinned,
+deterministic tar digest. With no path, those checks skip with an explicit
+reason; `PWMCP_REQUIRE_CONSOLE_CORPUS=1` makes a missing corpus fail during a
+focused run. The registered gate lanes do not include or require the full
+capture. See the [design rationale](docs/DESIGN-GUIDE.md#local-console-corpus)
+and [local verification example](docs/CONSUMERS.md#local-console-corpus).
 
 The release gate is `run-gate r1`. It runs the resolver, image-builder
 contract, and client tests through source-backed Assay in `tester-unified`,

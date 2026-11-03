@@ -7,6 +7,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ### Added
 - GlyphGrid tooling: additional attributed console-font atlases, identity-checked faster reads with frame-sequence reuse, and the deterministic `imagegen` test-image generator. No behavior change in the service; the GlyphGrid engine remains unavailable (HTTP 501).
 
+### Testing
+- Keep the full 242-frame console capture local and unpublished. Corpus tests verify an explicit `PWMCP_CONSOLE_CORPUS_DIR` against the frame index and deterministic tar pin; they skip with a reason when unset, and `PWMCP_REQUIRE_CONSOLE_CORPUS=1` makes absence fail. The registered gate lanes remain corpus-free.
+
 <!-- cmru: release history -->
 
 ## [1.64.0-r4] - 2026-11-02
