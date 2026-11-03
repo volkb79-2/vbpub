@@ -171,7 +171,7 @@ def _load_official_client_module() -> Any:
     except PackageNotFoundError as exc:
         raise TrueNASAPIError(
             "the official TrueNAS API client is not installed; "
-            "run python -m pip install -r requirements.txt"
+            "run python -m pip install -r requirements-api.txt"
         ) from exc
 
     package_init = installed.locate_file(f"{UPSTREAM_PACKAGE}/__init__.py")

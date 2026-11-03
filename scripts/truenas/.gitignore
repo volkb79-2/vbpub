@@ -1,6 +1,8 @@
 .env
 truenas.toml
 .venv/
-.vm/
 __pycache__/
 *.py[cod]
+# Fetched inputs belong in <repo root>/downloads/, never beside the sources.
+*.deb
+*.iso

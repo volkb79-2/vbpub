@@ -1681,10 +1681,10 @@ def test_stale_tester_recovery_requires_existing_container(monkeypatch) -> None:
 def test_docker_host_paths_are_normalized_without_local_filesystem_resolution() -> None:
     runner = load_runner()
     expected = runner.normalized_docker_host_path(
-        "/home/vb/volkb79-2/vbpub/artifacts/../artifacts/update.iso",
+        "/host/checkout/downloads/../downloads/update.iso",
         "selected ISO host path",
     )
-    assert str(expected) == "/home/vb/volkb79-2/vbpub/artifacts/update.iso"
+    assert str(expected) == "/host/checkout/downloads/update.iso"
     assert not Path(str(expected)).exists()
     try:
         runner.normalized_docker_host_path("relative/update.iso", "selected ISO host path")

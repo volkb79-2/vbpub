@@ -185,7 +185,7 @@ def test_start_parser_defaults_to_three_and_can_lower_the_limit():
     required = [
         "start", "--name", "guest", "--base-disk", "disk.qcow2",
         "--ovmf-code", "OVMF_CODE_4M.fd", "--ovmf-vars", "OVMF_VARS_4M.fd",
-        "--state-dir", ".vm/guest",
+        "--state-dir", "artifacts/vm-lab/guest",
     ]
     assert tcg_vm.build_parser().parse_args(required).max_concurrent_guests == 3
     assert tcg_vm.build_parser().parse_args(required + ["--max-concurrent-guests", "2"]).max_concurrent_guests == 2
@@ -312,17 +312,17 @@ def test_guest_command_creates_sparse_extra_disks_and_refuses_wrong_resume_size(
     qemu_args = args_file.read_text().splitlines()
     first_disk_drive = (
         f"file={state_dir / 'data-disk-1.qcow2'},if=none,id=truenasdata1,"
-        "format=qcow2,cache=writeback"
+        "format=qcow2,cache=unsafe"
     )
     assert first_disk_drive in qemu_args
     assert "virtio-blk-pci,drive=truenasdata1,serial=TNEXTRA001,addr=0x8" in qemu_args
     second_disk_drive = (
         f"file={state_dir / 'data-disk-2.qcow2'},if=none,id=truenasdata2,"
-        "format=qcow2,cache=writeback"
+        "format=qcow2,cache=unsafe"
     )
     assert second_disk_drive in qemu_args
     assert "virtio-blk-pci,drive=truenasdata2,serial=TNEXTRA002,addr=0x9" in qemu_args
-    boot_drive = f"file={state_dir / 'disk-overlay.qcow2'},if=virtio,format=qcow2,cache=writeback"
+    boot_drive = f"file={state_dir / 'disk-overlay.qcow2'},if=virtio,format=qcow2,cache=unsafe"
     assert qemu_args.index(boot_drive) < qemu_args.index(first_disk_drive)
     assert "-o" in qemu_img_args.read_text().splitlines()
     assert "preallocation=off" in qemu_img_args.read_text().splitlines()
@@ -1097,7 +1097,7 @@ def test_rebind_media_parser_requires_the_existing_guest_identity():
     args = tcg_vm.build_parser().parse_args([
         "rebind-media",
         "--name", "tns-test",
-        "--state-dir", ".vm/tns-test",
+        "--state-dir", "artifacts/vm-lab/tns-test",
         "--readonly-media", "release.iso",
     ])
     assert args.command == "rebind-media"
@@ -1152,3 +1152,35 @@ def test_resume_manifest_rejects_a_different_base(tmp_path):
     manifest.write_text('{"schema": 1}\n')
     with pytest.raises(tcg_vm.RunnerError, match="resume identity differs"):
         tcg_vm.check_runner_manifest(manifest, {"schema": 2})
+
+
+def test_vm_lab_is_the_project_artifacts_directory_not_an_environment_value(monkeypatch):
+    monkeypatch.setenv("TRUENAS_VM_LAB", "/elsewhere")
+    assert tcg_vm.VM_LAB_DIR == Path(tcg_vm.__file__).resolve().parent / "artifacts" / "vm-lab"
+    assert tcg_vm.default_state_dir("v27-path-b") == tcg_vm.VM_LAB_DIR / "v27-path-b"
+
+
+@pytest.mark.parametrize("name", ["", "../escape", "a/b", ".hidden", "x y"])
+def test_default_state_dir_refuses_names_that_could_leave_vm_lab(name):
+    with pytest.raises(tcg_vm.RunnerError):
+        tcg_vm.default_state_dir(name)
+
+
+def test_status_without_state_dir_uses_vm_lab_and_start_creates_it(monkeypatch, tmp_path):
+    monkeypatch.setattr(tcg_vm, "VM_LAB_DIR", tmp_path / "vm-lab")
+    status = tcg_vm.build_parser().parse_args(["status", "--name", "guest"])
+    tcg_vm.resolve_state_dir_argument(status)
+    assert status.state_dir == str(tmp_path / "vm-lab" / "guest")
+    assert not (tmp_path / "vm-lab").exists()
+    start = tcg_vm.build_parser().parse_args([
+        "start", "--name", "guest", "--base-disk", "d.qcow2",
+        "--ovmf-code", "c.fd", "--ovmf-vars", "v.fd",
+    ])
+    tcg_vm.resolve_state_dir_argument(start)
+    assert Path(start.state_dir).is_dir()
+
+
+def test_explicit_state_dir_wins_over_the_vm_lab_default():
+    args = tcg_vm.build_parser().parse_args(["status", "--name", "g", "--state-dir", "/x/y"])
+    tcg_vm.resolve_state_dir_argument(args)
+    assert args.state_dir == "/x/y"

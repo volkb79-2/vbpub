@@ -43,6 +43,26 @@ MAX_CONCURRENT_GUESTS = 3
 VM_LABEL = "org.vbpub.truenas.tcg-vm"
 VM_LABEL_VALUE = "true"
 STATE_LABEL = "org.vbpub.truenas.state-dir-sha256"
+# Estate layout (AGENTS.md "Directory conventions"): VM state lives in
+# <project>/artifacts/vm-lab/<vm>/, derived from this file's location and never
+# from an environment variable. An explicit --state-dir still wins.
+VM_LAB_DIR = Path(__file__).resolve().parent / "artifacts" / "vm-lab"
+
+
+def default_state_dir(name: str) -> Path:
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name):
+        raise RunnerError(f"guest name cannot name a vm-lab directory: {name!r}")
+    return VM_LAB_DIR / name
+
+
+def resolve_state_dir_argument(args: argparse.Namespace) -> None:
+    """Fill a missing --state-dir with artifacts/vm-lab/<name>; only `start` creates it."""
+    if getattr(args, "state_dir", "") is not None or not hasattr(args, "name"):
+        return
+    state_dir = default_state_dir(args.name)
+    if args.command == "start":
+        state_dir.mkdir(parents=True, exist_ok=True)
+    args.state_dir = str(state_dir)
 DEFAULT_SSH_PORT = 2222
 DEFAULT_HTTPS_PORT = 8443
 START_TIMEOUT_SECONDS = 20
@@ -1054,7 +1074,7 @@ if [ -n "$extra_sizes" ]; then
     # path and strand the guest in the EFI shell when sparse disks are added.
     pci_addr=$(printf '0x%x' "$((7 + index))")
     set -- "$@" \
-      -drive "file=$disk,if=none,id=truenasdata${index},format=qcow2,cache=writeback" \
+      -drive "file=$disk,if=none,id=truenasdata${index},format=qcow2,cache=unsafe" \
       -device "virtio-blk-pci,drive=truenasdata${index},serial=TNEXTRA$(printf '%03d' "$index"),addr=$pci_addr"
   done
   IFS=$old_ifs
@@ -1083,7 +1103,7 @@ exec qemu-system-x86_64 \
   -rtc base=utc,clock=host \
   -drive if=pflash,format=raw,readonly=on,file=/state/OVMF_CODE_4M.fd \
   -drive if=pflash,format=raw,file=/state/OVMF_VARS_4M.fd \
-  -drive file=/state/disk-overlay.qcow2,if=virtio,format=qcow2,cache=writeback \
+  -drive file=/state/disk-overlay.qcow2,if=virtio,format=qcow2,cache=unsafe \
   -netdev "user,id=net0,hostfwd=tcp:0.0.0.0:${VM_SSH_PORT}-:22,hostfwd=tcp:0.0.0.0:${VM_HTTPS_PORT}-:443" \
   -device virtio-net-pci,netdev=net0 \
   -boot order=c,menu=on \
@@ -1502,7 +1522,11 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument("--base-disk", required=True, help="local qcow2/raw disk image mounted read-only")
     start.add_argument("--ovmf-code", required=True, help="local OVMF_CODE_4M.fd source file")
     start.add_argument("--ovmf-vars", required=True, help="local OVMF_VARS_4M.fd template file")
-    start.add_argument("--state-dir", required=True, help="existing empty or resumed writable state directory")
+    start.add_argument(
+        "--state-dir",
+        default=None,
+        help="empty or resumed writable state directory (default: artifacts/vm-lab/<name> beside this script, created)",
+    )
     start.add_argument("--image", help="QEMU image; defaults to TRUENAS_TCG_IMAGE")
     start.add_argument("--network", help="Docker network; defaults to DOCKER_NETWORK_INTERNAL")
     start.add_argument("--cgroup-parent", help="systemd slice; defaults to CGROUP_PARENT_DEV_BACKGROUND")
@@ -1550,14 +1574,14 @@ def build_parser() -> argparse.ArgumentParser:
     for verb in ("status", "stop"):
         sub = commands.add_parser(verb)
         sub.add_argument("--name", required=True)
-        sub.add_argument("--state-dir", required=True)
+        sub.add_argument("--state-dir", default=None, help="default: artifacts/vm-lab/<name>")
         sub.set_defaults(func=cmd_status if verb == "status" else cmd_stop)
     terminate_paused = commands.add_parser(
         "terminate-paused",
         help="terminate a managed guest QEMU reports as paused; preserves disk state",
     )
     terminate_paused.add_argument("--name", required=True)
-    terminate_paused.add_argument("--state-dir", required=True)
+    terminate_paused.add_argument("--state-dir", default=None, help="default: artifacts/vm-lab/<name>")
     terminate_paused.set_defaults(func=cmd_terminate_paused)
     destroy = commands.add_parser("destroy", help="remove a stopped container but preserve its disk state")
     destroy.add_argument("--name", required=True)
@@ -1567,24 +1591,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="update a stopped guest's read-only ISO path after verifying identical contents",
     )
     rebind.add_argument("--name", required=True)
-    rebind.add_argument("--state-dir", required=True)
+    rebind.add_argument("--state-dir", default=None, help="default: artifacts/vm-lab/<name>")
     rebind.add_argument("--readonly-media", required=True)
     rebind.set_defaults(func=cmd_rebind_media)
     console = commands.add_parser("console", help="interact with a running guest through its QMP socket")
     console_commands = console.add_subparsers(dest="console_action", required=True)
     screendump = console_commands.add_parser("screendump", help="save the current VGA frame as a PPM image")
     screendump.add_argument("--name", required=True)
-    screendump.add_argument("--state-dir", required=True)
+    screendump.add_argument("--state-dir", default=None, help="default: artifacts/vm-lab/<name>")
     screendump.add_argument("--filename", default="screendump.ppm")
     screendump.set_defaults(func=cmd_console_screendump)
     sendkey = console_commands.add_parser("sendkey", help="send a QEMU key or key combination to the guest")
     sendkey.add_argument("--name", required=True)
-    sendkey.add_argument("--state-dir", required=True)
+    sendkey.add_argument("--state-dir", default=None, help="default: artifacts/vm-lab/<name>")
     sendkey.add_argument("key")
     sendkey.set_defaults(func=cmd_console_sendkey)
     serial = console_commands.add_parser("serial", help="connect interactively to a guest's serial console")
     serial.add_argument("--name", required=True)
-    serial.add_argument("--state-dir", required=True)
+    serial.add_argument("--state-dir", default=None, help="default: artifacts/vm-lab/<name>")
     serial.set_defaults(func=cmd_console_serial)
     return parser
 
@@ -1592,6 +1616,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        resolve_state_dir_argument(args)
         return int(args.func(args))
     except (OSError, ValueError, RunnerError) as exc:
         print(f"tcg_vm.py: {exc}", file=sys.stderr)

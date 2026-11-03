@@ -34,13 +34,21 @@ sys.path.insert(0, str(HERE.parent))
 from truenas_api_client import TrueNASAPIClient, TrueNASAPIError, TrueNASSettings
 
 
-DEFAULT_VM_DISK = HERE / "artifacts" / "truenas-27-20GiB-source.qcow2"
-DEFAULT_VM_VARS = HERE / "vm" / "truenas-27-20GiB-OVMF_VARS.fd"
-DEFAULT_VM_KEY = HERE / "vm" / "root_ed25519"
-DEFAULT_KNOWN_HOSTS = HERE / "vm" / "truenas-27-20GiB-known_hosts"
+# Estate layout (AGENTS.md "Directory conventions"): the source VM's state lives
+# in scripts/truenas/artifacts/vm-lab/<vm>/, fetched inputs (installer ISO, Debian
+# live base) in <repo root>/downloads/, built outputs in this project's artifacts/.
+# All derived from this file's location; no environment variable relocates them.
+VM_DIR = HERE.parent / "artifacts" / "vm-lab" / "golden-source-27-20GiB"
+DEFAULT_VM_DISK = VM_DIR / "source.qcow2"
+DEFAULT_VM_VARS = VM_DIR / "OVMF_VARS.fd"
+DEFAULT_VM_KEY = VM_DIR / "root_ed25519"
+DEFAULT_KNOWN_HOSTS = VM_DIR / "known_hosts"
 DEFAULT_IMAGE = HERE / "artifacts" / "truenas-27-20GiB-golden.raw"
 DEFAULT_SECRETS = HERE / "artifacts" / "truenas-27-20GiB-golden.secrets.toml"
-DEFAULT_QEMU_LOG = HERE / "vm" / "step1-source-console.log"
+DEFAULT_QEMU_LOG = VM_DIR / "step1-source-console.log"
+# The installed source disk is the golden base later runs clone from: durable
+# cache mode (COW-BL-05), never cache=unsafe.
+SOURCE_DISK_CACHE = "writeback"
 GIB_BYTES = 1024**3
 MIN_GOLDEN_DISK_BYTES = 16 * GIB_BYTES
 API_KEY_NAME = "truenas-27-20GiB-golden-image"
@@ -571,7 +579,7 @@ def start_source_vm(args: argparse.Namespace, disk: Path) -> tuple[subprocess.Po
         "-drive",
         f"if=pflash,format=raw,file={args.vm_vars}",
         "-drive",
-        f"file={disk},if=virtio,format=qcow2",
+        f"file={disk},if=virtio,format=qcow2,cache={SOURCE_DISK_CACHE}",
         "-netdev",
         f"user,id=net0,hostfwd=tcp:{SSH_HOST}:{SSH_PORT}-:22,hostfwd=tcp:{SSH_HOST}:{API_PORT}-:443",
         "-device",

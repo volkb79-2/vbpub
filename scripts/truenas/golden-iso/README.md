@@ -101,7 +101,7 @@ source installer and image digests with each run rather than treating the
 golden image as a rolling release.
 
 The v28 nightly ISO used for patch work belongs under
-`../boot-pool-patch/artifacts/`, not in this golden-image project. Its
+the repository's `downloads/` folder, not in this golden-image project. Its
 temporary hard-link alias under this directory was removed on 2026-10-17 after
 all three retained VM manifests were rebound to the canonical path and the
 active guest was cleanly recreated with its COW disk and EFI state preserved.

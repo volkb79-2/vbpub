@@ -168,12 +168,12 @@ SquashFS ownership and extended attributes are preserved. This example uses
 the pinned v27.0.0-RC.1 ISO and creates an unattended-relaxed 16 GiB image:
 
 ```bash
-sudo /home/vscode/.venv/bin/python3 \
+sudo "$(command -v python3)" \
   scripts/truenas/vanilla-iso-patcher/multisession_overlay_poc.py \
-  --input-iso scripts/truenas/vanilla-iso-patcher/artifacts/compat/TrueNAS-27.0.0-RC.1.iso \
+  --input-iso downloads/TrueNAS-27.0.0-RC.1.iso \
   --expected-input-sha256 515a0252e72f1a6c86d603fa4d1661333029fe9a4804d0a7a28d24fe4f63498e \
-  --output-iso /tmp/TrueNAS-27.0.0-RC.1-unattended-relaxed-overlay.iso \
-  --delta-output /tmp/TrueNAS-27.0.0-RC.1-unattended-relaxed-overlay.vcdiff \
+  --output-iso scripts/truenas/vanilla-iso-patcher/artifacts/TrueNAS-27.0.0-RC.1-unattended-relaxed-overlay.iso \
+  --delta-output scripts/truenas/vanilla-iso-patcher/artifacts/TrueNAS-27.0.0-RC.1-unattended-relaxed-overlay.vcdiff \
   --boot-pool-size-gib 16 \
   --flavor unattended-relaxed \
   --post-install-action poweroff
