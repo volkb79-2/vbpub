@@ -64,3 +64,11 @@ they be filed. The branch was merged into the 1.1.0 wave branch on 2026-10-27; t
   (`daemon_slice_bounded` then `daemon_slice_problem` for the message) is KEPT on purpose: `daemon_slice_bounded`
   is the monkeypatch seam four existing tests use to skip the guard; collapsing it to one call means re-pointing
   those tests. Cosmetic, accepted. N5-N11 are unchanged and still open.
+
+### 2026-11-04 (51d42dad3)
+
+- N5 FIXED: `test_finalize_takes_the_session_lock_exactly_once` (counting lock proxy) in `tests/test_serve.py`.
+- N6 FIXED: the two own-thread comments in `lib/serve.py` now state the return is ignored and the failure is logged by `_finalize_session_locked`; `test_own_thread_finalize_with_a_held_session_lock_logs_the_failure` pins the log line.
+- N7 ACCEPTED (reviewer's disposition: a failed `cgroup.kill` write on a removed leaf is harmless; revisit only if it shows in the daemon log).
+- N8 FIXED: `stop` reports "the session lock was busy" when the worker exited (`_Session.finalize_refusal`), tests `test_stop_with_a_busy_session_lock_does_not_blame_the_worker` and its wedged-worker counter-case.
+- N9, N10, N11 remain open (`serve.py` package fix-cgp-1); N12 was closed on 2026-10-27. The entry stays `open` until N9-N11 land.

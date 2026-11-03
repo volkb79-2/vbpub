@@ -980,6 +980,43 @@ class TestListChildrenErrors:
         assert t.list_children("/does/not/exist", str(cgroup_root)) == []
 
 
+class TestMisspeltOption:
+    """CP-38: an unknown word after '@' is refused early, not sampled forever."""
+
+    def test_cgroup_typo_names_the_suspect_segment(self, cgroup_root: Path):
+        with pytest.raises(t.TargetError, match=r"'follo'.*misspelt option.*trailing '@'"):
+            t.parse_target("cgroup:/a@follo", str(cgroup_root))
+
+    def test_case_sensitive_option_key_is_a_typo(self, cgroup_root: Path):
+        with pytest.raises(t.TargetError, match="'Follow'"):
+            t.parse_target("cgroup:/dev.slice@Follow", str(cgroup_root))
+
+    def test_key_value_shaped_typo_is_refused(self, cgroup_root: Path):
+        with pytest.raises(t.TargetError, match="'metric=mem'"):
+            t.parse_target("cgroup:/dev.slice@metric=mem", str(cgroup_root))
+
+    def test_bare_target_typo_is_refused(self, cgroup_root: Path):
+        with pytest.raises(t.TargetError, match="'follo'"):
+            t.parse_target("/a@follo", str(cgroup_root))
+
+    def test_slice_with_at_is_refused_at_parse_time(self, cgroup_root: Path):
+        with pytest.raises(t.TargetError, match="contains '@'"):
+            t.parse_target("slice:dev.slice@follo", str(cgroup_root))
+
+    def test_existing_cgroup_with_at_in_its_name_still_resolves(self, cgroup_root: Path):
+        write_cgroup(cgroup_root, "user.slice/user@1000.service", {})
+        resolved = t.parse_target("cgroup:/user.slice/user@1000.service", str(cgroup_root))
+        assert resolved[0].cgroup == "/user.slice/user@1000.service"
+
+    def test_existing_cgroup_named_like_an_option_resolves(self, cgroup_root: Path):
+        write_cgroup(cgroup_root, "a@follo", {})
+        assert t.parse_target("cgroup:/a@follo", str(cgroup_root))[0].cgroup == "/a@follo"
+
+    def test_trailing_at_escape_names_a_missing_cgroup_without_refusal(self, cgroup_root: Path):
+        resolved = t.parse_target("cgroup:/a@follo@", str(cgroup_root))
+        assert resolved[0].cgroup == "/a@follo"
+
+
 class TestTargetOptions:
     def test_follow_option(self, cgroup_root: Path):
         resolved = t.parse_target("cgroup:/dev.slice@follow", str(cgroup_root))

@@ -314,6 +314,10 @@ class _Session:
     stop_event: threading.Event = field(default_factory=threading.Event)
     stop_attempts: int = 0
     stop_forced: bool = False
+    # Why the last `_finalize_session_locked` returned False: "worker" (the
+    # sampling thread is still alive) or "lock" (the session lock stayed
+    # busy); "" when it did not. Lets `stop` say which (CP-27 N8).
+    finalize_refusal: str = ""
     # Set under ``lock`` BEFORE placement is released and DAMON is closed
     # (Sol S6). Every sample-side action that touches those resources or the
     # session's records re-checks it under the same lock, so a wedged worker
@@ -1539,7 +1543,10 @@ class SessionServer:
                 if not sess.finished:
                     sess.error = str(exc)
                     # Runs on the session's own thread: the join is skipped,
-                    # so this cannot return False (Sol B2).
+                    # so it cannot return False for a live worker (Sol B2). It
+                    # CAN return False when the bounded session-lock acquire
+                    # times out; the return is ignored here and the failure is
+                    # logged inside `_finalize_session_locked` (CP-27 N6).
                     self._finalize_session_locked(sess, aborted_reason=f"session-error:{exc}")
 
     def _on_topology_noop(self, appeared: List[str], disappeared: List[str]) -> None:
@@ -1998,7 +2005,11 @@ class SessionServer:
         with self._lock:
             if not sess.finished:
                 # Called from the session's own sampler thread: the join is
-                # skipped, so this cannot return False (Sol B2).
+                # skipped, so it cannot return False for a live worker (Sol
+                # B2). It CAN return False when the bounded session-lock
+                # acquire times out; the return is ignored here and the
+                # failure is logged inside `_finalize_session_locked`
+                # (CP-27 N6).
                 self._finalize_session_locked(sess, aborted_reason=None)
         self._run_retention()
 
@@ -2241,6 +2252,17 @@ class SessionServer:
                 # The worker finalized itself while we waited.
                 return self._stop_response(session_id, sess.summary_doc, already_stopped=True)
             if not self._finalize_session_locked(sess, aborted_reason=None, prejoined=True):
+                if sess.finalize_refusal == "lock":
+                    # The worker exited but the session lock stayed busy
+                    # (a short-lived verb, or a wedged locked action):
+                    # not the "worker did not exit" case (CP-27 N8).
+                    raise RequestError(
+                        "stop-incomplete",
+                        f"session {session_id} could not be finalized: the "
+                        f"session lock was busy for {STOP_JOIN_SECONDS:g}s "
+                        f"(another verb or action holds it), so it was NOT "
+                        f"finalized and its resources are still held; retry stop",
+                    )
                 # Sol B2: the sampling worker did not exit in time. The
                 # session stays live and owns its placement and DAMON
                 # resources; no finished manifest was written. The caller can
@@ -2291,6 +2313,7 @@ class SessionServer:
         worker holds the session lock the forced path still returns False
         rather than deadlock the daemon."""
         sess.stop_event.set()
+        sess.finalize_refusal = ""
         worker_alive = False
         if sess.thread is not None and sess.thread is not threading.current_thread():
             # `prejoined`: the caller already waited a full bound outside the
@@ -2306,6 +2329,7 @@ class SessionServer:
                         f"DAMON resources (attempt {sess.stop_attempts} of "
                         f"{STOP_FORCE_AFTER_ATTEMPTS})"
                     )
+                    sess.finalize_refusal = "worker"
                     return False
                 worker_alive = True
         # Take the session lock ONCE, bounded, and keep it for the whole
@@ -2320,6 +2344,7 @@ class SessionServer:
                 f"{STOP_JOIN_SECONDS:g}s; cannot finalize, the session keeps "
                 f"its resources and a restart recovers it as an orphan"
             )
+            sess.finalize_refusal = "lock"
             return False
         if worker_alive:
             sess.stop_forced = True

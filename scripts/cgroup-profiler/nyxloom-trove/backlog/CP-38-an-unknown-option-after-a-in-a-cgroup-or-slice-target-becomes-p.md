@@ -3,7 +3,7 @@ kind: backlog-entry
 schema_version: 1
 id: CP-38
 title: "An unknown option after '@' in a cgroup:/slice:/bare target becomes part of the name and fails late (since the last-@ grammar)"
-status: open
+status: fixed
 type: "bugfix"
 severity: "low"
 component: "targets"
@@ -32,3 +32,7 @@ that segment as a probable misspelt option and mentions the trailing-`@` escape.
 ## Oracles
 
 Parse/resolve tests for the three inputs above produce an error naming the suspect segment; `user@1000.service` still resolves.
+
+## Resolution
+
+FIXED 2026-11-04 (84666766d). `parse_target` refuses `@` in a `slice:` name and, for `cgroup:`/bare targets naming a nonexistent cgroup, refuses an option-looking last `@` segment (`_refuse_misspelt_option`), naming it and the trailing-`@` escape. Existing cgroups (`user@1000.service`) and the trailing-`@` escape still resolve. Tests: `TestMisspeltOption` in `tests/test_targets.py`.
