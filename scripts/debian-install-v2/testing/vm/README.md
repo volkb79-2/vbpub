@@ -1,9 +1,14 @@
 # QEMU/TCG test-VM harness
 
 A genuinely isolated test environment for anything that must never run
-against this shared devcontainer host's own kernel: `inuse_partition_
-editor.py`'s real `add-swap --commit` path (real `mkswap`+`swapon`), and
-eventually the full installer's live-root-disk-edit-then-reboot flow.
+against this shared devcontainer host's own kernel: the real
+`inuse_partition_editor.py` `add-swap --commit` path (`mkswap`+`swapon`), and the
+full installer's live-root-disk-edit-then-reboot flow. Manual first-boot
+acceptance with a private NoCloud seed ISO has also been exercised; the
+standard automated lane remains focused on real loop/swap tests.
+
+For a copyable operational workflow, host/guest diagnosis, and the cgroup2
+mount-flags incident notes, see [usage and testing](USAGE-TESTING.md).
 
 ## Why this exists, and why it is not a privileged container
 
@@ -91,6 +96,16 @@ requires `BUILDX_BUILDER` and invokes `docker buildx build --builder
 "$BUILDX_BUILDER" --load`, so the image build uses the host-managed builder
 instead of Docker's default daemon path. The configured builder must already
 be available in the caller's Buildx configuration.
+
+For a manual CPU benchmark only, a host-shell invocation may explicitly set
+`CGROUP_PARENT_DEV_GATES=system.slice`. The wrapper verifies with host
+`systemctl` and cgroupfs that this built-in slice is loaded, has no CPU or
+memory ceilings, and exposes the host's full CPU set. This checks the slice;
+host-wide Docker transient-scope backstops may still impose limits on the
+runner, so inspect its live cgroup too. This exception is unavailable from
+inside a devcontainer; registered tests continue to use the governed gate
+slice. A TCG benchmark can contend with production work, so schedule it for a
+quiet window. See the [Geekbench procedure](USAGE-TESTING.md#geekbench-6-tcg-guest-versus-native-host).
 
 ## `vmctl` directly (inside the runner container)
 
@@ -302,12 +317,12 @@ which is exactly why `vmctl wait` already blocks on `cloud-init status
 --wait` before returning control, and why `prepare-ready-base` snapshots
 right after that point (see above).
 
-## What this harness does NOT do (yet)
+## What is not automated yet
 
-The standard `run-vm-tests.sh` lane now runs the real
+The standard `run-vm-tests.sh` lane runs the real
 `inuse_partition_editor.py` loop/swap commit tests in a Case-B guest. The
-larger acceptance flow — booting a customized installer image, checking the
-mount-source guard and byte-identical dry-run, then running the full
-`debian-install-v2` stage1/stage2 install through its own reboot — is still
-pending. Case A's small-root/free-tail base image is also designed but not
+larger first-boot acceptance flow—booting a private NoCloud seed, running the
+full `debian-install-v2` install through its reboot, and checking the final
+host state—was manually exercised on 2026-10-14, but is not yet part of that
+automated lane. Case A's small-root/free-tail base image is designed but not
 automated yet.

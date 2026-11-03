@@ -202,12 +202,58 @@ fi
 verify_cgroup_parent() {
     [ -n "$VM_CGROUP_PARENT" ] || die \
         'CGROUP_PARENT_DEV_GATES is not set; refusing to start the VM runner unplaced'
-    [ -n "$VM_PROBE_CGROUP_PARENT" ] || die \
-        'CGROUP_PARENT_DEV_INTERACTIVE is not set; cannot safely verify the VM cgroup parent'
     case "$VM_CGROUP_PARENT" in
         *.slice) ;;
         *) die "invalid VM cgroup parent '$VM_CGROUP_PARENT' (expected a .slice unit)" ;;
     esac
+
+    # A controlled native-vs-TCG benchmark needs to distinguish emulator
+    # overhead from an imposed CPU/memory ceiling. system.slice is a built-in
+    # systemd slice and therefore has no /etc/systemd/system/<name> file for
+    # the generic probe below to verify. Permit this exact parent only when
+    # the wrapper is running in the host namespace, where systemctl is the
+    # authority; never infer it from a cgroup directory visible in a cockpit.
+    if [ "$VM_CGROUP_PARENT" = "system.slice" ]; then
+        [ "$inside_container" = "0" ] || die \
+            'system.slice is only permitted from a host-shell invocation; use the governed dev-gates.slice from a cockpit'
+        command -v systemctl >/dev/null 2>&1 || die \
+            'systemctl is unavailable; refusing to use the built-in system.slice for an uncapped VM runner'
+        local load_state control_group cpu_quota memory_high memory_max slice_cgroup
+        local host_cpus slice_cpus
+        load_state="$(systemctl show system.slice --property=LoadState --value 2>/dev/null || true)"
+        control_group="$(systemctl show system.slice --property=ControlGroup --value 2>/dev/null || true)"
+        cpu_quota="$(systemctl show system.slice --property=CPUQuotaPerSecUSec --value 2>/dev/null || true)"
+        memory_high="$(systemctl show system.slice --property=MemoryHigh --value 2>/dev/null || true)"
+        memory_max="$(systemctl show system.slice --property=MemoryMax --value 2>/dev/null || true)"
+        [ "$load_state" = loaded ] || die \
+            "system.slice is not a loaded systemd unit (LoadState='${load_state:-unknown}')"
+        [ "$control_group" = /system.slice ] || die \
+            "system.slice has unexpected ControlGroup '${control_group:-<empty>}'"
+        [ "$cpu_quota" = infinity ] || die \
+            "system.slice has a CPU quota ('$cpu_quota'); refusing an unrepresentative benchmark"
+        [ "$memory_high" = infinity ] || die \
+            "system.slice has MemoryHigh='$memory_high'; refusing an unrepresentative benchmark"
+        [ "$memory_max" = infinity ] || die \
+            "system.slice has MemoryMax='$memory_max'; refusing an unrepresentative benchmark"
+        slice_cgroup="/sys/fs/cgroup$control_group"
+        [ -d "$slice_cgroup" ] || die \
+            "system.slice cgroup is not live at '$slice_cgroup'"
+        [ "$(cat "$slice_cgroup/cpu.max" 2>/dev/null || true)" = 'max 100000' ] || die \
+            'system.slice cpu.max is not unlimited; refusing an unrepresentative benchmark'
+        [ "$(cat "$slice_cgroup/memory.high" 2>/dev/null || true)" = max ] || die \
+            'system.slice memory.high is not unlimited; refusing an unrepresentative benchmark'
+        [ "$(cat "$slice_cgroup/memory.max" 2>/dev/null || true)" = max ] || die \
+            'system.slice memory.max is not unlimited; refusing an unrepresentative benchmark'
+        host_cpus="$(cat /sys/fs/cgroup/cpuset.cpus.effective 2>/dev/null || true)"
+        slice_cpus="$(cat "$slice_cgroup/cpuset.cpus.effective" 2>/dev/null || true)"
+        [ -n "$host_cpus" ] && [ "$slice_cpus" = "$host_cpus" ] || die \
+            "system.slice CPU set '$slice_cpus' does not match host CPU set '${host_cpus:-<unknown>}'"
+        echo '+ verified host system.slice parent: no CPU/memory quota or CPU-set restriction' >&2
+        return 0
+    fi
+
+    [ -n "$VM_PROBE_CGROUP_PARENT" ] || die \
+        'CGROUP_PARENT_DEV_INTERACTIVE is not set; cannot safely verify the VM cgroup parent'
     case "$VM_PROBE_CGROUP_PARENT" in
         *.slice) ;;
         *) die "invalid cgroup probe parent '$VM_PROBE_CGROUP_PARENT' (expected a .slice unit)" ;;

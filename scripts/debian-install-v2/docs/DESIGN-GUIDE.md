@@ -143,7 +143,7 @@ the rest of a larger disk available for a manually created data partition:
 
 Swap sizing is tied to both machine resources and disk capacity. A pure
 RAM-based rule can consume most of a small VM's disk, while a fixed GiB value
-does not scale across 20–512 GB images. The default is
+does not scale across the nominal 20–512 GB example disks. The default is
 `min(ceil(2 × RAM in GiB), round-half-up(20% of disk capacity in GiB))`:
 twice guest RAM rounded up to GiB, capped by 20% of actual disk bytes rounded
 to the nearest GiB. The resulting values for common disk/RAM pairs are listed in the
@@ -270,6 +270,107 @@ those tools (its DESIGN-GUIDE has the placement rule), so they deselect the mark
 of letting the tests skip quietly; the QEMU VM lane `r1-vm-real-commit` is where the binaries exist
 and runs the marked tests with `VBPUB_REQUIRE_OS_INTEGRATION=1`, so a skip there fails. Docker-driving
 tests are not marked: the TCG VM cannot carry CPU-heavy work.
+
+## QEMU validation and host cgroup visibility
+
+The Debian guest runs a separate kernel, so guest cloud-init or installer
+commands cannot change the host's cgroup2 mount. Host diagnostics are a
+separate boundary: `host-escape` invokes a privileged Docker helper to enter
+host namespaces, then runs an `mdt doctor` postflight that repairs missing
+cgroup2 mount flags. That repair makes the host safe again but means the
+postflight warning is an observation, not attribution of the remounting
+process. For the operational QEMU workflow and the 2026-10-14 incident
+evidence, see the [VM usage/testing guide](../testing/vm/USAGE-TESTING.md#host-checks-when-cgroup2-flags-disappear).
+
+The ordinary VM test lane belongs in the admission-controlled
+`dev-gates.slice`; a CPU benchmark there can measure the slice quota as much as
+TCG overhead. The manual Geekbench comparison therefore has one narrow
+exception: a host-shell launch can explicitly select the built-in
+`system.slice`, after verifying through host `systemctl` and cgroupfs that it
+has no CPU/memory ceilings and exposes every host CPU. That verifies the slice,
+not every ancestor or the Docker transient scope: host-wide Docker backstops
+may still apply, so inspect the runner's live cgroup. The harness refuses this
+exception from a container and refuses it if the slice's live properties
+change. This is not the default for tests: a TCG workload can contend with
+production, so use it only for a controlled, quiet-window benchmark. The
+guest's outbound network defaults to locked after the benchmark binary is
+downloaded. If publication is desired, a narrow allowlist for the current
+Geekbench Browser HTTPS address can be added; all other guest egress remains
+blocked. Geekbench itself reports the VM CPU as `QEMU TCG CPU`, so the result
+does not impersonate the physical host processor. Its single- and multi-core
+sequences are sequential and may exceed the runner helper's fixed 15-minute
+timeout, so the manual procedure executes the binary directly with a
+three-hour outer bound. Host cgprofile samples the entire runner cgroup, but
+that is enough for approximate per-phase timing and host-charged memory:
+timestamp Geekbench's workload-boundary output and correlate it with
+five-second samples against an idle-VM baseline. This includes QEMU overhead
+and is not guest process RSS; guest pages may remain resident or be reused
+after a workload, so label phase memory estimates accordingly. Geekbench's
+published working-set figures are a useful reference, but represent
+touched-page working set rather than peak RSS or a RAM requirement; the guide
+records that distinction and links the source. The reviewed Geekbench 6
+materials do not document a per-workload runtime control. The full CPU suite's
+32 single-/multi-core workload phases have at most 31 five-second
+gaps (about 2 minutes 35 seconds), so a multi-hour TCG runtime is actual work,
+not repeated sampling; removing the pauses saves little and weakens the
+thermal-isolation rationale. Do not add a fast mode unless Geekbench officially
+documents a way to configure per-workload runtime. Any shortened run must be
+labelled diagnostic unless Geekbench explicitly documents its score as
+comparable: changing workload duration can change the measured metric.
+
+Preserve cgprofile's Markdown report beside its `charts/` directory and raw
+samples. In this host setup, HTML rendering was killed with exit 137 under
+the profiler container's 1 GiB memory limit, while `cgprofile report --md-only`
+succeeded; the daemon-backed `ctl report` also timed out after stopping the
+session. The usage guide gives the offline render/copy sequence.
+
+The free Linux binary automatically uploads to Geekbench Browser and, in our
+offline native attempt, returned exit 255 without printing scores after DNS
+resolution failed. The successful native comparison therefore ran with host
+network access, after publication was explicitly accepted; users who need
+offline scoring require a Geekbench license that supports it. `taskset` limits
+execution CPUs but does not necessarily change the topology reported by
+Geekbench: our four-CPU-affinity run still reported eight processors, while
+TBB confirmed the worker pool was capped to three workers plus the caller.
+Record both the reported topology and effective affinity, and do not describe
+the resulting score ratio as pure virtualization overhead.
+
+The current manual benchmark starts from `case-b`'s generic-cloud image because
+the harness uses cloud-init to provision its SSH tester account and to decide
+when first boot has completed. Debian's NoCloud image is a plausible leaner
+base for a later CPU-only run, but it needs a separate credential/setup path;
+its Trixie first boot also asks for a root password on the serial console.
+Cloud-init is not expected to affect an idle CPU benchmark materially, so the
+main benefit would be a simpler, more explicit guest setup rather than a
+guaranteed score improvement. See the [image-choice notes](../testing/vm/USAGE-TESTING.md#image-choice).
+
+## Hypervisor boot disk and NoCloud seed
+
+The intended VM starts from Debian's generic cloud image. That image already
+contains cloud-init and avoids treating this project as a Debian ISO
+installer. The private `build-iso` artifact carries NoCloud user-data and
+meta-data, so the hypervisor must present it as a data CD-ROM while booting the
+Debian disk first. Making the seed ISO first in firmware boot order would try
+to boot a non-bootable data volume and would not start the installer.
+
+The generic cloud QCOW2 is intentionally compact as a downloaded file, and
+its virtual disk capacity can be smaller than the VM's intended installation
+disk. Hyper-V must grow its converted VHDX; Proxmox/ZFS must resize the imported
+volume; TrueNAS must create the destination ZFS volume at the requested final
+capacity before importing. The consumer guide requires that capacity to be
+chosen explicitly instead of silently accepting a too-small image size.
+
+The setup differs by hypervisor because they expose storage differently:
+Hyper-V uses VHDX, Proxmox imports a QCOW2 into an explicitly selected storage,
+and TrueNAS imports a dataset image into a ZFS volume and attaches it as a VM
+device. The TrueNAS importer requires the VM to be stopped with autostart
+disabled during conversion. An incomplete ZFS volume may be the VM's only boot
+disk, so device boot order does not protect it from an early start. VM
+lifecycle on TrueNAS 27+ is managed with [`truenas/tnt`](../../../truenas/tnt/README.md)
+(`tnt vm ...`); its reference VM disk-image importer (TNT-61) is the
+[prior-art client](../../../truenas/tnt/docs/prior-art/truenas-vm/README.md)
+until the verb ships in `tnt`. Copyable workflows are in
+[`CONSUMERS.md`](CONSUMERS.md#boot-a-debian-cloud-vm-with-the-private-seed-iso).
 
 ## Prompt library boundary
 
