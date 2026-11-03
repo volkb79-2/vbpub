@@ -299,6 +299,15 @@ not add a root `cmru bundle` verb until a concrete operator workflow needs one.
 The standalone generated `get.py` remains an independent product and keeps its
 own `argparse` parser because adopters use it without installing CMRU.
 
+#### Consumer-side environment preparation
+
+A consumer sometimes must evaluate an image tag or command before executing a
+configured step. It should call `cmru.runner.prepare_project_environment` first
+so registry, owner, and project settings come from the same resolved CMRU
+configuration that `run_step` uses. This keeps consumers from copying a registry
+default or calculating a preflight reference that differs from the later build.
+The helper applies settings only; it does not execute a step.
+
 `worktree` is a bundled shared library, not another CMRU CLI. It owns neutral
 Git workspace identity, records, leases, and lifecycle primitives; CMRU owns
 release and transaction policy. Its separate consumer guide is the canonical

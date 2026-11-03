@@ -52,7 +52,7 @@ if str(ROOT / "scripts") not in sys.path:
 import local_dev  # noqa: E402
 from cmru import exit_codes  # noqa: E402
 from cmru.ghcr import GitHubPackages  # noqa: E402
-from cmru.runner import run_step  # noqa: E402
+from cmru.runner import prepare_project_environment, run_step  # noqa: E402
 
 BUILD_ENV_FILE = ROOT / ".build-env.json"
 # A local-dev build keeps its own state: it must neither clobber the saved
@@ -503,6 +503,10 @@ def do_local_dev_build(
     local_dev.stage(artifacts, staging_dir=LOCAL_DEV_STAGING)
     ensure_manifests_dir()
 
+    # CMRU's project and orchestration config own the registry/repository
+    # identity. Prepare that environment before evaluating Bake tags so the
+    # pre-build plan and the runner's build step see the same references.
+    prepare_project_environment(ROOT / "cmru.toml")
     plan = local_dev_tag_plan(requested_targets, build_date)
     env_vars.update(
         {
