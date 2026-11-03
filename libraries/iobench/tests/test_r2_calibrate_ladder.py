@@ -95,3 +95,21 @@ def test_r2_cal_shape_cells_of_thirty_seconds_are_logged_every_two_seconds_and_s
     s6 = [j for j in fio_jobs(host) if "-s6-" in j.name]
     assert {j.runtime_s for j in s6} == {15, 30}
     assert all(j.log_avg_ms == (1000 if j.runtime_s < RUNG_S else 2000) for j in s6)
+
+
+def test_r2_cal_a_budget_that_allows_exactly_three_rungs_ends_the_ladder_there_instead_of_failing_the_run():
+    run = Calibrator(make_host(cache=INVERSION), config(budget_minutes=9))
+    out = run.execute()
+    assert out.status == "complete" and len(run.reads) == 3 and run.budget_limited
+    assert out.result["quality"]["cache_proof"] == "limited-by-budget"
+
+
+def test_r2_cal_without_a_closing_shape_reference_the_fresh_write_check_still_names_the_missing_cell():
+    import copy
+    base = Calibrator(make_host(cache=INVERSION), config())
+    base.execute()
+    run = copy.copy(base)
+    run.cells = [c for c in base.cells if c["block_state"] != "fresh"]
+    run.moved_dirs = {k: v for k, v in base.moved_dirs.items() if k != "shape"}
+    check = {c.id: c for c in run.bytes_checks({})}["IOB-PLA-18"]
+    assert check.status == "not_applicable" and check.detail == "write: no fresh sequential 1 MiB cell"
