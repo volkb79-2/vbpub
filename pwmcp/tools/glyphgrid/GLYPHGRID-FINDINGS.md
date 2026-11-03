@@ -13,8 +13,8 @@ and answers with whichever bitmap came out, so a clean 1:1 frame is read as a co
 vga-8x16 `U+2584` as `U+2580`; unifont-16 `U+2587` as `U+2594`, `U+2589` as `U+2595`, `U+2599` as `U+259D`, `U+259B` as `U+2597`,
 `U+259C` as `U+2596`, `U+259F` as `U+2598`; and every font's isolated solid block `U+2588` as a confident blank (uniform cell, the `f`
 fill rule only fires next to text). Reproduce (oracle = true grid, so grid detection is not involved):
-`python3 -m imagegen generate --font unifont-16 --screen alphabet --seed 7 -o D` then
-`python3 -m imagegen read --engine glyph-grid-oracle --truth D/unifont-16__alphabet__clean__s7.json D/unifont-16__alphabet__clean__s7.png`
+`python3 -m imagegen generate --font unifont-16 --screen alphabet --seed 7 -o scratch/D` then
+`python3 -m imagegen read --engine glyph-grid-oracle --truth scratch/D/unifont-16__alphabet__clean__s7.json scratch/D/unifont-16__alphabet__clean__s7.png`
 (the pinned pairs are tested: `pwmcp/tests/test_imagegen.py::test_fixture_atlas_misreads_complement_twins_pinned`).
 **Proposed fix (glyphgrid.py, separate branch):** when an atlas bitmap has a complement twin (or is all-ones / all-zero) in the same
 font, treat the pair as an alias set (`a`, ambiguity set, UNKNOWN character) unless the colours disambiguate, i.e. polarity is

@@ -1,0 +1,7 @@
+# Keep generated images, truth files, scratch atlases, and eval output local.
+scratch/
+suite*/
+*.atlas.json
+results*.json
+*-results*.json
+__pycache__/

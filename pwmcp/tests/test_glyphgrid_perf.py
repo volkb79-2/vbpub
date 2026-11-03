@@ -80,12 +80,20 @@ def _screens():
     plain = render(lines)
     rev = render(lines, reverse_cols={(2, 3), (2, 4), (5, 9)})
     colour = render(lines, fg=(255, 170, 0), bg=(0, 0, 170))
-    noise = Image.frombytes("RGB", (320, 192), bytes(random.Random(5).randrange(256) for _ in range(320 * 192 * 3)))
+    noise_rng = random.Random(5)
+    noise = Image.frombytes("RGB", (320, 192), bytes(noise_rng.randrange(256) for _ in range(320 * 192 * 3)))
     gradient = Image.linear_gradient("L").resize((256, 256)).convert("RGB")
     blurred = plain.resize((plain.size[0] * 3 // 2, plain.size[1] * 3 // 2), Image.BILINEAR)
     up2 = plain.resize((plain.size[0] * 2, plain.size[1] * 2), Image.NEAREST)
     return {"plain": plain, "reverse": rev, "colour": colour, "noise": noise, "gradient": gradient, "blurred": blurred,
             "nearest2x": up2, "uniform": Image.new("RGB", (160, 96), (0, 0, 0))}
+
+
+def test_noise_fixture_is_spatially_varying():
+    """The noise input used for fast/reference identity must not collapse to a uniform image."""
+    noise = _screens()["noise"]
+    colors = noise.getcolors(maxcolors=noise.width * noise.height)
+    assert colors is not None and len(colors) > 1000
 
 
 @pytest.mark.parametrize("name", sorted(_screens()))

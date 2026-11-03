@@ -3,7 +3,7 @@
 This file records consumer-facing product gaps for later triage. Normative
 behavior remains in the product specification and consumer documentation.
 
-Last updated: 2026-11-02 (PWMCP-18 transparency gap identified during R2 survivor triage).
+Last updated: 2026-11-03 (GlyphGrid tooling integration; PWMCP-18 transparency gap identified during R2 survivor triage).
 
 ## PWMCP-01 — Provide a rendered-page inspection command
 
@@ -322,6 +322,11 @@ shows. Origin: a Codex session driving a TrueNAS relaxed unattended install on a
    page; the shared-browser mode from P03 is the natural home) and the glyph-grid engine fed by VM-harness
    captures. Needs the PWMCP-10 concurrency answer first, since a watcher holds the one shared browser.
 3. (OPEN) Guarded expect-and-send, OFF unless a config flag enables it.
+
+**GlyphGrid tooling update (2026-11-03).** The tooling now includes SHA-pinned console font atlases with per-font attribution, a reference-checked
+reader fast path and frame-sequence reader, and deterministic synthetic image generation with exact ground truth. These support offline
+measurement and regression testing only. Phase 2 remains OPEN: the service engine is still registered as unavailable (HTTP 501), the watcher is
+not implemented, and the larger 242-frame console series used for performance measurements remains local.
 
 **Release wiring: FIXED-ON-BRANCH (operator decision 2026-10-27: extend the existing release so ONE pwmcp
 release builds, publishes and records BOTH images under one contract).** The image is first published in `1.64.0-r4`; this stays

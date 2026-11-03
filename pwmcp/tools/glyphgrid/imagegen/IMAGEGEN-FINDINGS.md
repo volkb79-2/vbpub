@@ -14,12 +14,14 @@ Pillow/zlib may change the bytes but not the pixels' meaning; compare `env` in t
 
 ```
 cd pwmcp/tools/glyphgrid
-python3 -m imagegen generate --font vga-8x16 --screen alphabet --transform nn-upscale:2 --transform blur:0.8 --seed 1 -o DIR
-python3 -m imagegen suite -o DIR [--font F]... [--screen S]... --seed 1      # 4 fonts x 3 screens x 20 chains = 240 images, ~10 s
-python3 -m imagegen atlas -o gen.atlas.json                                   # atlas LEARNED from generator pages (bitmap fonts)
-python3 -m imagegen eval --suite DIR --engine glyph-grid|glyph-grid-oracle|tesseract [--atlas A] [--by label|font|screen] [--json out.json]
-python3 -m imagegen read IMAGE.png [--engine glyph-grid|glyph-grid-oracle --truth T.json]   # one image: status + text (reproducers)
+python3 -m imagegen generate --font vga-8x16 --screen alphabet --transform nn-upscale:2 --transform blur:0.8 --seed 1 -o scratch/sample
+python3 -m imagegen suite -o scratch/suite [--font F]... [--screen S]... --seed 1      # 4 fonts x 3 screens x 20 chains = 240 images, ~10 s
+python3 -m imagegen atlas -o scratch/gen.atlas.json                                   # atlas LEARNED from generator pages (bitmap fonts)
+python3 -m imagegen eval --suite scratch/suite --engine glyph-grid|glyph-grid-oracle|tesseract [--atlas A] [--by label|font|screen] [--json scratch/out.json]
+python3 -m imagegen read scratch/IMAGE.png [--engine glyph-grid|glyph-grid-oracle --truth scratch/T.json]   # one image: status + text (reproducers)
 ```
+
+Keep generated PNGs, truth files, atlases, and reports under `scratch/`; that directory is ignored by Git.
 
 * Fonts: `vga-8x16`, `unifont-16`, `edk2-8x19` (bitmaps from the committed font-exact fixture
   `pwmcp/tests/fixtures/glyphgrid/fonts.atlas.json`, no font files exist on this host; `fonts.from_fontfile()` takes any
@@ -152,13 +154,13 @@ not scored (previously they were counted as misses, which made the oracle look w
 
 ## Known defects of glyph-grid found by the generator (fix in a separate branch; NOT generator artefacts)
 
-Reproduce with `cd pwmcp/tools/glyphgrid; python3 -m imagegen generate ... -o D; python3 -m imagegen read D/<file>.png`.
+Reproduce with `cd pwmcp/tools/glyphgrid; python3 -m imagegen generate ... -o scratch/D; python3 -m imagegen read scratch/D/<file>.png`.
 
 | id | reproducer | observed | one-line hypothesis |
 |---|---|---|---|
-| known-defect D-2 `no_grid` | `generate --font vga-8x16 --screen random --seed 1 -o D`; `read D/vga-8x16__random-1__clean__s1.png` (same for `--screen alphabet`) | `no_grid`: best tiling 8x16, description length 0.81 (alphabet 0.70) > 0.50 | random/alphabet screens are ~75 % ink with no blank cells and almost no repeated cell, so the MDL compression gate (0.5) refuses; `grid_hints` restricts candidates but does not bypass the gate. Real consoles repeat cells, so this mostly hits test pages |
-| known-defect D-3 EDK2 read as 8x16 | `generate --font edk2-8x19 --screen installer --seed 1 -o D`; `read D/edk2-8x19__installer__clean__s1.png` | `no_font`; grid 8x16, origin_y 1, 29 rows, font_share 0.01 | the free/hinted search ranks 8x16 above the true 8x19 (`k2[1] % ph == 0`-style sub-tiling rules favour the smaller pitch) on a screen that tiles under both; choose among hinted sizes by atlas font_share, not by description length |
-| known-defect D-4 offset origin | `generate --font vga-8x16 --screen installer --transform offset:1,1 --seed 1 -o D`; `read D/vga-8x16__installer__offset-1_1__s1.png` | `no_font`; grid origin (0, 15) | blank rows tie, `detect_grid` takes the tie nearest (0,0) by modular distance (15 = -1) instead of the true +1 phase; the phase search over `phases` does not recover it because the atlas phase list only holds the learned origins |
+| known-defect D-2 `no_grid` | `generate --font vga-8x16 --screen random --seed 1 -o scratch/D`; `read scratch/D/vga-8x16__random-1__clean__s1.png` (same for `--screen alphabet`) | `no_grid`: best tiling 8x16, description length 0.81 (alphabet 0.70) > 0.50 | random/alphabet screens are ~75 % ink with no blank cells and almost no repeated cell, so the MDL compression gate (0.5) refuses; `grid_hints` restricts candidates but does not bypass the gate. Real consoles repeat cells, so this mostly hits test pages |
+| known-defect D-3 EDK2 read as 8x16 | `generate --font edk2-8x19 --screen installer --seed 1 -o scratch/D`; `read scratch/D/edk2-8x19__installer__clean__s1.png` | `no_font`; grid 8x16, origin_y 1, 29 rows, font_share 0.01 | the free/hinted search ranks 8x16 above the true 8x19 (`k2[1] % ph == 0`-style sub-tiling rules favour the smaller pitch) on a screen that tiles under both; choose among hinted sizes by atlas font_share, not by description length |
+| known-defect D-4 offset origin | `generate --font vga-8x16 --screen installer --transform offset:1,1 --seed 1 -o scratch/D`; `read scratch/D/vga-8x16__installer__offset-1_1__s1.png` | `no_font`; grid origin (0, 15) | blank rows tie, `detect_grid` takes the tie nearest (0,0) by modular distance (15 = -1) instead of the true +1 phase; the phase search over `phases` does not recover it because the atlas phase list only holds the learned origins |
 | known-defect D-1 complement twins | see `GLYPHGRID-FINDINGS.md` | confident wrong block elements, solid block read as blank | minority-colour ink rule loses polarity |
 
 Letterbox: its previous `no_font` rows came partly from the generator filling the border with the top-left pixel (grey title bar);

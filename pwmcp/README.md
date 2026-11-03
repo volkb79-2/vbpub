@@ -680,6 +680,10 @@ ciu-build -d . push-images
 - [docs/USAGE.md](docs/USAGE.md) — consumer connect() and MCP usage details
 - [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md) — why standalone roots and client bundles use these boundaries
 - [docs/CONSUMERS.md](docs/CONSUMERS.md) — installation, updates, CLI inspection, MCP, and release gates
+- [GlyphGrid development tools](tools/glyphgrid/README.md) — local font atlases,
+  reference-checked reads, and deterministic synthetic images; offline tooling
+  only, with the service engine still HTTP 501. See the [design rationale](docs/DESIGN-GUIDE.md#glyphgrid-development-tooling)
+  and [pasteable examples](docs/CONSUMERS.md#glyphgrid-development-tooling).
 
 ## Testing
 

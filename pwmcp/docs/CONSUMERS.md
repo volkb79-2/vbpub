@@ -134,6 +134,31 @@ An MCP client on the same network can use this server entry:
 }
 ```
 
+## GlyphGrid development tooling
+
+The GlyphGrid reader and `imagegen` are local analysis tools in the PWMCP source
+tree. They do not enable the OCR service engine, which still returns HTTP 501.
+Run the examples from the source checkout with Python and Pillow available;
+they use the committed bitmap font and synthetic screens, not the local console
+corpus. Keep every generated image, truth file, atlas, and report under the
+ignored `scratch/` directory.
+
+```bash
+cd pwmcp/tools/glyphgrid
+python3 -m imagegen generate --font vga-8x16 --screen installer --seed 1 -o scratch/sample
+python3 -m imagegen read --engine glyph-grid-oracle \
+  --truth scratch/sample/vga-8x16__installer__clean__s1.json \
+  scratch/sample/vga-8x16__installer__clean__s1.png
+python3 -m imagegen suite --font vga-8x16 --screen installer --seed 1 -o scratch/suite
+python3 -m imagegen eval --suite scratch/suite --engine glyph-grid --by screen --json scratch/eval.json
+```
+
+The generated files are reproducible within the recorded image-library
+environment. The evaluation command reports exact, unknown, and wrong cells
+separately. See the [tool README](../tools/glyphgrid/README.md) for all font,
+screen, engine, and transform choices, the [design rationale](DESIGN-GUIDE.md#glyphgrid-development-tooling),
+and [font attribution](../tools/glyphgrid/NOTICE.md).
+
 ## Release gates
 
 Run the release-equivalent suite with:

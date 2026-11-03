@@ -1,6 +1,0 @@
-# generated suites, scratch atlases and eval dumps are never committed
-scratch/
-suite*/
-*.atlas.json
-results*.json
-__pycache__/

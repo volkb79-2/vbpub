@@ -133,6 +133,35 @@ would add a wheel per platform to the sidecar and tester images and a release st
 
 `python3 bench_glyphgrid.py --series DIR [--reference | --check | --reader | --typing]` reproduces every number above.
 
+## Synthetic image generator
+
+`imagegen` builds deterministic console images with exact per-cell ground truth, applies ordered image transforms, and compares the real
+glyph-grid reader, an oracle with known geometry, or Tesseract. It is a test and analysis tool; it does not change the OCR service, where
+the glyph-grid engine remains unavailable (HTTP 501).
+
+Run from this directory and keep generated PNGs, truth files, atlases, and reports under the ignored `scratch/` directory:
+
+```sh
+python3 -m imagegen generate --font vga-8x16 --screen installer --seed 1 -o scratch/sample
+python3 -m imagegen suite --font vga-8x16 --seed 1 -o scratch/suite
+python3 -m imagegen atlas --font vga-8x16 -o scratch/learned.atlas.json
+python3 -m imagegen eval --suite scratch/suite --engine glyph-grid --json scratch/eval.json
+```
+
+The generator supports the committed bitmap fonts and a vector-font fallback; its transforms include scaling, offsets, blur, JPEG, noise,
+colour changes, and subpixel shifts. Generated image bytes are reproducible within the recorded Pillow/zlib/libjpeg environment. See
+[`imagegen/IMAGEGEN-FINDINGS.md`](imagegen/IMAGEGEN-FINDINGS.md) for the measured matrix, known reader defects, and interpretation limits.
+
+The CLI vocabulary is: commands `generate`, `suite`, `atlas`, `eval`, and `read`;
+screens `alphabet`, `installer`, and `random`; evaluation engines `glyph-grid`,
+`glyph-grid-oracle`, and `tesseract` (the `read` command accepts the two
+GlyphGrid engines); and evaluation groups `label`, `font`, and `screen`. Bitmap
+font IDs are `vga-8x16`, `unifont-16`, and `edk2-8x19`; vector IDs include
+`vector-<px>`, `dejavu-mono-<px>`, `pillow-default-<px>`, and `ttf:<path>:<px>`.
+Transform names are `nn-upscale`, `scale`, `blur`, `boxblur`, `jpeg`, `quant`,
+`gamma`, `contrast`, `offset`, `letterbox`, `noise`, and `subpixel`. `scale`
+accepts the filters `nearest`, `bilinear`, `bicubic`, `lanczos`, and `box`.
+
 ## Font-file atlases
 
 ```
@@ -143,8 +172,8 @@ python3 build_font_atlas.py --manifest fonts-console-extra.manifest.json --src-r
 python3 verify_fonts.py --atlas fonts.atlas.json --bzimage ... --pf2 ... --ovmf ... --corpus CORPUS --series SERIES --out font-verify.json
 atlas = gg.Atlas.merge(gg.Atlas.load("fonts.atlas.json"), learned_atlas)      # font entries first, learned ones for other consoles
 ```
-Committed: `pwmcp/tests/fixtures/glyphgrid/fonts.atlas.json` (VGA 8x16 from the Linux kernel, GNU Unifont 16 from GRUB's `unicode.pf2`, EDK2 8x19 from OVMF; 87 KB).
-Runtime needs only the JSON; regeneration needs the source files (Debian: `linux-image-*`, `grub-common`/`fonts-unifont`, `ovmf`, `kbd`/`console-setup-linux`).
+Committed: `pwmcp/tests/fixtures/glyphgrid/fonts.atlas.json` (VGA 8x16 from the Linux kernel, GNU Unifont 16 from GRUB's `unicode.pf2`, EDK2 8x19 from OVMF; 91,837 bytes); the installer/rescue fixtures add `fonts.console-extra.atlas.json` (537,773 bytes) and `fonts.console-ambiguous.atlas.json` (79,120 bytes). Every committed font has a source, version, checksum, and licence attribution in [`NOTICE.md`](NOTICE.md); the build manifest refuses source checksum drift.
+Runtime needs only the JSON. Regeneration needs the source files listed in the manifest and NOTICE; no font source files are committed.
 Cell origin is found by exact font hits over all phases (`choose_extraction`, accepted only with a large margin).
 
 ## Learning and evaluation
