@@ -193,9 +193,9 @@
     // template, not one of mdt's dev-tier slices.
     "CGROUP_PARENT_DEV_GATES": "dev-gates.slice",
 
-    // Optional CoW area root (see the opt-in mount above): per user, tools append the target
-    // repo. Uncomment together with that mount.
-    "MDT_COW_ROOT":"/srv/mdt-cockpit-cow/${localEnv:USER}",
+    // CoW area root (see the CoW mount above): per user, tools append the target
+    // repo. Active together with that mount.
+    "MDT_COW_ROOT": "/srv/mdt-cockpit-cow/${localEnv:USER}",
 
     // Buildx and agent settings persist as part of the complete home mount.
     "BUILDX_CONFIG": "/home/vscode/.config/docker/buildx",
@@ -291,6 +291,7 @@
           "**/.hypothesis/**": true,
           "**/artifacts/**": true,
           "**/downloads/**": true,
+          // evidence/ and logs/ may hold tracked files: the explorer will not live-refresh there (git is unaffected).
           "**/evidence/**": true,
           "**/logs/**": true
         },

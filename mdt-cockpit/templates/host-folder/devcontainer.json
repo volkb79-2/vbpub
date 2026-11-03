@@ -307,6 +307,7 @@
           "**/.hypothesis/**": true,
           "**/artifacts/**": true,
           "**/downloads/**": true,
+          // evidence/ and logs/ may hold tracked files: the explorer will not live-refresh there (git is unaffected).
           "**/evidence/**": true,
           "**/logs/**": true
         },
