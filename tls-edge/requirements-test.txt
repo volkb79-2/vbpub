@@ -1,0 +1,9 @@
+# Test dependencies for tls-edge (tests/ and scripts/render_standalone.py --check).
+# tester-unified already ships all of these in /opt/tester-venv; this file is the declared
+# contract and the install line for a bare checkout:
+#   python3 -m pip install -r tls-edge/requirements-test.txt
+# Floors carry a reason each (estate version policy: >= floors, one documented reason per floor).
+pytest>=8            # test runner (parametrize, tmp_path, monkeypatch)
+Jinja2>=3.1          # render_standalone.py and the ciu-stack templates
+PyYAML>=6.0          # consumer-examples / compose lint tests
+tomli_w>=1.0         # installer adapter seed + wizard answers
