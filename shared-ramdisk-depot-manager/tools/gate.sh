@@ -33,6 +33,8 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 project_dir="$(dirname "$here")"
 repo_root="$(cd "$project_dir/.." && pwd)"
+# shellcheck source=host-path.sh
+source "$here/host-path.sh"
 
 worktree="${1:-$repo_root}"
 target="${2:-unit}"
@@ -50,15 +52,24 @@ esac
 # rather than hardcoding an operator's home directory.
 host_repo_root="${SRDM_HOST_REPO_ROOT:-}"
 if [ -z "$host_repo_root" ]; then
-  self="$(cat /etc/hostname 2>/dev/null || true)"
-  if [ -n "$self" ]; then
-    host_repo_root="$(docker inspect "$self" \
-      --format '{{range .Mounts}}{{if eq .Destination "'"$repo_root"'"}}{{.Source}}{{end}}{{end}}' \
-      2>/dev/null || true)"
-  fi
+  host_repo_root="$(host_path_from_mounts "$repo_root")"
 fi
 [ -n "$host_repo_root" ] || die "cannot determine the host path of $repo_root.
   Set SRDM_HOST_REPO_ROOT to it (the path as the DOCKER HOST sees this repo)."
+
+git_common_dir="$(git -C "$repo_root" rev-parse --git-common-dir 2>/dev/null || true)"
+primary_mount_args=()
+if [ -n "$git_common_dir" ] && [ "$git_common_dir" != "$repo_root/.git" ]; then
+  host_common_git="$(host_path_from_mounts "$git_common_dir")"
+  if [ -z "$host_common_git" ] && [ "$host_repo_root" = "$repo_root" ]; then
+    host_common_git="$git_common_dir"
+  fi
+  [ -n "$host_common_git" ] || die "cannot determine the host path of Git common directory $git_common_dir.
+  Set SRDM_HOST_REPO_ROOT and run from a host-visible checkout."
+  host_primary_root="${host_common_git%/.git}"
+  container_primary_root="${git_common_dir%/.git}"
+  primary_mount_args=(-v "$host_primary_root:$container_primary_root:ro")
+fi
 
 # --- placement -----------------------------------------------------------
 cgroup_parent="$("$here/cgroup-parent.sh" "${SRDM_CGROUP_PARENT:-}")"
@@ -88,7 +99,8 @@ rel_project="${project_dir#"$repo_root"/}"
 work_in_container="$worktree/$rel_project"
 
 if [ "$target" = "unit" ]; then
-  cmd='set -euo pipefail
+cmd='set -euo pipefail
+git config --global --add safe.directory "*"
 cd "$0"
 unformatted="$(gofmt -l .)"
 if [ -n "$unformatted" ]; then
@@ -99,20 +111,24 @@ go build ./...
 go vet ./...
 go test ./... -count=1'
   run_args=()
+  run_env=()
 elif [ "$target" = "coverage" ]; then
   # -coverpkg=./... so packages with no test files of their own still appear
   # in the profile. Without it they are simply absent, and "absent" is
   # indistinguishable from "excluded by a build tag" — the gate would have to
   # guess, and guessing in the lenient direction is how a floor stops binding.
   cmd='set -euo pipefail
+git config --global --add safe.directory "*"
 cd "$0"
 go test ./... -count=1 -coverpkg=./... -covermode=atomic -coverprofile=/tmp/srdm-cover.out >/dev/null
 exec go run ./tools/covergate \
   -profile /tmp/srdm-cover.out \
-  -base "'"${SRDM_COVERAGE_BASE:-main}"'" \
+  -base "${SRDM_COVERAGE_BASE:-main}" \
   -source internal \
-  -fail-under "'"${SRDM_COVERAGE_FLOOR:-75}"'"'
+  -fail-under "${SRDM_COVERAGE_FLOOR:-75}"'
   run_args=()
+  run_env=(-e "SRDM_COVERAGE_BASE=${SRDM_COVERAGE_BASE:-main}"
+    -e "SRDM_COVERAGE_FLOOR=${SRDM_COVERAGE_FLOOR:-75}")
 fi
 
 # --- e2e: boot systemd, then exec the suite into it ----------------------
@@ -121,14 +137,12 @@ fi
 # BE a systemd host, so the suite cannot be its command. It boots detached,
 # the harness waits for systemd to come up, and the suite runs via exec.
 if [ "$target" = "e2e" ]; then
-  # A daemon that refuses privileged containers cannot run this harness.
-  # That is a property of the host, not a failing change — skip loudly, at
-  # the one level where it is visible, and never from inside the suite.
+  # A daemon that refuses privileged containers cannot run this required
+  # harness. Report infrastructure failure rather than a green skip.
   if ! docker run --rm --privileged --cgroup-parent="$cgroup_parent" \
         --network=none alpine:latest true >/dev/null 2>&1; then
-    printf 'gate: SKIP — this Docker daemon refuses privileged containers, so the\n' >&2
-    printf '      e2e harness cannot run here. The unit and canary gates still apply.\n' >&2
-    exit 0
+    printf 'gate: infrastructure failure — Docker daemon refuses privileged containers; e2e did not run\n' >&2
+    exit 3
   fi
 
   # --cgroupns=private: systemd wants its own cgroup namespace root, and a
@@ -140,6 +154,7 @@ if [ "$target" = "e2e" ]; then
     --cgroup-parent="$cgroup_parent" \
     --privileged --cgroupns=private \
     --tmpfs /run --tmpfs /run/lock --tmpfs /tmp:exec,size=2g \
+    "${primary_mount_args[@]}" \
     -v "$host_repo_root:$repo_root" \
     "$image")"
   trap 'docker rm -f "$cid" >/dev/null 2>&1 || true' EXIT
@@ -164,7 +179,8 @@ if [ "$target" = "e2e" ]; then
   # step. An exec stream can be truncated or its status forged by a relay;
   # a file the suite wrote cannot be.
   docker exec "$cid" bash -c \
-    "cd '$work_in_container' && go test ./... -count=1 -tags=e2e -v; echo \$? > /tmp/srdm-e2e.rc" || true
+    'git config --global --add safe.directory "*"; cd "$1"; go test ./... -count=1 -tags=e2e -v; rc=$?; echo "$rc" > /tmp/srdm-e2e.rc; exit "$rc"' \
+    bash "$work_in_container" || true
   code="$(docker exec "$cid" cat /tmp/srdm-e2e.rc 2>/dev/null || true)"
   case "$code" in
     ''|*[!0-9]*)
@@ -181,15 +197,22 @@ fi
 # Detached: the verdict comes from `docker wait`, never from the stream.
 cid="$(docker run -d \
   --cgroup-parent="$cgroup_parent" \
+  "${run_env[@]}" \
   "${run_args[@]}" \
+  "${primary_mount_args[@]}" \
   -v "$host_repo_root:$repo_root" \
   -w "$work_in_container" \
   "$image" \
   bash -c "$cmd" "$work_in_container")"
 
 code="$(docker wait "$cid")"
-docker logs "$cid"
+logs_code=0
+docker logs "$cid" || logs_code=$?
 docker rm -f "$cid" >/dev/null 2>&1 || true
 
 printf 'gate: %s exited %s\n' "$target" "$code" >&2
+if [ "$logs_code" -ne 0 ]; then
+  printf 'gate: Docker log retrieval failed with %s\n' "$logs_code" >&2
+  [ "$code" -ne 0 ] || exit 3
+fi
 exit "$code"
