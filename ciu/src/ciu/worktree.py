@@ -7939,6 +7939,20 @@ def remove(
     mark("ciu_record_removal", "not-run" if managed is not None else "skipped-no-record")
     report["phases"]["shared_record_removal"] = "not-run"
     path = wt.path
+    # WT-OW-01: refuse before `ciu clean` / any cleanup can touch content that
+    # lives on a mount under the checkout. The shared library repeats the check
+    # right before deletion; this one protects the adapter's earlier phases.
+    try:
+        mounted = _shared_worktree().mounts_under(wt.path)
+    except _shared_worktree().WorkspaceError as exc:
+        raise fail(str(exc), phase="lifecycle_preflight") from exc
+    if mounted:
+        raise fail(
+            f"refusing to remove {wt.path}: mount(s) at or under the checkout: "
+            + "; ".join(f"{item} (detach it first)" for item in mounted)
+            + ". Nothing was removed or unmounted; --force does not override this check.",
+            phase="lifecycle_preflight",
+        )
     try:
         ciu_root = (
             managed.ciu_root if managed is not None
