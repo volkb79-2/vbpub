@@ -7112,7 +7112,15 @@ these records, and the tables T2/T3 are produced from them.
 
 ## RG-146 — `workers` for non-R2 (pytest-xdist) lanes: auto from clean per-worker profiles, enforced caps, isolation checks, cgprofile worker plugin
 
-**Status:** OPEN. Severity: feature. Filed 2026-11-03. Design §6.2, §6.3.
+**Status:** IMPLEMENTED 2026-11-03 on branch `fan-rg-xdist-20261103`, unreleased, with these open parts. (1) The
+`run_gate_profile` plugin speaks the design §3.1 window wire, which needs cgprofile CP-39; until then profiles are
+`NO_MEASUREMENT` and `auto` stays at 1. (2) The io term of the formula is never active: no lane key declares an io
+write cap. (3) The inconclusive result is verdict `FAIL` with reason `XDIST_ISOLATION` (history outcome
+`inconclusive`), because the verdict table is closed; a fifth verdict is a contract change. (4) Raw per-worker profiles
+are folded into the history entry only; the bounded sidecar is RG-145. (5) The contamination flag is read through the
+seam `workers_entry_is_clean` until RG-144 lands. (6) Live runs (design §9 M3) are not done. (7) The plugin is not yet
+in the release-candidate wheel verification (`tools/release_candidate.py` checks `run_gate` and `run_gate_admission`).
+Severity: feature. Filed 2026-11-03. Design §6.2, §6.3.
 
 **Problem.** Plain pytest lanes run serially. Neither the lane config nor the history knows how many xdist workers a
 lane could run inside its caps, and suites are not checked for xdist isolation. The lane footprints (pwmcp r1 peak
@@ -7187,7 +7195,9 @@ exists but is unmeasured.
 
 ## RG-147 — `--scaling` measurement mode (1 worker baseline, then N) producing the scaling tables
 
-**Status:** OPEN. Severity: feature. Filed 2026-11-03. Design §6.5, §9.
+**Status:** IMPLEMENTED 2026-11-03 for command lanes on branch `fan-rg-xdist-20261103`, unreleased. Open: native R2
+`--scaling --candidates`, the T3b table (auto pick and limiting term against the measured peak; the pick and limit are
+stored in `workers` but not printed as a table), and live M2/M3 runs. Severity: feature. Filed 2026-11-03. Design §6.5, §9.
 
 **Design.**
 

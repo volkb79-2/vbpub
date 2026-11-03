@@ -227,6 +227,83 @@ into it. See the
 [image identity rationale](docs/DESIGN-GUIDE.md#per-invocation-image-identity)
 and [consumer example](CONSUMERS.md#per-invocation-image-selection).
 
+### xdist workers for command lanes (RG-146, RG-147)
+
+A pytest-based command lane can run its tests on parallel xdist workers
+without run-gate rewriting its argv. The lane declares the count and carries
+the token where the worker count belongs:
+
+```toml
+[lanes.unit]
+kind = "command"
+environment = "tester-unified"
+argv = ["bash", "-c", "cd {worktree}/lib && exec python -m pytest -n {workers} -q"]
+workers = "auto"        # int >= 1 or "auto"; absent = no xdist handling at all
+workers_max = 4         # default 8
+xdist_safe = true       # required for workers != 1
+[lanes.unit.resources]
+memory = "4g"           # enforced caps are required for workers != 1
+cpus = "3"
+worker_ram = "600m"     # optional conservative per-worker RAM when nothing is measured
+```
+
+- **Token.** `{workers}` is substituted in the argv (a lane with `workers`
+  and no token, or a token without `workers`, is refused at load) and
+  `RUN_GATE_WORKERS` is exported. `workers = 1` is the scaling baseline: one
+  xdist worker plus the controller. `--workers N|auto` overrides the lane for
+  one run.
+- **Safety conditions.** `workers != 1` requires `xdist_safe = true` (the
+  suite's isolation contract: Docker object names that include
+  `PYTEST_XDIST_WORKER` and the run id, port 0 or per-worker port ranges,
+  `tmp_path` only with `HOME`/`XDG_*` per worker, per-worker or file-locked
+  session services, no process-global mutation, green under `-p randomly` and
+  `--dist loadfile`). An ephemeral lane also needs enforced `resources.memory`
+  and `resources.cpus`; a bare-host or exec lane needs
+  `resource_observer = "cgprofile"` placement, and since run-gate cannot see
+  those caps, `auto` stays at 1 there.
+- **`auto`.** `max(1, min(workers_max, floor(cpus / max(0.25, per-worker cpu
+  share)), floor((memory x 0.75 - controller RSS p95) / per-worker RSS p95),
+  floor(io_write_cap / per-worker write rate) [only with an io write cap],
+  floor(tests_collected / 20)))`. The inputs are the per-worker numbers of
+  clean, passing runs: the latest `--scaling` run, or the last two or more
+  runs (the highest recent p95 is used, like R2's candidate RAM). With no
+  clean profile, or without caps, `auto` selects 1 and the INFO line
+  (`run-gate: xdist workers: ...`) says why; the selection, every term and
+  the basis are recorded as `workers` in the history entry. `worker_ram` is
+  the per-worker RAM when no p95 is measured. There is no way yet to declare
+  an io write cap, so the io term is never active.
+- **Per-worker numbers.** The wheel installs the pytest plugin
+  `run_gate_profile` (active only when `RUN_GATE_PROFILE_DIR` is set, which
+  run-gate does for workers lanes). In the controller and in every worker it
+  opens a cgprofile `process-tree` window and writes one
+  `resource-profile/1` file; run-gate folds them into the history entry as
+  `per_worker` (rss, cpu, io distributions: p50, p95, max, n), `controller`
+  and `tests_collected`. Without an observer the profile is `NO_MEASUREMENT`
+  and `auto` stays at 1. The cgprofile side of the window wire (CP-39) is not
+  shipped yet, so these numbers appear once it is.
+- **Isolation check at run time.** When a lane run at N > 1 fails with
+  pytest's failure exit code, run-gate re-runs it once serially (`{workers}`
+  = 1, `PYTEST_ADDOPTS=--lf`). A failure that passes serially is reported as
+  `INCONCLUSIVE/XDIST_ISOLATION` naming the tests: verdict `FAIL` (the closed
+  verdict table has no fifth value), reason `XDIST_ISOLATION`, history outcome
+  `inconclusive`, never a PASS and never a history measurement. A failure
+  that also fails serially is an ordinary FAIL.
+- **`run-gate <lane> --xdist-parity [--workers k]`** runs N=1 and N=k (default
+  2), compares per-test junit outcomes, and stores the proof in
+  `.run-gate/xdist-parity/<lane>.json` keyed by the lane config digest
+  (argv, environment, caps, ...; not `workers`/`workers_max`/`budget`). Every
+  run at N > 1 prints the parity state (`proven`, `stale`, `absent`); a
+  missing proof warns, it does not refuse.
+- **`run-gate <lane> --scaling 1,2,3,4 [--repeat 1:3,*:2]`** runs the lane at
+  each count, baseline first, one container at a time, every step recorded
+  like an ordinary run (one history entry per commit and worker count), and
+  prints the T2/T3 table: N, reps, wall p50, speedup, efficiency, lane memory
+  peak, per-worker RSS p50/p95/max, per-worker CPU p50, IO write p95, stall,
+  contaminated, same outcomes as N=1. A step whose record is contaminated is
+  repeated once, then labelled; an outcome mismatch with N=1 is listed per
+  test and ends the run as `XDIST_ISOLATION`. Native R2 `--scaling` (candidate
+  subsets) is not implemented.
+
 ### PID 1 and cgroup resource failures
 
 run-gate refuses to start as container PID 1, where orphaned lane processes
