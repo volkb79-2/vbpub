@@ -181,47 +181,43 @@ across VM resets within one runner lifetime but is lost on
 All VM files live in `<project>/artifacts/vm-lab/` (gitignored), **per checkout
 and per worktree**: staged base images (`images/`), each run's qcow2 overlay,
 cloud-init seed, QMP socket, pidfile and serial log (`runs/<name>/`), and the
-test-only SSH key (`ssh/`, generated under `flock`). `vmctl` derives that folder
-from its own location; `MDT_VM_STATE_DIR` (an absolute path) overrides it, and
-the wrapper honours the override (translated to the Docker host path through the
-cockpit's mount table; it refuses when no mount contains it). A consumer such as
-mdt-cockpit should pass its own `<project>/artifacts/vm-lab` this way so its VMs
-belong to its project.
+test-only SSH key (`ssh/`, generated under `flock`). The path is fixed: the
+wrapper and `vmctl` derive `<project>/artifacts/vm-lab` by fixed depth from the
+script location, so a worktree uses its own. There are no environment overrides
+(using `artifacts/vm-lab` and `downloads/` is a repo decision); a test that needs
+another location runs a copy of the scripts, and `vmctl` accepts the global
+options `--state-dir DIR` and `--downloads-dir DIR` before the subcommand (the
+wrapper passes its mount points `/vm-lab` and `/downloads` this way).
 
-Big shared downloads (the cloud image) go to the gitignored `downloads/` of the
-**main checkout**: the parent of `git rev-parse --path-format=absolute
---git-common-dir` when that is named `.git`, so all worktrees share one copy.
-Outside git (or with a bare/separate git dir) the script-relative repo root is
-used and one INFO line is printed. `MDT_DOWNLOADS_DIR` overrides. Concurrent
-downloads from several worktrees are serialized with `flock`.
+Big shared downloads (the cloud image) go to `<repo root>/downloads/` of the
+checkout that runs (also fixed depth); the download script's optional argument
+is the same folder. Concurrent downloads are serialized with `flock`.
 
-Base images are looked up in this checkout's `vm-lab/images/` first, then in the
-**main checkout's** `vm-lab/images/` (bind-mounted read-only into the runner as
-`/main-vm-images`, `MDT_VM_MAIN_IMAGES_DIR`). A base found there is never
-written or modified: every run still gets its own overlay in this checkout, with
-the main base as backing file by absolute path. In a worktree `prepare-base` is
-skipped with an INFO line when the main checkout already has that base. Bases
-are never replaced by the tooling (`prepare-base` returns early when one exists;
-`snapshot` refuses to overwrite), so a main base is stable while overlays use
-it. Do not replace or edit a base by hand while any run backed by it exists:
-`destroy` those runs first, or stage the new image under a new case name.
+Both top folders are **tracked placeholders** (a `README.md` and a `.gitignore`
+that ignores everything else), so every checkout, including a fresh clone,
+contains them; the scripts never create them (they do `mkdir -p` for `images/`,
+`runs/`, `ssh/`) and the wrapper refuses with a clear message if one is missing.
+Plan (owned by `ciu worktree` and `libraries/cowtree`, not built here): a new
+worktree gets a CoW clone of the main checkout's declared gitignored paths, so it
+already contains main's downloads and staged bases. Without CoW a worktree starts
+with empty folders and `prepare-base` / the download fetch again. Bases are
+written once and never replaced by the tooling (`prepare-base` returns early when
+one exists; `snapshot` refuses to overwrite), because overlays use them as
+backing files. Do not replace or edit a base by hand while any run backed by it
+exists: `destroy` those runs first, or stage the new image under a new case name.
 
-Ownership: `run-vm-harness.sh` bind-mounts the folders as `/vm-lab`,
-`/downloads` (read-write) and `/main-vm-images` (read-only), and runs every
-`vmctl` as `docker exec --user <uid:gid of vm-lab>`, so nothing written there is
-root-owned and `git worktree remove` / `rm -rf` keep working. The runner's entry
-command (as root) only creates the passwd entry for that uid and starts
-`apt-cacher-ng`. A root-owned vm-lab is refused.
+Ownership: `run-vm-harness.sh` bind-mounts the folders as `/vm-lab` and
+`/downloads` (read-write) and runs every `vmctl` as `docker exec --user <uid:gid
+of vm-lab>`, so nothing written there is root-owned and `git worktree remove` /
+`rm -rf` keep working. The runner's entry command (as root) only creates the
+passwd entry for that uid and starts `apt-cacher-ng`. A root-owned vm-lab, or
+vm-lab and downloads owned by different users, is refused.
 
 Runner reuse: a running runner is reused only if its layout label
-(`mdt.vm.layout`), owner label, `/vm-lab`, `/downloads` and `/main-vm-images`
-mount sources match, and the folders' device:inode match inside and outside the
-runner (so a folder deleted, replaced or mounted over after the runner started
-is detected). Otherwise the wrapper refuses and says to run `--stop-daemon`.
-
-Fresh clone: neither `artifacts/` nor `downloads/` exists; the wrapper and the
-scripts create them (as the calling user) before use, and readers fail with a
-clear "no base image ... run: vmctl prepare-base" or "no such run".
+(`mdt.vm.layout`), owner label, and `/vm-lab` and `/downloads` mount sources
+match, and the folders' device:inode match inside and outside the runner (so a
+folder deleted, replaced or mounted over after the runner started is detected).
+Otherwise the wrapper refuses and says to run `--stop-daemon`.
 
 CoW: a btrfs subvolume mounted over `<project>/artifacts/vm-lab` is invisible to
 these scripts. Provisioning it (creating the mount point as the checkout owner,

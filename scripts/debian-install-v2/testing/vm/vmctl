@@ -16,7 +16,9 @@
 # that class of test belongs instead: the guest's /dev/vda and its swap
 # are the GUEST kernel's own, entirely separate from the host's.
 #
-# <vm-lab> = <project>/artifacts/vm-lab, overridable with MDT_VM_STATE_DIR.
+# <vm-lab> = <project>/artifacts/vm-lab (a tracked placeholder folder; contents
+# are gitignored). Global options before the subcommand: --state-dir DIR,
+# --downloads-dir DIR (used by the in-runner wrapper for its mount points).
 # Design (credited: this repo's own operator ran the same question past a
 # separate research session, cross-checked against this implementation --
 # see the 2026-09-09 KVM-setup discussion in project memory):
@@ -56,15 +58,24 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # State lives in <project>/artifacts/vm-lab (gitignored). It may be a plain
 # directory or a CoW subvolume mounted over it; this script does not care.
 # HERE is <project>/testing/vm.
-PROJECT_DIR="$(cd "$HERE/../.." && pwd)"
-STATE_DIR="${MDT_VM_STATE_DIR:-$PROJECT_DIR/artifacts/vm-lab}"
+PROJECT_DIR="$(cd "$HERE/../.." && pwd -P)"
+# Fixed-depth defaults (<repo>/scripts/debian-install-v2/testing/vm). No env
+# overrides: the layout is a repo decision. The in-runner wrapper cannot derive
+# them (its /work is only the testing dir), so it passes the global options
+# --state-dir /vm-lab --downloads-dir /downloads before the subcommand.
+STATE_DIR="$PROJECT_DIR/artifacts/vm-lab"
+DOWNLOADS_DIR="$(cd "$PROJECT_DIR/../.." && pwd -P)/downloads"
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --state-dir) STATE_DIR="${2:?--state-dir requires a path}"; shift 2 ;;
+        --downloads-dir) DOWNLOADS_DIR="${2:?--downloads-dir requires a path}"; shift 2 ;;
+        *) break ;;
+    esac
+done
 IMAGES_DIR="$STATE_DIR/images"
 RUNS_DIR="$STATE_DIR/runs"
 SSH_DIR="$STATE_DIR/ssh"
 SSH_KEY="$SSH_DIR/id_ed25519"
-# Optional READ-ONLY images dir of the main checkout (set by the wrapper when a
-# worktree can reuse the main checkout's staged bases). Never written to.
-MAIN_IMAGES_DIR="${MDT_VM_MAIN_IMAGES_DIR:-}"
 
 DEFAULT_SSH_PORT=2222
 DEFAULT_MEM_MB=2048
@@ -122,37 +133,15 @@ ensure_ssh_key() {
     ) 8>"$SSH_DIR/.lock"
 }
 
-# Resolve a staged base image: this checkout's vm-lab first, then the main
-# checkout's images (read-only; used as the overlay's backing file by absolute
-# path, never written or modified). Prints the path; fails when neither has it.
-find_base() {
-    local name="$1"
-    if [ -f "$IMAGES_DIR/$name" ]; then
-        printf '%s\n' "$IMAGES_DIR/$name"
-    elif [ -n "$MAIN_IMAGES_DIR" ] && [ -f "$MAIN_IMAGES_DIR/$name" ]; then
-        printf '%s\n' "$MAIN_IMAGES_DIR/$name"
-    else
-        return 1
-    fi
-}
-
 cmd_prepare_base() {
     local case_name="${1:?usage: vmctl prepare-base <case>}"
     mkdir -p "$IMAGES_DIR"
     local dest="$IMAGES_DIR/${case_name}-base.qcow2"
-    local existing
-    if existing="$(find_base "${case_name}-base.qcow2")"; then
-        if [ "$existing" = "$dest" ]; then
-            log "already staged: $dest"
-        else
-            log "INFO: base '$case_name' already staged in the main checkout ($existing); using it read-only as the overlay backing file, skipping prepare-base"
-        fi
-        return 0
-    fi
     case "$case_name" in
         case-b)
+            [ -f "$dest" ] && { log "already staged: $dest"; return 0; }
             local downloaded
-            downloaded="$("$HERE/../download-base-image.sh")"
+            downloaded="$("$HERE/../download-base-image.sh" "$DOWNLOADS_DIR")"
             if [ "$(stat -f -c %T "$IMAGES_DIR" 2>/dev/null)" != "btrfs" ]; then
                 log "INFO: vm-lab is not on btrfs; base staging is a full copy"
             fi
@@ -184,9 +173,8 @@ cmd_prepare_ready_base() {
     # base just before we start to run" the operator asked for.
     local case_name="${1:?usage: vmctl prepare-ready-base <case>}"
     local dest="$IMAGES_DIR/${case_name}-ready-base.qcow2"
-    local existing
-    if existing="$(find_base "${case_name}-ready-base.qcow2")"; then
-        log "already staged: $existing"
+    if [ -f "$dest" ]; then
+        log "already staged: $dest"
         return 0
     fi
     cmd_prepare_base "$case_name"
@@ -284,14 +272,14 @@ cmd_start() {
         die "custom seed ISO must be a readable, non-empty regular file (not a symlink): $seed_iso"
     fi
 
-    local base
-    base="$(find_base "${case_name}-base.qcow2")" || die "no base image for '$case_name' -- run: vmctl prepare-base $case_name"
+    local base="$IMAGES_DIR/${case_name}-base.qcow2"
+    [ -f "$base" ] || die "no base image for '$case_name' -- run: vmctl prepare-base $case_name"
     ensure_ssh_key
 
     local run_dir; run_dir="$(run_dir_for "$run")"
     # QEMU refuses a UNIX socket path over 108 bytes (long worktree paths when
     # vmctl is run directly on the host).
-    [ "${#run_dir}" -le 98 ] || die "run directory path is too long for the QMP socket (${#run_dir} bytes; sun_path limit is 107): $run_dir -- set MDT_VM_STATE_DIR to a shorter path"
+    [ "${#run_dir}" -le 98 ] || die "run directory path is too long for the QMP socket (${#run_dir} bytes; sun_path limit is 107): $run_dir -- use a checkout under a shorter path"
     [ -e "$run_dir/qemu.pid" ] && kill -0 "$(cat "$run_dir/qemu.pid")" 2>/dev/null \
         && die "run '$run' already has a live QEMU process (pid $(cat "$run_dir/qemu.pid")) -- vmctl destroy $run first"
     rm -rf "$run_dir"

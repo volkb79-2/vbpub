@@ -26,16 +26,14 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 TESTING_DIR="$(cd "$HERE/.." && pwd -P)"
 SOURCE_NAMESPACE_DIR="${MDT_VM_SOURCE_DIR:-}"
-# In-runner mount points. The host side is derived below: the project's
-# artifacts/vm-lab (or MDT_VM_STATE_DIR), the shared downloads/ folder of the
-# MAIN checkout (or MDT_DOWNLOADS_DIR), and the main checkout's staged base
-# images (read-only, only when this is a worktree).
+# In-runner mount points. The host side is derived below, by fixed depth from
+# this script: <project>/artifacts/vm-lab and <repo root>/downloads of the
+# checkout that runs (a worktree uses its own).
 VM_STATE_DIR="/vm-lab"
 VM_DOWNLOADS_DIR="/downloads"
-VM_MAIN_IMAGES_DIR="/main-vm-images"
 # Layout generation: bump when the runner's mounts/env/user contract changes,
 # so a runner started by older code is refused instead of silently reused.
-RUNNER_LAYOUT="vm-lab-2"
+RUNNER_LAYOUT="vm-lab-3"
 RUNNER_HOME="/tmp/vmlab-home"
 DOCKERFILE_SHA="$(sha256sum "$HERE/Dockerfile" | awk '{print $1}')"
 
@@ -113,6 +111,7 @@ EOF
         printf '%s%s\n' "$best_src" "${path#"$best_dest"}"
     fi
 }
+HOST_REPO_ROOT="$REPO_ROOT"
 SELF_HOSTNAME="$(cat /etc/hostname 2>/dev/null || true)"
 SELF_CONTAINER_ID=""
 inside_container=0
@@ -157,6 +156,9 @@ EOF
     HOST_PROJECT_DIR="${HOST_TESTING_DIR%/testing}"
     [ "$HOST_PROJECT_DIR" != "$HOST_TESTING_DIR" ] || die \
         "host testing dir '$HOST_TESTING_DIR' does not end in /testing; refusing a namespace-wrong bind mount"
+    HOST_REPO_ROOT="${HOST_PROJECT_DIR%"/${PROJECT_DIR#"$REPO_ROOT"/}"}"
+    [ "$HOST_REPO_ROOT" != "$HOST_PROJECT_DIR" ] || die \
+        "host project dir '$HOST_PROJECT_DIR' does not end in /${PROJECT_DIR#"$REPO_ROOT"/}; refusing a namespace-wrong bind mount"
     # Keep the default source bind in the same mapped host namespace.
     HOST_SOURCE_DIR="$HOST_PROJECT_DIR"
     if [ -n "$SOURCE_NAMESPACE_DIR" ]; then
@@ -171,60 +173,19 @@ if [ "$inside_container" = "0" ] && [ -n "$SOURCE_NAMESPACE_DIR" ]; then
     HOST_SOURCE_DIR="$SOURCE_NAMESPACE_DIR"
 fi
 
-# --- state / downloads / main-checkout images: namespace paths, then host paths
-# vm-lab stays per checkout (<project>/artifacts/vm-lab). Overrides are honoured
-# (translated through the same mount table) or refused, never silently ignored.
-require_absolute() {
-    case "$2" in
-        /*) ;;
-        *) die "$1 must be an absolute path (got '$2')" ;;
-    esac
-}
-if [ -n "${MDT_VM_STATE_DIR:-}" ]; then
-    require_absolute MDT_VM_STATE_DIR "$MDT_VM_STATE_DIR"
-    VM_LAB_NS="$MDT_VM_STATE_DIR"
-    HOST_VM_LAB_DIR="$(host_path_for "$VM_LAB_NS" "MDT_VM_STATE_DIR")" || exit 1
-else
-    VM_LAB_NS="$PROJECT_DIR/artifacts/vm-lab"
-    HOST_VM_LAB_DIR="$HOST_PROJECT_DIR/artifacts/vm-lab"
-fi
-
-# Main checkout root: parent of git's common dir when that is named .git.
-MAIN_ROOT=""
-git_common="$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
-if [ -n "$git_common" ] && [ "$(basename "$git_common")" = ".git" ]; then
-    MAIN_ROOT="$(cd "$(dirname "$git_common")" && pwd -P)"
-fi
-
-if [ -n "${MDT_DOWNLOADS_DIR:-}" ]; then
-    require_absolute MDT_DOWNLOADS_DIR "$MDT_DOWNLOADS_DIR"
-    DOWNLOADS_NS="$MDT_DOWNLOADS_DIR"
-elif [ -n "$MAIN_ROOT" ]; then
-    DOWNLOADS_NS="$MAIN_ROOT/downloads"
-else
-    echo "INFO: no usable git common dir for $REPO_ROOT; downloads go to $REPO_ROOT/downloads (set MDT_DOWNLOADS_DIR to override)" >&2
-    DOWNLOADS_NS="$REPO_ROOT/downloads"
-fi
-HOST_DOWNLOADS_DIR="$(host_path_for "$DOWNLOADS_NS" "downloads dir")" || exit 1
-
-# Main checkout's staged base images: read-only fallback for a worktree.
-MAIN_IMAGES_NS=""
-HOST_MAIN_IMAGES_DIR=""
-if [ -n "$MAIN_ROOT" ] && [ "$MAIN_ROOT" != "$REPO_ROOT" ]; then
-    candidate_images="$MAIN_ROOT/${PROJECT_DIR#"$REPO_ROOT"/}/artifacts/vm-lab/images"
-    if [ -d "$candidate_images" ]; then
-        MAIN_IMAGES_NS="$candidate_images"
-        HOST_MAIN_IMAGES_DIR="$(host_path_for "$MAIN_IMAGES_NS" "main-checkout images dir")" || exit 1
-    fi
-fi
+# --- state / downloads: fixed-depth paths of THIS checkout, then host paths.
+# Both top folders are tracked placeholders, so they exist in every checkout.
+VM_LAB_NS="$PROJECT_DIR/artifacts/vm-lab"
+HOST_VM_LAB_DIR="$HOST_PROJECT_DIR/artifacts/vm-lab"
+DOWNLOADS_NS="$REPO_ROOT/downloads"
+HOST_DOWNLOADS_DIR="$HOST_REPO_ROOT/downloads"
 
 # A fixed runner name would silently reuse whichever worktree first created
 # it. That can make a gate execute another worktree's source. Derive both
-# names from this worktree's path (plus the source, state and downloads
-# identity: two projects may reuse this harness from one worktree, and their
-# inputs and state must never be silently exchanged).
-RUNNER_FINGERPRINT="$(printf '%s\0%s\0%s\0%s\0%s' "$TESTING_DIR" "$SOURCE_NAMESPACE_DIR" \
-    "$VM_LAB_NS" "$DOWNLOADS_NS" "$MAIN_IMAGES_NS" | sha256sum | cut -c1-12)"
+# names from this worktree's path (plus the source: two projects may reuse
+# this harness from one worktree, and their inputs must never be silently
+# exchanged).
+RUNNER_FINGERPRINT="$(printf '%s\0%s' "$TESTING_DIR" "$SOURCE_NAMESPACE_DIR" | sha256sum | cut -c1-12)"
 IMAGE="debian-install-vm:$RUNNER_FINGERPRINT"
 NAME="debian-install-vm-harness-$RUNNER_FINGERPRINT"
 
@@ -307,12 +268,13 @@ ensure_runner() {
     verify_build_environment
     verify_cgroup_parent
 
-    # Create the bind sources here, in the caller's namespace and as the caller,
-    # so Docker never creates them root-owned. This also runs before the reuse
-    # check: a deleted-and-recreated folder is then caught by the inode compare.
-    mkdir -p "$VM_LAB_NS" "$DOWNLOADS_NS"
-    [ -z "$MAIN_IMAGES_NS" ] || [ -d "$MAIN_IMAGES_NS" ] || die \
-        "main-checkout images dir $MAIN_IMAGES_NS disappeared"
+    # The bind sources are tracked placeholder folders (artifacts/vm-lab and
+    # downloads); never create them here (Docker would make a missing source
+    # root-owned). A deleted-and-recreated folder is caught by the inode compare.
+    for folder in "$VM_LAB_NS" "$DOWNLOADS_NS"; do
+        [ -d "$folder" ] || die \
+            "$folder is missing; a checkout contains it as a tracked placeholder (restore it with git checkout)"
+    done
     RUNNER_OWNER="$(stat -c '%u:%g' "$VM_LAB_NS")"
     downloads_owner="$(stat -c '%u:%g' "$DOWNLOADS_NS")"
     [ "$RUNNER_OWNER" = "$downloads_owner" ] || die \
@@ -338,8 +300,7 @@ ensure_runner() {
             "was started by older code (layout '$(runner_label mdt.vm.layout)', expected '$RUNNER_LAYOUT')" || return 1
         [ "$(runner_label mdt.vm.owner)" = "$RUNNER_OWNER" ] || stale_runner \
             "runs as '$(runner_label mdt.vm.owner)' but the vm-lab owner is '$RUNNER_OWNER'" || return 1
-        for pair in "$VM_STATE_DIR|$HOST_VM_LAB_DIR" "$VM_DOWNLOADS_DIR|$HOST_DOWNLOADS_DIR" \
-                    "$VM_MAIN_IMAGES_DIR|$HOST_MAIN_IMAGES_DIR"; do
+        for pair in "$VM_STATE_DIR|$HOST_VM_LAB_DIR" "$VM_DOWNLOADS_DIR|$HOST_DOWNLOADS_DIR"; do
             dst="${pair%%|*}"; want="${pair#*|}"
             have="$(runner_mount_src "$dst")"
             [ "$have" = "$want" ] || stale_runner \
@@ -390,10 +351,6 @@ ensure_runner() {
     # live one (review finding, 2026-09-09).
     docker rm -f "$NAME" >/dev/null 2>&1 || true
     echo "+ starting persistent VM-harness runner ($NAME)" >&2
-    main_images_mount=()
-    if [ -n "$HOST_MAIN_IMAGES_DIR" ]; then
-        main_images_mount=(--mount "type=bind,src=$HOST_MAIN_IMAGES_DIR,dst=$VM_MAIN_IMAGES_DIR,readonly")
-    fi
     # The entry command runs as root: it creates a passwd/group entry for the
     # vm-lab owner (so ssh/ssh-keygen work for that uid), starts apt-cacher-ng,
     # and then idles. All vmctl work runs via `docker exec --user <owner>`, so
@@ -406,7 +363,6 @@ ensure_runner() {
         --label "mdt.vm.owner=$RUNNER_OWNER" \
         --mount "type=bind,src=$HOST_VM_LAB_DIR,dst=$VM_STATE_DIR" \
         --mount "type=bind,src=$HOST_DOWNLOADS_DIR,dst=$VM_DOWNLOADS_DIR" \
-        "${main_images_mount[@]}" \
         --mount "type=bind,src=$HOST_TESTING_DIR,dst=/work,readonly" \
         --mount "type=bind,src=$HOST_SOURCE_DIR,dst=/source,readonly" \
         -w /work/vm \
@@ -437,8 +393,5 @@ esac
 ensure_runner
 # Always as the vm-lab owner (never root): files written under the bind mounts
 # must stay deletable by the cockpit user.
-exec_env=(-e "MDT_VM_STATE_DIR=$VM_STATE_DIR" -e "MDT_DOWNLOADS_DIR=$VM_DOWNLOADS_DIR" -e "HOME=$RUNNER_HOME")
-if [ -n "$MAIN_IMAGES_NS" ]; then
-    exec_env+=(-e "MDT_VM_MAIN_IMAGES_DIR=$VM_MAIN_IMAGES_DIR")
-fi
-exec docker exec -i --user "$RUNNER_OWNER" "${exec_env[@]}" "$NAME" ./vmctl "$@"
+exec docker exec -i --user "$RUNNER_OWNER" -e "HOME=$RUNNER_HOME" "$NAME" \
+    ./vmctl --state-dir "$VM_STATE_DIR" --downloads-dir "$VM_DOWNLOADS_DIR" "$@"

@@ -351,19 +351,23 @@ stock image already matches it.
 
 ## 3b. State layout, worktrees and ownership
 
-- **vm-lab** (`<project>/artifacts/vm-lab`, or `MDT_VM_STATE_DIR`): per
-  checkout/worktree: `images/`, `runs/<name>/`, `ssh/`. Disposable state is tied
-  to the source under test and is cleaned with the worktree.
-- **downloads** (main checkout `downloads/`, resolved via git's common dir;
-  `MDT_DOWNLOADS_DIR` overrides; outside git the script-relative root plus an
-  INFO line): shared, immutable, checksum-verified, `flock`ed.
-- **Main-checkout bases**: a worktree looks up `<name>-base.qcow2` locally, then
-  in the main checkout's `vm-lab/images` (read-only mount `/main-vm-images`).
-  Runs always get an overlay in their own checkout, backed by the main base by
-  absolute path. Safety of that backing file rests on bases being write-once:
-  the tooling never replaces a base (`prepare-base` returns early, `snapshot`
-  refuses to overwrite). Content-addressed base names were considered and not
-  built; a refresh needs a new case name or destroying dependent runs first.
+- **vm-lab** (`<project>/artifacts/vm-lab`): per checkout/worktree, derived by
+  fixed depth from the script location; no env overrides. `images/`,
+  `runs/<name>/`, `ssh/`. Disposable state is tied to the source under test and
+  is cleaned with the worktree.
+- **downloads** (`<repo root>/downloads`, of the checkout that runs): shared by
+  all projects, immutable, checksum-verified, `flock`ed.
+- **Placeholders**: both top folders are tracked (README + a `*` `.gitignore`),
+  so a fresh clone has them; scripts only `mkdir -p` the subfolders.
+- **Worktrees** (plan, owned by `ciu worktree` + `libraries/cowtree`): a new
+  worktree gets CoW clones of the main checkout's declared gitignored paths, so
+  it already holds main's downloads and staged bases; scripts just use the
+  project-relative paths. Without CoW a worktree starts empty and fetches/stages
+  again. The harness has no main-checkout lookup of its own.
+- **Base safety**: bases are write-once (`prepare-base` returns early, `snapshot`
+  refuses to overwrite) because overlays reference them by path. Content-
+  addressed names were considered and not built; a refresh needs a new case name
+  or destroying dependent runs first.
 - **Ownership**: the runner entry command runs as root only to add the owner's
   passwd entry and start apt-cacher-ng; all `vmctl` runs use `docker exec --user`
   with the vm-lab owner's uid:gid, so no root-owned files appear in worktrees.
