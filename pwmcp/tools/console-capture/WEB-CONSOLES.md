@@ -27,6 +27,8 @@ Things learned the hard way (all handled or documented in the tool):
   every 15 s. A fresh daemon means a fresh browser context, i.e. log in again.
 * Leaving a console page raises a `beforeunload` dialog that blocks every tool until `dialog` (browser_handle_dialog).
 * A self-signed certificate shows Chrome's interstitial: `click '#details-button'`, then `click '#proceed-link'`.
+* The TrueNAS JSON-RPC helper (`truenas_rpc.py`, used to read a VM's display URI/password) verifies TLS by default; for a throwaway
+  self-signed TrueNAS test install set `TRUENAS_INSECURE_TLS=1` (warns on stderr) or `TRUENAS_CA_FILE=<pem>`. See README, "TrueNAS API client TLS".
 * `browser_type` does fill password inputs (the TrueNAS note about empty password fields applies to spice-html5 only).
 * Screen-reading ops never need credentials; typing a secret into a guest uses `typekeys --file/--env`
   (one `press_key` per character, no secret in JS).
