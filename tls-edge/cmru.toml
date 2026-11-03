@@ -114,9 +114,10 @@ commands = [
 [steps.push]
 quiet = true
 commands = [
-  # tarball-publish takes exactly one asset; the variant matrix goes through the
-  # publish_versioned_variants keystone (cmru backlog: a handler for it).
-  { label = "tls-edge: publish variant bundles", argv = ["python3", "scripts/publish-variants.py"], cwd = "." },
+  # One tarball per interpreter variant, all under the same release tag or none (cmru KI-115).
+  # The --variant names and labels repeat [[project.variants]] above; tests/test_release_config.py
+  # keeps the two in step. dist/get.py is the installer, published beside the bundles.
+  { label = "tls-edge: publish variant bundles", argv = ["cmru", "handler", "tarball-publish", "--prefix", "tls-edge", "--cwd", ".", "--glob", "tls-edge-v*.tar.xz", "--version-file", "dist/VERSION", "--notes-env", "TLS_EDGE_RELEASE_NOTES", "--variant", "py313=CPython 3.13, x86_64 glibc", "--variant", "py314=CPython 3.14, x86_64 glibc", "--extra-asset", "dist/get.py"], cwd = "." },
 ]
 
 [versions.targets."oci.socket-proxy"]

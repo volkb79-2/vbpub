@@ -746,8 +746,158 @@ def cmd_wheel_validate(args: argparse.Namespace) -> None:
               f"&& sha256sum -c {info['asset']}.sha256")
 
 
+def _parse_variant_specs(specs: list[str]) -> list[tuple[str, Optional[str]]]:
+    """``--variant NAME[=LABEL]`` values -> ``[(name, label|None)]``; a bad one is a refusal."""
+    from cmru.config import _VARIANT_NAME_RE
+
+    parsed: list[tuple[str, Optional[str]]] = []
+    seen: set[str] = set()
+    for spec in specs:
+        name, separator, label = spec.partition("=")
+        if not _VARIANT_NAME_RE.match(name):
+            raise SystemExit(
+                f"--variant {spec!r}: the name must be letters, digits, '.', '-' or '_' "
+                "(it goes into the asset filename)"
+            )
+        if separator and not label.strip():
+            raise SystemExit(f"--variant {spec!r}: an empty label; use NAME alone for none")
+        if name in seen:
+            raise SystemExit(f"--variant {name!r} is declared twice")
+        seen.add(name)
+        parsed.append((name, label.strip() if separator else None))
+    return parsed
+
+
+def _select_variant_tarballs(
+    args: argparse.Namespace, cwd: Path, version: str,
+    variants: list[tuple[str, Optional[str]]], build_output: Optional[dict],
+) -> dict[str, Path]:
+    """Exactly one canonically named tarball per declared variant, and nothing else.
+
+    A multi-variant release is all-or-nothing: every problem (a declared variant with no
+    file, a file matching the glob that is no declared variant, a stale file from another
+    version) is collected and refused TOGETHER before any staging or upload.
+    """
+    from cmru.release import variant_asset_name
+
+    if build_output is not None:
+        candidates = _build_output_files(args, args.glob, record=build_output)
+    else:
+        candidates = sorted(item for item in (cwd / "dist").glob(args.glob) if item.is_file())
+    by_name: dict[str, list[Path]] = {}
+    for candidate in candidates:
+        by_name.setdefault(candidate.name, []).append(candidate)
+    expected = {
+        name: variant_asset_name(args.prefix, version, name, args.asset_suffix)
+        for name, _label in variants
+    }
+    problems: list[str] = []
+    for name, asset in expected.items():
+        found = by_name.get(asset, [])
+        if not found:
+            problems.append(f"variant {name!r}: no {asset} matching {args.glob!r}")
+        elif len(found) > 1:
+            problems.append(f"variant {name!r}: {len(found)} files named {asset}")
+    wanted = set(expected.values())
+    for stray in sorted(set(by_name) - wanted):
+        problems.append(
+            f"{stray} matches {args.glob!r} but is no declared variant of "
+            f"{args.prefix} {version} (stale or undeclared); remove it or declare it"
+        )
+    if problems:
+        raise SystemExit(
+            "refusing a partial multi-variant release, nothing was uploaded:\n  "
+            + "\n  ".join(problems)
+        )
+    return {name: by_name[asset][0] for name, asset in expected.items()}
+
+
+def _select_release_extras(
+    args: argparse.Namespace, cwd: Path, patterns: list[str], build_output: Optional[dict],
+) -> list[Path]:
+    """Release-level companion files (a project's ``get.py``); zero matches is a refusal."""
+    extras: list[Path] = []
+    for pattern in patterns:
+        if build_output is not None:
+            files = _build_output_files(args, pattern, record=build_output)
+        else:
+            files = sorted(
+                Path(item).resolve() for item in glob.glob(str(cwd / pattern))
+                if Path(item).is_file()
+            )
+        if not files:
+            raise SystemExit(f"--extra-asset {pattern!r} matched no existing file")
+        extras.extend(files)
+    return extras
+
+
+def _publish_tarball_variants(
+    args: argparse.Namespace, *, cwd: Path, version: str, declared: list[str],
+    extra_patterns: list[str], owner: str, repo: str, token: str,
+    build_output: Optional[dict],
+) -> None:
+    """``tarball-publish --variant ...``: every variant under ONE release, or nothing."""
+    from cmru.release import VariantArtifact, publish_versioned_variants
+
+    variants = _parse_variant_specs(declared)
+    selected = _select_variant_tarballs(args, cwd, version, variants, build_output)
+    extras = _select_release_extras(args, cwd, extra_patterns, build_output)
+    notes = (os.getenv(args.notes_env) if args.notes_env else None) or None
+    release_notes = _curated_release_notes(cwd, args.prefix, version, build_output)
+    labels = dict(variants)
+    gh = GitHubReleases(owner, repo, token)
+
+    def publish(sources: dict[str, Path], release_extras: list[Path], **guards) -> dict:
+        return publish_versioned_variants(
+            gh, prefix=args.prefix, version=version,
+            variants=[
+                VariantArtifact(name=name, asset_path=path, label=labels[name])
+                for name, path in sources.items()
+            ],
+            asset_suffix=args.asset_suffix, notes=notes,
+            extra_assets=release_extras, verify_assets=True,
+            **_notes_kwargs(release_notes), **guards,
+        )
+
+    if build_output is None:
+        result = publish(selected, extras)
+    else:
+        # The keystone writes sidecars and latest.json beside its inputs: publish exact,
+        # digest-checked COPIES so the immutable retained record is never mutated.
+        with tempfile.TemporaryDirectory(prefix="cmru-build-publish-") as temporary:
+            staging = Path(temporary)
+            names = [path.name for path in [*selected.values(), *extras]]
+            clashes = sorted({n for n in names if names.count(n) > 1})
+            if clashes:
+                raise SystemExit(f"asset name collision, nothing was uploaded: {clashes}")
+
+            def stage(source: Path) -> Path:
+                copy = staging / source.name
+                shutil.copy2(source, copy)
+                _verify_staged_build_output_file(build_output, source, copy)
+                return copy
+
+            staged = {name: stage(path) for name, path in selected.items()}
+            staged_extras = [stage(path) for path in extras]
+            result = publish(
+                staged, staged_extras, require_existing_targets=True,
+                latest_pointer_recreate=False,
+                expected_tag_commit=build_output["manifest"]["source_commit"],
+            )
+    print(f"[INFO] Published {args.prefix} {version}")
+    for record in result["variants"]:
+        print(f"[INFO] {args.prefix.upper()}_VARIANT_{record['name'].upper().replace('-', '_').replace('.', '_')}"
+              f"={record['asset']} sha256={record['sha256']}")
+    print(f"[INFO] {args.prefix.upper()}_RELEASE_ASSETS={','.join(result['assets'])}")
+    print(result)
+
+
 def cmd_tarball_publish(args: argparse.Namespace) -> None:
-    """Find the built tarball, read the version, publish via the keystone."""
+    """Find the built tarball, read the version, publish via the keystone.
+
+    With ``--variant`` (repeatable) the glob selects one canonically named tarball per
+    declared variant and ALL of them are published under one release (KI-115).
+    """
     cwd = Path(args.cwd).resolve()
     token = _require_env("GITHUB_PUSH_PAT")
     owner = _require_env("GITHUB_USERNAME")
@@ -767,6 +917,18 @@ def cmd_tarball_publish(args: argparse.Namespace) -> None:
         version = version_path.read_text(encoding="utf-8").strip()
     else:
         version = _require_env(args.version_env)
+
+    declared = list(getattr(args, "variant", None) or [])
+    extra_patterns = list(getattr(args, "extra_asset", None) or [])
+    if declared:
+        _publish_tarball_variants(
+            args, cwd=cwd, version=version, declared=declared,
+            extra_patterns=extra_patterns, owner=owner, repo=repo, token=token,
+            build_output=build_output,
+        )
+        return
+    if extra_patterns:
+        raise SystemExit("--extra-asset is only valid with --variant")
 
     if build_output is not None:
         matches = _build_output_files(args, args.glob, record=build_output)
@@ -1017,6 +1179,9 @@ def handlers_cli():
             OptionSpec(("--version-file",), "version file relative to --cwd", metavar="PATH", parser_kwargs={"dest": "version_file", "default": None}, mutually_exclusive_group="version-source", mutually_exclusive_required=True),
             OptionSpec(("--version-env",), "environment variable containing the version", metavar="NAME", parser_kwargs={"dest": "version_env", "default": None}, mutually_exclusive_group="version-source", mutually_exclusive_required=True),
             OptionSpec(("--notes-env",), "environment variable holding optional release notes", metavar="NAME", parser_kwargs={"dest": "notes_env", "default": None}),
+            OptionSpec(("--variant",), "publish one per-interpreter variant asset NAME[=LABEL]; repeatable, all-or-nothing", metavar="NAME[=LABEL]", parser_kwargs={"action": "append", "default": []}),
+            OptionSpec(("--asset-suffix",), "variant asset file extension (default .tar.xz)", metavar="SUFFIX", parser_kwargs={"dest": "asset_suffix", "default": ".tar.xz"}),
+            OptionSpec(("--extra-asset",), "release-level companion file or glob (with --variant); repeatable", metavar="PATH", parser_kwargs={"action": "append", "default": []}),
         )),
         ("bundle-manifest", "Write the installer manifest (files + sha256) into a staged bundle dir.", cmd_bundle_manifest, (
             required_name("--name", "project name (as in cmru.toml)", "NAME"),

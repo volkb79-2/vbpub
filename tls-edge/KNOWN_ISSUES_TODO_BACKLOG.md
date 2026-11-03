@@ -198,8 +198,8 @@ sufficient for a searchable, persistent audit trail.
 ### Instance packaging follow-ups (filed 2026-11-04)
 
 - Drop the installer adapter's `git init` once ciu runs in a non-git standalone root (ciu CIU-163).
-- Replace `scripts/publish-variants.py` with a cmru handler for multi-variant tarball releases (cmru KI-115); until then publication
-  through a retained build-output record is refused.
+- Multi-variant publication goes through `cmru handler tarball-publish --variant` (cmru KI-115); `scripts/publish-variants.py` is gone and
+  a retained build-output record publishes like any other release.
 - Wheel freshness: `scripts/stage-wheels.py` refuses PyPI wheels younger than 14 days; a pinned older version needs a constraint file (not yet added).
 - Live migration of the hand-made deployment: planned in `docs/INSTALL.md`, not executed.
 

@@ -1610,13 +1610,19 @@
         "option:route:entrypoint:cmru/handler/tarball-publish/--prefix",
         "option:route:entrypoint:cmru/handler/tarball-publish/--cwd",
         "option:route:entrypoint:cmru/handler/tarball-publish/--glob",
+        "option:route:entrypoint:cmru/handler/tarball-publish/--variant",
+        "option:route:entrypoint:cmru/handler/tarball-publish/--asset-suffix",
+        "option:route:entrypoint:cmru/handler/tarball-publish/--extra-asset",
         "option:route:entrypoint:cmru/handler/tarball-publish/--version-file",
         "option:route:entrypoint:cmru/handler/tarball-publish/--version-env"
       ],
       "route_id": "route:entrypoint:cmru/handler/tarball-publish",
       "shape": {
         "defaulted_options": [
-          "option:route:entrypoint:cmru/handler/tarball-publish/--log-prefix-time-short"
+          "option:route:entrypoint:cmru/handler/tarball-publish/--log-prefix-time-short",
+          "option:route:entrypoint:cmru/handler/tarball-publish/--variant",
+          "option:route:entrypoint:cmru/handler/tarball-publish/--asset-suffix",
+          "option:route:entrypoint:cmru/handler/tarball-publish/--extra-asset"
         ],
         "required_argument_values": {},
         "required_arguments": [],
@@ -1632,7 +1638,20 @@
           "option:route:entrypoint:cmru/handler/tarball-publish/--glob"
         ]
       },
-      "signature": "sha256:4d11053914c6cebb18ee0ad9b27325799d6b0d06a4a4b9b99e6ba7d1d7e4c9d5"
+      "signature": "sha256:be5a8af7980a8444b9e3ec4fffffd85fde2d4006f0a2fb1c8fa7249a2baded08"
+    },
+    {
+      "id": "case:route:entrypoint:cmru/handler/tarball-publish/option-spelling/option:route:entrypoint:cmru/handler/tarball-publish/--asset-suffix/--asset-suffix",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cmru/handler/tarball-publish/--asset-suffix"
+      ],
+      "route_id": "route:entrypoint:cmru/handler/tarball-publish",
+      "shape": {
+        "option_id": "option:route:entrypoint:cmru/handler/tarball-publish/--asset-suffix",
+        "spelling": "--asset-suffix"
+      },
+      "signature": "sha256:4e38a31bedf3aa0d9bf077163f8cc0063d1bc03ee655e64515f8e009945530a0"
     },
     {
       "id": "case:route:entrypoint:cmru/handler/tarball-publish/option-spelling/option:route:entrypoint:cmru/handler/tarball-publish/--cwd/--cwd",
@@ -1672,6 +1691,19 @@
         "spelling": "--dry-run"
       },
       "signature": "sha256:b2b04455bdcbbfeb5852a1b54eea6fe3104bd1633e682be7e170de7f47ab1d17"
+    },
+    {
+      "id": "case:route:entrypoint:cmru/handler/tarball-publish/option-spelling/option:route:entrypoint:cmru/handler/tarball-publish/--extra-asset/--extra-asset",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cmru/handler/tarball-publish/--extra-asset"
+      ],
+      "route_id": "route:entrypoint:cmru/handler/tarball-publish",
+      "shape": {
+        "option_id": "option:route:entrypoint:cmru/handler/tarball-publish/--extra-asset",
+        "spelling": "--extra-asset"
+      },
+      "signature": "sha256:d3562ae0696a849c20a121ada61fd21baa3d729c115559ea51f88b5d6699ba5c"
     },
     {
       "id": "case:route:entrypoint:cmru/handler/tarball-publish/option-spelling/option:route:entrypoint:cmru/handler/tarball-publish/--glob/--glob",
@@ -1724,6 +1756,19 @@
         "spelling": "--prefix"
       },
       "signature": "sha256:dac45f6471ffd3f563ca06fa0891814af382e0ca7818a3159ac903a9d2684c50"
+    },
+    {
+      "id": "case:route:entrypoint:cmru/handler/tarball-publish/option-spelling/option:route:entrypoint:cmru/handler/tarball-publish/--variant/--variant",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cmru/handler/tarball-publish/--variant"
+      ],
+      "route_id": "route:entrypoint:cmru/handler/tarball-publish",
+      "shape": {
+        "option_id": "option:route:entrypoint:cmru/handler/tarball-publish/--variant",
+        "spelling": "--variant"
+      },
+      "signature": "sha256:1ad0d013787ecafc0a26626bdc61933d56faebebbfaf7a80d6716101fe73d124"
     },
     {
       "id": "case:route:entrypoint:cmru/handler/tarball-publish/option-spelling/option:route:entrypoint:cmru/handler/tarball-publish/--version-env/--version-env",
@@ -9083,6 +9128,126 @@
           "parser_kwargs": {
             "default": null,
             "dest": "notes_env"
+          },
+          "parser_path": [
+            "handler",
+            "tarball-publish"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._AppendAction",
+          "before_nested_subcommand": false,
+          "canonical": "--variant",
+          "choices": null,
+          "const": null,
+          "default": [],
+          "default_present": true,
+          "description": "publish one per-interpreter variant asset NAME[=LABEL]; repeatable, all-or-nothing",
+          "dest": "variant",
+          "effective_default": [],
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--variant"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:cmru/handler/tarball-publish/--variant",
+          "kind": "option",
+          "metavar": "NAME[=LABEL]",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "action": "append",
+            "default": []
+          },
+          "parser_path": [
+            "handler",
+            "tarball-publish"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--asset-suffix",
+          "choices": null,
+          "const": null,
+          "default": ".tar.xz",
+          "default_present": true,
+          "description": "variant asset file extension (default .tar.xz)",
+          "dest": "asset_suffix",
+          "effective_default": ".tar.xz",
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--asset-suffix"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:cmru/handler/tarball-publish/--asset-suffix",
+          "kind": "option",
+          "metavar": "SUFFIX",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": ".tar.xz",
+            "dest": "asset_suffix"
+          },
+          "parser_path": [
+            "handler",
+            "tarball-publish"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._AppendAction",
+          "before_nested_subcommand": false,
+          "canonical": "--extra-asset",
+          "choices": null,
+          "const": null,
+          "default": [],
+          "default_present": true,
+          "description": "release-level companion file or glob (with --variant); repeatable",
+          "dest": "extra_asset",
+          "effective_default": [],
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--extra-asset"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:cmru/handler/tarball-publish/--extra-asset",
+          "kind": "option",
+          "metavar": "PATH",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "action": "append",
+            "default": []
           },
           "parser_path": [
             "handler",
