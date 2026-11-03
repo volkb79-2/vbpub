@@ -4547,6 +4547,16 @@ telemetry.
   reserving.
 - Keep all capacity refusals distinct from lane and mutation verdicts.
 
+### Archive note (2026-11-04)
+
+The earlier design and implementation branches were removed in the worktree
+close-out (operator Q6: RG-56 stays archived; run-gate has since been rewritten
+and RG-80 shipped a different, count-based admission). Their tips are preserved
+as the git tags `archive/rg56-admission` (design handoff, review, repair
+reports) and `archive/rg56-admission-implementation` (pure admission
+arithmetic and manifest validation in the old `run-gate.py`; it does not apply
+to the current `run_gate.py`). Memory-reservation admission is still open here.
+
 ### Status — OPEN (RW-283; future dependency-gated admission wave)
 
 P5 delivers only the non-reserving R-45 behavior specified in `SPEC.md`.
