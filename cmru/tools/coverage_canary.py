@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Sequence
@@ -84,8 +85,8 @@ def run(argv: Sequence[str] | None = None) -> int:
         )
         control = _run(test_argv, cwd=copied)
         if control.returncode != 0:
-            # The tail of a pytest run is only the bare FAILED list, so keep the whole
-            # output in temporary storage and quote the cause of the first failure.
+            # Keep a temporary copy, and stream the full output so disposable lane logs
+            # retain it after their container's temporary directory disappears.
             log: Path | None = None
             try:
                 with tempfile.NamedTemporaryFile(
@@ -94,7 +95,7 @@ def run(argv: Sequence[str] | None = None) -> int:
                 ) as stream:
                     log = Path(stream.name)
                     stream.write(control.stdout)
-                where = f"full output: {log}"
+                where = "full output is above in the lane log"
             except OSError as exc:
                 cleanup_detail = ""
                 if log is not None:
@@ -102,7 +103,14 @@ def run(argv: Sequence[str] | None = None) -> int:
                         log.unlink(missing_ok=True)
                     except OSError as cleanup_exc:
                         cleanup_detail = f"; partial temporary log cleanup failed: {cleanup_exc}"
-                where = f"the control log in temporary storage could not be written: {exc}{cleanup_detail}"
+                where = (
+                    "full output is above in the lane log; a temporary copy could not be "
+                    f"written: {exc}{cleanup_detail}"
+                )
+            sys.stderr.write("known-good canary control output follows:\n")
+            sys.stderr.write(control.stdout)
+            sys.stderr.write("\n")
+            sys.stderr.flush()
             raise RuntimeError(
                 f"known-good canary control failed with exit {control.returncode} "
                 f"({where}): {failure_excerpt(control.stdout, 2000)}"

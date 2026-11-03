@@ -845,9 +845,11 @@ path is covered by the shared fixture pathspecs and present in the selected
 tree.
 More complex dynamic path spellings are not inferred by this check (see
 KI-88). A failing known-good control is reported with the first failure's
-header, `E` cause lines and `file:line` location; its full output is written to
-system temporary storage instead of beside `.assay` evidence, so the failed
-lane does not create a second unapproved snapshot artifact.
+header, `E` cause lines and `file:line` location. Its full output is kept in a
+uniquely named temporary log and streamed to stderr before the refusal, so a
+disposable lane's log retains the control output after its temporary directory
+disappears. The error points to that lane log instead of naming a temporary
+path that is no longer available.
 
 The full `run-gate gate` still covers R0 through R3: R0 runs the full test
 suite, R1 requires 100% line-and-branch coverage, R2 runs the tag-based

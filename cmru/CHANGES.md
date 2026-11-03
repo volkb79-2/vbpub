@@ -37,8 +37,8 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   triage. Each test fails its mapped mutation in a disposable source copy;
   KI-79 records the equivalent survivors and remaining whole-source debt.
 - Keep the coverage-canary control fixture complete for module-import reads,
-  including tests skipped after import, and write failed-control logs outside
-  `.assay` so one lane failure leaves one clear refusal.
+  including tests skipped after import; retain failed-control output in the lane
+  log so a disposable run leaves one actionable error.
 
 <!-- cmru: release history -->
 

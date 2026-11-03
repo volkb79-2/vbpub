@@ -425,10 +425,21 @@ def test_fixture_carries_import_time_root_reads_even_in_skip_guarded_modules():
     )
 
 
-def test_canary_control_failure_keeps_the_first_failure_section_in_the_message_and_a_full_log(tmp_path):
+def test_canary_control_failure_keeps_the_first_failure_section_and_streams_a_full_log(
+    tmp_path, monkeypatch, capsys
+):
     project_root = _estate(tmp_path / "repo")
     summary = "".join(f"FAILED tests/test_x.py::test_case_number_{n:03d}\n" for n in range(80))
     assert len(summary) > 2000  # the old stdout[-2000:] kept only this
+    full_output = (
+        "....F.....\n"
+        "=================================== FAILURES ===================================\n"
+        "____ test_real_cause ____\n"
+        "E   FileNotFoundError: /scratch/tester-base/Dockerfile\n"
+        "=========================== short test summary info ============================\n"
+        + summary
+        + "== 80 failed in 1.00s ==\n"
+    )
     (project_root / "noisy_control.py").write_text(textwrap.dedent(f'''\
         import sys
         print("....F.....")
@@ -442,25 +453,29 @@ def test_canary_control_failure_keeps_the_first_failure_section_in_the_message_a
     '''), encoding="utf-8")
     subprocess.run(["git", "-C", str(project_root.parent), "add", "-A"], check=True)  # the fixture copies tracked files
     evidence = tmp_path / "canary.json"
+    monkeypatch.setattr(coverage_canary.tempfile, "tempdir", str(tmp_path))
 
-    with pytest.raises(RuntimeError, match="known-good canary control failed with exit 1") as raised:
-        coverage_canary.run([
-            "--repo-root", str(project_root.parent), "--project-root", str(project_root),
-            "--target", "src/cmru/config.py", "--evidence", str(evidence),
-            "--", sys.executable, "noisy_control.py",
-        ])
+    try:
+        with pytest.raises(RuntimeError, match="known-good canary control failed with exit 1") as raised:
+            coverage_canary.run([
+                "--repo-root", str(project_root.parent), "--project-root", str(project_root),
+                "--target", "src/cmru/config.py", "--evidence", str(evidence),
+                "--", sys.executable, "noisy_control.py",
+            ])
 
-    assert "FileNotFoundError: /scratch/tester-base/Dockerfile" in str(raised.value)
-    log_match = re.search(r"full output: ([^\n)]+)", str(raised.value))
-    assert log_match
-    log = Path(log_match.group(1))
-    assert log.parent != evidence.parent
-    text = log.read_text(encoding="utf-8")
-    assert text.startswith("....F.....") and "80 failed in 1.00s" in text
-    assert "FileNotFoundError: /scratch/tester-base/Dockerfile" in text
-    assert not evidence.exists()
-    assert not list(evidence.parent.glob("*.control.log"))
-    log.unlink()
+        error = str(raised.value)
+        assert "FileNotFoundError: /scratch/tester-base/Dockerfile" in error
+        assert "full output is above in the lane log" in error
+        assert "full output:" not in error
+        assert capsys.readouterr().err == "known-good canary control output follows:\n" + full_output + "\n"
+        logs = list(tmp_path.glob("cmru-coverage-canary-*.control.log"))
+        assert len(logs) == 1
+        assert logs[0].read_text(encoding="utf-8") == full_output
+        assert not evidence.exists()
+        assert not evidence.with_suffix(".control.log").exists()
+    finally:
+        for log in tmp_path.glob("cmru-coverage-canary-*.control.log"):
+            log.unlink(missing_ok=True)
 
 
 def _real_pytest_output(tmp_path: Path, source: str) -> str:

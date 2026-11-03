@@ -2613,3 +2613,14 @@ sparse tracked fixture and omitted that file, so the control did not test the kn
 copying and closure checks, and check module-level root reads even in skip-guarded test modules. Failed-control output remains
 available in a uniquely named temporary log; a new run removes any legacy adjacent log before starting. Tests pin both the
 missing-input refusal and the absence of a stray `.assay` log (`tests/test_project_fixture.py`).
+
+### KI-108 — the coverage-canary control log disappears with disposable gate containers
+
+**Status:** FIXED 2026-11-03 (this branch); severity: minor, release-gate diagnostics. A red known-good control wrote its full output to a
+temporary file and named that path in the error. In a tester-unified command lane the file is under the container's `/tmp`, which is
+removed when the lane exits; the retained lane log contained only the bounded failure excerpt, losing the control's full collection or
+test output.
+
+**Fix.** Keep the temporary copy and also stream the complete captured control output to stderr before raising. The refusal says the
+full output is above in the lane log and does not point to the disappearing path. The focused test asserts the complete stderr and
+message, and redirects/cleans the temporary copy under its own `tmp_path` (`tests/test_project_fixture.py`).
