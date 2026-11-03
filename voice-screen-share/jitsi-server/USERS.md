@@ -2,8 +2,21 @@
 
 Authentication is Jitsi secure-domain with prosody **internal** accounts. Nobody joins without
 logging in (`jitsi.auth.guests = false`). Accounts are declared in `ciu.defaults.toml.j2`
-(`[[jitsi.users]]`): `admin`, `dummy1`, `dummy2`, `dummy3`. Jitsi internal auth has no separate
-admin role: `admin` is simply a normal account you keep for yourself.
+(`[[jitsi.users]]`): `admin`, plus `dummy1`, `dummy2`, `dummy3` marked `dummy = true`. Jitsi
+internal auth has no separate admin role: `admin` is simply a normal account you keep for yourself.
+
+**Dummy users are opt-in.** By default (`jitsi.auth.dummy_users = false`) only `admin` is registered, so a
+production host carries no throwaway accounts. For a test setup set `dummy_users = true` in a sparse
+`ciu.toml.j2` override under `[jitsi.auth]` and `ciu up`. Turning it back to false stops registering them
+but does not delete accounts already created; unregister them (see "Add or remove a user").
+
+## Hostdir permissions
+
+The `/config` hostdirs are `0750` for prosody (uid 100), jicofo (999:1000) and jvb (998:1000): they
+hold account records and rendered auth secrets, and the owner is the service uid, so no group-write
+or world access is needed. `web` is `0755`: its config holds only nginx/Meet frontend settings (no
+secrets) and its processes run under a different user than the directory owner. After the first start
+check the file modes inside (`ls -l` under `vol-*-config`); files holding secrets should be 0600/0640.
 
 ## Where the credentials live
 
