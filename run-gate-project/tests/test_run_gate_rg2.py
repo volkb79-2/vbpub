@@ -221,6 +221,40 @@ class TestSaveContainerLogsCreation:
         assert run_gate.save_container_logs("docker", "x", target) is None
         assert victim.read_text() == "precious"
 
+    def test_a_directory_owned_by_someone_else_is_refused(
+            self, tmp_path, monkeypatch):
+        self._docker_logs(monkeypatch)
+        monkeypatch.setattr(run_gate.os, "geteuid", lambda: os.getuid() + 1)
+        target = tmp_path / "foreign" / "x.log"
+        assert run_gate.save_container_logs("docker", "x", target) is None
+        assert not target.exists()
+
+    def test_a_file_owned_by_someone_else_is_refused_untouched(
+            self, tmp_path, monkeypatch):
+        self._docker_logs(monkeypatch)
+        target = tmp_path / "planted.log"
+        target.write_text("theirs")
+        # The directory check passes (it is ours); the file check must not.
+        real_stat = os.fstat
+
+        class _Foreign:
+            def __init__(self, inner):
+                self.st_uid = inner.st_uid + 1
+
+        monkeypatch.setattr(run_gate.os, "fstat",
+                            lambda fd: _Foreign(real_stat(fd)))
+        assert run_gate.save_container_logs("docker", "x", target) is None
+        assert target.read_text() == "theirs"
+
+    def test_a_partial_write_is_completed(self, tmp_path, monkeypatch):
+        self._docker_logs(monkeypatch, "0123456789" * 50)
+        real_write = os.write
+        monkeypatch.setattr(run_gate.os, "write",
+                            lambda fd, data: real_write(fd, bytes(data[:7])))
+        target = tmp_path / "big.log"
+        assert run_gate.save_container_logs("docker", "x", target) == target
+        assert target.read_text() == "0123456789" * 50
+
     def test_an_existing_file_is_truncated_and_made_private(
             self, tmp_path, monkeypatch):
         """The lane log is pre-created by `allocate_lane_log`; it is rewritten."""
