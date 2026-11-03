@@ -11,6 +11,7 @@ never take a port of a live project.
 |---|---|---|
 | [`mattermost-server/`](mattermost-server/README.md) | live stack (the move into this area needs `MIGRATION.md` run once in the main checkout) | Mattermost Team Edition + Calls (on by default), provisioned for nyxloom; media via tls-edge |
 | [`mattermore/`](mattermore/README.md) | tryout, rendered/validated only, never started | Mattermost fork with group calls and other paywalled features enabled; isolated, no published ports |
+| [`fluxer-server/`](fluxer-server/README.md) | tryout, running on its own network; web route via tls-edge needs a DNS name and `expose_public` | Fluxer (Discord-style chat, persistent voice channels, screen share, client-side RNNoise noise suppression); 21 containers, capped; media TCP 7891 / UDP 7892 |
 | Jitsi (planned) | not created | docker-jitsi-meet: group calls, screen share, client-side noise suppression, remote control in the Electron client |
 | Mumble (planned) | not created | always-on voice channels (TeamSpeak-like), tiny |
 | Matrix + LiveKit (planned) | not created | Synapse, Element Web/Cinny, LiveKit SFU, lk-jwt-service; replaces rather than adds to chat |
@@ -34,6 +35,7 @@ Public ports are claimed in one place so projects cannot collide. The edge (tls-
 | 10000 | UDP | Jitsi (planned) | JVB media (single port); TCP 4443 optional fallback |
 | 64738 | TCP+UDP | Mumble (planned) | control + voice |
 | 7881 TCP, 7882 UDP | | Matrix/LiveKit (planned) | LiveKit single-port mux; if not muxed the range UDP 50000-60000 |
+| 7891 TCP, 7892 UDP | | Fluxer tryout (`fluxer-server/`) | LiveKit single-port mux, published directly on the host (no edge change); 7881/7882 stay with Matrix/LiveKit |
 | 3478/5349 TCP+UDP, relay UDP 49152-65535 | | optional TURN (coturn) | only when direct media is blocked; the relay range is large: prefer LiveKit's built-in TURN first |
 | 21115-21117 TCP, 21116 UDP | | RustDesk server (planned) | hbbs/hbbr (+21118/21119 for the web client) |
 

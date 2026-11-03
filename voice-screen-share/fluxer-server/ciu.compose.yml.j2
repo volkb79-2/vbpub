@@ -1,0 +1,671 @@
+# ─── Fluxer tryout stack ─────────────────────────────────────────────────────
+# Derived from the upstream compose bundle fluxer-release@2026.1102.205049
+# (https://fluxer.dev/compose/latest, AGPL-3.0), reduced to what this
+# deployment needs: every `${X:-}` that was empty upstream is dropped (the
+# service default applies), the rexctl guard (`x-fluxer-settings`) is gone,
+# Caddy runs in plain-HTTP behind-proxy mode (docker-compose.proxy.yml's
+# idea) and is NOT published, and the LiveKit media pair is moved to
+# {{ fluxer.livekit.tcp_port }}/tcp + {{ fluxer.livekit.udp_port }}/udp.
+#
+# Secrets: the images read secrets from the environment only (no *_FILE
+# forms), so hooks/pre_compose_secrets.py writes per-role env files into the
+# gitignored .ciu/secrets/ (mode 0600) and compose loads them with env_file.
+# No secret value appears in this template or in any rendered file.
+#
+# Own network `fluxer`; no host port except LiveKit's media pair. Limits per
+# service come from [fluxer.limits]; ciu's governance overlay adds the
+# dev-background cgroup parent.
+{% set origin = fluxer.public_scheme ~ '://' ~ fluxer.public_host ~ ('' if fluxer.public_port in (80, 443) else ':' ~ fluxer.public_port) %}
+x-fluxer-logging: &fluxer-logging
+  driver: json-file
+  options:
+    max-size: "{{ fluxer.logging.max_size }}"
+    max-file: "{{ fluxer.logging.max_file }}"
+
+x-fluxer-service: &fluxer-service
+  restart: unless-stopped
+  networks: [fluxer]
+  logging: *fluxer-logging
+  security_opt:
+    - no-new-privileges:true
+
+x-fluxer-healthcheck: &fluxer-healthcheck
+  interval: {{ fluxer.health.interval }}
+  timeout: {{ fluxer.health.timeout }}
+  retries: {{ fluxer.health.retries }}
+  start_period: {{ fluxer.health.start_period }}
+  start_interval: 1s
+
+x-fluxer-app-healthcheck: &fluxer-app-healthcheck
+  interval: {{ fluxer.health.interval }}
+  timeout: {{ fluxer.health.timeout }}
+  retries: {{ fluxer.health.app_retries }}
+  start_period: {{ fluxer.health.app_start_period }}
+  start_interval: 1s
+
+x-fluxer-svc-healthcheck: &fluxer-svc-healthcheck
+  <<: *fluxer-app-healthcheck
+  start_period: {{ fluxer.health.start_period }}
+  test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8090 && printf \"GET /_health HTTP/1.0\\r\\n\\r\\n\" >&3 && head -n 1 <&3 | grep -q \" 200 \"'"]
+
+# Non-secret environment shared by every first-party service. Secrets come
+# from env_file (see header).
+x-fluxer-env: &fluxer-env
+  FLUXER_ENV: production
+  FLUXER_SELF_HOSTED: "true"
+  FLUXER_BASE_DOMAIN: "{{ fluxer.public_host }}"
+  FLUXER_PUBLIC_SCHEME: "{{ fluxer.public_scheme }}"
+  FLUXER_PUBLIC_PORT: "{{ fluxer.public_port }}"
+  FLUXER_PUBLIC_ORIGIN: "{{ origin }}"
+  FLUXER_TRUST_CLIENT_IP_HEADER: "true"
+  # Username + password sign-in (no e-mail delivery on this tryout).
+  FLUXER_ACCOUNT_IDENTITY: "username"
+  FLUXER_POSTGRES_HOST: postgres
+  FLUXER_POSTGRES_DATABASE: "{{ fluxer.postgres.db }}"
+  FLUXER_POSTGRES_USERNAME: "{{ fluxer.postgres.user }}"
+  FLUXER_DATABASE_BACKEND: postgres
+  FLUXER_APP_ENDPOINT: "{{ origin }}"
+  FLUXER_MEDIA_ENDPOINT: "{{ origin }}/media"
+  FLUXER_MEDIA_PROXY_PUBLIC_ENDPOINT: "{{ origin }}/media"
+  FLUXER_ADMIN_ENDPOINT: "{{ origin }}/admin"
+  FLUXER_MARKETING_ENDPOINT: "{{ origin }}"
+  FLUXER_KV_URL: redis://valkey:6379/0
+  FLUXER_NATS_URL: nats://nats:4222
+  FLUXER_NATS_JETSTREAM_URL: nats://nats:4222
+  FLUXER_SVC_NATS_URL: nats://nats:4222
+  FLUXER_SVC_SHARD_COUNT: "1"
+  FLUXER_SEARCH_ENGINE: meilisearch
+  FLUXER_SEARCH_URL: http://meilisearch:7700
+  FLUXER_S3_ENDPOINT: http://seaweedfs:8333
+  FLUXER_S3_PUBLIC_ENDPOINT: http://seaweedfs:8333
+  FLUXER_S3_REGION: us-east-1
+  FLUXER_S3_ACCESS_KEY_ID: "{{ fluxer.s3.access_key }}"
+  FLUXER_S3_FORCE_PATH_STYLE: "true"
+  FLUXER_S3_BUCKET_CDN: "{{ fluxer.s3.bucket_cdn }}"
+  FLUXER_S3_BUCKET_UPLOADS: "{{ fluxer.s3.bucket_uploads }}"
+  FLUXER_S3_BUCKET_REPORTS: "{{ fluxer.s3.bucket_reports }}"
+  FLUXER_S3_BUCKET_HARVESTS: "{{ fluxer.s3.bucket_harvests }}"
+  FLUXER_API_PRESIGNED_HARVEST_DOWNLOADS_ENABLED: "false"
+  FLUXER_LIVEKIT_ENABLED: "true"
+  FLUXER_LIVEKIT_API_KEY: "{{ fluxer.livekit.api_key }}"
+  FLUXER_LIVEKIT_INTERNAL_URL: http://livekit:7880
+  FLUXER_LIVEKIT_BUNDLED: "true"
+  FLUXER_LIVEKIT_DEFAULT_REGION: '{"id":"default","name":"Default","emoji":"🌍","latitude":0,"longitude":0}'
+  FLUXER_LIVEKIT_URL: "{{ origin }}/livekit"
+  FLUXER_LIVEKIT_TURN_SERVERS: "[]"
+  FLUXER_PASSKEY_RP_ID: "{{ fluxer.public_host }}"
+  FLUXER_PASSKEY_ADDITIONAL_ALLOWED_ORIGINS: "{{ origin }}"
+  FLUXER_EMAIL_FROM_EMAIL: "noreply@{{ fluxer.public_host }}"
+  FLUXER_VAPID_EMAIL: "admin@{{ fluxer.public_host }}"
+  FLUXER_INTERNAL_API_ENDPOINT: http://api:8080
+  FLUXER_INTERNAL_MEDIA_PROXY_ENDPOINT: http://media-proxy:8080
+  FLUXER_MEDIA_PROXY_UPLOAD_RELAY_ENDPOINT: "{{ origin }}/media"
+
+x-fluxer-rust-env: &fluxer-rust-env
+  <<: *fluxer-env
+  TOKIO_WORKER_THREADS: "2"
+  MALLOC_ARENA_MAX: "2"
+
+x-fluxer-secrets: &fluxer-secrets
+  path: ./.ciu/secrets/env.fluxer
+  required: false
+
+services:
+  edge:
+    <<: *fluxer-service
+    image: {{ fluxer.images.caddy }}
+    container_name: {{ fluxer.container_prefix }}-edge
+    mem_limit: {{ fluxer.limits.edge.mem }}
+    cpus: {{ fluxer.limits.edge.cpus }}
+    # Plain HTTP on :8080 inside the network, never published. Traefik
+    # (tls-edge) reaches it over the shared ingress network when
+    # expose_public is on.
+    environment:
+      FLUXER_EDGE_SITE_ADDRESS: ":8080"
+      FLUXER_EDGE_TLS_DIRECTIVE: ""
+      FLUXER_EDGE_TRUSTED_PROXIES: private_ranges
+      FLUXER_EDGE_ENCODE: zstd gzip
+      FLUXER_EDGE_PROTOCOLS: h1
+      FLUXER_EDGE_GLOBAL_OPTIONS: ""
+      FLUXER_ADMIN_BASE_PATH: /admin
+    # /etc/caddy/Caddyfile is mounted by ciu's configfile mechanism (overlay,
+    # physical host path: a relative bind mount here would not resolve on the
+    # host daemon under docker-outside-of-docker).
+    volumes:
+      - edge-data:/data
+      - edge-config:/config
+    networks:
+      - fluxer
+{% if fluxer.expose_public %}
+      - ingress
+{% endif %}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2019/config/"]
+      <<: *fluxer-healthcheck
+    depends_on:
+      api: {condition: service_healthy}
+      gateway: {condition: service_healthy}
+{% if fluxer.expose_public %}
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: "{{ fluxer.ingress_network }}"
+      traefik.http.routers.fluxer-vss.rule: "Host(`{{ fluxer.public_host }}`)"
+      traefik.http.routers.fluxer-vss.entrypoints: "websecure"
+      traefik.http.services.fluxer-vss.loadbalancer.server.port: "8080"
+{% endif %}
+
+  postgres:
+    <<: *fluxer-service
+    image: {{ fluxer.images.postgres }}
+    container_name: {{ fluxer.container_prefix }}-postgres
+    mem_limit: {{ fluxer.limits.postgres.mem }}
+    cpus: {{ fluxer.limits.postgres.cpus }}
+    shm_size: {{ fluxer.limits.postgres.shm }}
+    # Upstream's tuning scaled down to the 1g cap (upstream: shared_buffers
+    # 512MB, effective_cache_size 2GB, max_connections 150, max_wal_size 2GB).
+    command: >
+      postgres
+      -c max_connections=120
+      -c shared_buffers=192MB
+      -c effective_cache_size=512MB
+      -c work_mem=4MB
+      -c maintenance_work_mem=64MB
+      -c autovacuum_work_mem=64MB
+      -c random_page_cost=1.1
+      -c effective_io_concurrency=200
+      -c jit=off
+      -c min_wal_size=80MB
+      -c max_wal_size=1GB
+      -c checkpoint_completion_target=0.9
+      -c wal_buffers=8MB
+      -c wal_compression=zstd
+      -c autovacuum_max_workers=2
+      -c max_parallel_workers_per_gather=1
+      -c max_parallel_workers=2
+      -c shared_preload_libraries=pg_stat_statements
+    environment:
+      POSTGRES_DB: "{{ fluxer.postgres.db }}"
+      POSTGRES_USER: "{{ fluxer.postgres.user }}"
+    env_file:
+      - path: ./.ciu/secrets/env.postgres
+        required: false
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      <<: *fluxer-healthcheck
+
+  valkey:
+    <<: *fluxer-service
+    image: {{ fluxer.images.valkey }}
+    container_name: {{ fluxer.container_prefix }}-valkey
+    mem_limit: {{ fluxer.limits.valkey.mem }}
+    cpus: {{ fluxer.limits.valkey.cpus }}
+    command: ["valkey-server", "--appendonly", "yes", "--appendfsync", "everysec", "--dir", "/data",
+              "--save", "",
+              "--maxmemory", "96mb",
+              "--maxmemory-policy", "noeviction"]
+    volumes:
+      - valkey-data:/data
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      <<: *fluxer-healthcheck
+
+  nats:
+    <<: *fluxer-service
+    image: {{ fluxer.images.nats }}
+    container_name: {{ fluxer.container_prefix }}-nats
+    mem_limit: {{ fluxer.limits.nats.mem }}
+    cpus: {{ fluxer.limits.nats.cpus }}
+    environment:
+      GOMEMLIMIT: 100MiB
+      FLUXER_NATS_MAX_MEMORY_STORE: 32MB
+      FLUXER_NATS_MAX_FILE_STORE: 2GB
+    command:
+      - sh
+      - -c
+      - >
+        printf 'http_port: 8222\njetstream {\n  store_dir: /data\n  max_memory_store: %s\n  max_file_store: %s\n}\n'
+        "$$FLUXER_NATS_MAX_MEMORY_STORE" "$$FLUXER_NATS_MAX_FILE_STORE" > /tmp/nats.conf
+        && exec nats-server -c /tmp/nats.conf
+    volumes:
+      - nats-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8222/healthz"]
+      <<: *fluxer-healthcheck
+
+  meilisearch:
+    <<: *fluxer-service
+    image: {{ fluxer.images.meilisearch }}
+    container_name: {{ fluxer.container_prefix }}-meilisearch
+    mem_limit: {{ fluxer.limits.meilisearch.mem }}
+    cpus: {{ fluxer.limits.meilisearch.cpus }}
+    environment:
+      MEILI_ENV: production
+      MEILI_NO_ANALYTICS: "true"
+      MEILI_UPGRADE_DB: "true"
+      MEILI_MAX_INDEXING_MEMORY: 128mb
+      MEILI_MAX_INDEXING_THREADS: "1"
+      MEILI_LOG_LEVEL: WARN
+    env_file:
+      - path: ./.ciu/secrets/env.meilisearch
+        required: false
+    volumes:
+      - meilisearch-data:/meili_data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:7700/health"]
+      <<: *fluxer-healthcheck
+
+  seaweedfs:
+    <<: *fluxer-service
+    image: {{ fluxer.images.seaweedfs }}
+    container_name: {{ fluxer.container_prefix }}-seaweedfs
+    mem_limit: {{ fluxer.limits.seaweedfs.mem }}
+    cpus: {{ fluxer.limits.seaweedfs.cpus }}
+    environment:
+      GOMEMLIMIT: 400MiB
+      WEED_MASTER_VOLUME_GROWTH_COPY_1: "1"
+    command: ["server", "-s3", "-s3.iam=false", "-dir=/data", "-master.telemetry=false", "-master.volumeSizeLimitMB=256", "-master.garbageThreshold=0.1", "-volume.max=200", "-s3.concurrentFileUploadLimit=5"]
+    volumes:
+      - seaweedfs-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8333/healthz"]
+      <<: *fluxer-healthcheck
+      retries: 20
+
+  seaweedfs-init:
+    image: {{ fluxer.images.seaweedfs }}
+    container_name: {{ fluxer.container_prefix }}-seaweedfs-init
+    mem_limit: {{ fluxer.limits.seaweedfs_init.mem }}
+    cpus: {{ fluxer.limits.seaweedfs_init.cpus }}
+    networks: [fluxer]
+    logging: *fluxer-logging
+    depends_on:
+      seaweedfs: {condition: service_healthy, restart: true}
+    restart: "no"
+    environment:
+      FLUXER_S3_BUCKET_CDN: "{{ fluxer.s3.bucket_cdn }}"
+      FLUXER_S3_BUCKET_UPLOADS: "{{ fluxer.s3.bucket_uploads }}"
+      FLUXER_S3_BUCKET_REPORTS: "{{ fluxer.s3.bucket_reports }}"
+      FLUXER_S3_BUCKET_HARVESTS: "{{ fluxer.s3.bucket_harvests }}"
+      FLUXER_SEAWEEDFS_INIT_ATTEMPTS: "60"
+      FLUXER_SEAWEEDFS_UPLOADS_TTL: 1d
+    env_file:
+      - path: ./.ciu/secrets/env.s3init
+        required: false
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >
+        buckets="$$FLUXER_S3_BUCKET_CDN $$FLUXER_S3_BUCKET_UPLOADS $$FLUXER_S3_BUCKET_REPORTS $$FLUXER_S3_BUCKET_HARVESTS";
+        missing="$$buckets";
+        for attempt in $$(seq 1 $$FLUXER_SEAWEEDFS_INIT_ATTEMPTS); do
+          if ! nc -z seaweedfs 9333 2>/dev/null; then
+            sleep 2;
+            continue;
+          fi;
+          listed=$$(echo "s3.bucket.list" | timeout 10 weed shell -master=seaweedfs:9333 2>&1);
+          missing="";
+          failure="";
+          for b in $$buckets; do
+            echo "$$listed" | grep -q "^[[:space:]]*$$b[[:space:]]" || missing="$${missing:+$$missing }$$b";
+          done;
+          if [ -z "$$missing" ]; then
+            if [ "$$FLUXER_SEAWEEDFS_UPLOADS_TTL" = off ]; then
+              ttl_rule="fs.configure -locationPrefix=/buckets/$$FLUXER_S3_BUCKET_UPLOADS/ -delete -apply";
+            else
+              ttl_rule="fs.configure -locationPrefix=/buckets/$$FLUXER_S3_BUCKET_UPLOADS/ -ttl=$$FLUXER_SEAWEEDFS_UPLOADS_TTL -apply";
+            fi;
+            failure="could not configure the S3 identity";
+            if echo "s3.configure -user=fluxer -access_key=$$FLUXER_S3_ACCESS_KEY -secret_key=$$FLUXER_S3_SECRET_KEY -actions=Admin,Read,Write,List,Tagging -apply" | timeout 10 weed shell -master=seaweedfs:9333 >/dev/null 2>&1; then
+              failure="could not set the expiry of $$FLUXER_S3_BUCKET_UPLOADS";
+              if echo "$$ttl_rule" | timeout 10 weed shell -master=seaweedfs:9333 >/dev/null 2>&1; then
+                echo "buckets ready";
+                exit 0;
+              fi;
+            fi;
+            sleep 2;
+            continue;
+          fi;
+          for b in $$missing; do
+            echo "s3.bucket.create -name $$b" | timeout 10 weed shell -master=seaweedfs:9333 >/dev/null 2>&1;
+          done;
+          sleep 2;
+        done;
+        if [ -n "$$failure" ]; then
+          echo "seaweedfs-init $$failure" >&2;
+        else
+          echo "seaweedfs-init could not verify buckets: $$missing" >&2;
+        fi;
+        exit 1;
+
+  livekit:
+    <<: *fluxer-service
+    image: {{ fluxer.images.livekit }}
+    container_name: {{ fluxer.container_prefix }}-livekit
+    mem_limit: {{ fluxer.limits.livekit.mem }}
+    cpus: {{ fluxer.limits.livekit.cpus }}
+    environment:
+      GOMEMLIMIT: 200MiB
+      LIVEKIT_CONFIG: |
+        port: 7880
+        log_level: info
+        rtc:
+          tcp_port: {{ fluxer.livekit.tcp_port }}
+          udp_port: {{ fluxer.livekit.udp_port }}
+          use_external_ip: {{ 'true' if fluxer.livekit.use_external_ip else 'false' }}
+          node_ip: "{{ fluxer.livekit.node_ip }}"
+          stun_servers:
+            - {{ fluxer.livekit.stun_primary }}
+            - {{ fluxer.livekit.stun_secondary }}
+          turn_servers: []
+        webhook:
+          api_key: {{ fluxer.livekit.api_key }}
+          urls:
+            - http://api:8080/webhooks/livekit
+    env_file:
+      - path: ./.ciu/secrets/env.livekit
+        required: false
+    # The ONLY published ports of this project: LiveKit media (signalling
+    # goes through the edge under /livekit).
+    ports:
+      - "{{ fluxer.livekit.tcp_port }}:{{ fluxer.livekit.tcp_port }}"
+      - "{{ fluxer.livekit.udp_port }}:{{ fluxer.livekit.udp_port }}/udp"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:7880/"]
+      <<: *fluxer-healthcheck
+
+  api:
+    <<: *fluxer-service
+    image: {{ fluxer.images.api }}
+    container_name: {{ fluxer.container_prefix }}-api
+    mem_limit: {{ fluxer.limits.api.mem }}
+    cpus: {{ fluxer.limits.api.cpus }}
+    env_file:
+      - *fluxer-secrets
+      - path: ./.ciu/secrets/env.api
+        required: false
+    environment:
+      <<: *fluxer-env
+      FLUXER_API_PORT: "8080"
+      NODE_OPTIONS: --max-old-space-size-percentage=60
+      NODE_EXTRA_CA_CERTS: /etc/ssl/certs/ca-certificates.crt
+      FLUXER_POSTGRES_MAX_CONNECTIONS: "25"
+      FLUXER_API_PRESIGNED_ATTACHMENT_UPLOADS_ENABLED: "true"
+      FLUXER_API_EMBEDDED_WORKER: "false"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080 && printf \"GET /_health HTTP/1.0\\r\\nHost: 127.0.0.1\\r\\n\\r\\n\" >&3 && head -n 1 <&3 | grep -q \" 200 \"'"]
+      <<: *fluxer-app-healthcheck
+    depends_on:
+      postgres: {condition: service_healthy}
+      valkey: {condition: service_healthy}
+      nats: {condition: service_healthy}
+      meilisearch: {condition: service_healthy}
+      seaweedfs-init: {condition: service_completed_successfully}
+      gifs: {condition: service_healthy}
+      snowflakes: {condition: service_healthy}
+      messages: {condition: service_healthy}
+      users: {condition: service_healthy}
+
+  worker:
+    <<: *fluxer-service
+    image: {{ fluxer.images.api }}
+    container_name: {{ fluxer.container_prefix }}-worker
+    mem_limit: {{ fluxer.limits.worker.mem }}
+    cpus: {{ fluxer.limits.worker.cpus }}
+    command: ["node", "dist/WorkerEntrypoint.js"]
+    env_file:
+      - *fluxer-secrets
+    environment:
+      <<: *fluxer-env
+      NODE_OPTIONS: --max-old-space-size-percentage=55
+      NODE_EXTRA_CA_CERTS: /etc/ssl/certs/ca-certificates.crt
+      FLUXER_API_WORKER_MODE: all_lanes
+      FLUXER_API_WORKER_ENABLE_CRON_SCHEDULER: "true"
+      FLUXER_POSTGRES_MAX_CONNECTIONS: "25"
+    healthcheck:
+      test: ["CMD-SHELL", "find /tmp/fluxer-worker-heartbeat -newermt '-30 seconds' | grep -q ."]
+      <<: *fluxer-app-healthcheck
+      retries: 3
+    depends_on:
+      postgres: {condition: service_healthy}
+      valkey: {condition: service_healthy}
+      nats: {condition: service_healthy}
+      seaweedfs-init: {condition: service_completed_successfully}
+      snowflakes: {condition: service_healthy}
+      messages: {condition: service_healthy}
+      users: {condition: service_healthy}
+
+  gateway:
+    <<: *fluxer-service
+    image: {{ fluxer.images.gateway }}
+    container_name: {{ fluxer.container_prefix }}-gateway
+    mem_limit: {{ fluxer.limits.gateway.mem }}
+    cpus: {{ fluxer.limits.gateway.cpus }}
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    env_file:
+      - *fluxer-secrets
+    environment:
+      <<: *fluxer-env
+      FLUXER_GATEWAY_PORT: "8080"
+      FLUXER_GATEWAY_MEDIA_PROXY_ENDPOINT: "{{ origin }}/media"
+      FLUXER_GATEWAY_STATIC_CDN_ENDPOINT: "{{ origin }}"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080 && printf \"GET /_health/ready HTTP/1.0\\r\\nHost: 127.0.0.1\\r\\n\\r\\n\" >&3 && head -n 1 <&3 | grep -q \" 200 \"'"]
+      <<: *fluxer-app-healthcheck
+    depends_on:
+      nats: {condition: service_healthy}
+      valkey: {condition: service_healthy}
+
+  media-proxy:
+    <<: *fluxer-service
+    image: {{ fluxer.images.media_proxy }}
+    container_name: {{ fluxer.container_prefix }}-media-proxy
+    mem_limit: {{ fluxer.limits.media_proxy.mem }}
+    cpus: {{ fluxer.limits.media_proxy.cpus }}
+    env_file:
+      - *fluxer-secrets
+    environment:
+      <<: *fluxer-env
+      FLUXER_MEDIA_PROXY_PORT: "8080"
+      TOKIO_WORKER_THREADS: "2"
+      FLUXER_MEDIA_PROXY_MODE: upload
+      FLUXER_MEDIA_PROXY_STORAGE_BACKEND: s3
+      FLUXER_MEDIA_PROXY_CORS_ALLOWED_ORIGINS: "{{ origin }}"
+      FLUXER_MEDIA_PROXY_UPLOAD_RELAY_SPOOL_MAX_TOTAL_BYTES: "536870912"
+      FLUXER_S3_READ_SIGNED: "true"
+    volumes:
+      - media-proxy-tmp:/tmp
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/fluxer-media-proxy", "healthcheck"]
+      <<: *fluxer-healthcheck
+      interval: 30s
+    depends_on:
+      seaweedfs-init: {condition: service_completed_successfully}
+      nats: {condition: service_healthy}
+
+  push:
+    <<: *fluxer-service
+    image: {{ fluxer.images.push }}
+    container_name: {{ fluxer.container_prefix }}-push
+    mem_limit: {{ fluxer.limits.push.mem }}
+    cpus: {{ fluxer.limits.push.cpus }}
+    env_file:
+      - *fluxer-secrets
+    environment:
+      <<: *fluxer-rust-env
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/fluxer-push", "healthcheck"]
+      <<: *fluxer-app-healthcheck
+      start_period: {{ fluxer.health.start_period }}
+    depends_on:
+      nats: {condition: service_healthy}
+      api: {condition: service_healthy}
+
+  static-proxy:
+    <<: *fluxer-service
+    image: {{ fluxer.images.static_proxy }}
+    container_name: {{ fluxer.container_prefix }}-static-proxy
+    mem_limit: {{ fluxer.limits.static_proxy.mem }}
+    cpus: {{ fluxer.limits.static_proxy.cpus }}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/avatars/0.png"]
+      <<: *fluxer-healthcheck
+
+  app-proxy:
+    <<: *fluxer-service
+    image: {{ fluxer.images.app_proxy }}
+    container_name: {{ fluxer.container_prefix }}-app-proxy
+    mem_limit: {{ fluxer.limits.app_proxy.mem }}
+    cpus: {{ fluxer.limits.app_proxy.cpus }}
+    environment:
+      TOKIO_WORKER_THREADS: "2"
+      FLUXER_APP_PROXY_PORT: "8080"
+      FLUXER_S3_PUBLIC_ENDPOINT: http://seaweedfs:8333
+      FLUXER_S3_BUCKET_UPLOADS: "{{ fluxer.s3.bucket_uploads }}"
+      FLUXER_MEDIA_ENDPOINT: "{{ origin }}/media"
+      DISCOVERY_UPSTREAM_URL: http://edge:8088/.well-known/fluxer
+      DISCOVERY_REFRESH_INTERVAL_MS: "5000"
+      FLUXER_LIVEKIT_URL: "{{ origin }}/livekit"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:8080/_ready"]
+      <<: *fluxer-healthcheck
+      interval: 30s
+    depends_on:
+      api: {condition: service_healthy}
+      edge: {condition: service_healthy}
+
+  snowflakes:
+    <<: *fluxer-service
+    stop_grace_period: 30s
+    image: {{ fluxer.images.snowflakes }}
+    container_name: {{ fluxer.container_prefix }}-snowflakes
+    mem_limit: {{ fluxer.limits.snowflakes.mem }}
+    cpus: {{ fluxer.limits.snowflakes.cpus }}
+    env_file:
+      - *fluxer-secrets
+    environment:
+      <<: *fluxer-rust-env
+      FLUXER_SVC_NAME: snowflakes
+      FLUXER_SVC_MODE: combined
+    healthcheck: *fluxer-svc-healthcheck
+    depends_on:
+      nats: {condition: service_healthy}
+
+  users:
+    <<: *fluxer-service
+    stop_grace_period: 30s
+    image: {{ fluxer.images.users }}
+    container_name: {{ fluxer.container_prefix }}-users
+    mem_limit: {{ fluxer.limits.users.mem }}
+    cpus: {{ fluxer.limits.users.cpus }}
+    env_file:
+      - *fluxer-secrets
+    environment:
+      <<: *fluxer-rust-env
+      FLUXER_SVC_NAME: users
+      FLUXER_SVC_MODE: combined
+      FLUXER_POSTGRES_MAX_CONNECTIONS: "20"
+    healthcheck: *fluxer-svc-healthcheck
+    depends_on:
+      nats: {condition: service_healthy}
+      postgres: {condition: service_healthy}
+
+  gifs:
+    <<: *fluxer-service
+    stop_grace_period: 30s
+    image: {{ fluxer.images.gifs }}
+    container_name: {{ fluxer.container_prefix }}-gifs
+    mem_limit: {{ fluxer.limits.gifs.mem }}
+    cpus: {{ fluxer.limits.gifs.cpus }}
+    env_file:
+      - *fluxer-secrets
+    environment:
+      <<: *fluxer-rust-env
+      FLUXER_SVC_NAME: gifs
+      FLUXER_SVC_MODE: combined
+      FLUXER_GIFS_SHARD_CACHE_MAX_BYTES: "33554432"
+    healthcheck: *fluxer-svc-healthcheck
+    depends_on:
+      nats: {condition: service_healthy}
+
+  messages:
+    <<: *fluxer-service
+    stop_grace_period: 30s
+    image: {{ fluxer.images.messages }}
+    container_name: {{ fluxer.container_prefix }}-messages
+    mem_limit: {{ fluxer.limits.messages.mem }}
+    cpus: {{ fluxer.limits.messages.cpus }}
+    env_file:
+      - *fluxer-secrets
+    environment:
+      <<: *fluxer-rust-env
+      FLUXER_SVC_NAME: messages
+      FLUXER_SVC_MODE: combined
+      FLUXER_POSTGRES_MAX_CONNECTIONS: "20"
+    healthcheck: *fluxer-svc-healthcheck
+    depends_on:
+      nats: {condition: service_healthy}
+      postgres: {condition: service_healthy}
+
+  unfurl:
+    <<: *fluxer-service
+    stop_grace_period: 30s
+    image: {{ fluxer.images.unfurl }}
+    container_name: {{ fluxer.container_prefix }}-unfurl
+    mem_limit: {{ fluxer.limits.unfurl.mem }}
+    cpus: {{ fluxer.limits.unfurl.cpus }}
+    env_file:
+      - *fluxer-secrets
+    environment:
+      <<: *fluxer-rust-env
+      FLUXER_SVC_NAME: unfurl
+      FLUXER_SVC_MODE: combined
+      FLUXER_MEDIA_PROXY_ENDPOINT: http://media-proxy:8080
+    healthcheck: *fluxer-svc-healthcheck
+    depends_on:
+      nats: {condition: service_healthy}
+
+  admin:
+    <<: *fluxer-service
+    image: {{ fluxer.images.admin }}
+    container_name: {{ fluxer.container_prefix }}-admin
+    mem_limit: {{ fluxer.limits.admin.mem }}
+    cpus: {{ fluxer.limits.admin.cpus }}
+    env_file:
+      - *fluxer-secrets
+    environment:
+      <<: *fluxer-rust-env
+      FLUXER_ADMIN_PORT: "8080"
+      FLUXER_ADMIN_BASE_PATH: /admin
+      FLUXER_API_ENDPOINT: http://api:8080
+      FLUXER_API_PUBLIC_ENDPOINT: ""
+      FLUXER_STATIC_CDN_ENDPOINT: "{{ origin }}"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080 && printf \"GET /_health HTTP/1.0\\r\\n\\r\\n\" >&3 && head -n 1 <&3 | grep -q \" 200 \"'"]
+      <<: *fluxer-app-healthcheck
+      start_period: {{ fluxer.health.start_period }}
+    depends_on:
+      api: {condition: service_healthy}
+
+networks:
+  fluxer:
+    driver: bridge
+{% if fluxer.expose_public %}
+  ingress:
+    external: true
+    name: {{ fluxer.ingress_network }}
+{% endif %}
+
+volumes:
+  edge-data:
+  edge-config:
+  postgres-data:
+  valkey-data:
+  nats-data:
+  meilisearch-data:
+  seaweedfs-data:
+  media-proxy-tmp:

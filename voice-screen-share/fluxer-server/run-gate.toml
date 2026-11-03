@@ -1,0 +1,14 @@
+# fluxer-server tryout gate lane — parsed ONLY by Run-Gate CLI. Stdlib + pytest
+# + jinja2/pyyaml (skipped when absent); no docker daemon needed (the one
+# `docker compose config` test skips without the CLI).
+schema_version = 1
+
+[lanes.suite]
+kind = "command"
+environment = "tester-unified"
+argv = [
+    "bash", "-c",
+    "cd {worktree}/voice-screen-share/fluxer-server && \"$TESTER_VENV/bin/python\" -m pytest tests -q -p no:cacheprovider",
+]
+clean_tree = false
+budget = "5m"
