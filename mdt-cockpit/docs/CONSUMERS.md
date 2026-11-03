@@ -19,8 +19,9 @@ ciu up
 The connected devcontainer joins the instance network: `ciu up` attaches the container it
 runs in, and when the devcontainer is later recreated or rebuilt while the stack still runs,
 the finalize step re-attaches it automatically (no manual `docker network connect`), but only to
-the stack named `pwmcp-<INSTANCE_ID>-pwmcp` of this workspace (`INSTANCE_ID` from the environment or
-the workspace `ciu.env`); when other PWMCP stacks run on the host or the identity is unknown it joins
+the stack of the shipped instance `/srv/pwmcp-instance` (its own `ciu.env`, or the running stack
+labelled with that compose working dir; fallbacks: `INSTANCE_ID` from the environment or the
+workspace `ciu.env`); when other PWMCP stacks run on the host or the identity is unknown it joins
 nothing, and `PWMCP_STACK_CONTAINER=<container name>` in the container environment chooses one. Configure an MCP client
 inside it with:
 

@@ -468,7 +468,9 @@ Fix direction: a `stage_tool_artifacts.py prune --older-than` and a unit test; n
 <!-- MDT-028..MDT-031 are taken by the iogov review branch (iogov-fable-review-20261027); the entries below
      were filed by the mdt-cockpit deep review of 2026-10-27 and start at MDT-032 to avoid a collision. -->
 
-## MDT-032 - `cmru release` never runs the smoke lane, and the release lane skips every pytest-style staging test (2026-10-27)
+## MDT-060 - `cmru release` never runs the smoke lane, and the release lane skips every pytest-style staging test (2026-10-27)
+
+*(Renumbered from MDT-032 on 2026-11-04: the id was reused by the iogov fill-test entry; MDT-032 now means that entry.)*
 
 `cmru.toml` `[steps.run-tests]` runs `run-gate release` and `run-gate oci-push` only. The `release` lane is
 `python -m unittest scripts.test_release_flow scripts.test_oci_tool_staging scripts.test_oci_push_lane`, and
@@ -480,7 +482,9 @@ waiver test, the dpkg clean-up after the final assertions) and the 2026-10-27 re
 the `release` lane run `pytest` over those modules (tester-unified has `/opt/tester-venv/bin/pytest`) or add
 `run-gate smoke` to `run-tests`; `test_release_flow.py` should assert the lane runs every test function.
 
-## MDT-033 - build inputs COPYed to `/tmp` are baked into the image layers (2026-10-27)
+## MDT-061 - build inputs COPYed to `/tmp` are baked into the image layers (2026-10-27)
+
+*(Renumbered from MDT-033 on 2026-11-04: the id was reused by the capacity entry; MDT-033 now means that entry.)*
 
 `COPY apt/packages.list`, `pip/wheels.list`, `pip/wheels/`, `requirements/`, `package-manifests-versioned/`,
 `customization/`, `scripts/mdt_cli.py`, `apt/backports.sources.in` and `build/tool-artifacts-staging/tool-versions.env`
@@ -1021,9 +1025,6 @@ the runner account must be uid 1003 (the tester-unified lane uid). Test the help
 **Rescope 2026-11-04 (operator decision, see MDT-055).** Step 1 is decided: the cgprofile release ships a wheel (client CLI plus
 the stdlib-only collector, `host-unit` subcommand; CP-41). The wheel serves two consumers: this image's wheel list and host-setup's
 native cgprofile service (MDT-055). The `report` extra stays out of both closures.
-
-<!-- Id note (2026-11-04): MDT-049..MDT-052 exist on branch fix-r1002-findings-20261104 and are not on main yet. The ids below
-     start at MDT-053 to leave that gap; the controller resolves ordering on merge. -->
 
 ## MDT-053 - fixed estate group `mdt-docker` (gid 2751) on the host Docker relay socket (2026-11-04)
 

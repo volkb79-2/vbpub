@@ -73,8 +73,12 @@ which starts on the default bridge alone, so `pwmcp` would not resolve. The fina
 therefore runs `join_pwmcp_network`. Several PWMCP stacks are normal on one host (instance,
 worktree, gate, other users'), all named `pwmcp-<INSTANCE_ID>-pwmcp` with the alias `pwmcp`, so
 the step never picks "the first": it derives the exact container name of THIS workspace's stack
-from `PWMCP_STACK_CONTAINER` (explicit override, e.g. in `remoteEnv`), else `INSTANCE_ID` from the
-environment, else the `INSTANCE_ID` line of `<workspace>/ciu.env`. It finds that container with a
+from `PWMCP_STACK_CONTAINER` (explicit override, e.g. in `remoteEnv`), else the `INSTANCE_ID` of
+the shipped instance (`/srv/pwmcp-instance/ciu.env` or `.ciu/ciu.env`; `PWMCP_INSTANCE_DIR`
+changes the directory), else the running stack whose compose working-dir label is that instance
+directory (the instance keeps no `ciu.env` after `ciu up`), else `INSTANCE_ID` from the
+environment, else the `INSTANCE_ID` line of `<workspace>/ciu.env` (this workspace's own ciu
+instance, normally NOT the PWMCP stack's id). It finds that container with a
 filtered `docker ps` (name `^pwmcp-`, compose service label `pwmcp`), inspects it with
 `docker inspect --type container`, and `docker network connect`s this container to a network on
 which it carries the alias, unless already attached. Unknown identity or no exact match joins
