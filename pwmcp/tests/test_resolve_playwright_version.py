@@ -956,6 +956,7 @@ def test_refresh_accepts_zero_age_window(
     monkeypatch.setattr(resolver, "fetch_npm_release_times", lambda: {"1.2.3": old})
     monkeypatch.setattr(resolver, "fetch_pypi_release_times", lambda: {"1.2.3": old})
     monkeypatch.setattr(resolver, "fetch_mcr_manifest_digest", lambda version, distro: DIGEST)
+    monkeypatch.setattr(resolver, "fetch_dockerhub_manifest_digest", lambda repository, tag: DEBIAN_DIGEST)
     monkeypatch.setattr(resolver, "compute_release_number", lambda version: 4)
     resolver.refresh_upstream_projection(0)
     assert "PWMCP_VERSION=1.2.3-r4" in files["release_vars"].read_text()

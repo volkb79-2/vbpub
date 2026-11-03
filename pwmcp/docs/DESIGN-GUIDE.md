@@ -107,6 +107,29 @@ and leaves the choice opt-in; a hostname-specific certificate bypass is not
 available through this Playwright context option. See the
 [consumer example](CONSUMERS.md#inspect-a-webpage).
 
+## GlyphGrid development tooling
+
+GlyphGrid stays unavailable through the OCR service (HTTP 501). The reader,
+font atlases, benchmark, and `imagegen` live under `tools/glyphgrid` as local
+development tools; none is included in the service images or release bundle.
+
+The fast reader remains paired with its slower reference implementation so
+performance changes can be checked for identical results. The sequence reader
+reuses a prior frame's geometry only while its invalidation checks hold, then
+falls back to a full read. Additional font data is kept in separate atlases so
+operators load fonts only for known targets; each font is indexed in the
+[NOTICE](../tools/glyphgrid/NOTICE.md) with its source, version, checksum, and
+licence attribution. Attribution uncertainty is recorded explicitly, and the
+font data has not had legal review for redistribution in an image.
+
+`imagegen` makes synthetic console frames with exact ground truth and controlled
+transforms. The integration adds no screenshots and does not copy the operator's
+larger local console corpus into these tooling changes. Generated PNGs, truth
+files, atlases, and reports belong under the ignored `scratch/` directory. See the
+[tool README](../tools/glyphgrid/README.md) for the command vocabulary and the
+[consumer examples](CONSUMERS.md#glyphgrid-development-tooling) for a working
+invocation.
+
 ## Upstream version age window
 
 Until CMRU owns upstream selection, an explicit resolver refresh applies a

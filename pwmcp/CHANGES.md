@@ -4,6 +4,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Added
+- GlyphGrid tooling: additional attributed console-font atlases, identity-checked faster reads with frame-sequence reuse, and the deterministic `imagegen` test-image generator. No behavior change in the service; the GlyphGrid engine remains unavailable (HTTP 501).
+
 <!-- cmru: release history -->
 
 ## [1.64.0-r4] - 2026-11-02
