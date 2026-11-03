@@ -940,6 +940,9 @@ The
 and an import-break canary. The release `gate` adds R2 through a separate
 changed-source mutation campaign based on the highest-version published
 `cmru-v*` tag in the candidate's full ancestry.
+The cause-sensitive canary's known-good control uses a tracked fixture that
+includes test inputs read during module import, even when the test module will
+later be skipped. See the [fixture design](docs/DESIGN-GUIDE.md#canary-control-fixture-includes-import-time-inputs).
 The native-R2 `mutation` lane requests contract-2 `cgprofile` resource-event
 observation. Other tester lanes declare memory and PID ceilings but do not yet
 collect event evidence; [KI-77](KNOWN_ISSUES_TODO_BACKLOG.md#ki-77--the-release-gate-lacks-container-resource-event-evidence-on-non-mutation-lanes-and-cannot-confine-every-shared-git-ref)

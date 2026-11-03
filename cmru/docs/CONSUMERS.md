@@ -906,6 +906,10 @@ starts with the KI-26 installed-wheel acceptance lane, which builds the wheel,
 installs it into a fresh isolated venv, and invokes `cmru get-py` outside the
 source checkout. (The former real-enrollment lane moved to ciu with `get.py
 enroll`; see "Installer extensions" below.)
+When a canary's known-good control fails, its message includes the first pytest
+cause and a path to the complete output in temporary storage. The control log
+does not become a second file under `.assay`; use the lane's reported cause to
+diagnose the failed control before relying on any canary evidence.
 
 Release worktrees never contain a credential file: the launcher hands the resolved
 token to its transaction child over a private pipe (see the

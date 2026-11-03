@@ -36,6 +36,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   the 16 non-equivalent survivors from the 7.1.0-era to 7.1.2 diff-scoped R2
   triage. Each test fails its mapped mutation in a disposable source copy;
   KI-79 records the equivalent survivors and remaining whole-source debt.
+- Keep the coverage-canary control fixture complete for module-import reads,
+  including tests skipped after import, and write failed-control logs outside
+  `.assay` so one lane failure leaves one clear refusal.
 
 <!-- cmru: release history -->
 
