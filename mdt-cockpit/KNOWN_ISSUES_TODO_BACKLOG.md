@@ -933,3 +933,24 @@ the release flow): the two variables, that the environment wins over the `docker
 
 **Acceptance.** A test on fake `systemctl` shows `install.sh` without `--restart-docker` issues no Docker restart on any path;
 the scratch-host reproduction is recorded with its cause (or "not reproducible with live-restore, restart was explicit").
+
+## MDT-048 - cgprofile client is not in the image: cgprofile releases carry no wheel (2026-11-03)
+
+**Status:** OPEN. `pip/wheels.list` resolves `<name>-v*` releases that carry a `.whl`. The `cgprofile-v*` releases
+(`scripts/cgroup-profiler/cmru.toml`: `artifacts = ["oci-image"]`) publish only the daemon image to `ghcr.io/volkb79-2/cgprofile`
+and a release note; the release has no assets, and `scripts/cgroup-profiler/pyproject.toml` (`cgroup-profiler`, stdlib-only
+collector, optional `report` extra) is not built into a wheel. So the cgprofile client (wrap/attach CLI) cannot be added to the
+image's wheel list without inventing a package.
+
+**Next steps.**
+
+1. Decide the client's distribution: add a `wheel` artifact to the cgroup-profiler release (client CLI entry point, stdlib-only
+   core, `report` extra left out of the image closure), or keep it image-less and document running it from the checkout.
+2. If a wheel is published, add `cgprofile` (the release prefix name; the wheel's distribution name must normalize to it or the
+   resolver and `scripts/check_wheel_set.py` will not match) to `pip/wheels.list`, `FIRST_PARTY_WHEEL_NAMES`, the Dockerfile
+   manifest RUN, and the tables that enumerate the wheel set (README, `docs/CONSUMERS.md`, `local-dev-artifacts.toml.example`,
+   `FIRST_PARTY_NO_AGE_WINDOW`).
+3. Any dependency of the new wheel must be in the set or `requirements/toolkit.txt`, because the image installs with `--no-index`.
+
+**Acceptance.** `cgprofile` resolves from a published wheel and `check_wheel_set` plus the manifest test pass with it declared;
+or the decision to stay image-less is recorded here with the checkout invocation.

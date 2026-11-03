@@ -82,6 +82,8 @@ class ReleaseFlowTests(unittest.TestCase):
         self.assertIn("pygments>=2.21.0", requirements)
         wheels = (ROOT / "pip/wheels.list").read_text()
         self.assertRegex(wheels, r"(?m)^nyxloom\s+#")
+        # run-gate is stdlib-only (no dependency floor needed); its wheel is run_gate-*.whl.
+        self.assertRegex(wheels, r"(?m)^run-gate\s+#")
         # cmru's wheel declares cli-extended; the install is --no-index, so it must be staged too.
         self.assertRegex(wheels, r"(?m)^cli-extended\s+#")
         dockerfile = (ROOT / "Dockerfile").read_text()

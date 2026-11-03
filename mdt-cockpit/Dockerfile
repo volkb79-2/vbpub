@@ -859,8 +859,8 @@ RUN set -euo pipefail; \
     fi
 # ── First-party wheels (pip/wheels.list) ─────────────────────────────────────
 # Resolved and downloaded pre-build by scripts/resolve-devcontainers-release.py.
-# pip/wheels/ holds the .whl files (cli-extended, ciu, cmru, topos and nyxloom from
-# their GitHub Releases).
+# pip/wheels/ holds the .whl files (cli-extended, ciu, cmru, topos, nyxloom and run-gate
+# from their GitHub Releases; run-gate has no dependencies).
 # Installed with --no-index --find-links (no build-time network): each wheel's
 # runtime deps must already be in the venv. requirements/toolkit.txt is the
 # source of those floors: Jinja2/PyYAML/tomli_w for ciu, textual for topos, and
@@ -1021,6 +1021,7 @@ RUN set -euo pipefail; \
     cmru_version_output="$(dist_version cmru)"; \
     topos_version_output="$(dist_version topos)"; \
     nyxloom_version_output="$(dist_version nyxloom)"; \
+    run_gate_version_output="$(dist_version run-gate)"; \
     cli_extended_version_output="$(dist_version cli-extended)"; \
     aider_version_output="$(dist_version aider-chat)"; \
     custom_tooling_file="$(mktemp /tmp/custom-tooling.XXXXXX)"; \
@@ -1041,6 +1042,7 @@ RUN set -euo pipefail; \
         fi; \
         echo "topos=${topos_version_output:-not-installed}"; \
         echo "nyxloom=${nyxloom_version_output:-not-installed}"; \
+        echo "run-gate=${run_gate_version_output:-not-installed}"; \
         echo "cli-extended=${cli_extended_version_output:-not-installed}"; \
         if [ -n "${aider_version_output}" ]; then \
             echo "aider=${aider_version_output}"; \
