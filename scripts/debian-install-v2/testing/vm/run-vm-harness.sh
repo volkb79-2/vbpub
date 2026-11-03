@@ -36,8 +36,11 @@ SOURCE_NAMESPACE_DIR="${MDT_VM_SOURCE_DIR:-}"
 RUNNER_FINGERPRINT="$(printf '%s\0%s' "$TESTING_DIR" "$SOURCE_NAMESPACE_DIR" | sha256sum | cut -c1-12)"
 IMAGE="debian-install-vm:$RUNNER_FINGERPRINT"
 NAME="debian-install-vm-harness-$RUNNER_FINGERPRINT"
-VM_STATE_DIR="/var/lib/mdt-debian-install-vm/$RUNNER_FINGERPRINT"
-VM_CACHE_DIR="/var/cache/mdt-debian-install-vm/$RUNNER_FINGERPRINT"
+# In-runner mount points. The host side is derived below: the project's
+# artifacts/vm-lab (base images, runs, ssh keys) and the repo-root downloads/
+# (shared ISO/cloud-image downloads). Both are gitignored.
+VM_STATE_DIR="/vm-lab"
+VM_DOWNLOADS_DIR="/downloads"
 DOCKERFILE_SHA="$(sha256sum "$HERE/Dockerfile" | awk '{print $1}')"
 
 # A VM still consumes host CPU and host-side qcow2 I/O.  It is therefore a
@@ -57,14 +60,21 @@ die() {
 
 # Bind-mount the PARENT testing/ directory read-only, not just vm/: vmctl's
 # prepare-base reaches one level up for ../download-base-image.sh, which
-# only exists at that path relative to vm/. VM state and the image cache live
-# in the persistent runner container, never in the judged worktree.
+# only exists at that path relative to vm/. VM state and downloads are
+# separate read-write binds of the gitignored artifacts/vm-lab and downloads/
+# folders; the (read-only) project and testing mounts are never written.
 # Also mount the project directory read-only at /source. This gives vmctl a
 # stable namespace path for copying debian_install_v2 into the guest; path
 # traversal through /work/.. cannot escape a Docker bind mount.
 HOST_TESTING_DIR="$TESTING_DIR"
 HOST_PROJECT_DIR="${HOST_TESTING_DIR%/testing}"
 HOST_SOURCE_DIR="$HOST_PROJECT_DIR"
+# Namespace-local project and repo root (derived from this script's location);
+# vm-lab and downloads are created here so Docker never creates them root-owned.
+PROJECT_DIR="$HOST_PROJECT_DIR"
+REPO_ROOT="$(git -C "$TESTING_DIR" rev-parse --show-toplevel)" || die \
+    "cannot derive the repo root from $TESTING_DIR"
+HOST_REPO_ROOT="$REPO_ROOT"
 SELF_HOSTNAME="$(cat /etc/hostname 2>/dev/null || true)"
 SELF_CONTAINER_ID=""
 inside_container=0
@@ -133,6 +143,8 @@ EOF
     # Keep the default source bind in the same mapped host namespace. This
     # value was initialized from the container path before the translation.
     HOST_SOURCE_DIR="$HOST_PROJECT_DIR"
+    # Host-namespace repo root: strip the project's repo-relative path.
+    HOST_REPO_ROOT="${HOST_PROJECT_DIR%"/${PROJECT_DIR#"$REPO_ROOT"/}"}"
 
     # MDT and future consumers can provide a project source below any of the
     # cockpit's authoritative Docker bind mounts.  Resolve it using the same
@@ -176,6 +188,8 @@ fi
 if [ "$inside_container" = "0" ] && [ -n "$SOURCE_NAMESPACE_DIR" ]; then
     HOST_SOURCE_DIR="$SOURCE_NAMESPACE_DIR"
 fi
+HOST_VM_LAB_DIR="$HOST_PROJECT_DIR/artifacts/vm-lab"
+HOST_DOWNLOADS_DIR="$HOST_REPO_ROOT/downloads"
 
 # Outside a Docker cockpit, this path is already in the daemon's namespace and
 # a local check is authoritative. Inside a cockpit, HOST_SOURCE_DIR has been
@@ -278,6 +292,7 @@ ensure_runner() {
         return 1
     fi
 
+    mkdir -p "$PROJECT_DIR/artifacts/vm-lab" "$REPO_ROOT/downloads"
     docker buildx build \
         --builder="$BUILD_BUILDER" \
         --load \
@@ -298,7 +313,9 @@ ensure_runner() {
         --cgroup-parent="$VM_CGROUP_PARENT" \
         --label "mdt.vm.testing-dir=$HOST_TESTING_DIR" \
         -e "MDT_VM_STATE_DIR=$VM_STATE_DIR" \
-        -e "MDT_VM_CACHE_DIR=$VM_CACHE_DIR" \
+        -e "MDT_DOWNLOADS_DIR=$VM_DOWNLOADS_DIR" \
+        --mount "type=bind,src=$HOST_VM_LAB_DIR,dst=$VM_STATE_DIR" \
+        --mount "type=bind,src=$HOST_DOWNLOADS_DIR,dst=$VM_DOWNLOADS_DIR" \
         --mount "type=bind,src=$HOST_TESTING_DIR,dst=/work,readonly" \
         --mount "type=bind,src=$HOST_SOURCE_DIR,dst=/source,readonly" \
         -w /work/vm \
@@ -321,5 +338,5 @@ esac
 ensure_runner
 exec docker exec -i \
     -e "MDT_VM_STATE_DIR=$VM_STATE_DIR" \
-    -e "MDT_VM_CACHE_DIR=$VM_CACHE_DIR" \
+    -e "MDT_DOWNLOADS_DIR=$VM_DOWNLOADS_DIR" \
     "$NAME" ./vmctl "$@"

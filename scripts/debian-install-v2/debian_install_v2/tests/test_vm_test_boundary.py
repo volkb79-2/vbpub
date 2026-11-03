@@ -42,8 +42,15 @@ def test_vm_runner_is_governed_and_has_no_host_device_passthrough():
     assert 'VM_CGROUP_PARENT="${CGROUP_PARENT_DEV_GATES:-}"' in runner
     assert 'VM_PROBE_CGROUP_PARENT="${CGROUP_PARENT_DEV_INTERACTIVE:-}"' in runner
     assert 'BUILD_BUILDER="${BUILDX_BUILDER:-}"' in runner
-    assert 'VM_STATE_DIR="/var/lib/mdt-debian-install-vm/$RUNNER_FINGERPRINT"' in runner
-    assert 'MDT_VM_CACHE_DIR=$VM_CACHE_DIR' in runner
+    assert 'VM_STATE_DIR="/vm-lab"' in runner
+    assert 'VM_DOWNLOADS_DIR="/downloads"' in runner
+    assert 'HOST_VM_LAB_DIR="$HOST_PROJECT_DIR/artifacts/vm-lab"' in runner
+    assert 'HOST_DOWNLOADS_DIR="$HOST_REPO_ROOT/downloads"' in runner
+    assert 'MDT_VM_STATE_DIR=$VM_STATE_DIR' in runner
+    assert 'MDT_DOWNLOADS_DIR=$VM_DOWNLOADS_DIR' in runner
+    assert '--mount "type=bind,src=$HOST_VM_LAB_DIR,dst=$VM_STATE_DIR"' in runner
+    assert '--mount "type=bind,src=$HOST_DOWNLOADS_DIR,dst=$VM_DOWNLOADS_DIR"' in runner
+    assert "MDT_VM_CACHE_DIR" not in runner
     assert '--cgroup-parent="$VM_CGROUP_PARENT"' in runner
     assert "        --init \\\n" in runner
     assert '--mount "type=bind,src=$HOST_TESTING_DIR,dst=/work,readonly"' in runner

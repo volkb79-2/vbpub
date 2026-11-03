@@ -4,9 +4,9 @@
 # like Netcup deploys, which is exactly the point: this is a REAL boot
 # (bootloader, initramfs, kernel), not something built from scratch with
 # debootstrap, and it's the same kind of image the real Case B live-test
-# hosts are provisioned from. The wrapper puts the cache in its persistent
-# runner; direct invocations default to an external user cache, never the
-# source tree. A second run of
+# hosts are provisioned from. The image is a shared download: it lives in
+# the gitignored <repo root>/downloads/ (override: MDT_DOWNLOADS_DIR, which the
+# VM wrapper sets to its downloads bind mount). A second run of
 # testing/vm/vmctl prepare-base doesn't re-download; it only refetches if
 # the file is missing or its checksum doesn't match what's currently
 # published (Debian repoints
@@ -16,18 +16,18 @@
 # Prints the path to the verified local qcow2 on success.
 set -euo pipefail
 
-if [ -n "${MDT_VM_CACHE_DIR:-}" ]; then
-    CACHE_DIR="$MDT_VM_CACHE_DIR"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -n "${MDT_DOWNLOADS_DIR:-}" ]; then
+    DOWNLOADS_DIR="$MDT_DOWNLOADS_DIR"
 else
-    CACHE_ROOT="${XDG_CACHE_HOME:-${TMPDIR:-/tmp}}"
-    CACHE_DIR="$CACHE_ROOT/mdt-debian-install-vm"
+    DOWNLOADS_DIR="$(git -C "$HERE" rev-parse --show-toplevel)/downloads"
 fi
 IMAGE_NAME="debian-13-genericcloud-amd64.qcow2"
 BASE_URL="https://cloud.debian.org/images/cloud/trixie/latest"
-LOCAL_PATH="$CACHE_DIR/$IMAGE_NAME"
-SUMS_PATH="$CACHE_DIR/SHA512SUMS"
+LOCAL_PATH="$DOWNLOADS_DIR/$IMAGE_NAME"
+SUMS_PATH="$DOWNLOADS_DIR/SHA512SUMS"
 
-mkdir -p "$CACHE_DIR"
+mkdir -p "$DOWNLOADS_DIR"
 
 echo "+ fetching current SHA512SUMS" >&2
 wget -q -O "$SUMS_PATH.new" "$BASE_URL/SHA512SUMS"

@@ -51,7 +51,7 @@ target size. For example, a 20 GiB disk with the default 2 GiB VM RAM gives a
 4 GiB automatic swap target:
 
 ```bash
-./run-vm-harness.sh start iso-test --disk-gb 20 --seed-iso ./.vm/private.iso
+./run-vm-harness.sh start iso-test --disk-gb 20 --seed-iso /vm-lab/private.iso
 ```
 
 Use the raw cloud-image base for this first-boot test: cloud-init can grow its
@@ -118,13 +118,13 @@ lane.
 
 For NoCloud/ISO acceptance tests, `start --seed-iso PATH` attaches the supplied
 seed ISO instead of generating the harness's normal `tester` seed. The path is
-resolved inside the runner container; a file saved under this worktree's
-`testing/vm/.vm/` is visible there as `/work/vm/.vm/<name>.iso`. The supplied
+resolved inside the runner container; a file saved in the project's
+`artifacts/vm-lab/` folder is visible there as `/vm-lab/<name>.iso`. The supplied
 user-data must provision the harness SSH key for a `tester` account with
 passwordless sudo, because `wait` and `ssh` connect as `tester`. `vmctl` copies
 the source ISO into the disposable run directory with mode `0600`; it does not
 modify the source artifact. Keep credential-bearing seed ISOs in the ignored
-`.vm/` directory, not in tracked source.
+`artifacts/vm-lab/` folder, not in tracked source.
 
 `start --disk-gb N` grows the new CoW overlay's virtual capacity to `N` GiB
 before boot. It never resizes the base image and does not request a shrink;
@@ -171,25 +171,28 @@ caching that would require rewriting debian-install-v2's own generated
 `docker.sources` to use apt-cacher-ng's special `/HTTPS/` URL convention,
 which isn't worth coupling the real installer to a test-harness detail for
 a comparatively small, infrequently-hit package set. The cache lives inside the runner
-container's own filesystem (not `.vm/`, not bind-mounted), so it persists
+container's own filesystem (not in `artifacts/vm-lab/`, not bind-mounted), so it persists
 across VM resets within one runner lifetime but is lost on
 `run-vm-harness.sh --stop-daemon`.
 
-When invoked through `run-vm-harness.sh`, state lives in the persistent,
-worktree-specific runner container under `/var/lib/mdt-debian-install-vm/`:
-the base image is immutable and shared across runs, while each run's qcow2
-overlay, cloud-init seed, QMP socket, pidfile, and serial log are disposable.
-The SSH key and download cache are kept there too, so no root-owned generated
-files are written into the judged worktree. Direct `vmctl` use without the
-wrapper falls back to a local `.vm/` directory for interactive debugging.
+All VM files live in `<project>/artifacts/vm-lab/` (gitignored): the base
+image is immutable and shared across runs, while each run's qcow2 overlay,
+cloud-init seed, QMP socket, pidfile, and serial log are disposable, and the
+SSH key and OVMF vars sit beside them. `vmctl` derives that folder from its own
+location; `MDT_VM_STATE_DIR` overrides it. Whether the folder is a plain
+directory or a CoW subvolume mounted over it is invisible to the scripts.
+Big shared downloads (the cloud image) go to the gitignored
+`<repo root>/downloads/`, derived from the repo root, or `MDT_DOWNLOADS_DIR`.
+`run-vm-harness.sh` bind-mounts both folders read-write into the runner as
+`/vm-lab` and `/downloads` and passes them via `MDT_VM_STATE_DIR` and
+`MDT_DOWNLOADS_DIR`; files written there are owned by the runner's user.
 
 ## Base images
 
 - **`case-b`** (implemented): the plain, unmodified Debian genericcloud
   qcow2 — root fills the disk, exactly Case B's real starting shape on a
   freshly-imaged host. `prepare-base case-b` calls the sibling
-  `../download-base-image.sh` and stages a copy in the runner-local image
-  directory.
+  `../download-base-image.sh` and stages a copy in `artifacts/vm-lab/images/`.
 - **`case-a`** (not yet implemented — `prepare-base case-a` says so and
   exits non-zero): needs a small root with real free trailing space,
   which the stock cloud image doesn't have (cloud-init's `growpart` grows

@@ -352,29 +352,30 @@ stock image already matches it.
 ## 4. Detailed walkthrough (what was actually run, live, 2026-09-09)
 
 This is the real transcript of the harness's first end-to-end proof,
-not an idealized example. It predates the later state move out of the
-worktree; current wrapper runs use the runner-local paths described above.
+not an idealized example. It predates the move of VM state to
+`artifacts/vm-lab/`; current wrapper runs use `/vm-lab` and `/downloads` inside
+the runner.
 
 ```
 $ ./run-vm-harness.sh prepare-base case-b
 + starting persistent VM-harness runner (worktree-specific name)
 + fetching current SHA512SUMS
-+ staging /work/.cache/debian-13-genericcloud-amd64.qcow2 -> /work/vm/.vm/images/case-b-base.qcow2 (copy, not symlink: ...)
-+ case-b base ready: /work/vm/.vm/images/case-b-base.qcow2 (root fills the disk -- ...)
++ staging /downloads/debian-13-genericcloud-amd64.qcow2 -> /vm-lab/images/case-b-base.qcow2 (copy, not symlink: ...)
++ case-b base ready: /vm-lab/images/case-b-base.qcow2 (root fills the disk -- ...)
 ```
 
 `download-base-image.sh` fetched and SHA512-verified the current Debian
-13 `genericcloud` qcow2 (~339MB) and staged a copy under `.vm/images/`.
-The copy (not a symlink) is deliberate: `.vm/images/case-b-base.qcow2` is
+13 `genericcloud` qcow2 (~339MB) and staged a copy under `artifacts/vm-lab/images/`.
+The copy (not a symlink) is deliberate: `images/case-b-base.qcow2` in the vm-lab folder is
 the thing every overlay is backed by and must never move or change out
-from under a running test; the original download cache under
-the wrapper's external cache can be independently re-verified or refreshed later
+from under a running test; the original download under
+the shared `downloads/` folder can be independently re-verified or refreshed later
 without touching an in-use base.
 
 ```
 $ ./run-vm-harness.sh start smoke1 --case case-b --mem 1024 --smp 1
-+ generating VM fixture SSH key (/work/vm/.vm/ssh/id_ed25519)
-+ creating CoW overlay over /work/vm/.vm/images/case-b-base.qcow2
++ generating VM fixture SSH key (/vm-lab/ssh/id_ed25519)
++ creating CoW overlay over /vm-lab/images/case-b-base.qcow2
 + starting qemu-system-x86_64 (TCG, no KVM) -- ssh on 127.0.0.1:2222
 + started (pid 64); vmctl wait smoke1 to block until SSH is reachable
 

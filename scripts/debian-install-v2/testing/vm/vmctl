@@ -16,11 +16,12 @@
 # that class of test belongs instead: the guest's /dev/vda and its swap
 # are the GUEST kernel's own, entirely separate from the host's.
 #
+# <vm-lab> = <project>/artifacts/vm-lab, overridable with MDT_VM_STATE_DIR.
 # Design (credited: this repo's own operator ran the same question past a
 # separate research session, cross-checked against this implementation --
 # see the 2026-09-09 KVM-setup discussion in project memory):
-#   - immutable base images (.vm/images/*.qcow2), never written to directly
-#   - a disposable qcow2 CoW overlay per run (.vm/runs/<name>/disk.qcow2)
+#   - immutable base images (<vm-lab>/images/*.qcow2), never written to directly
+#   - a disposable qcow2 CoW overlay per run (<vm-lab>/runs/<name>/disk.qcow2)
 #   - QMP (unix socket) for VM lifecycle (start/stop/reset/status)
 #   - SSH for everything inside the guest -- two separate control planes
 #   - QEMU user-mode networking (slirp) + hostfwd -- no TAP, no
@@ -29,7 +30,7 @@
 #     userspace, so no host loop device is involved in booting one.
 #
 # Usage:
-#   vmctl prepare-base <case>          # download + stage .vm/images/<case>-base.qcow2
+#   vmctl prepare-base <case>          # download + stage <vm-lab>/images/<case>-base.qcow2
 #   vmctl prepare-ready-base <case>    # prepare-base, then boot+wait for cloud-init to
 #                                       # finish, disable it, flatten -> <case>-ready-base.qcow2
 #   vmctl start <run>  [--case <case>] [--ssh-port N] [--mem MB] [--smp N] [--disk-gb N] [--no-apt-cache] [--seed-iso PATH]
@@ -42,7 +43,7 @@
 #   vmctl stop <run>                   # graceful: QMP system_powerdown, then SIGTERM
 #   vmctl destroy <run>                # stop (if running) + rm -rf the run dir
 #
-# <case> selects which base image (.vm/images/<case>-base.qcow2); for now
+# <case> selects which base image (<vm-lab>/images/<case>-base.qcow2); for now
 # "case-b" (a plain, unmodified genericcloud image -- root already fills
 # the disk, exactly Case B's real-world starting shape) is implemented.
 # "case-a" (small root + large free trailing space, needing cloud-init's
@@ -52,22 +53,15 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LEGACY_STATE_DIR="$HERE/.vm"
-STATE_DIR="${MDT_VM_STATE_DIR:-$LEGACY_STATE_DIR}"
+# State lives in <project>/artifacts/vm-lab (gitignored). It may be a plain
+# directory or a CoW subvolume mounted over it; this script does not care.
+# HERE is <project>/testing/vm.
+PROJECT_DIR="$(cd "$HERE/../.." && pwd)"
+STATE_DIR="${MDT_VM_STATE_DIR:-$PROJECT_DIR/artifacts/vm-lab}"
 IMAGES_DIR="$STATE_DIR/images"
 RUNS_DIR="$STATE_DIR/runs"
-LEGACY_RUNS_DIR="$LEGACY_STATE_DIR/runs"
 SSH_DIR="$STATE_DIR/ssh"
 SSH_KEY="$SSH_DIR/id_ed25519"
-# Preserve access to a runner created before state moved out of the worktree.
-# Once its legacy key is used for that in-flight run, later new runs can keep
-# using it until the operator removes the generated legacy directory.
-if [ "$STATE_DIR" != "$LEGACY_STATE_DIR" ] \
-    && [ ! -f "$SSH_KEY" ] \
-    && [ -f "$LEGACY_STATE_DIR/ssh/id_ed25519" ]; then
-    SSH_DIR="$LEGACY_STATE_DIR/ssh"
-    SSH_KEY="$SSH_DIR/id_ed25519"
-fi
 
 DEFAULT_SSH_PORT=2222
 DEFAULT_MEM_MB=2048
@@ -205,16 +199,7 @@ EOF
 }
 
 run_dir_for() {
-    # The wrapper keeps state outside the mounted worktree. If a runner was
-    # upgraded while a VM was active under the former .vm location, continue
-    # to address that specific legacy run so wait/ssh/destroy can clean it up.
-    if [ "$STATE_DIR" != "$LEGACY_STATE_DIR" ] \
-        && [ -d "$LEGACY_RUNS_DIR/$1" ] \
-        && [ ! -d "$RUNS_DIR/$1" ]; then
-        echo "$LEGACY_RUNS_DIR/$1"
-    else
-        echo "$RUNS_DIR/$1"
-    fi
+    echo "$RUNS_DIR/$1"
 }
 
 cmd_start() {
