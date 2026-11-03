@@ -685,3 +685,14 @@ Found while sizing a 4-core / 7.9 GB scratch VM with no other load (wizard value
 5. Validation (wizard and `validate_host_setup_values`): reserve must be a size and leave B >= 1G; `DEV_MEMORY_MAX` <= B when a reserve is set (re-prompt like the existing
    child-vs-parent rule ~667-689); advisory warning when a known slice outside dev.slice has a MemoryMax above the reserve. Also document: on a 4-core host with no other
    load set `DEV_SUBSLICE_CPU_RESERVE_CORES=1` (300% per tier instead of 100%).
+
+**Revision 2026-11-03 (operator direction, supersedes the "budget = RAM minus reserve as a hard ceiling" reading above).** Overcommit is intended: zswap exists
+because the hot working set of a test or load is far below its peak, so the dev tiers' summed `MemoryMax` may exceed physical RAM (for example 10-12 GB of declared
+need on a 7.75 GB host, served by zswap and paging). Protection of the rest of the host comes from (1) cgroup WEIGHTS (`CPUWeight`/`IOWeight`, and `MemoryLow` on
+host services) so host services always win contention, (2) `memory.min` on the production/host service cgroups (as already done for `wings.slice` on the shared
+host), which is what the "reserve" becomes: the reserved RAM is mirrored as `memory.min` on those cgroups instead of being subtracted from the dev budget, (3) PSI as
+the control signal (the watchers/kernel parameter changes keep the host responsive; memory/cpu/io pressure thresholds throttle or pause the dev tiers before the host
+suffers). So `DEV_MEMORY_RESERVE` should (a) mirror into `memory.min` for named host cgroups, (b) only bound `MemoryHigh`-style soft limits, and (c) never turn the dev
+`MemoryMax` sum into a hard physical-RAM budget. CPU: a "very safe" gates setting on a 4-core scratch host is 3.5 cores (`DEV_SUBSLICE_CPU_RESERVE_CORES=0.5`
+equivalent), with weights keeping host services first. Per-lane worker counts must be sized from MEASURED per-worker RAM (see run-gate footprint numbers) so the
+overcommit stays inside what zswap can absorb.
