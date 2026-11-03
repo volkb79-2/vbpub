@@ -4523,6 +4523,34 @@ class TestStructuredControlDocuments:
         assert exc.value.phase_report["phases"]["lifecycle_preflight"] == "failed"
         assert record.git_worktree_path.is_dir()
 
+    def test_rm_reports_early_status_recheck_failure_before_any_cleanup(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        record = worktree.create(tmp_repo, "early-status-recheck-failure")
+        original = worktree._worktree_change_paths
+        calls = 0
+        cleaned: list[object] = []
+
+        def fail_second_status(checkout, managed):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise worktree.WorktreeError("early status unavailable")
+            return original(checkout, managed)
+
+        monkeypatch.setattr(worktree, "_worktree_change_paths", fail_second_status)
+        monkeypatch.setattr(
+            worktree, "_clean_in", lambda *a, **k: cleaned.append(a) or 0
+        )
+
+        with pytest.raises(
+            worktree.WorktreeRemovalError, match="early status unavailable"
+        ):
+            worktree.remove_document(tmp_repo, record.logical_name)
+
+        assert cleaned == []
+        assert record.git_worktree_path.is_dir()
+
     def test_rm_reports_status_recheck_failure(
         self, tmp_repo, fake_generate_env, monkeypatch
     ):
@@ -4533,7 +4561,9 @@ class TestStructuredControlDocuments:
         def fail_second_status(checkout, managed):
             nonlocal calls
             calls += 1
-            if calls == 2:
+            # Call 2 is the early (pre-sibling-clean) recheck; call 3 is the
+            # final recheck this test targets.
+            if calls == 3:
                 raise worktree.WorktreeError("second status unavailable")
             return original(checkout, managed)
 

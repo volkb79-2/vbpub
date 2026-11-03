@@ -181,3 +181,38 @@ def test_a_sibling_lease_release_failure_refuses(
     with pytest.raises(worktree.WorktreeError, match="sibling root.*record unreadable"):
         worktree.remove(tmp_repo, "one")
     assert record.git_worktree_path.exists()
+
+
+def test_a_checkout_that_turns_dirty_is_refused_before_any_sibling_clean(
+    tmp_repo, fake_generate_env, monkeypatch
+):
+    record, _nested = _setup(tmp_repo, "nested-a", "nested-b")
+    calls: list[Path] = []
+    monkeypatch.setattr(
+        worktree, "_clean_in", lambda root, *, yes: calls.append(root.resolve()) or 0
+    )
+    original_plan = worktree._branch_removal_plan
+
+    def dirty_after_inventory(*args, **kwargs):
+        # Runs after the initial inventory and before the sibling pass.
+        (record.git_worktree_path / "late-change.txt").write_text("x", encoding="utf-8")
+        return original_plan(*args, **kwargs)
+
+    monkeypatch.setattr(worktree, "_branch_removal_plan", dirty_after_inventory)
+    with pytest.raises(worktree.WorktreeError, match="no sibling root was cleaned"):
+        worktree.remove(tmp_repo, "one")
+    assert calls == []
+    assert record.git_worktree_path.exists()
+
+
+def test_a_sibling_root_resolving_outside_the_checkout_is_refused(
+    tmp_repo, fake_generate_env, tmp_path
+):
+    record, _nested = _setup(tmp_repo, "nested-a")
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    swapped = record.git_worktree_path / "nested-a"
+    swapped.rename(record.git_worktree_path / "nested-a.moved")
+    swapped.symlink_to(outside)
+    with pytest.raises(worktree.WorktreeError, match="resolves outside the checkout"):
+        worktree._sibling_committed_roots(record.git_worktree_path, record.ciu_root)

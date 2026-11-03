@@ -4293,7 +4293,13 @@ adopted checkout during resume.
   selected root and before any checkout deletion; a sibling's lease is released
   only after that sibling's clean succeeded. A discovery, identity or clean
   failure refuses (unless `--force` for a failed clean), preserves the checkout
-  and the lifecycle record, and names the roots already cleaned. A checkout with
+  and the lifecycle record, and names the roots already cleaned; the resources
+  of those already-cleaned roots are gone (only the checkout and records are
+  preserved). Uncommitted changes that appeared since the initial inventory
+  are refused BEFORE the first sibling clean; the final ignored-state and
+  uncommitted-change recheck after the selected root's clean remains the last
+  guard. A discovered root that resolves outside the checkout (for example a
+  directory swapped for a symlink after the commit) refuses. A checkout with
   no committed root invokes no guessed cleanup.
   **The order is normative.** `ciu down` preserves
   volumes, so it strands `vol-*` dirs owned by image UIDs that an unprivileged
@@ -4688,10 +4694,11 @@ becomes visible.
 
 `ciu worktree inspect LOGICAL --json`, `ciu worktree list --json`, the
 lifecycle verbs (`create`/`ensure`/`adopt`) with `--json`,
-`ciu worktree lease --json` (S16.9) and `ciu worktree rm --json` each emit
+`ciu worktree lease --json` (S16.9), `ciu worktree refork --json` (S16.9,
+CIU-142) and `ciu worktree rm --json` each emit
 **exactly one JSON document on stdout** (`schema_version: 2`); diagnostics go
 to stderr. The `operation` vocabulary is closed (`create | ensure | adopt |
-inspect | lease | list | remove`) and the `status` vocabulary is closed
+inspect | lease | list | refork | remove`) and the `status` vocabulary is closed
 (`allocating | ready | recovery-required | removed | failed`); a `recovery-required`
 instance additionally carries a closed `recovery_status`
 (`checkout-incomplete | env-generation-failed | runtime-collision |

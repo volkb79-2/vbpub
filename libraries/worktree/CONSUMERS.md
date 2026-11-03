@@ -140,12 +140,19 @@ phase event, never unmounts, and `force` does not override it. An unreadable or 
 refuses (fail closed). `mounts_under(path, mountinfo_reader=None)` is public so an adapter can run the
 same check before its own destructive steps (ciu does, ahead of `ciu clean`); tests inject
 `mountinfo_reader` (a zero-argument callable returning the table text). Out of scope: mounts that exist
-only in another mount namespace are invisible to this process, and the check is a point-in-time read, not
-a lock against a mount appearing afterwards.
+only in another mount namespace (the host's, when running in a devcontainer or tester container) are
+invisible to this process. The check is time-of-check only, not a lock and not atomic: the table is
+read after the identity and lease checks, again immediately before the Git deletion (after the
+`cleanup` callback), and again before each permission-retry deletion (the `git worktree remove`
+retry and the residual `rmtree`), which narrows but does not close the window in which a mount can
+appear.
 
 **Release coupling.** The library source is embedded in both the ciu and the cmru wheels (the same
-top-level `worktree` package). Both tools must be re-released with identical library copies, ciu
-installed first, then cmru. Affected consumer surfaces: `ciu worktree rm` and cmru's release/build
+top-level `worktree` package, both built from `libraries/worktree/src/worktree` through their
+`package-dir` mapping, so the two copies are identical by construction). Release order: ciu first,
+then cmru, each with the identical library copy. Each adapter has its own surface test: ciu
+`test_remove_refuses_mount_under_checkout_before_any_cleanup`, cmru
+`test_remove_workspace_refuses_mount_under_the_checkout_through_cmru_surface`. Affected consumer surfaces: `ciu worktree rm` and cmru's release/build
 workspace cleanup and `cmru abandon`.
 
 The public failure categories are `collision`, `occupied`, `root-mismatch`,

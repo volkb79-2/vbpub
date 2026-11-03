@@ -1227,8 +1227,13 @@ def _finish_permission_recovery(
     admin_snapshot: tuple[Path, tuple[int, int], str],
     checkout_identity: tuple[int, int],
     residual_checkout_guard: Callable[[Path], None] | None = None,
+    mountinfo_reader: Callable[[], str] | None = None,
 ) -> None:
-    """Finish an already-authorized, permission-specific checkout retry."""
+    """Finish an already-authorized, permission-specific checkout retry.
+
+    The mount table is read again before each deletion (WT-OW-01): a mount that
+    appeared after the first check refuses the retry.
+    """
     admin, identity, reverse_link = admin_snapshot
     _verify_workspace_admin_snapshot(current, admin, identity, reverse_link)
     target = current.worktree_path
@@ -1256,6 +1261,7 @@ def _finish_permission_recovery(
                         f"residual checkout guard refused {target}: {exc}",
                         category="cleanup-refusal",
                     ) from exc
+        _refuse_if_mounts_under(target, mountinfo_reader)
         retry = subprocess.run(
             ["git", "worktree", "remove", "--force", str(target)],
             cwd=current.source_git_root, text=True, capture_output=True, check=False,
@@ -1288,6 +1294,7 @@ def _finish_permission_recovery(
                         f"residual checkout guard refused {target}: {exc}",
                         category="cleanup-refusal",
                     ) from exc
+            _refuse_if_mounts_under(target, mountinfo_reader)
             shutil.rmtree(target)
         except WorkspaceError:
             raise
@@ -1384,6 +1391,8 @@ def _refuse_if_mounts_under(
 
     Never overridden by ``force`` and never unmounts anything: descending into
     a mounted volume could delete data that does not belong to the checkout.
+    The table is read once per call: this is a time-of-check guard, not an
+    atomic one, so deletion paths call it again right before they delete.
     """
 
     mounts = mounts_under(path, mountinfo_reader=mountinfo_reader)
@@ -1512,6 +1521,12 @@ def remove_workspace(
         admin_snapshot = _workspace_admin_snapshot(current)
         if on_phase is not None:
             on_phase("checkout_deletion", "running")
+        # Re-read the table right before the deletion when an adapter cleanup
+        # callback ran: it can take long enough for a mount to appear (narrows,
+        # does not close, the time-of-check window). Without a callback the
+        # first check is already immediately before the deletion.
+        if cleanup is not None:
+            _refuse_if_mounts_under(current.worktree_path, mountinfo_reader)
         result = subprocess.run(
             ["git", "worktree", "remove", "--force", str(current.worktree_path)],
             cwd=current.source_git_root, text=True, capture_output=True, check=False,
@@ -1532,7 +1547,7 @@ def remove_workspace(
                 try:
                     _finish_permission_recovery(
                         current, admin_snapshot, checkout_identity,
-                        residual_checkout_guard,
+                        residual_checkout_guard, mountinfo_reader,
                     )
                 except WorkspaceError as exc:
                     if on_phase is not None:

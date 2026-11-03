@@ -790,3 +790,86 @@ def test_remove_orphan_workspace_refuses_mount_even_with_force(
     assert target.is_dir() and context.record_path.exists()
     remove_orphan_workspace(record, executor_git_root=repository)
     assert not target.exists()
+
+
+def _late_mount_reader(mount: Path, armed: list[bool]):
+    """Mount table that shows ``mount`` only once ``armed`` is truthy."""
+
+    def reader() -> str:
+        return _mountinfo(str(mount)) if armed else _mountinfo()
+
+    return reader
+
+
+def test_remove_workspace_rechecks_mounts_right_before_the_git_deletion(
+    repository: Path, tmp_path: Path,
+) -> None:
+    context = _linked(repository, tmp_path, "late")
+    mount = context.worktree_path / "vol"
+    mount.mkdir()
+    armed: list[bool] = []
+    reader = _late_mount_reader(mount, armed)
+    # The mount appears while the adapter cleanup callback runs.
+    with pytest.raises(core.WorkspaceError, match="detach it first"):
+        remove_workspace(
+            context, cleanup=lambda _ctx: armed.append(True), mountinfo_reader=reader,
+        )
+    assert armed == [True]
+    assert context.worktree_path.is_dir() and context.record_path.exists()
+
+
+def test_permission_retry_rechecks_mounts_before_git_retry(
+    repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _linked(repository, tmp_path, "retry")
+    mount = context.worktree_path / "vol"
+    mount.mkdir()
+    armed: list[bool] = []
+    original = core.subprocess.run
+    removes: list[list[str]] = []
+
+    def deny_remove(argv, *args, **kwargs):
+        if argv[:3] == ["git", "worktree", "remove"]:
+            removes.append(argv)
+            return subprocess.CompletedProcess(argv, 1, "", "Permission denied")
+        return original(argv, *args, **kwargs)
+
+    monkeypatch.setattr(core.subprocess, "run", deny_remove)
+    with pytest.raises(core.WorkspaceError, match="detach it first"):
+        remove_workspace(
+            context,
+            checkout_recovery=lambda *_args: armed.append(True) or True,
+            mountinfo_reader=_late_mount_reader(mount, armed),
+        )
+    assert len(removes) == 1  # the retry never ran
+    assert context.worktree_path.is_dir() and context.record_path.exists()
+
+
+def test_residual_rmtree_rechecks_mounts_before_deleting(
+    repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _linked(repository, tmp_path, "residual")
+    record = read_record(context.record_path)
+    admin = core._workspace_admin_snapshot(record)[0]
+    mount = context.worktree_path / "vol"
+    mount.mkdir()
+    (mount / "disk.img").write_text("precious", encoding="utf-8")
+    armed: list[bool] = []
+    original = core.subprocess.run
+    calls: list[list[str]] = []
+
+    def unregister_and_fail(argv, *args, **kwargs):
+        if argv[:3] == ["git", "worktree", "remove"] and not calls:
+            calls.append(argv)
+            shutil.rmtree(admin)
+            return subprocess.CompletedProcess(argv, 1, "", "Permission denied")
+        return original(argv, *args, **kwargs)
+
+    monkeypatch.setattr(core.subprocess, "run", unregister_and_fail)
+    with pytest.raises(core.WorkspaceError, match="detach it first"):
+        remove_workspace(
+            context,
+            checkout_recovery=lambda *_args: armed.append(True) or True,
+            mountinfo_reader=_late_mount_reader(mount, armed),
+        )
+    assert (mount / "disk.img").read_text(encoding="utf-8") == "precious"

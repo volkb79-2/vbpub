@@ -1191,6 +1191,7 @@ def test_remove_reports_shared_legacy_removal_failure(monkeypatch, tmp_path):
             Path(selected).resolve(), repo / ".git", "demo", "a" * 8
         ),
         list_workspaces=lambda _common: (),
+        mounts_under=lambda *_args, **_kwargs: [],
         find_workspace=lambda _common, selected: temporary if Path(selected) == _path else None,
         adopt_workspace=lambda *_args, **_kwargs: temporary,
         remove_workspace=lambda *_args, **_kwargs: (_ for _ in ()).throw(
@@ -1223,6 +1224,7 @@ def test_forced_cleanup_failure_uses_the_legacy_unrecorded_removal_adapter(
             Path(selected).resolve(), repo / ".git", "demo", "a" * 8
         ),
         list_workspaces=lambda _common: (),
+        mounts_under=lambda *_args, **_kwargs: [],
         find_workspace=lambda *_args: None,
         remove_unrecorded_workspace=lambda *args, **kwargs: calls.append((args, kwargs)),
         adopt_workspace=lambda *_args, **_kwargs: (_ for _ in ()).throw(

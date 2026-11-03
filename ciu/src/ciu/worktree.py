@@ -6795,7 +6795,21 @@ def _sibling_committed_roots(checkout: Path, selected_root: Path) -> list[Path]:
             f"[CIU-138] cannot discover the committed CIU roots of {checkout}: {exc}"
         ) from exc
     selected = Path(selected_root).resolve()
-    return [root for root in roots if root.resolve() != selected]
+    inside = Path(checkout).resolve()
+    siblings: list[Path] = []
+    for root in roots:
+        resolved = root.resolve()
+        if resolved == selected:
+            continue
+        # A working-tree directory swapped for a symlink after the commit must
+        # not send `ciu clean` outside the checkout.
+        if resolved != inside and inside not in resolved.parents:
+            raise WorktreeError(
+                f"[CIU-138] committed CIU root {root} resolves outside the "
+                f"checkout {inside}; refusing to clean it"
+            )
+        siblings.append(root)
+    return siblings
 
 
 def _clean_with_primary_identity(
@@ -8086,6 +8100,23 @@ def remove(
     # selected root (so a sibling failure leaves the selected root's lease and
     # all records untouched) and before any checkout deletion.
     details["root_cleanups"] = []
+    # Refuse a checkout that gained uncommitted changes since the initial
+    # inventory BEFORE any sibling `ciu clean` tears resources down; the later
+    # recheck (after the selected root is cleaned) stays as the final guard.
+    try:
+        early_dirty_paths = _worktree_change_paths(wt.path, managed)
+    except WorktreeError as exc:
+        raise fail(
+            f"could not recheck uncommitted changes before sibling cleanup: {exc}"
+        ) from exc
+    early_new_dirty = sorted(set(early_dirty_paths) - set(dirty_paths))
+    if early_new_dirty:
+        mark("resource_cleanup", "skipped-dirty-changes")
+        raise fail(
+            "uncommitted changes changed since the initial inventory; review "
+            f"the newly changed paths ({_format_changed_paths(early_new_dirty)}) "
+            "and retry; no sibling root was cleaned"
+        )
     try:
         sibling_roots = _sibling_committed_roots(wt.path, ciu_root)
     except WorktreeError as exc:
