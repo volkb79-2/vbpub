@@ -179,7 +179,9 @@ def test_unattended_install_update_rollback_offline(env):
     assert override.is_file() and not override.is_symlink()
     # the launcher runs from the hash-locked venv
     import subprocess
-    assert subprocess.run([str(root / "bin" / "pwmcp")], capture_output=True, text=True).stdout.strip() == "pwmcp-client 1.0.0"
+    clean_env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}  # the gate sets PYTHONPATH=client/src, which would shadow the venv's wheel
+    out = subprocess.run([str(root / "bin" / "pwmcp")], capture_output=True, text=True, env=clean_env).stdout.strip()
+    assert out == "pwmcp-client 1.0.0"
 
     # an operator edit of the override survives update; rollback restores the previous release
     override.write_text(override.read_text() + "\n# operator edit\n")
