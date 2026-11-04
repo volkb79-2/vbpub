@@ -11,6 +11,17 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 <!-- cmru: release history -->
 
+## [25.0.2] - 2026-11-04
+<!-- cmru: generated -->
+<!-- cmru: source-end=892dcba8c98dcaac0e5b063c6281fc8c28ea9dfa -->
+
+### Changed
+- run-gate: backlog RG-160, CHANGES (14fbef874)
+- run-gate: the unparsable cgprofile response warning names the response length and start (cf3e8af1a)
+- run-gate: released-reader test skips only in a tagless snapshot (third documented structural exception), backlog RG-158/159, CHANGES (53fb00964)
+- run-gate tests: hermetic bare-interpreter cowtree oracle, derive released tag (RG-158, RG-159) (f6ac2d38b)
+- run-gate-project: map RUN_GATE_TMPDIR onto the assay lanes' TMPDIR (RG-157) (ed5658be2)
+
 ## [25.0.1] - 2026-11-04
 <!-- cmru: generated -->
 <!-- cmru: source-end=7ef33e037c7aee0b70636b64452cf408cb5ee8c6 -->
