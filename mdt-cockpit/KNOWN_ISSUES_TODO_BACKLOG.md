@@ -1342,3 +1342,34 @@ install and no result (MDT-063 is the producer), so the least-limiting expressib
 only under `HOST_ROLE=dedicated-dev`; keep IOWeight and the PSI guard. Also: the installer reads `../../scripts/debian-install-v2/tools/` outside `host-setup/`, so a
 `host-setup/`-only copy fails midway (after rendering units) with "cannot stat iocost_coef_gen.py"; either vendor those two files or check for them up front.
 Also seen: the reconcile logs `Permission denied` writing `io.bfq.weight` on docker scopes (non-fatal, scheduler is not bfq).
+## MDT-069 - `mdt-psi-guard.py` writes `cpu.weight` and thereby silently resets `cpu.idle` on the dev slices (2026-11-05)
+
+**Status:** OPEN. Severity P3. Found by the Geekbench exploration on r1002/v1001 (`reports/geekbench-explore-REPORT.md`, finding 1, in the release-program reports dir).
+
+**Observed.** `/usr/local/sbin/mdt-psi-guard.py` writes `cpu.weight` (1 under pressure, then restores the saved value) on `dev-gates`, `dev-background` and `dev-buildkitd`.
+In the kernel a `cpu.weight` write resets `cpu.idle` to 0 (and leaving idle resets the weight to 100). An operator or benchmark that sets `cpu.idle=1` on
+`dev.slice/dev-gates.slice` loses it within minutes; on r1002 the first Geekbench launch lost idle that way, and the run wrapper had to re-assert `cpu.idle=1` every second.
+The guard's restore can also leave a wrong weight (dev-gates read 100 instead of 20 after a short run).
+
+**Design.** The guard reads `cpu.idle` together with `cpu.weight` before acting; on a slice with `cpu.idle=1` it skips the weight write (idle is already the strongest
+deprioritisation), and when it does write a weight it re-applies `cpu.idle` afterwards (write `cpu.idle` last, since it also resets the weight). Document the interaction in host-setup/README.md.
+
+**Acceptance criteria.** Unit test with a fake cgroup tree: a slice with `cpu.idle=1` keeps it through a pressure cycle and its weight is not rewritten; a slice with `cpu.idle=0` still
+gets the 1 -> original weight cycle and ends with the exact original values.
+
+## MDT-070 - Geekbench result pages are Cloudflare-challenged; the host CPU benchmark's `--resolve` page-parsing fallback cannot work (2026-11-05)
+
+**Status:** OPEN (documentation and tool change; related to MDT-066/067/068 on branch rigor-hb23-20261105, which are not on main yet). Severity P3.
+Evidence: `reports/geekbench-explore-REPORT.md` (finding 3) and `reports/geekbench-pwmcp-REPORT.md`.
+
+**Observed.** `browser.geekbench.com` and `www.geekbench.com` answer scripted clients (curl with the tool's User-Agent, from the devcontainer, r1002 and v1001) with the Cloudflare
+"Just a moment" challenge (HTTP 403). The PWMCP browser (chrome-windows and edge-windows profiles) does not pass the managed challenge either (page never resolves within 100 s). So the HB-1
+`--resolve` / result-page fallback can never retrieve a real result page; no result-page fixture could be captured. The stdout "Benchmark Summary" is the only reliable score source.
+Also seen: GB 6.7.0 ended with `unknown error (internal code 35)` at upload on r1002 twice (no scores printed, so no stdout fallback either); GB 7.1.0 uploaded fine.
+
+**Design.** Treat the result page as best-effort at most: the HB-1/HB-2/HB-3 docs and the tool's help state that scores come from stdout, that the `--resolve` fallback is unavailable behind the
+challenge, and that an upload failure or blocked page is a `warned` step (re-measure later, never fabricate a score). Prefer GB7 for the installer step; either remove the fallback or keep it
+documented as unreachable. When MDT-066..068 land, cross-reference this entry from them.
+
+**Acceptance criteria.** The HB docs and the tool text carry the Cloudflare/stdout-only statement; a test feeds the tool a challenge page and a missing-summary stdout and expects `warned`
+with no score, not a parse of the challenge HTML.
