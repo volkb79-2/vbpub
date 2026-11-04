@@ -1289,7 +1289,11 @@ def test_every_verb_is_covered_by_a_golden():
     # C7: `watch` is a verb the daemon answers but NOT through `_dispatch`
     # (it streams, `_handle_connection` hands it to its own thread), so it
     # is listed separately and covered by its own goldens.
-    assert set(STREAMING) == set(serve.STREAMING_VERBS)
+    # Contract 2's `export` streams too; its goldens (request + NDJSON
+    # stream) are produced and checked by tests/test_serve_export.py.
+    assert set(STREAMING) | {"export"} == set(serve.STREAMING_VERBS)
+    assert _golden("export-request.json").is_file()
+    assert _golden("export-response.ndjson").is_file()
     for verb in VERBS + STREAMING:
         assert _golden(f"{verb}-request.json").is_file()
         assert _golden(f"{verb}-response.json").is_file()

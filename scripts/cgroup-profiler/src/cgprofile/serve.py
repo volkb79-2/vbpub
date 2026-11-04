@@ -33,7 +33,9 @@ lookups).
 
 from __future__ import annotations
 
+import base64
 import errno
+import hashlib
 import json
 import math
 import os
@@ -117,7 +119,11 @@ _WIRE_KEYS = frozenset({"verb", "args", "contract"})
 # then close" (see `_handle_connection` and `docs/PROTOCOL.md` §2). It never
 # goes through `_dispatch` — asked there (a caller that cannot stream) it is
 # §8.8's `not-streaming`.
-STREAMING_VERBS = frozenset({"watch"})
+#
+# Contract 2 adds `export` (PROTOCOL 10.3), the second streaming verb. It has
+# its own slot class and thread (`_export_connection`) and exists at
+# contract 2 only.
+STREAMING_VERBS = frozenset({"watch", "export"})
 # Asserted at every start on the directory the socket lives in and on the
 # socket itself (§8.1 "belt and braces to the host's tmpfiles.d entry",
 # RW-37: the host's own source of truth is mdt host-setup's
@@ -2975,6 +2981,17 @@ class SessionServer:
                 return contract
         return CONTRACT_VERSION
 
+    def _make_ctx(self, req: Any, peer: Any) -> _Ctx:
+        """The request context: `peer` is `(pid, uid, gid)`, `None` for
+        unreadable credentials (uid None, fails closed) or `_UNSET` for an
+        in-process, trusted caller."""
+        contract = self._request_contract(req)
+        if peer is _UNSET:
+            return _Ctx(contract)
+        if peer is None:
+            return _Ctx(contract, uid=None)
+        return _Ctx(contract, uid=peer[1], pid=peer[0])
+
     def _dispatch(
         self, req: Dict[str, Any], peer: Any = _UNSET
     ) -> Dict[str, Any]:
@@ -2991,15 +3008,17 @@ class SessionServer:
         the long-option arg NAMES are documented per verb in
         `docs/PROTOCOL.md`.
         """
-        if peer is _UNSET:
-            ctx = _Ctx(self._request_contract(req))
-        elif peer is None:
-            ctx = _Ctx(self._request_contract(req), uid=None)
-        else:
-            ctx = _Ctx(self._request_contract(req), uid=peer[1], pid=peer[0])
+        ctx = self._make_ctx(req, peer)
         verb, args, wire_error = self._validate_wire(req)
         if wire_error is not None:
             return wire_error
+        if verb in CONTRACT_2_VERBS and ctx.contract < 2:
+            return self._error_response(
+                "bad-argument",
+                f"verb {verb!r} exists only at contract 2; this request is contract "
+                f"{ctx.contract} (this daemon speaks contracts {list(CONTRACTS)})",
+                contract=ctx.contract,
+            )
         if verb in STREAMING_VERBS:
             # §8.8's `not-streaming`: the verb exists and the request is
             # well formed, but this path answers exactly one object and the
@@ -3027,13 +3046,6 @@ class SessionServer:
         if handler is None:
             return self._error_response(
                 "bad-argument", f"unknown verb {verb!r}", contract=ctx.contract
-            )
-        if verb in CONTRACT_2_VERBS and ctx.contract < 2:
-            return self._error_response(
-                "bad-argument",
-                f"verb {verb!r} exists only at contract 2; this request is contract "
-                f"{ctx.contract} (this daemon speaks contracts {list(CONTRACTS)})",
-                contract=ctx.contract,
             )
         try:
             resp = handler(args, ctx)
@@ -3698,25 +3710,41 @@ class SessionServer:
                 # other verb (including the `stop` that ends the very
                 # session being watched) for the life of the stream.
                 verb, args, wire_error = self._validate_wire(req)
-                if wire_error is None and verb in STREAMING_VERBS:
-                    if not self._watch_slots.acquire(blocking=False):
+                ctx = self._make_ctx(req, peer)
+                if (
+                    wire_error is None and verb in STREAMING_VERBS
+                    and not (verb in CONTRACT_2_VERBS and ctx.contract < 2)
+                ):
+                    # `watch` and `export` each have their own slot class;
+                    # `export` also needs the peer (ownership, PROTOCOL 10.5).
+                    exporting = verb == "export"
+                    slots = self._export_slots if exporting else self._watch_slots
+                    if not slots.acquire(blocking=False):
                         self._send_line(conn, self._error_response(
-                            "busy", "too many watch streams are open; retry shortly",
+                            "busy", f"too many {verb} streams are open; retry shortly",
+                            contract=ctx.contract,
                         ))
                         return
-                    thread = threading.Thread(
-                        target=self._watch_connection, args=(conn, args),
-                        kwargs={"watch_slot": True}, daemon=True,
-                        name=f"cgprofile-watch-{args.get('session')}",
-                    )
+                    if exporting:
+                        thread = threading.Thread(
+                            target=self._export_connection, args=(conn, args, ctx),
+                            daemon=True, name=f"cgprofile-export-{args.get('session')}",
+                        )
+                    else:
+                        thread = threading.Thread(
+                            target=self._watch_connection, args=(conn, args),
+                            kwargs={"watch_slot": True}, daemon=True,
+                            name=f"cgprofile-watch-{args.get('session')}",
+                        )
                     handed_off = True
                     try:
                         thread.start()
                     except RuntimeError:
                         handed_off = False
-                        self._watch_slots.release()
+                        slots.release()
                         self._send_line(conn, self._error_response(
-                            "busy", "the daemon could not start a watch thread; retry shortly",
+                            "busy", f"the daemon could not start a {verb} thread; retry shortly",
+                            contract=ctx.contract,
                         ))
                     return
                 try:
@@ -3866,6 +3894,169 @@ class SessionServer:
             },
             entry["watch"],
         )
+
+    # ── verb: export (PROTOCOL 10.3, contract 2) ─────────────────────────
+
+    @staticmethod
+    def _export_open(path: str) -> Any:
+        """Open one stored part read-only, refusing a symlink or non-regular file."""
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise OSError(errno.EINVAL, "not a regular file")
+            return os.fdopen(fd, "rb")
+        except BaseException:
+            os.close(fd)
+            raise
+
+    def _export_admit(self, args: Dict[str, Any], ctx: _Ctx) -> Tuple[str, List[str], Optional[int]]:
+        """Validate an `export` request and register the session as being
+        exported (so retention skips it). Registration is the last step: a
+        raise means nothing was registered."""
+        unknown = sorted(set(args) - {"session", "parts"})
+        if unknown:
+            raise RequestError("bad-argument", f"unexpected export argument(s) {unknown!r}")
+        session_id = args.get("session")
+        if not isinstance(session_id, str) or not _SESSION_ID_RE.match(session_id):
+            raise RequestError("unknown-session", f"no session {session_id!r} is on record")
+        parts = args.get("parts")
+        if parts is None:
+            names = list(EXPORT_PARTS)
+        elif isinstance(parts, list) and all(
+            isinstance(item, str) and item in EXPORT_PARTS for item in parts
+        ):
+            names = [name for name in EXPORT_PARTS if name in parts]
+        else:
+            raise RequestError(
+                "bad-argument", f"'parts' must be null or a list drawn from {list(EXPORT_PARTS)!r}"
+            )
+        with self._lock:
+            sess = self._sessions.get(session_id)
+            if sess is not None and not sess.finished:
+                raise RequestError(
+                    "session-live", f"session {session_id} is still running; stop it first"
+                )
+            manifest = self._read_manifest(session_id)
+            if manifest is None:
+                raise RequestError("unknown-session", f"no session {session_id} is on record")
+            if manifest.get("status") == "live":
+                raise RequestError(
+                    "session-live", f"session {session_id} is still running; stop it first"
+                )
+            owner = manifest.get("owner_uid")
+            owner = owner if type(owner) is int else None
+            self._check_owner(ctx, owner, "export")
+            self._exporting[session_id] = self._exporting.get(session_id, 0) + 1
+        return session_id, names, owner
+
+    def _export_release(self, session_id: str) -> None:
+        with self._lock:
+            left = self._exporting.get(session_id, 0) - 1
+            if left > 0:
+                self._exporting[session_id] = left
+            else:
+                self._exporting.pop(session_id, None)
+
+    def _export_connection(self, conn: socket.socket, args: Dict[str, Any], ctx: _Ctx) -> None:
+        """One `export` connection, on its own thread, start to `end`."""
+        session_id: Optional[str] = None
+        files: List[Tuple[str, Any]] = []
+        try:
+            conn.settimeout(EXPORT_STALL_SECONDS)
+            try:
+                session_id, names, owner = self._export_admit(args, ctx)
+            except RequestError as exc:
+                self._send_line(conn, self._error_response(exc.code, exc.message, contract=2))
+                return
+            try:
+                header = self._export_header(session_id, names, owner, files)
+            except RequestError as exc:
+                self._send_line(conn, self._error_response(exc.code, exc.message, contract=2))
+                return
+            self._send_line(conn, header)
+            self._export_stream(conn, files)
+        except OSError:
+            pass  # the consumer stopped reading or stalled; nothing to report to it
+        except Exception as exc:  # noqa: BLE001 - same blast-radius rule as _handle_connection
+            print(
+                f"cgprofile: unhandled error streaming export: {type(exc).__name__}: {exc}",
+                file=sys.stderr, flush=True,
+            )
+        finally:
+            for _name, handle in files:
+                handle.close()
+            if session_id is not None:
+                self._export_release(session_id)
+            self._export_slots.release()
+            conn.close()
+
+    def _export_header(
+        self, session_id: str, names: List[str], owner: Optional[int],
+        files: List[Tuple[str, Any]],
+    ) -> Dict[str, Any]:
+        """Open every existing part (kept open in `files`, so a retention
+        pass or restart cannot pull a file from under the stream), size-check
+        against `export_max_bytes`, hash, and build the header line."""
+        folder = os.path.join(self.sessions_dir, session_id)
+        total = 0
+        try:
+            for name in names:
+                try:
+                    handle = self._export_open(os.path.join(folder, name))
+                except FileNotFoundError:
+                    continue  # a part the session does not have is omitted
+                files.append((name, handle))
+                total += os.fstat(handle.fileno()).st_size
+            if total > self.export_max_bytes:
+                raise RequestError(
+                    "export-too-large",
+                    f"session {session_id} is {total} bytes, over export_max_bytes "
+                    f"({self.export_max_bytes}); raise it (cgpctl config set "
+                    f"export_max_bytes) or export fewer parts",
+                )
+            parts: List[Dict[str, Any]] = []
+            for name, handle in files:
+                digest = hashlib.sha256()
+                size = 0
+                for block in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(block)
+                    size += len(block)
+                handle.seek(0)
+                parts.append({"name": name, "bytes": size, "sha256": digest.hexdigest()})
+        except OSError as exc:
+            raise RequestError(
+                "export-failed", f"cannot read session {session_id}: {exc.strerror or exc}"
+            ) from None
+        return {
+            "ok": True, "contract": 2, "session": session_id, "parts": parts,
+            "total_bytes": sum(part["bytes"] for part in parts), "owner_uid": owner,
+        }
+
+    def _export_stream(self, conn: socket.socket, files: List[Tuple[str, Any]]) -> None:
+        for name, handle in files:
+            seq = 0
+            while True:
+                if self._stopping:
+                    self._export_abort(conn, "the daemon is shutting down")
+                    return
+                try:
+                    chunk = handle.read(EXPORT_CHUNK_BYTES)
+                except OSError as exc:
+                    self._export_abort(conn, f"cannot read {name}: {exc.strerror or exc}")
+                    return
+                if not chunk:
+                    break
+                self._send_line(conn, {
+                    "part": name, "seq": seq, "data": base64.b64encode(chunk).decode("ascii"),
+                })
+                seq += 1
+        self._send_line(conn, {"event": "end", "status": "complete"})
+
+    def _export_abort(self, conn: socket.socket, message: str) -> None:
+        self._send_line(conn, {
+            "event": "end", "status": "aborted",
+            "error": {"code": "export-failed", "message": message},
+        })
 
     def request_shutdown(self) -> None:
         self._stopping = True
