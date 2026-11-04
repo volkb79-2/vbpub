@@ -1297,3 +1297,35 @@ against a 1.x daemon it fails ("sessions needs ctl contract 2") and the drain ca
 exists: list live sessions through `docker exec cgprofile-host-daemon cgprofile ctl status` (contract 1), wait/refuse exactly like the drain, then
 `docker update --restart=no` + `docker stop` it, and print the rollback line (`docker start cgprofile-host-daemon` after `systemctl stop cgpd`). The
 container removal stays an operator step. `check.sh` ignores `caller-group` for uid 0 until CP-57 ships. Tests with the fake docker.
+
+## MDT-063 - debian-install-v2 must run the iobench calibration and persist `result.json` for host-setup (2026-11-05)
+
+**Status:** OPEN (host-setup consumer shipped, producer deferred). Found on r1002/v1001: the static fallback (500 IOPS) throttled every gate lane on an
+idle 8000-IOPS disk.
+
+**Done (MDT-TESTHOST-IO).** `HOST_ROLE=dedicated-dev` makes `dev.slice` use `proposals.caps.dev_aggregate` of `/var/lib/iobench/result.json`
+(identity-verified, `scripts/mdt_iobench_caps.py`), no static fallback; see host-setup/README.md "Host role".
+**Open.** debian-install-v2 still only runs the older `iocost_coef_gen` (io.cost model, `io-benchmark.json`). Add, after that tool and before the
+throwaway partition's teardown: unmount, `iobench target init <partition> --i-own-this-device --expect-size --expect-partuuid`, then
+`iobench calibrate --target <partition> --work-dir <dir> --profile quick|standard --installer --confirm-quiet-window --protect-cgroup ... --abort-psi 40`
+so `result.json` and `calibration.json` land in `/var/lib/iobench/`; new config `run_iobench_calibration` (default false), a `warned` (advisory) step on
+failure, resume handling like `io_benchmark`. Needs the `iobench` wheel and `fio` in the target; fake-`iobench` unit tests in `test_io_benchmark.py`.
+**Live verification** needs a vm-system run (a real disk with a tail partition): the result must show `caps.dev_aggregate` and `install.sh` on the
+VM with `HOST_ROLE=dedicated-dev` must render those numbers. Until then the operator runs `iobench calibrate` on the test hosts by hand.
+
+## MDT-064 - iobench `proposals.iocost_qos` is not consumed: latency targets for the responsiveness guard (2026-11-05)
+
+**Status:** OPEN. The goal of the iogov/iobench work is high device utilisation WITH responsiveness. On `dedicated-dev` the absolute ceiling now
+follows the measured capacity, so the guard is the gate/BuildKit sub-ceilings, IOWeight, the PSI guard and `IO_COST_QOS` (still operator-written, default `off`).
+iobench emits only `min`/`max` QoS proposals (rule R6), no read/write latency target, so the wizard cannot propose `rlat`/`wlat`.
+**Design.** Agree the latency target (e.g. p95 read latency a multiple of the measured idle latency) in iobench R6, extract it in the wizard like
+`IO_COST_MODEL`, and on `dedicated-dev` propose `IO_COST_QOS` from it; validate live on a test host (PSI-io with and without) before defaulting.
+
+## MDT-065 - btrfs/page-cache read amplification under an R2 campaign container (2026-11-05)
+
+**Status:** OPEN, UNDER MEASUREMENT (no cause is claimed). See host-setup/README.md "Observation: read volume under a low IOPS cap".
+**Observed.** One R2 campaign container read 15-30 GB within an hour on an 8 GB host while the IOPS cap was 300. Candidates are only hypotheses
+until measured: page-cache churn with little RAM, btrfs read amplification on `/srv/cow`, the workload itself. Tracked by assay B217/B218 and
+dstdns `docs/testing/PARALLELISM-AND-PERFORMANCE.md`.
+**Acceptance.** A measurement (per-container `io.stat` rbytes vs. block-layer rbytes, cache hit ratio, `iostat`) on a dedicated host with the cap lifted;
+the result is recorded in the README observation and decides whether host-setup needs a change.

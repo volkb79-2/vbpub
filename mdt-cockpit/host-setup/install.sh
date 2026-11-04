@@ -706,9 +706,17 @@ esac
 # the operator-pinned DEV_IO_{RBPS,WBPS,RIOPS,WIOPS}_MAX when set, else
 # DEV_STATIC_*.  Rendered as plain byte counts, so systemd never applies its
 # own K/M/G base to an MDT number.  An invalid value refuses the install.
+export MDT_IOBENCH_CAPS_HELPER="${MDT_IOBENCH_CAPS_HELPER:-$HERE/scripts/mdt_iobench_caps.py}"
 if ! _mdt_resolve_static_io; then
-  echo "ERROR: invalid IO cap value in host-setup.env (see above); no host policy changes beyond this point were applied" >&2
+  if [ -n "${MDT_DEDICATED_UNRESOLVED:-}" ]; then
+    echo "ERROR: HOST_ROLE=dedicated-dev and no IO limit could be resolved for: ${MDT_DEDICATED_UNRESOLVED} (remedy above); no host policy changes beyond this point were applied" >&2
+  else
+    echo "ERROR: invalid IO cap value in host-setup.env (see above); no host policy changes beyond this point were applied" >&2
+  fi
   exit 2
+fi
+if [ "$(_mdt_host_role)" = unset ]; then
+  echo "NOTICE: HOST_ROLE is not set in $CONFIG_PATH — treated as shared-prod (conservative static limits). On a sole-tenant dev/test host set HOST_ROLE=dedicated-dev so dev.slice uses the MEASURED device limits (install.sh --wizard asks)." >&2
 fi
 DEV_STATIC_RBW="$MDT_STATIC_RBPS"; DEV_STATIC_WBW="$MDT_STATIC_WBPS"
 DEV_STATIC_RIOPS="$MDT_STATIC_RIOPS"; DEV_STATIC_WIOPS="$MDT_STATIC_WIOPS"
@@ -1032,7 +1040,11 @@ render "$HERE/units/docker-scope-default-limits.conf.in" \
   /etc/systemd/system/docker-.scope.d/50-default-limits.conf
 
 if [ -n "${IO_SD_DEV:-}" ]; then
+  if [ "$(_mdt_host_role)" = dedicated-dev ]; then
+    echo "IO limits (HOST_ROLE=dedicated-dev): dev.slice on ${IO_SD_DEV} (${IO_DEV_PATH}) = ${DEV_STATIC_RIOPS}r/${DEV_STATIC_WIOPS}w IOPS, ${DEV_STATIC_RBW}/${DEV_STATIC_WBW} bytes/s read/write (DEV_IO_*_MAX pin, else the measured iobench cap; no static fallback on this role)"
+  else
   echo "static IO fallback: dev.slice on ${IO_SD_DEV} (${IO_DEV_PATH}) = ${DEV_STATIC_RIOPS}r/${DEV_STATIC_WIOPS}w IOPS, ${DEV_STATIC_RBW}/${DEV_STATIC_WBW} bytes/s read/write (DEV_IO_*_MAX when set, else DEV_STATIC_*)"
+  fi
   echo "  applies from boot, and whenever no current plausible identity-verified baseline is available; the reconciliation service re-asserts it explicitly, applies min(pinned, ${DEV_IO_CAP_PCT:-60}% of baseline) per value when a baseline exists, and verifies the kernel io.max (check with: mdt-cgroup-io-limits.sh dev.slice --systemd)"
 else
   if [ "$IO_SD_STATE" = unresolved ]; then
@@ -1181,6 +1193,7 @@ install -m 0755 "$HERE/scripts/mdt-container-io-events-watcher.sh"  /usr/local/s
 # sys.path when systemd or an operator executes the installed script.
 install -m 0644 "$HERE/scripts/mdt_cli.py"             /usr/local/sbin/mdt_cli.py
 install -m 0755 "$HERE/scripts/mdt-io-baseline.py"     /usr/local/sbin/mdt-io-baseline.py
+install -m 0755 "$HERE/scripts/mdt_iobench_caps.py"    /usr/local/sbin/mdt_iobench_caps.py
 install -d -m 0755 /usr/local/lib/mdt
 install -m 0755 "$HERE/../../scripts/debian-install-v2/tools/iocost_coef_gen.py" \
   /usr/local/lib/mdt/iocost_coef_gen.py

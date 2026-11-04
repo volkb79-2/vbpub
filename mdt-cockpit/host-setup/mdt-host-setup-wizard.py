@@ -494,6 +494,32 @@ def validate_positive_size(value: str) -> str | None:
 _IO_PIN_RE = re.compile(r"^([0-9]+)([KMGT]?)$")
 
 
+HOST_ROLES = ("shared-prod", "dedicated-dev")
+
+
+def validate_host_role(value: str) -> str | None:
+    """HOST_ROLE: empty (not decided = shared-prod conservative limits) | shared-prod | dedicated-dev."""
+    if value == "" or value in HOST_ROLES:
+        return None
+    return f"{value!r} is not a host role; choose 'dedicated-dev' (sole-tenant dev/test host), 'shared-prod' (production runs here) or leave empty"
+
+
+def load_measured_caps(result: Path | None = None, *, runner=subprocess.run):
+    """The measured dev.slice caps of the iobench result for THIS host's root disk, through the one
+    runtime reader (scripts/mdt_iobench_caps.py).  Returns (values, notes, why): values KEY -> int (empty
+    when nothing is usable), notes KEY -> provenance, why = the reason when empty."""
+    spec = importlib.util.spec_from_file_location("mdt_iobench_caps", HOST_SETUP_DIR / "scripts" / "mdt_iobench_caps.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    facts = derive_disk_facts(runner=runner)
+    path = result or Path(os.environ.get("IOBENCH_RESULT") or module.DEFAULT_RESULT)
+    try:
+        values, notes = module.load_caps(path, facts.get("majmin"), facts.get("identity"))
+    except module.NotUsable as exc:
+        return {}, {}, str(exc)
+    return values, notes, ""
+
+
 def validate_io_pin(value: str) -> str | None:
     """DEV_IO_{RBPS,WBPS,RIOPS,WIOPS}_MAX: an operator-pinned absolute dev.slice cap.
 
@@ -813,6 +839,7 @@ def memory_review_warnings(values: dict[str, str]) -> list[str]:
 def _config_value_validators() -> dict[str, Validator]:
     """Return the non-interactive equivalents of the wizard's field checks."""
     validators: dict[str, Validator] = {
+        "HOST_ROLE": validate_host_role,
         "IO_DEV_PATH": validate_io_dev_path,
         "DEV_STATIC_RIOPS": validate_positive_int,
         "DEV_STATIC_WIOPS": validate_positive_int,
@@ -1991,9 +2018,38 @@ def check_benchmark_results(
 # ─── interactive sections (Work step 4a-4i) ────────────────────────────────
 
 
-def step_io_device(cfg_current: dict[str, str], example_defaults: dict[str, str]) -> str:
+def step_host_role(cfg_current: dict[str, str], example_defaults: dict[str, str]) -> str:
+    """First question of the wizard: who else uses this disk?  Decides whether dev.slice is sized
+    conservatively (shared-prod) or from the MEASURED device capacity (dedicated-dev)."""
     section("Host facts")
-    out("Docker data device:")
+    out("Host role (asked first because it decides every IO limit below):")
+    for bullet in (
+        "`shared-prod`: production workloads share this host. dev.slice keeps conservative limits (a pin, else a percentage of a baseline, else the static fallback) so development can never starve production.",
+        "`dedicated-dev`: this host is a sole-tenant dev/test machine. dev.slice is sized from the MEASURED device capacity of the iobench calibration (or your pin), for high disk utilisation; the gate sub-ceilings, IOWeight, the PSI guard and io.cost QoS latency targets keep it responsive. There is NO static fallback on this role: without a measurement or a pin the install refuses and tells you how to measure.",
+        "Empty = not decided: treated as shared-prod and noted on every install. Do not choose `dedicated-dev` on a host that runs anything you care about besides development.",
+    ):
+        out(f"- {bullet}", hang="  ")
+    role = walk_key(
+        "Host role (shared-prod | dedicated-dev; empty = not decided)",
+        "HOST_ROLE",
+        cfg_current,
+        example_defaults,
+        validate=validate_host_role,
+    )
+    if role == "dedicated-dev":
+        values, notes, why = load_measured_caps()
+        if values:
+            out("Measured device capacity for this host's root disk (iobench):")
+            for key, value in values.items():
+                out(f"- {key} = {value} ({notes[key]})", hang="  ")
+        else:
+            out(f"No usable iobench measurement for this host's root disk: {why}.")
+            out("Remedy: run `iobench calibrate` (libraries/iobench/docs/CONSUMERS.md section 2; debian-install-v2 runs it at install time) before applying, or pin the four DEV_IO_*_MAX values at the IO caps step. Without one of the two the install refuses.")
+    return role
+
+
+def step_io_device(cfg_current: dict[str, str], example_defaults: dict[str, str]) -> str:
+    out("\nDocker data device:")
     for bullet in (
         "`IO_DEV_PATH` selects the host block device named by the static root limits and measured results.",
         "Empty or `auto` discovers with `findmnt`; no device omits static IO caps but keeps CPU/memory governance.",
@@ -2367,6 +2423,7 @@ def step_io_settings(
     cfg_current: dict[str, str],
     example_defaults: dict[str, str],
     results: dict[str, int],
+    walked_role: str | None = None,
 ) -> dict[str, str]:
     """Converge all IO choices after the background measurement has finished."""
     section("IO caps")
@@ -2380,9 +2437,26 @@ def step_io_settings(
         "`IOWeight` is a relative share among sibling slices; `io.max` is an absolute rate ceiling.",
     ):
         out(f"- {bullet}", hang="  ")
-    out("Static root limits:")
-    values = step_static_io_fallback(cfg_current, example_defaults)
-    values.update(step_io_pins(cfg_current, example_defaults, results))
+    dedicated = resolve_default("HOST_ROLE", cfg_current, example_defaults, None) == "dedicated-dev"
+    if walked_role is not None:
+        dedicated = walked_role == "dedicated-dev"
+    if dedicated:
+        out("Static root limits: none on a dedicated-dev host (measured iobench capacity or your pins decide dev.slice).")
+        values = {}
+        values.update(step_io_pins(cfg_current, example_defaults, results))
+        measured, _notes, why = load_measured_caps()
+        for key, pin in (("RBPS", "DEV_IO_RBPS_MAX"), ("WBPS", "DEV_IO_WBPS_MAX"),
+                         ("RIOPS", "DEV_IO_RIOPS_MAX"), ("WIOPS", "DEV_IO_WIOPS_MAX")):
+            if not values.get(pin) and key not in measured:
+                raise ValueError(
+                    f"HOST_ROLE=dedicated-dev has no limit for {key}: no {pin} pin and no usable iobench measurement ({why or 'no value for it'}). "
+                    "There is deliberately no static fallback on a dedicated host. Run `iobench calibrate` (libraries/iobench/docs/CONSUMERS.md section 2) "
+                    "and re-run the wizard, or pin all four DEV_IO_*_MAX values from a sustained measurement."
+                )
+    else:
+        out("Static root limits:")
+        values = step_static_io_fallback(cfg_current, example_defaults)
+        values.update(step_io_pins(cfg_current, example_defaults, results))
     out("Measured percentage limits:")
     dev_default = resolve_default("DEV_IO_CAP_PCT", cfg_current, example_defaults, None)
     watcher_default = resolve_default("WATCHER_IO_CAP_PCT", cfg_current, example_defaults, None)
@@ -4012,6 +4086,7 @@ def main(argv: list[str] | None = None) -> int:
         # Step order = STEP_TITLES. The optional disk measurement starts early
         # (step 2) and runs concurrently with steps 3-6; every IO choice is
         # deliberately collected after the one job has finished (steps 7-9).
+        walked["HOST_ROLE"] = step_host_role(cfg_current, example_defaults)
         io_dev_path = step_io_device(cfg_current, example_defaults)
         walked["IO_DEV_PATH"] = io_dev_path
         walked.update(step_damon_stat_policy(cfg_current, example_defaults))
@@ -4037,7 +4112,7 @@ def main(argv: list[str] | None = None) -> int:
         baseline_results = finish_io_baseline(baseline_job)
         if not baseline_results:
             baseline_results = read_baseline_results(Path(baseline_env))
-        walked.update(step_io_settings(cfg_current, example_defaults, baseline_results))
+        walked.update(step_io_settings(cfg_current, example_defaults, baseline_results, walked_role=walked["HOST_ROLE"]))
         walked.update(
             step_io_writeback(cfg_current, example_defaults, iobench_result=args.iobench_result)
         )

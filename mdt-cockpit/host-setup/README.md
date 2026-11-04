@@ -1083,6 +1083,33 @@ machinery, not a hand-rolled retry loop).
 Full reasoning for each gap, and why raw cgroupfs writes lose to
 `set-property`: [CGROUP-NOTES.md](CGROUP-NOTES.md).
 
+## Host role: shared-prod or dedicated-dev (MDT-TESTHOST-IO)
+
+`HOST_ROLE` in `host-setup.env` (section 4.0) says who else uses the disk. The wizard asks it FIRST.
+
+| role | `dev.slice` absolute IO ceiling | no pin, no measurement |
+|---|---|---|
+| `shared-prod` (also empty, with a NOTICE) | pin, else `DEV_IO_CAP_PCT`% of a baseline, else static `DEV_STATIC_*` | static fallback applies |
+| `dedicated-dev` | pin per value, else the MEASURED iobench cap (`proposals.caps.dev_aggregate` of `/var/lib/iobench/result.json`) | `install.sh` refuses (exit 2), the reconcile keeps the cap in force and fails; the remedy is printed |
+
+Why: on the sole-tenant test hosts r1002 and v1001 the shared-host static defaults (500 IOPS, 150M, gates sub-ceiling 60% = 300 IOPS) throttled
+every gate lane together while the CPUs were 70% idle and the disk 1-2% utilised; pinning 8000/4000 IOPS and 300M/250M dropped IO pressure from 52% to 8%.
+The goal is high utilisation with responsiveness, so limits are not removed: the ceiling follows the measured capacity (iobench already leaves its
+utilisation headroom `U`), and the guards stay: gate/BuildKit IOPS sub-ceilings (`DEV_SUBSLICE_IOPS_PCT`), IOWeight, the PSI guard and the optional
+`IO_COST_QOS` latency targets (latency target proposals: backlog MDT-064).
+
+A measured value is used only when the result is schema 1, `run.status=complete`, `quality.plausible`, and its disk identity (devno plus at least one of
+model/serial/size/wwn) equals the root disk's; `proven` and `unproven` values count (unproven reasons are shown), `absent` ones do not. The reader is
+`scripts/mdt_iobench_caps.py`, installed to `/usr/local/sbin`; the lib resolves it through `_mdt_load_iobench_caps`. Measure with
+`iobench calibrate` (`libraries/iobench/docs/CONSUMERS.md` section 2) or pin `DEV_IO_*_MAX`. Producing the result during debian-install-v2 is backlog MDT-063;
+until then run the calibration by hand on the test hosts.
+
+### Observation: read volume under a low IOPS cap
+
+One R2 campaign container read 15-30 GB within an hour on a 8 GB host while the dev.slice cap was 300 IOPS. No cause is claimed; possible factors
+(page-cache churn on little RAM, btrfs read amplification on `/srv/cow`, the workload) are under measurement: backlog MDT-065, assay B217/B218, dstdns
+`docs/testing/PARALLELISM-AND-PERFORMANCE.md`.
+
 ## The IO baseline
 
 `mdt-io-baseline.py` and `scripts/debian-install-v2/tools/iocost-calibrate.sh`

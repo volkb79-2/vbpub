@@ -153,6 +153,13 @@ _mdt_no_device() {
 _mdt_apply_dev_io() {
   local majmin _rc sd_dev
   _mdt_resolve_dev_io_caps || MDT_RC=1
+  if [ -n "${MDT_DEDICATED_UNRESOLVED:-}" ]; then
+    # HOST_ROLE=dedicated-dev with no pin and no verified iobench measurement: never apply a guess and
+    # never wipe what is in force (the remedy was logged by the resolver); this run fails.
+    log "ERROR: dev.slice IO limits NOT changed — unresolved on a dedicated-dev host: ${MDT_DEDICATED_UNRESOLVED}"
+    MDT_RC=1
+    return
+  fi
   if ! majmin=$(_mdt_dev_majmin "$IO_DEV_PATH" 2>&1); then
     log "ERROR: cannot resolve $IO_DEV_PATH to the whole disk systemd caps: ${majmin:-missing node or no sysfs entry} — IO governance cannot be verified"
     MDT_RC=1
