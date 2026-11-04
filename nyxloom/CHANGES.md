@@ -4,6 +4,46 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [0.12.1] - 2026-11-04
+<!-- cmru: generated -->
+<!-- cmru: source-end=90626896146b57db4be70616999efddb5a57665d -->
+
+### Fixed
+- fix(nyxloom): publish the typed result before the receipt so no reader sees a receipt without it (NL-12) (4c7ba6d65)
+- fix(nyxloom): NL-9 L7 sibling paths, NL-28 L4 precision, NL-25 coverage-floor assert (4b4be42ba)
+- fix(nyxloom): stale src/nyxloom.egg-info no longer shadows the installed version (NL-24) (684b785c6)
+- fix(nyxloom): terminate child when child.pid publish fails (NL-53); drop retired gate-verify text and knob (NL-13, NL-14) (55792dfe6)
+- fix(nyxloom): session-extract effect detector misses and false positives (NL-35) (5351e28bb)
+- fix(nyxloom): publish child.pid atomically; order in-process SIGTERM tests on child output (0ec64508b)
+
+### Changed
+- Merge branch 'feat-ciu-clix-20261104' (f8c2cb6a3)
+- Merge branch 'fix-nyx-3-20261104' (3c0f08c89)
+- Merge branch 'fix-nyx-2-20261104' (60b45c0b4)
+- Merge branch 'vss-20261103_175855-voice-screen-share' (f80080ed5)
+- nyxloom backlog: nyxloomd derives the docker gid by stat (NL-54) (afa9b7d39)
+- refactor: move mattermost-server/ to voice-screen-share/mattermost-server/ and update references (24c216156)
+- Fix capped root growth and wizard manifest naming (86b466e51)
+- chore(debian-install-v2): name wizard requirements by use case (fb071df80)
+
+### Documentation
+- docs(nyxloom): close NL-12, NL-24, NL-35 and note the NL-38 docs part in the backlog (1575d3aff)
+- docs(ciu): sweep callers of the adoption's forced spellings across the monorepo (bfb2a0b07)
+- docs(nyxloom): replace hard-coded instance ids with placeholders and ciu resolve (NL-38 docs part) (7f42cac7b)
+- docs(nyxloom): mark NL-9, NL-28, NL-25 fixed (4b4be42ba) (b80308c12)
+- docs(nyxloom): close NL-53, NL-13, NL-14 and add CHANGES lines (vbpub@55792dfe6) (13637b2dd)
+- docs(nyxloom): file NL-53 (unsupervised child when child.pid publication fails) (0dbd0af48)
+- docs(nyxloom): re-measure test_wrapper.py size in ownership inventory (2b760a2fb)
+
+### Testing
+- test(nyxloom): NL-14 warning spy replaces the module log entry (lazy-proxy guard) (906268961)
+- test(nyxloom): ownership inventory records the new wrapper.py size (d047302d8)
+- test(nyxloom): reap stray sleep children of the interrupt and SIGKILL-drill tests on failure paths (122865e80)
+- test(nyxloom): neutralise late SIGTERM and stop signalling thread in wrapper SIGTERM tests (330f0d34f)
+
+<!-- cmru: pending release notes begin -->
 - fix(nyxloom): wrapper terminates the child and records a `child-pid-publish-failed` refusal when `child.pid` cannot be published (NL-53, 55792dfe6)
 - fix(nyxloom): scaffolded gate Dockerfile no longer points at the retired `nyxloom gate verify` (NL-13, 55792dfe6)
 - fix(nyxloom): remove dead `Policy.gate_verify_interval_days` and `ReconcileInput.days_since_gate_verify`; a toml still carrying the key loads and warns (NL-14, 55792dfe6)
@@ -16,8 +56,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - docs(nyxloom): operational READMEs, ntfy/pwmcp-instance/nyxloomd files and the process-model doc use `<instance_id>` placeholders and `ciu resolve` instead of a hard-coded instance id; the plain-compose fallback derives its container and network names from `NYXLOOM_CONTAINER_PREFIX` (NL-38, docs part)
 - fix(nyxloom): the wrapper publishes the typed result before the receipt, so a reader that sees the receipt never reads a missing result for a leg that answered (NL-12)
 - test(nyxloom): stray `sleep` children of the interrupt and SIGKILL-drill tests are reaped on failure paths
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [0.12.0] - 2026-10-30
 <!-- cmru: generated -->
