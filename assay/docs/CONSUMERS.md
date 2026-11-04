@@ -804,6 +804,23 @@ walks ancestry or names an older commit. Tags and refs are not preserved in a
 snapshot, and assay resolves changed-line bases before snapshot creation, so
 ordinary R1/R2/R3 lanes should keep the shallow default.
 
+**Candidate materialization cost on a copy-on-write workspace (B219/B220/B222).**
+The sealed template's Git index is refreshed once before it is sealed, so a
+clone that keeps inode numbers and timestamps (a btrfs snapshot) lets every
+`git status` validate by `lstat` instead of hashing the whole worktree; a clone
+that does not keep them still hashes and stays correct. The lane key
+`isolation.verify_clone` chooses how much of the clone proof runs per candidate:
+`"tiered"` (default) proves the template completely once, repeats the complete
+clone proof for the first and every 25th clone, and otherwise checks only the
+replacement's identity (HEAD, index tree, the blob at the replaced path, the
+replaced file's bytes and mode) and bounds the child closure from the seed's
+recorded totals plus the objects the replacement adds. `"full"` keeps the
+complete per-clone proof and the complete closure walk. The post-command dirt
+check (`status`, untracked scan, HEAD) runs for every candidate in both modes,
+and the limits fire at the same thresholds in both. The measured cost on a
+7.6k-file repository was 173.6 MB read and 2.31 s per candidate before the
+change (`materialize-experiment-REPORT.md`, variants a and a2).
+
 The history policy and the project-level object ceilings are adopted together
 in the same `assay.toml` commit. This is a complete lane file shape you can
 copy and adapt:
