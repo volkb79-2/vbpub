@@ -1,0 +1,31 @@
+Geekbench 7.1.0 : https://www.geekbench.com/
+
+Geekbench 7 requires an internet connection. Upgrade to Geekbench 7 Pro for full functionality.
+
+System Information
+  Operating System              Debian GNU/Linux 13 (trixie)
+  Model                         QEMU Standard PC (Q35 + ICH9, 2009)
+
+CPU Information
+  Name                          AMD EPYC 9634 84-Core Processor
+  Topology                      1 Processor, 4 Cores
+
+Running Gathering System Information
+Running Single-Core
+  File Compression               1500
+Running Multi-Core
+  File Compression               5000
+
+Uploading results to the Geekbench Browser. This could take a minute or two depending on the speed of your internet connection.
+
+Upload succeeded. Visit the following link and view your results online:
+
+  https://browser.geekbench.com/v7/cpu/15956833
+
+Visit the following link and add this result to your profile:
+
+  https://browser.geekbench.com/v7/cpu/15956833/claim?key=526696
+
+Benchmark Summary
+  Single-Core Score             1801
+  Multi-Core Score              5702

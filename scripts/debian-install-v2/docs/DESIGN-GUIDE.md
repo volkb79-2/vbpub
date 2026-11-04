@@ -282,6 +282,15 @@ postflight warning is an observation, not attribution of the remounting
 process. For the operational QEMU workflow and the 2026-10-14 incident
 evidence, see the [VM usage/testing guide](../testing/vm/USAGE-TESTING.md#host-checks-when-cgroup2-flags-disappear).
 
+The installer's own per-host measurement is a different thing from the manual
+comparison below: step `run_cpu_benchmark` (default on, advisory) runs the shared
+`tools/cpu_benchmark.py` once at the end of stage two and persists the host's
+Geekbench scores in `/var/lib/mdt/host-facts/cpu-benchmark.json`. It replaces the
+rejected v1 `run_geekbench` key (see the README, "Host CPU benchmark step"). Inside
+the VM harness it measures the TCG guest's `QEMU TCG CPU`, so a harness install
+needs the Browser egress allowlist below or the step `warned`s (which is also a
+valid outcome to assert); never read those scores as the physical host's.
+
 The ordinary VM test lane belongs in the admission-controlled
 `dev-gates.slice`; a CPU benchmark there can measure the slice quota as much as
 TCG overhead. The manual Geekbench comparison therefore has one narrow

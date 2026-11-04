@@ -156,10 +156,25 @@ class Contract:
     HTOP = [("F10", b"q")]                      # function-key bar drawn -> q
     MC = [("10Quit|Quit", b"\x1b[21~"), (r"(?i)really want|\[\s*Yes", b"\r")]  # F10, then confirm if asked
 
-    def test_nano_reads_the_system_nanorc_that_includes_the_image_defaults(self) -> None:
+    def test_nano_starts_without_rc_errors_and_the_system_nanorc_carries_the_image_defaults(self) -> None:
+        # An `include` of the defaults made nano 8.x print "Command "set" not allowed in included file".
         opened = self.trace("nano /tmp/probe.txt", self.NANO)
-        system = opened.index("/etc/nanorc")
-        self.assertIn("/usr/local/share/mdt-cockpit/nanorc", opened[system:], "the include must be processed")
+        self.assertIn("/etc/nanorc", opened)
+        result = self.box("grep -c '^set linenumbers' /etc/nanorc; grep -c '^include .*mdt-cockpit/nanorc' /etc/nanorc || true")
+        self.assertEqual(result.stdout.split()[:2], ["1", "0"], result.output)
+
+    def test_nano_reports_no_rc_errors_when_it_really_reads_its_rc_files(self) -> None:
+        # `nano --version/--help` exit before reading any rc file, so run the editor itself on a pty
+        # (`script`, stdin at EOF so it quits) and read the transcript. The control run proves the
+        # check can fail: a bad user rc must show nano's "Error in ..." line.
+        run = "script -qec 'timeout 3 nano /tmp/probe.txt' /tmp/nano.out </dev/null >/dev/null 2>&1; "
+        clean = self.box("printf 'x\\n' > /tmp/probe.txt; " + run + "grep -a -c -E 'Error in|not allowed|Mistakes in' /tmp/nano.out || true")
+        self.assertEqual(clean.stdout.strip().splitlines()[-1], "0", clean.output)
+        control = self.box(
+            "printf 'x\\n' > /tmp/probe.txt; printf 'bogusdirective\\n' > ~/.nanorc; " + run
+            + "grep -a -c -E 'Error in' /tmp/nano.out || true"
+        )
+        self.assertNotEqual(control.stdout.strip().splitlines()[-1], "0", control.output)
 
     def test_a_user_nanorc_is_read_after_the_system_one_so_it_can_override(self) -> None:
         opened = self.trace("nano /tmp/probe.txt", self.NANO, prepare="printf 'set nolinenumbers\\n' > ~/.nanorc; ")
@@ -204,11 +219,11 @@ class Contract:
                 self.assertEqual(in_image[path], expected, f"{path} differs from {source}")
         hooks = self.box(
             "S=/usr/local/share/mdt-cockpit; "
-            "grep -F \"include \\\"$S/nanorc\\\"\" /etc/nanorc >/dev/null && echo nano-includes; "
+            "grep -qx 'set linenumbers' /etc/nanorc && echo nano-defaults; "
             "grep -F \"$S/bashrc\" /etc/bash.bashrc >/dev/null && echo bash-hook; "
             "grep -F \"$S/zshrc\" /etc/zsh/zshrc >/dev/null && echo zsh-hook"
         )
-        self.assertEqual(hooks.stdout.split(), ["nano-includes", "bash-hook", "zsh-hook"], hooks.output)
+        self.assertEqual(hooks.stdout.split(), ["nano-defaults", "bash-hook", "zsh-hook"], hooks.output)
 
     # nvim --------------------------------------------------------------------------
     # The shipped "NvChad" tree is the NvChad CORE repository, whose init.lua is a placeholder that

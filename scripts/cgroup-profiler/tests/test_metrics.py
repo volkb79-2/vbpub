@@ -456,7 +456,7 @@ def test_loadavg_non_numeric_fields(tmp_path):
 
 def test_cpu_jiffies_missing_stat_file(tmp_path):
     jiffies = metrics._cpu_jiffies(str(tmp_path))
-    assert jiffies == {"total_jiffies": None, "idle_jiffies": None}
+    assert jiffies == metrics._NO_JIFFIES
 
 
 def test_cpu_jiffies_skips_non_aggregate_lines_before_finding_cpu(tmp_path):
@@ -466,19 +466,40 @@ def test_cpu_jiffies_skips_non_aggregate_lines_before_finding_cpu(tmp_path):
     jiffies = metrics._cpu_jiffies(str(tmp_path))
     assert jiffies["total_jiffies"] == 1000 + 20 + 3000 + 90000 + 500 + 100
     assert jiffies["idle_jiffies"] == 90000 + 500
+    # field 7 is softirq (100), field 8 steal (0): steal is read, not guessed
+    assert jiffies["steal_jiffies"] == 0
+    assert jiffies["accounted_jiffies"] == 1000 + 20 + 3000 + 90000 + 500 + 100
+
+
+def test_cpu_jiffies_steal_and_guest_are_separated(tmp_path):
+    # guest (field 9) and guest_nice (field 10) are already inside user/nice:
+    # they count in total_jiffies but NOT in accounted_jiffies.
+    (tmp_path / "stat").write_text("cpu  100 0 50 800 20 0 10 30 7 3\n")
+    jiffies = metrics._cpu_jiffies(str(tmp_path))
+    assert jiffies["steal_jiffies"] == 30
+    assert jiffies["accounted_jiffies"] == 100 + 50 + 800 + 20 + 10 + 30
+    assert jiffies["total_jiffies"] == jiffies["accounted_jiffies"] + 7 + 3
+
+
+def test_cpu_jiffies_old_kernel_without_steal_field(tmp_path):
+    (tmp_path / "stat").write_text("cpu  100 0 50 800\n")
+    jiffies = metrics._cpu_jiffies(str(tmp_path))
+    assert jiffies["steal_jiffies"] is None
+    assert jiffies["idle_jiffies"] == 800
+    assert jiffies["accounted_jiffies"] == 950
 
 
 def test_cpu_jiffies_non_numeric_fields(tmp_path):
     (tmp_path / "stat").write_text("cpu  1000 abc 3000 90000 500 0 100 0 0 0\n")
     jiffies = metrics._cpu_jiffies(str(tmp_path))
-    assert jiffies == {"total_jiffies": None, "idle_jiffies": None}
+    assert jiffies == metrics._NO_JIFFIES
 
 
 def test_cpu_jiffies_aggregate_line_with_no_fields(tmp_path):
     # "cpu " with nothing after it — degenerate but must not IndexError.
     (tmp_path / "stat").write_text("cpu \n")
     jiffies = metrics._cpu_jiffies(str(tmp_path))
-    assert jiffies == {"total_jiffies": None, "idle_jiffies": None}
+    assert jiffies == metrics._NO_JIFFIES
 
 
 def test_cpu_jiffies_no_aggregate_line_at_all(tmp_path):
@@ -486,4 +507,4 @@ def test_cpu_jiffies_no_aggregate_line_at_all(tmp_path):
     # this function needs was never found.
     (tmp_path / "stat").write_text("cpu0 500 10 1500 45000 250 0 50 0 0 0\n")
     jiffies = metrics._cpu_jiffies(str(tmp_path))
-    assert jiffies == {"total_jiffies": None, "idle_jiffies": None}
+    assert jiffies == metrics._NO_JIFFIES

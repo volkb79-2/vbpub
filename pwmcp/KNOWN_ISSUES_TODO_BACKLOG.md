@@ -655,3 +655,11 @@ fail-closed shim (mdt-cockpit MDT-056); on the host the shim may even remap `BUI
 **Fix direction.** Make the consumer install recipe part of the bundle: either ship the cli-extended wheel (and its checksum) inside the bundle and have the documented install command use `--find-links <bundle>/wheels`, or document the exact `--find-links`/release URL a consumer must add, with a consumer-side test in the release gate that installs the bundle into a clean image with no index access beyond PyPI. The dstdns side (`install-pwmcp-client.py` passes no find-links) is the consumer half and is reported separately in the dstdns P220 report.
 
 **Acceptance.** A clean `python:3.14-slim` image can install the released bundle's client with the command the bundle README documents, and the release gate fails when it cannot.
+
+## PWMCP-32 — `inspect` returned a Cloudflare challenge page as if it were the target
+
+**Status:** FIXED in branch `pwmcp-block-20261105` (not released). Filed and fixed 2026-11-05 from geekbench-pwmcp-REPORT.md (CP-59): `pwmcp inspect https://browser.geekbench.com/...` loaded the managed-challenge page ("Just a moment...", "Performing security verification") and printed it like content, so callers had to guess.
+
+**Fix.** `client/src/pwmcp_client/blocked.py` signature tables (definitive vs hint signals, see README "Bot protection"); `inspect` exits 4 with an honest message, `--json` carries `blocked`/`provider`/`signals`/`status`/`final_url`/`waited_ms`, never writes `--output`, never retries, and a wait that ends on a challenge is reported blocked (with the time waited) instead of a generic timeout. `--storage-state FILE` (`storage_state.py`) reuses a human-exported Playwright session: mode 0600, scoped to the URL's host, counts only in output. pwmcp-fetch skill updated: report BLOCKED, offer the human-in-the-loop route. Non-goals held: no solver, no stealth, no fingerprint spoofing.
+
+**Open follow-ups (P3).** (a) `pwmcp ocr URL --selector` does not check for bot protection. (b) The signature table is heuristic and unverified against live providers other than the Cloudflare page in the geekbench report; extend it with a row and a fixture when a new interstitial is seen. (c) Optional: a short grace period that lets a self-resolving interstitial clear before reporting blocked when no `--wait-for` is given.

@@ -57,6 +57,35 @@ selector may match multiple elements; PWMCP waits for its first visible match.
 Avoid using a generic page shell as the selector. If the wait times out, inspect
 the page snapshot and determine whether the site is still loading, requires
 authentication, or is showing an error before reporting that content is absent.
+If the wait ended on a bot-protection page, `inspect` says so itself (exit 4).
+
+## Blocked by bot protection: report it, do not work around it
+
+`pwmcp inspect` recognises Cloudflare challenges ("Just a moment...", "Performing security
+verification"), CAPTCHA walls and similar interstitials. When it does, it exits **4**, prints
+`blocked by bot protection (<provider> <kind>); page content below is the challenge page, not the
+target`, and with `--json` returns `blocked: true`, `provider`, `signals`, `status`, `final_url`
+and `waited_ms`. A wait that ends on a challenge page is reported the same way (not as a
+generic timeout), and it is never retried.
+
+When you get exit 4 or `blocked: true`:
+
+- **Tell the user the page was BLOCKED**, naming the provider and URL. The text it printed is
+  the challenge page, not the target: never summarise it, quote it, or extract numbers from it
+  as if it were the page the user asked for, and never fill gaps from memory.
+- Do not retry in a loop, rotate user agents, look for solver services or stealth tooling, or
+  otherwise try to defeat the protection. That is not in scope for this tool or for you.
+- Offer the human-in-the-loop route: a person opens the page once in their own browser, passes
+  the check, and exports a Playwright storage state (`playwright codegen --save-storage=state.json
+  URL`, then `chmod 600 state.json`); you then re-run with `pwmcp inspect URL --storage-state
+  state.json`. Treat the file as a secret: never print, log, commit or paste it. It may stop working
+  (cookies expire and can be bound to the IP address and user agent), and then you report BLOCKED again.
+- Other legitimate routes: ask the site owner for an API or data feed, or ask the user to read
+  the page and paste the relevant part.
+
+Detection is a heuristic. Exit 0 means "not recognised as bot protection", not proof that the
+content is complete; an unexpectedly short or generic result is still worth a second look.
+Full details: the pwmcp README, section "Bot protection".
 
 ## Knowing which identity read the page
 
@@ -72,7 +101,8 @@ configure an alternative identity (README "Overridable User Agent"; presets
 browser sees. Only use a non-default identity for pages you are entitled to
 read; it does not solve CAPTCHA or proof-of-work challenges, and a page that
 answers "Access Denied" is an answer, not content. Do not retry with other
-identities to get around an explicit refusal; report it.
+identities to get around an explicit refusal; report it (see "Blocked by bot
+protection" above).
 
 ## Text that is not in the DOM (canvas consoles): `pwmcp ocr`
 

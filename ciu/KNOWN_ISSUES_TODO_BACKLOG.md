@@ -6029,3 +6029,29 @@ path element of `bundle_dir`; (3) after the bundle arrived, `[S1.7] .../whoami/.
 **Design.** Make both refusals name the remedy (`ciu worktree ensure <name>`, then `--adopt-existing-network` when the network is unlabeled), or have `ensure` migrate a v1 record whose generated facts disagree in one guarded step. `ciu env generate` should read `DOCKER_GID` from the docker group or the devcontainer env the same way `ciu up` does, or say how to set it.
 
 **Acceptance criteria.** Test: a schema-v1 record with a different id than the generated facts, plus an unlabeled legacy network, recovers through the message's own named commands; the two refusal texts contain the remedy.
+
+## CIU-173 — CIU-117 image-ref suffixing applies only to services with `build:`, `extends` or `include`; a stack without them runs main's `:local` in a worktree
+
+**Status: OPEN (filed 2026-11-05 from the dstdns cmru-p2 run on ciu 7.21.0; evidence `reports/dstdns-cmru-p2-REPORT.md`, "CIU-117 finding"). Severity: P2 (C03-F06 false-green trap).**
+
+**Observed.** `engine.scope_worktree_compose_images` returns early unless a rendered service has `build:`, `extends` or `include` (`image_isolation.compose_may_require_image_scoping`).
+dstdns compose has no `build:` by policy (AGENTS 4.3), and `ciu check` in the worktree printed no `[CIU-117]` notice. A linked worktree therefore bakes `dstdns/<svc>:local-<suffix>`
+but its compose still runs main's `:local`, so a worktree test exercises the wrong image.
+
+**Design.** Classify project-built images from the Bake plan or the global images table (not from compose keys) and suffix the rendered compose refs of exactly those images in a linked worktree;
+alternatively document and test the instance-layer override (`[images.<key>].ref` pointed at the `:local-<id>` tag), which is the recorded workaround and has not been exercised.
+
+**Acceptance criteria.** Test with a compose that has only `image:` refs matching images in the global images table: in a linked worktree the rendered refs carry the instance suffix and the notice is printed;
+in the main checkout nothing changes.
+
+## CIU-174 — after a failed `ciu worktree create` preparation the checkout and its record remain, and a manual `git worktree remove` leaves a stale shared-registry record whose refusal names no remedy
+
+**Status: OPEN (filed 2026-11-05; evidence `reports/fix-ciu-161-REPORT.md`, branch fix-ciu-161-20261105). Severity: P3.**
+
+**Observed.** When worktree preparation fails (CIU-161), the created checkout and its worktree record stay behind. Removing the checkout by hand with `git worktree remove` leaves the record in
+the shared workspace registry, and the next create at that path refuses with "physical workspace path is already recorded" without naming a remedy (`ciu worktree rm <name>` or a registry repair command).
+
+**Design.** (a) Roll the checkout and record back when preparation fails after creation (or mark the record `recovery-required` and say so); (b) make the "already recorded" refusal name the owning
+record and the remedy (`ciu worktree rm <name>`, and for a record whose path no longer exists, a prune such as `ciu worktree prune`/`rm --stale`).
+
+**Acceptance criteria.** Test: a forced preparation failure leaves no checkout or record (or a record that `ciu worktree rm` removes); after a manual `git worktree remove` the next create refuses with a text containing the remedy command, and that command succeeds.

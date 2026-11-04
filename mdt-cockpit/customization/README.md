@@ -24,7 +24,7 @@ What ships here and where it is wired:
 | `shell.env`, `aliases.sh` | `/usr/local/share/mdt-cockpit/` | image layer of the two user files above |
 | `htoprc` | `/etc/htoprc` | htop reads it when the user has no `~/.config/htop/htoprc` |
 | `mc.ini` | `/etc/mc/mc.ini` | mc reads it when the user has no `~/.config/mc/ini` |
-| `nanorc` | `include` line appended to `/etc/nanorc` | nano reads `~/.nanorc` after it |
+| `nanorc` | appended to `/etc/nanorc` (an `include` would be refused: nano rejects `set` in included files) | nano reads `~/.nanorc` after it |
 | `tmux.conf` | `/etc/tmux.conf` | tmux reads `~/.tmux.conf` after it; tmux is opt-in and nothing starts it. Prefix Ctrl+Space (Ctrl+B and Ctrl+O collide with Claude Code, mc and vim) |
 | `gitconfig` | appended to `/etc/gitconfig` | `core.pager=delta` (terminal output only; `interactive.diffFilter`, `delta.navigate`, `delta.line-numbers`), `merge.conflictStyle=zdiff3`, `diff.colorMoved=default`, `push.autoSetupRemote=true`, `init.defaultBranch=main`; `~/.gitconfig` and repository config override |
 | `inputrc` | appended to `/etc/inputrc` | readline defaults. A user `~/.inputrc` REPLACES `/etc/inputrc`: start it with `$include /etc/inputrc` |

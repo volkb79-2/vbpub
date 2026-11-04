@@ -562,3 +562,40 @@ Package 3 adds, under `tests/fixtures/rg55/socket/`: `export-request.json`, `exp
 `report-removed-response.json` (a contract-1 request answered by a 2.x daemon) and contract-2 variants of
 `version-response.json` and `status-response.json`. The existing contract-1 goldens stay byte-for-byte
 as the 1.x compatibility oracle.
+
+## 11. Machine facts (`machine/1`, rigor-evidence CP-1)
+
+Additive under contract 1 and 2 (existing consumers ignore the new keys; the Summary schema number stays 1, the amendment is v1.2).
+
+**Where it appears.** `host.machine`, `host.steal_seconds` and `host.cpu_seconds_total` in the `host` verb and in the `host` block of `status`
+(counters since boot, seconds), and the same three keys in the Summary `host` block (`steal_seconds` and `cpu_seconds_total` are the increase over
+the session; `machine` is fixed at session start, stored in the manifest, and so also present in a Summary recovered after a daemon restart). The
+`host` verb describes the host; a session describes the lane's cgroup (`cpus_available` includes its quota).
+
+```json
+"machine": {"schema": "machine/1", "cpu_model": "AMD EPYC 9634 84-Core Processor", "cpus_online": 4, "cpus_available": 2.5,
+            "hypervisor": true, "smt": false,
+            "speed": {"basis": "geekbench7-measured", "geekbench_major": 7, "geekbench_version": "7.1.0", "baseline_score": 2500,
+                      "single_core": 2100, "multi_core": 7800, "cpus_at_measurement": 4, "measured_on": "2026-11-04"},
+            "speed_reason": null}
+```
+
+- `cpu_model`: first `model name` of `/proc/cpuinfo`, whitespace collapsed; `cpus_online`: its `processor` count. `cpus_available`: the CPUs in
+  `Cpus_allowed_list` intersected with the tightest `cpu.max` quota/period from the cgroup up to the root; `null` when neither is readable.
+  `smt` is `/sys/devices/system/cpu/smt/active` (informational; unreliable in VMs). Any unreadable fact is `null`, never a guess.
+- `speed` comes from `/var/lib/mdt/host-facts/cpu-benchmark.json` (`mdt-host-cpu-benchmark/1`, written once by the host benchmark tool). cgpd reads
+  it at start and on reload (SIGHUP or `cgpd reload`) and never measures. It is accepted (`basis: "geekbench<major>-measured"`) only while its
+  `cpu_model` and `cpus_online` equal the live values and `single_core` is a valid score.
+- Otherwise the packaged table `cgprofile-scores/1` (see `docs/SCORES-TABLE.md`) is looked up by CPU model and Geekbench major:
+  `basis: "geekbench<major>-table"`, `multi_core: null`, plus `source_url` and `retrieved`. `speed_reason` says why the host record was not used:
+  `NO_HOST_MEASUREMENT` (file absent), `HOST_MEASUREMENT_STALE` (model or CPU count differ, or the live values are unreadable),
+  `HOST_MEASUREMENT_INCOMPLETE` (no valid `single_core`), `HOST_MEASUREMENT_INVALID` (unreadable, wrong schema or tool, unsupported major).
+- With neither source `speed` is `null` and `speed_reason` is the reason plus `_AND_MODEL_NOT_IN_TABLE` (for example
+  `NO_HOST_MEASUREMENT_AND_MODEL_NOT_IN_TABLE`). There is no default score.
+- **Majors are never mixed.** One `speed` carries one `geekbench_major` and that major's `baseline_score` (6: 2500, i7-12700; 7: 2500, Ryzen 7 7700).
+  The normalisation `x_ref = x * single_core / baseline_score` is only valid among records of the same major; a consumer treats a different
+  major, or a major without a baseline, as no basis.
+- **Privacy.** Only the fields above are exported. The result URL, the claim link, the measurement conditions, `produced_by`, the archive hash and
+  any host identity stay in host state; the claim file (`cpu-benchmark.claim.json`) is never opened.
+- `steal_seconds` is `/proc/stat` field 8 (steal) over `SC_CLK_TCK`; `cpu_seconds_total` is fields 1-8 summed (user to steal, all CPUs; the guest
+  fields are already inside user and nice). A steal fraction is `steal_seconds / cpu_seconds_total`. `null` when the kernel does not report it.

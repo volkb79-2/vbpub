@@ -60,6 +60,7 @@ from . import (
     ancestor_events as ancestor_events_mod,
     limits as limits_mod,
     liveness as liveness_mod,
+    machine as machine_mod,
     observer_windows as observer_windows_mod,
     placement as placement_mod,
     resource_observer as resource_observer_mod,
@@ -376,6 +377,9 @@ class _Session:
     baseline_memory_bytes: Optional[int]
     pids_at_start: int
     host_snapshot: Dict[str, Any]
+    # CP-1: the `machine/1` facts fixed at session start (also in the manifest,
+    # so a recovered session's Summary carries the same block).
+    machine: Optional[Dict[str, Any]] = field(default=None, kw_only=True)
     rundir: "store.RunDir"
     summary_acc: "summary.SummaryAccumulator"
     subtree_resolver: Optional["subtree.SubtreeResolver"]
@@ -512,6 +516,8 @@ class SessionServer:
         socket_check_interval: float = SOCKET_CHECK_INTERVAL_SECONDS,
         placement_factory: Optional[Callable[..., "placement_mod.LanePlacement"]] = None,
         settings: Optional["daemon_config.Settings"] = None,
+        host_benchmark_path: Optional[str] = None,
+        sys_root: Optional[str] = None,
     ) -> None:
         if damon_default not in ("on", "off"):
             raise ValueError(f"damon_default must be 'on' or 'off', got {damon_default!r}")
@@ -544,6 +550,13 @@ class SessionServer:
         # use the REAL `/proc` for pid/subtree resolution but wants a
         # controlled host-pressure reading overrides this separately.
         self.host_proc_root = host_proc_root if host_proc_root is not None else proc_root
+        # CP-1: machine facts. The persisted host benchmark (read only, never
+        # measured) is loaded now and again on reload; the packaged fallback
+        # table is read once.
+        self.host_benchmark_path = host_benchmark_path or machine_mod.DEFAULT_BENCHMARK_PATH
+        self.sys_root = sys_root or machine_mod.DEFAULT_SYS_ROOT
+        self._scores_table = machine_mod.load_scores_table()
+        self._host_benchmark = machine_mod.load_host_benchmark(self.host_benchmark_path)
         self.windows = observer_windows_mod.WindowRegistry(
             proc_root=self.proc_root,
             host_proc_root=self.host_proc_root,
@@ -820,6 +833,7 @@ class SessionServer:
             damon_enabled=bool(manifest.get("damon_enabled")),
             damon_kdamond=manifest.get("damon_kdamond"),
             damon_thresholds=manifest.get("damon_thresholds"),
+            machine=manifest.get("machine"),
         )
         if manifest.get("damon_unavailable_reason"):
             acc.mark_damon_unavailable(manifest["damon_unavailable_reason"])
@@ -910,6 +924,7 @@ class SessionServer:
             "damon_cleanup": sess.damon_cleanup,
             "placement": _placement_block(sess),
             "meta": sess.meta,
+            "machine": sess.machine,
             "aborted_reason": None,
             # RW-14: everything from here down is never read by an RG-55
             # contract verb — it exists so this same manifest.json also
@@ -1316,6 +1331,7 @@ class SessionServer:
         # field mirrors `cmd_collect`'s own convention of a single snapshot
         # written into the manifest at start, not updated thereafter.
         host_snapshot = metrics.sample_host(proc_root=self.host_proc_root)
+        machine_facts = self._machine(cgroup)
         sampler_origin_mono = self.sampler_clock()
 
         slice_cgroup = os.path.dirname(cgroup.rstrip("/")) or "/"
@@ -1484,6 +1500,7 @@ class SessionServer:
                 damon_enabled=damon_requested_on,
                 damon_kdamond=damon_session_obj.kdamond_idx if damon_session_obj else None,
                 damon_thresholds=damon_session_obj.thresholds if damon_session_obj else None,
+                machine=machine_facts,
             )
             if damon_unavailable_reason is not None:
                 acc.mark_damon_unavailable(damon_unavailable_reason)
@@ -1496,7 +1513,8 @@ class SessionServer:
                 session_id=session_id, scope=scope, container_id=container_id, cgroup=cgroup,
                 owner_uid=owner_uid, slice_name=slice_name, slice_cgroup=slice_cgroup, token=token, interval=interval,
                 meta=meta, started_at=started_at, baseline_memory_bytes=baseline,
-                pids_at_start=pids_at_start, host_snapshot=host_snapshot, rundir=rundir,
+                pids_at_start=pids_at_start, host_snapshot=host_snapshot, machine=machine_facts,
+                rundir=rundir,
                 summary_acc=acc, subtree_resolver=subtree_resolver, damon_session=damon_session_obj,
                 damon_status=damon_status, damon_requested_on=damon_requested_on,
                 damon_unavailable_reason=damon_unavailable_reason,
@@ -2368,8 +2386,19 @@ class SessionServer:
             abs_path = os.path.join(self.cgroup_root, cgroup_path.lstrip("/"))
             slices[name] = self._slice_snapshot(cgroup_path, abs_path)
 
+        cpu = host.get("cpu") or {}
+        hz = util.clk_tck()
+
+        def cpu_seconds(key: str) -> Optional[float]:
+            jiffies = cpu.get(key)
+            return None if jiffies is None else round(jiffies / hz, 3)
+
         return {
             "at": self._iso(self.clock()),
+            # CP-1: additive. Counters are cumulative since boot.
+            "machine": self._machine(),
+            "steal_seconds": cpu_seconds("steal_jiffies"),
+            "cpu_seconds_total": cpu_seconds("accounted_jiffies"),
             "loadavg": host.get("loadavg"),
             "meminfo": {
                 "total_bytes": meminfo.get("MemTotal"),
@@ -2933,7 +2962,19 @@ class SessionServer:
         """SIGHUP / `cgpd reload`: re-read the file and apply. Never raises."""
         ok = self.settings.reload()
         self._apply_settings()
+        self._host_benchmark = machine_mod.load_host_benchmark(self.host_benchmark_path)
         return ok
+
+    def _machine(self, cgroup: Optional[str] = None) -> Dict[str, Any]:
+        """The `machine/1` facts: the host's, or a lane's when `cgroup` is given."""
+        return machine_mod.build_machine(
+            loaded=self._host_benchmark,
+            entries=self._scores_table,
+            proc_root=self.host_proc_root,
+            cgroup_root=self.cgroup_root,
+            sys_root=self.sys_root,
+            cgroup=cgroup,
+        )
 
     @staticmethod
     def _request_contract(req: Any) -> int:

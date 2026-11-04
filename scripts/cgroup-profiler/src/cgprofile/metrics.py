@@ -150,11 +150,7 @@ def _proc_cpu_usec(stat_path: str) -> Tuple[Optional[int], Optional[int]]:
         ticks_stime = int(fields[12])
     except ValueError:
         return (None, None)
-    try:
-        hz = os.sysconf("SC_CLK_TCK")
-    except (ValueError, OSError, AttributeError):
-        hz = 100
-    per_tick = 1_000_000 / hz
+    per_tick = 1_000_000 / util.clk_tck()
     return (int(ticks_utime * per_tick), int(ticks_stime * per_tick))
 
 
@@ -199,6 +195,14 @@ def _loadavg(proc_root: str) -> Optional[list]:
         return None
 
 
+_NO_JIFFIES: Dict[str, Optional[int]] = {
+    "total_jiffies": None,
+    "idle_jiffies": None,
+    "steal_jiffies": None,
+    "accounted_jiffies": None,
+}
+
+
 def _cpu_jiffies(proc_root: str) -> Dict[str, Optional[int]]:
     """Host-wide jiffy counters from the ``cpu `` (aggregate) line of /proc/stat.
 
@@ -206,22 +210,32 @@ def _cpu_jiffies(proc_root: str) -> Dict[str, Optional[int]]:
     more than one sitting fully idle is, and every top-alike tool's "%idle"
     matches that convention — using the raw ``idle`` field alone would read
     as busier than the host actually is whenever storage is the bottleneck.
+
+    ``steal_jiffies`` is the hypervisor-stolen time (field 8; ``None`` on a
+    kernel that does not report it). ``accounted_jiffies`` is fields 1-8
+    (user..steal): the denominator of a steal fraction. ``total_jiffies`` also
+    adds the guest fields, which the kernel already counts inside user/nice.
     """
     text = util.read_text(os.path.join(proc_root, "stat"))
     if not text:
-        return {"total_jiffies": None, "idle_jiffies": None}
+        return dict(_NO_JIFFIES)
     for line in text.split("\n"):
         if line.startswith("cpu "):
             parts = line.split()[1:]
             try:
                 values = [int(p) for p in parts]
             except ValueError:
-                return {"total_jiffies": None, "idle_jiffies": None}
+                return dict(_NO_JIFFIES)
             if not values:
-                return {"total_jiffies": None, "idle_jiffies": None}
+                return dict(_NO_JIFFIES)
             idle = values[3] + (values[4] if len(values) > 4 else 0)
-            return {"total_jiffies": sum(values), "idle_jiffies": idle}
-    return {"total_jiffies": None, "idle_jiffies": None}
+            return {
+                "total_jiffies": sum(values),
+                "idle_jiffies": idle,
+                "steal_jiffies": values[7] if len(values) > 7 else None,
+                "accounted_jiffies": sum(values[:8]),
+            }
+    return dict(_NO_JIFFIES)
 
 
 def cpu_cores_used(prev: Dict, cur: Dict, dt: float) -> Optional[float]:
