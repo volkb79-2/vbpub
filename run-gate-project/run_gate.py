@@ -4604,7 +4604,8 @@ def select_r2_jobs(request: int | str | None, *, jobs_max: int,
                    candidates_remaining: int | None = None,
                    cheap_clone: bool | None = None,
                    cheap_clone_backend: str | None = None,
-                   source: str | None = None) -> dict:
+                   source: str | None = None,
+                   cheap_clone_reason: str | None = None) -> dict:
     """Select and validate the worker count for one native R2 lane.
 
     The `auto` formula is intentionally owned by Run-Gate: Assay does not
@@ -4646,8 +4647,11 @@ def select_r2_jobs(request: int | str | None, *, jobs_max: int,
         if jobs > 1 and cheap_clone is not True:
             backend = (f" (detected backend {cheap_clone_backend!r})"
                        if cheap_clone_backend else "")
+            cause = (f" [cheap_clone_reason={cheap_clone_reason}]"
+                     if cheap_clone_reason else "")
             fail(f"--jobs {jobs} requires a cheap-clone workspace; Assay "
-                 f"could not confirm the supported btrfs CoW backend{backend}. "
+                 f"could not confirm the supported btrfs CoW backend"
+                 f"{backend}{cause}. "
                  "Use --jobs 1 or configure the supported Cowtree btrfs area")
     else:
         fail("R2 jobs request must be a positive integer, 'auto', or unset "
@@ -11181,7 +11185,13 @@ def candidate_ram_from_history(project_dir: Path, lane_name: str,
     return R2_CONSERVATIVE_CANDIDATE_RAM_BYTES, 0, "default"
 
 
-_R2_CAPACITY_PROBE_CODE = r'''import json, os, pathlib
+_R2_CAPACITY_PROBE_CODE = r'''import json, os, pathlib, sys
+
+# RG-154: the run resolves `cowtree` from the Assay artifact it executes (a
+# zipapp carries its own copy); the probe must look in the same place.  `-I`
+# drops PYTHONPATH, so the artifact arrives as an explicit argument.
+for _artifact in sys.argv[1:2]:
+    sys.path.insert(0, _artifact)
 
 def positive_limit(raw):
     if raw is None or raw == "max":
@@ -11251,6 +11261,7 @@ def r2_capacity_probe(docker: str | None, lane: dict, env: dict,
     object and runs locally; named environments use the shared probe builder.
     """
     parts = [f"cd {shlex.quote(str(project_dir))}"]
+    artifact = ""
     if lane.get("assay_command") is None:
         parts.extend(assay_source_setup(lane, worktree, project_dir))
         python = '"$ASSAY_PYTHON"'
@@ -11259,9 +11270,14 @@ def r2_capacity_probe(docker: str | None, lane: dict, env: dict,
         first = command[0] if command else ""
         if re.fullmatch(r"(?:.*/)?python(?:[0-9]+(?:\.[0-9]+)?)?", first):
             python = shlex.quote(first)
+            # `python3 path/assay.pyz ...`: the zipapp bundles cowtree.
+            target = command[1] if len(command) > 1 else ""
+            if target.endswith((".pyz", ".pyzw", ".zip")):
+                artifact = " " + shlex.quote(target)
         else:
             python = "python3"
-    parts.append(f"{python} -I -c {shlex.quote(_R2_CAPACITY_PROBE_CODE)}")
+    parts.append(f"{python} -I -c {shlex.quote(_R2_CAPACITY_PROBE_CODE)}"
+                 f"{artifact}")
     script = " && ".join(parts)
     try:
         argv = build_env_probe_argv(
@@ -11447,7 +11463,11 @@ def configure_r2_jobs(lane: dict, lane_name: str,
         candidate_ram_samples=samples,
         candidates_remaining=candidates_remaining,
         cheap_clone=cheap_clone, cheap_clone_backend=backend,
-        source=request_source)
+        source=request_source,
+        cheap_clone_reason=(
+            capacity.get("cheap_clone_reason")
+            if isinstance(capacity, dict)
+            else "capacity-probe-unavailable" if needs_probe else None))
     selection.update({
         "assay_lane": lane["assay_lane"],
         "assay_version": assay_version,
@@ -14661,6 +14681,39 @@ class LogStreamWatch:
                 f"last line seen: {seen}")
 
 
+def assay_lane_budget_lines(lane: dict) -> list[str]:
+    """RG-155: the Assay lane's own `budget` ends each attempt with
+    BUDGET_EXCEEDED/LANE_TIMEOUT. When the judge inventory shows one that is
+    tighter than the Run-Gate wrapper budget, name both and their sources."""
+    inventory = lane.get("_assay_inventory")
+    entry = inventory.get("entry") if isinstance(inventory, dict) else None
+    assay_budget = entry.get("budget") if isinstance(entry, dict) else None
+    if not isinstance(assay_budget, str):
+        return []
+    try:
+        assay_s = budget_seconds(assay_budget)
+    except (KeyError, ValueError):
+        return []
+    wrapper = lane.get("budget")
+    wrapper_s = budget_seconds(wrapper) if isinstance(wrapper, str) else None
+    lines = [f"run-gate: effective per-attempt bound: assay.toml lane budget "
+             f"{assay_budget} (ends each attempt with BUDGET_EXCEEDED/"
+             f"LANE_TIMEOUT; resume continues)"
+             + (f"; run-gate wrapper budget {wrapper} is only the outer limit"
+                if wrapper else "")]
+    if wrapper_s is not None and assay_s < wrapper_s:
+        lines.append(f"run-gate: WARNING: assay.toml lane budget {assay_budget} "
+                     f"is below the run-gate budget {wrapper}; a long lane "
+                     f"needs several resumed attempts, each paying baseline "
+                     f"and snapshot again")
+    return lines
+
+
+def print_assay_lane_budget(lane: dict) -> None:
+    print("".join(f"{line}\n" for line in assay_lane_budget_lines(lane)),
+          end="", flush=True)
+
+
 def print_lane_bounds(lane: dict, owner_pid: int | None = None) -> None:
     """RW-18 (review S6): the two numbers that can END this lane, disclosed
     before it is watched — on the fresh path, the RE-ATTACH path and the
@@ -14678,6 +14731,7 @@ def print_lane_bounds(lane: dict, owner_pid: int | None = None) -> None:
     if lane.get("budget"):
         print(f"run-gate: budget {lane['budget']} (hard limit; clock starts "
               f"after admission and lock waits)", flush=True)
+    print_assay_lane_budget(lane)
     if lane.get("stall_timeout"):
         # R-40: what this bounds is SILENCE, not elapsed time. Saying so on
         # the line next to the hard budget is the whole point — the two
@@ -16105,6 +16159,7 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
     if lane.get("budget"):
         print(f"run-gate: budget {lane['budget']} (hard limit; clock starts "
               f"after admission and lock waits)", flush=True)
+    print_assay_lane_budget(lane)
     # Review fix (R-05/R-28): exec lanes disclose the assembled plan exactly
     # like ephemeral lanes do — live AND dry, forwarded VALUES redacted
     # (RG-19). The slice name itself stays visible: it is mechanics, not a
@@ -16574,6 +16629,7 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     if lane.get("budget"):
         print(f"run-gate: budget {lane['budget']} (hard limit; clock starts "
               f"after admission and lock waits)", flush=True)
+    print_assay_lane_budget(lane)
     if dry_run:
         if profile_plan and profile_plan["enabled"]:
             # Match the live bare-host order: only a discoverable Docker

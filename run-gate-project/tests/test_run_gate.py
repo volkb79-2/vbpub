@@ -36305,6 +36305,73 @@ class TestR2JobsPR3:
             {})
         assert "python3 -I -c" in seen["script"]
 
+    def test_capacity_probe_resolves_cowtree_from_the_pinned_pyz(
+            self, monkeypatch, tmp_path):
+        """RG-154 oracle (a): an image without cowtree, a pyz that bundles it."""
+        import zipfile
+        pyz = tmp_path / "assay.pyz"
+        with zipfile.ZipFile(pyz, "w") as archive:
+            archive.writestr("cowtree/__init__.py", (
+                "from types import SimpleNamespace as N\n"
+                "def detect(log=None):\n"
+                "    return N(caps=N(backend='btrfs', fs_type='btrfs',"
+                " cheap_clone=True))\n"))
+        monkeypatch.setenv("MDT_COW_ROOT", str(tmp_path))
+        monkeypatch.delenv("COWTREE_MODE", raising=False)
+        monkeypatch.delenv("PYTHONPATH", raising=False)
+        monkeypatch.setattr(run_gate, "_probe_slice", lambda *_args: "slice")
+        monkeypatch.setattr(
+            run_gate, "build_env_probe_argv",
+            lambda *args, **_kwargs: ["bash", "-c", args[7]])
+        lane = {"assay_command": [sys.executable, str(pyz)]}
+        result = run_gate.r2_capacity_probe(
+            None, lane, {}, "bare-host", "fixture", tmp_path, tmp_path,
+            tmp_path, {})
+        assert result is not None
+        assert result["cheap_clone"] is True
+        assert result["cheap_clone_reason"] == "supported-btrfs"
+        # Without the artifact the old behaviour is reproduced: no cowtree.
+        lane = {"assay_command": [sys.executable, "-m", "assay"]}
+        result = run_gate.r2_capacity_probe(
+            None, lane, {}, "bare-host", "fixture", tmp_path, tmp_path,
+            tmp_path, {})
+        assert result["cheap_clone"] is False
+        assert result["cheap_clone_reason"] == (
+            "cowtree-probe-ModuleNotFoundError")
+
+    def test_lane_header_names_the_assay_lane_budget(self, capsys):
+        """RG-155 oracle: both budgets, their sources, and the warning."""
+        lane = {"budget": "300m", "kind": "assay",
+                "_assay_inventory": {"entry": {"budget": "3m"}}}
+        run_gate.print_lane_bounds(lane)
+        out = capsys.readouterr().out
+        assert "budget 300m (hard limit" in out
+        assert "assay.toml lane budget 3m" in out
+        assert "LANE_TIMEOUT" in out
+        assert "WARNING: assay.toml lane budget 3m is below" in out
+        lane["_assay_inventory"] = {"entry": {"budget": "600m"}}
+        assert not any("WARNING" in line
+                       for line in run_gate.assay_lane_budget_lines(lane))
+        assert run_gate.assay_lane_budget_lines({"budget": "5m"}) == []
+        # an unparsable Assay budget is not disclosed (and never raises)
+        assert run_gate.assay_lane_budget_lines(
+            {"_assay_inventory": {"entry": {"budget": "soon"}}}) == []
+        # no inventory budget: nothing printed, not even a blank line
+        run_gate.print_assay_lane_budget({"budget": "5m"})
+        assert capsys.readouterr().out == ""
+
+    @pytest.mark.parametrize("reason", [
+        "cowtree-probe-ModuleNotFoundError", "cow-root-unset",
+        "cowtree-no-area", "assay-requires-btrfs",
+        "capacity-probe-unavailable"])
+    def test_jobs_refusal_names_the_cheap_clone_reason(self, reason):
+        """RG-154 oracle (b): the true cause reaches the refusal text."""
+        with pytest.raises(run_gate.GateError) as caught:
+            run_gate.select_r2_jobs(
+                3, jobs_max=4, cheap_clone=False,
+                cheap_clone_reason=reason)
+        assert f"cheap_clone_reason={reason}" in str(caught.value)
+
     @pytest.mark.parametrize(
         "ram_target,cap,expected",
         [("75%", 1000, 750), ("12g", 4 * 1024**3, 4 * 1024**3),

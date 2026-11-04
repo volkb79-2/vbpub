@@ -9,6 +9,12 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+### Fixed
+- RG-154: the `--jobs N>1`/`auto` cheap-clone capacity probe resolves `cowtree` from the pinned Assay zipapp (`python3 x.pyz` assay commands) instead of
+  the lane image, and the refusal now names `cheap_clone_reason`; CONSUMERS documents the image requirements.
+- RG-155: the lane header prints the Assay lane `budget` from `assay.toml` (it ends each attempt with LANE_TIMEOUT) next to the run-gate wrapper budget
+  and warns when it is the smaller one. The plan-estimate comparison needs `assay plan --json` data and is left open.
+
 <!-- cmru: release history -->
 
 ## [25.0.0] - 2026-11-04

@@ -36,7 +36,12 @@ canary() {
   # shellcheck disable=SC2064
   trap "rm -rf '$work'" RETURN
 
-  tar -C "$project_dir" \
+  # CP-56: the source tree may be written while it is copied (a shared
+  # checkout, another lane's artifacts), and GNU tar then exits 1 with
+  # "file changed as we read it", which `pipefail` turns into a failed gate.
+  # A copy of a live tree is expected to see that; a torn source file would
+  # surface as a failing baseline, not as a silent pass.
+  tar -C "$project_dir" --warning=no-file-changed \
       --exclude=venv --exclude=runs --exclude=output \
       --exclude=__pycache__ --exclude=.pytest_cache \
       -cf - . | tar -C "$work" -xf -

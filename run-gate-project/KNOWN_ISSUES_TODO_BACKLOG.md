@@ -7498,7 +7498,7 @@ a test pins that no committed default names 1003.
 
 ## RG-154 — `--jobs N>1` / `--jobs auto` are refused for every external consumer that pins an Assay zipapp: the R2 capacity probe imports `cowtree` from the lane interpreter, not from the pinned artifact
 
-**Status:** OPEN. Filed 2026-11-04. Severity: Major for external consumers (dstdns), none for vbpub's internal source-backed lanes. Found by the first dstdns native R2 pilot (`reports/DSTDNS-R2-PILOT-2026-11-04.md`).
+**Status:** FIXED 2026-11-04 (fix-rg-154-20261104; oracles (a) and (b) are tests, (c) needs a live dstdns re-run). Filed 2026-11-04. Severity: Major for external consumers (dstdns), none for vbpub's internal source-backed lanes. Found by the first dstdns native R2 pilot (`reports/DSTDNS-R2-PILOT-2026-11-04.md`).
 
 **Observed.** dstdns declares `command = ["python3", "tools/assay/assay-11.0.0.pyz"]` and runs lanes in its own `dstdns/test-runner` image on a host whose
 `/srv/cow/mdt-cow` is btrfs with `cheap_clone=True`. `run-gate inf_events_obs_r2 --jobs 3` ends with
@@ -7521,7 +7521,7 @@ value appears in the refusal text in a table test. (c) The dstdns pilot lane run
 
 ## RG-155 — the lane header prints `budget 300m (hard limit)` while an Assay lane's own `budget` in `assay.toml` ends each attempt (LANE_TIMEOUT)
 
-**Status:** OPEN. Filed 2026-11-04. Severity: Minor.
+**Status:** PARTIAL 2026-11-04 (fix-rg-154-20261104): header and exec/bare paths print the Assay lane budget with its source and warn when it is below the run-gate budget; the warning against the plan's estimated wall time is OPEN (needs `assay plan --json`, assay B213). Filed 2026-11-04. Severity: Minor.
 
 **Observed.** `inf_events_obs_r2` declares `budget = "3m"` in dstdns's `assay.toml` and its plan estimates 2880 s serial. Run-Gate printed
 `run-gate: budget 300m (hard limit; clock starts after admission and lock waits)` (its own wrapper limit) and the first attempt ended
