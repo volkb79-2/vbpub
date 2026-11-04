@@ -2130,6 +2130,37 @@ Check the installed console entrypoint before selecting a CIU verb:
 
 It prints `ciu <version>` on stdout, exits 0, and writes nothing to stderr.
 
+## 22. The registered CLI: what a script or agent can rely on (ciu 7.20, CIU-114) — BREAKING
+
+Every verb is registered with `libraries/cli-extended`; `ciu help [verb]` / `ciu <verb> --help` is
+generated from that registration and `docs/cli-surface.json` + SPEC S10.8 export it.
+
+| Was | Is | Action |
+|---|---|---|
+| `-y` | `--yes` | replace in every script (`ciu clean -y` → `ciu clean --yes`) |
+| `secrets ... -d PATH`, `up --dir ... -f NAME` | `--dir PATH`, `--file NAME` | replace |
+| `-h`, `--prof`, `--hos=…` (prefixes) | `--help`, exact spellings | prefixes are usage errors (exit 2), never a silent fall-through |
+| `health [--preflight]` | `status --gate`, `status --preflight` | the gate's verdict is its exit status |
+| `profiles`, `layouts` | `show profiles`, `show layouts` (+ `--json`) | read-only listings |
+| `ksm build`, `iops-baseline` | `governance ksm`, `governance iops-baseline` | |
+| `capabilities` | `schema capabilities` | the allowlist document is unchanged |
+| `migration-check` | `migrate --check` | |
+| `host-secrets HOST …` | `secrets host HOST …` | |
+| bare `ciu env`, `up --check`, `provenance --force`, `graph --format json` | `env print`, `ciu check`, `--ignore-mismatch`, `graph --json` | removed |
+
+- Machine output: `--json` where a verb offers it (`status`, `diagnose`, `check`, `graph`, `resolve`
+  (always JSON), `provenance`, `schema capabilities`, `migrate --check`, `show profiles|layouts`,
+  `worktree create|ensure|adopt|rm|list|inspect|lease|refork|branches|reap`, `doctor`, `skills`).
+- Exit codes: `0` success, `1` runtime failure (an unexpected exception is one `[ERROR]` line;
+  `--traceback` shows the stack), `2` usage/configuration refusal, `3` environment/bootstrap (also: a
+  source tree that was neither built nor installed has no version), `130` prompt cancelled. `4` and `5`
+  are reserved for v8.
+- Diagnostics lead with `[ERROR] …`, then the headline and usage; help screens start with the headline.
+- `ciu doctor [--check NAME] [--json]` verifies the environment; `ciu skills install|check|list|uninstall`
+  manages the agent skills the wheel ships (re-run `install` after every upgrade).
+- Install order: `cli-extended` (a released wheel, published on GitHub Releases only) before `ciu`
+  (`--no-index --find-links` or `--no-deps`); `get.py` already hoists it.
+
 ## Configure CIU resource limits
 
 Governance can place a stack without adding per-container resource caps.
