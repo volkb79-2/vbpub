@@ -22,6 +22,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from ciu import engine, image_isolation as iso, worktree, workspace_env  # noqa: E402
 
 
+def _replies(items):
+    it = iter(items)
+    return lambda *a, **k: next(it)
+
+
 def _result(returncode: int, stdout: str = ""):
     return SimpleNamespace(returncode=returncode, stdout=stdout, stderr="")
 
@@ -32,8 +37,9 @@ def _result(returncode: int, stdout: str = ""):
 
 
 @pytest.fixture
-def git_says_unignored(monkeypatch):
-    """`git` reports a work tree in which the probe path is NOT ignored."""
+def git_says_unignored(monkeypatch, tmp_path):
+    """`git` reports a work tree in which the probe path is NOT ignored; the bundle root is tmp_path."""
+    monkeypatch.setenv("REPO_ROOT", str(tmp_path))
     replies = iter((_result(0, "true\n"), _result(1), _result(1)))
     monkeypatch.setattr(engine.procutil, "run_cmd", lambda *a, **k: next(replies))
 
@@ -51,6 +57,56 @@ def test_gitignore_text_above_the_stack_dir_satisfies_the_guard(git_says_unignor
     stack.mkdir(parents=True)
     (tmp_path / ".gitignore").write_text("**/.ciu/\n", encoding="utf-8")
     engine._check_gitignore(stack)
+
+
+def test_gitignore_above_the_bundle_root_never_satisfies_the_guard(git_says_unignored, tmp_path, monkeypatch):
+    bundle = tmp_path / "bundle"
+    stack = bundle / "apps" / "whoami"
+    stack.mkdir(parents=True)
+    monkeypatch.setenv("REPO_ROOT", str(bundle))
+    (tmp_path / ".gitignore").write_text("**/.ciu/\n", encoding="utf-8")  # outside the bundle
+    with pytest.raises(ValueError, match="not gitignored"):
+        engine._check_gitignore(stack)
+    # ...but the same file INSIDE the bundle root does
+    (bundle / ".gitignore").write_text("**/.ciu/\n", encoding="utf-8")
+    assert engine._gitignore_text_ignores(stack, bundle) is True
+
+
+def test_gitignore_without_a_bundle_root_trusts_only_the_stacks_own_file(monkeypatch, tmp_path):
+    monkeypatch.delenv("REPO_ROOT", raising=False)
+    monkeypatch.setattr(engine.procutil, "run_cmd",
+                        _replies((_result(0, "true\n"), _result(1), _result(1))))
+    stack = tmp_path / "apps" / "whoami"
+    stack.mkdir(parents=True)
+    (tmp_path / ".gitignore").write_text(".ciu\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="not gitignored"):
+        engine._check_gitignore(stack)
+
+
+def test_a_later_negation_unignores_and_a_rooted_ancestor_pattern_does_not_apply(tmp_path):
+    stack = tmp_path / "apps" / "whoami"
+    stack.mkdir(parents=True)
+    ignores = engine._gitignore_text_ignores
+    (tmp_path / ".gitignore").write_text("/.ciu\n", encoding="utf-8")  # rooted at tmp_path only
+    assert ignores(stack, tmp_path) is False
+    (tmp_path / ".gitignore").write_text("**/.ciu/\n", encoding="utf-8")
+    assert ignores(stack, tmp_path) is True
+    (stack / ".gitignore").write_text("!.ciu\n", encoding="utf-8")  # deeper negation wins
+    assert ignores(stack, tmp_path) is False
+    (stack / ".gitignore").write_text(".ciu/\n/.ciu\n!.ciu\n.ciu\n", encoding="utf-8")  # order inside a file
+    assert ignores(stack, tmp_path) is True
+    (stack / ".gitignore").write_text("/.ciu\n", encoding="utf-8")  # rooted pattern in the stack's own file
+    assert ignores(stack, tmp_path) is True
+
+
+def test_a_bundle_root_that_is_not_an_ancestor_only_trusts_the_stack_file(tmp_path):
+    stack = tmp_path / "a"
+    stack.mkdir()
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    (tmp_path / ".gitignore").write_text(".ciu\n", encoding="utf-8")
+    assert engine._gitignore_text_ignores(stack, other) is False
+    assert engine._gitignore_text_ignores(stack, stack) is False
 
 
 def test_unrelated_gitignore_lines_do_not_satisfy_the_guard(git_says_unignored, tmp_path):

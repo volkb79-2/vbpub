@@ -1030,10 +1030,13 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
      while an endpoint (the devcontainer) is actually attached to that network
      (CIU-171): a standalone or pushed bundle has none, so its workspace network
      is removed with a one-line message (an indeterminate endpoint query keeps
-     it). When the deploy tags are set, compose networks whose name matches the
-     anchored `^{project}-{env}-` prefix and carry a compose project label are
-     removed too, so a stack deployed outside the profile selection (`up --dir`,
-     a pushed bundle) leaves no `<project>_default` behind.
+     it). When the deploy tags are set, the compose networks whose project label
+     value is EXACTLY `{project}-{env}-{stack dir}` for a stack directory of the
+     bundle are removed too (no name-prefix match: env `prod` never touches
+     `prod-x`), so a stack deployed outside the profile selection (`up --dir`, a
+     pushed bundle) leaves no `<project>_default` behind. Such a network that
+     still has an attached endpoint after the project's containers were removed
+     is kept and named, never disconnected.
   5. The S6.4 post-clean invariant extends to networks: every targeted
      network must be gone (Docker STATE re-inspection decides, never command
      diagnostic text); any survivor that was not a declared keep exits
@@ -3905,7 +3908,7 @@ contract, needing no Docker/Python on the target. It composes with `--host`.
 
 Every remote verb after the push (`render`, `down`, `status --gate`) runs inside the
 bundle with its environment exported, in ONE command string:
-`cd <bundle_dir> && eval "$(ciu env print)" && ciu <verb> ...` (CIU-170). `--dir STACK`
+`cd <bundle_dir> && { env=$(ciu env print) || exit $?; eval "$env"; } && ciu <verb> ...` (CIU-170; a failing `env print` aborts, the verb never runs without the bundle environment). `--dir STACK`
 is accepted after `--host` by `up`, `down` and `status --gate` and forwarded, so a
 single pushed stack is stopped and gated the same way it was started;
 `ciu status --gate --dir STACK` also gates one stack locally.
@@ -3936,12 +3939,12 @@ accepted for the user-global file). Keys:
 | `ssh_port` | No | Port (default `22`) |
 | `ssh_key` | Yes | Filesystem path OR `ASK_VAULT:<path>[#field]` — never committed |
 | `known_host` | Yes* | Pinned host public key (e.g. `ssh-ed25519 AAAA…`) |
-| `bundle_dir` | No | Remote path for bundle-sync (default `/opt/ciu/current`); created with its parents before the push |
-| `remote_ciu` | No | The `ciu` executable on the target (default `ciu`, resolved on the non-login PATH); set an absolute path when ciu lives in a user venv or `~/.local/bin` |
+| `bundle_dir` | No | Remote path for bundle-sync (default `/opt/ciu/current`); created with its parents before the push. A leading `~/` means the ssh user's home (expanded deliberately); `~user` and whitespace are refused (exit 2, before anything is sent) |
+| `remote_ciu` | No | The `ciu` executable on the target (default `ciu`, resolved on the non-login PATH); set an absolute path (or `~/...`) when ciu lives in a user venv or `~/.local/bin`; must be a string |
 | `docker_optional` | No | Advisory flag: this host has no Docker; deploy it with `--thin` (S14.6). CIU nudges (stderr) if the docker `--host` path is used on it, but does not block. |
 | `activate` | Yes† | S14.6 activation contract — a string entrypoint (CIU appends the verb) or a per-verb table (`bootstrap`/`apply`/`health`/`rollback`). †Required only for `--thin`. |
 | `push_mode` | No | `auto` (default) \| `rsync` \| `scp`. `auto` tries rsync, falls back to tar+scp when rsync is absent on the control host or target (S14.6). |
-| `bundle_excludes` | No | List of paths excluded from the pushed bundle IN ADDITION to the mandatory set `.git`, `.ciu/` (at any depth: materialised secrets) and `ciu.env`, which no host row can re-include (CIU-175). Applied identically to the rsync and tar+scp paths and to both `ciu up --host` and `--thin`; excluded paths already on the target are neither overwritten nor deleted (the sync never uses `--delete`). A non-list value is a configuration error (exit 2). |
+| `bundle_excludes` | No | List of paths excluded from the pushed bundle IN ADDITION to the mandatory set `.git`, `.ciu` (file, directory or symlink, at any depth: materialised secrets), `ciu.env` and `vol-*` (the control host's stack data directories), which no host row can re-include (CIU-175). A rendered `ciu.toml`/`ciu.compose.yml` at a stack root is NOT in the set (the target re-renders it): exclude it here when it carries values that must not leave the control host. Applied identically to the rsync and tar+scp paths and to both `ciu up --host` and `--thin`; excluded paths already on the target are neither overwritten nor deleted (the sync never uses `--delete`). A non-list value is a configuration error (exit 2). |
 | `secrets` | No | S14.3a — host-scoped local secret directives subtable (ASK_EXTERNAL / GEN_LOCAL only). |
 
 Before any `--host` transport, CIU MUST load the repository's global
@@ -4024,7 +4027,7 @@ inventory + host-key pinning + Vault-key resolution; the *project* owns
 activation (supplied as shell via the `activate` host key). The default docker
 `--host` path (S14.2) is untouched — `--thin` is a parallel branch.
 
-**Push.** An artifact (the repo tree, minus the mandatory excludes `.git`/`.ciu/`/`ciu.env` and `bundle_excludes`, S14.2)
+**Push.** An artifact (the repo tree, minus the mandatory excludes `.git`/`.ciu`/`ciu.env`/`vol-*` and `bundle_excludes`, S14.2)
 is shipped to `bundle_dir`. Strategy is `push_mode`:
 
 - **S14.6a** `auto` (default) tries `rsync` (S14.2 machinery, `--exclude` per
@@ -4034,8 +4037,11 @@ is shipped to `bundle_dir`. Strategy is `push_mode`:
   `tar xzf … -C bundle_dir && rm …`. The fallback needs only `sh`/`tar` on the
   target and rides the ssh daemon's own scp/sftp subsystem (no user-space
   transfer tool on the target). `rsync` forces rsync-only; `scp` forces
-  tar+scp-only. Both strategies honour `bundle_excludes`, so they ship an
-  identical tree.
+  tar+scp-only. Both strategies apply the same `--exclude` pattern semantics
+  (slash-less patterns at any depth, trailing `/` = directories only, leading or
+  inner `/` = path from the bundle root, `*` `?` `[..]` `**` globs), so they ship an
+  identical file set; a test runs real `tar` and real `rsync` on one fixture tree
+  and compares them.
 
 **Activation contract.** Instead of the hardcoded `ciu render && ciu up`, CIU
 runs one of four verbs — `bootstrap | apply | health | rollback` (the same shape

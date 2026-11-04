@@ -4820,29 +4820,64 @@ def _workspace_network_attached(network: str) -> bool:
     return bool(endpoints)
 
 
-def _tagged_project_networks(config: dict) -> list[str]:
-    """Compose-created networks whose name matches ``^{project}-{env}-`` (S7.8, CIU-171).
+_STACK_MARKERS = (
+    "ciu.toml.j2", "ciu.toml", "docker-compose.yml", "docker-compose.yml.j2",
+    "docker-compose.yaml", "compose.yml", "compose.yaml",
+)
+_STACK_SCAN_SKIP = frozenset({"node_modules", "__pycache__"})
 
-    The network twin of :func:`_matching_containers`: an exact anchored prefix
-    plus the compose project label, so unrelated networks sharing a substring
-    are never touched. Raises ``ValueError`` on a daemon failure (fail closed).
+
+def _known_stack_projects(repo_root: Path, config: dict) -> list[str]:
+    """Exact S8.7 compose project names of EVERY stack directory under *repo_root*.
+
+    The tagged network sweep (CIU-171) must find the networks of a stack that was
+    deployed outside the profile selection (``up --dir``, a pushed bundle) without
+    ever matching on a name prefix: ``dstdns-prod-`` is also the prefix of the env
+    tag ``prod-x``'s projects. A project belongs to THIS bundle only when it is
+    ``{project}-{env}-{stack dir basename}`` of a stack directory that exists here.
+    Hidden directories, ``vol-*`` data directories and ``node_modules`` are not scanned.
     """
     deploy_cfg = config.get("deploy", {})
-    prefix = f"{deploy_cfg.get('project_name')}-{deploy_cfg.get('environment_tag')}-"
-    result = procutil.docker(
-        ["network", "ls", "--filter", f"name={prefix}",
-         "--filter", "label=com.docker.compose.project", "--format", "{{.Name}}"],
-        capture=True, check=False,
-    )
-    if result.returncode != 0:
-        raise ValueError(
-            f"[S6.4a] docker network ls failed for prefix {prefix!r}: "
-            f"{(result.stderr or '').strip()}"
-        )
-    return sorted(
-        n.strip() for n in (result.stdout or "").splitlines()
-        if n.strip().startswith(prefix)
-    )
+    if not deploy_cfg.get("project_name") or not deploy_cfg.get("environment_tag"):
+        return []
+    names: set[str] = set()
+    for current, dirs, files in os.walk(repo_root):
+        dirs[:] = [
+            d for d in dirs
+            if not d.startswith(".") and not d.startswith("vol-") and d not in _STACK_SCAN_SKIP
+        ]
+        if Path(current) != Path(repo_root) and any(m in files for m in _STACK_MARKERS):
+            names.add(engine.compose_project_name(config, Path(current)))
+    return sorted(names)
+
+
+def _tagged_project_networks(
+    repo_root: Path, config: dict, known_projects: list[str],
+) -> tuple[list[str], list[tuple[str, str]]]:
+    """Networks of this bundle's stacks outside the selection (S7.8, CIU-171).
+
+    Matches the compose project LABEL VALUE exactly against the stack directories
+    found on disk (:func:`_known_stack_projects`), never a name prefix, and never
+    disconnects anything: a network that still has an attached endpoint after the
+    project's containers were removed belongs to someone else (a shared network,
+    another environment's stack, the devcontainer) and is returned as *kept*
+    ``(name, reason)`` instead. Raises ``ValueError`` on a daemon failure.
+    """
+    candidates = [p for p in _known_stack_projects(repo_root, config) if p not in known_projects]
+    removable: list[str] = []
+    kept: list[tuple[str, str]] = []
+    for net in _list_stack_project_networks(candidates):
+        try:
+            endpoints = _network_endpoints(net)
+        except ValueError as exc:
+            kept.append((net, f"endpoints could not be read: {exc}"))
+            continue
+        if endpoints:
+            names = ", ".join(sorted(e["name"] for e in endpoints))
+            kept.append((net, f"still has foreign endpoint(s): {names}"))
+            continue
+        removable.append(net)
+    return removable, kept
 
 
 def _list_stack_project_networks(stack_projects: list[str]) -> list[str]:
@@ -5390,9 +5425,13 @@ def action_clean(
         # pushed bundle) owns compose networks the selection never names; the
         # tagged S7.8 prefix finds them the same way it finds its containers.
         if tagged:
-            for net in _tagged_project_networks(config):
+            sweep, sweep_kept = _tagged_project_networks(repo_root, config, stack_projects)
+            for net in sweep:
                 if net not in target_networks and net not in keep_networks:
                     target_networks.append(net)
+            for net, reason in sweep_kept:
+                if net not in target_networks and net not in keep_networks:
+                    keep_networks[net] = reason
     except ValueError as exc:
         error(str(exc))
         rc = 1

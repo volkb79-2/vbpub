@@ -2567,26 +2567,42 @@ _CIU_IGNORE_LINES = frozenset({
 })
 
 
-def _gitignore_text_ignores(stack_dir: Path) -> bool:
-    """True when a ``.gitignore`` at or above *stack_dir* lists the ``.ciu`` pattern.
+def _gitignore_text_ignores(stack_dir: Path, bundle_root: Optional[Path] = None) -> bool:
+    """True when the ``.gitignore`` files of the bundle ignore ``<stack_dir>/.ciu``.
 
     A push-deployed bundle (S14.2) carries the project's ``.gitignore`` files but
     its git metadata is excluded or foreign, so ``git check-ignore`` cannot answer
     there. The shipped text is the same declaration the control host's check
-    passed on (CIU-169). Walks up to the first directory holding ``.git``.
+    passed on (CIU-169). Only files from *bundle_root* down to *stack_dir* count
+    (an unrelated ``/.gitignore`` or ``/opt/ciu/.gitignore`` above the bundle never
+    satisfies the secrets guard; without a root only the stack's own file counts),
+    applied in order with last-match-wins like git, so a later ``!.ciu`` negation
+    un-ignores. A rooted pattern (``/.ciu``) only counts in the stack's own file.
     """
-    for directory in (stack_dir.resolve(), *stack_dir.resolve().parents):
+    stack = stack_dir.resolve()
+    root = bundle_root.resolve() if bundle_root is not None else stack
+    chain = [stack]
+    if root != stack and root in stack.parents:
+        chain = [stack, *(p for p in stack.parents if root in (p, *p.parents))]
+    ignored = False
+    for directory in reversed(chain):
         candidate = directory / ".gitignore"
-        if candidate.is_file():
-            try:
-                lines = candidate.read_text(encoding="utf-8").splitlines()
-            except (OSError, UnicodeDecodeError):
-                lines = []
-            if any(line.strip() in _CIU_IGNORE_LINES for line in lines):
-                return True
-        if (directory / ".git").exists():
-            return False
-    return False
+        if not candidate.is_file():
+            continue
+        try:
+            lines = candidate.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeDecodeError):
+            continue
+        for raw in lines:
+            line = raw.strip()
+            negated = line.startswith("!")
+            pattern = line[1:] if negated else line
+            if pattern not in _CIU_IGNORE_LINES:
+                continue
+            if pattern.startswith("/") and directory != stack:
+                continue
+            ignored = not negated
+    return ignored
 
 
 def _check_gitignore(stack_dir: Path) -> None:
@@ -2624,7 +2640,8 @@ def _check_gitignore(stack_dir: Path) -> None:
     ignored_dir = procutil.run_cmd(["git", "check-ignore", "-q", str(ciu_dir)], check=False)
     if ignored_dir.returncode == 0:
         return
-    if _gitignore_text_ignores(stack_dir):
+    env_root = os.environ.get("REPO_ROOT")
+    if _gitignore_text_ignores(stack_dir, Path(env_root) if env_root else None):
         return  # a pushed bundle ships the .gitignore text but not always a usable repo (CIU-169)
     raise ValueError(
         f"[S1.7] {ciu_dir} is not gitignored. CIU machine-owned artifacts must be "

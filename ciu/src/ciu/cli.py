@@ -220,7 +220,26 @@ def _remote_render_kwargs(repo_root: Path) -> dict:
 
 def _remote_ciu(host_cfg: dict) -> str:
     """The `ciu` executable on the target: the host row's ``remote_ciu`` or ``ciu``."""
-    return str(host_cfg.get("remote_ciu") or "ciu")
+    value = host_cfg.get("remote_ciu")
+    if value is None or value == "":
+        return "ciu"
+    if not isinstance(value, str):
+        raise ValueError(
+            f"[S14.6] 'remote_ciu' must be a string path or command name, got {type(value).__name__}."
+        )
+    return value
+
+
+def _remote_words(host_cfg: dict) -> tuple[str, str, str, str]:
+    """Validated ``(ciu, ciu_word, bundle, bundle_word)`` of a host row; raises ValueError.
+
+    The ``*_word`` values are shell-ready (quoted, a leading ``~/`` expanded to ``$HOME``).
+    """
+    from .activate import bundle_dir_for, remote_path_word
+
+    ciu = _remote_ciu(host_cfg)
+    bundle = bundle_dir_for(host_cfg)
+    return ciu, remote_path_word(ciu, "'remote_ciu'"), bundle, remote_path_word(bundle, "'bundle_dir'")
 
 
 def _remote_bundle_command(host_cfg: dict, argv: list[str]) -> str:
@@ -228,31 +247,52 @@ def _remote_bundle_command(host_cfg: dict, argv: list[str]) -> str:
 
     Every remote verb after the push (render, down, status --gate) must run in
     the bundle with its ``ciu.env`` exported; a login-directory run has no CIU
-    root and no environment.
+    root and no environment. ``ciu env print`` failing (no ``ciu.env``) aborts the
+    command with its exit code: the verb never runs without the bundle environment.
+    Raises ``ValueError`` for an invalid ``bundle_dir``/``remote_ciu``.
     """
-    ciu = _remote_ciu(host_cfg)
-    bundle = shlex.quote(str(host_cfg.get("bundle_dir", "/opt/ciu/current")))
+    _ciu, ciu_word, _bundle, bundle_word = _remote_words(host_cfg)
     return (
-        f'cd {bundle} && eval "$({shlex.quote(ciu)} env print)" && '
-        + shlex.join([ciu, *argv])
+        f'cd {bundle_word} && {{ ciu_env=$({ciu_word} env print) || exit $?; '
+        f'eval "$ciu_env"; }} && {ciu_word} {shlex.join(argv)}'
     )
+
+
+def _run_remote_bundle(host_cfg: dict, argv: list[str], *, config: dict, repo_root: Path) -> int:
+    """Run ``ciu *argv`` in the pushed bundle over ssh; an invalid host row is exit 2."""
+    from .transport_ssh import ssh_exec
+
+    try:
+        remote_cmd = _remote_bundle_command(host_cfg, argv)
+    except ValueError as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        return 2
+    # Pass the whole command as ONE argv element: ssh space-joins remote
+    # args into a single string for the remote login shell to re-parse, so
+    # an "sh -c" wrapper here would be re-split and break "&&"/cd. The login
+    # shell ssh spawns already interprets the operators natively.
+    return ssh_exec(host_cfg, [remote_cmd], config=config, repo_root=repo_root)
 
 
 def _remote_preflight(host_cfg: dict, host_label: str, *, config: dict, repo_root: Path) -> int:
     """Check the push preconditions on the target and create ``bundle_dir`` (CIU-169).
 
-    One SSH round trip: ``ciu`` must resolve on the non-login PATH (exit 127), and
-    ``bundle_dir`` is created with its parents because rsync makes only the last
-    path element (exit 126). Prints the exact remedy and returns the exit code;
-    0 means the push may proceed.
+    The host row is validated FIRST (exit 2, nothing sent). Then one SSH round trip:
+    ``ciu`` must resolve on the non-login PATH (exit 127), and ``bundle_dir`` is
+    created with its parents because rsync makes only the last path element
+    (exit 126). Prints the exact remedy and returns the exit code; 0 means the
+    push may proceed.
     """
     from .transport_ssh import ssh_exec
 
-    ciu = _remote_ciu(host_cfg)
-    bundle = str(host_cfg.get("bundle_dir", "/opt/ciu/current"))
+    try:
+        ciu, ciu_word, bundle, bundle_word = _remote_words(host_cfg)
+    except ValueError as exc:
+        print(f"[ERROR] host '{host_label}': {exc}", file=sys.stderr)
+        return 2
     probe = (
-        f"command -v {shlex.quote(ciu)} >/dev/null 2>&1 || exit 127; "
-        f"mkdir -p {shlex.quote(bundle)} || exit 126"
+        f"command -v {ciu_word} >/dev/null 2>&1 || exit 127; "
+        f"mkdir -p {bundle_word} || exit 126"
     )
     rc = ssh_exec(host_cfg, [probe], config=config, repo_root=repo_root)
     if rc == 127:
@@ -305,18 +345,19 @@ def _push_host(
             f"{host_label} --thin'? (S14.6)",
             file=sys.stderr,
         )
-    bundle_dir = host_cfg.get("bundle_dir", "/opt/ciu/current")
-    from .transport_ssh import ssh_exec, ssh_sync
-    rc = _remote_preflight(host_cfg, host_label, config=config, repo_root=repo_root)
-    if rc != 0:
-        return "preflight", rc
     from .activate import bundle_excludes_for
+    from .transport_ssh import ssh_exec, ssh_sync
+    # Validate the whole host row BEFORE the first byte or ssh command goes out (CIU-169).
     try:
         excludes = bundle_excludes_for(host_cfg)
     except ValueError as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)
         return "sync", 2
-    # CIU-175: never ship `.ciu/` (materialised secrets), `ciu.env` or `.git`;
+    rc = _remote_preflight(host_cfg, host_label, config=config, repo_root=repo_root)
+    if rc != 0:
+        return "preflight", rc
+    _ciu, ciu_word, bundle_dir, bundle_word = _remote_words(host_cfg)
+    # CIU-175: never ship `.ciu` (materialised secrets), `ciu.env`, `.git` or `vol-*`;
     # the host's `bundle_excludes` apply on this path exactly as on `--thin`.
     rc = ssh_sync(host_cfg, str(repo_root), bundle_dir, config=config,
                   repo_root=repo_root, excludes=excludes)
@@ -328,9 +369,9 @@ def _push_host(
     # shell ssh spawns already interprets the operators natively.
     remote_cmd = (
         extra_exports
-        + f"cd {shlex.quote(str(bundle_dir))} && {shlex.quote(_remote_ciu(host_cfg))} env generate && "
-        + f"{shlex.quote(_remote_ciu(host_cfg))} render && "
-        + shlex.join([_remote_ciu(host_cfg), "up", *remaining])
+        + f"cd {bundle_word} && {ciu_word} env generate && "
+        + f"{ciu_word} render && "
+        + f"{ciu_word} {shlex.join(['up', *remaining])}"
     )
     rc = ssh_exec(host_cfg, [remote_cmd], config=config, repo_root=repo_root)
     return "exec", rc
@@ -1750,14 +1791,9 @@ def _legacy_dispatch(raw: list[str]) -> None:
             repo_root = _resolve_repo_root_deploy(define_root)
             config = _load_remote_config(repo_root)
             from .hosts import get_host
-            from .transport_ssh import ssh_exec
             host_cfg = get_host(repo_root, opts.host)
-            remote_cmd = _remote_bundle_command(host_cfg, ["render", *remaining])
-            # Pass the whole command as ONE argv element: ssh space-joins remote
-            # args into a single string for the remote login shell to re-parse, so
-            # an "sh -c" wrapper here would be re-split and break "&&"/cd. The login
-            # shell ssh spawns already interprets the operators natively.
-            raise SystemExit(ssh_exec(host_cfg, [remote_cmd], config=config, repo_root=repo_root))
+            raise SystemExit(_run_remote_bundle(
+                host_cfg, ["render", *remaining], config=config, repo_root=repo_root))
         from .deploy import main as deploy_main
         raise SystemExit(deploy_main(["--render-toml"] + rest))
 
@@ -1923,14 +1959,9 @@ def _legacy_dispatch(raw: list[str]) -> None:
             repo_root = _resolve_repo_root_deploy(define_root)
             config = _load_remote_config(repo_root)
             from .hosts import get_host
-            from .transport_ssh import ssh_exec
             host_cfg = get_host(repo_root, opts.host)
-            remote_cmd = _remote_bundle_command(host_cfg, ["down", *remaining])
-            # Pass the whole command as ONE argv element: ssh space-joins remote
-            # args into a single string for the remote login shell to re-parse, so
-            # an "sh -c" wrapper here would be re-split and break "&&"/cd. The login
-            # shell ssh spawns already interprets the operators natively.
-            raise SystemExit(ssh_exec(host_cfg, [remote_cmd], config=config, repo_root=repo_root))
+            raise SystemExit(_run_remote_bundle(
+                host_cfg, ["down", *remaining], config=config, repo_root=repo_root))
         if _flag_given(rest, "--dir"):
             define_root, rest = _extract_define_root(rest)
             parser = CiuArgumentParser(prog="ciu down --dir")
@@ -2007,13 +2038,8 @@ def _legacy_dispatch(raw: list[str]) -> None:
                     print(f"[ERROR] {exc}", file=sys.stderr)
                     raise SystemExit(2)
                 raise SystemExit(rc)
-            from .transport_ssh import ssh_exec
-            remote_cmd = _remote_bundle_command(host_cfg, ["status", "--gate", *remaining])
-            # Pass the whole command as ONE argv element: ssh space-joins remote
-            # args into a single string for the remote login shell to re-parse, so
-            # an "sh -c" wrapper here would be re-split and break "&&"/cd. The login
-            # shell ssh spawns already interprets the operators natively.
-            raise SystemExit(ssh_exec(host_cfg, [remote_cmd], config=config, repo_root=repo_root))
+            raise SystemExit(_run_remote_bundle(
+                host_cfg, ["status", "--gate", *remaining], config=config, repo_root=repo_root))
         if _flag_given(rest, "--dir"):
             # `status --gate --dir STACK` (CIU-170): the S7.7 gate over ONE stack, the
             # same single-stack gate `ciu up --dir --healthcheck` applies.

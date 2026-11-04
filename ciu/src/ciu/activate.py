@@ -26,6 +26,7 @@ render-on-target path (S14.2) is untouched — ``--thin`` is a parallel branch.
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import sys
 import tarfile
@@ -45,11 +46,16 @@ ACTIVATION_VERBS = ("bootstrap", "apply", "health", "rollback")
 DEFAULT_BUNDLE_EXCLUDES = [".git"]
 
 # Never pushed, whatever the host row says (CIU-175): ``.git`` is local state;
-# ``.ciu/`` holds the control host's materialised secrets (e.g. the registry
-# read token); ``ciu.env`` is the control host's machine facts. rsync patterns
-# without a leading slash match at any depth, so nested stacks' ``.ciu/`` are
-# covered; :func:`make_tarball` mirrors that for the tar+scp fallback.
-ALWAYS_BUNDLE_EXCLUDES = [".git", ".ciu/", "ciu.env"]
+# ``.ciu`` holds the control host's materialised secrets (e.g. the registry
+# read token); ``ciu.env`` is the control host's machine facts; ``vol-*`` are the
+# control host's persistent stack data directories (``vol-<service>-<purpose>``,
+# may hold credentials and keys; the target creates its own). Slash-less rsync
+# patterns match files, directories and symlinks at any depth, so nested stacks
+# are covered; :func:`make_tarball` applies the same matcher to the tar+scp
+# fallback. NOT excluded: a rendered ``ciu.toml`` / ``ciu.compose.yml`` at a stack
+# root (the target re-renders them) -- exclude those per host via ``bundle_excludes``
+# when they carry values that must not leave the control host.
+ALWAYS_BUNDLE_EXCLUDES = [".git", ".ciu", "ciu.env", "vol-*"]
 
 
 def bundle_excludes_for(host_cfg: dict) -> list[str]:
@@ -63,6 +69,39 @@ def bundle_excludes_for(host_cfg: dict) -> list[str]:
     merged = list(ALWAYS_BUNDLE_EXCLUDES)
     merged += [e for e in extra if e not in merged]
     return merged
+
+def remote_path_word(path: str, what: str = "path") -> str:
+    """A shell word for a REMOTE *path*: quoted, but a leading ``~`` / ``~/`` is expanded
+    deliberately (``"$HOME"``) instead of being suppressed by the quoting (CIU-169).
+
+    ``~user`` forms are refused: the remote user's home is the only one this tool knows.
+    """
+    if not isinstance(path, str) or not path.strip():
+        raise ValueError(f"[S14.6] {what} must be a non-empty string.")
+    if path == "~":
+        return '"$HOME"'
+    if path.startswith("~/"):
+        return '"$HOME"' + shlex.quote(path[1:])
+    if path.startswith("~"):
+        raise ValueError(
+            f"[S14.6] {what} {path!r}: '~user' forms are not supported; "
+            "use '~/...' (the ssh user's home) or an absolute path."
+        )
+    return shlex.quote(path)
+
+
+def bundle_dir_for(host_cfg: dict) -> str:
+    """The validated ``bundle_dir`` of a host row (default ``/opt/ciu/current``).
+
+    Whitespace is refused: rsync's destination argument is not shell-quoted, so a
+    space would work for ``mkdir`` and break the transfer.
+    """
+    value = host_cfg.get("bundle_dir", "/opt/ciu/current")
+    remote_path_word(value, "'bundle_dir'")
+    if any(ch.isspace() for ch in value):
+        raise ValueError(f"[S14.6] 'bundle_dir' {value!r} must not contain whitespace.")
+    return value
+
 
 # Name of the transient tarball dropped in bundle_dir by the scp/tar fallback.
 _REMOTE_TARBALL = ".ciu_bundle.tar.gz"
@@ -125,16 +164,75 @@ def resolve_activation_command(host_cfg: dict, verb: str) -> str:
     )
 
 
+def _glob_regex(pattern: str) -> "re.Pattern[str]":
+    """rsync-style glob to regex: ``*``/``?``/``[..]`` stop at ``/``, ``**`` crosses it."""
+    out: list[str] = []
+    i = 0
+    while i < len(pattern):
+        c = pattern[i]
+        if pattern.startswith("**/", i):
+            out.append("(?:.*/)?")
+            i += 3
+            continue
+        if c == "*":
+            if pattern.startswith("**", i):
+                out.append(".*")
+                i += 2
+                continue
+            out.append("[^/]*")
+        elif c == "?":
+            out.append("[^/]")
+        elif c == "[" and "]" in pattern[i + 2:]:
+            end = pattern.index("]", i + 2)
+            body = pattern[i + 1:end].replace("\\", "\\\\")
+            out.append("[" + re.sub(r"^!", "^", body) + "]")
+            i = end
+        elif c == "\\" and i + 1 < len(pattern):
+            i += 1
+            out.append(re.escape(pattern[i]))
+        else:
+            out.append(re.escape(c))
+        i += 1
+    return re.compile("".join(out) + r"\Z")
+
+
+def _compile_excludes(excludes: list[str]) -> list[tuple["re.Pattern[str]", bool, bool]]:
+    """``(regex, dir_only, match_full_path)`` per rsync ``--exclude`` pattern."""
+    compiled = []
+    for raw in excludes:
+        dir_only = raw.endswith("/")
+        pat = raw.rstrip("/")
+        anchored = pat.startswith("/")
+        pat = pat.lstrip("/")
+        compiled.append((_glob_regex(pat), dir_only, anchored or "/" in pat))
+    return compiled
+
+
+def _is_excluded(segments: list[str], is_dir: bool, compiled) -> bool:
+    """rsync semantics: a pattern hitting the path or any ancestor directory excludes it."""
+    for depth in range(1, len(segments) + 1):
+        node_is_dir = is_dir or depth < len(segments)
+        for regex, dir_only, full in compiled:
+            if dir_only and not node_is_dir:
+                continue
+            target = "/".join(segments[:depth]) if full else segments[depth - 1]
+            if regex.match(target):
+                return True
+    return False
+
+
 def make_tarball(local_dir: str, *, excludes: Optional[list[str]] = None) -> str:
     """tar.gz *local_dir*'s contents into a temp file; return its path.
 
     Members are stored **relative to** ``local_dir`` (arcname ".") so that a
     remote ``tar xzf … -C <bundle_dir>`` reproduces the tree directly under
     ``bundle_dir`` — matching rsync's ``<src>/ -> <dst>/`` content semantics.
-    ``excludes`` are matched against each member's path relative to
-    ``local_dir`` (leading segment or exact path), mirroring rsync ``--exclude``.
+    ``excludes`` use rsync ``--exclude`` pattern semantics (slash-less patterns at
+    any depth, a trailing ``/`` for directories only, a leading or inner ``/`` for
+    a path from the bundle root, ``*``/``?``/``[..]``/``**`` globs), so both push
+    strategies ship the same file set (the equivalence is tested against real rsync).
     """
-    ex = set(excludes or [])
+    compiled = _compile_excludes(excludes or [])
     root = Path(local_dir).resolve()
 
     def _filter(ti: tarfile.TarInfo) -> Optional[tarfile.TarInfo]:
@@ -149,14 +247,7 @@ def make_tarball(local_dir: str, *, excludes: Optional[list[str]] = None) -> str
         rel = name[2:] if name.startswith("./") else name
         if not rel:
             return ti
-        segments = rel.split("/")
-        first = segments[0]
-        if first in ex or rel in ex or first + "/" in ex:
-            return None
-        # rsync's slash-less/dir patterns match at any depth (CIU-175).
-        if ".ciu/" in ex and ".ciu" in segments:
-            return None
-        if "ciu.env" in ex and segments[-1] == "ciu.env":
+        if _is_excluded(rel.split("/"), ti.isdir(), compiled):
             return None
         return ti
 
@@ -191,8 +282,10 @@ def _push_scp(
     tarball = make_tarball(local_dir, excludes=excludes)
     remote_dir_clean = remote_dir.rstrip("/")
     remote_tar = f"{remote_dir_clean}/{_REMOTE_TARBALL}"
+    dir_word = remote_path_word(remote_dir_clean, "bundle_dir")
+    tar_word = remote_path_word(remote_tar, "bundle_dir")
     try:
-        rc = ssh_exec(host_cfg, [f"mkdir -p {shlex.quote(remote_dir_clean)}"],
+        rc = ssh_exec(host_cfg, [f"mkdir -p {dir_word}"],
                       config=config, repo_root=repo_root)
         if rc != 0:
             _err(f"[S14.6] Could not create remote bundle_dir '{remote_dir_clean}' (rc={rc}).")
@@ -202,8 +295,7 @@ def _push_scp(
             _err(f"[S14.6] scp of the bundle failed (rc={rc}).")
             return rc
         extract = (
-            f"tar xzf {shlex.quote(remote_tar)} -C {shlex.quote(remote_dir_clean)} "
-            f"&& rm -f {shlex.quote(remote_tar)}"
+            f"tar xzf {tar_word} -C {dir_word} && rm -f {tar_word}"
         )
         rc = ssh_exec(host_cfg, [extract], config=config, repo_root=repo_root)
         if rc != 0:
@@ -238,6 +330,7 @@ def push_bundle(
     """
     mode = str(host_cfg.get("push_mode", "auto")).lower()
     excludes = bundle_excludes_for(host_cfg)
+    bundle_dir_for({"bundle_dir": remote_dir})  # validate before anything is sent
 
     if mode == "scp":
         return _push_scp(host_cfg, local_dir, remote_dir,
@@ -284,7 +377,7 @@ def run_activation(
     chain intact (same rule as the docker render-on-target path).
     """
     cmd = resolve_activation_command(host_cfg, verb)
-    remote = f"cd {shlex.quote(bundle_dir)} && {cmd}"
+    remote = f"cd {remote_path_word(bundle_dir, 'bundle_dir')} && {cmd}"
     if remaining:
         remote += " " + shlex.join(remaining)
     return ssh_exec(host_cfg, [remote], config=config, repo_root=repo_root)

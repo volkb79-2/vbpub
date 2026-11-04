@@ -140,11 +140,11 @@ def test_up_layout_quotes_bundle_dir_in_remote_argv(remote, monkeypatch):
     seen = remote
     seen["hosts"].clear()
     import ciu.hosts as hosts
-    host = {"bundle_dir": "/srv/ciu current; touch SHOULD_NOT_RUN"}
+    host = {"bundle_dir": "/srv/ciu;touch-SHOULD_NOT_RUN"}
     monkeypatch.setattr(hosts, "get_host", lambda root, name, admin=False: dict(host))
     assert _run(monkeypatch, ["up", "--layout", "dev-local"]) == 0
     remote_cmd = seen["exec"][0][1][0]
-    assert "cd '/srv/ciu current; touch SHOULD_NOT_RUN' &&" in remote_cmd
+    assert "cd '/srv/ciu;touch-SHOULD_NOT_RUN' &&" in remote_cmd
 
 
 def test_up_layout_sync_failure_aborts_naming_host_and_remainder(remote, monkeypatch, capsys):

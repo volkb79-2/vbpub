@@ -534,4 +534,4 @@ class TestCliThinDispatch:
         with pytest.raises(SystemExit) as exc:
             cli_mod.main()
         assert exc.value.code == 0
-        assert exec_calls[0] == 'cd /opt/app && eval "$(ciu env print)" && ciu status --gate'
+        assert exec_calls[0] == 'cd /opt/app && { ciu_env=$(ciu env print) || exit $?; eval "$ciu_env"; } && ciu status --gate'
