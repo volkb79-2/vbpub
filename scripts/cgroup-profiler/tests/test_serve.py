@@ -3505,28 +3505,36 @@ def test_accept_loop_survives_a_handler_bug_and_keeps_serving(tmp_path, monkeypa
     # propagate the exception and die — a second, healthy connection must
     # still be served afterward.
     server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
-    calls = {"n": 0}
     real_dispatch = server._dispatch
 
+    # CP-53: each connection runs on its own handler thread (CP-33), so the
+    # order in which the two requests reach `_dispatch` is not the order they
+    # were accepted. The crash is keyed on the request itself, never on a call
+    # counter, and the accept loop is not allowed to end (which flips the
+    # daemon to "shutting down" and answers late requests `busy`) until both
+    # connections have been closed by their handlers.
     def _flaky(req):
-        calls["n"] += 1
-        if calls["n"] == 1:
+        if req["args"].get("crash"):
             raise ValueError("synthetic unanticipated handler bug")
         return real_dispatch(req)
 
     monkeypatch.setattr(server, "_dispatch", _flaky)
 
     conns = [
-        _FakeConn([_wire_bytes("version")]),
+        _FakeConn([_wire_bytes("version", crash=True)]),
         _FakeConn([_wire_bytes("version")]),
     ]
 
     class _FakeSock:
         def __init__(self, conns):
             self._conns = list(conns)
+            self._all = list(conns)
 
         def accept(self):
             if not self._conns:
+                deadline = time.monotonic() + 10.0
+                while not all(c.closed for c in self._all) and time.monotonic() < deadline:
+                    time.sleep(0.005)
                 raise OSError("no more fake connections")
             return self._conns.pop(0), ("fake",)
 
