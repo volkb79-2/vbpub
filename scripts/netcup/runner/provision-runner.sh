@@ -114,6 +114,14 @@ chmod 0711 "$RUNNER_HOME" "$RUNNER_HOME/checkouts"
 install -o "$RUNNER_USER" -g "$RUNNER_USER" -m 0755 "$here/run-job" "$RUNNER_HOME/bin/run-job"
 install -o "$RUNNER_USER" -g "$RUNNER_USER" -m 0755 "$here/sync-from-devcontainer" "$RUNNER_HOME/bin/sync-from-devcontainer"
 
+# The runner scripts themselves (setup-*.sh, build-*.sh, lib.sh, runner.env) live in ~/runner-scripts, the path the docs and run-job
+# invocations use; a reinstall recreates it here, from the directory this script was uploaded in.
+install -d -o "$RUNNER_USER" -g "$RUNNER_USER" -m 0700 "$RUNNER_HOME/runner-scripts"
+for f in "$here"/*.sh "$here/run-job" "$here/sync-from-devcontainer" "$here/runner.env.example"; do
+  install -o "$RUNNER_USER" -g "$RUNNER_USER" -m 0755 "$f" "$RUNNER_HOME/runner-scripts/$(basename "$f")"
+done
+install -o "$RUNNER_USER" -g "$RUNNER_USER" -m 0600 "$runner_env" "$RUNNER_HOME/runner-scripts/runner.env"
+
 identity_check
 # uv searches the cwd's parents for uv.toml; /root is unreadable to the runner.
 cd "$RUNNER_HOME"

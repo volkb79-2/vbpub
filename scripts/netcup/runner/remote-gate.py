@@ -79,6 +79,9 @@ VERSION_RE = re.compile(r"^[0-9]+(\.[0-9]+)*$")
 BIN_RE = re.compile(r"^/[A-Za-z0-9._/+-]+$")
 IMAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/:@-]*$")
 ENV_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
+# set by the job itself; a profile `env` may not override them (they carry the safety posture of the lane)
+RESERVED_ENV = {"RUN_GATE_ALLOW_MAIN_CHECKOUT", "ASSAY_GATE_HOST_REPO_ROOT", "ASSAY_GATE_HOSTS_REPO_ROOT", "RUN_GATE_PROFILE",
+                "RUN_GATE_TESTER_UNIFIED_IMAGE", "PATH", "HOME", "DOCKER_HOST", "DOCKER_CONFIG", "LD_PRELOAD", "LD_LIBRARY_PATH"}
 REPO_KEYS = {"run_gate_min", "run_gate_bins", "required_images", "uid_check", "admission_check", "tester_image", "env"}
 PREREQ_RC = 76  # the job's exit code (and verdict PREREQ_MISSING) when a per-repo prerequisite is not met
 
@@ -144,6 +147,9 @@ def build_profile(name: str, *layers: dict) -> RepoProfile:
     env = row.get("env", {})
     if not isinstance(env, dict) or not all(ENV_KEY_RE.match(str(k)) and isinstance(v, str) for k, v in env.items()):
         raise GateError(f"repo profile {name!r}: env must map UPPER_CASE names to strings")
+    reserved = sorted(set(env) & RESERVED_ENV)
+    if reserved or any(str(k).startswith("RUN_GATE_ALLOW_") for k in env):
+        raise GateError(f"repo profile {name!r}: env may not set reserved names {reserved or sorted(k for k in env if k.startswith('RUN_GATE_ALLOW_'))}")
     prof.env = dict(env)
     return prof
 
@@ -259,15 +265,18 @@ def git(ctx: Ctx, wt: str, *args: str) -> Result:
 
 def repo_name(ctx: Ctx, top: str, override: Optional[str]) -> str:
     """The repository's name: --repo, else the directory of its main checkout (a linked worktree's common git dir is
-    `<main checkout>/.git`), else the worktree's own directory name."""
+    `<main checkout>/.git`). Anything else is refused (never guessed from a worktree directory name): the name selects the
+    per-repo prerequisite profile, and a wrong guess would silently run with the empty profile (no floor, image or admission checks)."""
     if override:
         return check_repo_name(override)
     common = git(ctx, top, "rev-parse", "--path-format=absolute", "--git-common-dir").out.strip()
-    path = Path(common).parent if common.endswith("/.git") else Path(top)
+    if not common.endswith("/.git"):
+        raise GateError(f"cannot derive the repository name: the git common dir {common or '(unknown)'!r} is not <main checkout>/.git; pass --repo NAME", 2)
+    path = Path(common).parent
     try:
         return check_repo_name(path.name)
     except GateError:
-        raise GateError(f"cannot derive a repository name from {path}; pass --repo NAME") from None
+        raise GateError(f"cannot derive a repository name from the main checkout directory {path.name!r}; pass --repo NAME", 2) from None
 
 
 def local_state(ctx: Ctx, wt: str, base: Optional[str]) -> dict:
@@ -362,7 +371,6 @@ rc=70
 @@PREREQ_FUNCS@@
 log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$*"; }
 printf '%s\n' "$$" > "$D/pid"
-psi_high() { awk -v lim="$PSI_LIMIT" '/^some/ {sub("avg10=","",$2); if ($2+0 > lim) f=1} END {exit !f}' /proc/pressure/cpu /proc/pressure/memory; }
 # shellcheck disable=SC2329  # invoked from the TERM trap
 cancel_lane() {
   docker exec -u vscode "$COCKPIT" sh -c 'test -s "$1" && kill -TERM "$(cat "$1")"' sh "$PIDF" 2>/dev/null || true
@@ -411,10 +419,7 @@ while psi_high; do
   sleep 30; waited=$((waited + 30))
 done
 log "PSI ok (waited ${waited}s)"
-if [[ -n $UID_IMAGE ]] && ! docker run --rm --pull=never --network none --name "rg-@@NAME@@-uidchk" --entrypoint getent "$UID_IMAGE" passwd "$UID_NUM" >/dev/null 2>&1; then
-  PREREQ_MSGS=("image $UID_IMAGE has no passwd entry for uid $UID_NUM (run-gate >= 25 refuses the lane user; rebuild the image with the uid entry)")
-  prereq_fail
-fi
+check_uid "rg-@@NAME@@-uidchk" || prereq_fail   # also checked before the upload when the host was quiet enough; this is the authoritative one
 
 mkdir -p -- "$CKROOT"
 if [[ -n $SEED ]]; then
@@ -442,7 +447,16 @@ log "checkout $CKDIR at $SHA"
 
 if (( ADMISSION_CHECK )); then
   # a repo whose run-gate.toml enables admission needs a published gates cap on this host, or every lane ends NOT_RUN no-headroom
-  adm=$(docker exec -u vscode -w "$CKIN/$PROJ" "$COCKPIT" "$RG_BIN" admission show 2>&1 || true)
+  # fail-closed: an erroring `admission show` or an output without an `enabled=true|false` statement is a failed check, not a pass
+  adm=$(docker exec -u vscode -w "$CKIN/$PROJ" "$COCKPIT" "$RG_BIN" admission show 2>&1); arc=$?
+  if (( arc != 0 )); then
+    PREREQ_MSGS=("run-gate admission show failed (rc $arc): $(head -c 200 <<<"$adm" | tr '\n' ' ')")
+    prereq_fail
+  fi
+  if ! grep -qE 'admission: enabled=(true|false)' <<<"$adm"; then
+    PREREQ_MSGS=("run-gate admission show printed no 'enabled=true|false' statement (output format changed?): $(head -c 200 <<<"$adm" | tr '\n' ' ')")
+    prereq_fail
+  fi
   if grep -q 'admission: enabled=true' <<<"$adm" && ! grep -qE 'max_concurrent=[0-9]+' <<<"$adm"; then
     PREREQ_MSGS=("run-gate admission is enabled by the repo but this host publishes no gates cap (run-gate admission set --max-concurrent N --unreadable-policy refuse)")
     prereq_fail
@@ -455,7 +469,7 @@ args=("$LANE" "${EXTRA[@]}")
 log "run-gate ${args[*]} (cwd $CKIN/$PROJ, run-gate $RG_VER)"
 LANE_STARTED=1
 docker exec -u vscode -w "$CKIN/$PROJ" -e RUN_GATE_TESTER_UNIFIED_IMAGE="$IMAGE" -e RUN_GATE_ALLOW_MAIN_CHECKOUT=1 -e ASSAY_GATE_HOST_REPO_ROOT="$HOME/checkouts/$REPO" -e RUN_GATE_PROFILE=off "${ENVX[@]}" \
-  "$COCKPIT" sh -c 'echo $$ > "$1"; b=$2; shift 2; PATH=${b%/*}:$PATH; exec nice -n 19 "$b" "$@"' sh "$PIDF" "$RG_BIN" "${args[@]}" > "$D/lane.log" 2>&1 &
+  "$COCKPIT" sh -c 'echo $$ > "$1"; b=$2; shift 2; d=${b%/*}; PATH=${d:-/}:$PATH; exec nice -n 19 "$b" "$@"' sh "$PIDF" "$RG_BIN" "${args[@]}" > "$D/lane.log" 2>&1 &
 lanepid=$!
 wait "$lanepid"
 rc=$?
@@ -475,7 +489,32 @@ PREREQ_FUNCS = r"""PREREQ_MSGS=()
 SEEN=()
 RG_BIN=
 RG_VER=
-ver_ge() { [[ $(printf '%s\n%s\n' "$2" "$1" | sort -V | head -n1) == "$2" ]]; }  # $1 >= $2
+psi_high() { awk -v lim="$PSI_LIMIT" '/^some/ {sub("avg10=","",$2); if ($2+0 > lim) f=1} END {exit !f}' /proc/pressure/cpu /proc/pressure/memory; }
+# PEP 440 ordering: 25.0.1.dev1 < 25.0.1a1 < 25.0.1b1 < 25.0.1rc1 < 25.0.1 < 25.0.1.post1; an unparsable version is never >= anything.
+VERCMP='import re, sys
+def key(v):
+    m = re.fullmatch(r"(\d+(?:\.\d+)*)(?:(a|b|rc)(\d+))?(?:\.post(\d+))?(?:\.dev(\d+))?(?:\+[A-Za-z0-9.]+)?", v)
+    if not m:
+        sys.exit(2)
+    rel = [int(x) for x in m.group(1).split(".")]
+    rel += [0] * (8 - len(rel))
+    pre = {"a": 1, "b": 2, "rc": 3}[m.group(2)] if m.group(2) else (0 if m.group(5) and not m.group(4) else 4)
+    return (rel, pre, int(m.group(3) or 0), int(m.group(4)) if m.group(4) else -1, int(m.group(5)) if m.group(5) else 10**9)
+sys.exit(0 if key(sys.argv[1]) >= key(sys.argv[2]) else 1)'
+ver_ge() { python3 -c "$VERCMP" "$1" "$2" 2>/dev/null; }  # $1 >= $2
+# the version of a run-gate: the last version-looking word of the first `--version` line (so "run-gate (python 3.12) 25.0.2" reads 25.0.2)
+ver_of() {
+  docker exec -u vscode "$COCKPIT" "$1" --version 2>/dev/null | head -n1 | tr ' ' '\n' \
+    | grep -E '^[0-9]+(\.[0-9]+)*((a|b|rc)[0-9]+)?(\.post[0-9]+)?(\.dev[0-9]+)?(\+[A-Za-z0-9.]+)?$' | tail -n1 || true
+}
+# the repo's lane user must exist in its image (run-gate >= 25 refuses `user = "invoker"` without a passwd entry); $1 = a unique container name
+check_uid() {
+  [[ -n $UID_IMAGE ]] || return 0
+  if ! docker run --rm --pull=never --network none --name "$1" --entrypoint getent "$UID_IMAGE" passwd "$UID_NUM" >/dev/null 2>&1; then
+    PREREQ_MSGS+=("image $UID_IMAGE has no passwd entry for uid $UID_NUM (run-gate >= 25 refuses the lane user; rebuild the image with the uid entry)")
+    return 1
+  fi
+}
 # Fills PREREQ_MSGS with every unmet prerequisite and sets RG_BIN/RG_VER to the first cockpit run-gate that satisfies RG_MIN.
 check_prereqs() {
   local i b v
@@ -484,7 +523,7 @@ check_prereqs() {
     docker image inspect "$i" >/dev/null 2>&1 || PREREQ_MSGS+=("docker image $i is not present on this host")
   done
   for b in "${RG_BINS[@]}"; do
-    v=$(docker exec -u vscode "$COCKPIT" "$b" --version 2>/dev/null | head -n1 | grep -oE '[0-9]+(\.[0-9]+)+' | head -n1 || true)
+    v=$(ver_of "$b")
     [[ -n $v ]] || { SEEN+=("$b=unusable"); continue; }
     if [[ -z $RG_MIN ]] || ver_ge "$v" "$RG_MIN"; then RG_BIN=$b; RG_VER=$v; break; fi
     SEEN+=("$b=$v")
@@ -497,8 +536,16 @@ PREFLIGHT = r"""COCKPIT=@@COCKPIT@@
 RG_MIN=@@RG_MIN@@
 RG_BINS=(@@RG_BINS@@)
 REQ_IMAGES=(@@REQ_IMAGES@@)
+UID_IMAGE=@@UID_IMAGE@@
+UID_NUM=@@UID_NUM@@
+PSI_LIMIT=@@PSI_LIMIT@@
 @@PREREQ_FUNCS@@
-if check_prereqs; then echo "OK $RG_BIN $RG_VER"; else printf 'PREREQ %s\n' "${PREREQ_MSGS[@]}"; fi
+check_prereqs || true
+# the lane-user check starts a throwaway container: only on a quiet host (otherwise the job repeats it after its own PSI wait)
+if [[ -n $UID_IMAGE ]] && docker image inspect "$UID_IMAGE" >/dev/null 2>&1; then
+  if psi_high; then echo "NOTE uid check deferred to the job (PSI above $PSI_LIMIT)"; else check_uid "rg-preflight-uidchk-$$" || true; fi
+fi
+if (( ${#PREREQ_MSGS[@]} )); then printf 'PREREQ %s\n' "${PREREQ_MSGS[@]}"; else echo "OK $RG_BIN $RG_VER"; fi
 """
 
 
@@ -507,7 +554,7 @@ def profile_subs(host: Host, prof: RepoProfile) -> dict:
     return {"COCKPIT": shlex.quote(host.cockpit), "PREREQ_FUNCS": PREREQ_FUNCS, "RG_MIN": shlex.quote(prof.run_gate_min),
             "RG_BINS": " ".join(shlex.quote(b) for b in prof.run_gate_bins),
             "REQ_IMAGES": " ".join(shlex.quote(i) for i in prof.required_images),
-            "UID_IMAGE": shlex.quote(uc.get("image", "")), "UID_NUM": str(uc.get("uid", "")),
+            "UID_IMAGE": shlex.quote(uc.get("image", "")), "UID_NUM": str(uc.get("uid", "")), "PSI_LIMIT": f"{PSI_LIMIT:g}",
             "ADMISSION_CHECK": "1" if prof.admission_check else "0",
             "ENVX": " ".join(f"-e {shlex.quote(f'{k}={v}')}" for k, v in sorted(prof.env.items())),
             "IMAGE": shlex.quote(prof.tester_image or host.image)}

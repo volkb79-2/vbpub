@@ -53,7 +53,7 @@ def hosts():
     return {n: rg.Host(name=n, ssh=row(n)["ssh"], api_check=row(n)["api_check"], guard=row(n)["guard"]) for n in ("r1002", "v1001")}
 
 
-PREFLIGHT_OK = ("if check_prereqs", rg.Result(0, "OK /home/vscode/.local/bin/run-gate 25.0.2\n"))
+PREFLIGHT_OK = ("check_prereqs || true", rg.Result(0, "OK /home/vscode/.local/bin/run-gate 25.0.2\n"))
 
 
 def ctx_for(tmp_path, handlers):
@@ -78,7 +78,7 @@ def git_handlers(dirty="", base_ok=True, count="3", repo="vbpub"):
 
 
 def psi(cpu, mem):
-    return ("/proc/pressure/cpu /proc/pressure/memory", rg.Result(0, f"{cpu}\n{mem}\n"))
+    return ("print $2}' /proc/pressure/cpu /proc/pressure/memory", rg.Result(0, f"{cpu}\n{mem}\n"))
 
 
 def run_args(tmp_path, *extra):

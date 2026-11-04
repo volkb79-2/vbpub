@@ -24,10 +24,23 @@ def test_repo_name_is_the_main_checkout_directory_of_a_linked_worktree(tmp_path)
     assert rg.repo_name(ctx, "/ws/dstdns/.worktrees/x", None) == "dstdns"
 
 
-def test_repo_name_falls_back_to_the_worktree_directory_and_honours_an_override(tmp_path):
+def test_repo_name_is_never_guessed_from_the_worktree_directory(tmp_path):
     ctx, _ = ctx_for(tmp_path, [("--git-common-dir", rg.Result(0, "/srv/x/bare.git\n"))])
-    assert rg.repo_name(ctx, "/home/me/myrepo", None) == "myrepo"
+    with pytest.raises(rg.GateError, match="pass --repo NAME") as e:
+        rg.repo_name(ctx, "/home/me/myrepo", None)
+    assert e.value.code == 2  # a wrong guess would select the empty profile and skip every prerequisite check
     assert rg.repo_name(ctx, "/home/me/myrepo", "other") == "other"
+
+
+def test_odd_main_checkout_directory_name_is_refused_without_repo(tmp_path):
+    ctx, _ = ctx_for(tmp_path, [("--git-common-dir", rg.Result(0, "/ws/9-main/.git\n"))])
+    with pytest.raises(rg.GateError, match="--repo") as e:
+        rg.repo_name(ctx, "/ws/9-main/.worktrees/x", None)
+    assert e.value.code == 2
+    ctx, _ = ctx_for(tmp_path, git_handlers(repo="dstdns") + [psi(1, 1), LS])
+    with pytest.raises(rg.GateError):
+        rg.cmd_run(ctx, run_args(tmp_path, "r1002", "/wt", "suite", "--name", "nr1", "--repo", "9bad"))
+    assert not (tmp_path / "out" / "nr1").exists()
 
 
 @pytest.mark.parametrize("bad", ["", "9lives", "-x", "a/b", "x" * 60, "a" * 40, "foo.git", "has space"])
@@ -79,6 +92,12 @@ def test_host_table_overrides_a_builtin_profile_key_by_key():
     {"env": {"lower": "x"}},
     {"env": {"OK": 1}},
     {"env": ["A"]},
+    {"env": {"RUN_GATE_ALLOW_MAIN_CHECKOUT": "0"}},
+    {"env": {"RUN_GATE_ALLOW_ANYTHING": "1"}},
+    {"env": {"ASSAY_GATE_HOSTS_REPO_ROOT": "/"}},
+    {"env": {"ASSAY_GATE_HOST_REPO_ROOT": "/"}},
+    {"env": {"RUN_GATE_PROFILE": "on"}},
+    {"env": {"PATH": "/tmp"}},
 ])
 def test_invalid_profiles_are_refused(row):
     with pytest.raises(rg.GateError):
@@ -118,7 +137,7 @@ def test_dstdns_worktree_is_checked_out_under_its_own_repo_directory(tmp_path):
     meta = json.loads((tmp_path / "out" / "d1" / "meta.json").read_text())
     assert meta["repo"] == "dstdns" and meta["run_gate"] == "/home/vscode/.local/bin/run-gate" and meta["project_dir"] == "."
     flat = [" ".join(c[0]) for c in ctx.runner.calls]
-    pre = next(i for i, c in enumerate(flat) if "check_prereqs" in c)
+    pre = next(i for i, c in enumerate(flat) if "check_prereqs || true" in c)
     first_write = next(i for i, c in enumerate(flat) if "mkdir -p -m 0700" in c)
     assert pre < first_write  # prerequisites are checked before anything is created on the host
 
@@ -131,7 +150,7 @@ def test_repo_flag_overrides_the_derived_name(tmp_path):
 
 def test_missing_prerequisites_stop_before_any_upload_with_a_clear_error(tmp_path):
     msg = "PREREQ docker image dstdns/test-runner:local is not present on this host\nPREREQ no run-gate >= 25.0.1 in the cockpit (tried: /x=24.3.0)\n"
-    handlers = git_handlers(repo="dstdns") + [psi(1, 1), LS, ("if check_prereqs", rg.Result(0, msg))]
+    handlers = git_handlers(repo="dstdns") + [psi(1, 1), LS, ("check_prereqs || true", rg.Result(0, msg))]
     ctx, _ = ctx_for(tmp_path, handlers)
     with pytest.raises(rg.GateError) as e:
         rg.cmd_run(ctx, run_args(tmp_path, "r1002", "/wt", "run-gate-docs", "--detach", "--name", "d3"))
@@ -147,11 +166,11 @@ def test_missing_prerequisites_stop_before_any_upload_with_a_clear_error(tmp_pat
 def test_preflight_transport_failure_and_silent_host_are_errors(tmp_path):
     h = hosts()["r1002"]
     prof = h.profile("dstdns")
-    ctx, _ = ctx_for(tmp_path, [("if check_prereqs", rg.Result(255, "", "ssh: refused"))])
+    ctx, _ = ctx_for(tmp_path, [("check_prereqs || true", rg.Result(255, "", "ssh: refused"))])
     with pytest.raises(rg.GateError) as e:
         rg.preflight(ctx, h, "dstdns", prof)
     assert e.value.code == 3 and "could not run" in str(e.value)
-    ctx, _ = ctx_for(tmp_path, [("if check_prereqs", rg.Result(0, ""))])
+    ctx, _ = ctx_for(tmp_path, [("check_prereqs || true", rg.Result(0, ""))])
     with pytest.raises(rg.GateError, match="no answer from the host check") as e:
         rg.preflight(ctx, h, "dstdns", prof)
     assert e.value.code == 4
@@ -159,7 +178,7 @@ def test_preflight_transport_failure_and_silent_host_are_errors(tmp_path):
 
 def test_preflight_returns_the_selected_run_gate(tmp_path):
     h = hosts()["r1002"]
-    ctx, _ = ctx_for(tmp_path, [("if check_prereqs", rg.Result(0, "noise\nOK /home/vscode/.venvs/gate-tools2502/bin/run-gate 25.0.2\n"))])
+    ctx, _ = ctx_for(tmp_path, [("check_prereqs || true", rg.Result(0, "noise\nOK /home/vscode/.venvs/gate-tools2502/bin/run-gate 25.0.2\n"))])
     assert rg.preflight(ctx, h, "dstdns", h.profile("dstdns")) == "/home/vscode/.venvs/gate-tools2502/bin/run-gate"
     sent = ctx.runner.calls[-1][0][-1]
     assert sent.startswith("bash -c ") and "guard-r1002" in sent
@@ -221,11 +240,11 @@ if cmd == "exec":
         v = cfg["versions"].get(rest[0])
         if v is None:
             sys.exit(1)
-        print("run-gate " + v)
+        print(cfg["version_line"].replace("@V@", v) if "version_line" in cfg else "run-gate " + v)
         sys.exit(0)
     if rest[1:3] == ["admission", "show"]:
         print(cfg.get("admission", ""))
-        sys.exit(0)
+        sys.exit(cfg.get("admission_rc", 0))
     if rest[:2] == ["sh", "-c"]:
         sys.exit(subprocess.run(["sh", "-c", rest[2], *rest[3:]], env=env).returncode)
     sys.exit(1)  # cat / rm inside the cockpit: nothing to read, fall back to the host side
@@ -312,13 +331,20 @@ def _docker_calls(sb):
     return [json.loads(x) for x in (sb.tmp / "docker.log").read_text().splitlines()]
 
 
+def _preflight(sandbox, host, repo="dstdns", psi_value="0.00"):
+    """Run the real preflight script in bash with the sandbox's fake docker; the pressure files are the sandbox's own."""
+    (sandbox.tmp / "psi").write_text(f"some avg10={psi_value} avg60=0.00 avg300=0.00 total=0\n")
+    script = rg.substitute(rg.PREFLIGHT, rg.profile_subs(host, host.profile(repo)))
+    script = script.replace("/proc/pressure/cpu /proc/pressure/memory", f"{sandbox.tmp}/psi {sandbox.tmp}/psi")
+    return subprocess.run(["bash", "-c", script], env=sandbox.env, capture_output=True, text=True)
+
+
 def test_preflight_script_in_real_bash_selects_the_first_run_gate_that_meets_the_floor(sandbox):
     old = sandbox.tmp / "old" / "run-gate"
     host = hosts()["r1002"]
     host.repos = {"dstdns": {"run_gate_bins": [str(old), str(sandbox.rgbin)]}}
     sandbox.conf(versions={str(old): "24.3.0", str(sandbox.rgbin): "25.0.2"})
-    script = rg.substitute(rg.PREFLIGHT, rg.profile_subs(host, host.profile("dstdns")))
-    r = subprocess.run(["bash", "-c", script], env=sandbox.env, capture_output=True, text=True)
+    r = _preflight(sandbox, host)
     assert r.stdout.strip() == f"OK {sandbox.rgbin} 25.0.2", r.stderr
 
 
@@ -327,8 +353,7 @@ def test_preflight_script_reports_every_unmet_prerequisite(sandbox):
     host = hosts()["r1002"]
     host.repos = {"dstdns": {"run_gate_bins": [str(old), str(sandbox.rgbin), "/nonexistent/run-gate"]}}
     sandbox.conf(versions={str(old): "24.3.0", str(sandbox.rgbin): "25.0.0"}, images=[], cockpit_down=True)
-    script = rg.substitute(rg.PREFLIGHT, rg.profile_subs(host, host.profile("dstdns")))
-    r = subprocess.run(["bash", "-c", script], env=sandbox.env, capture_output=True, text=True)
+    r = _preflight(sandbox, host)
     lines = r.stdout.strip().splitlines()
     assert all(x.startswith("PREREQ ") for x in lines) and len(lines) == 3, r.stdout
     assert "cockpit container mdt-cockpit-runner is not running" in lines[0]
@@ -336,11 +361,53 @@ def test_preflight_script_reports_every_unmet_prerequisite(sandbox):
     assert f"no run-gate >= 25.0.1 in the cockpit (tried: {old}=24.3.0 {sandbox.rgbin}=25.0.0 /nonexistent/run-gate=unusable)" in lines[2]
 
 
-def test_version_floor_compares_numerically_not_lexically(sandbox):
-    for have, want, ok in (("25.0.2", "25.0.1", True), ("25.0.1", "25.0.1", True), ("24.3.0", "25.0.1", False), ("25.10.0", "25.9.9", True),
-                           ("9.0.0", "25.0.1", False)):
-        r = subprocess.run(["bash", "-c", rg.PREREQ_FUNCS + f'\nver_ge {have} {want}'], capture_output=True)
-        assert (r.returncode == 0) is ok, (have, want)
+def test_preflight_checks_the_lane_user_before_any_upload(sandbox):
+    host = hosts()["r1002"]
+    host.repos = {"dstdns": {"run_gate_bins": [str(sandbox.rgbin)]}}
+    sandbox.conf(uid_ok=False)
+    r = _preflight(sandbox, host)
+    assert r.stdout.strip() == "PREREQ image dstdns/test-runner:local has no passwd entry for uid 1003 (run-gate >= 25 refuses the lane user; rebuild the image with the uid entry)"
+    assert any(c[0] == "run" and any(a.startswith("rg-preflight-uidchk-") for a in c) for c in _docker_calls(sandbox))
+
+
+def test_preflight_defers_the_lane_user_check_on_a_busy_host(sandbox):
+    host = hosts()["r1002"]
+    host.repos = {"dstdns": {"run_gate_bins": [str(sandbox.rgbin)]}}
+    sandbox.conf(uid_ok=False)
+    r = _preflight(sandbox, host, psi_value="60.00")
+    assert "NOTE uid check deferred to the job" in r.stdout and f"OK {sandbox.rgbin} 25.0.2" in r.stdout
+    assert not any(c[0] == "run" for c in _docker_calls(sandbox))  # no container started on a busy host
+
+
+def test_repo_without_uid_check_starts_no_container_in_preflight(sandbox):
+    host = hosts()["r1002"]
+    host.repos = {"other": {"run_gate_bins": [str(sandbox.rgbin)]}}
+    r = _preflight(sandbox, host, repo="other")
+    assert r.stdout.strip() == f"OK {sandbox.rgbin} 25.0.2"
+    assert not any(c[0] == "run" for c in _docker_calls(sandbox))
+
+
+@pytest.mark.parametrize("have,want,ok", [
+    ("25.0.2", "25.0.1", True), ("25.0.1", "25.0.1", True), ("24.3.0", "25.0.1", False), ("25.10.0", "25.9.9", True), ("9.0.0", "25.0.1", False),
+    ("25.0.1rc1", "25.0.1", False), ("25.0.1.dev3", "25.0.1", False), ("25.0.1a2", "25.0.1", False), ("25.0.1b1", "25.0.1", False),
+    ("25.0.1.post1", "25.0.1", True), ("25.0.2rc1", "25.0.1", True), ("25.0.1rc2", "25.0.1rc1", True), ("25.0.1.dev1", "25.0.1rc1", False),
+    ("25.1.dev0", "25.0.1", True), ("25.0.1+local.3", "25.0.1", True), ("25", "25.0.0", True), ("garbage", "25.0.1", False),
+])
+def test_version_floor_is_a_pep440_comparison(have, want, ok):
+    r = subprocess.run(["bash", "-c", rg.PREREQ_FUNCS + '\nver_ge "$0" "$1"', have, want], capture_output=True)
+    assert (r.returncode == 0) is ok, (have, want)
+
+
+@pytest.mark.parametrize("line,bin_ok", [
+    ("run-gate (python 3.12) 25.0.2", True), ("run-gate 25.0.2", True), ("25.0.2", True),
+    ("run-gate (python 3.12) 25.0.1rc1", False), ("run-gate 25.0.1.dev4", False), ("run-gate 25.0.1.post2", True), ("no version here", False),
+])
+def test_version_is_read_from_the_last_version_word_and_prereleases_miss_the_floor(sandbox, line, bin_ok):
+    host = hosts()["r1002"]
+    host.repos = {"dstdns": {"run_gate_bins": [str(sandbox.rgbin)]}}
+    sandbox.conf(version_line=line.replace("25.0.2", "@V@") if "25.0.2" in line else line, versions={str(sandbox.rgbin): "25.0.2"})
+    r = _preflight(sandbox, host)
+    assert r.stdout.startswith("OK ") is bin_ok, r.stdout
 
 
 def test_job_runs_a_dstdns_lane_from_the_repo_layout_with_the_selected_run_gate(sandbox):
@@ -403,6 +470,18 @@ def test_job_refuses_when_admission_is_enabled_but_no_cap_is_published(sandbox):
     r = _refused(sandbox)
     assert "publishes no gates cap" in r.stdout and "run-gate admission set --max-concurrent" in r.stdout
     assert not list((sandbox.home / "checkouts" / "dstdns" / ".worktrees").glob("rg-*"))  # the checkout is cleaned on the way out
+
+
+def test_admission_show_errors_fail_the_check(sandbox):
+    sandbox.conf(admission="run-gate: no such subcommand", admission_rc=2)
+    r = _refused(sandbox)
+    assert "admission show failed (rc 2)" in r.stdout and "no such subcommand" in r.stdout
+
+
+def test_admission_output_without_an_enabled_statement_fails_the_check(sandbox):
+    sandbox.conf(admission="admission is on, cap 4")  # a changed format must not pass silently
+    r = _refused(sandbox)
+    assert "no 'enabled=true|false' statement" in r.stdout
 
 
 def test_admission_that_the_repo_does_not_enable_is_not_checked_further(sandbox):

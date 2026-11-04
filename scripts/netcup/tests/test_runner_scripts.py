@@ -47,3 +47,10 @@ def test_real_env_file_is_ignored_and_uid_default_matches_tester_lane_user():
     ignored = subprocess.run(["git", "check-ignore", "-q", str(RUNNER / "runner.env")], cwd=RUNNER).returncode
     assert ignored == 0
     assert re.search(r"^RUNNER_UID=1003\b", (RUNNER / "runner.env.example").read_text(), re.M)
+
+
+def test_provisioning_installs_the_runner_scripts_into_the_documented_directory():
+    text = (RUNNER / "provision-runner.sh").read_text()
+    assert '"$RUNNER_HOME/runner-scripts"' in text and '"$here"/*.sh' in text and '"$runner_env"' in text  # ~/runner-scripts, runner.env included, mode 0600
+    assert "setup-cockpit-run-gate.sh" in (RUNNER.parent / "CONSUMERS.md").read_text()
+    assert "~/runner-scripts/setup-cockpit-run-gate.sh" in (RUNNER.parent / "CONSUMERS.md").read_text()
