@@ -337,6 +337,7 @@ _mdt_host_role() {
 # per process; set MDT_MEASURED_LOADED= to force a re-read.
 _mdt_load_iobench_caps() {
   [ -n "${MDT_MEASURED_LOADED:-}" ] && return 0
+  # shellcheck disable=SC2034  # read through eval "\${MDT_MEASURED_$field}" in the dedicated resolvers
   MDT_MEASURED_LOADED=1; MDT_MEASURED_RIOPS=""; MDT_MEASURED_WIOPS=""; MDT_MEASURED_RBPS=""; MDT_MEASURED_WBPS=""
   MDT_MEASURED_WHY=""
   local helper="${MDT_IOBENCH_CAPS_HELPER:-/usr/local/sbin/mdt_iobench_caps.py}" node majmin k v out rc
@@ -370,7 +371,7 @@ _mdt_dedicated_remedy() {
 # (DEV_IO_*_MAX), else the measured iobench cap; never DEV_STATIC_*, never a built-in.  Fields without
 # either stay EMPTY and MDT_DEDICATED_UNRESOLVED lists them; rc 1 then (the callers refuse / fail).
 _mdt_resolve_static_io_dedicated() {
-  local rc=0 field pin meas value unresolved=""
+  local rc=0 field pin value unresolved=""
   _mdt_load_iobench_caps || true
   for field in "RBPS DEV_IO_RBPS_MAX" "WBPS DEV_IO_WBPS_MAX" "RIOPS DEV_IO_RIOPS_MAX" "WIOPS DEV_IO_WIOPS_MAX"; do
     set -- $field
