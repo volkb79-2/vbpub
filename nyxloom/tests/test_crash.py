@@ -271,11 +271,11 @@ def test_wrapper_sigkill_drill(tmp_state, tmp_path):
         # wrapper dies (start_new_session=True detaches it); reap it early
         # instead of leaving it to run out its 30s on its own.
         child_pid_file = attempt_dir / "child.pid"
-        if child_pid_file.exists():
-            try:
-                os.kill(int(child_pid_file.read_text(encoding="utf-8").strip()), signal.SIGKILL)
-            except (ProcessLookupError, ValueError):
-                pass
+        try:
+            os.kill(int(child_pid_file.read_text(encoding="utf-8").strip()), signal.SIGKILL)
+        except (ProcessLookupError, ValueError, FileNotFoundError):
+            # gone already / never published / half-written: nothing to reap
+            pass
 
 
 # ---------------------------------------------------------------------------
