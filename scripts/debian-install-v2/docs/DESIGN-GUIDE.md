@@ -320,9 +320,8 @@ comparable: changing workload duration can change the measured metric.
 
 Preserve cgprofile's Markdown report beside its `charts/` directory and raw
 samples. In this host setup, HTML rendering was killed with exit 137 under
-the profiler container's 1 GiB memory limit, while `cgprofile report --md-only`
-succeeded; the daemon-backed `ctl report` also timed out after stopping the
-session. The usage guide gives the offline render/copy sequence.
+a small container memory limit, while `cgpctl report --md-only` succeeded;
+the daemon never renders. The usage guide gives the render sequence.
 
 The free Linux binary automatically uploads to Geekbench Browser and, in our
 offline native attempt, returned exit 255 without printing scores after DNS
