@@ -36339,7 +36339,17 @@ class TestR2JobsPR3:
         assert result["cheap_clone"] is True
         assert result["cheap_clone_reason"] == "supported-btrfs"
         # Without the artifact the old behaviour is reproduced: no cowtree.
-        lane = {"assay_command": [sys.executable, "-m", "assay"]}
+        # RG-158: hermetic. The lane image may have cowtree installed in
+        # site-packages (then the probe gets RootInvalid for the fixture root
+        # instead of ModuleNotFoundError), so the interpreter is a wrapper
+        # that starts without site-packages (`-S`).
+        bare_bin = tmp_path / "bare"
+        bare_bin.mkdir()
+        bare_python = bare_bin / "python"
+        bare_python.write_text(
+            f'#!/bin/sh\nexec {shlex.quote(sys.executable)} -S "$@"\n')
+        bare_python.chmod(0o755)
+        lane = {"assay_command": [str(bare_python), "-m", "assay"]}
         result = run_gate.r2_capacity_probe(
             None, lane, {}, "bare-host", "fixture", tmp_path, tmp_path,
             tmp_path, {})
@@ -38054,14 +38064,31 @@ class TestHistoryStoreReadableByTheReleasedReader:
     def released_module(self, tmp_path):
         src = tmp_path / "released"
         src.mkdir()
+        # RG-159: take 24.3.0, else the oldest released 24.x tag at or above
+        # it (a later 24.x reader must read the same schema-2 store). A
+        # tagless snapshot (the assay lane) has no hermetic route: skip.
+        listed = subprocess.run(
+            ["git", "-C", str(RUN_GATE_DIR), "tag", "--list",
+             "run-gate-v24.*"], capture_output=True, text=True)
+        candidates = []
+        for tag in listed.stdout.split():
+            match = re.fullmatch(r"run-gate-v24\.(\d+)\.(\d+)", tag)
+            if match and int(match.group(1)) >= 3:
+                candidates.append((int(match.group(1)),
+                                   int(match.group(2)), tag))
+        if not candidates:
+            pytest.skip("no released run-gate-v24.>=3 tag in this checkout "
+                        "(tagless snapshot, e.g. the assay lane); the "
+                        "released-reader compatibility cannot be checked "
+                        "hermetically here")
+        tag = min(candidates)[2]
         for name in ("run_gate.py", "run_gate_admission.py"):
             shown = subprocess.run(
                 ["git", "-C", str(RUN_GATE_DIR), "show",
-                 f"run-gate-v24.3.0:run-gate-project/{name}"],
+                 f"{tag}:run-gate-project/{name}"],
                 capture_output=True, text=True)
             assert shown.returncode == 0, (
-                "the run-gate-v24.3.0 tag is required for the compatibility "
-                f"test: {shown.stderr}")
+                f"the {tag} tag must hold {name}: {shown.stderr}")
             (src / name).write_text(shown.stdout)
         spec = importlib.util.spec_from_file_location(
             "run_gate_released", src / "run_gate.py")
