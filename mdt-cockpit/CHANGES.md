@@ -5,6 +5,12 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 
 ### Added
+- `install.sh cpu-benchmark [--force|--resolve]` (HB-3, `mdt host-setup cpu-benchmark`): measures the host CPU once with the shared
+  sha256-pinned `cpu_benchmark.py` (Geekbench version and archive sha256 per architecture from `cpu_benchmark.pins.json`), via the
+  installed wrapper `mdt-host-cpu-benchmark.py`; refuses to re-measure without `--force` and while CPU PSI `some avg10` is 5 or more;
+  `mdt-host-check.sh` gains a "per-host CPU benchmark" section (OK / missing / partial / STALE when `cpu_model` or vCPU count
+  changed); every install now also installs the helper; wizard ends with a pointer. Tests: `host-setup/tests/test_cpu_benchmark_hostsetup.py`.
+  Live runs are backlog MDT-066 (installer step in a vm-system run), MDT-067 (dev host, r1002, v1001), MDT-068 (aarch64 pin).
 - Hermetic tests for the shared host CPU benchmark tool `scripts/debian-install-v2/tools/cpu_benchmark.py` (HB-1:
   `host-setup/tests/test_cpu_benchmark.py` with Geekbench stdout and result-page fixtures); the tool writes
   `/var/lib/mdt/host-facts/cpu-benchmark.json` (+ root-only `.claim.json`) and is wired into `mdt host-setup` by HB-3.
