@@ -957,20 +957,29 @@ if [ "$MDT_DEDICATED_MEM" = 1 ]; then
       DEDICATED_MEM_HIGH_SOURCE) _ded_high_src="$_ded_value" ;;
       DEDICATED_MEM_MAX_SOURCE) _ded_max_src="$_ded_value" ;;
       DEDICATED_MEM_LOW_SOURCE) _ded_low_src="$_ded_value" ;;
+      DEDICATED_GATES_HIGH_SOURCE) _ded_gates_high_src="$_ded_value" ;;
+      DEDICATED_GATES_MAX_SOURCE) _ded_gates_max_src="$_ded_value" ;;
+      DEDICATED_BACKGROUND_HIGH_SOURCE) _ded_bg_high_src="$_ded_value" ;;
+      DEDICATED_BACKGROUND_MAX_SOURCE) _ded_bg_max_src="$_ded_value" ;;
+      DEDICATED_GATES_HIGH) DEV_GATES_MEMORY_HIGH="$_ded_value" ;;
+      DEDICATED_GATES_MAX) DEV_GATES_MEMORY_MAX="$_ded_value" ;;
+      DEDICATED_BACKGROUND_HIGH) DEV_BACKGROUND_MEMORY_HIGH="$_ded_value" ;;
+      DEDICATED_BACKGROUND_MAX) DEV_BACKGROUND_MEMORY_MAX="$_ded_value" ;;
       DEDICATED_PROTECTED_UNITS) MDT_DEDICATED_PROTECTED_UNITS="$_ded_value" ;;
     esac
   done <<<"$_ded_mem"
   _ded_ignored=""
+  # gates and background are derived/pinned above (dev.slice minus the protected tiers' MemoryLow); the
+  # interactive and BuildKit tiers carry no ceiling of their own.
   for _ded_tier_key in \
-    DEV_INTERACTIVE_MEMORY_HIGH DEV_INTERACTIVE_MEMORY_MAX DEV_BACKGROUND_MEMORY_HIGH DEV_BACKGROUND_MEMORY_MAX \
-    DEV_GATES_MEMORY_HIGH DEV_GATES_MEMORY_MAX DEV_BUILDKITD_MEMORY_HIGH DEV_BUILDKITD_MEMORY_MAX; do
+    DEV_INTERACTIVE_MEMORY_HIGH DEV_INTERACTIVE_MEMORY_MAX DEV_BUILDKITD_MEMORY_HIGH DEV_BUILDKITD_MEMORY_MAX; do
     case "${!_ded_tier_key:-}" in
       ""|-) ;;
       *) _ded_ignored="$_ded_ignored $_ded_tier_key=${!_ded_tier_key}" ;;
     esac
     printf -v "$_ded_tier_key" '%s' ""
   done
-  echo "HOST_ROLE=dedicated-dev memory: dev.slice MemoryHigh=${DEV_MEMORY_HIGH:-none} (${_ded_high_src}), MemoryMax=${DEV_MEMORY_MAX:-none} (${_ded_max_src}), MemoryLow=${DEV_MEMORY_LOW:-none} (${_ded_low_src}); host keeps ${MDT_DEDICATED_KEEP}B (DEV_HOST_MEMORY_KEEP); tiers carry no MemoryHigh/MemoryMax and a swap ceiling equal to dev.slice's"
+  echo "HOST_ROLE=dedicated-dev memory: dev.slice MemoryHigh=${DEV_MEMORY_HIGH:-none} (${_ded_high_src}), MemoryMax=${DEV_MEMORY_MAX:-none} (${_ded_max_src}), MemoryLow=${DEV_MEMORY_LOW:-none} (${_ded_low_src}); host keeps ${MDT_DEDICATED_KEEP}B (DEV_HOST_MEMORY_KEEP); dev-gates MemoryHigh=${DEV_GATES_MEMORY_HIGH:-none} MemoryMax=${DEV_GATES_MEMORY_MAX:-none} (${_ded_gates_high_src}/${_ded_gates_max_src}), dev-background MemoryHigh=${DEV_BACKGROUND_MEMORY_HIGH:-none} MemoryMax=${DEV_BACKGROUND_MEMORY_MAX:-none} (${_ded_bg_high_src}/${_ded_bg_max_src}); interactive and buildkitd tiers carry no MemoryHigh/MemoryMax; every tier's swap ceiling equals dev.slice's"
   if [ -n "$_ded_ignored" ]; then
     echo "NOTICE: HOST_ROLE=dedicated-dev ignores the per-tier memory ceilings still set in $CONFIG_PATH (clear them to silence this):${_ded_ignored}" >&2
   fi

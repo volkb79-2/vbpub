@@ -385,6 +385,24 @@ class DedicatedMemory:
     max_source: str
     low: int | None = None
     low_source: str = "none"
+    # dev-gates / dev-background MemoryHigh and MemoryMax (MDT-TESTHOST-MEM-2): dev.slice's own value minus the
+    # protected tiers' MemoryLow, so a running cockpit/BuildKit keeps its Low while the load tiers yield first.
+    protected: int = 0
+    load_high: int | None = None
+    load_max: int | None = None
+    gates_high_source: str = "none"
+    gates_max_source: str = "none"
+    background_high_source: str = "none"
+    background_max_source: str = "none"
+    gates_high: int | None = None
+    gates_max: int | None = None
+    background_high: int | None = None
+    background_max: int | None = None
+
+# The tiers whose MemoryLow dev-gates / dev-background must leave room for.
+_PROTECTED_LOW_KEYS = ("DEV_INTERACTIVE_MEMORY_LOW", "DEV_BUILDKITD_MEMORY_LOW")
+# Floor of a derived load-tier ceiling (a smaller value would stall every lane).
+DEDICATED_LOAD_FLOOR = 1024 ** 3
 
 
 _TIER_LOW_KEYS = (
@@ -460,7 +478,46 @@ def dedicated_memory(values: dict[str, str], *, mem_total: int, swap_total: int)
             parsed = parse_size_bytes(raw) if raw not in ("", "-") else None
             total += parsed or 0
         low, low_source = (total, "sum of the tier MemoryLow values") if total else (None, "none")
-    return DedicatedMemory(keep, ram, swap, high, maximum, high_source, max_source, low, low_source)
+    # Load tiers (gates, background): dev.slice's value minus the protected tiers' MemoryLow, never below 1G
+    # and never above dev.slice's own. MemoryHigh is the limit that acts (throttling + reclaim, so the load
+    # yields before the protected tiers' Low is touched); MemoryMax is derived the same way for consistency
+    # (it stays >= the tier's MemoryHigh) although memory.max is not reachable on these hosts. memory.swap.max
+    # stays equal to dev.slice's: swap is one shared pool, a smaller tier cap would only make the load die
+    # earlier without returning any RAM. A DEV_{GATES,BACKGROUND}_MEMORY_{HIGH,MAX} pin wins; `-`/0 omit.
+    protected = 0
+    for key in _PROTECTED_LOW_KEYS:
+        raw = (values.get(key, "") or "").strip()
+        protected += (parse_size_bytes(raw) or 0) if raw not in ("", "-") else 0
+
+    def derive_load(dev_value: int | None) -> int | None:
+        if dev_value is None:
+            return None
+        return min(dev_value, max(DEDICATED_LOAD_FLOOR, dev_value - protected))
+
+    load_high = derive_load(high)
+    load_max = derive_load(maximum)
+    if load_high is not None and load_max is not None:
+        load_max = max(load_max, load_high)
+    resolved: dict[str, tuple[int | None, str]] = {}
+    for tier in ("GATES", "BACKGROUND"):
+        h, hs = pick(f"DEV_{tier}_MEMORY_HIGH", load_high or 0)
+        m, ms = pick(f"DEV_{tier}_MEMORY_MAX", load_max or 0)
+        if hs == "derived" and load_high is None:
+            h, hs = None, "omitted (dev.slice has no MemoryHigh)"
+        if ms == "derived" and load_max is None:
+            m, ms = None, "omitted (dev.slice has no MemoryMax)"
+        # one side pinned, the other derived: the derived value follows the pin instead of refusing the pair
+        if h is not None and m is not None and h > m:
+            if hs == "derived":
+                h, hs = m, "derived, clamped to the MemoryMax pin"
+            elif ms == "derived":
+                m, ms = h, "derived, raised to the MemoryHigh pin"
+        if h is not None and m is not None and h > m:
+            raise CapacityError(f"dev-{tier.lower()}.slice MemoryHigh {format_size(h)} ({hs}) exceeds MemoryMax {format_size(m)} ({ms}); keep MemoryHigh <= MemoryMax")
+        resolved[tier] = (h, hs, m, ms)
+    g, b = resolved["GATES"], resolved["BACKGROUND"]
+    return DedicatedMemory(keep, ram, swap, high, maximum, high_source, max_source, low, low_source,
+                           protected, load_high, load_max, g[1], g[3], b[1], b[3], g[0], g[2], b[0], b[2])
 
 
 def validate_host_protected_units(value: str) -> str | None:
@@ -1040,6 +1097,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"DEDICATED_MEM_LOW_SOURCE={mem.low_source}")
         print(f"DEDICATED_MEM_HIGH_SOURCE={mem.high_source}")
         print(f"DEDICATED_MEM_MAX_SOURCE={mem.max_source}")
+        for _tier, _vals in (("GATES", (mem.gates_high, mem.gates_max, mem.gates_high_source, mem.gates_max_source)),
+                             ("BACKGROUND", (mem.background_high, mem.background_max, mem.background_high_source, mem.background_max_source))):
+            print(f"DEDICATED_{_tier}_HIGH={'' if _vals[0] is None else _vals[0]}")
+            print(f"DEDICATED_{_tier}_MAX={'' if _vals[1] is None else _vals[1]}")
+            print(f"DEDICATED_{_tier}_HIGH_SOURCE={_vals[2]}")
+            print(f"DEDICATED_{_tier}_MAX_SOURCE={_vals[3]}")
         print(f"DEDICATED_PROTECTED_UNITS={' '.join(protected)}")
         return 0
     try:

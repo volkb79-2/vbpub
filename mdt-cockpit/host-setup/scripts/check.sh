@@ -265,6 +265,22 @@ if [ -d "$DEV_PATH" ]; then
         if [ "$eff" = "$want" ]; then ok "dev.slice $prop=$eff matches the HOST_ROLE=dedicated-dev derivation"
         else fail "dev.slice $prop=$eff but the HOST_ROLE=dedicated-dev derivation says $want (DEV_HOST_MEMORY_KEEP / pins). Re-run install.sh."; fi
       done
+      # MDT-TESTHOST-MEM-2: dev-gates / dev-background yield first: MemoryHigh/Max = dev.slice's minus the protected tiers' MemoryLow.
+      for _tier_label in "dev-gates.slice:GATES" "dev-background.slice:BACKGROUND"; do
+        _tier_unit="${_tier_label%%:*}"; _tier_key="${_tier_label#*:}"; _tier_dir="$(_slice_path "$_tier_unit")"
+        [ -d "$_tier_dir" ] || continue
+        for prop_label in "memory.high:HIGH" "memory.max:MAX"; do
+          prop="${prop_label%%:*}"; want="$(printf '%s\n' "$_ded_mem" | sed -n "s/^DEDICATED_${_tier_key}_${prop_label#*:}=//p")"
+          eff="$(cat "$_tier_dir/$prop" 2>/dev/null)"
+          [ -n "$want" ] || want=max
+          if [ "$eff" = "$want" ]; then ok "$_tier_unit $prop=$eff matches the HOST_ROLE=dedicated-dev derivation (dev.slice minus the protected tiers' MemoryLow)"
+          else fail "$_tier_unit $prop=$eff but the HOST_ROLE=dedicated-dev derivation says $want (dev.slice minus the protected tiers' MemoryLow, or a DEV_${_tier_key}_MEMORY_${prop_label#*:} pin). Re-run install.sh."; fi
+        done
+        _t_high="$(cat "$_tier_dir/memory.high" 2>/dev/null)"; _d_high="$(cat "$DEV_PATH/memory.high" 2>/dev/null)"
+        if [ "$_t_high" != max ] && [ "$_d_high" != max ] && [ "$_t_high" -lt "$_d_high" ] 2>/dev/null; then
+          ok "$_tier_unit memory.high=$_t_high is below dev.slice memory.high=$_d_high (the load yields before the protected tiers)"
+        else warn "$_tier_unit memory.high=$_t_high is not below dev.slice memory.high=$_d_high: the protected tiers' MemoryLow is not shielded from this tier (pin or omitted?)"; fi
+      done
     else
       warn "HOST_ROLE=dedicated-dev memory derivation failed: $_ded_mem"
     fi
@@ -312,9 +328,8 @@ if [ -d "$GATES_PATH" ]; then
     eff="$(cat "$GATES_PATH/$prop" 2>/dev/null)"
     cfg="${!var:-}"
     if [ "$(_mdt_host_role)" = dedicated-dev ]; then
-      # HOST_ROLE=dedicated-dev (MDT-TESTHOST-MEM): a tier carries NO memory ceiling of its own; dev.slice is the bound.
-      if [ "$eff" = max ]; then ok "dev-gates.slice $prop=max (HOST_ROLE=dedicated-dev: no per-tier ceiling)"
-      else fail "dev-gates.slice $prop=$eff but HOST_ROLE=dedicated-dev means no per-tier memory ceiling. Re-run install.sh."; fi
+      # HOST_ROLE=dedicated-dev: gates' value is derived (dev.slice minus the protected tiers' Low) and checked in the dev.slice block above.
+      info "dev-gates.slice $prop=$eff (HOST_ROLE=dedicated-dev: derived, verified against the derivation under dev.slice)"
       continue
     fi
     if [ -z "$cfg" ]; then

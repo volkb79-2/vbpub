@@ -13,6 +13,10 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   `~/.nanorc` still overrides per setting. Runtime test `test_system_defaults.py` updated.
 
 ### Added
+- host-setup `HOST_ROLE=dedicated-dev` load tiers yield first (MDT-TESTHOST-MEM-2; shared-prod byte-identical): `dev-gates.slice` and `dev-background.slice` MemoryHigh =
+  dev.slice MemoryHigh minus (`DEV_INTERACTIVE_MEMORY_LOW` + `DEV_BUILDKITD_MEMORY_LOW`), MemoryMax derived the same way from dev.slice MemoryMax (floor 1G, never above
+  dev.slice's, MemoryMax >= MemoryHigh); MemorySwapMax and CPU weights unchanged. `DEV_{GATES,BACKGROUND}_MEMORY_{HIGH,MAX}` are now pins on this role (`-`/`0` omit).
+  `mdt-host-check.sh` verifies the values and that each is below dev.slice's. Documented in README "Memory of the dedicated-dev role" and the env example 4.0b.
 - host-setup `HOST_ROLE=dedicated-dev` memory (MDT-TESTHOST-MEM; the memory half of MDT-TESTHOST-IO; shared-prod and an empty role are unchanged): the
   whole of RAM plus disk swap belongs to the dev tier minus `DEV_HOST_MEMORY_KEEP` (new key, default 1G, minimum 256M, validated; not named `*_RESERVE_*`, which the
   2026-11 rename guard refuses). `dev.slice` MemoryMax = `MemTotal + SwapTotal - MDT_EXCLUDED_RAM - MDT_EXCLUDED_SWAP - keep`, MemoryHigh = `MemTotal - MDT_EXCLUDED_RAM - keep`
