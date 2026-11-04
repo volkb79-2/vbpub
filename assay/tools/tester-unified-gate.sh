@@ -1303,13 +1303,21 @@ run_sql_qualification() {
   make_exact_oid_clone "$worktree" "$_assay_sql_scratch"
   [[ "$(assay_git -C "$_assay_sql_scratch/clone" rev-parse HEAD)" == "$commit" ]] \
     || die "SQL clone is not the gated commit $commit"
-  [[ -S "$docker_socket" ]] \
+  # $docker_socket is the HOST path the runner container binds. In a
+  # devcontainer that path does not exist here: the daemon is reached through
+  # the socket DOCKER_HOST names (docker-outside-of-docker). Probe that one for
+  # existence and group; the mount source stays the host path.
+  local docker_socket_local="$docker_socket"
+  if [[ ! -S "$docker_socket_local" && "${DOCKER_HOST:-}" == unix://* ]]; then
+    docker_socket_local="${DOCKER_HOST#unix://}"
+  fi
+  [[ -S "$docker_socket_local" ]] \
     || die "Docker socket $docker_socket is unavailable to the SQL qualification launcher"
   if [[ -n "$verified_docker_gid" ]]; then
     docker_socket_gid="$verified_docker_gid"
   else
-    docker_socket_gid="$(stat -Lc %g "$docker_socket")" \
-      || die "could not read Docker socket group for $docker_socket"
+    docker_socket_gid="$(stat -Lc %g "$docker_socket_local")" \
+      || die "could not read Docker socket group for $docker_socket_local"
   fi
   [[ "$docker_socket_gid" =~ ^[0-9]+$ ]] || die "Docker socket group is malformed: $docker_socket_gid"
   # The runner's native R2 witness needs the same cgroup observer access as the
