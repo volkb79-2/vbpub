@@ -10,6 +10,12 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - fix(nyxloom): NL-9 lint L7 validates a bare scope.touch path into a sibling monorepo project against the real file instead of accepting it unchecked
 - fix(nyxloom): NL-28 lint L4 (P78) ignores path/command-shaped tokens and code fences and reports once per handoff naming every oracle
 - feat(nyxloom): NL-25 add `coverage-floor` to the gate asserts vocabulary (schema, config docs, STANDARD.md), distinct from `changed-line-coverage`
+### Fixed
+- fix(nyxloom): session-extract effect detector (NL-35): `sudo -u`/`timeout -s` wrappers, bare `git tag` and `curl -H "a -d b"` false positives, more than 12 leading assignments, `$(...)` inside double quotes, and `$VAR` command heads listed as "possible effect, head unresolved"
+- fix(nyxloom): a leftover `src/nyxloom.egg-info` no longer shadows the installed distribution's version when `exec-nyxloom.py` runs from a checkout (NL-24)
+- docs(nyxloom): operational READMEs, ntfy/pwmcp-instance/nyxloomd files and the process-model doc use `<instance_id>` placeholders and `ciu resolve` instead of a hard-coded instance id; the plain-compose fallback derives its container and network names from `NYXLOOM_CONTAINER_PREFIX` (NL-38, docs part)
+- fix(nyxloom): the wrapper publishes the typed result before the receipt, so a reader that sees the receipt never reads a missing result for a leg that answered (NL-12)
+- test(nyxloom): stray `sleep` children of the interrupt and SIGKILL-drill tests are reaped on failure paths
 
 <!-- cmru: release history -->
 

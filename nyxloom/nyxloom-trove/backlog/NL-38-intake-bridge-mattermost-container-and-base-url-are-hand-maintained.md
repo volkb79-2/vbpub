@@ -101,3 +101,7 @@ The Mattermost stack moved from `nyxloom/mattermost` to its own ciu root at `<vb
 ## Related
 
 ciu CIU-115 (schema-2 instance identity); CIU-104 (`environment_tag = "$INSTANCE_ID"`); ciu CIU-118 (`ciu resolve --json`, shipped; its 2026-10-07 follow-up is the service-discovery gap this entry needs); ciu CIU-132 (persisted webhook URLs embed the id).
+
+## Updates
+
+**2026-11-04** — 2026-11-04 (7f42cac7b): docs part done: operational READMEs, ntfy/pwmcp-instance/nyxloomd files and runtime-process-model.md use <instance_id> placeholders or ciu resolve; plain-compose fallback derives names from NYXLOOM_CONTAINER_PREFIX; mattermost README/compose already left nyxloom (MM-MOVE). Dated docs/plan-*.md left as written. STILL OPEN: the poll-time resolver and per-poll fail-loud checks (Design a-d) are a feature (feat commit, minor bump) and not part of this fix package.

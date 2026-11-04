@@ -2047,3 +2047,96 @@ class TestSessionCaptureDelaySkip:
             f"a capture-capable route must still honour SESSION_CAPTURE_DELAY "
             f"(finished in {elapsed:.2f}s of a 1.0s delay)"
         )
+
+
+class TestReceiptIsPublishedAfterTheTypedResult:
+    """NL-12: the receipt is the "attempt over, consume it" signal, so the typed
+    result must already exist when the receipt becomes visible. Ordering made
+    deterministic with a real FIFO as the judgement file: assembling the typed
+    result blocks in its read until the test releases it, so the wrapper is held
+    at exactly the point where the old order had already published the receipt."""
+
+    def test_no_receipt_is_visible_while_the_typed_result_is_still_being_assembled(
+            self, tmp_state, tmp_path, fake_cli, mock_adapters, monkeypatch):
+        import threading
+
+        from nyxloom import results
+
+        # wrapper_main installs SIGTERM/SIGINT handlers, which Python only allows on the main
+        # thread; the test runs it on a worker thread to observe the filesystem meanwhile.
+        monkeypatch.setattr(signal, "signal", lambda *a, **k: signal.SIG_DFL)
+        project, task_id, attempt_id = "demo", "demo-P01-sample", "att-1"
+        seed(project, task_id, attempt_id)
+        script = fake_cli(["done"], exit_code=0)
+        attempt_dir = tmp_path / "attempt"
+        attempt_dir.mkdir()
+        cwd = tmp_path / "cwd"
+        cwd.mkdir()
+        fifo = cwd / results.judgement_filename(task_id)
+        os.mkfifo(fifo)
+        log_path = attempt_dir / "wrapper.log"
+        receipt_path = attempt_dir / "receipt.json"
+        spec = WrapperSpec(
+            project=project, task_id=task_id, attempt_id=attempt_id, argv=[str(script)],
+            cwd=str(cwd), log_path=str(log_path), receipt_path=str(receipt_path),
+            attempt_dir=str(attempt_dir), route_def=OPERATOR_ROUTE,
+            result_kind=results.ResultKind.REVIEW_INDEPENDENT.value,
+        )
+        spec_path = attempt_dir / "spec.json"
+        spec_path.write_text(json.dumps(spec.to_dict()), encoding="utf-8")
+        mock_adapters.extract_usage.return_value = Usage(basis=Basis.UNKNOWN)
+        mock_adapters.capture_session.return_value = "sess-1"
+        mock_adapters.classify_log_tail.return_value = None
+
+        done = threading.Thread(target=wrapper_main, args=(str(spec_path),))
+        done.start()
+        try:
+            _wait_for_child_output(log_path, marker="done", timeout=60.0)
+            # the child has finished; give the wrapper ample time to (wrongly) publish
+            deadline = time.monotonic() + 1.0
+            while time.monotonic() < deadline:
+                assert not receipt_path.exists(), (
+                    "receipt published before the typed result was assembled"
+                )
+                time.sleep(0.01)
+        finally:
+            # release the blocked read (an empty judgement is refused -> a FAILED result)
+            # (non-blocking open fails with ENXIO until the wrapper's read has actually begun)
+            release_by = time.monotonic() + 60.0
+            while done.is_alive() and time.monotonic() < release_by:
+                try:
+                    os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
+                except OSError:
+                    time.sleep(0.02)
+                else:
+                    break
+            done.join(timeout=60.0)
+        assert not done.is_alive()
+        assert (attempt_dir / results.result_filename(task_id)).exists()
+        assert receipt_path.exists()
+
+    def test_an_unwritable_result_store_does_not_suppress_the_receipt(
+            self, tmp_state, tmp_path, fake_cli, mock_adapters):
+        from nyxloom import results
+
+        project, task_id, attempt_id = "demo", "demo-P01-sample", "att-1"
+        seed(project, task_id, attempt_id)
+        script = fake_cli(["x"], exit_code=0)
+        attempt_dir = tmp_path / "attempt"
+        attempt_dir.mkdir()
+        # the result path is a directory, so the atomic replace into it fails with an OSError
+        (attempt_dir / results.result_filename(task_id)).mkdir()
+        spec = WrapperSpec(
+            project=project, task_id=task_id, attempt_id=attempt_id, argv=[str(script)],
+            cwd=str(tmp_path), log_path=str(attempt_dir / "wrapper.log"),
+            receipt_path=str(attempt_dir / "receipt.json"), attempt_dir=str(attempt_dir),
+            route_def=OPERATOR_ROUTE, result_kind=results.ResultKind.REVIEW_INDEPENDENT.value,
+        )
+        spec_path = attempt_dir / "spec.json"
+        spec_path.write_text(json.dumps(spec.to_dict()), encoding="utf-8")
+        mock_adapters.extract_usage.return_value = Usage(basis=Basis.UNKNOWN)
+        mock_adapters.capture_session.return_value = "sess-1"
+        mock_adapters.classify_log_tail.return_value = None
+
+        assert wrapper_main(str(spec_path)) == 0
+        assert json.loads((attempt_dir / "receipt.json").read_text())["result"] == "done"

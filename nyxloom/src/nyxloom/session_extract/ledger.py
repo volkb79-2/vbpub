@@ -63,7 +63,7 @@ from . import toolresult
 # The effect patterns, segmentation (quote-aware), wrapper stripping and
 # ssh/scp/`bash -c` recursion live in shellcmd.py (shared with the adapter's
 # --effect-calls / --read-calls classification).
-from .shellcmd import DEFAULT_EFFECT_PATTERNS, effect_segments  # noqa: E402,F401
+from .shellcmd import DEFAULT_EFFECT_PATTERNS, effect_segments, unresolved_head_segments  # noqa: E402,F401
 
 
 def external_effect(
@@ -299,6 +299,11 @@ def build_ledger_claude_code(
                         if m:
                             ledgers[current].branches.append(m.group(1))
                         hits = effect_segments(command, effect_patterns, scp_uploads)
+                        unresolved = unresolved_head_segments(command, effect_patterns, scp_uploads)
+                        if unresolved:
+                            # NL-35: a `$VAR` command head cannot be classified; show it as an
+                            # explicit unknown rather than silence.
+                            hits = hits + [f"[possible effect, head unresolved] {s}" for s in unresolved]
                         if hits:
                             effects = ledgers[current].external_effects
                             effects.append(

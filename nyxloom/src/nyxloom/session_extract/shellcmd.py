@@ -20,12 +20,14 @@ whose head is `grep` / `git commit` and neither is an effect. Wrappers
 stripped before the segment is matched, and `bash -c '...'` / `sh -c '...'`
 and `ssh host '...'` are recursed into (bounded depth).
 
-KNOWN RESIDUALS (documented, filed as backlog NL-35): a command whose head is
-hidden behind shell-variable indirection (`NC="python3 nc.py"; $NC ... delete`,
-`$SSH host ...`), shell functions/aliases, `eval`, scripts that push
-internally, commands built by command substitution, and a mutating flag
-placed inside a quoted `curl` argument. Those are NOT detected (a missed
-effect); a user-supplied `--effect-pattern` can add them.
+KNOWN RESIDUALS (backlog NL-35): a command whose head is hidden behind
+shell-variable indirection (`NC="python3 nc.py"; $NC ... delete`, `$SSH host
+...`) is not RESOLVED, but `unresolved_head_segments` reports it so the ledger
+prints a "possible effect, head unresolved" marker instead of staying silent.
+Still NOT detected: shell functions/aliases, `eval`, scripts that push
+internally, a heredoc piped to ssh, and the mutating `docker compose` / `docker
+exec` forms (defaults are widened only after re-measuring on the real corpus,
+decision D4); a user-supplied `--effect-pattern` can add them.
 """
 
 from __future__ import annotations
@@ -36,12 +38,19 @@ from collections.abc import Iterable
 
 _GIT = r"git(?:\s+(?:-[Cc]\s+\S+|--[\w-]+(?:=\S+)?|-P))*"
 _NC = r"^(?:python3?\s+)?(?:\S*/)?(?:nc\.py|scp-api)\b"
+# Any text up to a flag, skipping over quoted strings whole so a flag-looking token INSIDE
+# quotes (`curl -H "a -d b"`) is not read as a flag. The alternatives start with disjoint
+# characters, so the lazy repeat cannot backtrack catastrophically.
+_ANY = r"""(?:[^"']|"(?:\\.|[^"\\])*"|'[^']*')*?"""
 
 # MUTATING forms only (operator ruling 2026-10-06, D2): each is matched
 # (re.search, case-insensitive) against one normalised shell segment.
 DEFAULT_EFFECT_PATTERNS: tuple[str, ...] = (
     rf"^{_GIT}\s+(?:push|merge(?!-)|rebase|reset\s+--hard)\b",
-    rf"^{_GIT}\s+tag\b(?!.*\s(?:-l|--list)\b)",
+    # A tag CREATION/deletion: an explicit -a/-s/-d/-f/-m/-u style flag or a tag-name word.
+    # A bare `git tag` (or `-n`, `--contains`, `--sort=...`) is a listing.
+    rf"^{_GIT}\s+tag\s+(?:-[A-Za-z]*[asdfmu][A-Za-z]*\b|--(?:annotate|sign|delete|force|message|local-user)\b|[^-\s])"
+    r"(?!.*\s(?:-l|--list)\b)",
     r"^systemctl(?:\s+-\S+)*\s+(?:start|stop|restart|reload|enable|disable|mask|unmask|kill|"
     r"reboot|poweroff|isolate|daemon-reload)\b",
     r"^apt(?:-get)?(?:\s+-\S+)*\s+(?:install|remove|purge|upgrade|full-upgrade|dist-upgrade|"
@@ -49,8 +58,8 @@ DEFAULT_EFFECT_PATTERNS: tuple[str, ...] = (
     r"^dpkg(?:\s+\S+)*?\s+(?:-i|-r|-P|--install|--remove|--purge)(?:\s|$)",
     r"^docker\s+(?:container\s+)?(?:rm|stop|kill|run|restart)\b",
     r"^docker\s+(?:volume|network|image)\s+rm\b",
-    r"^curl\b.*\s(?:-X|--request)[\s=]*[\"']?(?:POST|PUT|PATCH|DELETE)\b",
-    r"^curl\b.*\s(?:-d|--data\S*|--json|-F|--form\S*|-T|--upload-file)(?:\s|=|$)",
+    rf"^curl\b{_ANY}\s(?:-X|--request)[\s=]*[\"']?(?:POST|PUT|PATCH|DELETE)\b",
+    rf"^curl\b{_ANY}\s(?:-d|--data\S*|--json|-F|--form\S*|-T|--upload-file)(?:\s|=|$)",
     rf"{_NC}.*\s(?:create|delete|attach-iso|power|install-host)(?:\s|$)",
     rf"{_NC}.*\sboot-order\s+set\b",
 )
@@ -61,10 +70,12 @@ _ASSIGN = r"[A-Za-z_][A-Za-z0-9_]*=(?:\"[^\"]*\"|'[^']*'|\S*)"
 _WRAPPER_RES = (
     re.compile(r"^(?:do|then|else|elif|if|while|until|!|\{)\s+"),
     re.compile(rf"^{_ASSIGN}\s+"),
-    re.compile(r"^sudo(?:\s+-\S+)*\s+"),
+    # sudo options that take an argument: -u USER, -g GROUP, -h HOST, -p PROMPT, -C N, -D DIR, ...
+    re.compile(r"^sudo(?:\s+(?:-[ughpCDRrTt]\s+\S+|-\S+))*\s+"),
     re.compile(r"^nice(?:\s+-n\s*\d+|\s+-\d+)?\s+"),
     re.compile(r"^ionice(?:\s+-c\s*\d+)?(?:\s+-n\s*\d+)?\s+"),
-    re.compile(r"^timeout(?:\s+-\S+)*\s+\d+[smhd]?\s+"),
+    # timeout options that take an argument: -s SIGNAL, -k DURATION
+    re.compile(r"^timeout(?:\s+(?:-[sk]\s+\S+|-\S+))*\s+[\d.]+[smhd]?\s+"),
     re.compile(r"^(?:time|nohup|exec|command|builtin)(?:\s+-p)?\s+"),
     re.compile(rf"^env(?:\s+(?:-u\s+\S+|-\S+|{_ASSIGN}))*\s+"),
     re.compile(r"^xargs(?:\s+-\S+)*\s+"),
@@ -73,7 +84,7 @@ _WRAPPER_RES = (
 _DIRPREFIX_RE = re.compile(r"^[^\s'\"]*/(?=[^\s/'\"]+(?:\s|$))")
 _SHELL_C_RE = re.compile(r"^(?:ba|z|da|k)?sh\s+-\S*c\S*\s+(?P<arg>.+)$", re.DOTALL)
 
-_WRAPPER_PASSES = 12
+_WRAPPER_PASSES = 64
 _MAX_DEPTH = 3
 
 _SSH_OPTS_WITH_ARG = frozenset("bcDEeFIiJLlmOopQRSWw")
@@ -157,6 +168,60 @@ def normalized_segments(command: str, depth: int = 0) -> list[str]:
             out.extend(normalized_segments(_first_arg(m.group("arg")), depth + 1))
             continue
         out.append(seg)
+        if depth < _MAX_DEPTH:
+            for body in _quoted_substitutions(seg):
+                out.extend(normalized_segments(body, depth + 1))
+    return out
+
+
+def _quoted_substitutions(seg: str) -> list[str]:
+    """Bodies of `$(...)` substitutions that sit inside DOUBLE quotes of `seg`
+    (split_segments keeps those inside the quote, so they would otherwise be
+    invisible). Single-quoted `$(` is literal and skipped."""
+    bodies: list[str] = []
+    quote = ""
+    i = 0
+    while i < len(seg):
+        ch = seg[i]
+        if ch == "\\" and quote != "'":
+            i += 2
+            continue
+        if quote:
+            if ch == quote:
+                quote = ""
+            elif quote == '"' and seg.startswith("$(", i):
+                depth, j = 1, i + 2
+                while j < len(seg) and depth:
+                    depth += {"(": 1, ")": -1}.get(seg[j], 0)
+                    j += 1
+                if depth == 0:
+                    bodies.append(seg[i + 2: j - 1])
+                    i = j
+                    continue
+        elif ch in "'\"":
+            quote = ch
+        i += 1
+    return bodies
+
+
+def unresolved_head_segments(
+    command: str,
+    patterns: Iterable[str] = DEFAULT_EFFECT_PATTERNS,
+    scp_uploads: bool = True,
+) -> list[str]:
+    """Segments whose command head is a shell expansion (`$NC ...`, `$SSH host ...`,
+    `${X} ...`) and that the effect patterns did not already classify as an effect.
+    The detector cannot see through the expansion, so these are POSSIBLE effects:
+    the ledger lists them with an explicit unresolved marker instead of staying
+    silent (NL-35 contract (b))."""
+    compiled = [re.compile(p, re.IGNORECASE) for p in patterns]
+    out: list[str] = []
+    for seg in normalized_segments(command):
+        if _head(seg).startswith("$") and not _segment_is_effect(seg, compiled, scp_uploads, 0):
+            out.append(seg)
+        elif _head(seg) == "ssh" and ssh_remote_command(seg) is not None:
+            remote = ssh_remote_command(seg) or ""
+            out.extend(s for s in normalized_segments(remote) if _head(s).startswith("$"))
     return out
 
 

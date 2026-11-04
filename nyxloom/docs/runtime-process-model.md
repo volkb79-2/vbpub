@@ -111,7 +111,7 @@ the SSH-client machine is two hops removed.
 1. **Put the daemon's HTTP surface on a shared bridge network** the devcontainer
    already joins (e.g. `vbpub-fae1b8-network`) and bind it on that interface
    (not host-loopback). Then it's reachable from the devcontainer at
-   `nyxloom-1dd3d1-nyxloomd:8942`, VS Code forwards it, and it stays off the LAN
+   `nyxloom-<instance_id>-nyxloomd:8942`, VS Code forwards it, and it stays off the LAN
    (bridge is internal to docker). **Trade-off:** any container on that network
    can reach it (vs. only the host loopback today) — acceptable if that network
    is trusted; add a bearer token if not. This is the cleanest fix but is a
@@ -122,7 +122,7 @@ the SSH-client machine is two hops removed.
    vb host's `127.0.0.1:8942` (`ssh -L 8942:127.0.0.1:8942 vbhost`). No daemon
    change; works today; not "VS Code auto".
 3. **`docker exec` from the devcontainer** for one-off inspection
-   (`docker exec nyxloom-1dd3d1-nyxloomd curl 127.0.0.1:8942/…`). Debug-only.
+   (`docker exec nyxloom-<instance_id>-nyxloomd curl 127.0.0.1:8942/…`). Debug-only.
 
 `nyxloomctl doctor` now prints the URL + the host-network caveat so the port is at
 least discoverable (2026-07-16).
@@ -191,7 +191,7 @@ should be amended to state the verdict mechanism + the fail-safe rule explicitly
 - ~~tini + supervisor for crash/restart-without-consequence (§2)~~ — **DONE**
   (P37, deployed 2026-07-16; PID1=tini, daemon supervised grandchild).
 - ~~Dashboard on a shared bridge network for VS Code forwarding (§3/§4)~~ —
-  **DONE** (P38, deployed 2026-07-16; bridge `nyxloom-1dd3d1-nyxloomd-net`, 0.0.0.0
+  **DONE** (P38, deployed 2026-07-16; bridge `nyxloom-<instance_id>-nyxloomd-net`, 0.0.0.0
   bind, no token — trust the docker net). *Remaining nicety:* a devcontainer-side
   localhost:8942→nyxloomd:8942 proxy so VS Code auto-forwards it to a browser.
 - ~~P33 (verdict fail-safe, §5)~~ — **DONE** (merged; SPEC §7 amended).
