@@ -3,12 +3,14 @@ kind: backlog-entry
 schema_version: 1
 id: NL-12
 title: "test_scope_amendment_files_reach_review_independent_dispatch is timing-sensitive under heavy host load, failed once with a spurious REVIEW_REJECTED"
-status: open
+status: fixed
 type: "bugfix"
 severity: "low"
 component: "testing"
 provenance: "nyxloom-P103 post-merge gate verification, 2026-09-08"
 filed_date: "2026-09-08"
+closed_date: "2026-11-04"
+closed_reason: "FIXED 2026-11-04 (4c7ba6d65): a genuine race, not load alone: wrapper.py published receipt.json before the typed result, so a pass that consumed the receipt read 'no typed result'. Typed result is now written first (tests/test_wrapper.py TestReceiptIsPublishedAfterTheTypedResult, FIFO-held ordering oracle)."
 ---
 
 ## Observed mechanism and reproduction
