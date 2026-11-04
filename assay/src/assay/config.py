@@ -77,6 +77,7 @@ from .errors import LaneConfigError
 from .liveness import LIVENESS_AUTO, LIVENESS_FALSE, LIVENESS_TRUE, argv_invokes_pytest
 from .mutation_parsers import MUTATION_FORMAT_REGISTRY
 from .guards import is_nonempty_str, is_percentage, is_real, is_strict_int
+from .r2_command import UnrecognizedCoverageOption, transform_argv
 from .records import positional_record
 # (B078) The result-report reader registry, imported at module level for
 # `FORMAT_REGISTRY`'s own reason (A-068): `result_report.format` is closed
@@ -121,6 +122,8 @@ __all__ = [
     "SCOPES",
     "SNAPSHOT_HISTORIES",
     "SNAPSHOT_SELECTIONS",
+    "VERIFY_CLONE_MODES",
+    "MATERIALIZE_MODES",
     "find_lane_file",
     "lane_validation_warnings",
     "load_lane_file",
@@ -243,9 +246,31 @@ SNAPSHOT_SELECTIONS: frozenset[str] = frozenset(
 # shallow/promisor/alternate refusals remain owned by the Git boundary.
 SNAPSHOT_HISTORIES: frozenset[str] = frozenset({"shallow", "full"})
 
+# B222: how much of the clone proof runs for every candidate of a cheap
+# (copy-on-write) workspace.  ``full`` repeats the whole template proof per
+# clone and walks the complete object closure per replacement (the pre-B222
+# behaviour); ``tiered`` proves the sealed template once, re-proves the clone in
+# full every ``VERIFY_CLONE_FULL_EVERY`` candidates, and otherwise checks only
+# the replacement's identity and the objects it adds.  The post-command dirt
+# check is identical in both modes.
+VERIFY_CLONE_MODES: frozenset[str] = frozenset({"tiered", "full"})
+
+# B223: how a candidate's tree is materialized.  ``cow`` (default) is the
+# per-candidate copy-on-write clone; ``tmpfs-worker`` gives each mutation
+# worker one memory-backed tree that is populated once and restored in place
+# after every candidate, falling back to ``cow`` whenever the tmpfs is
+# unavailable or too small.  Verdict inputs are identical in both.
+MATERIALIZE_MODES: frozenset[str] = frozenset({"cow", "tmpfs-worker"})
+DEFAULT_TMPFS_ROOT = "/dev/shm"
+DEFAULT_TMPFS_MAX_MIB = 1024
+
 _ISOLATION_FIELDS: tuple[str, ...] = (
     "snapshot_selection",
     "snapshot_history",
+    "verify_clone",
+    "materialize",
+    "tmpfs_root",
+    "tmpfs_max_mib",
     "unsafe_symlink_omissions",
     # (B041(b), schema v9) paths symlinked IN from the invoking checkout.
     "link_paths",
@@ -463,6 +488,9 @@ _MUTATION_OPTIONAL_FIELDS: tuple[str, ...] = (
     "schedule_low_factor",
     "prediction_wall_seconds",
     "prediction_rss_bytes",
+    # (WP1) Explicit native-R2 opt-in: candidate commands (never the baseline)
+    # stop at the first failing test and skip coverage collection.
+    "candidate_fail_fast",
 )
 
 #: (B046) The fields an INGESTED R2 lane declares: which report FORMAT the
@@ -638,6 +666,12 @@ class MutationConfig:
     #: canonical order: wall seconds and peak RSS bytes of a typical candidate.
     prediction_wall_seconds: float | None = None
     prediction_rss_bytes: int | None = None
+    #: (WP1) Opt-in, native pytest lanes only. When ``True`` every CANDIDATE
+    #: command runs the declared argv minus its pytest-cov options plus
+    #: ``-x -p no:pytest_cov``, so a mutant stops at its first failing test
+    #: and pays no coverage cost. The baseline (R0/R1) is untouched. Part of
+    #: the judge identity, so flipping it invalidates resume records.
+    candidate_fail_fast: bool = False
     #: (B207) Runtime admission budget in bytes, selected by the run path
     #: (``--memory-budget-bytes``), never declared in a lane file.
     memory_budget_bytes: int | None = None
@@ -686,6 +720,8 @@ class MutationConfig:
         }
         if self.jobs_max is None:
             del payload["jobs_max"]
+        if self.candidate_fail_fast:
+            payload["candidate_fail_fast"] = True
         # (P34/W4) Declared value or omitted, never null (A-051) -- present
         # only for the SQL lane that actually named it.
         if self.kill_signal_artifact is not None:
@@ -1152,9 +1188,54 @@ class IsolationConfig:
     #: is orthogonal to the unsafe-symlink omission policy, and a lane may
     #: declare this under either selection.
     link_paths: tuple[str, ...] = ()
+    #: (B222) ``tiered`` (default) or ``full``; see :data:`VERIFY_CLONE_MODES`.
+    #: Declared by the lane only when it is not the default, so a lane that
+    #: never mentions it keeps an unchanged declaration.
+    verify_clone: str = "tiered"
+    #: (B223) ``cow`` (default) or ``tmpfs-worker``; see
+    #: :data:`MATERIALIZE_MODES`.  ``tmpfs_root`` is the memory-backed
+    #: directory worker trees live under and ``tmpfs_max_mib`` bounds one
+    #: tree; both are declared only when not the default.
+    materialize: str = "cow"
+    tmpfs_root: str = DEFAULT_TMPFS_ROOT
+    tmpfs_max_mib: int = DEFAULT_TMPFS_MAX_MIB
 
     def __post_init__(self) -> None:
         where = "IsolationConfig"
+        if (
+            not isinstance(self.materialize, str)
+            or self.materialize not in MATERIALIZE_MODES
+        ):
+            raise LaneConfigError(
+                f"{where}: 'materialize' must be one of "
+                f"{sorted(MATERIALIZE_MODES)}, got {self.materialize!r}"
+            )
+        if (
+            not isinstance(self.tmpfs_root, str)
+            or not self.tmpfs_root.startswith("/")
+            or ".." in self.tmpfs_root.split("/")
+        ):
+            raise LaneConfigError(
+                f"{where}: 'tmpfs_root' must be an absolute path without "
+                f"'..', got {self.tmpfs_root!r}"
+            )
+        if (
+            isinstance(self.tmpfs_max_mib, bool)
+            or not isinstance(self.tmpfs_max_mib, int)
+            or self.tmpfs_max_mib < 1
+        ):
+            raise LaneConfigError(
+                f"{where}: 'tmpfs_max_mib' must be a positive integer, got "
+                f"{self.tmpfs_max_mib!r}"
+            )
+        if (
+            not isinstance(self.verify_clone, str)
+            or self.verify_clone not in VERIFY_CLONE_MODES
+        ):
+            raise LaneConfigError(
+                f"{where}: 'verify_clone' must be one of "
+                f"{sorted(VERIFY_CLONE_MODES)}, got {self.verify_clone!r}"
+            )
         if (
             not isinstance(self.snapshot_history, str)
             or self.snapshot_history not in SNAPSHOT_HISTORIES
@@ -1254,6 +1335,14 @@ class IsolationConfig:
             declared["unsafe_symlink_omissions"] = list(self.unsafe_symlink_omissions)
         if self.link_paths:
             declared["link_paths"] = list(self.link_paths)
+        if self.verify_clone != "tiered":
+            declared["verify_clone"] = self.verify_clone
+        if self.materialize != "cow":
+            declared["materialize"] = self.materialize
+        if self.tmpfs_root != DEFAULT_TMPFS_ROOT:
+            declared["tmpfs_root"] = self.tmpfs_root
+        if self.tmpfs_max_mib != DEFAULT_TMPFS_MAX_MIB:
+            declared["tmpfs_max_mib"] = self.tmpfs_max_mib
         return declared
 
 
@@ -2088,6 +2177,28 @@ def _load_isolation(value: Any, where: str) -> IsolationConfig:
                 f"{where}: 'isolation.snapshot_history' must be one of "
                 f"{sorted(SNAPSHOT_HISTORIES)}, got {snapshot_history!r}"
             )
+    verify_clone = "tiered"
+    if "verify_clone" in value:
+        verify_clone = _as_str(value["verify_clone"], where, "isolation.verify_clone")
+        if verify_clone not in VERIFY_CLONE_MODES:
+            raise LaneConfigError(
+                f"{where}: 'isolation.verify_clone' must be one of "
+                f"{sorted(VERIFY_CLONE_MODES)}, got {verify_clone!r}"
+            )
+    materialize = "cow"
+    if "materialize" in value:
+        materialize = _as_str(value["materialize"], where, "isolation.materialize")
+        if materialize not in MATERIALIZE_MODES:
+            raise LaneConfigError(
+                f"{where}: 'isolation.materialize' must be one of "
+                f"{sorted(MATERIALIZE_MODES)}, got {materialize!r}"
+            )
+    tmpfs_root = DEFAULT_TMPFS_ROOT
+    if "tmpfs_root" in value:
+        tmpfs_root = _as_str(value["tmpfs_root"], where, "isolation.tmpfs_root")
+    tmpfs_max_mib = DEFAULT_TMPFS_MAX_MIB
+    if "tmpfs_max_mib" in value:
+        tmpfs_max_mib = value["tmpfs_max_mib"]
     # (B041(b)/A-366) Read BEFORE the selection fork and passed to both
     # branches: `link_paths` is independent of `snapshot_selection`, and
     # reading it inside one branch is how a key silently becomes legal under
@@ -2117,6 +2228,10 @@ def _load_isolation(value: Any, where: str) -> IsolationConfig:
             snapshot_history=snapshot_history,
             snapshot_history_declared=snapshot_history_declared,
             link_paths=link_paths,
+            verify_clone=verify_clone,
+            materialize=materialize,
+            tmpfs_root=tmpfs_root,
+            tmpfs_max_mib=tmpfs_max_mib,
         )
     if not has_omissions:
         raise LaneConfigError(
@@ -2133,6 +2248,10 @@ def _load_isolation(value: Any, where: str) -> IsolationConfig:
         snapshot_history=snapshot_history,
         snapshot_history_declared=snapshot_history_declared,
         link_paths=link_paths,
+        verify_clone=verify_clone,
+        materialize=materialize,
+        tmpfs_root=tmpfs_root,
+        tmpfs_max_mib=tmpfs_max_mib,
     )
 
 
@@ -3451,6 +3570,32 @@ def _load_mutation(
             f"{where}: 'judge.mutation.prediction_rss_bytes' must be a positive "
             f"integer byte count, got {prediction_rss_bytes!r}"
         )
+    candidate_fail_fast = value.get("candidate_fail_fast", False)
+    if type(candidate_fail_fast) is not bool:
+        raise LaneConfigError(
+            f"{where}: 'judge.mutation.candidate_fail_fast' must be a boolean, "
+            f"got {_type_name(candidate_fail_fast)}"
+        )
+    if candidate_fail_fast:
+        if not (language == "python" and argv_invokes_pytest(argv)):
+            raise LaneConfigError(
+                f"{where}: 'judge.mutation.candidate_fail_fast = true' requires "
+                f"judge.language = 'python' and a lane argv that literally "
+                f"invokes pytest (a token 'pytest', a path ending '/pytest', or "
+                f"the adjacent pair '-m pytest'): the option appends pytest's "
+                f"-x and -p no:pytest_cov to candidate runs only; this lane "
+                f"declares judge.language = {language!r} and argv {list(argv)!r}"
+            )
+        try:
+            transform_argv(argv)
+        except UnrecognizedCoverageOption as exc:
+            raise LaneConfigError(
+                f"{where}: 'judge.mutation.candidate_fail_fast = true' cannot "
+                f"remove the coverage option {str(exc)!r} from the candidate "
+                f"command without guessing; only --cov=, --cov-report= and "
+                f"--cov-branch are recognized. Drop the option or spell the "
+                f"coverage options that way"
+            ) from exc
     return MutationConfig(
         jobs=None,
         jobs_max=jobs_max,
@@ -3469,6 +3614,7 @@ def _load_mutation(
         schedule_low_factor=schedule_low_factor,
         prediction_wall_seconds=prediction_wall_seconds,
         prediction_rss_bytes=prediction_rss_bytes,
+        candidate_fail_fast=candidate_fail_fast,
     )
 
 
@@ -3559,6 +3705,7 @@ def _load_ingested_mutation(
             "liveness_cpu_window", "liveness_idle_floor",
             "schedule_high_factor", "schedule_low_factor",
             "prediction_wall_seconds", "prediction_rss_bytes",
+            "candidate_fail_fast",
         }
     )
     if orchestration_only:

@@ -7617,6 +7617,9 @@ without evidence of the bytes. **Diagnostic landed:** the `unparsable response` 
 the cause. No product defect is claimed. **Next step:** when either test fails again in a lane, read the warning (reattach) or add `faulthandler`/`py-spy` output to the inner session
 (clean-session) before changing code; treat a differing result between runs under load as inconclusive.
 
+## RG-163 — no lane key for the container's shm/tmpfs size, which Assay's `isolation.materialize = "tmpfs-worker"` (B223) needs
+
+**Status:** OPEN, 2026-11-05 (filed from assay-tmpfs-20261105). The lane container is started with `--memory`, `--cpus`, `--pids-limit` and mounts but no `--shm-size` / `--tmpfs`, so `/dev/shm` is Docker's default 64 MiB, below one worker tree (about 175 MB for a 7.6k-file repository). Assay falls back to clone materialization with one stderr advisory when the directory is too small, so nothing fails, but the option has no effect. **Fix shape:** an optional `resources.shm_size` (and/or `resources.tmpfs = ["/path:size"]`) lane key passed as `--shm-size` / `--tmpfs ...:rw,exec,size=N`, validated against `resources.memory` (tmpfs pages are charged to the container). Until then a measuring run can pass the flag through a wrapper.
 ## RG-161 — `run-gate --list --json`: lane inventory with derived rigor (rigor-evidence package RG-d)
 
 **Status: FIXED on branch rigor-rgd-20261105 (2026-11-05); not on main, not released.** Design authority: the rigor-evidence memo amendment 2 and row RG-d (release program `reports/RIGOR-EVIDENCE-DESIGN-MEMO-2026-11-05.md`). SPEC R-55, `README.md`, `CONSUMERS.md`, tests `TestListJsonDerivedRigor` in `tests/test_run_gate.py`. The three-column `--list` is untouched (R-01); `--json` with any other verb is still refused.

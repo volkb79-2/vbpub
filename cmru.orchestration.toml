@@ -29,6 +29,7 @@ registry = ["ghcr.io"]
 #   nyxloom <- cli-extended  (declared release order)
 #   pwmcp <- cli-extended  (declared release order)
 #   iobench <- cli-extended  (declared release order)
+#   rigor-record <- cli-extended  (declared release order)
 #   tls-edge <- none  (declared release order)
 #   modern-debian-tools-python-debug <- cli-extended, ciu, cmru, pwmcp, topos, nyxloom  (declared release order)
 #     consumes first-party wheels: cli-extended, ciu, cmru, topos, nyxloom
@@ -38,7 +39,7 @@ registry = ["ghcr.io"]
 #
 # LEVELS (a project releases after every project on a lower level; longest declared chain)
 #   L0: cli-extended, assay, topos, tls-edge, tester-base
-#   L1: tnt, cgroup-profiler, ciu, nyxloom, pwmcp, iobench
+#   L1: tnt, cgroup-profiler, ciu, nyxloom, pwmcp, iobench, rigor-record
 #   L2: run-gate-project
 #   L3: cmru
 #   L4: modern-debian-tools-python-debug, mdt-cockpit
@@ -51,7 +52,7 @@ registry = ["ghcr.io"]
 # CMRU requires cli-extended at runtime and a published Run-Gate release for its gate.
 # Run-Gate's full R2 qualification requires the released CGProfile observer.
 # project_order must be a topological order of every level; the preflight enforces it.
-project_order = ["cli-extended", "tnt", "cgroup-profiler", "run-gate-project", "cmru", "ciu", "assay", "topos", "nyxloom", "pwmcp", "iobench", "tls-edge", "modern-debian-tools-python-debug", "mdt-cockpit", "tester-base"]
+project_order = ["cli-extended", "tnt", "cgroup-profiler", "run-gate-project", "cmru", "ciu", "assay", "topos", "nyxloom", "pwmcp", "iobench", "rigor-record", "tls-edge", "modern-debian-tools-python-debug", "mdt-cockpit", "tester-base"]
 default_steps = ["run-tests", "build", "push"]
 execution_mode = "project-first"
 # Repository credentials live in gitignored root cmru.secret.toml. A project may
@@ -239,6 +240,14 @@ depends_on = []
 # phases M1-M4 in libraries/iobench/docs/DESIGN-GUIDE.md); cmru is an installed tool, not a build edge.
 [orchestration.project.iobench]
 config = "libraries/iobench/cmru.toml"
+depends_on = ["cli-extended"]
+
+# rigor-record (libraries/rigor-record, RR-1/RR-2): the interchange layer of the rigor-evidence record
+# (schemas, validator, privacy lint, assemble, render, check). Its library modules are stdlib-only and
+# producers vendor its schemas and golden fixtures instead of importing the wheel; only the
+# `rigor-record` command line uses the cli-extended wheel (cli-extended>=0.3.0, RR-2).
+[orchestration.project.rigor-record]
+config = "libraries/rigor-record/cmru.toml"
 depends_on = ["cli-extended"]
 
 # Consumes no first-party package (stdlib-only wheel); cmru is the source-built

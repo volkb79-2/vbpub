@@ -159,6 +159,7 @@ def test_the_analysis_package_imports_nothing_outside_the_stdlib_and_assay():
         "cli.py",
         "evidence.py",
         "plan_estimate.py",
+        "rigor_export.py",
     }
 
 

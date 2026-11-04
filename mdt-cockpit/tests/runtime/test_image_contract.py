@@ -24,6 +24,8 @@ EXTRA_COMMANDS = {"antigravity": ("agy",)}
 PROBE_ARGS = {"claudelink": "help"}
 # First-party wheels that are libraries, not CLIs: checked by import instead.
 LIBRARY_ONLY = {"cli-extended": "cli_extended"}
+# First-party wheels whose commands are not named after the wheel (cgprofile 2.0 ships cgpctl and cgpd).
+WHEEL_COMMANDS = {"cgprofile": ("cgpctl", "cgpd")}
 
 
 def _declared_ai_tools() -> dict[str, str]:
@@ -176,9 +178,10 @@ class Contract:
 
     def test_first_party_clis_resolve_to_the_primary_venv_and_run(self) -> None:
         commands = [
-            (name, name, "/opt/mdt/venv/bin")
+            (name, command, "/opt/mdt/venv/bin")
             for name in _declared_first_party()
             if name not in LIBRARY_ONLY
+            for command in WHEEL_COMMANDS.get(name, (name,))
         ]
         self._check_commands(commands)
         for name, module in LIBRARY_ONLY.items():

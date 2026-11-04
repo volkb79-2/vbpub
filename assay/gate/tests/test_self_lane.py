@@ -189,6 +189,7 @@ def test_analysis_r2_is_a_bounded_separate_whole_target_lane():
         "analysis/src/assay_analysis/cli.py",
         "analysis/src/assay_analysis/evidence.py",
         "analysis/src/assay_analysis/plan_estimate.py",
+        "analysis/src/assay_analysis/rigor_export.py",
     )
     assert not set(judge.targets) & {target for target in lane_file.lane(QUALIFICATION_ID).judge.targets}
     assert judge.mutation is not None

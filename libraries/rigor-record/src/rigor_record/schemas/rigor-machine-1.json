@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:vbpub:rigor-machine:1",
+  "$comment": "VENDORED COPY. Owner: cgroup-profiler (cgprofile). Normative text: scripts/cgroup-profiler/docs/PROTOCOL.md section 11 (machine/1); producer: scripts/cgroup-profiler/src/cgprofile/machine.py. Copied from vbpub@215f4518a (rigor-evidence CP-1). Do not edit here: change it in cgprofile and re-vendor with its golden fixtures (golden/machine/).",
+  "title": "machine/1 as emitted by cgpd (cgprofile PROTOCOL section 11)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "cpu_model", "cpus_online", "cpus_available", "hypervisor", "smt", "speed", "speed_reason"],
+  "properties": {
+    "schema": {"const": "machine/1"},
+    "cpu_model": {"type": ["string", "null"], "maxLength": 96},
+    "cpus_online": {"type": ["integer", "null"], "minimum": 1},
+    "cpus_available": {"type": ["number", "null"], "exclusiveMinimum": 0},
+    "hypervisor": {"type": ["boolean", "null"]},
+    "smt": {"type": ["boolean", "null"]},
+    "speed": {"oneOf": [{"$ref": "#/$defs/speed_measured"}, {"$ref": "#/$defs/speed_table"}, {"type": "null"}]},
+    "speed_reason": {"type": ["string", "null"], "pattern": "^[A-Z][A-Z0-9_]{0,95}$"}
+  },
+  "$defs": {
+    "speed_measured": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["basis", "geekbench_major", "geekbench_version", "baseline_score", "single_core", "multi_core", "cpus_at_measurement", "measured_on"],
+      "properties": {
+        "basis": {"type": "string", "pattern": "^geekbench[0-9]{1,2}-measured$"},
+        "geekbench_major": {"type": "integer", "minimum": 1},
+        "geekbench_version": {"type": ["string", "null"], "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+        "baseline_score": {"type": "integer", "minimum": 1},
+        "single_core": {"type": "integer", "minimum": 1},
+        "multi_core": {"type": ["integer", "null"], "minimum": 1},
+        "cpus_at_measurement": {"type": ["integer", "null"], "minimum": 1},
+        "measured_on": {"type": ["string", "null"], "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"}
+      }
+    },
+    "speed_table": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["basis", "geekbench_major", "geekbench_version", "baseline_score", "single_core", "multi_core", "cpus_at_measurement", "measured_on", "source_url", "retrieved"],
+      "properties": {
+        "basis": {"type": "string", "pattern": "^geekbench[0-9]{1,2}-table$"},
+        "geekbench_major": {"type": "integer", "minimum": 1},
+        "geekbench_version": {"type": "null"},
+        "baseline_score": {"type": "integer", "minimum": 1},
+        "single_core": {"type": "integer", "minimum": 1},
+        "multi_core": {"type": "null"},
+        "cpus_at_measurement": {"type": "null"},
+        "measured_on": {"type": "null"},
+        "source_url": {"type": "string", "pattern": "^https://[A-Za-z0-9./_?=&%#-]{1,300}$"},
+        "retrieved": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"}
+      }
+    }
+  }
+}

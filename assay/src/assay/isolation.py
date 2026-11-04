@@ -39,9 +39,11 @@ import os
 import re
 import shutil
 import stat
+import sys
 import tempfile
 import threading
 from contextlib import ExitStack, contextmanager
+from . import _tmpfs_worker
 from .records import record
 from pathlib import Path, PurePosixPath
 from typing import Callable, ContextManager, Iterable, Iterator, Mapping, Sequence
@@ -267,6 +269,36 @@ class _Entry:
     #: Only for :data:`_MODE_SYMLINK`: the exact target bytes, already proven
     #: to resolve lexically inside the snapshot root.
     target: str | None = None
+
+
+#: (B222) Under ``verify_clone = "tiered"`` every this-many-th clone (the first
+#: included) still gets the complete :meth:`SnapshotRepository._verify` proof.
+#: The clone of a sealed read-only template cannot differ from it, so this is
+#: insurance against a harness or backend defect, not a part of the argument.
+VERIFY_CLONE_FULL_EVERY = 25
+
+_LS_TREE_BLOB = re.compile(rb"[0-7]+ blob ([0-9a-f]{40})\t")
+
+
+@record
+class _BaseClosure:
+    """(B220) What the seed already proved about the judged commit's closure.
+
+    The child commit of a replacement shares every object of the judged
+    commit's closure except the replaced blob, the trees on its path and the
+    commit itself. These facts are derived once while the seed is prepared, so
+    each candidate bounds only the objects it adds instead of re-walking the
+    whole pack. ``oids`` is the closure under the seed's own shallow boundaries
+    (the same visible commits a child walk sees), not the larger seed
+    inventory.
+    """
+
+    oids: frozenset[str]
+    total_bytes: int
+    #: Unique blob OID -> size over the judged commit's tree.
+    tree_blob_sizes: Mapping[str, int]
+    #: Number of tree leaves (paths) that reference each blob OID.
+    blob_refs: Mapping[str, int]
 
 
 @record
@@ -579,6 +611,7 @@ class SnapshotRepository:
         template: Path,
         manifest: _Manifest,
         workspace: ActiveWorkspace | None = None,
+        base_closure: _BaseClosure | None = None,
     ) -> None:
         self._spec = spec
         self._source = source
@@ -586,11 +619,22 @@ class SnapshotRepository:
         self._template = template
         self._manifest = manifest
         self._workspace = workspace
+        #: ``None`` (a caller that did not derive it) keeps the full closure
+        #: walk, exactly as before B220.
+        self._base_closure = base_closure
+        self._clone_count = 0
         self._lock = threading.Lock()
         self._template_lock = threading.Lock()
         self._closed = False
         self._live: set[Path] = set()
         self._template_root: Path | None = None
+        #: (B223) ``tmpfs-worker`` state: one long-lived tree per worker thread
+        #: under a private directory of the declared tmpfs, the template's
+        #: size (measured once) and whether creating more trees was refused.
+        self._workers: dict[int, _tmpfs_worker.WorkerTree] = {}
+        self._tmpfs_dir: Path | None = None
+        self._template_bytes: int | None = None
+        self._tmpfs_off = False
 
     @property
     def spec(self) -> SnapshotSpec:
@@ -765,6 +809,13 @@ class SnapshotRepository:
         try:
             if replacement is not None:
                 self._check_replacement_site(replacement, deadline)
+                worker = self._acquire_worker(deadline)
+                if worker is not None:
+                    with self._worker_candidate(
+                        worker, replacement, deadline
+                    ) as snapshot:
+                        yield snapshot
+                    return
             if self._workspace is not None and self._workspace.cheap_clone:
                 template = self._ensure_template(deadline)
                 root = self._workspace.clone_tree(template)
@@ -814,6 +865,7 @@ class SnapshotRepository:
             root = workspace.make_tree()
             try:
                 self._build(root, None, deadline, plant_links=False)
+                self._prime_index(root, deadline)
                 workspace.seal(root)
             except BaseException:
                 self._discard_materialization(root)
@@ -821,11 +873,38 @@ class SnapshotRepository:
             self._template_root = root
             return root
 
+    def _prime_index(self, root: Path, deadline: "_git._P22Deadline") -> None:
+        """(B219) Record stat data in the sealed template's index, once.
+
+        ``_build`` writes the index with ``read-tree`` and the worktree from
+        Python, so the index carries no stat data, and every Git child runs
+        with optional locks off, so a later ``git status`` never persists a
+        refresh. Each candidate's ``status`` (before the command and in the
+        post-command dirt check) therefore hashed every tracked file. One
+        explicit ``update-index --refresh`` here (a non-optional write, so the
+        lock flags do not suppress it) lets a clone that preserves inode
+        numbers and timestamps validate by ``lstat`` alone. A clone that does
+        not preserve them simply mismatches the recorded stat data and Git
+        falls back to hashing: slower, never wrong. The file mtimes are fixed
+        and far older than the index file, so no entry is racily clean.
+        """
+        git_dir = root / ".git"
+        _git._p22_git(
+            self._source.git_executable,
+            git_dir=git_dir,
+            work_tree=root,
+            args=("update-index", "--refresh"),
+            deadline=deadline,
+            cwd=root,
+        )
+
     def _materialize_clone(
         self,
         root: Path,
         replacement: tuple[PurePosixPath, bytes, bytes] | None,
         deadline: "_git._P22Deadline",
+        *,
+        force_full: bool = False,
     ) -> str:
         """Apply one unit's private Git and worktree changes to its clone."""
         executable = self._source.git_executable
@@ -843,7 +922,7 @@ class SnapshotRepository:
                 identity=identity,
             )
 
-        commit, _entries = self._apply_replacement(
+        commit, entries = self._apply_replacement(
             root=root,
             git_dir=git_dir,
             run=run,
@@ -852,9 +931,237 @@ class SnapshotRepository:
             rewrite_worktree=True,
         )
         (git_dir / "HEAD").write_text(f"{commit}\n", encoding="ascii")
-        self._verify(root, git_dir, commit, run)
+        with self._lock:
+            ordinal = self._clone_count
+            self._clone_count += 1
+        if (
+            force_full
+            or self._spec.snapshot_policy.verify_clone == "full"
+            or ordinal % VERIFY_CLONE_FULL_EVERY == 0
+        ):
+            self._verify(root, git_dir, commit, run)
+        else:
+            self._verify_clone_identity(root, commit, run, replacement, entries)
         self._plant_link_paths(root, run)
         return commit
+
+    def _acquire_worker(
+        self, deadline: "_git._P22Deadline"
+    ) -> "_tmpfs_worker.WorkerTree | None":
+        """(B223) The calling thread's tmpfs tree, or ``None`` for the CoW path.
+
+        ``None`` is the designed fallback, never a failure: the lane did not
+        ask for ``tmpfs-worker``, there is no sealed template to copy, the
+        thread's tree is already in use (a nested materialization), or the
+        tmpfs refused one more tree (not a tmpfs, tree above
+        ``tmpfs_max_mib``, not enough free space, write error).  Candidates
+        then use the clone path exactly as before, so a verdict never depends
+        on which path a candidate took.
+        """
+        policy = self._spec.snapshot_policy
+        if (
+            policy.materialize != "tmpfs-worker"
+            or self._workspace is None
+            or not self._workspace.cheap_clone
+        ):
+            return None
+        ident = threading.get_ident()
+        with self._lock:
+            worker = self._workers.get(ident)
+            if worker is not None:
+                if worker.busy:
+                    return None
+                worker.busy = True
+                return worker
+            if self._tmpfs_off:
+                return None
+        template = self._ensure_template(deadline)
+        try:
+            worker = self._build_worker(template, deadline)
+        except _tmpfs_worker.TmpfsUnavailable as exc:
+            with self._lock:
+                first = not self._tmpfs_off
+                self._tmpfs_off = True
+            if first:
+                sys.stderr.write(
+                    "Assay advisory: isolation.materialize = 'tmpfs-worker' is "
+                    f"unavailable ({exc}); candidates use copy-on-write clones\n"
+                )
+            return None
+        worker.busy = True
+        with self._lock:
+            self._workers[ident] = worker
+        return worker
+
+    def _build_worker(
+        self, template: Path, deadline: "_git._P22Deadline"
+    ) -> "_tmpfs_worker.WorkerTree":
+        """Populate one tree on the tmpfs from the sealed template, once."""
+        policy = self._spec.snapshot_policy
+        holder: Path | None = None
+        try:
+            with self._lock:
+                if self._tmpfs_dir is None:
+                    self._tmpfs_dir = Path(
+                        tempfile.mkdtemp(prefix="assay-tmpfs-", dir=policy.tmpfs_root)
+                    )
+                directory = self._tmpfs_dir
+            if self._template_bytes is None:
+                self._template_bytes = _tmpfs_worker.tree_bytes(template)
+            _tmpfs_worker.check_capacity(
+                directory,
+                self._template_bytes,
+                max_bytes=policy.tmpfs_max_mib * 1024 * 1024,
+            )
+            holder = Path(tempfile.mkdtemp(prefix="w-", dir=directory))
+            tree = holder / "tree"
+            _tmpfs_worker.copy_template(template, tree)
+            # Inode numbers changed with the copy, so the template's recorded
+            # stat data no longer matches: refresh it here, in the final place.
+            self._prime_index(tree, deadline)
+            return _tmpfs_worker.WorkerTree(tree)
+        except OSError as exc:
+            if holder is not None:
+                shutil.rmtree(holder, ignore_errors=True)
+            raise _tmpfs_worker.TmpfsUnavailable(
+                f"the worker tree could not be built: {exc}"
+            ) from exc
+        except BaseException:
+            if holder is not None:
+                shutil.rmtree(holder, ignore_errors=True)
+            raise
+
+    @contextmanager
+    def _worker_candidate(
+        self,
+        worker: "_tmpfs_worker.WorkerTree",
+        replacement: tuple[PurePosixPath, bytes, bytes],
+        deadline: "_git._P22Deadline",
+    ) -> Iterator[Snapshot]:
+        """One candidate in a worker's tree, restored (or dropped) afterwards.
+
+        The first candidate on a fresh tree runs the complete clone proof
+        (:meth:`_verify`); the others follow the ``verify_clone`` tier as a
+        clone would.  After the body, the tree is restored and scanned
+        (:meth:`_tmpfs_worker.WorkerTree.settle`); an exception in setup or
+        body, or a tree that does not scan clean, drops the tree so the next
+        candidate starts from a fresh copy of the template.
+        """
+        root = worker.root
+        self._track(root)
+        kept = False
+        try:
+            commit = self._materialize_clone(
+                root, replacement, deadline, force_full=worker.fresh
+            )
+            worker.fresh = False
+            yield Snapshot(
+                root=root,
+                project_root=_join_prefix(root, self._spec.project_prefix),
+                commit=commit,
+                tracked_directories=frozenset(self._manifest.directories),
+            )
+            kept = self._settle_worker(worker, replacement)
+        finally:
+            self._untrack(root)
+            worker.busy = False
+            if not kept:
+                self._drop_worker(worker)
+
+    def _settle_worker(
+        self,
+        worker: "_tmpfs_worker.WorkerTree",
+        replacement: tuple[PurePosixPath, bytes, bytes],
+    ) -> bool:
+        path, original, _new = replacement
+        entry = self._manifest.by_path()[path]
+        root = worker.root
+        try:
+            return worker.settle(
+                path=root.joinpath(*path.parts),
+                original=original,
+                executable=entry.mode == _MODE_EXECUTABLE,
+                fixed_mtime=_FIXED_MTIME,
+                planted=tuple(
+                    root / raw for raw in self._spec.snapshot_policy.link_paths
+                ),
+            )
+        except OSError:
+            return False
+
+    def _drop_worker(self, worker: "_tmpfs_worker.WorkerTree") -> None:
+        with self._lock:
+            for ident, held in list(self._workers.items()):
+                if held is worker:
+                    del self._workers[ident]
+        shutil.rmtree(worker.root.parent, ignore_errors=True)
+
+    def _release_workers(self) -> None:
+        """Remove every worker tree and the private tmpfs directory."""
+        with self._lock:
+            self._workers.clear()
+            directory = self._tmpfs_dir
+            self._tmpfs_dir = None
+        if directory is not None:
+            shutil.rmtree(directory, ignore_errors=True)
+            if directory.exists():
+                sys.stderr.write(
+                    f"Assay advisory: tmpfs directory {directory} could not be "
+                    f"removed; its memory stays charged until it is\n"
+                )
+
+    def _verify_clone_identity(
+        self,
+        root: Path,
+        commit: str,
+        run: Callable[..., bytes],
+        replacement: tuple[PurePosixPath, bytes, bytes] | None,
+        entries: tuple[_Entry, ...],
+    ) -> None:
+        """(B222) The per-candidate proof for a clone of the sealed template.
+
+        The clone is a copy-on-write snapshot of a read-only template that
+        :meth:`_build` already proved in full, so its untouched content equals
+        the template's by construction. What a clone adds is the candidate: the
+        replacement commit, and the one worktree file written for it. Those
+        are checked directly: ``HEAD`` is the commit, the index tree is
+        ``HEAD``'s tree, the replaced path holds the intended blob in the
+        commit and the intended bytes and mode on disk. The post-command dirt
+        check (``status`` plus the head check) is not tiered and still runs
+        for every candidate.
+        """
+        head = _decode(run("rev-parse", "HEAD")).strip()
+        if head != commit:
+            raise _git_failed(f"private HEAD is {head}, expected {commit}")
+        tree = _decode(run("write-tree")).strip()
+        head_tree = _decode(run("rev-parse", "HEAD^{tree}")).strip()
+        if tree != head_tree:
+            raise _git_failed(
+                f"the private snapshot at {root} has an index tree {tree} "
+                f"that does not match HEAD^{{tree}} {head_tree}"
+            )
+        if replacement is None:
+            return
+        path, _expected, new_bytes = replacement
+        entry = next(item for item in entries if item.path == path)
+        committed = _decode(run("rev-parse", f"HEAD:{path}")).strip()
+        if committed != entry.oid:
+            raise _git_failed(
+                f"the replacement commit holds blob {committed} at {path!s}, "
+                f"expected {entry.oid}"
+            )
+        destination = root.joinpath(*path.parts)
+        executable = entry.mode == _MODE_EXECUTABLE
+        status = destination.lstat()
+        if (
+            not stat.S_ISREG(status.st_mode)
+            or bool(status.st_mode & 0o111) != executable
+            or destination.read_bytes() != new_bytes
+        ):
+            raise _git_failed(
+                f"the replaced file {path!s} in the private snapshot at {root} "
+                f"does not hold the replacement bytes and mode"
+            )
 
     def _discard_materialization(self, root: Path) -> None:
         """Remove a failed or leaked child without masking its first error."""
@@ -1025,7 +1332,12 @@ class SnapshotRepository:
             )
             for item in entries
         )
-        self._enforce_child_closure(git_dir, commit, deadline)
+        self._enforce_child_closure(
+            git_dir,
+            commit,
+            deadline,
+            replaced=(path, entry.oid, new_oid),
+        )
         if rewrite_worktree:
             destination = root.joinpath(*path.parts)
             destination.unlink()
@@ -1145,7 +1457,12 @@ class SnapshotRepository:
             )
 
     def _enforce_child_closure(
-        self, git_dir: Path, commit: str, deadline: "_git._P22Deadline"
+        self,
+        git_dir: Path,
+        commit: str,
+        deadline: "_git._P22Deadline",
+        *,
+        replaced: tuple[PurePosixPath, str, str],
     ) -> None:
         """Bound the child's own closure (A-186).
 
@@ -1153,7 +1470,23 @@ class SnapshotRepository:
         Checking only the base closure would let the declared ceilings be
         true of the prepared seed and false of every repository actually
         handed to a consumer command.
+
+        (B220) The base closure was already measured when the seed was
+        prepared, so under ``verify_clone = "tiered"`` only the objects the
+        replacement adds are read (:meth:`_enforce_added_objects`); the limits
+        fire at exactly the thresholds of the full walk, which remains the
+        behaviour for ``verify_clone = "full"``, for a repository prepared
+        without base facts, and for a path Git's line-oriented object-name
+        protocol cannot carry.
         """
+        path = replaced[0]
+        if (
+            self._base_closure is not None
+            and self._spec.snapshot_policy.verify_clone == "tiered"
+            and "\n" not in str(path)
+        ):
+            self._enforce_added_objects(git_dir, commit, deadline, replaced)
+            return
         limits = self._spec.limits
         oids = _closure_oids(
             self._source.git_executable,
@@ -1184,6 +1517,82 @@ class SnapshotRepository:
             no_walk=True,
         )
         _enforce_tree_blob_limits(child_metadata, tree_oids, limits)
+
+    def _enforce_added_objects(
+        self,
+        git_dir: Path,
+        commit: str,
+        deadline: "_git._P22Deadline",
+        replaced: tuple[PurePosixPath, str, str],
+    ) -> None:
+        """(B220) The child's limits from the base facts plus the added objects.
+
+        The child closure is the judged commit's closure plus, at most, the
+        replacement commit, the root tree and every tree down to the replaced
+        path, and the new blob. Those are read with one ``cat-file
+        --batch-check``; everything else is the seed's recorded totals.
+        """
+        base = self._base_closure
+        assert base is not None
+        limits = self._spec.limits
+        path, old_oid, new_oid = replaced
+        names = [commit, f"{commit}^{{tree}}"]
+        names.extend(
+            f"{commit}^{{tree}}:{PurePosixPath(*path.parts[:depth])}"
+            for depth in range(1, len(path.parts) + 1)
+        )
+        raw = _git._p22_git(
+            self._source.git_executable,
+            git_dir=git_dir,
+            work_tree=None,
+            args=("cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"),
+            deadline=deadline,
+            cwd=git_dir,
+            stdin_bytes=("\n".join(names) + "\n").encode("utf-8"),
+        )
+        lines = _decode(raw).splitlines()
+        reported: dict[str, tuple[str, int]] = {}
+        for line in lines:
+            fields = line.split(" ")
+            if len(fields) != 3:
+                raise _git_failed(
+                    f"git cat-file --batch-check reported {line!r} for the "
+                    f"replacement's own objects"
+                )
+            reported[fields[0]] = (fields[1], int(fields[2]))
+        added = {
+            oid: found for oid, found in reported.items() if oid not in base.oids
+        }
+        if len(base.oids) + len(added) > limits.max_objects:
+            raise _limit_exceeded(
+                f"the reachable closure of {commit} exceeds max_objects "
+                f"({limits.max_objects})"
+            )
+        total = base.total_bytes
+        for oid, (kind, size) in added.items():
+            if kind == "blob" and size > limits.max_blob_bytes:
+                raise _limit_exceeded(
+                    f"blob {oid} is {size} bytes, exceeding max_blob_bytes "
+                    f"({limits.max_blob_bytes})"
+                )
+            total += size
+            if total > limits.max_total_object_bytes:
+                raise _limit_exceeded(
+                    f"the closure exceeds max_total_object_bytes "
+                    f"({limits.max_total_object_bytes})"
+                )
+        # The judged tree's unique blob bytes: the old blob leaves when this
+        # was its only path, the new blob joins unless the tree held it.
+        tree_total = sum(base.tree_blob_sizes.values())
+        if old_oid != new_oid and base.blob_refs[old_oid] == 1:
+            tree_total -= base.tree_blob_sizes[old_oid]
+        if new_oid not in base.tree_blob_sizes:
+            tree_total += reported[new_oid][1]
+        if tree_total > limits.max_total_tree_blob_bytes:
+            raise _limit_exceeded(
+                "the judged tree exceeds max_total_tree_blob_bytes "
+                f"({limits.max_total_tree_blob_bytes}) with {tree_total} bytes"
+            )
 
     def _verify(
         self,
@@ -1349,6 +1758,56 @@ def _copy_objects(
                 shutil.copyfile(item, destination)
             else:
                 workspace.clone_file(item, destination)
+
+
+def _derive_base_closure(
+    git_executable: Path,
+    *,
+    seed_git_dir: Path,
+    spec: SnapshotSpec,
+    metadata: Mapping[str, tuple[str, int]],
+    judged_tree_oids: Sequence[str],
+    deadline: "_git._P22Deadline",
+) -> _BaseClosure:
+    """(B220) Measure, once, what every child commit shares with the seed.
+
+    The walk is the one a child performs (``rev-list --objects <commit>`` under
+    the seed's shallow boundaries), so a child's closure is exactly this set
+    plus the objects its replacement adds.
+    """
+    oids = frozenset(
+        _closure_oids(
+            git_executable,
+            git_dir=seed_git_dir,
+            work_tree=None,
+            cwd=seed_git_dir,
+            commit=spec.commit,
+            deadline=deadline,
+            max_objects=spec.limits.max_objects,
+        )
+    )
+    listing = _git._p22_git(
+        git_executable,
+        git_dir=seed_git_dir,
+        work_tree=None,
+        args=("ls-tree", "-r", "-z", "--full-tree", spec.commit),
+        deadline=deadline,
+        cwd=seed_git_dir,
+    )
+    refs: dict[str, int] = {}
+    for match in _LS_TREE_BLOB.finditer(listing):
+        oid = match.group(1).decode("ascii")
+        refs[oid] = refs.get(oid, 0) + 1
+    return _BaseClosure(
+        oids=oids,
+        total_bytes=sum(metadata[oid][1] for oid in oids),
+        tree_blob_sizes={
+            oid: metadata[oid][1]
+            for oid in set(judged_tree_oids)
+            if metadata[oid][0] == "blob"
+        },
+        blob_refs=refs,
+    )
 
 
 def _workspace_estimate(
@@ -2315,6 +2774,14 @@ def prepare_snapshot(
             judged_tree_oids,
             spec.limits,
         )
+        base_closure = _derive_base_closure(
+            executable,
+            seed_git_dir=seed_git_dir,
+            spec=spec,
+            metadata=metadata,
+            judged_tree_oids=judged_tree_oids,
+            deadline=deadline,
+        )
         if workspace is not None:
             estimate = _workspace_estimate(
                 manifest,
@@ -2335,6 +2802,7 @@ def prepare_snapshot(
             template=template,
             manifest=manifest,
             workspace=active_workspace,
+            base_closure=base_closure,
         )
         yield repository
     except BaseException as exc:
@@ -2343,6 +2811,7 @@ def prepare_snapshot(
         # the caller is actually about to see.
         if repository is not None:
             leaked, template_root = _close_repository(repository)
+            repository._release_workers()
             for root in leaked:
                 repository._discard_materialization(root)
             if template_root is not None:
@@ -2352,6 +2821,7 @@ def prepare_snapshot(
         raise
     else:
         live, template_root = _close_repository(repository)
+        repository._release_workers()
         # Refusing loudly is right, but a refusal that ABANDONS a snapshot
         # directory inside caller-owned scratch would be the silent state
         # leak the terminal table forbids -- so the misused children are

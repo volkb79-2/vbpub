@@ -10168,12 +10168,14 @@ class TestShippedGateFullDeclaration:
         assert lanes["assay-r2"]["environment"] == "tester-unified"
         assert lanes["assay-r2"]["resource_observer"] == "cgprofile"
         assert lanes["assay-r2"]["resources"] == {
-            "cpus": "3", "memory": "2g", "pids": 8192,
+            "cpus": "3", "memory": "2g", "pids": 8192, "candidate_ram": "700m",
         }
-        # Two scratch worktrees still share one tester-cgroup event counter.
-        # Concurrent candidate windows cannot safely attribute a limit hit.
+        # Assay 11/12 attributes a limit event to every overlapping candidate
+        # window, so the lane opts into run-gate's worker selection under a
+        # declared ceiling (assay-jobs-audit 2026-11-05).
+        assert lanes["assay-r2"]["jobs"] == "auto"
         assay_cfg = tomllib.loads((RUN_GATE_DIR / "assay.toml").read_text())
-        assert assay_cfg["lanes"]["r2"]["judge"]["mutation"]["jobs"] == 1
+        assert assay_cfg["lanes"]["r2"]["judge"]["mutation"]["jobs_max"] == 2
         assert "assay-r2" not in gate_full["argv"][2]
 
 

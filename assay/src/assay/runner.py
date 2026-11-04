@@ -91,6 +91,7 @@ from typing import (
     Callable,
     cast,
     ContextManager,
+    Final,
     Iterator,
     Mapping,
     Protocol,
@@ -1236,6 +1237,109 @@ def _consume_result_report(
         return result_reports.read_verified(result_report.format, raw)
     except result_reports.ReportUnusable:
         return None
+
+
+def _resolve_candidate_fail_fast(
+    declared: bool, *, cold_witness: bool, diagnostics: Any
+) -> bool:
+    """(WP1) Whether this run applies the lane's ``candidate_fail_fast``.
+
+    A ``--cold-witness`` run already stops each candidate at its first verified
+    failure under a stricter proof, so the key is ignored there (announced on
+    *diagnostics* when there is one) and stays out of that run's identity.
+    """
+    if declared and cold_witness and diagnostics is not None:
+        print(
+            "assay: judge.mutation.candidate_fail_fast is ignored under "
+            "--cold-witness, which already stops each candidate at its first "
+            "verified failure",
+            file=diagnostics,
+        )
+    return declared and not cold_witness
+
+
+#: (WP1) Preflight timeout: a multiple of the baseline's measured wall time
+#: (the same suite, minus coverage), never below the floor, never above what
+#: is left of the lane budget.
+_PREFLIGHT_BASELINE_FACTOR: Final = 2.0
+_PREFLIGHT_FLOOR_SECONDS: Final = 60.0
+
+
+def _preflight_timeout(baseline_seconds: float, remaining: float) -> float:
+    return min(
+        remaining,
+        max(_PREFLIGHT_FLOOR_SECONDS, _PREFLIGHT_BASELINE_FACTOR * baseline_seconds),
+    )
+
+
+def _baseline_seconds(result: "CommandResult") -> float:
+    return (
+        datetime.fromisoformat(result.ended) - datetime.fromisoformat(result.started)
+    ).total_seconds()
+
+
+def _first_failure_line(outcome: "CommandResult") -> str | None:
+    """The first pytest ``FAILED``/``ERROR`` summary line in the output tails."""
+    for tail in (outcome.stdout_tail, outcome.stderr_tail):
+        for line in (tail or "").splitlines():
+            if line.startswith(("FAILED ", "ERROR ")):
+                return line.strip()
+    return None
+
+
+def _candidate_fail_fast_preflight(
+    *,
+    prepared: Any,
+    plan: CommandPlan,
+    deadline: "LaneDeadline",
+    process_runner: ProcessRunner,
+    clock: Clock,
+    baseline_seconds: float,
+    liveness_plugin_path: Path | None = None,
+) -> None:
+    """(WP1) Refuse the lane unless its candidate command PASSES unmutated.
+
+    Every nonzero exit is a ``killed`` mutant, so anything that makes the
+    candidate command fail on the unmutated tree (an option conflict such as
+    ``addopts = --cov`` once ``-p no:pytest_cov`` removes the plugin, or a test
+    that needs pytest-cov at setup or run time) would turn the whole sweep into
+    false kills. This runs the exact candidate command (fail-fast transform and
+    the injected witness plugin included, ``-x`` and all) once on the UNMUTATED
+    snapshot and requires a full PASS. The timeout is a bounded multiple of the
+    baseline's own wall time, not the remaining lane budget.
+    """
+    with tempfile.TemporaryDirectory(prefix="assay-ff-preflight-") as scratch:
+        env = dict(plan.env_effective)
+        if liveness.ASSAY_LIVENESS_EVENTS_ENV in env:
+            env[liveness.ASSAY_LIVENESS_EVENTS_ENV] = str(
+                Path(scratch) / "events.ndjson"
+            )
+        ff_plan = mutation.candidate_fail_fast_preflight_plan(
+            replace(plan, env_effective=MappingProxyType(env)),
+            plugin_dir=Path(scratch),
+            liveness_plugin_path=liveness_plugin_path,
+        )
+        with prepared.materialize(timeout=deadline.remaining()) as snapshot:
+            outcome = execute_plan(
+                ff_plan,
+                cwd=snapshot.project_root,
+                timeout=_preflight_timeout(baseline_seconds, deadline.remaining()),
+                process_runner=process_runner,
+                clock=clock,
+            )
+    if outcome.outcome is not Outcome.PASS:
+        failing = _first_failure_line(outcome)
+        raise AssayError(
+            "judge.mutation.candidate_fail_fast: the candidate command "
+            f"({' '.join(ff_plan.argv_effective)}) did not pass on the "
+            f"unmutated snapshot ({outcome.outcome.value}, exit {outcome.returncode}"
+            + (f"; {failing}" if failing else "")
+            + "); every candidate would be a false kill. Fix the pytest "
+            "configuration or the test (an addopts entry or a test that needs "
+            "pytest-cov is the usual cause) or drop the key",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.BAD_LANE_CONFIG,
+        )
 
 
 def execute_plan(
@@ -5465,10 +5569,37 @@ def _run_prepared_lane(
                             f"of lane time: {exc}"
                         ) from exc
                     raise
+            # (WP1) `candidate_fail_fast` is the lane's opt-in to candidate-only
+            # `-x` and no coverage. A cold-witness run already stops at the
+            # first verified failure under its own no-coverage command, so the
+            # lane key is not applied there (and stays out of the identity).
+            candidate_fail_fast = _resolve_candidate_fail_fast(
+                lane.judge.mutation.candidate_fail_fast,
+                cold_witness=cold_witness,
+                diagnostics=diagnostics,
+            )
+            if candidate_fail_fast:
+                _candidate_fail_fast_preflight(
+                    prepared=prepared,
+                    # The baseline's own plan and runner: the liveness runner
+                    # is per-candidate machinery, and the plugin needs the
+                    # events path the baseline plan already carries.
+                    plan=baseline_plan,
+                    deadline=deadline,
+                    process_runner=lane_process_runner,
+                    clock=clock,
+                    baseline_seconds=_baseline_seconds(result),
+                    liveness_plugin_path=(
+                        Path(liveness_plugin_path)
+                        if liveness_plugin_path is not None
+                        else None
+                    ),
+                )
             try:
                 mutation_result = mutation.run_mutation(
                     baseline=result,
                     prepared=prepared,
+                    candidate_fail_fast=candidate_fail_fast,
                     plan=r2_plan if cold_witness else plan,
                     deadline=deadline,
                     targets=targets,

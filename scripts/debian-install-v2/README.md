@@ -180,10 +180,11 @@ default, `root_resize_policy: "resize"` sizes the ext root partition to the
 largest safe extent after the configured swap area; it may grow online or
 shrink offline in an initramfs pre-mount hook. `grow-only` can use available
 space but never shrinks root. `untouched` forbids root geometry changes.
-Set `root_max_size_gb` to cap the root partition while keeping space after
-root and configured swap unallocated for a later data partition. A cap requires
-`swap_policy: "on"` and at least one managed tail swap partition directly after
-root; layouts without that boundary are refused. This limit is not a request to
+Set `root_max_size_gb` to cap the root partition while keeping the space
+between root and the end-of-disk swap unallocated for a later data (cow)
+partition. A cap requires `swap_policy: "on"` and at least one managed tail swap
+partition; swap is always placed at the END of the disk (see
+[Disk layout policy](#disk-layout-policy)). This limit is not a request to
 format or mount that space. See the
 [root sizing design](docs/DESIGN-GUIDE.md#root-and-swap-policies) and the
 [consumer example](docs/CONSUMERS.md#root-and-swap-policy).
@@ -252,9 +253,11 @@ current root is shrunk safely and a smaller root can grow up to the cap. The
 cap must be at least `preserve_root_size_gb`. `grow-only` and `untouched`
 refuse a current root larger than the cap because honoring it would require a
 shrink. A cap requires `swap_policy: "on"` and at least one managed tail swap
-partition directly after root. Swap off, untouched swap, or a plan where
-retained pre-root swap needs no tail partition is refused because cloud-init or
-stage-two growth could otherwise consume the cap. The cap measures root
+partition at the end of the disk, with the gap after root left
+unallocated. Swap off, untouched swap, or a plan where retained pre-root swap
+needs no tail partition is refused. A cap below the layout minimum
+(`min_root_gib`, below) is refused. Stage-two growth resizes root to exactly the
+plan when unallocated space follows it (`growpart` would consume the gap). The cap measures root
 partition length from its existing start, so a non-MiB-aligned start does not
 reduce the configured limit. When a cap is set, stage one installs and stage
 two repeats guards against automatic root growth by writing
@@ -285,6 +288,69 @@ and rolled back on a mismatch. Kernel partition refreshes target only the exact
 added/removed/changed partition-number ranges. See the
 [root/swap design rationale](docs/DESIGN-GUIDE.md#root-and-swap-policies) and
 [adoption examples](docs/CONSUMERS.md#root-and-swap-policy).
+
+### Disk layout policy
+
+```
+ESP | /boot | root (ext4) | [unallocated: cow area + reserve] | swap (END of disk)
+```
+
+Rules the planner enforces (`debian_install_v2/layout_policy.py`; hermetic tests
+in `tests/test_layout_policy.py`):
+
+- **Swap is last.** Swap partitions (or swap files, when a layout uses them)
+  sit at the very end of the disk, after every other allocation. Swap is the one
+  area that never needs to grow, so it must not stand between root, the cow
+  partition and free space: a partition cannot grow past its right neighbour, and
+  moving swap means a swapoff plus table rewrite on a live host. The planner
+  refuses any plan in which a non-swap partition follows the first swap or more
+  than 2 MiB of the disk follows the last swap. The original r1002/v1001 layout
+  (40 GiB root, swap in the middle, 455 GiB cow behind it) could never grow root
+  or cow and filled root at 91-97%.
+- **Root has a minimum.** `min_root_gib(disk) = clamp(20% of disk, 8, 100)` GiB
+  (100 GiB on 512 GiB). It is enforced for a capped root, for `dev-host`, and for
+  a `full-root` plan in which the installer itself shrinks root to make room for
+  managed swap (`swap_policy=on`, `root_resize_policy=resize`). It is not judged
+  for `root_resize_policy=untouched` or a root the installer leaves as it is.
+  `root_max_size_gb` below the minimum is a plan-time error (breaking change,
+  see CHANGES.md): remove it and use `"disk_layout": "dev-host"`.
+- **`untouched` / `grow-only` with `swap_policy=on`:** swap now goes to the END
+  of the disk, so a gap appears between root and swap where swap used to follow
+  root directly. The gap is never formatted by the installer.
+- **Alignment:** 1 MiB (2048 sectors), a 1 MiB end buffer, partition order
+  ESP, `/boot`, root, free gap, swap. Swap partition numbers follow root
+  (`root+1..`); the cow partition is created last by `provision-runner.sh` and
+  gets whatever number parted assigns (the script finds it by its `MDT_COW`
+  label, not by number).
+- **Gap, not a data partition, by default.** The installer does not format
+  anything it does not own: the unallocated gap is carved into the Btrfs cow
+  partition by `scripts/netcup/runner/provision-runner.sh` (`COW_SIZE_GIB`,
+  default a third of the disk), placed at the END of the gap (directly before
+  swap). The remainder is unallocated reserve directly BEHIND ROOT: root grows
+  into it (`sfdisk -N` + `resize2fs`, no data move) and cow, a disposable
+  cache, is re-created larger or extended by a second btrfs device. So neither
+  root nor cow is ever boxed in by swap. Final order:
+  `ESP | /boot | root | reserve | cow | swap`.
+
+`disk_layout: "dev-host"` selects the dev/test host sizing (default
+`"full-root"` keeps root = everything not swap):
+
+| Disk | root | cow (btrfs) | swap | reserve |
+| ---: | ---: | ---: | ---: | ---: |
+| 512 GiB (Netcup RS 4000 test hosts) | 160 GiB | 168 GiB | 16 GiB (auto: min(2 x RAM, 20%)) | ~166 GiB |
+
+Rule: root = 5/16 of the disk in 8 GiB steps, clamped to 24..200 GiB; cow = 1/3
+of the disk in 8 GiB steps; swap = the existing auto rule; reserve = the rest.
+Reasoning for 512 GiB: measured need on a test host is docker 27 GB (images and
+layers) plus build cache, runner checkouts, logs and the campaign directories, so
+160 GiB leaves 3-4x headroom and about 50% free at the observed footprint (the old
+40 GiB root sat at 91-97%). Cow trees for parallel candidates are ~170-250 MB per
+worker, so 168 GiB is generous; it is a third of the disk because that was the
+operator's sizing and it keeps IO away from a nearly full disk (hoster VMs slow to
+~6 MB/s as the disk fills, so a large permanent reserve stays unwritten, which also
+keeps the thin-provisioned backing storage unused). `root_max_size_gb` overrides
+the root size (still checked against the minimum). Set via
+`"disk_layout": "dev-host"` in the config.
 
 ### zswap
 

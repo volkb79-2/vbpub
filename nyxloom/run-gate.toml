@@ -39,14 +39,17 @@ kind = "assay"
 resource_observer = "cgprofile"
 assay_lane = "session-extract"       # -> assay.toml [lanes.session-extract]
 environment = "tester-unified"       # central [environments.tester-unified]
-# session-extract runs one native candidate at a time for cgroup-event
-# attribution, with one pytest worker inside that candidate. The previous
-# campaign processed 293 candidates in 7012 seconds; the current tree has 1203
-# candidates and Assay rejudges all after a tree change, projecting to about
-# 8.1 hours. This hard outer bound mirrors assay.toml and leaves room for R0/R1
-# and R3 while still refusing an unbounded campaign.
+# session-extract runs one pytest worker inside each candidate. The previous
+# serial campaign processed 293 candidates in 7012 seconds; the current tree has
+# 1203 candidates and Assay rejudges all after a tree change, projecting to about
+# 8.1 hours serially (about 3 hours at the 3 workers `jobs = "auto"` selects).
+# This hard outer bound mirrors assay.toml and leaves room for R0/R1 and R3
+# while still refusing an unbounded campaign.
 budget = "10h"
+jobs = "auto"                        # assay.toml jobs_max = 3 is the ceiling
 
 [lanes.session-extract.resources]
 memory = "2g"
 pids = 8192
+cpus = "3"
+candidate_ram = "400m"

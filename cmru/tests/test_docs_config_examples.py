@@ -149,7 +149,7 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
 
     first_r2_mutation = assay_config["cmru-first-release-r2"]["judge"]["mutation"]
     assert first_r2_mutation == {
-        "jobs": 1,
+        "jobs_max": 2,
         "max_mutants": 10000,
         "operators": [
             "python:compare-swap",

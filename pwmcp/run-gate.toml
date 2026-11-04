@@ -21,7 +21,14 @@ environment = "tester-unified"
 resource_observer = "cgprofile"
 clean_tree = true
 budget = "4h"
+# CPU-bound single-threaded suite (~300 s on one CPU, ~260 MiB): let run-gate
+# pick the worker count (min of assay.toml jobs_max=3, cpus 3, memory /
+# candidate_ram). Needs run-gate >= 25.0.1 for pyz-pinned consumers (RG-154) and
+# a btrfs MDT_COW_ROOT host; otherwise auto clamps to one worker.
+jobs = "auto"
 
 [lanes.r2.resources]
-memory = "2g"
+memory = "3g"
 pids = 8192
+cpus = "3"
+candidate_ram = "450m"

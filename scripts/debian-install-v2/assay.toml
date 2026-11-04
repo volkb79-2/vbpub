@@ -56,9 +56,10 @@ source_roots = ["debian_install_v2"]
 base = "origin/main"
 
 [lanes.r2.judge.mutation]
-# Native R2 runs one candidate at a time (Assay B157/A-491): candidate cgroup event windows must
-# not overlap, and the loader refuses any other value.
-jobs = 1
+# Ceiling (assay >= 11): the one-candidate rule (B157/A-491) is lifted; windows
+# may overlap and attribute conservatively. Unmeasured lane: 2 until a first
+# campaign records per-candidate wall time and RSS.
+jobs_max = 2
 max_mutants = 320
 operators = [
   "python:compare-swap",

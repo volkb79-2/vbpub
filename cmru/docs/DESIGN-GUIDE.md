@@ -1210,7 +1210,8 @@ project's own image push. The choices, and what was rejected:
   puts it after its push command. A handler that pushed would own registry credentials
   and one more failure mode, and a release body is worth publishing only for an image
   that already exists. Retries are therefore cheap: the only writes are one create or one
-  name/body update, and no asset is ever listed, deleted or uploaded, so a retry cannot
+  name/body update, and no asset is ever listed, deleted or uploaded (sole exception, rigor C-2:
+  the record step's `<prefix>-v<V>-rigor.json` and its `.sha256`), so a retry cannot
   disturb an asset that happens to share a name with something a wheel handler uploads.
 - **The registry must be written explicitly.** `--image` is `<registry>/<repository>` and the
   pull instruction repeats it verbatim, so the registry has to mean the same thing to CMRU

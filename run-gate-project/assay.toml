@@ -116,10 +116,10 @@ base_source = "request"
 # Operators and max_mutants exactly as scripts/cgroup-profiler/
 # assay.toml's [lanes.r2] (handoff §2 C2) — the same four python families.
 # The RG-89 tester-unified lane has one cgroup leaf, even though Assay gives
-# each mutant its own scratch snapshot and pytest basetemp. Its resource event
-# counters cannot attribute an overlapping limit hit to either worker. Keep
-# one candidate active until per-worker cgroups and counter bindings exist;
-# --resume continues an incomplete campaign on the same exact tree.
+# each mutant its own scratch snapshot and pytest basetemp. Since assay 11/12 B157,
+# concurrent windows attribute a limit event to every overlapping window and PASS stays
+# `survived`, so the ceiling below is 2 (the suite is docker-adjacent, ~160 s per
+# candidate). --resume continues an incomplete campaign on the same exact tree.
 # The R2 pytest argv also carries `-x`: one failed behavioral oracle already
 # kills the mutant, so continuing the remaining integration-heavy suite can
 # add no evidence. More importantly, a mutation can break cleanup after an
@@ -127,7 +127,7 @@ base_source = "request"
 # `budget_per_candidate` expires. Stop at the first proof instead of turning a
 # killed mutant into BUDGET_EXCEEDED (P4 review B10, observed on six candidates).
 [lanes.r2.judge.mutation]
-jobs = 1
+jobs_max = 2
 # budget_per_candidate = "900s" (RW-28, mandatory for every R2 lane from
 # now on): a mutant flipping a thread's daemon=True to non-daemon makes
 # pytest finish its tests and hang at interpreter exit on the thread join

@@ -11,7 +11,7 @@ from typing import TextIO
 from assay.cli import AssayArgumentParser
 from assay.errors import AssayError
 
-from assay_analysis import campaign, evidence, plan_estimate
+from assay_analysis import campaign, evidence, plan_estimate, rigor_export
 
 
 def _workers(text: str) -> int:
@@ -69,6 +69,16 @@ def build_parser() -> argparse.ArgumentParser:
     estimate.add_argument("--plan-json", type=Path, required=True, metavar="PLAN")
     estimate.add_argument("--progress", type=Path, required=True, metavar="PROGRESS")
     estimate.add_argument("--workers", type=_workers, default=1, metavar="N")
+    export = commands.add_parser(
+        "export", help="verify a verdict and write its judgment-fact fragment (urn:vbpub:rigor-fragment:1)")
+    export.add_argument("--verdict", type=Path, required=True)
+    export.add_argument("--progress", type=Path, help="progress JSONL: campaign times and resumed count")
+    export.add_argument("--lane", required=True)
+    export.add_argument("--file", type=Path, required=True, metavar="ASSAY_TOML",
+                        help="the lane file; its directory is the project directory")
+    export.add_argument("--expected-commit", required=True)
+    export.add_argument("--project", help="project name (default: the lane file's directory name)")
+    export.add_argument("--out", type=Path, required=True)
     campaign.build_campaign_parser(commands)
     return parser
 
@@ -127,6 +137,9 @@ def cmd_analyze(args: argparse.Namespace, *, stdout: TextIO, stderr: TextIO) -> 
             if args.format == "text":
                 evidence._report_text(result, stdout)
                 return code
+        elif args.analysis_command == "export":
+            result = rigor_export.export(args.verdict, args.expected_commit, args.lane, args.file, args.out,
+                                         args.progress, args.project)
         elif args.analysis_command == "progress":
             result = evidence.inspect_progress(args.path, args.expected_commit)
         elif args.analysis_command == "plan-estimate":

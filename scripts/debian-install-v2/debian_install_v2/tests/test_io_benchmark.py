@@ -325,9 +325,9 @@ def test_terminal_marker_skips_rerun(tmp_path):
 def test_too_small_free_space_skips_cleanly_and_swap_still_applied(tmp_path):
     installer, disk = make(tmp_path, disk_gib=44)
     planned, _root_size = installer._plan_swap_partitions()
-    planned_end = planned[-1][0] + planned[-1][1]
-    tail_end = disk.disk_bytes // 512 - 2048
-    shift = tail_end - planned_end
+    # The planner puts swap at the very end; emulate a table whose swap sits
+    # 1 GiB before the end (stale shape): no benchmark room, swap rewritten.
+    shift = -SECTORS_PER_GIB
     for number, (start, size) in enumerate(planned, start=4):
         disk.table[number] = {
             "start": str(start + shift), "size": str(size),
@@ -342,9 +342,25 @@ def test_too_small_free_space_skips_cleanly_and_swap_still_applied(tmp_path):
     assert not (Path(installer.config.state_dir) / "io-benchmark.json").exists()
 
 
+# NOTE (review F6): this deliberately fabricates the OLD adjacent-swap shape, which the planner no longer
+# produces. The benchmark runs on the pre-swap live table and removes its own partition before the final shape
+# is applied, so these tests exercise the benchmark, not the layout; do not "fix" them to the new layout.
+def _legacy_adjacent(disk: SimDisk, partitions: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Move planned swap directly after root: free space then lies at the disk tail.
+
+    The planner now puts swap at the end of the disk; these benchmark tests
+    exercise the benchmark's tail-free-space handling, which needs that
+    legacy shape in the live table.
+    """
+    root_end = int(disk.table[3]["start"]) + int(disk.table[3]["size"])
+    shift = (root_end + 2047) // 2048 * 2048 - partitions[0][0]
+    return [(start + shift, size) for start, size in partitions]
+
+
 def test_size_is_capped_by_swap_requirement(tmp_path):
     installer, disk = make(tmp_path, disk_gib=50)
     partitions, _ = installer._plan_swap_partitions()
+    partitions = _legacy_adjacent(disk, partitions)
     for number, (start, size) in enumerate(partitions, start=4):
         disk.table[number] = {
             "start": str(start), "size": str(size),
@@ -383,6 +399,7 @@ def test_plan_benchmark_partition_boundary(tmp_path):
 def test_case_b_swap_already_written_uses_tail_after_existing_partitions(tmp_path):
     installer, disk = make(tmp_path, disk_gib=60)
     partitions, _ = installer._plan_swap_partitions()
+    partitions = _legacy_adjacent(disk, partitions)
     for index, (start, size) in enumerate(partitions, start=4):
         disk.table[index] = {"start": str(start), "size": str(size), "type": "0657FD6D-A4AB-43C4-84E5-0933C84B4F4F", "uuid": f"S{index}"}
         disk.kernel.add(index)

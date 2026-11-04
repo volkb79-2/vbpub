@@ -1,0 +1,259 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:vbpub:rigor-common:1",
+  "$comment": "Shared definitions. Parts are VENDORED COPIES of producer-owned shapes: judge, survivor_buckets, candidates, campaign (assay, assay/docs/CONSUMERS.md); run_gate_tool, tester_image, distribution, metric, perf_entry (run-gate); speed references the cgprofile machine/1 schema (rigor-machine-1.json). The run-gate half is provisional until RG-a and RG-d land (backlog RRK-11). Copied at vbpub@aa4052259 plus RR-2a.",
+  "title": "Shared definitions for rigor-fragment/1 and rigor-record/1",
+  "description": "Every string that can reach a published record is restricted here by pattern (privacy layer 1, SPEC section 8).",
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "git_oid": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "image_id": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "semver": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$"},
+    "tag": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}-v[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$"},
+    "project": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"},
+    "lane": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"},
+    "timestamp": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"},
+    "date": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+    "identifier": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"},
+    "reason_code": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,63}$"},
+    "operator": {"type": "string", "pattern": "^[a-z]+:[a-z0-9-]+$"},
+    "role": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$"},
+    "source_label": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"},
+    "cpu_model": {"type": "string", "pattern": "^[A-Za-z0-9 ()@.,_+-]{1,96}$"},
+    "relpath": {
+      "type": "string",
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9._+-]*(?:/[A-Za-z0-9_][A-Za-z0-9._+-]*)*$"
+    },
+    "target_path": {
+      "type": "string",
+      "maxLength": 256,
+      "pattern": "^(?:\\.|[A-Za-z0-9_][A-Za-z0-9._+-]*(?:/[A-Za-z0-9_][A-Za-z0-9._+-]*)*)$"
+    },
+    "targets": {
+      "type": "object",
+      "propertyNames": {"$ref": "#/$defs/target_path"},
+      "additionalProperties": {"$ref": "#/$defs/git_oid"}
+    },
+    "claim_level": {"type": "string", "enum": ["R1", "R2", "R3"]},
+    "stored_status": {"type": "string", "enum": ["pass", "fail", "survivors", "pass-with-waivers", "incomplete", "error"]},
+    "test_node_id": {"type": "string", "pattern": "^[A-Za-z0-9_./:\\[\\]-]{1,256}$"},
+    "short_reason": {"type": "string", "pattern": "^[A-Za-z0-9 .,;:()_<>=!+*/-]{1,200}$"},
+    "count": {"type": "integer", "minimum": 0},
+    "percent": {"type": "number", "minimum": 0, "maximum": 100},
+    "outcome": {"type": "string", "enum": ["PASS", "FAIL", "ERROR"]},
+
+    "distribution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["unit", "n", "n_excluded", "p50", "p90", "p98", "p99", "max", "source"],
+      "properties": {
+        "unit": {"type": "string", "enum": ["s", "s_ref", "bytes", "ops", "ratio"]},
+        "n": {"$ref": "#/$defs/count"},
+        "n_excluded": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["contaminated", "no_measurement"],
+          "properties": {
+            "contaminated": {"$ref": "#/$defs/count"},
+            "no_measurement": {"$ref": "#/$defs/count"}
+          }
+        },
+        "p50": {"type": ["number", "null"]},
+        "p90": {"type": ["number", "null"]},
+        "p98": {"type": ["number", "null"]},
+        "p99": {"type": ["number", "null"]},
+        "max": {"type": ["number", "null"]},
+        "source": {"$ref": "#/$defs/source_label"}
+      }
+    },
+    "unavailable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["unavailable", "reason"],
+      "properties": {
+        "unavailable": {"const": true},
+        "reason": {"$ref": "#/$defs/reason_code"}
+      }
+    },
+    "metric": {
+      "oneOf": [{"$ref": "#/$defs/distribution"}, {"$ref": "#/$defs/unavailable"}]
+    },
+
+    "speed": {
+      "$comment": "The cgprofile machine/1 speed object (rigor-machine-1.json speed_measured / speed_table) without source_url and retrieved. The measured form is referenced from the vendored schema; the table form is its projection.",
+      "oneOf": [
+        {"$ref": "rigor-machine-1.json#/$defs/speed_measured"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["basis", "geekbench_major", "geekbench_version", "baseline_score", "single_core", "multi_core", "cpus_at_measurement", "measured_on"],
+          "properties": {
+            "basis": {"type": "string", "pattern": "^geekbench[0-9]{1,2}-table$"},
+            "geekbench_major": {"type": "integer", "minimum": 1},
+            "geekbench_version": {"type": "null"},
+            "baseline_score": {"type": "integer", "minimum": 1},
+            "single_core": {"type": "integer", "minimum": 1},
+            "multi_core": {"type": "null"},
+            "cpus_at_measurement": {"type": "null"},
+            "measured_on": {"type": "null"}
+          }
+        }
+      ]
+    },
+    "machine_class": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "cpu_model", "cpus_available", "hypervisor", "speed"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^m[0-9]{1,3}$"},
+        "cpu_model": {"$ref": "#/$defs/cpu_model"},
+        "cpus_available": {"type": "number", "exclusiveMinimum": 0},
+        "hypervisor": {"type": "boolean"},
+        "speed": {"oneOf": [{"$ref": "#/$defs/speed"}, {"$ref": "#/$defs/unavailable"}]}
+      }
+    },
+    "perf_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lane", "level", "subject", "window", "machine_classes", "status_counts", "normalisation", "metrics", "host_psi_some_avg"],
+      "properties": {
+        "lane": {"$ref": "#/$defs/lane"},
+        "level": {"type": "string", "enum": ["R0", "R1", "R2", "R3"]},
+        "subject": {"type": "string", "enum": ["r2-candidate", "xdist-worker", "lane-run"]},
+        "window": {
+          "oneOf": [
+            {"type": "string", "enum": ["this-campaign", "this-run"]},
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["runs", "first_commit", "last_commit"],
+              "properties": {
+                "runs": {"type": "integer", "minimum": 1, "maximum": 200},
+                "first_commit": {"$ref": "#/$defs/git_oid"},
+                "last_commit": {"$ref": "#/$defs/git_oid"}
+              }
+            }
+          ]
+        },
+        "machine_classes": {
+          "type": "object",
+          "propertyNames": {"type": "string", "pattern": "^m[0-9]{1,3}$"},
+          "additionalProperties": {"$ref": "#/$defs/count"}
+        },
+        "status_counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["MEASURED", "PARTIAL", "NO_MEASUREMENT"],
+          "properties": {
+            "MEASURED": {"$ref": "#/$defs/count"},
+            "PARTIAL": {"$ref": "#/$defs/count"},
+            "NO_MEASUREMENT": {"$ref": "#/$defs/count"}
+          }
+        },
+        "normalisation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["basis", "geekbench_major", "divisor", "reference_score", "reason"],
+          "properties": {
+            "basis": {"type": "string", "pattern": "^(?:geekbench[0-9]{1,2}-(?:measured|table)|none)$"},
+            "geekbench_major": {"type": ["integer", "null"], "minimum": 1},
+            "divisor": {"type": "string", "enum": ["single_core", "none"]},
+            "reference_score": {"type": ["integer", "null"], "minimum": 1},
+            "reason": {"type": ["string", "null"], "pattern": "^[A-Z][A-Z0-9_]{0,63}$"}
+          }
+        },
+        "metrics": {
+          "type": "object",
+          "propertyNames": {"type": "string", "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)?$"},
+          "additionalProperties": {"$ref": "#/$defs/metric"}
+        },
+        "host_psi_some_avg": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["cpu", "memory", "io"],
+          "properties": {
+            "cpu": {"type": ["number", "null"], "minimum": 0, "maximum": 100},
+            "memory": {"type": ["number", "null"], "minimum": 0, "maximum": 100},
+            "io": {"type": ["number", "null"], "minimum": 0, "maximum": 100}
+          }
+        }
+      }
+    },
+
+    "judge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "artifact_sha256", "judge_identity", "verdict_schema"],
+      "properties": {
+        "version": {"$ref": "#/$defs/semver"},
+        "artifact_sha256": {"$ref": "#/$defs/sha256"},
+        "judge_identity": {"type": "string", "pattern": "^assay-judge-identity/[0-9]+$"},
+        "verdict_schema": {"type": "string", "pattern": "^urn:assay:schema:verdict:[0-9]+$"}
+      }
+    },
+    "run_gate_tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "wheel_sha256"],
+      "properties": {
+        "version": {"$ref": "#/$defs/semver"},
+        "wheel_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "tester_image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ref", "image_id", "labels"],
+      "properties": {
+        "ref": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._/-]{0,127}:[A-Za-z0-9._-]{1,128}$"},
+        "image_id": {"$ref": "#/$defs/image_id"},
+        "labels": {
+          "type": "object",
+          "propertyNames": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"},
+          "additionalProperties": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,64}$"}
+        }
+      }
+    },
+
+    "survivor_buckets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["killed", "survived", "equivalent", "hung", "budget_exceeded", "crashed"],
+      "properties": {
+        "killed": {"$ref": "#/$defs/count"},
+        "survived": {"$ref": "#/$defs/count"},
+        "equivalent": {"$ref": "#/$defs/count"},
+        "hung": {"$ref": "#/$defs/count"},
+        "budget_exceeded": {"$ref": "#/$defs/count"},
+        "crashed": {"$ref": "#/$defs/count"}
+      }
+    },
+    "candidates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["total", "executed", "resumed"],
+      "properties": {
+        "total": {"$ref": "#/$defs/count"},
+        "executed": {"$ref": "#/$defs/count"},
+        "resumed": {"$ref": "#/$defs/count"}
+      }
+    },
+    "worker_counts": {
+      "type": "object",
+      "propertyNames": {"type": "string", "pattern": "^[1-9][0-9]{0,2}$"},
+      "additionalProperties": {"$ref": "#/$defs/count"}
+    },
+    "campaign": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["started_at", "completed_at", "attempts", "closeout_exit"],
+      "properties": {
+        "started_at": {"$ref": "#/$defs/timestamp"},
+        "completed_at": {"$ref": "#/$defs/timestamp"},
+        "attempts": {"type": "integer", "minimum": 1},
+        "closeout_exit": {"type": "integer", "minimum": 0, "maximum": 3}
+      }
+    }
+  }
+}

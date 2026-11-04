@@ -1,0 +1,90 @@
+{
+  "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "inventory": {
+    "members": [],
+    "r2_lanes": [
+      "assay-r2"
+    ],
+    "sequence": null
+  },
+  "labels": [],
+  "machine_classes": [],
+  "perf": [],
+  "project": "cgroup-profiler",
+  "qualifications": {},
+  "results": [
+    {
+      "attributed_from": null,
+      "buckets": {
+        "budget_exceeded": 3,
+        "crashed": 2,
+        "equivalent": 0,
+        "hung": 2,
+        "killed": 550,
+        "survived": 0
+      },
+      "campaign": {
+        "attempts": 1,
+        "closeout_exit": 0,
+        "completed_at": "2026-11-04T17:30:00Z",
+        "started_at": "2026-11-04T08:00:00Z"
+      },
+      "candidates": {
+        "executed": 557,
+        "resumed": 0,
+        "total": 557
+      },
+      "config_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "deviations": [],
+      "history": [],
+      "judged_by": "assay",
+      "kind": "assay",
+      "lane": "assay-r2",
+      "levels": {
+        "R0": "pass",
+        "R2": "pass"
+      },
+      "scope": {
+        "anchored": true,
+        "base_commit": null,
+        "kind": "whole-source"
+      },
+      "score": 1.0,
+      "survivors": {
+        "accepted": 0,
+        "by_file": {},
+        "equivalent_reviewed": 0,
+        "listed": [],
+        "open": 0,
+        "resolved": 0,
+        "sidecar_sha256": null
+      },
+      "targets": {
+        "cgroup-profiler": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "toolset": "t1",
+      "verdict_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "worker_counts": {
+        "1": 557
+      }
+    }
+  ],
+  "review": {
+    "document_sha256": null,
+    "range": null,
+    "reviewer_role": null,
+    "status": "missing"
+  },
+  "revision": 1,
+  "schema": "urn:vbpub:rigor-record:1",
+  "toolsets": {
+    "t1": {
+      "assay": {
+        "artifact_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "judge_identity": "assay-judge-identity/14",
+        "verdict_schema": "urn:assay:schema:verdict:18",
+        "version": "12.0.0"
+      }
+    }
+  }
+}
