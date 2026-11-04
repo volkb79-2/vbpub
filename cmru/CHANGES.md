@@ -4,6 +4,22 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+- `[project.version].exclude_paths` (KI-118, rigor C-3): project-relative subtrees or git globs that never count as project changes
+  or generated-note entries; the project's own `rigor/` directory and `RIGOR.md` are always ignored, so record commits never
+  schedule a release. New config error for an exclude that covers an explicit `paths` entry.
+- `[project.release].record_step` (rigor C-1, optional, inert when absent): a declared step that runs after the build and before
+  `push` with protected `CMRU_BUILD_INVENTORY`, `CMRU_GATE_EVIDENCE_DIR`, `CMRU_RECORD_OUT`; it may write only `record.json`
+  (64 KiB) and `release-body.md` (8 KiB); the push step receives `CMRU_RECORD_JSON` / `CMRU_RECORD_BODY`. Failure is a
+  pre-publication failure (tag rolled back, resumable). KI-120 (`cmru rigor`) is superseded by this design.
+- Rigor C-2 (inert without a record step): `wheel-publish`, `tarball-publish` and `oci-image-release` append the record step's
+  `release-body.md` under `## Rigor at publication` and upload `record.json` as `<prefix>-v<V>-rigor.json` plus `.sha256`
+  (read back from the release asset list). `oci-image-release` gains exactly this one asset-and-sidecar exception to "uploads no
+  asset". `release --dry-run` prints the appendix placeholder. New module `cmru/rigor_publish.py`.
+  The body-only path fails closed on GitHub immutable releases (assets cannot change after publication): it refuses before
+  any write when the repository setting is enabled, and before any asset delete when the release reports `immutable`.
+  Draft-first publication (attach, then publish) is not implemented; the remaining delete-then-upload window on a
+  non-immutable repository is documented, not closed.
+
 <!-- KI-30 originally refused a tagged release while this body was non-empty. KI-78 now
      folds pending notes into the version section in the disposable release candidate.
      KI-23 still refuses a hand-authored `## [6.0.0] - UNRELEASED` heading, so this file

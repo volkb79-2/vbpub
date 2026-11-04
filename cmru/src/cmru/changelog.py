@@ -36,6 +36,8 @@ from cmru.version import (
     _next_counter_version,
     bump_version,
     detect_changed_projects,
+    pathspec_exclude,
+    project_change_excludes,
 )
 
 
@@ -267,7 +269,7 @@ def _subject_groups(
     end_ref: str = "HEAD",
 ) -> dict[str, list[str]]:
     revision_range = f"{previous_ref}..{end_ref}" if previous_ref else end_ref
-    exclusions = [f":(exclude){path}" for path in exclude_paths]
+    exclusions = [pathspec_exclude(path) for path in exclude_paths]
     output = _git(
         repo_root,
         "log", revision_range, "--format=%h%x1f%s", "--", *paths,
@@ -321,7 +323,10 @@ def _generated_exclusions(project: Any, changelog_path: Path, repo_root: Path) -
     relative_changelog = changelog_path.relative_to(project_root).as_posix()
     outputs = [relative_changelog, *getattr(project, "commit_generated", ())]
     cwd = getattr(project, "cwd", None) or project.name
-    return [f"{cwd}/{path}" for path in outputs]
+    return [
+        *[f"{cwd}/{path}" for path in outputs],
+        *project_change_excludes(project, cwd),
+    ]
 
 
 def _project_commits_after_cursor(

@@ -109,6 +109,7 @@ class VersionConfig:
     strategy: str            # "scm" | "file:<PATH>" | "counter"
     paths: List[str]         # paths to watch for change detection (S12.2)
     bump: str                # "conventional" | "patch"
+    exclude_paths: List[str] = field(default_factory=list)  # never count as changes (KI-118)
 
 
 @dataclass(frozen=True)
@@ -416,6 +417,7 @@ class ProjectS2Config:
     artifact_dirs: List[str] = field(default_factory=list)
     evidence_paths: List[str] = field(default_factory=list)
     build_step: str = ""
+    record_step: str = ""  # optional rigor-record step (C-1); empty = inert
     runtime_kind: str = "none"
     versions: Mapping[str, object] = field(default_factory=dict)
 
@@ -610,7 +612,9 @@ def _project_relative_paths(
 
 def _parse_version(raw: dict, project_name: str) -> VersionConfig:
     where = f"project.{project_name}.version"
-    _reject_unknown(raw, {"strategy", "bump", "paths", "base_version", "file"}, where)
+    _reject_unknown(
+        raw, {"strategy", "bump", "paths", "exclude_paths", "base_version", "file"}, where,
+    )
     strategy = str(_require(raw, "strategy", where)).strip()
     if not (
         strategy in {"scm", "counter", "none"}
@@ -630,7 +634,56 @@ def _parse_version(raw: dict, project_name: str) -> VersionConfig:
     paths = raw.get("paths") or []
     if not isinstance(paths, list):
         _error(f"{where}.paths must be a list")
-    return VersionConfig(strategy=strategy, paths=[str(p) for p in paths], bump=bump)
+    excludes = _version_exclude_paths(raw.get("exclude_paths"), paths, where)
+    return VersionConfig(
+        strategy=strategy, paths=[str(p) for p in paths], bump=bump,
+        exclude_paths=excludes,
+    )
+
+
+def _parse_record_step(release: dict, steps: Mapping[str, object], build_step: str) -> str:
+    """Validate the optional ``[project.release].record_step`` (rigor C-1).
+
+    The step runs after the artifact build and before ``push``; it must be its own
+    declared step (never the publishing step, the build step or a gate step) and needs
+    a Git tag to bind to. Absent (the default) the feature is inert."""
+    if "record_step" not in release:
+        return ""
+    value = release["record_step"]
+    if not isinstance(value, str) or not value.strip():
+        _error("project.release.record_step must be a non-empty step name")
+    name = value.strip()
+    if name not in steps:
+        _error(f"project.release.record_step={name!r} is not declared in [steps]")
+    if name in {"push", "run-tests", "prepare", build_step}:
+        _error(
+            f"project.release.record_step={name!r} is refused: it must be a separate step, "
+            "not the push, gate, prepare or build step"
+        )
+    if release["git_tag"] is not True:
+        _error("project.release.record_step requires git_tag = true (the record binds to the tag)")
+    return name
+
+
+def _version_exclude_paths(value: object, paths: list, where: str) -> List[str]:
+    """Validate ``version.exclude_paths`` (KI-118, C-3): project-relative subtrees
+    or globs that never count as project changes. An exclude equal to, or
+    covering, an explicit ``paths`` entry is ambiguous and refused."""
+    if value is None:
+        return []
+    excludes = _string_list(value, f"{where}.exclude_paths")
+    watched = [Path(str(path)) for path in paths]
+    for entry in excludes:
+        candidate = Path(entry)
+        if candidate.is_absolute() or ".." in candidate.parts or candidate == Path("."):
+            _error(f"{where}.exclude_paths must contain project-relative paths without '..' or '.'")
+        for watch in watched:
+            if candidate == watch or candidate in watch.parents:
+                _error(
+                    f"{where}.exclude_paths entry {entry!r} removes the explicit watch "
+                    f"path {str(watch)!r}: ambiguous"
+                )
+    return [entry.rstrip("/") for entry in excludes]
 
 
 _VALID_ARTIFACTS = {"wheel", "tarball", "oci-image", "bundle"}
@@ -1023,6 +1076,13 @@ _RESERVED_CMRU_INTERNAL_ENV = frozenset({
     # Where a publisher reads the curated notes for the version it releases
     # (KI-75); a project cannot redirect its own release notes.
     "CMRU_RELEASE_NOTES_SOURCE",
+    # Rigor record step (C-1): cmru-owned inputs of `release.record_step` and the
+    # validated outputs handed to the push step; a project cannot forge them.
+    "CMRU_RECORD_OUT",
+    "CMRU_BUILD_INVENTORY",
+    "CMRU_GATE_EVIDENCE_DIR",
+    "CMRU_RECORD_JSON",
+    "CMRU_RECORD_BODY",
     # The operator's recorded `--skip-gates` reason, published in the release
     # body; a project cannot forge or suppress it.
     "CMRU_RELEASE_GATES_SKIPPED",
@@ -1442,7 +1502,7 @@ def _parse_project_document(
     _reject_unknown(
         release, {
             "git_tag", "build_step", "commit_generated", "changelog", "artifact_dirs",
-            "evidence_paths",
+            "evidence_paths", "record_step",
         },
         "project.release",
     )
@@ -1501,6 +1561,7 @@ def _parse_project_document(
             "release tag rollback after a failed build phase is only safe when the build "
             "phase has published nothing. Declare a separate non-publishing build step."
         )
+    record_step = _parse_record_step(release, steps, build_step)
     return (
         ProjectS2Config(
             name=name,
@@ -1522,6 +1583,7 @@ def _parse_project_document(
             artifact_dirs=artifact_dirs,
             evidence_paths=evidence_paths,
             build_step=build_step,
+            record_step=record_step,
             runtime_kind=runtime_kind,
             versions=versions,
         ),

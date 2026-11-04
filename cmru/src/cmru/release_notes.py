@@ -435,4 +435,9 @@ def compose_release_body(headline: str, generated: str, notes: ReleaseNotes | No
         body += f"\n\n{GATES_SKIPPED_LINE_PREFIX}{skipped}"
     if notes is not None:
         body += "\n\n" + notes.text
+    from cmru.rigor_publish import appendix_from_env
+
+    appendix = appendix_from_env()  # inert unless a record step produced one (C-2)
+    if appendix is not None:
+        body += "\n\n" + appendix
     return body
