@@ -249,6 +249,16 @@ assay exists to close that gap mechanically, not by policy:
   infrastructure names, passthrough value fingerprints, cwd, links, project
   prefix, and assay version remain identity inputs. See the
   [B092 design rationale](docs/DESIGN-GUIDE.md#filtered-native-r2-judge-identity-b092).
+- **Native pytest R2 can stop each candidate at its first failure.** Set
+  `judge.mutation.candidate_fail_fast = true` (opt-in; python lanes whose argv
+  invokes pytest) and candidate commands, never the baseline, drop their
+  pytest-cov options and gain `-x -p no:pytest_cov`. A preflight runs the exact
+  candidate command to a full PASS on the unmutated snapshot and refuses the lane
+  otherwise, the transform is part of `judge_sha256` (toggling it invalidates
+  resume records), and a test fixture with an early, a late and a surviving
+  mutant lands in the same buckets with and without the key. Remove any `-x`
+  from the lane argv when adopting it (a declared `-x` disables the witness). See the
+  [consumer guide](docs/CONSUMERS.md#candidate-fail-fast-candidate_fail_fast-wp1).
 - **Native R2 can selectively replay verified kill witnesses after a fresh
   baseline.** `assay plan --reuse-from` previews candidate classifications;
   `assay run --reuse-from` always re-runs R0 first, then replays eligible prior

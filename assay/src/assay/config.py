@@ -77,6 +77,7 @@ from .errors import LaneConfigError
 from .liveness import LIVENESS_AUTO, LIVENESS_FALSE, LIVENESS_TRUE, argv_invokes_pytest
 from .mutation_parsers import MUTATION_FORMAT_REGISTRY
 from .guards import is_nonempty_str, is_percentage, is_real, is_strict_int
+from .r2_command import UnrecognizedCoverageOption, transform_argv
 from .records import positional_record
 # (B078) The result-report reader registry, imported at module level for
 # `FORMAT_REGISTRY`'s own reason (A-068): `result_report.format` is closed
@@ -487,6 +488,9 @@ _MUTATION_OPTIONAL_FIELDS: tuple[str, ...] = (
     "schedule_low_factor",
     "prediction_wall_seconds",
     "prediction_rss_bytes",
+    # (WP1) Explicit native-R2 opt-in: candidate commands (never the baseline)
+    # stop at the first failing test and skip coverage collection.
+    "candidate_fail_fast",
 )
 
 #: (B046) The fields an INGESTED R2 lane declares: which report FORMAT the
@@ -662,6 +666,12 @@ class MutationConfig:
     #: canonical order: wall seconds and peak RSS bytes of a typical candidate.
     prediction_wall_seconds: float | None = None
     prediction_rss_bytes: int | None = None
+    #: (WP1) Opt-in, native pytest lanes only. When ``True`` every CANDIDATE
+    #: command runs the declared argv minus its pytest-cov options plus
+    #: ``-x -p no:pytest_cov``, so a mutant stops at its first failing test
+    #: and pays no coverage cost. The baseline (R0/R1) is untouched. Part of
+    #: the judge identity, so flipping it invalidates resume records.
+    candidate_fail_fast: bool = False
     #: (B207) Runtime admission budget in bytes, selected by the run path
     #: (``--memory-budget-bytes``), never declared in a lane file.
     memory_budget_bytes: int | None = None
@@ -710,6 +720,8 @@ class MutationConfig:
         }
         if self.jobs_max is None:
             del payload["jobs_max"]
+        if self.candidate_fail_fast:
+            payload["candidate_fail_fast"] = True
         # (P34/W4) Declared value or omitted, never null (A-051) -- present
         # only for the SQL lane that actually named it.
         if self.kill_signal_artifact is not None:
@@ -3558,6 +3570,32 @@ def _load_mutation(
             f"{where}: 'judge.mutation.prediction_rss_bytes' must be a positive "
             f"integer byte count, got {prediction_rss_bytes!r}"
         )
+    candidate_fail_fast = value.get("candidate_fail_fast", False)
+    if type(candidate_fail_fast) is not bool:
+        raise LaneConfigError(
+            f"{where}: 'judge.mutation.candidate_fail_fast' must be a boolean, "
+            f"got {_type_name(candidate_fail_fast)}"
+        )
+    if candidate_fail_fast:
+        if not (language == "python" and argv_invokes_pytest(argv)):
+            raise LaneConfigError(
+                f"{where}: 'judge.mutation.candidate_fail_fast = true' requires "
+                f"judge.language = 'python' and a lane argv that literally "
+                f"invokes pytest (a token 'pytest', a path ending '/pytest', or "
+                f"the adjacent pair '-m pytest'): the option appends pytest's "
+                f"-x and -p no:pytest_cov to candidate runs only; this lane "
+                f"declares judge.language = {language!r} and argv {list(argv)!r}"
+            )
+        try:
+            transform_argv(argv)
+        except UnrecognizedCoverageOption as exc:
+            raise LaneConfigError(
+                f"{where}: 'judge.mutation.candidate_fail_fast = true' cannot "
+                f"remove the coverage option {str(exc)!r} from the candidate "
+                f"command without guessing; only --cov=, --cov-report= and "
+                f"--cov-branch are recognized. Drop the option or spell the "
+                f"coverage options that way"
+            ) from exc
     return MutationConfig(
         jobs=None,
         jobs_max=jobs_max,
@@ -3576,6 +3614,7 @@ def _load_mutation(
         schedule_low_factor=schedule_low_factor,
         prediction_wall_seconds=prediction_wall_seconds,
         prediction_rss_bytes=prediction_rss_bytes,
+        candidate_fail_fast=candidate_fail_fast,
     )
 
 
@@ -3666,6 +3705,7 @@ def _load_ingested_mutation(
             "liveness_cpu_window", "liveness_idle_floor",
             "schedule_high_factor", "schedule_low_factor",
             "prediction_wall_seconds", "prediction_rss_bytes",
+            "candidate_fail_fast",
         }
     )
     if orchestration_only:

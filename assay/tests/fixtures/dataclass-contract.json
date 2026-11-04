@@ -440,7 +440,11 @@
       }
     },
     "assay.config.MutationConfig": {
-      "fields": {},
+      "fields": {
+        "candidate_fail_fast": {
+          "default": false
+        }
+      },
       "params": {
         "eq": true,
         "frozen": true,

@@ -1870,6 +1870,88 @@ does not resume records made with the omitted key. A filtered declaration also
 changes the digest domain; changing the declaration or removing a path from
 the filter intentionally causes a cache miss and re-executes candidates.
 
+### Candidate fail-fast (`candidate_fail_fast`, WP1)
+
+```toml
+schema_version = 2
+
+[lanes.package]
+scope = "S1"
+rigor = ["R0", "R2"]
+enforcement = "gate"
+argv = ["pytest", "tests", "-q", "--cov=src", "--cov-branch"]
+env = {}
+env_passthrough = ["PATH"]
+budget = "30m"
+allow_argv_append = false
+
+[lanes.package.isolation]
+snapshot_selection = "repository"
+
+[lanes.package.judge]
+language = "python"
+source_roots = ["src"]
+base = "main"
+
+[lanes.package.judge.mutation]
+jobs = 1
+max_mutants = 500
+operators = ["python:compare-swap"]
+candidate_fail_fast = true
+```
+
+An ordinary native R2 candidate runs the lane's whole declared command, with
+coverage, even though a killed mutant only needs one failing test. Measured
+killed mutants cost as much as survivors (cmru: 572.6 s killed against 571.8 s
+survived). With `candidate_fail_fast = true` every **candidate** command is the
+declared argv minus its pytest-cov options (`--cov=...`, `--cov-report=...`,
+`--cov-branch`) plus `-x -p no:pytest_cov`, so a mutant stops at its first
+failing test and pays no coverage cost. The R0/R1 baseline is never changed: it
+keeps its coverage and runs the whole suite.
+
+- **Opt-in, native pytest lanes only.** The load refuses the key unless
+  `judge.language = "python"` and the argv literally invokes pytest, and refuses
+  a coverage option assay cannot remove without guessing (for example
+  `--cov-fail-under=90`).
+- **Full-pass preflight.** Every nonzero exit is a `killed` candidate, so
+  anything that makes the candidate command fail on the UNMUTATED tree would turn
+  the whole sweep into false kills: an option conflict (`addopts = --cov` breaks
+  once pytest-cov is disabled) and also a test that fails only at setup or run
+  time without the plugin (for example a test that uses the `cov` fixture).
+  Before the first candidate, assay runs the exact candidate command (coverage
+  options removed, injected witness plugin, `-x -p no:pytest_cov`) once on the
+  unmutated snapshot and requires a full PASS (exit 0). Otherwise it refuses the
+  lane (`BAD_LANE_CONFIG`) with a message naming the exit and the first failing
+  test. The preflight costs one no-coverage suite run and has its own timeout,
+  twice the baseline's measured wall time (at least 60 s, never more than the
+  remaining lane budget).
+- **Verdict semantics are unchanged.** Buckets still come from the command's
+  exit status. A fail-fast kill is as sound as a full-run kill (one failing test
+  is the whole definition of killed); a survivor still passed the complete suite,
+  because `-x` only matters after a failure. Nothing in the candidate path reads
+  coverage, so no per-candidate coverage output is lost. The failed-call witness
+  stays on **only if the declared lane argv has no `-x`/`--maxfail`** (assay's own
+  `-x` is added after the witness decision): the receipt plugin is injected
+  before the fail-fast tokens and a failed call simply ends the started prefix. Tests that fail only because of
+  test ORDER, or only when a later test runs, are the one place the buckets can
+  differ; the suite's own baseline is green, so such a mutant is a kill either
+  way.
+- **Identity.** The transform is folded into `judge_sha256` (only when the key
+  is on, so every existing identity is unchanged). Turning the key on or off
+  invalidates resume records, and a running campaign restarts its candidates:
+  schedule the change between campaigns.
+- **`--cold-witness`** already stops each candidate at its first verified failure
+  under a stricter proof, so the key is ignored there (with a diagnostic) and
+  stays out of that run's identity.
+- **Do not combine the key with `-x` in the lane argv.** A user `-x` (or
+  `--maxfail=1`) in the declared argv makes `supports_sequential_pytest` refuse
+  ("fail-fast option"), which disables the failed-call witness and
+  `--cold-witness`/`--reuse-from` replay, and it also truncates the R0/R1
+  baseline on a failure. Adopting the key therefore means REMOVING `-x` from the
+  lane argv; assay adds its own `-x` to candidates only. A lane that keeps its
+  `-x` and omits the key still gets the fail-fast effect, but pays for coverage in
+  every candidate and has no witness.
+
 ### Native mutation score vocabulary (B098)
 
 For every mutation payload, the score is `killed / (killed + survived)`.

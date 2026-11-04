@@ -2,7 +2,7 @@
   "format": 1,
   "files": {
     "src/assay/config.py": {
-      "lines": [99, 100],
+      "lines": [100, 101],
       "reason": "TYPE_CHECKING imports SnapshotLimits only for annotations; importing isolation here would create a runtime cycle."
     },
     "src/assay/liveness.py": {
@@ -10,7 +10,7 @@
       "reason": "TYPE_CHECKING imports CommandPlan only for annotations; importing runner here would create a runtime cycle."
     },
     "src/assay/mutation.py": {
-      "lines": [199, 206, 207],
+      "lines": [201, 208, 209],
       "reason": "TYPE_CHECKING imports four annotation names from adapters.base and runner; runtime imports would create the documented mutual dependencies."
     },
     "src/assay/mutation_witness.py": {
