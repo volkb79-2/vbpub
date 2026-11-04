@@ -14111,3 +14111,15 @@ directory and the relay socket, and the host `docker` group); on a non-mdt host 
 **Test plan.** `bash` helper tests with injected `stat` results, plus the existing launcher tests updated.
 
 **Dependencies and order.** After CP-43 and with MDT-053; pairs with run-gate RG-152.
+
+## B213 — `assay plan <lane>` crashes with a TypeError on an ingested-mutation lane (`max_mutants` is None)
+
+**Status:** OPEN. Filed 2026-11-04 from dstdns (P220, `ui_apierror_r2`; assay 9.0.0). Severity: P3 (no verdict affected; blocks plan-based budgeting of ingested lanes).
+
+**Observed.** For a lane that ingests a Stryker report (`judge.mutation = {format = "mutation-report-json", artifact, fail_under}`; `max_mutants`, `jobs` and `operators` are refused for ingested lanes) `python3 assay-9.0.0.pyz plan ui_apierror_r2` ends in a traceback instead of a plan or a refusal: `assay/cli.py:3823 _discover_plan_jobs: limit=lane.judge.mutation.max_mutants + 1` -> `TypeError: unsupported operand type(s) for +: 'NoneType' and 'int'`. The lane loads fine (`lanes`, `run-gate --dry-run`).
+
+**Design.** `plan` either refuses an ingested lane with one clear message ("candidates come from the ingested report, nothing to plan before the tool ran") or plans from the report artifact when one exists. It never raises a traceback.
+
+**Acceptance criteria.** Test: `plan` on a lane with an ingested `judge.mutation` exits with the refusal text and no traceback; the lane's declaration is unchanged.
+
+**Dependencies and order.** None. The dstdns consumer falls back to a written provisional budget (D-569 section 5) until this lands.
