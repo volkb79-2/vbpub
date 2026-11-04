@@ -14,6 +14,7 @@ from debian_install_v2.installer import Installer, InstallerError
 from debian_install_v2 import installer as installer_module
 
 from .test_disk_policy import make_planner
+from .test_inuse_partition_editor_r1 import REAL_VM_SWAP_TEST_SKIP
 
 DISK = 512 * GIB // 512
 START = 2500608
@@ -204,3 +205,62 @@ def test_resize2fs_that_does_nothing_is_not_recorded_as_success(tmp_path, monkey
     with pytest.raises(InstallerError, match="refusing to record root_resize success"):
         installer._grow_root_to_plan()
     assert host.steps["root_resize"]["status"] == "started"
+
+
+# --- VM-only: the same hazard against a real kernel, loop device and mounted ext4 ---------------------------------
+
+@REAL_VM_SWAP_TEST_SKIP
+def test_real_root_growth_after_table_ahead_of_kernel(tmp_path, monkeypatch):
+    """Real loop disk (QEMU guest only): partition table already grown, kernel still old (the interrupted run),
+    mounted ext4 root: the installer must run partx -u and resize2fs and end with fs == partition == plan."""
+    import os
+    import subprocess
+
+    from debian_install_v2.actions import HostActions
+
+    def sh(*argv, **kw):
+        return subprocess.run(argv, check=True, text=True, capture_output=True, **kw).stdout.strip()
+
+    img = tmp_path / "root-growth.img"
+    sh("truncate", "-s", "600M", str(img))
+    plan = (
+        "label: gpt\nunit: sectors\n\n"
+        'start=2048, size=204800, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="root"\n'
+        'start=1024000, size=102400, type=0657FD6D-A4AB-43C4-84E5-0933C84B4F4F, name="swap"\n'
+    )
+    sh("sfdisk", "--force", str(img), input=plan)
+    loop = sh("losetup", "--find", "--show", "--partscan", str(img))
+    part = f"{loop}p1"
+    mnt = tmp_path / "mnt"
+    mnt.mkdir()
+    target = 409600  # 200 MiB; the gap behind root (up to 500 MiB) must stay unallocated
+    try:
+        sh("mkfs.ext4", "-q", part)
+        sh("mount", part, str(mnt))
+        # the interrupted run: table written, kernel not told
+        sh("sfdisk", "--no-reread", "--no-tell-kernel", "-N", "1", loop, input=f",{target}\n")
+        assert int(sh("blockdev", "--getsz", part)) == 204800  # kernel still sees the old size
+
+        installer = make_planner(tmp_path, disk_gib=1, root_gib=1, swap_policy="on", swap_disk_total_gb=1)
+        installer.actions = HostActions(dry_run=False)
+        installer.root_disk = os.path.basename(loop)
+        installer.root_partition_path = part
+        installer.root_number = 1
+        installer._disk_facts = type(installer)._disk_facts.__get__(installer)
+        installer._live_partition_entries = type(installer)._live_partition_entries.__get__(installer)
+        installer._resolve_swap_plan = lambda **_k: ([], target, False)
+        installer._root_filesystem_facts = lambda: (4096, 1000)
+        installer._packages = lambda *_a: None
+        steps: list[tuple[str, str]] = []
+        installer._mark_step = lambda name, status, detail="": steps.append((name, status))
+        monkeypatch.setattr(installer_module.shutil, "which", lambda _n: "/usr/bin/growpart")
+
+        installer._grow_root_to_plan()
+
+        assert int(sh("blockdev", "--getsz", part)) == target
+        blocks = int(sh("sh", "-c", f"dumpe2fs -h {part} 2>/dev/null | awk '/^Block count:/ {{print $3}}'"))
+        assert abs(blocks * 4096 - target * 512) <= 2 * 1048576
+        assert steps[-1] == ("root_resize", "success")
+    finally:
+        subprocess.run(["umount", str(mnt)], check=False)
+        subprocess.run(["losetup", "--detach", loop], check=False)
