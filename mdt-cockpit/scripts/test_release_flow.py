@@ -163,7 +163,13 @@ class ReleaseFlowTests(unittest.TestCase):
         assert spec and spec.loader
         wizard = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = wizard
-        spec.loader.exec_module(wizard)
+        # the wizard imports its sibling modules (mdt_capacity); the release lane sets no PYTHONPATH
+        host_setup = str(ROOT / "host-setup")
+        sys.path.insert(0, host_setup)
+        try:
+            spec.loader.exec_module(wizard)
+        finally:
+            sys.path.remove(host_setup)
         values = wizard.parse_env_file(example, strict=True)
         self.assertEqual(values["WATCHER_MEMORY_POLICY"], "enabled")
         self.assertFalse(wizard.memory_relationship_errors(values))
