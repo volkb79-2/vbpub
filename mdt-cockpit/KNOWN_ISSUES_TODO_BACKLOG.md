@@ -1342,6 +1342,16 @@ install and no result (MDT-063 is the producer), so the least-limiting expressib
 only under `HOST_ROLE=dedicated-dev`; keep IOWeight and the PSI guard. Also: the installer reads `../../scripts/debian-install-v2/tools/` outside `host-setup/`, so a
 `host-setup/`-only copy fails midway (after rendering units) with "cannot stat iocost_coef_gen.py"; either vendor those two files or check for them up front.
 Also seen: the reconcile logs `Permission denied` writing `io.bfq.weight` on docker scopes (non-fatal, scheduler is not bfq).
+## MDT-072 - dedicated-dev memory: follow-ups after MDT-TESTHOST-MEM (2026-11-05)
+
+**Status:** PARTLY DONE. Done: `DEV_HOST_MEMORY_KEEP`, derived dev.slice limits, no tier ceilings, host protection, PSI watch of the host services, check.sh, wizard prompts,
+tests (host-setup/README.md "Memory of the dedicated-dev role"). Open:
+1. The wizard's memory step (step 3) still asks the tiers' MemoryHigh/MemoryMax on this role although they are ignored; skip those prompts when `HOST_ROLE=dedicated-dev`.
+2. `memory.max` is RAM only, so on an overcommitted host the combined RAM+swap bound is not enforceable by one cgroup knob; a pressure-driven reclaim of the dev tier
+   (psi-guard stage 2 on dev.slice itself, `memory.reclaim`) was not built. Measure whether MemoryHigh plus the OOM order is enough under 4-5 parallel mdt-cockpit gates.
+3. psi-guard `enforce` was never validated live on the test hosts (it ships `report`); its CPU `some` 25% signal on docker.service may fire in a CPU-saturated lane burst.
+4. Measure the zswap pool (`max_pool_percent` 25) against a real overcommit run before changing it.
+
 ## MDT-069 - `mdt-psi-guard.py` writes `cpu.weight` and thereby silently resets `cpu.idle` on the dev slices (2026-11-05)
 
 **Status:** OPEN. Severity P3. Found by the Geekbench exploration on r1002/v1001 (`reports/geekbench-explore-REPORT.md`, finding 1, in the release-program reports dir).

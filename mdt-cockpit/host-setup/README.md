@@ -1131,6 +1131,48 @@ model/serial/size/wwn) equals the root disk's; `proven` and `unproven` values co
 `iobench calibrate` (`libraries/iobench/docs/CONSUMERS.md` section 2) or pin `DEV_IO_*_MAX`. Producing the result during debian-install-v2 is backlog MDT-063;
 until then run the calibration by hand on the test hosts.
 
+### Memory of the dedicated-dev role (MDT-TESTHOST-MEM)
+
+The test hosts are planned for overcommit: the 4 GiB gates tier and the 5-8 GiB background tiers held a 1-1.75 GiB cmru lane or a 4 GiB mdt-cockpit test
+behind an artificial ceiling long before the host was short of memory. On `HOST_ROLE=dedicated-dev` the whole of RAM plus disk swap belongs to the dev
+tier, minus what the host keeps (`DEV_HOST_MEMORY_KEEP`, default 512M; not named `*_RESERVE_*` because the 2026-11 rename guard refuses those keys).
+`shared-prod` and an empty role keep sections 2.4 and 3 of the env file exactly as configured; nothing below applies to them.
+
+| control | shared-prod | dedicated-dev |
+|---|---|---|
+| `dev.slice` MemoryMax | `DEV_MEMORY_MAX` (empty = none) | pin, else `MemTotal + SwapTotal - MDT_EXCLUDED_RAM - MDT_EXCLUDED_SWAP - DEV_HOST_MEMORY_KEEP` |
+| `dev.slice` MemoryHigh | `DEV_MEMORY_HIGH` | pin, else `MemTotal - MDT_EXCLUDED_RAM - DEV_HOST_MEMORY_KEEP` |
+| `dev.slice` MemoryLow | `DEV_MEMORY_LOW` | pin, else the sum of the tiers' MemoryLow (a tier's Low protects only when its ancestors carry it) |
+| tier MemoryHigh / MemoryMax | `DEV_<TIER>_MEMORY_{HIGH,MAX}` | ignored: no directive rendered (install.sh names the values it ignored) |
+| tier MemoryLow / MemoryMin | as configured | as configured: this is the protection between tiers (e.g. the IDE, BuildKit) |
+| tier MemorySwapMax | `DEV_SWAP_CASCADE_PCT`% of dev.slice's | equal to dev.slice's |
+| `system.slice` | untouched | MemoryLow = `DEV_HOST_MEMORY_KEEP` |
+| host services (`DEV_HOST_PROTECTED_UNITS`: ssh, docker, containerd, cgpd, mdt-psi-guard, journald, oomd) | untouched | OOMScoreAdjust=-900 drop-in (never weakening a unit that already has a lower value, e.g. containerd -999) |
+| mdt-psi-guard signals | `MDT_PROTECTED_UNITS` + host memory `full` | the same plus the host services above |
+
+Note on `memory.max`: the kernel's `memory.max` counts RAM only, swap has its own `memory.swap.max`. `MemTotal + SwapTotal - keep` is therefore the
+combined overcommit ceiling and the leak backstop; the limit that actually keeps RAM for the host is dev.slice MemoryHigh (above it the kernel reclaims the tier into
+zswap and disk swap, throttling it, instead of taking the host's pages) together with `system.slice` MemoryLow. Per-container ceilings stay where a launcher
+sets them (`docker run --memory`, cmru's `CMRU_TESTER_*`); the docker-scope backstop (7.1) is untouched.
+
+OOM behaviour: when RAM and swap are genuinely exhausted the dev tier is killed first. In order: (1) reclaim takes dev pages before the host's
+(system.slice MemoryLow, dev.slice MemoryHigh); (2) systemd-oomd kills inside dev-gates / dev-background on sustained pressure (`*_OOM_PRESSURE_LIMIT`, 75%),
+dev-interactive is never an oomd target; (3) the kernel OOM killer prefers any dev-tier process because the host services carry -900. A killed lane is an
+infrastructure event (its history record survives), never a product verdict. The install lowers a running service's score in place; nothing is restarted.
+
+zswap (read on v1001/r1002, 2026-11-05: zstd, `max_pool_percent` 25, `accept_threshold_percent` 90, shrinker on, writeback `yes` on every tier) already suits
+overcommit: the pool is a cache that drains its coldest pages to disk swap, and the IO caps of the role bound that disk traffic. Unchanged.
+
+mdt-psi-guard reviewed: its thresholds are stall fractions (unit memory `some` 10%, host memory `full` 5%, unit CPU `some` 25%, each held 10 s), and its
+stage 2 lowers a tier's `memory.high` to 90% of that tier's live `memory.current`, so it throttles by pressure, never by a constant limit; the only constant is
+its 256M floor. With no tier `memory.high` the saved original is `max` and is restored on release. The dedicated-dev role adds the host services to the units it
+watches. It stays `report` until `MDT_PSI_GUARD=enforce` is chosen.
+
+Apply and verify: `install.sh` (or `install.sh --wizard`), then `systemctl show dev.slice -p MemoryHigh -p MemoryMax -p MemoryLow`, the cgroup files
+`/sys/fs/cgroup/dev.slice/memory.{high,max,low}`, `/sys/fs/cgroup/system.slice/memory.low` and `mdt-host-check.sh`. Existing tier values in the env file may stay
+(they are ignored and named at every install) or be cleared. Back to the old behaviour: set `HOST_ROLE=shared-prod` (the installer removes its drop-ins) and restore the
+tier values.
+
 ### Observation: read volume under a low IOPS cap
 
 One R2 campaign container read 15-30 GB within an hour on a 8 GB host while the dev.slice cap was 300 IOPS. No cause is claimed; possible factors

@@ -840,6 +840,8 @@ def _config_value_validators() -> dict[str, Validator]:
     """Return the non-interactive equivalents of the wizard's field checks."""
     validators: dict[str, Validator] = {
         "HOST_ROLE": validate_host_role,
+        "DEV_HOST_MEMORY_KEEP": mdt_capacity.validate_host_memory_keep,
+        "DEV_HOST_PROTECTED_UNITS": mdt_capacity.validate_host_protected_units,
         "IO_DEV_PATH": validate_io_dev_path,
         "DEV_STATIC_RIOPS": validate_positive_int,
         "DEV_STATIC_WIOPS": validate_positive_int,
@@ -2018,7 +2020,7 @@ def check_benchmark_results(
 # ─── interactive sections (Work step 4a-4i) ────────────────────────────────
 
 
-def step_host_role(cfg_current: dict[str, str], example_defaults: dict[str, str]) -> str:
+def step_host_role(cfg_current: dict[str, str], example_defaults: dict[str, str], walked: dict[str, str] | None = None) -> str:
     """First question of the wizard: who else uses this disk?  Decides whether dev.slice is sized
     conservatively (shared-prod) or from the MEASURED device capacity (dedicated-dev)."""
     section("Host facts")
@@ -2045,6 +2047,24 @@ def step_host_role(cfg_current: dict[str, str], example_defaults: dict[str, str]
         else:
             out(f"No usable iobench measurement for this host's root disk: {why}.")
             out("Remedy: run `iobench calibrate` (libraries/iobench/docs/CONSUMERS.md section 2; debian-install-v2 runs it at install time) before applying, or pin the four DEV_IO_*_MAX values at the IO caps step. Without one of the two the install refuses.")
+        out("Memory on this role (MDT-TESTHOST-MEM): dev.slice MemoryMax = RAM + swap - the host's share, MemoryHigh = RAM - the host's share; the tiers' own MemoryHigh/MemoryMax (asked later) are IGNORED, so no tier is tighter than dev.slice. The host's services get MemoryLow and an OOM-score drop-in, so the dev tier is killed first.")
+        keep = walk_key(
+            "Memory kept for the host (a size such as 512M)",
+            "DEV_HOST_MEMORY_KEEP",
+            cfg_current,
+            example_defaults,
+            validate=mdt_capacity.validate_host_memory_keep,
+        )
+        units = walk_key(
+            "Host services protected from the dev tier (empty = default list, `-` = none)",
+            "DEV_HOST_PROTECTED_UNITS",
+            cfg_current,
+            example_defaults,
+            validate=mdt_capacity.validate_host_protected_units,
+        )
+        if walked is not None:
+            walked["DEV_HOST_MEMORY_KEEP"] = keep
+            walked["DEV_HOST_PROTECTED_UNITS"] = units
     return role
 
 
@@ -4086,7 +4106,7 @@ def main(argv: list[str] | None = None) -> int:
         # Step order = STEP_TITLES. The optional disk measurement starts early
         # (step 2) and runs concurrently with steps 3-6; every IO choice is
         # deliberately collected after the one job has finished (steps 7-9).
-        walked["HOST_ROLE"] = step_host_role(cfg_current, example_defaults)
+        walked["HOST_ROLE"] = step_host_role(cfg_current, example_defaults, walked)
         io_dev_path = step_io_device(cfg_current, example_defaults)
         walked["IO_DEV_PATH"] = io_dev_path
         walked.update(step_damon_stat_policy(cfg_current, example_defaults))

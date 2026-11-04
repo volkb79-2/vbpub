@@ -336,6 +336,132 @@ def tier_swap_bytes(swap_mdt: int, cascade_pct: int) -> int:
     return max(0, swap_mdt) * cascade_pct // 100
 
 
+# --------------------------------------------- HOST_ROLE=dedicated-dev memory (MDT-TESTHOST-MEM)
+#
+# Not named *_RESERVE_*: every such key is refused by the 2026-11 rename guard above.
+DEDICATED_MEMORY_KEEP_DEFAULT = "512M"
+# Host services the dedicated-dev role protects from the dev tier (OOMScoreAdjust drop-in, the
+# PSI guard's pressure signals).  docker/containerd are protected too, so a dev-tier OOM victim is
+# never the daemon that supervises the containers.
+DEDICATED_PROTECTED_UNITS_DEFAULT = (
+    "ssh.service docker.service containerd.service cgpd.service mdt-psi-guard.service "
+    "systemd-journald.service systemd-oomd.service"
+)
+DEDICATED_OOM_SCORE_ADJUST = -900
+
+
+def validate_host_memory_keep(value: str) -> str | None:
+    """DEV_HOST_MEMORY_KEEP: a positive size (K/M/G/T suffix or bytes), never 0 or empty."""
+    parsed = parse_size_bytes(value) if value.strip() else None
+    if parsed is None or parsed <= 0:
+        return (
+            f"{value!r} is not a valid host memory size: use a positive size such as 512M or 1G "
+            "(the RAM+swap kept for the host itself on HOST_ROLE=dedicated-dev; 0 and empty are refused)"
+        )
+    return None
+
+
+@dataclass(frozen=True)
+class DedicatedMemory:
+    """dev.slice memory limits of HOST_ROLE=dedicated-dev, in bytes (``None`` = directive omitted)."""
+
+    keep: int
+    ram: int
+    swap: int
+    high: int | None
+    maximum: int | None
+    high_source: str
+    max_source: str
+    low: int | None = None
+    low_source: str = "none"
+
+
+_TIER_LOW_KEYS = (
+    "DEV_INTERACTIVE_MEMORY_LOW", "DEV_BACKGROUND_MEMORY_LOW", "DEV_GATES_MEMORY_LOW",
+    "DEV_BUILDKITD_MEMORY_LOW", "DEV_MEMORY_MIN_GUARANTEED_LOW",
+)
+
+
+def dedicated_memory(values: dict[str, str], *, mem_total: int, swap_total: int) -> DedicatedMemory:
+    """dev.slice limits for a sole-tenant dev/test host planned for overcommit.
+
+    MemoryMax = MemTotal + SwapTotal - MDT_EXCLUDED_RAM - MDT_EXCLUDED_SWAP - DEV_HOST_MEMORY_KEEP
+    (the combined RAM+swap ceiling; the kernel's memory.max itself counts RAM only, so on an
+    overcommitted host it is the leak backstop, never the first limit hit).
+    MemoryHigh = MemTotal - MDT_EXCLUDED_RAM - DEV_HOST_MEMORY_KEEP: the RAM the dev tier may hold; above
+    it the kernel reclaims the tier into zswap/swap instead of taking pages from the host.
+    An explicit DEV_MEMORY_HIGH / DEV_MEMORY_MAX is a pin and wins per value; `-` omits it.
+    """
+    raw_keep = (values.get("DEV_HOST_MEMORY_KEEP", "") or DEDICATED_MEMORY_KEEP_DEFAULT).strip()
+    error = validate_host_memory_keep(raw_keep)
+    if error:
+        raise CapacityError(f"DEV_HOST_MEMORY_KEEP: {error}")
+    keep = parse_size_bytes(raw_keep) or 0
+
+    def size(key: str) -> int:
+        raw = (values.get(key, "0") or "0").strip()
+        parsed = parse_size_bytes(raw)
+        if parsed is None:
+            raise CapacityError(f"{key}={raw!r} is not a size")
+        return parsed
+
+    ram = mem_total - size("MDT_EXCLUDED_RAM")
+    swap = max(0, swap_total - size("MDT_EXCLUDED_SWAP"))
+    high_ceiling = ram - keep
+    max_ceiling = ram + swap - keep
+    if high_ceiling < MIN_RAM_MDT:
+        raise CapacityError(
+            f"MemTotal {format_size(mem_total)} minus MDT_EXCLUDED_RAM minus DEV_HOST_MEMORY_KEEP "
+            f"{format_size(keep)} leaves {format_size(max(0, high_ceiling))} of RAM for the dev tier; "
+            "at least 1G is required (lower DEV_HOST_MEMORY_KEEP)"
+        )
+
+    def pick(key: str, derived: int) -> tuple[int | None, str]:
+        raw = (values.get(key, "") or "").strip()
+        if raw == "-":
+            return None, "omitted (-)"
+        if raw:
+            parsed = parse_size_bytes(raw)
+            if parsed is None or parsed <= 0:
+                raise CapacityError(f"{key}={raw!r} is not a positive size")
+            return parsed, f"pin {key}={raw}"
+        return derived, "derived"
+
+    high, high_source = pick("DEV_MEMORY_HIGH", high_ceiling)
+    maximum, max_source = pick("DEV_MEMORY_MAX", max_ceiling)
+    if high is not None and maximum is not None and high > maximum:
+        raise CapacityError(
+            f"dev.slice MemoryHigh {format_size(high)} ({high_source}) exceeds MemoryMax "
+            f"{format_size(maximum)} ({max_source}); keep MemoryHigh <= MemoryMax"
+        )
+    # MemoryLow of a tier only protects its pages when every ancestor carries at least as much
+    # (cgroup v2): dev.slice's own Low is therefore the SUM of the tiers' Low values, never more.
+    low, low_source = pick("DEV_MEMORY_LOW", 0)
+    if low_source == "derived":
+        total = 0
+        for key in _TIER_LOW_KEYS:
+            raw = (values.get(key, "") or "").strip()
+            parsed = parse_size_bytes(raw) if raw not in ("", "-") else None
+            total += parsed or 0
+        low, low_source = (total, "sum of the tier MemoryLow values") if total else (None, "none")
+    return DedicatedMemory(keep, ram, swap, high, maximum, high_source, max_source, low, low_source)
+
+
+def validate_host_protected_units(value: str) -> str | None:
+    """DEV_HOST_PROTECTED_UNITS: empty (the default list), `-` (none) or space-separated unit names."""
+    if value.strip() in ("", "-"):
+        return None
+    return validate_units(value)
+
+
+def dedicated_protected_units(values: dict[str, str]) -> list[str]:
+    """The host services of HOST_ROLE=dedicated-dev (empty value = the default list; `-` = none)."""
+    raw = (values.get("DEV_HOST_PROTECTED_UNITS", "") or "").strip()
+    if raw == "-":
+        return []
+    return (raw or DEDICATED_PROTECTED_UNITS_DEFAULT).split()
+
+
 def summary_line(cap: Capacity) -> str:
     return (
         f"MDT may use: RAM {format_size(cap.ram_mdt)} (overcommitted across tiers), "
@@ -811,6 +937,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     c.add_argument("env", type=Path)
     c.add_argument("--meminfo", type=Path, default=Path("/proc/meminfo"))
     c.add_argument("--nproc", type=int, required=True)
+    m = sub.add_parser("dedicated-memory", help="HOST_ROLE=dedicated-dev: print the dev.slice memory limits as KEY=VALUE lines")
+    m.add_argument("env", type=Path)
+    m.add_argument("--meminfo", type=Path, default=Path("/proc/meminfo"))
     d = sub.add_parser("derive", help="print the derived MDT capacity as KEY=VALUE lines")
     d.add_argument("env", type=Path)
     d.add_argument("--meminfo", type=Path, default=Path("/proc/meminfo"))
@@ -870,13 +999,30 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"wrote {path}")
         return 0
     total, swap = _meminfo_bytes(args.meminfo)
+    dedicated = values.get("HOST_ROLE", "") == "dedicated-dev"
+    if args.cmd == "dedicated-memory":
+        try:
+            mem = dedicated_memory(values, mem_total=total, swap_total=swap)
+        except CapacityError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
+        print(f"DEDICATED_MEM_KEEP={mem.keep}")
+        print(f"DEDICATED_MEM_HIGH={'' if mem.high is None else mem.high}")
+        print(f"DEDICATED_MEM_MAX={'' if mem.maximum is None else mem.maximum}")
+        print(f"DEDICATED_MEM_LOW={'' if mem.low is None else mem.low}")
+        print(f"DEDICATED_MEM_LOW_SOURCE={mem.low_source}")
+        print(f"DEDICATED_MEM_HIGH_SOURCE={mem.high_source}")
+        print(f"DEDICATED_MEM_MAX_SOURCE={mem.max_source}")
+        print(f"DEDICATED_PROTECTED_UNITS={' '.join(dedicated_protected_units(values))}")
+        return 0
     try:
         cap = derive_from_config(values, mem_total=total, swap_total=swap, nproc=args.nproc)
     except CapacityError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
+    sizing = () if dedicated else tuple(memory_sizing_warnings(values, cap))
     if args.cmd == "check-config":
-        for w in cap.warnings + tuple(memory_sizing_warnings(values, cap)):
+        for w in cap.warnings + sizing:
             print(f"WARN {w}")
         return 0
     print(f"MDT_RAM_BYTES={cap.ram_mdt}")
@@ -884,7 +1030,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"MDT_NO_DISK_SWAP={1 if cap.no_disk_swap else 0}")
     print(f"MDT_DEV_CPU_QUOTA={cap.dev_cpu_quota_pct}%")
     print(f"MDT_TIER_CPU_QUOTA={cap.tier_cpu_quota_pct}%")
-    for w in cap.warnings + tuple(memory_sizing_warnings(values, cap)):
+    for w in cap.warnings + sizing:
         print(f"WARN: {w}", file=sys.stderr)
     return 0
 

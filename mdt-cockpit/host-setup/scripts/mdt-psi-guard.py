@@ -68,6 +68,23 @@ SIGNALS = {
 WEIGHT_TIERS = ("dev-gates.slice", "dev-background.slice", "dev-buildkitd.slice")
 HIGH_TIERS = ("dev-gates.slice", "dev-background.slice")
 MODES = ("off", "report", "enforce")
+# HOST_ROLE=dedicated-dev (MDT-TESTHOST-MEM): the host's own services are watched too, so the dev tier is throttled by
+# the pressure the HOST feels, not by a constant limit. Same default list as mdt_capacity.DEDICATED_PROTECTED_UNITS_DEFAULT
+# (a test keeps the two equal); DEV_HOST_PROTECTED_UNITS overrides it, `-` = none.
+DEDICATED_HOST_UNITS = (
+    "ssh.service docker.service containerd.service cgpd.service mdt-psi-guard.service "
+    "systemd-journald.service systemd-oomd.service"
+)
+
+
+def protected_units(cfg: dict[str, str]) -> list[str]:
+    """MDT_PROTECTED_UNITS, plus the host services on HOST_ROLE=dedicated-dev (deduplicated, order kept)."""
+    units = cfg.get("MDT_PROTECTED_UNITS", "").split()
+    if cfg.get("HOST_ROLE", "") == "dedicated-dev":
+        raw = cfg.get("DEV_HOST_PROTECTED_UNITS", "").strip()
+        extra = [] if raw == "-" else (raw or DEDICATED_HOST_UNITS).split()
+        units += [u for u in extra if u not in units]
+    return units
 
 
 def validate_mode(value: str) -> str | None:
@@ -398,7 +415,7 @@ def main(argv: list[str] | None = None) -> int:
     if error:
         print(f"ERROR: MDT_PSI_GUARD: {error}", file=sys.stderr)
         return 2
-    units = cfg.get("MDT_PROTECTED_UNITS", "").split()
+    units = protected_units(cfg)
     guard = Guard(cg_root=args.cgroup_root, units=units, state_dir=args.state_dir, mode=mode,
                   proc_pressure=args.proc_pressure)
     if mode == "off":
@@ -406,7 +423,7 @@ def main(argv: list[str] | None = None) -> int:
         print("mdt-psi-guard: MDT_PSI_GUARD=off; nothing to do")
         return 0
     if not units:
-        print("mdt-psi-guard: MDT_PROTECTED_UNITS is empty; only the host memory signal is watched", file=sys.stderr)
+        print("mdt-psi-guard: no protected units (MDT_PROTECTED_UNITS empty, not HOST_ROLE=dedicated-dev); only the host memory signal is watched", file=sys.stderr)
     stopping = {"flag": False}
     signal.signal(signal.SIGTERM, lambda *_: stopping.__setitem__("flag", True))
     signal.signal(signal.SIGINT, lambda *_: stopping.__setitem__("flag", True))

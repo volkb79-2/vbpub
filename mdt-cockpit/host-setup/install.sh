@@ -867,6 +867,12 @@ done
 # size-suffixed string — valid for systemd set-property AND the Python
 # watcher's own arithmetic without a unit parser on either side.
 DEV_SWAP_CASCADE_PCT="${DEV_SWAP_CASCADE_PCT:-80}"
+MDT_DEDICATED_MEM=0
+if [ "$(_mdt_host_role)" = dedicated-dev ]; then
+  MDT_DEDICATED_MEM=1
+  # HOST_ROLE=dedicated-dev (MDT-TESTHOST-MEM): a tier's swap ceiling is its parent's, not a percentage of it.
+  DEV_SWAP_CASCADE_PCT=100
+fi
 _host_swap_bytes=""
 if grep -q '^SwapTotal:' /proc/meminfo 2>/dev/null; then
   _host_swap_kib=$(awk '$1 == "SwapTotal:" && $2 ~ /^[0-9]+$/ {print $2; exit}' /proc/meminfo 2>/dev/null)
@@ -932,6 +938,43 @@ for _optional_memory_var in \
     printf -v "$_optional_memory_var" '%s' ""
   fi
 done
+# HOST_ROLE=dedicated-dev memory (MDT-TESTHOST-MEM), PRE-FLIGHT part: derives the dev.slice limits and
+# drops the tiers' own MemoryHigh/MemoryMax so that no tier is tighter than dev.slice. Pins (a non-empty
+# DEV_MEMORY_HIGH/MAX/LOW) win per value; `-` omits one. shared-prod (and an empty role) skip all of it.
+MDT_DEDICATED_PROTECTED_UNITS=""
+MDT_DEDICATED_KEEP=""
+if [ "$MDT_DEDICATED_MEM" = 1 ]; then
+  if ! _ded_mem=$(python3 "$HERE/mdt_capacity.py" dedicated-memory "$CANDIDATE_PATH" --meminfo /proc/meminfo); then
+    echo "ERROR: HOST_ROLE=dedicated-dev: the dev.slice memory limits cannot be derived (see above); nothing was changed." >&2
+    exit 2
+  fi
+  while IFS='=' read -r _ded_key _ded_value; do
+    case "$_ded_key" in
+      DEDICATED_MEM_KEEP) MDT_DEDICATED_KEEP="$_ded_value" ;;
+      DEDICATED_MEM_HIGH) DEV_MEMORY_HIGH="$_ded_value" ;;
+      DEDICATED_MEM_MAX) DEV_MEMORY_MAX="$_ded_value" ;;
+      DEDICATED_MEM_LOW) DEV_MEMORY_LOW="$_ded_value" ;;
+      DEDICATED_MEM_HIGH_SOURCE) _ded_high_src="$_ded_value" ;;
+      DEDICATED_MEM_MAX_SOURCE) _ded_max_src="$_ded_value" ;;
+      DEDICATED_MEM_LOW_SOURCE) _ded_low_src="$_ded_value" ;;
+      DEDICATED_PROTECTED_UNITS) MDT_DEDICATED_PROTECTED_UNITS="$_ded_value" ;;
+    esac
+  done <<<"$_ded_mem"
+  _ded_ignored=""
+  for _ded_tier_key in \
+    DEV_INTERACTIVE_MEMORY_HIGH DEV_INTERACTIVE_MEMORY_MAX DEV_BACKGROUND_MEMORY_HIGH DEV_BACKGROUND_MEMORY_MAX \
+    DEV_GATES_MEMORY_HIGH DEV_GATES_MEMORY_MAX DEV_BUILDKITD_MEMORY_HIGH DEV_BUILDKITD_MEMORY_MAX; do
+    case "${!_ded_tier_key:-}" in
+      ""|-) ;;
+      *) _ded_ignored="$_ded_ignored $_ded_tier_key=${!_ded_tier_key}" ;;
+    esac
+    printf -v "$_ded_tier_key" '%s' ""
+  done
+  echo "HOST_ROLE=dedicated-dev memory: dev.slice MemoryHigh=${DEV_MEMORY_HIGH:-none} (${_ded_high_src}), MemoryMax=${DEV_MEMORY_MAX:-none} (${_ded_max_src}), MemoryLow=${DEV_MEMORY_LOW:-none} (${_ded_low_src}); host keeps ${MDT_DEDICATED_KEEP}B (DEV_HOST_MEMORY_KEEP); tiers carry no MemoryHigh/MemoryMax and a swap ceiling equal to dev.slice's"
+  if [ -n "$_ded_ignored" ]; then
+    echo "NOTICE: HOST_ROLE=dedicated-dev ignores the per-tier memory ceilings still set in $CONFIG_PATH (clear them to silence this):${_ded_ignored}" >&2
+  fi
+fi
 if [ -n "${DEV_SWAP_MAX:-}" ]; then
   if ! _swap_max_bytes=$(_size_to_bytes "$DEV_SWAP_MAX"); then
     echo "ERROR: DEV_SWAP_MAX is not a systemd size that can be converted to bytes: $DEV_SWAP_MAX" >&2
@@ -1091,6 +1134,46 @@ install -m 0644 "$HERE/units/mdt-psi-guard.service" /etc/systemd/system/mdt-psi-
 mkdir -p /etc/systemd/system/docker-.scope.d
 render "$HERE/units/docker-scope-default-limits.conf.in" \
   /etc/systemd/system/docker-.scope.d/50-default-limits.conf
+
+# HOST_ROLE=dedicated-dev host protection (MDT-TESTHOST-MEM): the host's own services outlive the dev tier.
+#   system.slice MemoryLow = DEV_HOST_MEMORY_KEEP   reclaim takes dev pages before the host's;
+#   OOMScoreAdjust=-900 on each DEV_HOST_PROTECTED_UNITS member   the kernel OOM killer picks the dev tier first.
+# One drop-in name, owned by this block: any other role removes exactly the files it finds.
+MDT_DED_DROPIN=50-mdt-dedicated-dev.conf
+MDT_DED_LIVE_UNITS=""
+MDT_SYSTEMD_DIR="${MDT_SYSTEMD_DIR:-/etc/systemd/system}"
+if [ "$MDT_DEDICATED_MEM" = 1 ]; then
+  mkdir -p "$MDT_SYSTEMD_DIR/system.slice.d"
+  printf '%s\n' "# RENDERED by host-setup/install.sh (HOST_ROLE=dedicated-dev) - do not edit." "[Slice]" "MemoryLow=${MDT_DEDICATED_KEEP}" \
+    > "$MDT_SYSTEMD_DIR/system.slice.d/$MDT_DED_DROPIN"
+  echo "host protection: system.slice MemoryLow=${MDT_DEDICATED_KEEP}B ($MDT_SYSTEMD_DIR/system.slice.d/$MDT_DED_DROPIN)"
+  for _ded_unit in $MDT_DEDICATED_PROTECTED_UNITS; do
+    _ded_file="$MDT_SYSTEMD_DIR/$_ded_unit.d/$MDT_DED_DROPIN"
+    if [ ! -f "$_ded_file" ]; then
+      if ! systemctl cat "$_ded_unit" >/dev/null 2>&1; then
+        echo "host protection: $_ded_unit is not installed on this host; skipped"
+        continue
+      fi
+      # Never weaken a unit that is already protected harder than ours (containerd ships -999).
+      _ded_has=$(systemctl show -p OOMScoreAdjust --value "$_ded_unit" 2>/dev/null || true)
+      case "$_ded_has" in
+        -*) if [ "$_ded_has" -le -900 ] 2>/dev/null; then echo "host protection: $_ded_unit already has OOMScoreAdjust=$_ded_has; left alone"; continue; fi ;;
+      esac
+    fi
+    mkdir -p "$MDT_SYSTEMD_DIR/$_ded_unit.d"
+    printf '%s\n' "# RENDERED by host-setup/install.sh (HOST_ROLE=dedicated-dev) - do not edit." "[Service]" "OOMScoreAdjust=-900" \
+      > "$_ded_file"
+    MDT_DED_LIVE_UNITS="$MDT_DED_LIVE_UNITS $_ded_unit"
+    echo "host protection: $_ded_unit OOMScoreAdjust=-900 ($_ded_file)"
+  done
+else
+  while IFS= read -r _ded_old; do
+    [ -n "$_ded_old" ] || continue
+    rm -f -- "$_ded_old"
+    rmdir -- "$(dirname -- "$_ded_old")" 2>/dev/null || true
+    echo "host protection: removed $_ded_old (HOST_ROLE is not dedicated-dev)"
+  done < <(find "$MDT_SYSTEMD_DIR" -maxdepth 2 -type f -path "*.d/$MDT_DED_DROPIN" 2>/dev/null)
+fi
 
 if [ -n "${IO_SD_DEV:-}" ]; then
   if [ "$(_mdt_host_role)" = dedicated-dev ]; then
@@ -1318,6 +1401,18 @@ _mdt_apply_iocost || IOCOST_FAILED=1
 
 echo "== activate =="
 systemctl daemon-reload
+# A drop-in's OOMScoreAdjust only reaches a service when it (re)starts, and docker/containerd/sshd are not
+# restarted here: lower the running main process's score directly (never raise it).
+for _ded_unit in $MDT_DED_LIVE_UNITS; do
+  _ded_pid=$(systemctl show -p MainPID --value "$_ded_unit" 2>/dev/null || true)
+  case "$_ded_pid" in ""|0|*[!0-9]*) continue ;; esac
+  _ded_cur=$(cat "/proc/$_ded_pid/oom_score_adj" 2>/dev/null || echo "")
+  if [ -n "$_ded_cur" ] && [ "$_ded_cur" -gt -900 ] 2>/dev/null; then
+    echo -900 > "/proc/$_ded_pid/oom_score_adj" 2>/dev/null \
+      && echo "host protection: $_ded_unit pid $_ded_pid oom_score_adj $_ded_cur -> -900" \
+      || echo "WARN: could not lower oom_score_adj of $_ded_unit (pid $_ded_pid); it applies at the unit's next restart"
+  fi
+done
 # Slices activate on demand, but starting them now makes the cgroups exist so
 # the zswap policy applies immediately and check.sh has something to look at.
 # dev.slice first — its children nest under it by name, but starting it
