@@ -34,7 +34,7 @@ The checked-in level view must match the graph:
 
 ```project-order
 L0: cli-extended, assay, topos, tls-edge, tester-base
-L1: tnt, cgroup-profiler, ciu, nyxloom, pwmcp, iobench
+L1: tnt, cgroup-profiler, ciu, nyxloom, pwmcp, iobench, rigor-record
 L2: run-gate-project
 L3: cmru
 L4: modern-debian-tools-python-debug, mdt-cockpit
