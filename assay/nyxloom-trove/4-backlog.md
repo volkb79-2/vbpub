@@ -14203,7 +14203,7 @@ phase is fsync (compare `io_sync = relaxed` with an eatmydata image, and `durabl
 **Reopen when.** (a) a workload reads large file bodies per candidate that a primed index cannot avoid (trees of tens of MB of source read by the tests, not only by `git status`), or (b) B223's tmpfs memory (175 MB per worker) is the limiting resource and a per-worker dataset is wanted, or (c) a host already runs ZFS. Then implement cowtree COW-BL-07 and use the z2 form (pre-mounted worker dataset, `zfs rollback -r`), with `zfs_arc_min` pinned to `zfs_arc_max`.
 
 **Acceptance (documentation only).** B219-B223 notes cite this entry as the ZFS comparison; no code change.
-## B225 — `tests/core/test_isolation.py::test_further_external_or_incomplete_topologies_are_refused` hung ~18 minutes on a blocked `git rev-parse --absolute-git-dir` child outside the lane container
+## B226 — `tests/core/test_isolation.py::test_further_external_or_incomplete_topologies_are_refused` hung ~18 minutes on a blocked `git rev-parse --absolute-git-dir` child outside the lane container
 
 **Status: OPEN (investigation, filed 2026-11-05).** Reported by the fix-assay-mat package: a local pytest of `assay/tests/core/test_isolation.py` on the bare devcontainer (not the lane container) stalled at about 43% of the file in this test (parametrized over `alternates-symlink`, `alternates-fifo`, `grafts`, `sha256`, `promisor`, test at line ~1320) with a blocked `git rev-parse --absolute-git-dir` child for about 18 minutes. The registered gate (lane container) was not affected in that run.
 
