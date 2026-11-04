@@ -186,7 +186,14 @@ source_roots = ["src/nyxloom/session_extract"]
 fail_under = 100.0
 allow_excluded = false
 require_branch = true
-base = "126ccc39e151e33cc7bbcaa18bf765f9c9cd7dd1"
+# 2026-11-05: the 126ccc39e SHA pin (a one-time integration boundary) had aged
+# into a ~1204-candidate / 40 h-worst-case plan that exceeded the cap by one and
+# ended every attempt BUDGET_EXCEEDED/MUTANT_LIMIT_EXCEEDED (exit 4). The base is
+# now delegated to the request: `run-gate --base <previous nyxloom release tag>
+# session-extract` (RG-51 fallback without --base: the ciu-recorded fork point,
+# then @{upstream}). Refresh per release by passing the new previous tag; nothing
+# in this file needs re-pinning.
+base_source = "request"
 
 # R2: native Python mutation, changed-lines-only -- resolve_mutation_targets
 # reuses R1's SAME current-main diff, so this mutates exactly the changed lines
@@ -196,10 +203,11 @@ base = "126ccc39e151e33cc7bbcaa18bf765f9c9cd7dd1"
 # budget_per_candidate remains 120s.
 [lanes.session-extract.judge.mutation]
 jobs = 1
-# The source-backed Assay plan for this tree reports 1203 candidates across
-# the session-extract source diff. Keep the cap at that exact count so this
-# branch's full plan is judged and future additions fail loudly for replanning.
-max_mutants = 1203
+# Cap 1500 (same as run-gate-project's R2): the whole session_extract package
+# is ~1.2k candidates, so even a base older than every release still plans
+# under the cap with headroom, while a request base at the previous release tag
+# plans a small fraction. A plan above 1500 means the base is wrong, not the cap.
+max_mutants = 1500
 operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-flip", "python:falsy-swap"]
 budget_per_candidate = "120s"
 

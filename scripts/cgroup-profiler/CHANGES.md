@@ -8,6 +8,10 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
 
 ## [Unreleased]
 
+### Fixed
+- R2 lane base: the recorded pre-wave base `eb3af770` exceeds Assay's 64 MiB git output bound (GIT_FAILED). `docs/CONSUMERS.md` now names the
+  previous release tag as the request base, to be refreshed per release (`cgprofile-v1.2.0` plans 557 candidates).
+
 <!-- cmru: release history -->
 
 ## [2.0.0] - 2026-11-04

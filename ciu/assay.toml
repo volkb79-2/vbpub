@@ -75,7 +75,14 @@ source_roots = ["src"]
 fail_under = 100.0
 allow_excluded = false
 require_branch = true
-base = "main"
+# 2026-11-05: base_source = "request" replaces base = "main". A release R2
+# campaign run from a checkout at the commit being released had an EMPTY plan
+# with base = "main" (merge-base(main, HEAD) == HEAD). The comparison base is
+# now delegated to run-gate: `run-gate --base <ref> ciu` (a release campaign
+# passes the previous release tag, e.g. --base ciu-v7.19.0). Without --base
+# run-gate falls back to the ciu-recorded worktree fork point, then @{upstream}
+# (RG-51), i.e. the same "diff of this worktree" meaning base = "main" had.
+base_source = "request"
 
 [lanes.ciu.judge.coverage]
 format = "coverage-py-json"

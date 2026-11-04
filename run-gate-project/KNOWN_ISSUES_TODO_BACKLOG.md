@@ -7566,3 +7566,53 @@ CONSUMERS, LANE-AUTHORING, `RG55-INTERFACE-CONTRACT.md` and its byte-identical m
 Tests use an in-process fake socket daemon (`set_cgprofile_plan`); the docker shim no longer answers `cgprofile ctl`.
 
 **Release impact.** Conventional-commit `feat(run-gate)!:` takes run-gate from 24.4.0 to 25.0.0 at the next release.
+
+## RG-157 — run-gate-project's own `assay-r1`/`assay-r2` lanes fail R0 in the lane container: the test command's TMPDIR never arrives, so in-process `doctor` tests fail their mountinfo check
+
+**Status:** FIXED 2026-11-05 (fix-r2-lanes-20261105); live R0/R1 re-run recorded in `reports/fix-r2-lanes-REPORT.md`. Found by the host-compute R2 session
+(`test_one_stale_lock_is_reported_with_the_singular_noun` -> `run-gate doctor: [FAIL] mountinfo: could not derive a physical host path for /tmp/pytest-of-tester/...`).
+
+**Cause.** After RG-98 run-gate exports the state-root path to the Assay judge as `RUN_GATE_TMPDIR` only when the state root is inside the judged
+worktree (the default `<checkout>/.run-gate`); `TMPDIR` is exported only for an external root. `assay.toml` still forwarded `TMPDIR` by `env_passthrough`,
+which therefore carried nothing, and pytest's `tmp_path` fell back to the container's `/tmp` overlay. Inside the lane `/.dockerenv` exists, so `doctor`
+(correctly) refuses a repo that is not on a bind mount. The product behaviour is right; the consumer config was stale. Every in-process `doctor` test is
+affected, `-x` only shows the first.
+
+**Fix.** Both lanes drop `TMPDIR` from `env_passthrough` and declare `[lanes.<n>.infrastructure] TMPDIR = "required-env:RUN_GATE_TMPDIR"` (Assay refuses the same
+name in both places). Oracle: `TestShippedGateFullDeclaration::test_assay_test_commands_use_the_tester_unified_python` pins the mapping and the absence of the
+dead passthrough; the live oracle is the `assay-r1` lane passing R0 in the lane container.
+
+## RG-158 — `test_capacity_probe_resolves_cowtree_from_the_pinned_pyz` assumes the interpreter has no `cowtree`: in the lane image (cowtree installed) the "without the artifact" half gets `RootInvalid`
+
+**Status:** FIXED 2026-11-05 (fix-r2-lanes-20261105). Found by the first full `assay-r1` run of run-gate-project (R0: expected `cowtree-probe-ModuleNotFoundError`,
+got `cowtree-probe-RootInvalid`).
+
+**Cause.** The RG-154 oracle's second half ran the probe with `sys.executable` and expected `ModuleNotFoundError`. That holds only where `cowtree` is not
+importable; in `tester-unified` it is, so the real `detect()` rejects the fixture `MDT_COW_ROOT` instead. Product code (probe) is correct; the fixture
+leaked the image into the oracle.
+
+**Fix.** The second half now probes through a wrapper `python` that execs the test interpreter with `-S` (no site-packages), so the result is
+`cowtree-probe-ModuleNotFoundError` in every image. Verified in the host venv and by the lane run.
+
+## RG-159 — `TestHistoryStoreReadableByTheReleasedReader` requires the `run-gate-v24.3.0` git tag, absent from Assay's tagless snapshot
+
+**Status:** FIXED 2026-11-05 (fix-r2-lanes-20261105).
+
+**Cause.** The released reader's source was read with `git show run-gate-v24.3.0:...`; the `assay-r1`/`assay-r2` lane judges a snapshot without tags, so the
+test failed in the lane (`invalid object name`).
+
+**Fix.** The test lists the `run-gate-v24.*` tags that exist, takes the oldest at or above 24.3.0 (24.3.0 itself where present), and skips with an explicit
+reason only when the checkout carries no `run-gate-v*` tag at all (the tagless snapshot): there is no hermetic route to a released reader without a tag, and
+vendoring a copy of the released source would drift. A checkout with tags but no usable 24.x tag fails. The skip is the third, documented structural exception in
+`tests/_testdeps.py` (`test_no_test_bypasses_the_policy` now pins three markers). Developer clones and the normal `cmru` gate still run the test.
+
+## RG-160 — two intermittent, lane-only R0 failures in the `assay-r1`/`assay-r2` lane container that do not reproduce by hand: `test_clean_session_passes` (inner pytest hangs to the 120 s timeout) and `test_reattach_adopts_recorded_session_stop_called_with_it` (`ctl stop` answered an unparsable response)
+
+**Status:** OPEN (watch), 2026-11-05 (fix-r2-lanes-20261105). Four full `assay-r1` runs on this worktree: run 1 failed `test_clean_session_passes` (+ RG-157/158/159 items), runs 2 and 3 failed
+only the reattach test, run 4 PASSED R0 and R1 (2875 passed). `test_clean_session_passes` then passed in every later run, in a narrowed lane (single file, and the seven files before
+`test_run_gate`) and by hand; the reattach test passes by hand in a `tester-unified` container, alone and with the whole class, and in a full host run of `tests/test_run_gate.py`.
+
+**What is known.** The reattach test's fake cgprofile daemon (`_FakeCgprofileDaemon`) answered `ctl stop` with an empty or truncated body in the failing runs; no cause was found
+without evidence of the bytes. **Diagnostic landed:** the `unparsable response` profiling warning now names the response length and its first 60 characters, so the next occurrence names
+the cause. No product defect is claimed. **Next step:** when either test fails again in a lane, read the warning (reattach) or add `faulthandler`/`py-spy` output to the inner session
+(clean-session) before changing code; treat a differing result between runs under load as inconclusive.

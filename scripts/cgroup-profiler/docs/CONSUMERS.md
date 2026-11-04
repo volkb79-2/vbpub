@@ -609,12 +609,19 @@ an independent session, so two no-token starts count separately against
 
 ## Run the P1 review gates
 
-For the current P1 acceptance campaign, the controller recorded the
-pre-wave comparison commit below. From the attached candidate worktree,
-pass that commit explicitly to both registered entrypoints:
+The R2 comparison base is always supplied by the caller (`base_source = "request"`
+in `assay.toml`). **Use the previous release tag as the base and refresh it at
+every release** (`git tag --list 'cgprofile-v*' --sort=-v:refname`, take the
+newest tag that is an ancestor of the release candidate). The P1 acceptance
+campaign's recorded pre-wave commit `eb3af770eb16362cff4c39388193c0180c2d370c`
+is retired as a base: its diff to the current tree exceeds Assay's 64 MiB git
+output bound (`GIT_FAILED`), so it can no longer plan. Measured 2026-11-05:
+base `cgprofile-v1.2.0` (`543d8e5e3`) plans 557 candidates (2.4 MB diff),
+well under `max_mutants = 2000`. From the attached candidate worktree,
+pass the base explicitly to both registered entrypoints:
 
 ```bash
-P1_BASE=eb3af770eb16362cff4c39388193c0180c2d370c
+P1_BASE=cgprofile-v1.2.0   # previous release tag; refresh per release
 run-gate --base "$P1_BASE" --dry-run r2
 run-gate --base "$P1_BASE" r2
 run-gate --base "$P1_BASE" gate

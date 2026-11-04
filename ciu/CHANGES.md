@@ -54,6 +54,10 @@ the technical detail below it.
 - test(ciu): adapt the suite to the registered CLI; add registry, doctor and show tests (b2b07bc94)
 
 <!-- cmru: pending release notes begin -->
+- `assay.toml` lane `ciu`: `base_source = "request"` replaces `base = "main"`, which planned zero mutation candidates for a release R2 campaign
+  run at the released commit. Pass `run-gate --base <previous ciu-v* tag> ciu` (`ciu-v7.19.0` plans 256 candidates); without `--base` run-gate's own
+  fallback (ciu-recorded fork point, then `@{upstream}`) applies.
+
 ### Changed (BREAKING: CLI surface; no aliases)
 - ciu adopts `libraries/cli-extended` (CIU-114): every verb, argument and option is registered once in `ciu.cli_registry`; help, errors, `--json`, `--yes`, `--dry-run`, `--traceback`, exact option spellings, the surface manifest (`docs/cli-surface.json`) and the reviewed catalog derive from it. The hand-written dispatcher, `_USAGE`/`_VERB_HELP`, per-verb help interception and the `--host`/`--layout`/`--dir` abbreviation routing (SPEC S10.4) are gone. Every decision is in `docs/CLI-SURFACE-DECISIONS-20261104.md`.
 - Short options are gone (the library has long options only): `-y` is `--yes`, `-d` is `--dir`, `-f` is `--file`, `-h` is rejected (`--help`). Option prefixes (`--prof`, `--hos`) are usage errors, exit 2.
