@@ -11,6 +11,13 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 <!-- cmru: release history -->
 
+## [25.1.1] - 2026-11-04
+<!-- cmru: generated -->
+<!-- cmru: source-end=35fab5ce40b5e7860fab4deebc0d6adc0030f777 -->
+
+### Fixed
+- fix(run-gate): run_gate_profile xdist hook optional; no INTERNALERROR without xdist (RG-164) (35fab5ce4)
+
 ## [25.1.0] - 2026-11-04
 <!-- cmru: generated -->
 <!-- cmru: source-end=436c6b69f5aa030dc9d1173edfc741903002715f -->
