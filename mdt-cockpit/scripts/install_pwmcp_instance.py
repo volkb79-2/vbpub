@@ -29,6 +29,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -57,8 +58,20 @@ def _download(url: str, expected_sha256: str, *, label: str) -> bytes:
     if not _SHA256.fullmatch(expected_sha256):
         raise ValueError(f"{label} SHA-256 must contain 64 lowercase hexadecimal characters")
     request = urllib.request.Request(url, headers={"User-Agent": "mdt-pwmcp-image-build"})
-    with urllib.request.urlopen(request, timeout=30) as response:
-        content = response.read(_MAX_SOURCE_BYTES + 1)
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            content = response.read(_MAX_SOURCE_BYTES + 1)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            # MDT-040: the URL names the source commit the image is built from; raw.githubusercontent.com
+            # serves it only once that commit is on GitHub.
+            raise ValueError(
+                f"{label}: HTTP 404 for {url} - is the source commit pushed to GitHub? "
+                "The image build fetches the installer at the exact commit it is built from, so a build "
+                "from an unpushed (e.g. worktree) commit cannot find it; push the commit, or use an "
+                "explicit --local-dev build"
+            ) from exc
+        raise
     if len(content) > _MAX_SOURCE_BYTES:
         raise ValueError(f"{label} exceeds {_MAX_SOURCE_BYTES} bytes")
     actual = hashlib.sha256(content).hexdigest()

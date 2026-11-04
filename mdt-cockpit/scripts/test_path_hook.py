@@ -243,8 +243,8 @@ def test_the_build_only_dpkg_setting_is_removed_after_the_last_apt_step_and_befo
 
 def test_the_dockerfile_patches_etc_profile_with_this_script_and_writes_the_entries_file() -> None:
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
-    assert "COPY scripts/patch_etc_profile.py /tmp/patch_etc_profile.py" in dockerfile
-    assert "python3 /tmp/patch_etc_profile.py /etc/profile" in dockerfile
+    assert "scripts/patch_etc_profile.py" in dockerfile.split("AS mdt-build-inputs", 1)[1].split("AS mdt-build-metadata", 1)[0]
+    assert "python3 /tmp/mdt-inputs/patch_etc_profile.py /etc/profile" in dockerfile
     assert '"${MDT_PATH_PREFIX}" "${MDT_PATH_SUFFIX}" > "${share_dir}/path-entries"' in dockerfile
     assert "!scripts/patch_etc_profile.py" in (ROOT / ".dockerignore").read_text(encoding="utf-8")
     assert "${share_dir}/path\"" not in dockerfile, "the full-PATH snapshot file is gone"

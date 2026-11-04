@@ -245,16 +245,17 @@ def test_staged_local_dev_wheels_pass_the_check_in_the_image(tmp_path: Path) -> 
 def test_the_dockerfile_runs_the_check_with_the_build_mode_and_has_no_empty_set_escape() -> None:
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert "no first-party wheels to install" not in dockerfile
-    run = dockerfile[dockerfile.index('wheels_dir="/tmp/pip/wheels"'):]
+    run = dockerfile[dockerfile.index('wheels_dir="/tmp/mdt-inputs/pip/wheels"'):]
     check = run[: run.index("pip install")]
     assert 'check_wheel_set.py' in check and '--build-mode "${MDT_BUILD_MODE}"' in check
     assert "--local-dir /tmp/mdt-local-dev" in check
     # only the files the check emitted are installed - never a bare glob of the directory
     assert '"${install_files[@]}"' in run and "*.whl" not in run.split("mdt-perms fix")[0]
-    assert "COPY scripts/check_wheel_set.py /tmp/check_wheel_set.py" in dockerfile
+    assert "scripts/check_wheel_set.py" in dockerfile.split("AS mdt-build-inputs", 1)[1].split("AS mdt-build-metadata", 1)[0]
+    assert "python3 /tmp/mdt-inputs/check_wheel_set.py" in dockerfile
     assert "!scripts/check_wheel_set.py" in (ROOT / ".dockerignore").read_text(encoding="utf-8")
     assert "from=mdt-local-dev,source=/,target=/tmp/mdt-local-dev" in dockerfile[
-        dockerfile.index("# FATAL in every build mode"):dockerfile.index('wheels_dir="/tmp/pip/wheels"')
+        dockerfile.index("# FATAL in every build mode"):dockerfile.index('wheels_dir="/tmp/mdt-inputs/pip/wheels"')
     ]
 
 

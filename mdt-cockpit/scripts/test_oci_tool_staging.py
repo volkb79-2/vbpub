@@ -520,6 +520,46 @@ def test_the_resolver_picks_the_newest_release_older_than_the_cutoff(monkeypatch
     assert seen == ["https://api.github.com/repos/o/r/releases?per_page=30"]
 
 
+def test_the_resolver_follows_pagination_until_a_release_old_enough_is_found(monkeypatch: _pytest.MonkeyPatch) -> None:
+    """MDT-036: a repository with more than 30 releases inside the age window is not a failure."""
+    monkeypatch.delenv("MDT_TOOL_MIN_AGE_DAYS", raising=False)
+    seen: list[str] = []
+    pages = {
+        "": [_rel(f"v9.0.{i}", 1) for i in range(30)],  # page 1: all too young
+        "&page=2": [_rel(f"v8.0.{i}", 2) for i in range(30)],  # page 2: still too young
+        "&page=3": [_rel("v2.0.0", 20), _rel("v1.0.0", 90)],  # page 3: qualifies; short page
+    }
+
+    def fake(url: str, **_: object) -> object:
+        seen.append(url)
+        return pages["&page=" + url.rsplit("&page=", 1)[1] if "&page=" in url else ""]
+
+    monkeypatch.setattr(staging, "_fetch_json", fake)
+    assert staging._resolve_latest_aged_release("o/r", now=NOW) == "2.0.0"
+    assert seen[0].endswith("releases?per_page=30") and seen[2].endswith("per_page=30&page=3") and len(seen) == 3
+
+
+def test_the_resolver_pagination_is_bounded_and_the_error_says_how_much_was_inspected(monkeypatch: _pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("MDT_TOOL_MIN_AGE_DAYS", raising=False)
+    seen = _api(monkeypatch, {"releases?per_page": [_rel(f"v9.0.{i}", 1) for i in range(30)]})
+    with _pytest.raises(staging.StageError, match=r"newest 150 inspected, 5 pages of 30"):
+        staging._resolve_latest_aged_release("o/r", now=NOW)
+    assert len(seen) == staging.LIST_MAX_PAGES
+
+
+def test_sss_follows_pagination_for_commits(monkeypatch: _pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("MDT_TOOL_MIN_AGE_DAYS", raising=False)
+    young = [_commit(f"{i:040x}", 1) for i in range(30)]
+
+    def fake(url: str, **_: object) -> object:
+        if url.endswith("/repos/azlux/sss"):
+            return SSS_REPO
+        return young if "&page=" not in url else [_commit("c" * 40, 20)]
+
+    monkeypatch.setattr(staging, "_fetch_json", fake)
+    assert staging._resolve_sss_commit(None, now=NOW) == "c" * 40
+
+
 def test_the_resolver_orders_by_published_at_not_by_list_position(monkeypatch: _pytest.MonkeyPatch) -> None:
     _api(monkeypatch, {"releases?per_page": [_rel("v1.0.0", 50), _rel("v1.1.0", 30)]})
     assert staging._resolve_latest_aged_release("o/r", now=NOW) == "1.1.0"
@@ -779,7 +819,7 @@ def test_the_manifest_run_reads_the_staged_versions_without_exporting_them() -> 
     """`set -a` would export AIDER_COMMIT/AIDER_VER/AIDER_BEFORE into every probe; aider reads AIDER_* as
     options and `aider --version` then prints its usage banner, which the 20261027 manifest recorded."""
     layer = _manifest_run_layer()
-    assert ". /tmp/tool-artifacts-staging/tool-versions.env;" in layer
+    assert ". /tmp/mdt-inputs/tool-versions.env;" in layer
     assert "set -a" not in layer and "export " not in layer
     assert "dist_version aider-chat)" in layer, "aider's version comes from the aider-chat distribution, not `aider --version`"
     assert "aider --version" not in layer
@@ -787,13 +827,15 @@ def test_the_manifest_run_reads_the_staged_versions_without_exporting_them() -> 
 
 def test_the_manifest_system_packages_are_derived_from_the_apt_list() -> None:
     layer = _manifest_run_layer()
-    assert "/tmp/packages.list" in layer, "the inventory is apt/packages.list, not a second hand-written list"
+    assert "/tmp/mdt-inputs/packages.list" in layer, "the inventory is apt/packages.list, not a second hand-written list"
     assert "bash-completion ca-certificates locales" not in layer, "the retyped package list is gone"
     for vendor_package in ("docker-ce-cli", "docker-buildx-plugin", "docker-compose-plugin", "nodejs", "postgresql-client", "redis-tools"):
         assert vendor_package in layer, f"{vendor_package} is installed by a vendor-repository layer and belongs in the inventory"
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
-    assert "COPY apt/packages.list /tmp/packages.list" in dockerfile
-    assert "rm -f /tmp/packages.list" not in dockerfile and "rm -rf /tmp/packages.list" not in dockerfile
+    # MDT-033 build inputs: bind-mounted from the throwaway inputs stage, never COPYed into (or rm'd from) /tmp.
+    assert "apt/packages.list" in dockerfile.split("AS mdt-build-inputs", 1)[1].split("AS mdt-build-metadata", 1)[0]
+    assert "/tmp/packages.list" not in dockerfile
+    assert "COPY apt/packages.list /tmp/" not in dockerfile
 
 
 # ── Age policy: third-party tools are aged, first-party wheels and PWMCP are not ───────────────────

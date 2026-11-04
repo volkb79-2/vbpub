@@ -28,6 +28,31 @@ RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev \
 # may land in a layer).
 FROM scratch AS mdt-local-dev
 
+# ── Build inputs (never committed to a layer) ─────────────────────────────────
+# The package lists, wheel set, requirements, customization tree, installer scripts and
+# staged tool versions the install RUNs read. They used to be COPYed into /tmp of the
+# image and shipped in every layer from there on (MDT-033 build inputs). Now they are
+# gathered here, in a throwaway stage, and each RUN that needs them bind-mounts the stage
+# at /tmp/mdt-inputs (read-only, scoped to that RUN, never part of any layer).
+# Release worktrees may be checked out under umask 077: the files are public package
+# metadata and must stay readable for the unprivileged vscode install layers, hence the
+# chmod here (this stage is discarded).
+FROM ${BASE_IMAGE} AS mdt-build-inputs
+COPY apt/backports.sources.in apt/packages.list ai-cli-tools.list /inputs/
+COPY pip/wheels.list /inputs/pip/wheels.list
+COPY pip/wheels/ /inputs/pip/wheels/
+COPY requirements/toolkit.txt /inputs/requirements/toolkit.txt
+COPY customization /inputs/customization
+COPY scripts/manifest_sections.py scripts/mdt_cli.py scripts/install_pwmcp_instance.py scripts/install_ai_cli_tools.py scripts/check_wheel_set.py scripts/patch_etc_profile.py /inputs/
+COPY build/tool-artifacts-staging/tool-versions.env /inputs/
+RUN chmod -R a+rX /inputs
+
+# Staged-artifact metadata (digests, source URLs) for manifest generation. A stage of its own on purpose:
+# metadata.json is timestamped and changes on every build, so it must reach only the manifest RUN and never
+# invalidate the cache of the tool-install RUNs that mount mdt-build-inputs.
+FROM scratch AS mdt-build-metadata
+COPY build/tool-artifacts-staging/metadata.json /metadata.json
+
 FROM ${BASE_IMAGE}
 
 SHELL ["/bin/bash", "-c"]
@@ -139,26 +164,12 @@ RUN if [ "${MDT_BUILD_UNSAFE_IO}" = "true" ]; then \
         echo "force-unsafe-io" > /etc/dpkg/dpkg.cfg.d/99-mdt-build-unsafe-io; \
     fi
 
-COPY apt/backports.sources.in /tmp/backports.sources.in
 # Priority policy (stable 500, stable-backports 600; testing/oldstable stay 100 via preview-archives). Matches the
 # archive NAME (`a=`), not the codename, which is why it is not templated by suite.
 COPY --chmod=0644 apt/debian-priorities.pref /etc/apt/preferences.d/debian-priorities
 # Vendor repositories (sury, pgdg, redis, docker) at 700, above backports' 600: see the file's comment.
 COPY --chmod=0644 apt/vendor-origins.pref /etc/apt/preferences.d/vendor-origins
-COPY apt/packages.list /tmp/packages.list
-COPY pip/wheels.list /tmp/pip/wheels.list
-COPY pip/wheels/ /tmp/pip/wheels/
-COPY requirements/toolkit.txt /tmp/requirements/toolkit.txt
-COPY package-manifests-versioned /tmp/package-manifests-versioned
-COPY customization /tmp/customization
-COPY scripts/manifest_sections.py /tmp/manifest_sections.py
-COPY scripts/mdt_cli.py /tmp/mdt_cli.py
-COPY scripts/install_pwmcp_instance.py /tmp/install_pwmcp_instance.py
 COPY --chmod=0755 scripts/mdt-perms /usr/local/bin/mdt-perms
-COPY ai-cli-tools.list /tmp/ai-cli-tools.list
-COPY scripts/install_ai_cli_tools.py /tmp/install_ai_cli_tools.py
-COPY scripts/check_wheel_set.py /tmp/check_wheel_set.py
-COPY scripts/patch_etc_profile.py /tmp/patch_etc_profile.py
 
 # Ensure vscode user exists (non-devcontainers bases)
 RUN set -euo pipefail; \
@@ -200,24 +211,17 @@ RUN set -euo pipefail; \
             || { echo "ERROR: $d is $(stat -c '%a %U:%G' "$d"), expected 2775 root:mdt" >&2; exit 1; }; \
     done
 
-# Release worktrees may be checked out under umask 077. These copied build
-# inputs contain public package metadata and must remain readable in the
-# unprivileged vscode install layers below.
-RUN set -euo pipefail; \
-    chmod -R a+rX /tmp/pip /tmp/requirements; \
-    chmod a+r /tmp/ai-cli-tools.list /tmp/install_ai_cli_tools.py \
-        /tmp/install_pwmcp_instance.py /tmp/mdt_cli.py
-
 # Core system packages
-RUN set -euo pipefail; \
+RUN --mount=type=bind,from=mdt-build-inputs,source=/inputs,target=/tmp/mdt-inputs \
+    set -euo pipefail; \
     if [ -f /etc/apt/sources.list.d/yarn.list ]; then \
         rm -f /etc/apt/sources.list.d/yarn.list; \
     fi; \
     BACKPORTS_SUITE="${DEBIAN_VERSION}-backports"; \
-    sed -e "s|@URI@|${BACKPORTS_URI}|g" -e "s|@SUITE@|${BACKPORTS_SUITE}|g" /tmp/backports.sources.in > "/etc/apt/sources.list.d/${BACKPORTS_SUITE}.sources"; \
+    sed -e "s|@URI@|${BACKPORTS_URI}|g" -e "s|@SUITE@|${BACKPORTS_SUITE}|g" /tmp/mdt-inputs/backports.sources.in > "/etc/apt/sources.list.d/${BACKPORTS_SUITE}.sources"; \
     apt-get update; \
     # Package list lives in apt/packages.list (one per line; '#' starts a comment). \
-    sed 's/#.*//' /tmp/packages.list | xargs apt-get install -y --no-install-recommends; \
+    sed 's/#.*//' /tmp/mdt-inputs/packages.list | xargs apt-get install -y --no-install-recommends; \
     sed -i 's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen; \
     locale-gen en_US.UTF-8; \
     update-locale LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8; \
@@ -260,15 +264,15 @@ ENV PATH="${MDT_PATH_PREFIX}:${PATH}:${MDT_PATH_SUFFIX}"
 # is scoped to the single RUN that declares it and is never part of any layer,
 # so it costs nothing in the final image. Each consuming RUN below re-declares
 # the same bind mount independently.
-COPY build/tool-artifacts-staging/tool-versions.env /tmp/tool-artifacts-staging/tool-versions.env
 
 # Neovim and NvChad are shipped from upstream GitHub releases/tags.
 RUN --mount=type=bind,source=build/tool-artifacts-staging/downloads,target=/tmp/tool-artifacts-staging/downloads \
+    --mount=type=bind,from=mdt-build-inputs,source=/inputs,target=/tmp/mdt-inputs \
     set -euo pipefail; \
     STAGE_DIR="/tmp/tool-artifacts-staging"; \
     DOWNLOADS_DIR="${STAGE_DIR}/downloads"; \
-    if [ -f "${STAGE_DIR}/tool-versions.env" ]; then \
-        set -a; . "${STAGE_DIR}/tool-versions.env"; set +a; \
+    if [ -f "/tmp/mdt-inputs/tool-versions.env" ]; then \
+        set -a; . "/tmp/mdt-inputs/tool-versions.env"; set +a; \
     fi; \
     : "${NVIM_VER:?Missing NVIM_VER build arg or staged tool version}"; \
     : "${NVCHAD_VER:?Missing NVCHAD_VER build arg or staged tool version}"; \
@@ -301,7 +305,7 @@ RUN --mount=type=bind,source=build/tool-artifacts-staging/downloads,target=/tmp/
     install -d -m 0755 /etc/xdg/nvim; \
     cp -a "${nvchad_root}/." /etc/xdg/nvim/; \
     chown -R root:root /etc/xdg/nvim; \
-    install -m 0644 /tmp/customization/nvim/sysinit.vim /etc/xdg/nvim/sysinit.vim; \
+    install -m 0644 /tmp/mdt-inputs/customization/nvim/sysinit.vim /etc/xdg/nvim/sysinit.vim; \
     rm -rf /tmp/nvchad-extract; \
     nvim --version | head -1
 
@@ -337,41 +341,42 @@ RUN set -euo pipefail; \
 # default by creating their own file. Every placement is verified in the built
 # image by the image-runtime lane (tests/runtime). docs/DESIGN-GUIDE.md
 # "System-wide defaults" records the per-tool lookup and why.
-RUN set -euo pipefail; \
+RUN --mount=type=bind,from=mdt-build-inputs,source=/inputs,target=/tmp/mdt-inputs \
+    set -euo pipefail; \
     share_dir="/usr/local/share/mdt-cockpit"; \
     install -d -m 0755 "${share_dir}"; \
-    install -m 0755 /tmp/customization/profile.sh "${share_dir}/profile.sh"; \
-    install -m 0755 /tmp/customization/lesspipe.sh "${share_dir}/lesspipe.sh"; \
-    install -m 0644 /tmp/customization/README.md "${share_dir}/README.md"; \
-    install -m 0644 /tmp/customization/aliases.sh "${share_dir}/aliases.sh"; \
-    install -m 0644 /tmp/customization/aliases.sh.example "${share_dir}/aliases.sh.example"; \
-    install -m 0644 /tmp/customization/ai.env.example "${share_dir}/ai.env.example"; \
-    install -m 0644 /tmp/customization/shell.env "${share_dir}/shell.env"; \
-    install -m 0644 /tmp/customization/bashrc "${share_dir}/bashrc"; \
-    install -m 0644 /tmp/customization/zshrc "${share_dir}/zshrc"; \
-    install -m 0644 /tmp/customization/htoprc "${share_dir}/htoprc"; \
-    install -m 0644 /tmp/customization/mc.ini "${share_dir}/mc.ini"; \
-    install -m 0644 /tmp/customization/nanorc "${share_dir}/nanorc"; \
-    install -D -m 0644 /tmp/customization/lnav/formats/nyxloom/nyxloom_events.json /etc/lnav/formats/nyxloom/nyxloom_events.json; \
-    install -m 0644 /tmp/customization/htoprc /etc/htoprc; \
-    install -D -m 0644 /tmp/customization/mc.ini /etc/mc/mc.ini; \
-    install -m 0644 /tmp/customization/tmux.conf "${share_dir}/tmux.conf"; \
-    install -m 0644 /tmp/customization/tmux.conf /etc/tmux.conf; \
-    install -m 0644 /tmp/customization/gitconfig "${share_dir}/gitconfig"; \
-    cat /tmp/customization/gitconfig >> /etc/gitconfig; \
-    install -m 0644 /tmp/customization/inputrc "${share_dir}/inputrc"; \
+    install -m 0755 /tmp/mdt-inputs/customization/profile.sh "${share_dir}/profile.sh"; \
+    install -m 0755 /tmp/mdt-inputs/customization/lesspipe.sh "${share_dir}/lesspipe.sh"; \
+    install -m 0644 /tmp/mdt-inputs/customization/README.md "${share_dir}/README.md"; \
+    install -m 0644 /tmp/mdt-inputs/customization/aliases.sh "${share_dir}/aliases.sh"; \
+    install -m 0644 /tmp/mdt-inputs/customization/aliases.sh.example "${share_dir}/aliases.sh.example"; \
+    install -m 0644 /tmp/mdt-inputs/customization/ai.env.example "${share_dir}/ai.env.example"; \
+    install -m 0644 /tmp/mdt-inputs/customization/shell.env "${share_dir}/shell.env"; \
+    install -m 0644 /tmp/mdt-inputs/customization/bashrc "${share_dir}/bashrc"; \
+    install -m 0644 /tmp/mdt-inputs/customization/zshrc "${share_dir}/zshrc"; \
+    install -m 0644 /tmp/mdt-inputs/customization/htoprc "${share_dir}/htoprc"; \
+    install -m 0644 /tmp/mdt-inputs/customization/mc.ini "${share_dir}/mc.ini"; \
+    install -m 0644 /tmp/mdt-inputs/customization/nanorc "${share_dir}/nanorc"; \
+    install -D -m 0644 /tmp/mdt-inputs/customization/lnav/formats/nyxloom/nyxloom_events.json /etc/lnav/formats/nyxloom/nyxloom_events.json; \
+    install -m 0644 /tmp/mdt-inputs/customization/htoprc /etc/htoprc; \
+    install -D -m 0644 /tmp/mdt-inputs/customization/mc.ini /etc/mc/mc.ini; \
+    install -m 0644 /tmp/mdt-inputs/customization/tmux.conf "${share_dir}/tmux.conf"; \
+    install -m 0644 /tmp/mdt-inputs/customization/tmux.conf /etc/tmux.conf; \
+    install -m 0644 /tmp/mdt-inputs/customization/gitconfig "${share_dir}/gitconfig"; \
+    cat /tmp/mdt-inputs/customization/gitconfig >> /etc/gitconfig; \
+    install -m 0644 /tmp/mdt-inputs/customization/inputrc "${share_dir}/inputrc"; \
     test -f /etc/inputrc; \
-    cat /tmp/customization/inputrc >> /etc/inputrc; \
-    install -m 0644 /tmp/customization/vimrc.local "${share_dir}/vimrc.local"; \
-    install -D -m 0644 /tmp/customization/vimrc.local /etc/vim/vimrc.local; \
+    cat /tmp/mdt-inputs/customization/inputrc >> /etc/inputrc; \
+    install -m 0644 /tmp/mdt-inputs/customization/vimrc.local "${share_dir}/vimrc.local"; \
+    install -D -m 0644 /tmp/mdt-inputs/customization/vimrc.local /etc/vim/vimrc.local; \
     test -f /etc/nanorc && test -f /etc/bash.bashrc && test -f /etc/zsh/zshrc && test -f /etc/zsh/zprofile; \
     printf '\n# mdt-cockpit defaults (nano reads ~/.nanorc afterwards, so a user setting wins).\ninclude "%s/nanorc"\n' "${share_dir}" >> /etc/nanorc; \
     printf '\n# mdt-cockpit interactive defaults (your ~/.bashrc runs afterwards).\n[ -r %s/bashrc ] && . %s/bashrc\n' "${share_dir}" "${share_dir}" >> /etc/bash.bashrc; \
     printf '\n# mdt-cockpit interactive defaults (your ~/.zshrc runs afterwards).\n[[ -r %s/zshrc ]] && source %s/zshrc\n' "${share_dir}" "${share_dir}" >> /etc/zsh/zshrc; \
     printf '%s\n%s\n' "${MDT_PATH_PREFIX}" "${MDT_PATH_SUFFIX}" > "${share_dir}/path-entries"; \
     chmod 0644 "${share_dir}/path-entries"; \
-    python3 /tmp/patch_etc_profile.py /etc/profile; \
-    install -m 0644 /tmp/customization/path-hook.sh "${share_dir}/path-hook.sh"; \
+    python3 /tmp/mdt-inputs/patch_etc_profile.py /etc/profile; \
+    install -m 0644 /tmp/mdt-inputs/customization/path-hook.sh "${share_dir}/path-hook.sh"; \
     printf '\n# mdt-cockpit: put the image PATH back in login shells (zsh does not read /etc/profile).\n. %s/path-hook.sh\n' "${share_dir}" >> /etc/zsh/zprofile; \
     install -d -m 0755 /etc/profile.d; \
     printf '%s\n' \
@@ -410,18 +415,20 @@ RUN set -euo pipefail; \
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     --mount=type=bind,source=build/tool-artifacts-staging/downloads,target=/tmp/tool-artifacts-staging/downloads \
+    --mount=type=bind,from=mdt-build-inputs,source=/inputs,target=/tmp/mdt-inputs \
     set -euo pipefail; \
     STAGE_DIR="/tmp/tool-artifacts-staging"; \
     DOWNLOADS_DIR="${STAGE_DIR}/downloads"; \
-    if [ ! -f "${STAGE_DIR}/tool-versions.env" ]; then \
-        echo "[ERROR] Missing staged tool version file: ${STAGE_DIR}/tool-versions.env" >&2; \
+    TOOL_VERSIONS_ENV="/tmp/mdt-inputs/tool-versions.env"; \
+    if [ ! -f "${TOOL_VERSIONS_ENV}" ]; then \
+        echo "[ERROR] Missing staged tool version file: ${TOOL_VERSIONS_ENV}" >&2; \
         exit 1; \
     fi; \
     if [ ! -d "${DOWNLOADS_DIR}" ]; then \
         echo "[ERROR] Missing staged downloads directory: ${DOWNLOADS_DIR}" >&2; \
         exit 1; \
     fi; \
-    set -a; . "${STAGE_DIR}/tool-versions.env"; set +a; \
+    set -a; . "${TOOL_VERSIONS_ENV}"; set +a; \
     php_system_packages=(); \
     if [ "${INSTALL_PHP}" = "true" ]; then \
         php_system_packages=( \
@@ -690,8 +697,8 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     install_from_tar "${DOWNLOADS_DIR}/cdebug-${CDEBUG_VER}.tar.gz" cdebug /tmp/cdebug-extract; \
     cdebug --version; \
     mandb -q; \
-    install -o vscode -g vscode -m 0644 "${STAGE_DIR}/tool-versions.env" /tmp/ai-tool-versions.env; \
-    ( umask 0002; python3 /tmp/install_ai_cli_tools.py root ); \
+    install -o vscode -g vscode -m 0644 "${TOOL_VERSIONS_ENV}" /tmp/ai-tool-versions.env; \
+    ( umask 0002; TOOLS_FILE=/tmp/mdt-inputs/ai-cli-tools.list python3 /tmp/mdt-inputs/install_ai_cli_tools.py root ); \
     mdt-perms fix /opt/mdt/bin; \
     rm -rf \
         /tmp/bat-extract \
@@ -723,11 +730,12 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
 # can `npm install -g` / update here without sudo; ~/.local/bin stays last on
 # PATH for the user's own additions.
 RUN --mount=type=cache,target=/tmp/mdt-build-cache/npm,uid=0,gid=0,sharing=locked \
+    --mount=type=bind,from=mdt-build-inputs,source=/inputs,target=/tmp/mdt-inputs \
     set -euo pipefail; \
     umask 0002; \
     set -a; . /tmp/ai-tool-versions.env; set +a; \
-    NPM_CONFIG_PREFIX=/opt/mdt/npm NPM_CONFIG_CACHE=/tmp/mdt-build-cache/npm \
-        python3 /tmp/install_ai_cli_tools.py npm-image; \
+    NPM_CONFIG_PREFIX=/opt/mdt/npm NPM_CONFIG_CACHE=/tmp/mdt-build-cache/npm TOOLS_FILE=/tmp/mdt-inputs/ai-cli-tools.list \
+        python3 /tmp/mdt-inputs/install_ai_cli_tools.py npm-image; \
     mdt-perms fix /opt/mdt/npm
 
 # Latest PostgreSQL and Redis clients (override versions via build args)
@@ -803,13 +811,14 @@ RUN set -euo pipefail; \
 # and ends with `mdt-perms fix`, which repairs only entries this RUN created.
 # Consumer-facing list: see README.md § "Primary Venv Packages".
 RUN --mount=type=cache,target=/tmp/mdt-build-cache/pip,uid=0,gid=0,sharing=locked \
+    --mount=type=bind,from=mdt-build-inputs,source=/inputs,target=/tmp/mdt-inputs \
     set -euo pipefail; \
     umask 0002; \
     export PIP_CACHE_DIR=/tmp/mdt-build-cache/pip; \
     python3 -m venv /opt/mdt/venv; \
     /opt/mdt/venv/bin/python -m pip install --upgrade pip setuptools wheel --disable-pip-version-check --quiet; \
     /opt/mdt/venv/bin/python -m pip install --disable-pip-version-check --quiet \
-        -r /tmp/requirements/toolkit.txt; \
+        -r /tmp/mdt-inputs/requirements/toolkit.txt; \
     mdt-perms fix /opt/mdt/venv
 # Aider gets its own layer, after the venv+toolkit.txt one above: it's the
 # only "venv" mode entry in ai-cli-tools.list, and its own dependency closure
@@ -818,11 +827,12 @@ RUN --mount=type=cache,target=/tmp/mdt-build-cache/pip,uid=0,gid=0,sharing=locke
 # directly in `docker history` instead of requiring a dependency-closure
 # probe to split it back out of a merged layer.
 RUN --mount=type=cache,target=/tmp/mdt-build-cache/pip,uid=0,gid=0,sharing=locked \
+    --mount=type=bind,from=mdt-build-inputs,source=/inputs,target=/tmp/mdt-inputs \
     set -euo pipefail; \
     umask 0002; \
     export PIP_CACHE_DIR=/tmp/mdt-build-cache/pip; \
     set -a; . /tmp/ai-tool-versions.env; set +a; \
-    python3 /tmp/install_ai_cli_tools.py venv; \
+    TOOLS_FILE=/tmp/mdt-inputs/ai-cli-tools.list python3 /tmp/mdt-inputs/install_ai_cli_tools.py venv; \
     mdt-perms fix /opt/mdt/venv
 # Aider is installed after toolkit.txt and may change packages shared with the
 # first-party wheels. Reconcile the primary venv from the single requirements
@@ -830,12 +840,13 @@ RUN --mount=type=cache,target=/tmp/mdt-build-cache/pip,uid=0,gid=0,sharing=locke
 # install can silently leave (for example) rich/Pygments below Nyxloom's
 # declared runtime floors.
 RUN --mount=type=cache,target=/tmp/mdt-build-cache/pip,uid=0,gid=0,sharing=locked \
+    --mount=type=bind,from=mdt-build-inputs,source=/inputs,target=/tmp/mdt-inputs \
     set -euo pipefail; \
     umask 0002; \
     export PIP_CACHE_DIR=/tmp/mdt-build-cache/pip; \
     /opt/mdt/venv/bin/python -m pip install \
         --disable-pip-version-check --upgrade --quiet \
-        -r /tmp/requirements/toolkit.txt; \
+        -r /tmp/mdt-inputs/requirements/toolkit.txt; \
     mdt-perms fix /opt/mdt/venv
 # ── Secondary Python venvs — lean (uv + debugpy + ruff only) ─────────────────
 # Driven by SECONDARY_PYTHON_VERSIONS build arg (space-separated dotted versions, e.g. "3.11 3.9").
@@ -877,12 +888,13 @@ RUN set -euo pipefail; \
 # sha256 is recorded in the image (first-party-wheels.json) for the runtime lane.
 # Source: https://github.com/volkb79-2/vbpub/releases — first-party project releases.
 RUN --mount=type=bind,from=mdt-local-dev,source=/,target=/tmp/mdt-local-dev \
+    --mount=type=bind,from=mdt-build-inputs,source=/inputs,target=/tmp/mdt-inputs \
     set -euo pipefail; \
     umask 0002; \
-    wheels_dir="/tmp/pip/wheels"; \
-    wheels_list="/tmp/pip/wheels.list"; \
+    wheels_dir="/tmp/mdt-inputs/pip/wheels"; \
+    wheels_list="/tmp/mdt-inputs/pip/wheels.list"; \
     install -d -m 0755 /usr/local/share/mdt-cockpit; \
-    python3 /tmp/check_wheel_set.py \
+    python3 /tmp/mdt-inputs/check_wheel_set.py \
         --wheels-dir "${wheels_dir}" \
         --wheels-list "${wheels_list}" \
         --build-mode "${MDT_BUILD_MODE}" \
@@ -920,11 +932,12 @@ RUN set -euo pipefail; \
 
 USER vscode
 RUN --mount=type=bind,from=mdt-local-dev,source=/,target=/tmp/mdt-local-dev \
+    --mount=type=bind,from=mdt-build-inputs,source=/inputs,target=/tmp/mdt-inputs \
     set -euo pipefail; \
     umask 0002; \
     local_args=(); \
     if [ "${MDT_BUILD_MODE}" = "local-dev" ]; then local_args=(--local-dev-dir /tmp/mdt-local-dev); fi; \
-    python3 /tmp/install_pwmcp_instance.py \
+    python3 /tmp/mdt-inputs/install_pwmcp_instance.py \
         --getpy-url "${PWMCP_GETPY_URL}" \
         --getpy-sha256 "${PWMCP_GETPY_SHA256}" \
         --contract-url "${PWMCP_CONTRACT_URL}" \
@@ -933,8 +946,9 @@ RUN --mount=type=bind,from=mdt-local-dev,source=/,target=/tmp/mdt-local-dev \
         "${local_args[@]}"; \
     mdt-perms fix /srv
 USER root
-RUN rm -f /tmp/install_pwmcp_instance.py
-RUN rm -f /tmp/install_ai_cli_tools.py /tmp/check_wheel_set.py /tmp/patch_etc_profile.py /tmp/ai-cli-tools.list /tmp/ai-tool-versions.env
+# /tmp/ai-tool-versions.env is the one generated file left in /tmp (written by the tool-install RUN, read by the
+# npm and venv RUNs); every static build input is bind-mounted from mdt-build-inputs and never lands in a layer.
+RUN rm -f /tmp/ai-tool-versions.env
 # ── In-container devcontainer finalize (postCreateCommand) ──────────────────
 # Baked into the image so any mdt-based repo wires only:
 #   "postCreateCommand": "finalize_container_environment.py"
@@ -966,18 +980,13 @@ RUN chmod 0755 /usr/local/bin/mdt /usr/local/bin/host-escape
 # a one-line CLAUDE.md adapter. Exact versions remain in the generated manifest.
 COPY templates/AGENTS.md /usr/local/share/mdt-cockpit/AGENTS.md.example
 
-# Copy staged-artifact metadata for manifest generation (digests, source URLs).
-# Note: this is a separate COPY because downloads/ (the bulk of
-# build/tool-artifacts-staging/) is only ever bind-mounted into the RUNs that
-# consume it, never committed to a layer — this file is the one piece of that
-# directory that a much later step (the manifest RUN) actually needs to persist.
-COPY build/tool-artifacts-staging/metadata.json /tmp/tool-artifacts-metadata.json
-
 # Canonical user-facing manifest generated directly from live probes
 # (pip freeze, dpkg-query, php -m, tool versions). The same manifest is
 # extracted post-build into package-manifests-versioned/ so the committed
 # and in-image versions are always identical (see build-push.py).
-RUN set -euo pipefail; \
+RUN --mount=type=bind,from=mdt-build-inputs,source=/inputs,target=/tmp/mdt-inputs \
+    --mount=type=bind,from=mdt-build-metadata,source=/,target=/tmp/mdt-metadata \
+    set -euo pipefail; \
     manifest_dir="/usr/local/share/mdt-cockpit"; \
     canonical_manifest="${manifest_dir}/manifest.md"; \
     inventory_manifest="${manifest_dir}/installed-tools-manifest.md"; \
@@ -987,7 +996,7 @@ RUN set -euo pipefail; \
     # separate shell from the tool-install RUN, so it reads the same staged file. Sourced WITHOUT `set -a`: \
     # the probes below run the tools, and an exported AIDER_COMMIT/AIDER_VER/AIDER_BEFORE is read by aider's \
     # own AIDER_* option prefix (the 20261027 manifest recorded its usage banner as the version). \
-    . /tmp/tool-artifacts-staging/tool-versions.env; \
+    . /tmp/mdt-inputs/tool-versions.env; \
     : "${DRY_VER:?Missing DRY_VER from the staged tool-versions.env}"; \
     : "${SSS_VER:?Missing SSS_VER from the staged tool-versions.env}"; \
     \
@@ -1176,11 +1185,11 @@ RUN set -euo pipefail; \
         fi; \
     } > "${custom_tooling_file}"; \
     /opt/mdt/venv/bin/pip list --format=freeze > "${python_packages_file}"; \
-    # The system-package inventory is apt/packages.list (still at /tmp/packages.list), never a second \
+    # The system-package inventory is apt/packages.list (bind-mounted at /tmp/mdt-inputs/packages.list), never a second \
     # hand-maintained list that drifts from it, plus the packages the vendor-repository layers install \
     # (Docker CLI, Node.js, PostgreSQL and Redis clients). A name that is not installed fails the build. \
-    mapfile -t apt_packages < <(sed 's/#.*//' /tmp/packages.list | tr -s '[:space:]' '\n' | sed '/^$/d'); \
-    test "${#apt_packages[@]}" -gt 0 || { echo "[ERROR] /tmp/packages.list yielded no package names" >&2; exit 1; }; \
+    mapfile -t apt_packages < <(sed 's/#.*//' /tmp/mdt-inputs/packages.list | tr -s '[:space:]' '\n' | sed '/^$/d'); \
+    test "${#apt_packages[@]}" -gt 0 || { echo "[ERROR] /tmp/mdt-inputs/packages.list yielded no package names" >&2; exit 1; }; \
     dpkg-query -W -f='${Package}=${Version}\n' "${apt_packages[@]}" \
         docker-ce-cli docker-buildx-plugin docker-compose-plugin nodejs 'postgresql-client*' redis-tools \
         | sort -u > "${system_packages_file}"; \
@@ -1192,7 +1201,7 @@ RUN set -euo pipefail; \
     if [ "${INSTALL_PHP}" = "true" ]; then \
         php -m 2>/dev/null | tail -n +2 > "${php_extensions_file}"; \
     fi; \
-    python3 /tmp/manifest_sections.py unified \
+    python3 /tmp/mdt-inputs/manifest_sections.py unified \
         --output "${canonical_manifest}" \
         --debian-version "${DEBIAN_VERSION}" \
         --python-version "${PYTHON_VERSION}" \
@@ -1203,7 +1212,7 @@ RUN set -euo pipefail; \
         --custom-tooling-file "${custom_tooling_file}" \
         --python-packages-file "${python_packages_file}" \
         --system-packages-file "${system_packages_file}" \
-        --artifact-metadata "/tmp/tool-artifacts-metadata.json" \
+        --artifact-metadata "/tmp/mdt-metadata/metadata.json" \
         --description "${OCI_DESCRIPTION_BASE:-${OCI_DESCRIPTION:-}}" \
         --target "${TARGET:-}" \
         --variant "${IMAGE_VARIANT:-}" \
@@ -1214,7 +1223,7 @@ RUN set -euo pipefail; \
         --php-extensions-file "${php_extensions_file}" \
         --build-mode "${MDT_BUILD_MODE}" \
         --local-artifacts-json "${MDT_LOCAL_ARTIFACTS_JSON}"; \
-    python3 /tmp/manifest_sections.py installed \
+    python3 /tmp/mdt-inputs/manifest_sections.py installed \
         --output "${inventory_manifest}" \
         --debian-version "${DEBIAN_VERSION}" \
         --python-version "${PYTHON_VERSION}" \
@@ -1226,9 +1235,8 @@ RUN set -euo pipefail; \
         --custom-tooling-file "${custom_tooling_file}" \
         --python-packages-file "${python_packages_file}" \
         --system-packages-file "${system_packages_file}" \
-        --artifact-metadata "/tmp/tool-artifacts-metadata.json"; \
-    rm -f "${custom_tooling_file}" "${python_packages_file}" "${system_packages_file}" "${php_extensions_file}" "/tmp/tool-artifacts-metadata.json"; \
-    rm -f /tmp/manifest_sections.py; \
+        --artifact-metadata "/tmp/mdt-metadata/metadata.json"; \
+    rm -f "${custom_tooling_file}" "${python_packages_file}" "${system_packages_file}" "${php_extensions_file}"; \
     chown root:root "${canonical_manifest}" "${inventory_manifest}"; \
     chmod 644 "${canonical_manifest}" "${inventory_manifest}"; \
     _image_tag="${DEBIAN_VERSION}-py${PYTHON_VERSION}${IMAGE_VARIANT:+-${IMAGE_VARIANT}}-${OCI_VERSION}"; \

@@ -507,6 +507,12 @@ there. Fix: bind-mount the build inputs (`--mount=type=bind,source=...`) in the 
 with one `rm -rf` of the known list and an `image-runtime` assertion that the native image's `/tmp` is empty
 (the whiteout still leaves the bytes in earlier layers; bind mounts are the real fix).
 
+**Status 2026-11-04: FIXED (fix-mdt-2).** A throwaway `mdt-build-inputs` stage holds the inputs; every consuming RUN
+bind-mounts it at `/tmp/mdt-inputs`. `metadata.json` has its own stage (manifest RUN only). Only the generated
+`/tmp/ai-tool-versions.env` still passes between RUNs (removed afterwards). `package-manifests-versioned` is no longer
+copied at all (nothing read it). Not yet verified by a real image build; the `image-runtime` assertion that the native
+image's `/tmp` is empty is left to that lane (MDT-012).
+
 ## MDT-034 - the manifest's Version column records raw `--version` banners for most tools (2026-10-27)
 
 Only ov, gdu, dust, yazi, regctl, nvim, lnav and shellcheck are normalised. `claude` records
@@ -544,6 +550,9 @@ age window fails closed with "no stable release published on or before ...". Unl
 failure message does not say why. Fix: follow the `Link: rel="next"` header until a qualifying entry is found (bounded
 to a few pages), or say "newest 30 inspected" in the error.
 
+**Status 2026-11-04: FIXED (fix-mdt-2).** Both resolvers page (`&page=N`, at most 5 pages of 30, stopping at the first
+page with a qualifying entry or a short page) and the error says how many entries were inspected.
+
 ## MDT-037 - `mdt-host-check.sh` does not check the dedicated Docker API socket or a pending daemon restart (2026-10-27)
 
 install.sh installs the `docker.socket` drop-in (`/run/docker-api/docker.sock`, the directory the devcontainer
@@ -580,6 +589,9 @@ worked, so cmru's transaction evidently satisfies this; document the ordering in
 make `install_pwmcp_instance.py` say "is this commit pushed?" on a 404. Related: `docs/CONSUMERS.md` and
 `local-dev-artifacts.toml.example` show `1.64.0-r4` while `pwmcp/pwmcp.contract.json` still names `1.64.0-r3`
 (forward references until pwmcp-v1.64.0-r4 ships; the image installs the contract's release).
+
+**Status 2026-11-04: FIXED (fix-mdt-2)** for the 404 message and the ordering note (`docs/BUILD-ARCHITECTURE.md`,
+"Ordering"). The `r3`/`r4` forward-reference remark is unchanged and resolves when pwmcp ships.
 
 ## MDT-041 - host and project names in the design docs and build inputs (2026-10-27)
 

@@ -87,6 +87,15 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - host-setup: `install.sh` validates the `/etc/environment` block before the commit point, never aborts
   silently when dockerd is not running, and `mdt-host-check.sh` checks the inotify setting against the
   policy minimum instead of the installed file's own value.
+- Build inputs (apt/pip lists, wheel set, requirements, customization, installer scripts, staged tool versions) are
+  no longer COPYed into the image's `/tmp`: a throwaway `mdt-build-inputs` stage is bind-mounted at `/tmp/mdt-inputs`
+  by each RUN that reads it, and the timestamped `metadata.json` has its own stage so it never invalidates the
+  tool-install cache (MDT-061, "MDT-033 build inputs" in the bugfix program).
+- The aged-latest resolvers (`_resolve_latest_aged_release`, `_resolve_sss_commit`) follow pagination (bounded to 5
+  pages of 30) instead of failing when the newest 30 entries are all inside the age window; the error reports how many
+  were inspected (MDT-036).
+- The in-image PWMCP installer says "is the source commit pushed to GitHub?" on a 404, and `docs/BUILD-ARCHITECTURE.md`
+  documents the push-before-build ordering (MDT-040).
 
 <!-- cmru: release history -->
 

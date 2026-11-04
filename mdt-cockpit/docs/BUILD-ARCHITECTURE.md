@@ -308,6 +308,23 @@ The phases are:
    missing layout, failed copy, missing remote manifest, or digest mismatch is
    nonzero and therefore fails the CMRU transaction.
 
+### Ordering: the source commit must be on GitHub before the image builds
+
+`build-push.py` points the in-image PWMCP installer (`scripts/install_pwmcp_instance.py`) at
+`raw.githubusercontent.com/<owner>/<repo>/<HEAD>/pwmcp/get.py` and `pwmcp.contract.json`, each with the SHA-256 of
+the local file. A release build therefore needs the commit it is built from to be pushed first; CMRU's release
+transaction pushes the prepared commit before the image build. A build from an unpushed worktree commit fails in the
+PWMCP layer with an HTTP 404, and the installer says so ("is the source commit pushed to GitHub?"). Push the
+commit, or use an explicit `--local-dev` build, which supplies the verified local installer and bundle instead.
+
+### Build inputs are bind-mounted, not copied
+
+The apt and pip lists, the wheel set, `requirements/`, the `customization/` tree, the installer scripts and the staged
+tool versions/metadata are gathered in the throwaway `mdt-build-inputs` stage of the Dockerfile. Each RUN that reads
+them bind-mounts that stage at `/tmp/mdt-inputs` (read-only, scoped to the RUN), so none of it is committed to an image
+layer (MDT-033 build inputs). The one file left in `/tmp` between RUNs is the generated `ai-tool-versions.env`, which a
+later RUN removes.
+
 ### Optional OCI-layout repack lane
 
 `RELEASE_IMAGE_FLOW=repack` remains available for compression experiments. It

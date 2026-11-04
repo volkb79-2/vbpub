@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tarfile
@@ -102,8 +103,8 @@ class ReleaseFlowTests(unittest.TestCase):
         dockerfile = (ROOT / "Dockerfile").read_text()
         self.assertIn("rich/pygments", dockerfile)
         self.assertIn("--no-index", dockerfile)
-        aider = dockerfile.index("python3 /tmp/install_ai_cli_tools.py venv")
-        reconcile = dockerfile.index("-r /tmp/requirements/toolkit.txt", aider)
+        aider = dockerfile.index("python3 /tmp/mdt-inputs/install_ai_cli_tools.py venv")
+        reconcile = dockerfile.index("-r /tmp/mdt-inputs/requirements/toolkit.txt", aider)
         wheels_layer = dockerfile.index("# ── First-party wheels")
         self.assertGreater(reconcile, aider)
         self.assertLess(reconcile, wheels_layer)
@@ -112,11 +113,29 @@ class ReleaseFlowTests(unittest.TestCase):
     def test_staged_ai_cli_installer_has_its_parser_module(self) -> None:
         """The installer runs from /tmp and must receive its local import too."""
         dockerfile = (ROOT / "Dockerfile").read_text()
-        self.assertIn("COPY scripts/mdt_cli.py /tmp/mdt_cli.py", dockerfile)
-        self.assertLess(
-            dockerfile.index("COPY scripts/mdt_cli.py /tmp/mdt_cli.py"),
-            dockerfile.index("COPY scripts/install_ai_cli_tools.py /tmp/install_ai_cli_tools.py"),
-        )
+        # Both scripts are gathered in the same build-inputs directory (no longer COPYed into /tmp), so the
+        # installer's sibling import resolves next to it.
+        stage = dockerfile[dockerfile.index("AS mdt-build-inputs"):dockerfile.index("AS mdt-build-metadata")]
+        self.assertIn("scripts/mdt_cli.py", stage)
+        self.assertIn("scripts/install_ai_cli_tools.py", stage)
+        self.assertIn("/inputs/\n", stage)
+
+    def test_build_inputs_are_never_copied_into_the_image(self) -> None:
+        """MDT-033 build inputs: nothing the install RUNs read may be COPYed to /tmp (it would stay in the layers)."""
+        dockerfile = (ROOT / "Dockerfile").read_text()
+        final_stage = dockerfile[dockerfile.rindex("\nFROM ") :]  # the throwaway build stages are not shipped
+        for line in final_stage.splitlines():
+            if line.startswith("COPY ") and "--from=" not in line:
+                self.assertNotRegex(line, r"\s/tmp/", line)
+        mount = "--mount=type=bind,from=mdt-build-inputs,source=/inputs,target=/tmp/mdt-inputs"
+        self.assertIn(mount, dockerfile)
+        # every RUN that reads /tmp/mdt-inputs declares the mount
+        for run in re.findall(r"(?ms)^RUN .*?(?=^\S)", dockerfile):
+            if "/tmp/mdt-inputs/" in run:
+                self.assertIn(mount, run, run[:160])
+        # the timestamped metadata stays out of the tool-install cache boundary
+        inputs_stage = dockerfile[dockerfile.index("AS mdt-build-inputs"):dockerfile.index("AS mdt-build-metadata")]
+        self.assertFalse([l for l in inputs_stage.splitlines() if l.startswith("COPY ") and "metadata.json" in l])
 
     def test_baked_container_finalizer_has_its_parser_module(self) -> None:
         """The finalizer runs from /usr/local/bin and imports its sibling module."""
@@ -219,11 +238,11 @@ class ReleaseFlowTests(unittest.TestCase):
             "target=/tmp/tool-artifacts-staging/downloads"
         )
         self.assertIn(bind_mount, dockerfile)
-        self.assertIn('COPY build/tool-artifacts-staging/tool-versions.env', dockerfile)
-        self.assertGreater(
-            dockerfile.find('COPY build/tool-artifacts-staging/metadata.json'),
-            dockerfile.find(bind_mount),
-        )
+        self.assertIn('COPY build/tool-artifacts-staging/tool-versions.env /inputs/', dockerfile)
+        # metadata.json lives in its own stage, mounted only by the manifest RUN (after the tool-install RUN).
+        self.assertIn('COPY build/tool-artifacts-staging/metadata.json /metadata.json', dockerfile)
+        self.assertEqual(dockerfile.count("from=mdt-build-metadata"), 1)
+        self.assertGreater(dockerfile.find("from=mdt-build-metadata"), dockerfile.find(bind_mount))
 
     def test_active_repack_path_is_oci_native(self) -> None:
         bake = (ROOT / "scripts/release-bake.sh").read_text()

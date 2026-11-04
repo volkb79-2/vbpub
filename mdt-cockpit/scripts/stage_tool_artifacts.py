@@ -452,26 +452,45 @@ def _age_cutoff(min_age_days: int | None, now: datetime | None) -> datetime:
     return (now or datetime.now(timezone.utc)) - timedelta(days=_age_days(min_age_days))
 
 
+LIST_PAGE_SIZE = 30
+LIST_MAX_PAGES = 5  # MDT-036: follow pagination, bounded (150 entries) so a mis-set age cannot walk a whole history
+
+
+def _page_suffix(page: int) -> str:
+    """Page 1 keeps the plain URL; later pages add `&page=N`."""
+    return "" if page <= 1 else f"&page={page}"
+
+
 def _resolve_latest_aged_release(repo: str, *, min_age_days: int | None = None, now: datetime | None = None) -> str:
     """Newest non-draft, non-prerelease release published at least `min_age_days` ago; version without leading v."""
     cutoff = _age_cutoff(min_age_days, now)
-    releases = _fetch_json(f"{GITHUB_API}/repos/{repo}/releases?per_page=30", headers=_github_api_headers())
-    if not isinstance(releases, list):
-        raise StageError(f"Unexpected releases payload for {repo}")
     best: tuple[datetime, str] | None = None
-    for release in releases:
-        if not isinstance(release, dict) or release.get("draft") or release.get("prerelease"):
-            continue
-        tag = str(release.get("tag_name") or "").strip().removeprefix("v")
-        if not tag or not release.get("published_at"):
-            continue
-        published = _github_time(release.get("published_at"), f"{repo} release {tag}")
-        if published <= cutoff and (best is None or published > best[0]):
-            best = (published, tag)
+    inspected = 0
+    for page in range(1, LIST_MAX_PAGES + 1):
+        releases = _fetch_json(
+            f"{GITHUB_API}/repos/{repo}/releases?per_page={LIST_PAGE_SIZE}{_page_suffix(page)}",
+            headers=_github_api_headers(),
+        )
+        if not isinstance(releases, list):
+            raise StageError(f"Unexpected releases payload for {repo}")
+        inspected += len(releases)
+        for release in releases:
+            if not isinstance(release, dict) or release.get("draft") or release.get("prerelease"):
+                continue
+            tag = str(release.get("tag_name") or "").strip().removeprefix("v")
+            if not tag or not release.get("published_at"):
+                continue
+            published = _github_time(release.get("published_at"), f"{repo} release {tag}")
+            if published <= cutoff and (best is None or published > best[0]):
+                best = (published, tag)
+        # Newest first: a qualifying release on this page beats every later page; a short page is the last one.
+        if best is not None or len(releases) < LIST_PAGE_SIZE:
+            break
     if best is None:
         raise StageError(
             f"{repo}: no stable release published on or before {cutoff.strftime('%Y-%m-%dT%H:%M:%SZ')} "
-            f"among the newest 30 (age buffer {MIN_AGE_DAYS_ENV})"
+            f"among the newest {inspected} inspected, {LIST_MAX_PAGES} pages of {LIST_PAGE_SIZE} at most "
+            f"(age buffer {MIN_AGE_DAYS_ENV})"
         )
     return best[1]
 
@@ -514,24 +533,31 @@ def _resolve_sss_commit(requested: str | None, *, min_age_days: int | None = Non
     if not branch:
         raise StageError(f"{repo}: cannot determine the default branch")
     until = urllib.parse.quote(cutoff.strftime("%Y-%m-%dT%H:%M:%SZ"))
-    commits = _fetch_json(
-        f"{GITHUB_API}/repos/{repo}/commits?sha={urllib.parse.quote(branch)}&until={until}&per_page=30",
-        headers=_github_api_headers(),
-    )
-    if not isinstance(commits, list):
-        raise StageError(f"Unexpected commits payload for {repo}")
     best: tuple[datetime, str] | None = None
-    for item in commits:  # `until` may be ignored: filter by the committer date ourselves
-        sha = str(item.get("sha") or "").strip().lower() if isinstance(item, dict) else ""
-        date = ((item.get("commit") or {}).get("committer") or {}).get("date") if isinstance(item, dict) else None
-        if not SHA40_RE.fullmatch(sha) or not date:
-            continue
-        committed = _github_time(date, f"{repo} commit {sha[:12]}")
-        if committed <= cutoff and (best is None or committed > best[0]):
-            best = (committed, sha)
+    inspected = 0
+    for page in range(1, LIST_MAX_PAGES + 1):
+        commits = _fetch_json(
+            f"{GITHUB_API}/repos/{repo}/commits?sha={urllib.parse.quote(branch)}&until={until}"
+            f"&per_page={LIST_PAGE_SIZE}{_page_suffix(page)}",
+            headers=_github_api_headers(),
+        )
+        if not isinstance(commits, list):
+            raise StageError(f"Unexpected commits payload for {repo}")
+        inspected += len(commits)
+        for item in commits:  # `until` may be ignored: filter by the committer date ourselves
+            sha = str(item.get("sha") or "").strip().lower() if isinstance(item, dict) else ""
+            date = ((item.get("commit") or {}).get("committer") or {}).get("date") if isinstance(item, dict) else None
+            if not SHA40_RE.fullmatch(sha) or not date:
+                continue
+            committed = _github_time(date, f"{repo} commit {sha[:12]}")
+            if committed <= cutoff and (best is None or committed > best[0]):
+                best = (committed, sha)
+        if best is not None or len(commits) < LIST_PAGE_SIZE:
+            break
     if best is None:
         raise StageError(
             f"{repo}: no commit on {branch} committed on or before {cutoff.strftime('%Y-%m-%dT%H:%M:%SZ')} "
+            f"among the newest {inspected} inspected, {LIST_MAX_PAGES} pages of {LIST_PAGE_SIZE} at most "
             f"({MIN_AGE_DAYS_ENV})"
         )
     return best[1]

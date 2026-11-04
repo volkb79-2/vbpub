@@ -267,9 +267,9 @@ def test_dockerfile_constructs_the_mdt_tree_before_any_content() -> None:
     """The group contract is a construction rule: roots first, umask on every writer."""
     dockerfile = (Path(__file__).parents[1] / "Dockerfile").read_text(encoding="utf-8")
     group_run = dockerfile.index('groupadd -g "${MDT_GID}" mdt')
-    assert group_run < dockerfile.index("/tmp/install_ai_cli_tools.py root")
+    assert group_run < dockerfile.index("/tmp/mdt-inputs/install_ai_cli_tools.py root")
     assert group_run < dockerfile.index("python3 -m venv /opt/mdt/venv")
-    assert group_run < dockerfile.index("/tmp/install_pwmcp_instance.py \\")
+    assert group_run < dockerfile.index("/tmp/mdt-inputs/install_pwmcp_instance.py \\")
     assert "python3 -m venv /opt/mdt/venv" in dockerfile
     assert "/opt/mdt/venvs/${venv_name}" in dockerfile
     assert 'ENV UV_PYTHON_INSTALL_DIR="/opt/mdt/python"' in dockerfile
@@ -302,7 +302,7 @@ def test_dockerfile_claims_srv_after_the_last_apt_step() -> None:
     dockerfile = (Path(__file__).parents[1] / "Dockerfile").read_text(encoding="utf-8")
     claim = dockerfile.index("chmod 2775 /srv")
     assert claim > dockerfile.rindex("apt-get install"), "an apt step after the claim can undo it"
-    assert claim < dockerfile.index("/tmp/install_pwmcp_instance.py \\")
+    assert claim < dockerfile.index("/tmp/mdt-inputs/install_pwmcp_instance.py \\")
     assert 'roots="' in dockerfile and "/srv" not in dockerfile.split('roots="', 1)[1].split('"', 1)[0]
 
 

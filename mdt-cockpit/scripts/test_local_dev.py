@@ -268,6 +268,28 @@ def test_staging_records_pwmcp_files_and_their_hashes(tmp_path: Path) -> None:
         pwmcp_installer.load_local_artifacts(staging)
 
 
+def test_a_404_for_the_installer_url_says_the_commit_may_not_be_pushed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """MDT-040: the URL names the source commit; an unpushed commit used to fail with a bare HTTP 404."""
+    import io
+    import urllib.error
+
+    url = "https://raw.githubusercontent.com/o/r/" + "a" * 40 + "/pwmcp/get.py"
+
+    def refuse(request, timeout):  # noqa: ANN001
+        raise urllib.error.HTTPError(url, 404, "Not Found", {}, io.BytesIO(b""))
+
+    monkeypatch.setattr(pwmcp_installer.urllib.request, "urlopen", refuse)
+    with pytest.raises(ValueError, match=r"PWMCP get\.py: HTTP 404.*is the source commit pushed"):
+        pwmcp_installer._download(url, "0" * 64, label="PWMCP get.py")
+
+    def server_error(request, timeout):  # noqa: ANN001
+        raise urllib.error.HTTPError(url, 500, "Server Error", {}, io.BytesIO(b""))
+
+    monkeypatch.setattr(pwmcp_installer.urllib.request, "urlopen", server_error)
+    with pytest.raises(urllib.error.HTTPError):
+        pwmcp_installer._download(url, "0" * 64, label="PWMCP get.py")
+
+
 def test_provenance_records_name_version_hash_and_original_path(tmp_path: Path) -> None:
     artifacts = _load(tmp_path, _ciu_entry(tmp_path))
     records = json.loads(local_dev.provenance_json(artifacts))
