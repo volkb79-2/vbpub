@@ -9,6 +9,9 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+### Added
+- `run-gate --list --json` (RG-161, SPEC R-55, rigor-evidence package RG-d): the lane inventory as one JSON document (`run-gate-list/1`) with `kind`, `environments`, `assay_lane`, a sequence's `members` and each lane's derived `rigor` (assay lanes from `assay lanes --json`; command lanes `["R0"]`, `declared-not-judged`; sequences `["R0"]`). A judge that cannot answer gives `rigor: null` and a reason. Plain `--list` is unchanged (three columns); `--json` with any other verb is still refused.
+
 <!-- cmru: release history -->
 
 ## [25.0.2] - 2026-11-04
