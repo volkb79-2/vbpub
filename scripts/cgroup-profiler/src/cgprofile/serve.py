@@ -4093,6 +4093,13 @@ class SessionServer:
     def _install_signals(self) -> None:
         signal.signal(signal.SIGTERM, lambda signum, frame: self.request_shutdown())
         signal.signal(signal.SIGINT, lambda signum, frame: self.request_shutdown())
+        signal.signal(signal.SIGHUP, lambda signum, frame: self._reload_in_thread())
+
+    def _reload_in_thread(self) -> None:
+        """SIGHUP: reload off the signal handler. A handler runs on the main
+        thread between bytecodes and could interrupt it while it holds the
+        settings lock; a worker thread takes the lock like any other caller."""
+        threading.Thread(target=self.reload_settings, daemon=True, name="cgpd-reload").start()
 
     def _accept_loop(self) -> None:
         """The bind/accept/dispatch loop, with no signal installation of its

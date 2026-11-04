@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import json
 import os
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -504,6 +506,33 @@ class TestResizableSlots:
         assert slots.acquire() is False
         slots.release()
         assert slots.acquire() is True
+
+
+class TestSighup:
+    def test_sighup_reloads_on_a_worker_thread(self, server, monkeypatch):
+        handlers = {}
+        monkeypatch.setattr(serve.signal, "signal", lambda sig, fn: handlers.__setitem__(sig, fn))
+        server._install_signals()
+        assert set(handlers) == {serve.signal.SIGTERM, serve.signal.SIGINT, serve.signal.SIGHUP}
+        Path(server.settings.config_path).write_text("keep_days = 6\n")
+        seen = {}
+        original = server.reload_settings
+
+        def spy():
+            seen["thread"] = threading.current_thread().name
+            return original()
+
+        monkeypatch.setattr(server, "reload_settings", spy)
+        handlers[serve.signal.SIGHUP](serve.signal.SIGHUP, None)
+        deadline = time.time() + 5
+        while "thread" not in seen and time.time() < deadline:
+            time.sleep(0.01)
+        for thread in threading.enumerate():
+            if thread.name == "cgpd-reload":
+                thread.join(timeout=5)
+        assert seen["thread"] == "cgpd-reload" and server.keep_days == 6
+        handlers[serve.signal.SIGTERM](serve.signal.SIGTERM, None)
+        assert server._stopping is True
 
 
 # ── goldens (PROTOCOL 10.7) ──────────────────────────────────────────────
