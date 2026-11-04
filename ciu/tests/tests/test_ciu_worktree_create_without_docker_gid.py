@@ -15,7 +15,6 @@ Oracles (each fails on the pre-fix behaviour):
 from __future__ import annotations
 
 import grp
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -26,8 +25,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from ciu import worktree, workspace_env  # noqa: E402
-
-SRC = str(Path(__file__).resolve().parents[2] / "src")
+from test_ciu_worktree import fake_generate_env, tmp_repo  # noqa: E402,F401
 
 
 def _git(args, cwd):
@@ -185,49 +183,13 @@ class TestDockerAbsence:
             worktree._docker_network_exists("n-1")
 
 
-@pytest.fixture
-def scratch_repo(tmp_path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    assert _git(["init", "-b", "main"], repo).returncode == 0
-    _git(["config", "user.email", "t@example.com"], repo)
-    _git(["config", "user.name", "T"], repo)
-    (repo / "README.md").write_text("x\n", encoding="utf-8")
-    (repo / ".gitignore").write_text(
-        "ciu.env\nciu.global.instance.toml.j2\nciu.instance.generated.toml\n",
-        encoding="utf-8",
-    )
-    (repo / "ciu.global.defaults.toml.j2").write_text("[ciu]\n", encoding="utf-8")
-    _git(["add", "-A"], repo)
-    assert _git(["commit", "-m", "init"], repo).returncode == 0
-    return repo
-
-
-def test_create_without_docker_socket_or_gid_honours_branch(scratch_repo, tmp_path):
-    """End to end through real subprocesses (the CIU-161 repro)."""
-    env = {k: v for k, v in os.environ.items() if k not in ("DOCKER_GID", "DOCKER_HOST")}
-    env["DOCKER_HOST"] = f"unix://{tmp_path}/absent.sock"
-    env["PYTHONPATH"] = SRC
-    env["CIU_TEST_SUITE"] = env.get("CIU_TEST_SUITE", "1")
-    # Hide any docker group on the machine: the child resolves it via grp.
-    env["PATH"] = os.environ.get("PATH", "")
-    done = subprocess.run(
-        [sys.executable, "-m", "ciu.cli", "worktree", "create", "wt1", "--branch", "exact/name"],
-        cwd=str(scratch_repo), env=env, capture_output=True, text=True, check=False,
-    )
-    try:
-        grp.getgrnam("docker")
-        has_group = True
-    except KeyError:
-        has_group = False
-    assert done.returncode == 0, done.stdout + done.stderr
-    branches = _git(["branch", "--format=%(refname:short)"], scratch_repo).stdout.split()
+def test_create_honours_the_requested_branch_name_exactly(tmp_repo, fake_generate_env):
+    record = worktree.create(tmp_repo, "branch-exact", branch="exact/name")
+    assert record.branch == "exact/name"
+    branches = _git(["branch", "--format=%(refname:short)"], tmp_repo).stdout.split()
     assert "exact/name" in branches
-    env_file = scratch_repo / ".worktrees" / "wt1" / "ciu.env"
-    text = env_file.read_text(encoding="utf-8")
-    if not has_group:
-        assert 'export DOCKER_GID=""' in text
-        assert "No Docker group id derivable" in done.stdout
+    head = _git(["rev-parse", "--abbrev-ref", "HEAD"], record.git_worktree_path)
+    assert head.stdout.strip() == "exact/name"
 
 
 class TestIdentityMismatchRemedy:

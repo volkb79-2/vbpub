@@ -2984,6 +2984,9 @@ class TestManagedHelperRefusals:
             worktree.procutil, "docker",
             lambda *_a, **_kw: subprocess.CompletedProcess([], 1, "", "denied"),
         )
+        # CIU-161: an absent socket is "no Docker"; this case is a present but
+        # refusing daemon, whatever sockets the test machine has.
+        monkeypatch.setattr(worktree, "_docker_socket_absent", lambda: False)
         with pytest.raises(worktree.WorktreeError, match="uniqueness.*denied"):
             worktree._docker_network_exists("wanted")
         monkeypatch.setattr(
