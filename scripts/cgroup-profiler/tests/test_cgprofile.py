@@ -41,20 +41,20 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import cgprofile as cg
-from lib import access, targets as targets_mod
-from lib import analyze as analyze_lib
-from lib import caps as caps_lib
-from lib import damon as damon_lib
-from lib import limits as limits_lib
-from lib import logtail as logtail_lib
-from lib import metrics as metrics_lib
-from lib import phases as phases_lib
-from lib import report_html as report_html_lib
-from lib import report_md as report_md_lib
-from lib import sampler as sampler_lib
-from lib import serve as serve_lib
-from lib import store as store_lib
+from cgprofile.cli import legacy as cg
+from cgprofile import access, targets as targets_mod
+from cgprofile import analyze as analyze_lib
+from cgprofile import caps as caps_lib
+from cgprofile import damon as damon_lib
+from cgprofile import limits as limits_lib
+from cgprofile import logtail as logtail_lib
+from cgprofile import metrics as metrics_lib
+from cgprofile import phases as phases_lib
+from cgprofile import report_html as report_html_lib
+from cgprofile import report_md as report_md_lib
+from cgprofile import sampler as sampler_lib
+from cgprofile import serve as serve_lib
+from cgprofile import store as store_lib
 
 
 # ── small process/clock doubles used across many tests ──────────────────────
@@ -1349,7 +1349,7 @@ class TestLaunchHelper:
     def test_damon_helper_prepares_and_mounts_only_the_registry_lock(
         self, monkeypatch, tmp_path: Path,
     ):
-        from lib import damon as damon_mod
+        from cgprofile import damon as damon_mod
 
         spec = access.HelperSpec(
             image="cgprofile-self:local", repo_host_path="/host/repo",
@@ -1397,7 +1397,7 @@ class TestLaunchHelper:
     def test_damon_lock_preflight_failure_still_runs_wrapped_command(
         self, monkeypatch, tmp_path: Path, capsys,
     ):
-        from lib import damon as damon_mod
+        from cgprofile import damon as damon_mod
 
         spec = access.HelperSpec(
             image="cgprofile-self:local", repo_host_path="/host/repo",
@@ -1474,7 +1474,7 @@ class TestLaunchHelper:
         command = captured["command"]
         assert command[0] == "/usr/bin/docker"
         assert command[-5:] == [
-            "python3", os.path.join(cg.HERE, "cgprofile.py"), "_collect", "--run-dir", run_path,
+            "python3", cg.SELF, "_collect", "--run-dir", run_path,
         ]
         # docker_args() (--privileged, the bind mounts, etc.) sit between the
         # binary and the plain-python3 collector invocation.
@@ -2526,7 +2526,7 @@ class TestLimitsSnapshot:
 
     @staticmethod
     def _eff():
-        from lib import limits
+        from cgprofile import limits
 
         return limits.Effective(
             cgroup="/dev.slice/dev-background.slice",
@@ -2543,8 +2543,8 @@ class TestLimitsSnapshot:
         )
 
     def test_snapshot_has_all_three_forms(self):
-        from lib import limits
-        import cgprofile
+        from cgprofile import limits
+        from cgprofile.cli import legacy as cgprofile
 
         snap = cgprofile._limits_snapshot(limits, self._eff())
         assert set(snap) == {"resolved", "described", "fingerprint"}
@@ -2552,8 +2552,8 @@ class TestLimitsSnapshot:
         assert isinstance(snap["fingerprint"], str)
 
     def test_resolved_carries_the_scalars_a_proposal_needs(self):
-        from lib import limits
-        import cgprofile
+        from cgprofile import limits
+        from cgprofile.cli import legacy as cgprofile
 
         resolved = cgprofile._limits_snapshot(limits, self._eff())["resolved"]
         assert resolved["memory_max"] == 8 * 1024**3
@@ -2562,8 +2562,8 @@ class TestLimitsSnapshot:
         assert resolved["warnings"] == ["something was discarded"]
 
     def test_chain_is_excluded_because_it_dominates_the_manifest(self):
-        from lib import limits
-        import cgprofile
+        from cgprofile import limits
+        from cgprofile.cli import legacy as cgprofile
 
         assert "chain" not in cgprofile._limits_snapshot(limits, self._eff())["resolved"]
 
@@ -2571,8 +2571,8 @@ class TestLimitsSnapshot:
         # It goes straight into manifest.json; a non-serialisable value here
         # loses the whole manifest, and with it the run.
         import json
-        from lib import limits
-        import cgprofile
+        from cgprofile import limits
+        from cgprofile.cli import legacy as cgprofile
 
         json.dumps(cgprofile._limits_snapshot(limits, self._eff()))
 
@@ -2580,9 +2580,9 @@ class TestLimitsSnapshot:
         """The end-to-end point: the shape the writer emits is the shape the
         proposal generator consumes. These two were mismatched, and nothing
         failed — proposals just silently never appeared."""
-        from lib import analyze, limits
-        from lib.model import Analysis
-        import cgprofile
+        from cgprofile import analyze, limits
+        from cgprofile.model import Analysis
+        from cgprofile.cli import legacy as cgprofile
 
         snap = cgprofile._limits_snapshot(limits, self._eff())
         analysis = Analysis(limits={"/dev.slice/dev-background.slice": snap})
@@ -2968,7 +2968,7 @@ class TestCtlRequest:
         # Same drift guard `test_ctl_socket_matches_lib_serve` applies to
         # the socket path: the client's own copy of the contract major must
         # never diverge from the daemon's.
-        from lib import serve as serve_mod
+        from cgprofile import serve as serve_mod
 
         assert cg.CONTRACT_VERSION == serve_mod.CONTRACT_VERSION
 

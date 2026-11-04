@@ -11,7 +11,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import cgprofile as cg
+from cgprofile.cli import legacy as cg
 
 
 def test_top_level_version_is_one_identity_line(capsys, monkeypatch):
@@ -20,7 +20,7 @@ def test_top_level_version_is_one_identity_line(capsys, monkeypatch):
         cg.build_parser().parse_args(["--version"])
     captured = capsys.readouterr()
     assert exc_info.value.code == 0
-    assert captured.out == "cgprofile 0.1.0\n"
+    assert captured.out == "cgprofile 0.0.0-dev\n"
     assert captured.err == ""
 
 
@@ -31,7 +31,7 @@ def test_shell_entrypoint_version_probe_is_clean(monkeypatch):
         capture_output=True, text=True, check=False,
     )
     assert proc.returncode == 0
-    assert proc.stdout == "cgprofile 0.1.0\n"
+    assert proc.stdout == "cgprofile 0.0.0-dev\n"
     assert proc.stderr == ""
 
 

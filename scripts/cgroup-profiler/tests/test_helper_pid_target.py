@@ -8,10 +8,10 @@ from typing import List
 
 import pytest
 
-import cgprofile as cg
-from lib import access, damon as damon_lib, limits as limits_lib
-from lib import metrics as metrics_lib, sampler as sampler_lib, store as store_lib
-from lib import targets as targets_mod
+from cgprofile.cli import legacy as cg
+from cgprofile import access, damon as damon_lib, limits as limits_lib
+from cgprofile import metrics as metrics_lib, sampler as sampler_lib, store as store_lib
+from cgprofile import targets as targets_mod
 from tests.conftest import cgroup_files, write_cgroup
 
 

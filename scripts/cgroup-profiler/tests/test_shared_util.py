@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 
-from lib import util
+from cgprofile import util
 
 
 def test_is_container_id_accepts_only_canonical_full_ids():

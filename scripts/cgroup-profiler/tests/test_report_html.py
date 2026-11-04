@@ -33,8 +33,8 @@ from typing import List
 
 import pytest
 
-from lib import report_html
-from lib.model import Analysis, Event, Phase, Proposal, Series
+from cgprofile import report_html
+from cgprofile.model import Analysis, Event, Phase, Proposal, Series
 
 
 def _plotly_json_escape(raw: str) -> str:
@@ -772,7 +772,7 @@ def test_panel_title_with_mixed_units_falls_back_to_bare_group_label() -> None:
 # ── _fmt_value: every unit branch, called directly ───────────────────────
 
 def test_fmt_value_every_unit_branch() -> None:
-    from lib import util as _util
+    from cgprofile import util as _util
 
     assert report_html._fmt_value(None, "bytes") == "—"
     assert report_html._fmt_value(1536.0, "bytes") == _util.fmt_bytes(1536)

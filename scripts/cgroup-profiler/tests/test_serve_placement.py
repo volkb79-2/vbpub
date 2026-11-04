@@ -35,7 +35,7 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
-from lib import access, liveness, placement, serve
+from cgprofile import access, liveness, placement, serve
 from tests.conftest import cgroup_files, write_cgroup
 
 CONTAINER_ID = "d" * 64
@@ -303,7 +303,7 @@ def _container_cgroup(root: Path, container_id: str = CONTAINER_ID) -> Path:
 def _host_proc_with_pids(monkeypatch, pids: List[int]) -> None:
     monkeypatch.setattr(access, "have_host_proc_view", lambda _root: True)
     monkeypatch.setattr(
-        "lib.targets.pids_in_cgroup",
+        "cgprofile.targets.pids_in_cgroup",
         lambda _cgroup, _root, _proc: list(pids),
     )
 
@@ -3765,7 +3765,7 @@ class TestPlacementJournalRecovery:
         monkeypatch.setattr(placement, "_systemd_unit_is_absent", lambda _unit: True)
         monkeypatch.setattr(placement, "_process_start_time_ticks", lambda _proc, _pid: "9797")
         monkeypatch.setattr(
-            "lib.targets.cgroup_of_pid",
+            "cgprofile.targets.cgroup_of_pid",
             lambda _pid, _root, _proc: "/" + SCOPE_CGROUP,
         )
 
@@ -3799,7 +3799,7 @@ class TestPlacementJournalRecovery:
         monkeypatch.setattr(placement, "_systemd_unit_is_absent", lambda _unit: True)
         monkeypatch.setattr(placement, "_process_start_time_ticks", lambda _proc, _pid: "9797")
         monkeypatch.setattr(
-            "lib.targets.cgroup_of_pid",
+            "cgprofile.targets.cgroup_of_pid",
             lambda _pid, _root, _proc: "/" + SCOPE_CGROUP,
         )
         updates = []
@@ -3909,7 +3909,7 @@ class TestPlacementJournalRecovery:
         monkeypatch.setattr(placement, "_systemd_unit_is_absent", lambda _unit: True)
         monkeypatch.setattr(placement, "_process_start_time_ticks", lambda _proc, _pid: "9797")
         current = "/dev.slice/outside.scope" if problem == "pid-moved" else "/" + SCOPE_CGROUP
-        monkeypatch.setattr("lib.targets.cgroup_of_pid", lambda *_args: current)
+        monkeypatch.setattr("cgprofile.targets.cgroup_of_pid", lambda *_args: current)
         def writer(_journal):
             if problem == "write-failed":
                 raise OSError("disk full")
@@ -3937,7 +3937,7 @@ class TestPlacementJournalRecovery:
         monkeypatch.setattr(placement, "_systemd_unit_is_absent", lambda _unit: True)
         monkeypatch.setattr(placement, "_process_start_time_ticks", lambda _proc, _pid: "reused")
         monkeypatch.setattr(
-            "lib.targets.cgroup_of_pid",
+            "cgprofile.targets.cgroup_of_pid",
             lambda *_args: pytest.fail("reused PID must not be inspected or moved"),
         )
         updates = []

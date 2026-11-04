@@ -18,8 +18,8 @@ from typing import List, Optional
 
 import pytest
 
-from lib import logtail
-from lib import phases as phases_mod
+from cgprofile import logtail
+from cgprofile import phases as phases_mod
 
 
 # ── test doubles for the docker-logs child process ──────────────────────────
@@ -412,14 +412,14 @@ class TestLogTailerConstruction:
         assert tailer.label == "soulmask"
 
     def test_docker_binary_defaults_via_access(self, tmp_path: Path, monkeypatch):
-        from lib import access
+        from cgprofile import access
 
         monkeypatch.setattr(access, "docker_bin", lambda: "/usr/bin/docker")
         tailer = logtail.LogTailer("c", [], str(tmp_path))
         assert tailer.docker == "/usr/bin/docker"
 
     def test_docker_binary_falls_back_to_the_bare_name_when_not_found(self, tmp_path: Path, monkeypatch):
-        from lib import access
+        from cgprofile import access
 
         monkeypatch.setattr(access, "docker_bin", lambda: None)
         tailer = logtail.LogTailer("c", [], str(tmp_path))

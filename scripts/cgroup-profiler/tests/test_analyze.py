@@ -20,9 +20,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from lib import analyze
-from lib.model import Analysis, Mark, Phase, Proposal, Series
-from lib.store import RunDir
+from cgprofile import analyze
+from cgprofile.model import Analysis, Mark, Phase, Proposal, Series
+from cgprofile.store import RunDir
 
 from conftest import OBSERVER, SUBJECT, cg_metrics, make_sample
 

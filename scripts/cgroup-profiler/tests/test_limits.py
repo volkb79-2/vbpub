@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from conftest import cgroup_files, write_cgroup
 
-from lib import limits, util
+from cgprofile import limits, util
 
 
 GIB = 1024**3

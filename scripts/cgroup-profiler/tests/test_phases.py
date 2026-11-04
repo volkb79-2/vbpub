@@ -15,8 +15,8 @@ import json
 import threading
 import time
 
-from lib.model import Mark, Phase
-from lib.phases import emit_mark, load_marks, phases_from_marks
+from cgprofile.model import Mark, Phase
+from cgprofile.phases import emit_mark, load_marks, phases_from_marks
 
 
 class TestEmitMark:

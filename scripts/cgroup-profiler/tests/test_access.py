@@ -20,7 +20,7 @@ from typing import Any, Dict, Optional
 
 import pytest
 
-from lib import access
+from cgprofile import access
 
 
 def fake_completed(returncode: int = 0, stdout: str = "", stderr: str = "") -> subprocess.CompletedProcess:

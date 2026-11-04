@@ -26,7 +26,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from lib.model import Analysis, Event, Phase, Proposal, Series  # noqa: E402
+from cgprofile.model import Analysis, Event, Phase, Proposal, Series  # noqa: E402
 
 
 # ── non-daemon thread leak safety net (RW-48) ───────────────────────────────

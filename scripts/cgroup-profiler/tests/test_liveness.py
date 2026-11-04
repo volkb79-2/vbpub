@@ -18,7 +18,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from lib import liveness
+from cgprofile import liveness
 
 
 # ── §8.4: policy parsing (`bad-policy` is the caller's, here it is an error) ──

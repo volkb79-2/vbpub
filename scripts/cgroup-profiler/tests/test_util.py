@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from lib import util
+from cgprofile import util
 
 
 class TestReaders:

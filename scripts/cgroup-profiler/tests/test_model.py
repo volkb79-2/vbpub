@@ -7,7 +7,7 @@ stray ``None`` in the compact on-disk form.
 
 from __future__ import annotations
 
-from lib.model import Analysis, Event, Mark, Phase, Proposal, Series, _clean
+from cgprofile.model import Analysis, Event, Mark, Phase, Proposal, Series, _clean
 
 
 class TestClean:

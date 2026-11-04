@@ -7,7 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from lib import version
+from cgprofile import version
+
+SRC_DIR = Path(__file__).resolve().parents[1] / "src"
 
 
 def _project_root(tmp_path: Path, prefix: str = "cgprofile-v") -> Path:
@@ -504,9 +506,9 @@ def test_daemon_version_uses_embedded_release_identity_in_fresh_process():
     import os
     import sys
 
-    env = dict(os.environ, CGPROFILE_VERSION="1.2.0")
+    env = dict(os.environ, CGPROFILE_VERSION="1.2.0", PYTHONPATH=str(SRC_DIR))
     result = subprocess.run(
-        [sys.executable, "-c", "from lib.serve import CGPROFILE_VERSION; print(CGPROFILE_VERSION)"],
+        [sys.executable, "-c", "from cgprofile.serve import CGPROFILE_VERSION; print(CGPROFILE_VERSION)"],
         cwd=Path(__file__).resolve().parents[1], capture_output=True, text=True,
         check=False, env=env,
     )
@@ -519,10 +521,10 @@ def test_untagged_source_daemon_reports_development_identity():
     import os
     import sys
 
-    env = dict(os.environ)
+    env = dict(os.environ, PYTHONPATH=str(SRC_DIR))
     env.pop("CGPROFILE_VERSION", None)
     result = subprocess.run(
-        [sys.executable, "-c", "from lib.serve import CGPROFILE_VERSION; print(CGPROFILE_VERSION)"],
+        [sys.executable, "-c", "from cgprofile.serve import CGPROFILE_VERSION; print(CGPROFILE_VERSION)"],
         cwd=Path(__file__).resolve().parents[1], capture_output=True, text=True,
         check=False, env=env,
     )

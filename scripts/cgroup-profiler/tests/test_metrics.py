@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import os
 
-from lib import metrics
+from cgprofile import metrics
 
 
 # ── sample_cgroup ────────────────────────────────────────────────────────────

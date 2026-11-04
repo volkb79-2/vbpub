@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from lib import ancestor_events
+from cgprofile import ancestor_events
 from tests.conftest import cgroup_files, write_cgroup
 from tests.test_serve import (  # noqa: F401 - fixtures shared with the serve tests
     SIMPLE_CONTAINER_ID,
