@@ -416,3 +416,119 @@ esac
     assert not removed.exists()  # lane never started (e.g. PSI refusal): nothing removed
     assert _bash(script + "LANE_STARTED=1; finish").returncode == 0
     assert removed.read_text().split() == ["run-gate-mine"]
+
+
+# ---- --base must reach the host (job exit 72 'base ... missing on the host') ----
+
+BASE = "c" * 40
+
+
+def _base_ctx(tmp_path, handlers, name):
+    ctx, _ = ctx_for(tmp_path, handlers + git_handlers(count="3") + [psi(1, 1), ("ls /home/runner/checkouts", rg.Result(0, SEED + "\n"))])
+    assert rg.cmd_run(ctx, run_args(tmp_path, "v1001", "/wt", "suite", "--detach", "--base", "main", "--name", name)) == 0
+    return ctx
+
+
+def test_base_commit_rides_the_thin_bundle_under_a_temporary_ref(tmp_path):
+    ctx = _base_ctx(tmp_path, [], "b1")
+    calls = [c[0] for c in ctx.runner.calls]
+    bundle = next(c for c in calls if "bundle" in c and "create" in c)
+    assert "HEAD" in bundle and rg.BASE_REF in bundle and f"^{SEED}" in bundle
+    i_set = next(i for i, c in enumerate(calls) if "update-ref" in c and BASE in c and rg.BASE_REF in c)
+    i_bundle = calls.index(bundle)
+    i_del = next(i for i, c in enumerate(calls) if "update-ref" in c and "-d" in c and rg.BASE_REF in c)
+    assert i_set < i_bundle < i_del  # the ref exists only while the bundle is built
+    job = (tmp_path / "out" / "b1" / "job.sh").read_text()
+    assert f"BASE_SHA={BASE}" in job and "ls-remote" in job and "refs/remote-gate/base" in job
+
+
+def test_base_not_on_the_seed_forces_a_bundle_even_when_head_is_there(tmp_path):
+    def count(argv):  # HEAD is covered by the seed, the base commit is not
+        return rg.Result(0, ("2" if BASE in argv else "0") + "\n")
+
+    ctx = _base_ctx(tmp_path, [("rev-list --count", count)], "b2")
+    assert any("bundle" in c[0] and "create" in c[0] for c in ctx.runner.calls)
+
+
+def test_base_already_on_the_seed_needs_no_bundle(tmp_path):
+    ctx = _base_ctx(tmp_path, [("rev-list --count", rg.Result(0, "0\n"))], "b3")
+    assert not any("bundle" in c[0] and "create" in c[0] for c in ctx.runner.calls)
+    assert not any("update-ref" in c[0] for c in ctx.runner.calls)
+
+
+def test_no_base_means_no_temporary_ref(tmp_path):
+    ctx, _ = ctx_for(tmp_path, git_handlers() + [psi(1, 1), ("ls /home/runner/checkouts", rg.Result(0, SEED + "\n"))])
+    assert rg.cmd_run(ctx, run_args(tmp_path, "v1001", "/wt", "suite", "--detach", "--name", "b4")) == 0
+    assert not any("update-ref" in c[0] for c in ctx.runner.calls)
+    bundle = next(c[0] for c in ctx.runner.calls if "bundle" in c[0] and "create" in c[0])
+    assert rg.BASE_REF not in bundle
+
+
+def test_failing_update_ref_aborts_before_the_bundle(tmp_path):
+    handlers = [("update-ref", rg.Result(1, "", "boom"))] + git_handlers() + [psi(1, 1), ("ls /home/runner/checkouts", rg.Result(0, SEED + "\n"))]
+    ctx, _ = ctx_for(tmp_path, handlers)
+    with pytest.raises(rg.GateError, match="cannot name the base commit"):
+        rg.cmd_run(ctx, run_args(tmp_path, "v1001", "/wt", "suite", "--detach", "--base", "main", "--name", "b5"))
+    assert not any("bundle" in c[0] and "create" in c[0] for c in ctx.runner.calls)
+
+
+def test_failed_bundle_still_removes_the_temporary_ref(tmp_path):
+    handlers = [("bundle create", rg.Result(1, "", "nope"))] + git_handlers() + [psi(1, 1), ("ls /home/runner/checkouts", rg.Result(0, SEED + "\n"))]
+    ctx, _ = ctx_for(tmp_path, handlers)
+    with pytest.raises(rg.GateError, match="git bundle failed"):
+        rg.cmd_run(ctx, run_args(tmp_path, "v1001", "/wt", "suite", "--detach", "--base", "main", "--name", "b6"))
+    assert any("update-ref" in c[0] and "-d" in c[0] for c in ctx.runner.calls)
+
+
+def test_real_git_and_bash_a_base_that_is_not_an_ancestor_of_head_reaches_the_host(tmp_path):
+    env = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+
+    def sh(*a, cwd):
+        return subprocess.run(a, cwd=cwd, check=True, capture_output=True, text=True, env=env).stdout.strip()
+
+    src = tmp_path / "src"
+    src.mkdir()
+    sh("git", "init", "-q", "-b", "main", cwd=src)
+    sh("git", "commit", "-q", "--allow-empty", "-m", "seed", cwd=src)
+    seed = sh("git", "rev-parse", "HEAD", cwd=src)
+    host = tmp_path / "host"  # the host checkout holds only the seed commit
+    sh("git", "clone", "-q", str(src), str(host), cwd=tmp_path)
+    sh("git", "checkout", "-q", "-b", "feature", cwd=src)
+    sh("git", "commit", "-q", "--allow-empty", "-m", "feature work", cwd=src)
+    head = sh("git", "rev-parse", "HEAD", cwd=src)
+    sh("git", "checkout", "-q", "main", cwd=src)
+    sh("git", "commit", "-q", "--allow-empty", "-m", "main moved on", cwd=src)
+    base = sh("git", "rev-parse", "HEAD", cwd=src)
+    sh("git", "checkout", "-q", "feature", cwd=src)
+    assert subprocess.run(["git", "merge-base", "--is-ancestor", base, head], cwd=src).returncode == 1  # main is NOT in the bundle's history
+    assert subprocess.run(["git", "cat-file", "-e", f"{base}^{{commit}}"], cwd=host).returncode != 0
+
+    ctx = rg.Ctx(runner=rg.Runner(), hosts=hosts(), out_dir=tmp_path / "out")
+    st = {"top": str(src), "sha": head, "base": base, "tags": []}
+    dest = tmp_path / "rgdir" / "in.bundle"
+    dest.parent.mkdir()
+    assert rg.build_bundle(ctx, st, [seed], str(dest)) == seed
+    assert dest.exists()
+    assert sh("git", "for-each-ref", "refs/remote-gate", cwd=src) == ""  # the temporary ref is gone
+
+    job = rg.render_job(hosts()["v1001"], "t7", {"sha": head, "base": base, "tags": []}, "suite", ".", "", 60, [])
+    part = job[job.index("if [[ -f $D/in.bundle ]]"):job.index("# every release tag of the source")]
+    script = f'D={dest.parent}\nCKDIR={host}\nBASE_SHA={base}\nlog() {{ echo "$@" >&2; }}\n' + part
+    r = subprocess.run(["bash", "-euo", "pipefail", "-c", script], capture_output=True, text=True, env=env)
+    assert r.returncode == 0, r.stderr
+    assert subprocess.run(["git", "cat-file", "-e", f"{base}^{{commit}}"], cwd=host).returncode == 0
+    assert subprocess.run(["git", "cat-file", "-e", f"{head}^{{commit}}"], cwd=host).returncode == 0
+
+
+def test_the_closest_of_several_host_checkouts_is_the_seed(tmp_path):
+    other = "d" * 40
+
+    def count(argv):  # the second checkout is closer to HEAD and the base than SEED
+        return rg.Result(0, ("1" if f"^{other}" in argv else "5") + "\n")
+
+    ls = ("ls /home/runner/checkouts", rg.Result(0, f"{other}\n{SEED}\n"))  # nearer one first, farther one after: the farther must not replace it
+    ctx, _ = ctx_for(tmp_path, [("rev-list --count", count)] + git_handlers() + [psi(1, 1), ls])
+    assert rg.cmd_run(ctx, run_args(tmp_path, "v1001", "/wt", "suite", "--detach", "--base", "main", "--name", "b7")) == 0
+    bundle = next(c[0] for c in ctx.runner.calls if "bundle" in c[0] and "create" in c[0])
+    assert f"^{other}" in bundle and f"^{SEED}" not in bundle

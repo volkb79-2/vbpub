@@ -311,16 +311,20 @@ def release_tags(ctx: Ctx, st: dict) -> list:
     return [m.groups() for m in (TAG_LINE_RE.match(x.strip()) for x in out.splitlines()) if m]
 
 
+BASE_REF = "refs/remote-gate/base"  # temporary local ref (and bundle head) naming the --base commit
+
+
 def build_bundle(ctx: Ctx, st: dict, have: list, dest: str) -> Optional[str]:
     """Thin bundle of HEAD plus all release tags against the closest commit the host already holds.
 
     Returns the seed checkout name ("" for none). No bundle file is written when the seed already holds
     HEAD and every tagged commit; the tags themselves always travel in the job script (st["tags"])."""
+    tips = [st["sha"]] + ([st["base"]] if st.get("base") else [])  # --base must be on the host too (job exit 72 otherwise)
     best = None
     for c in have:
         if git(ctx, st["top"], "cat-file", "-e", f"{c}^{{commit}}").rc != 0:
             continue
-        n = git(ctx, st["top"], "rev-list", "--count", st["sha"], f"^{c}").out.strip()
+        n = git(ctx, st["top"], "rev-list", "--count", *tips, f"^{c}").out.strip()
         if n.isdigit() and (best is None or int(n) < best[0]):
             best = (int(n), c)
     tags = st.get("tags", [])
@@ -330,9 +334,21 @@ def build_bundle(ctx: Ctx, st: dict, have: list, dest: str) -> Optional[str]:
             n = git(ctx, st["top"], "rev-list", "--count", *sorted({t[0] for t in tags}), f"^{best[1]}").out.strip()
             need = int(n) if n.isdigit() else 1
         if need == 0:
-            return best[1]  # HEAD and every tagged commit already reachable from an existing checkout: no bundle needed
+            return best[1]  # HEAD, the base and every tagged commit already reachable from an existing checkout: no bundle needed
     refs = ["HEAD"] + [f"refs/tags/{t[1]}" for t in tags]
-    r = git(ctx, st["top"], "bundle", "create", dest, *refs, *([f"^{best[1]}"] if best else []))
+    base_ref = ""
+    if st.get("base"):
+        # git bundle only carries named refs (a bare sha is silently dropped), so name the base for the duration of the build
+        base_ref = BASE_REF
+        r = git(ctx, st["top"], "update-ref", base_ref, st["base"])
+        if r.rc != 0:
+            raise GateError(f"cannot name the base commit for the bundle: {r.err.strip()[:300]}")
+        refs.append(base_ref)
+    try:
+        r = git(ctx, st["top"], "bundle", "create", dest, *refs, *([f"^{best[1]}"] if best else []))
+    finally:
+        if base_ref:
+            git(ctx, st["top"], "update-ref", "-d", base_ref)
     if r.rc != 0:
         raise GateError(f"git bundle failed: {r.err.strip()[:300]}")
     return best[1] if best else ""
@@ -429,6 +445,10 @@ else
 fi
 if [[ -f $D/in.bundle ]]; then
   git -C "$CKDIR" fetch -q "$D/in.bundle" HEAD
+  # the --base commit (not an ancestor of HEAD when main moved on) travels as its own bundle head
+  if [[ -n $BASE_SHA ]] && git ls-remote "$D/in.bundle" refs/remote-gate/base | grep -q .; then
+    git -C "$CKDIR" fetch -q "$D/in.bundle" refs/remote-gate/base || log "base fetch from the bundle failed"
+  fi
   # release tags from the bundle (annotated ones intact); tags the host already has are left alone
   git -C "$CKDIR" fetch -q "$D/in.bundle" 'refs/tags/*:refs/tags/*' || log "tag fetch from the bundle failed; falling back to the tag list"
 fi
