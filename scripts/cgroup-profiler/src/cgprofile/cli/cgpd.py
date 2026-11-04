@@ -31,7 +31,7 @@ from cli_extended import (
     VerbSpec,
 )
 
-from .. import ctlwire, daemon_config
+from .. import ctlwire, daemon_config, unitfiles
 from ..version import installed_version
 
 SCHEMA = 1
@@ -269,8 +269,76 @@ def build_cli(cli_identity: Optional[CliIdentity] = None) -> RegisteredCli:
     return registry.build()
 
 
+def _rendered(args: argparse.Namespace) -> Dict[str, str]:
+    try:
+        return unitfiles.render(args.install_root, args.wheel_venv)
+    except unitfiles.UnitError as exc:
+        raise _refuse(str(exc)) from None
+
+
+def _unit_print(args: argparse.Namespace, runtime: CliRuntime) -> int:
+    units = _rendered(args)
+    if args.unit:
+        units = {args.unit: units[args.unit]}
+    if runtime.json_mode:
+        runtime.output.primary({"schema": SCHEMA, "ok": True, "units": units})
+    elif args.unit:
+        sys.stdout.write(units[args.unit])
+    else:
+        for name, text in units.items():
+            sys.stdout.write(f"# ---- {name} ----\n{text}")
+    return 0
+
+
+def _unit_check(args: argparse.Namespace, runtime: CliRuntime) -> int:
+    rendered = _rendered(args)
+    try:
+        installed = unitfiles.installed_map(args.installed) if args.installed else {
+            name: os.path.join(unitfiles.DEFAULT_UNIT_DIR, name) for name in unitfiles.TEMPLATES}
+    except unitfiles.UnitError as exc:
+        raise _refuse(str(exc)) from None
+    problems = unitfiles.check(installed, rendered)
+    if problems:
+        raise _refuse(f"unit drift: {problems[0]}" + (f" (+{len(problems) - 1} more)" if len(problems) > 1 else ""),
+                      "reinstall the units: cgpd unit print --unit NAME > /etc/systemd/system/NAME")
+    body = {"schema": SCHEMA, "ok": True, "checked": installed}
+    runtime.output.primary(body if runtime.json_mode else
+                           "units match: " + ", ".join(f"{n} ({p})" for n, p in installed.items()))
+    return 0
+
+
+def _unit_options() -> Tuple[OptionSpec, ...]:
+    return (
+        _opt("--install-root", "install root of the versioned venvs (default /opt/cgprofile)",
+             group="RENDER", metavar="PATH", default=unitfiles.DEFAULT_INSTALL_ROOT),
+        _opt("--wheel-venv", "the venv holding bin/cgpd (default <install-root>/current/venv)",
+             group="RENDER", metavar="PATH"),
+    )
+
+
 def _register_unit(registry: CliRegistry) -> None:
-    """The ``unit`` group lands with the unit templates."""
+    unit = CliRegistry(
+        registry.identity, prog="cgpd unit", description="Render and verify the systemd units.",
+        global_options=registry.global_options, unexpected_exceptions="report")
+    read = VerbGroup.EXPLORATION.value
+    unit.register(VerbSpec(
+        "print", description="print cgprofile.slice and cgpd.service rendered from the wheel's templates",
+        group=read, include_progress=False,
+        examples=("cgpd unit print", "cgpd unit print --unit cgpd.service --wheel-venv /opt/cgprofile/2.0.0/venv"),
+        options=(*_unit_options(),
+                 _opt("--unit", "print only this unit, verbatim", group="RENDER", metavar="NAME",
+                      choices=tuple(unitfiles.TEMPLATES))),
+        handler=_unit_print))
+    unit.register(VerbSpec(
+        "check", description="compare installed unit files with the rendered output (exit 2 on drift)",
+        group=read, include_progress=False,
+        examples=("cgpd unit check", "cgpd unit check --installed /etc/systemd/system/cgpd.service"),
+        options=(*_unit_options(),
+                 _opt("--installed", "installed unit file(s) to compare (default /etc/systemd/system/<both>)",
+                      group="RENDER", metavar="PATH", nargs="+")),
+        handler=_unit_check))
+    registry.register(VerbSpec("unit", None, "render and verify the systemd units",
+                               group=VerbGroup.MIXED.value, delegate=unit.build()))
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
