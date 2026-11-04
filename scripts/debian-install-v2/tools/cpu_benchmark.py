@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Per-host CPU benchmark: Geekbench 6, measured ONCE, persisted in host state (HB-1).
+"""Per-host CPU benchmark: Geekbench (6 or 7, default 7), measured ONCE, persisted in host state (HB-1).
+
+The download/extract/parse logic is lifted from scripts/debian-install/geekbench_runner.py (v1) and generalised over the
+Geekbench major. Scores of different majors are never comparable; the record carries `tool_major` and every
+normalisation baseline is per major (`BASELINE_SCORE`, `baseline_for`, `require_same_major`).
 
 One shared stdlib-only tool for debian-install-v2 (step ``run_cpu_benchmark``) and
 ``mdt host-setup cpu-benchmark``. It is pinned by sha256 (``cpu_benchmark.py.sha256`` next to it),
@@ -44,7 +48,15 @@ from typing import Any
 SCHEMA = "mdt-host-cpu-benchmark/1"
 CLAIM_SCHEMA = "mdt-host-cpu-benchmark-claim/1"
 TOOL = "geekbench"
-MAJOR = 6
+# Geekbench majors are NOT comparable (a GB6 score says nothing about a GB7 score). The major is recorded in every
+# record (`tool_major`) and every normalisation baseline is per major. SUPPORTED_MAJORS: what this tool can run and parse;
+# DEFAULT_MAJOR: the newest major found on the CDN (7.0.0 and 7.1.0 verified 2026-11-04, `geekbench7 --help` read).
+SUPPORTED_MAJORS = (6, 7)
+DEFAULT_MAJOR = 7
+# Score of the Geekbench baseline machine per major (x_ref = x * single_core / baseline). GB6: 2500 (Core i7-12700, memo
+# 4.4). GB7: NOT VERIFIED, deliberately None -- the normaliser must refuse a GB7 record until the constant is confirmed
+# from Primate Labs documentation; a guessed constant would silently skew every normalised time.
+BASELINE_SCORE: dict[int, int | None] = {6: 2500, 7: None}
 DEFAULT_STATE_DIR = "/var/lib/mdt/host-facts"
 RESULT_NAME = "cpu-benchmark.json"
 CLAIM_NAME = "cpu-benchmark.claim.json"
@@ -55,11 +67,11 @@ USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) mdt-cpu-benchmark"
 
 EXIT_OK, EXIT_REFUSED, EXIT_FAILED, EXIT_PARTIAL = 0, 2, 3, 4
 
-RESULT_URL_RE = re.compile(r"https://browser\.geekbench\.com/v%d/cpu/(\d+)(?![\d/])" % MAJOR)
-CLAIM_URL_RE = re.compile(r"https://browser\.geekbench\.com/v%d/cpu/\d+/claim\?key=[A-Za-z0-9]+" % MAJOR)
+RESULT_URL_RE = re.compile(r"https://browser\.geekbench\.com/v(\d+)/cpu/(\d+)(?![\d/])")
+CLAIM_URL_RE = re.compile(r"https://browser\.geekbench\.com/v\d+/cpu/\d+/claim\?key=[A-Za-z0-9]+")
 CLAIM_REDACT_RE = re.compile(r"(https?://\S*?/claim\?key=)[^\s\"'<>]*")
 VERSION_RE = re.compile(r"Geekbench\s+(\d+\.\d+\.\d+)")
-PIN_VERSION_RE = re.compile(r"^6\.\d+\.\d+$")
+PIN_VERSION_RE = re.compile(r"^(\d+)\.\d+\.\d+$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 SCORE_MAX = 1_000_000
 
@@ -95,10 +107,13 @@ def parse_stdout(text: str) -> dict[str, Any]:
     m = VERSION_RE.search(text)
     if m:
         out["version"] = m.group(1)
-    m = re.search(r"Single-Core\s+Score\s+([\d,]+)", text)
+    # GB6 prints "Single-Core Score  1801" in its summary. The GB7 summary line format could NOT be verified without
+    # running the benchmark (the 7.1.0 `--help` and strings give no sample), so the same label is accepted with an
+    # optional ":" or "=" and the result-page fallback covers any other layout.
+    m = re.search(r"Single-Core\s+Score\s*[:=]?\s*([\d,]+)", text)
     if m:
         out["single_core"] = _score(m.group(1))
-    m = re.search(r"Multi-Core\s+Score\s+([\d,]+)", text)
+    m = re.search(r"Multi-Core\s+Score\s*[:=]?\s*([\d,]+)", text)
     if m:
         out["multi_core"] = _score(m.group(1))
     claim = CLAIM_URL_RE.search(text)
@@ -108,10 +123,11 @@ def parse_stdout(text: str) -> dict[str, Any]:
     # plain result link is the one that is found
     m = RESULT_URL_RE.search(CLAIM_URL_RE.sub("", text))
     if m is None and claim:
-        m = re.match(r"https://browser\.geekbench\.com/v%d/cpu/(\d+)" % MAJOR, claim.group(0))
+        m = re.match(r"https://browser\.geekbench\.com/v(\d+)/cpu/(\d+)", claim.group(0))
     if m:
         out["result_url"] = m.group(0)
-        out["result_id"] = m.group(1)
+        out["result_major"] = int(m.group(1))
+        out["result_id"] = m.group(2)
     return out
 
 
@@ -176,6 +192,15 @@ class Env:
         req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
         with urllib.request.urlopen(req, timeout=120) as resp, open(dest, "wb") as fh:  # noqa: S310 fixed https hosts
             shutil.copyfileobj(resp, fh)
+
+    def artifact_exists(self, url: str) -> bool:
+        """1-byte ranged GET: a real artifact answers 200/206 (not text/html); a missing version answers 404."""
+        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Range": "bytes=0-0"})
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310 fixed https host
+                return resp.status in (200, 206) and "text/html" not in resp.headers.get("Content-Type", "").lower()
+        except OSError:  # HTTPError and URLError are OSErrors: a blip counts as missing (callers need 2 misses)
+            return False
 
     def fetch_text(self, url: str) -> str:
         req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
@@ -291,6 +316,46 @@ def artifact_url(version: str, machine: str) -> str:
     return f"{CDN_BASE}/Geekbench-{version}-{suffix}.tar.gz"
 
 
+def discover_version(env: Env, major: int) -> str:
+    """Newest <major>.x.y on the CDN by probing (lifted from the v1 geekbench_runner; geekbench.com itself is behind
+    Cloudflare and 403s scripts). Pass 1: highest minor that publishes an x.0; pass 2: highest patch within it."""
+    machine = env.machine()
+    best_minor, misses, minor = None, 0, 0
+    while misses < 2 and minor < 40:
+        if env.artifact_exists(artifact_url(f"{major}.{minor}.0", machine)):
+            best_minor, misses = minor, 0
+        else:
+            misses += 1
+        minor += 1
+    if best_minor is None:
+        raise BenchmarkError(f"no Geekbench {major}.x.y found on {CDN_BASE}; pass --geekbench-version explicitly")
+    best_patch, misses, patch = 0, 0, 1
+    while misses < 2 and patch < 40:
+        if env.artifact_exists(artifact_url(f"{major}.{best_minor}.{patch}", machine)):
+            best_patch, misses = patch, 0
+        else:
+            misses += 1
+        patch += 1
+    return f"{major}.{best_minor}.{best_patch}"
+
+
+def baseline_for(record: dict[str, Any]) -> int:
+    """Normalisation baseline of a record's Geekbench major. Refuses a major without a verified constant."""
+    major = record.get("tool_major")
+    base = BASELINE_SCORE.get(major) if isinstance(major, int) else None
+    if base is None:
+        raise BenchmarkError(f"no verified normalisation baseline for Geekbench major {major!r}", EXIT_REFUSED)
+    return base
+
+
+def require_same_major(*records: dict[str, Any]) -> int:
+    """Scores of different Geekbench majors are not comparable: refuse to mix them."""
+    majors = {r.get("tool_major") for r in records}
+    if len(majors) != 1 or None in majors:
+        raise BenchmarkError(f"refusing to mix Geekbench majors {sorted(map(str, majors))}", EXIT_REFUSED)
+    return majors.pop()
+
+
 def _sha256_file(path: Path) -> str:
     h = hashlib.sha256()
     with open(path, "rb") as fh:
@@ -312,23 +377,23 @@ def _safe_extract(tar: tarfile.TarFile, dest: Path) -> None:
     tar.extractall(dest)  # noqa: S202 members validated above
 
 
-def fetch_binary(env: Env, version: str, sha256: str, workdir: Path) -> tuple[Path, str]:
-    """Download the pinned tarball, verify its sha256 BEFORE extracting, return (binary, tarball sha256)."""
+def fetch_binary(env: Env, version: str, sha256: str | None, major: int, workdir: Path) -> tuple[Path, str]:
+    """Download the tarball, verify its sha256 BEFORE extracting when a pin is given, return (binary, tarball sha256)."""
     url = artifact_url(version, env.machine())
     tarball = workdir / "geekbench.tar.gz"
     env.fetch_file(url, tarball)
     actual = _sha256_file(tarball)
-    if actual != sha256:
+    if sha256 is not None and actual != sha256:
         raise BenchmarkError(f"sha256 mismatch for the Geekbench archive (expected {sha256}, got {actual}); refusing to run")
     out = workdir / "gb"
     out.mkdir()
     with tarfile.open(tarball) as tar:
         _safe_extract(tar, out)
-    for path in sorted(out.rglob("geekbench6")):
+    for path in sorted(out.rglob(f"geekbench{major}")):
         if path.is_file():
             path.chmod(path.stat().st_mode | 0o111)
             return path, actual
-    raise BenchmarkError("geekbench6 executable not found in the archive")
+    raise BenchmarkError(f"geekbench{major} executable not found in the archive")
 
 
 # ---------------------------------------------------------------------------------------------
@@ -336,16 +401,25 @@ def fetch_binary(env: Env, version: str, sha256: str, workdir: Path) -> tuple[Pa
 # ---------------------------------------------------------------------------------------------
 
 def measure(env: Env, state_dir: Path, *, version: str | None, sha256: str | None, binary: Path | None, force: bool,
-            max_psi: float, timeout: float, produced_by: str | None) -> tuple[dict[str, Any], int]:
+            max_psi: float, timeout: float, produced_by: str | None, major: int | None = None
+            ) -> tuple[dict[str, Any], int]:
     result_path = state_dir / RESULT_NAME
     if result_path.exists() and not force:
         raise BenchmarkError(f"{result_path} exists; the CPU benchmark is measured once per host (use --force to re-measure)",
                              EXIT_REFUSED)
-    if binary is None:
-        if not version or not PIN_VERSION_RE.match(version):
-            raise BenchmarkError("--geekbench-version must be a pinned 6.x.y version (there is no default)", EXIT_REFUSED)
-        if not sha256 or not SHA256_RE.match(sha256):
-            raise BenchmarkError("--sha256 must be the 64-hex sha256 of the pinned Geekbench archive", EXIT_REFUSED)
+    if version:
+        m = PIN_VERSION_RE.match(version)
+        if not m:
+            raise BenchmarkError("--geekbench-version must look like 7.1.0", EXIT_REFUSED)
+        if major is not None and major != int(m.group(1)):
+            raise BenchmarkError(f"--geekbench-version {version} is not major {major}", EXIT_REFUSED)
+        major = int(m.group(1))
+    major = DEFAULT_MAJOR if major is None else major
+    if major not in SUPPORTED_MAJORS:
+        raise BenchmarkError(f"Geekbench major {major} is not supported (supported: {list(SUPPORTED_MAJORS)})", EXIT_REFUSED)
+    if sha256 is not None and not SHA256_RE.match(sha256):
+        raise BenchmarkError("--sha256 must be 64 lowercase hex characters", EXIT_REFUSED)
+    verified = binary is None and sha256 is not None
     psi_start = psi_some_avg10(env)
     if psi_start is not None and psi_start > max_psi:
         raise BenchmarkError(f"CPU pressure some avg10={psi_start} is above {max_psi}; refusing to measure on a busy host",
@@ -355,12 +429,15 @@ def measure(env: Env, state_dir: Path, *, version: str | None, sha256: str | Non
     workdir = Path(tempfile.mkdtemp(prefix="mdt-cpu-benchmark-"))
     try:
         if binary is None:
-            exe, tool_sha = fetch_binary(env, version or "", sha256 or "", workdir)
+            if not version:  # no pin given: newest of the major on the CDN (the installer passes a pin + sha256)
+                version = discover_version(env, major)
+            exe, tool_sha = fetch_binary(env, version, sha256, major, workdir)
         else:
             exe, tool_sha = binary, _sha256_file(binary)
         stat0, t0 = _cpu_stat(env), env.monotonic()
         try:
-            rc, output = env.run([str(exe), "--cpu"], timeout, str(exe.parent))
+            # no flags: the documented default of Geekbench 6 and 7 free is the CPU benchmark (7.1.0 --help)
+            rc, output = env.run([str(exe)], timeout, str(exe.parent))
         except subprocess.TimeoutExpired:
             raise BenchmarkError(f"Geekbench exceeded the {timeout:g}s timeout and was killed") from None
         duration = env.monotonic() - t0
@@ -372,9 +449,11 @@ def measure(env: Env, state_dir: Path, *, version: str | None, sha256: str | Non
     parsed = parse_stdout(output)
     if rc != 0 and not (parsed["single_core"] and parsed["multi_core"]):
         raise BenchmarkError(f"Geekbench exited with code {rc}")
-    major = (parsed["version"] or version or "").split(".")[0]
-    if major and major != str(MAJOR):
-        raise BenchmarkError(f"Geekbench major version {major} is not {MAJOR}; GB5 and GB6 scores are not comparable")
+    out_major = (parsed["version"] or "").split(".")[0]
+    if out_major and out_major != str(major):
+        raise BenchmarkError(f"Geekbench reports major {out_major}, expected {major}; majors are not comparable")
+    if parsed.get("result_major") not in (None, major):
+        raise BenchmarkError(f"result URL is for Geekbench major {parsed['result_major']}, expected {major}")
 
     steal_fraction = None
     if stat0 and stat1 and stat1[1] > stat0[1]:
@@ -400,7 +479,8 @@ def measure(env: Env, state_dir: Path, *, version: str | None, sha256: str | Non
         raise BenchmarkError("Geekbench produced neither scores nor a result URL")
 
     record = {
-        "schema": SCHEMA, "tool": TOOL, "tool_version": parsed["version"] or version, "tool_sha256": tool_sha,
+        "schema": SCHEMA, "tool": TOOL, "tool_version": parsed["version"] or version, "tool_major": major,
+        "baseline_score": BASELINE_SCORE.get(major), "tool_sha256": tool_sha, "archive_sha256_verified": verified,
         "measured_at": _iso(env.now()), "cpu_model": identity["cpu_model"], "cpus_online": identity["cpus_online"],
         "hypervisor": identity["hypervisor"], "single_core": scores["single_core"], "multi_core": scores["multi_core"],
         "score_source": source, "result_url": parsed["result_url"], "result_id": parsed["result_id"],
@@ -420,8 +500,11 @@ def resolve(env: Env, state_dir: Path) -> tuple[dict[str, Any], int]:
     except (OSError, ValueError) as exc:
         raise BenchmarkError(f"cannot read {path}: {type(exc).__name__}", EXIT_REFUSED) from None
     url = record.get("result_url")
-    if not isinstance(url, str) or not RESULT_URL_RE.fullmatch(url):
+    um = RESULT_URL_RE.fullmatch(url) if isinstance(url, str) else None
+    if um is None:
         raise BenchmarkError("the record has no result_url to resolve", EXIT_REFUSED)
+    if record.get("tool_major") not in (None, int(um.group(1))):
+        raise BenchmarkError("result_url major differs from the record's tool_major; refusing to mix majors", EXIT_REFUSED)
     try:
         page = parse_result_page(env.fetch_text(url))
     except Exception as exc:
@@ -447,12 +530,13 @@ def summary(record: dict[str, Any]) -> str:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Measure the host CPU once with Geekbench 6 and persist it in host state.")
+    p = argparse.ArgumentParser(description="Measure the host CPU once with Geekbench and persist it in host state.")
     p.add_argument("--state-dir", default=DEFAULT_STATE_DIR)
     p.add_argument("--resolve", action="store_true", help="re-read the result page of the existing record; never runs Geekbench")
     p.add_argument("--force", action="store_true", help="re-measure although a record exists")
-    p.add_argument("--geekbench-version", help="pinned Geekbench 6.x.y (no default)")
-    p.add_argument("--sha256", help="sha256 of the pinned Geekbench archive for this machine architecture")
+    p.add_argument("--major", type=int, help=f"Geekbench major {list(SUPPORTED_MAJORS)} (default {DEFAULT_MAJOR}, the newest)")
+    p.add_argument("--geekbench-version", help="exact Geekbench x.y.z (default: newest of the major found on the CDN)")
+    p.add_argument("--sha256", help="sha256 of the Geekbench archive for this architecture (verified; the installer pins it)")
     p.add_argument("--binary", help="use an already unpacked geekbench6 binary instead of downloading")
     p.add_argument("--max-psi", type=float, default=DEFAULT_MAX_PSI, help="refuse when CPU some avg10 exceeds this (default 25)")
     p.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT)
@@ -468,7 +552,7 @@ def main(argv: list[str] | None = None, env: Env | None = None) -> int:
         if args.resolve:
             record, code = resolve(env, state_dir)
         else:
-            record, code = measure(env, state_dir, version=args.geekbench_version, sha256=args.sha256,
+            record, code = measure(env, state_dir, version=args.geekbench_version, sha256=args.sha256, major=args.major,
                                    binary=Path(args.binary) if args.binary else None, force=args.force,
                                    max_psi=args.max_psi, timeout=args.timeout, produced_by=args.produced_by)
     except BenchmarkError as exc:

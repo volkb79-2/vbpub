@@ -15,8 +15,10 @@ All notable changes to debian-install-v2 are recorded here.
   and update its installer hint, CLI surface, and adoption documentation.
 
 ### Added
-- `tools/cpu_benchmark.py` (HB-1, sha256-pinned in `tools/cpu_benchmark.py.sha256`): shared stdlib tool that runs
-  Geekbench 6 once per host and writes `/var/lib/mdt/host-facts/cpu-benchmark.json` (0644, scores, CPU, conditions,
+- `tools/cpu_benchmark.py` (HB-1, sha256-pinned in `tools/cpu_benchmark.py.sha256`): shared stdlib tool, logic lifted
+  from the v1 `geekbench_runner.py` and generalised over the Geekbench major (6 or 7, default newest = 7 via CDN probing;
+  records `tool_major`, per-major normalisation baselines, refuses to mix majors), that runs
+  Geekbench once per host and writes `/var/lib/mdt/host-facts/cpu-benchmark.json` (0644, scores, CPU, conditions,
   result URL) and `cpu-benchmark.claim.json` (0600, claim link). Scores from the CLI output, else the result page
   (ported from the v1 runner); `--resolve` re-reads the page without running; refuses to re-measure without `--force`
   and under CPU pressure; hermetic tests in mdt-cockpit `host-setup/tests/test_cpu_benchmark.py`. The installer step

@@ -85,6 +85,11 @@ class FakeEnv(CB.Env):
             return "processor\t: 0\nmodel name\t: AMD EPYC  9634 84-Core Processor\nflags\t\t: fpu vme hypervisor lm\n"
         raise OSError(path)
 
+    existing: set = set()
+
+    def artifact_exists(self, url: str) -> bool:
+        return url in self.existing
+
     def fetch_file(self, url: str, dest: Path) -> None:
         self.downloads.append(url)
         dest.write_bytes(self.tarball)
@@ -268,12 +273,12 @@ class MeasureTests(Base):
         self.assertEqual(env.runs, [])
         self.assertFalse(self.state.exists())
 
-    def test_version_and_sha_pins_are_mandatory(self):
+    def test_bad_pins_and_majors_are_refused(self):
         env = FakeEnv()
-        self.assertEqual(self.invoke(env, base=False)[0], CB.EXIT_REFUSED)
-        self.assertEqual(self.invoke(env, "--geekbench-version", "5.5.1", "--sha256", _tarball_sha(), base=False)[0],
-                         CB.EXIT_REFUSED)
-        self.assertEqual(self.invoke(env, "--geekbench-version", "6.3.0", base=False)[0], CB.EXIT_REFUSED)
+        for extra in (("--geekbench-version", "6.x"), ("--geekbench-version", "5.5.1"), ("--geekbench-version", "8.0.0"),
+                      ("--geekbench-version", "6.3.0", "--major", "7"), ("--major", "5"),
+                      ("--geekbench-version", "6.3.0", "--sha256", "ABC")):
+            self.assertEqual(self.invoke(env, *extra, base=False)[0], CB.EXIT_REFUSED, extra)
         self.assertEqual((env.runs, env.downloads), ([], []))
 
     def test_timeout_fails_without_files(self):
@@ -303,17 +308,110 @@ class MeasureTests(Base):
         binary = self.state.parent / "geekbench6"
         binary.write_text("#!/bin/sh\n")
         env = FakeEnv()
-        code, _, err = self.invoke(env, "--binary", str(binary), base=False)
+        code, _, err = self.invoke(env, "--binary", str(binary), "--major", "6", base=False)
         self.assertEqual(code, 0, err)
-        self.assertEqual((env.downloads, env.runs), ([], [[str(binary), "--cpu"]]))
+        self.assertEqual((env.downloads, env.runs), ([], [[str(binary)]]))
+        self.assertFalse(self.record()["archive_sha256_verified"])
 
-    def test_runs_the_extracted_binary_in_cpu_mode(self):
+    def test_runs_the_extracted_binary_without_flags(self):
         env = FakeEnv()
         self.invoke(env)
         self.assertEqual(len(env.runs), 1)
         self.assertTrue(env.runs[0][0].endswith("geekbench6"))
-        self.assertEqual(env.runs[0][1:], ["--cpu"])
+        self.assertEqual(env.runs[0][1:], [])
+        rec = self.record()
+        self.assertEqual((rec["tool_major"], rec["baseline_score"], rec["archive_sha256_verified"]), (6, 2500, True))
 
+
+GB7_STDOUT = (FIXTURES / "gb7-stdout-ASSUMED-SHAPE.txt").read_text()
+GB7_URL = "https://browser.geekbench.com/v7/cpu/15956833"
+
+
+def _tarball7() -> bytes:
+    return _tarball({"Geekbench-7.1.0-Linux/geekbench7": b"#!/bin/sh\n"})
+
+
+class Gb7Tests(Base):
+    """Geekbench 7. The stdout fixture reuses the GB6 summary layout: the real GB7 score lines are UNVERIFIED
+    (`geekbench7 --help` was read, the benchmark was not run), which is why the result-page fallback exists."""
+
+    def env7(self, **kw) -> FakeEnv:
+        env = FakeEnv(stdout=GB7_STDOUT, tarball=_tarball7(), **kw)
+        env.existing = {f"https://cdn.geekbench.com/Geekbench-{v}-Linux.tar.gz" for v in ("7.0.0", "7.1.0", "7.1.1", *[f"6.{i}.0" for i in range(8)])}
+        return env
+
+    def test_default_discovers_the_newest_seven(self):
+        env = self.env7()
+        code, _, err = self.invoke(env, base=False)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(env.downloads, ["https://cdn.geekbench.com/Geekbench-7.1.1-Linux.tar.gz"])
+        rec = self.record()
+        self.assertEqual((rec["tool_major"], rec["tool_version"], rec["result_url"]), (7, "7.1.0", GB7_URL))
+        self.assertIsNone(rec["baseline_score"])  # GB7 baseline is unverified: None, not a guess
+        self.assertFalse(rec["archive_sha256_verified"])
+        self.assertEqual(rec["tool_sha256"], hashlib.sha256(_tarball7()).hexdigest())
+
+    def test_major_six_discovers_the_newest_six(self):
+        env = self.env7()
+        env.tarball = _tarball()
+        env.stdout = STDOUT_FULL
+        self.assertEqual(self.invoke(env, "--major", "6", base=False)[0], 0)
+        self.assertEqual(env.downloads, ["https://cdn.geekbench.com/Geekbench-6.7.0-Linux.tar.gz"])
+        self.assertEqual(self.record()["baseline_score"], 2500)
+
+    def test_discovery_with_nothing_found_fails_without_default(self):
+        env = self.env7()
+        env.existing = set()
+        code, _, err = self.invoke(env, base=False)
+        self.assertEqual(code, CB.EXIT_FAILED)
+        self.assertIn("pass --geekbench-version", err)
+        self.assertEqual(env.runs, [])
+
+    def test_pinned_seven_with_sha_is_verified(self):
+        env = self.env7()
+        code, _, err = self.invoke(env, "--geekbench-version", "7.1.0", "--sha256", hashlib.sha256(_tarball7()).hexdigest(),
+                                   base=False)
+        self.assertEqual(code, 0, err)
+        self.assertTrue(self.record()["archive_sha256_verified"])
+        self.assertEqual(env.runs[0][0].rsplit("/", 1)[1], "geekbench7")
+
+    def test_output_of_another_major_is_refused(self):
+        env = self.env7()
+        env.stdout = STDOUT_FULL  # a GB6 run where 7 was requested
+        self.assertEqual(self.invoke(env, "--geekbench-version", "7.1.0", base=False)[0], CB.EXIT_FAILED)
+        self.assertFalse(self.state.exists())
+
+    def test_result_url_of_another_major_is_refused(self):
+        env = self.env7()
+        env.stdout = GB7_STDOUT.replace("/v7/", "/v6/")
+        self.assertEqual(self.invoke(env, "--geekbench-version", "7.1.0", base=False)[0], CB.EXIT_FAILED)
+
+    def test_resolve_refuses_a_major_mismatch(self):
+        self.state.mkdir(parents=True)
+        (self.state / CB.RESULT_NAME).write_text(json.dumps({"tool_major": 6, "result_url": GB7_URL}))
+        env = FakeEnv()
+        self.assertEqual(self.invoke(env, "--resolve", base=False)[0], CB.EXIT_REFUSED)
+        self.assertEqual(env.page_fetches, [])
+
+
+class BaselineTests(unittest.TestCase):
+    def test_baselines_are_per_major(self):
+        self.assertEqual(CB.BASELINE_SCORE, {6: 2500, 7: None})
+        self.assertEqual(CB.baseline_for({"tool_major": 6}), 2500)
+
+    def test_unverified_or_unknown_baseline_is_refused(self):
+        for rec in ({"tool_major": 7}, {"tool_major": 5}, {}):
+            with self.assertRaises(CB.BenchmarkError):
+                CB.baseline_for(rec)
+
+    def test_mixing_majors_is_refused(self):
+        self.assertEqual(CB.require_same_major({"tool_major": 6}, {"tool_major": 6}), 6)
+        with self.assertRaises(CB.BenchmarkError):
+            CB.require_same_major({"tool_major": 6}, {"tool_major": 7})
+        with self.assertRaises(CB.BenchmarkError):
+            CB.require_same_major({"tool_major": 6}, {})
+
+class FileModeTests(Base):
     def test_umask_does_not_widen_the_claim_file(self):
         old = os.umask(0)
         try:

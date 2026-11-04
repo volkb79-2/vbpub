@@ -568,13 +568,26 @@ See `IO-BENCHMARK-DESIGN.md` for the full flow.
 
 ### Host CPU benchmark tool (`tools/cpu_benchmark.py`, HB-1)
 
-One shared stdlib-only tool measures the host CPU ONCE with Geekbench 6 and persists it in host state; it is pinned by
-`tools/cpu_benchmark.py.sha256` (same pattern as `iocost_coef_gen.py`) and is used by the installer step (HB-2) and by
-`mdt host-setup cpu-benchmark` (HB-3). Never copy it. The Geekbench archive is pinned too: `--geekbench-version 6.x.y`
-and `--sha256 <archive sha256>` are mandatory (no default); a mismatch refuses to run.
+One shared stdlib-only tool measures the host CPU ONCE with Geekbench (6 or 7, default 7) and persists it in host state;
+it is pinned by `tools/cpu_benchmark.py.sha256` (same pattern as `iocost_coef_gen.py`) and is used by the installer step
+(HB-2) and by `mdt host-setup cpu-benchmark` (HB-3). Never copy it. Its download, extract and parse logic is lifted from
+the v1 `scripts/debian-install/geekbench_runner.py` (CDN probing for the newest version, safe extract, stdout and
+result-page parsers) and generalised over the major.
+
+- Version: `--geekbench-version x.y.z` (exact) or, without it, the newest `<major>.x.y` found on `cdn.geekbench.com`
+  (`--major`, default 7). With `--sha256 <archive sha256>` the archive is verified before extraction and a mismatch
+  refuses to run (`archive_sha256_verified: true`; the installer passes both pins). Without it the computed sha256 is
+  recorded unverified.
+- Majors are not comparable. The record carries `tool_major` and `baseline_score`; the tool's `BASELINE_SCORE` is per major
+  (GB6 = 2500; GB7 = null, NOT VERIFIED, so a GB7 record cannot be normalised until its constant is confirmed), and
+  `baseline_for` / `require_same_major` refuse an unknown baseline or a mix of majors. Output or a result URL of another
+  major than requested is refused.
+- Geekbench 7.1.0 `--help` shows `--cpu` and "no options runs the CPU benchmark"; the tool runs the binary without flags.
+  The GB7 summary score lines could not be verified without running the benchmark, so GB7 stdout fixtures are marked
+  ASSUMED-SHAPE and the result-page fallback is the safety net.
 
 ```
-cpu_benchmark.py --geekbench-version 6.3.0 --sha256 <hex> [--state-dir DIR] [--force] [--max-psi 25] [--timeout S]
+cpu_benchmark.py [--major 7] [--geekbench-version 7.1.0 --sha256 <hex>] [--state-dir DIR] [--force] [--max-psi 25] [--timeout S]
 cpu_benchmark.py --resolve [--state-dir DIR]        # re-read the result page, never runs Geekbench
 ```
 
@@ -585,7 +598,8 @@ Files under `--state-dir` (default `/var/lib/mdt/host-facts`):
 | `cpu-benchmark.json` | 0644 | `mdt-host-cpu-benchmark/1` |
 | `cpu-benchmark.claim.json` | 0600 | `mdt-host-cpu-benchmark-claim/1`: `result_url`, `claim_url`, `measured_at` |
 
-`mdt-host-cpu-benchmark/1` fields: `tool` (`geekbench`), `tool_version`, `tool_sha256` (archive or binary), `measured_at`
+`mdt-host-cpu-benchmark/1` fields: `tool` (`geekbench`), `tool_version`, `tool_major`, `baseline_score` (per major, null when unverified), `tool_sha256` (archive or binary),
+`archive_sha256_verified`, `measured_at`
 (UTC), `cpu_model`, `cpus_online`, `hypervisor`, `single_core`, `multi_core` (null when not found), `score_source`
 (`stdout` | `result-page` | null), `result_url`, `result_id`, `conditions` (`loadavg1_start`, `psi_cpu_some_avg10_max`,
 `steal_fraction`, `duration_seconds`), `reason` (null, `SCORES_NOT_FOUND`, `RESULT_PAGE_UNAVAILABLE: <error type>`,
