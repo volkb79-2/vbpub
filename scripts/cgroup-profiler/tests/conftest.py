@@ -32,6 +32,19 @@ pytest_plugins = ["cli_extended.pytest_plugin"]
 from cgprofile.model import Analysis, Event, Phase, Proposal, Series  # noqa: E402
 
 
+# ── machine facts: never read the live host (CP-1) ──────────────────────────
+@pytest.fixture(autouse=True)
+def _no_live_host_facts(monkeypatch, tmp_path_factory):
+    """A daemon built without explicit paths would read the real
+    /var/lib/mdt/host-facts/cpu-benchmark.json and the real /sys, so goldens
+    would depend on the machine running them."""
+    from cgprofile import machine
+
+    empty = str(tmp_path_factory.mktemp("no-host-facts"))
+    monkeypatch.setattr(machine, "DEFAULT_BENCHMARK_PATH", empty + "/cpu-benchmark.json")
+    monkeypatch.setattr(machine, "DEFAULT_SYS_ROOT", empty + "/sys")
+
+
 # ── non-daemon thread leak safety net (RW-48) ───────────────────────────────
 #
 # `lib.serve`'s session-loop thread is created `daemon=True` (serve.py:479)
