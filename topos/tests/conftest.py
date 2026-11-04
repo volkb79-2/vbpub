@@ -3,6 +3,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 if str(SRC) not in sys.path:
@@ -40,6 +42,34 @@ def requires_mcp(func):
     return pytest.mark.skipif(
         not _mcp_extra_installed(), reason="topos[mcp] extra not installed"
     )(func)
+
+@pytest.fixture
+def real_docker_inspect():
+    """Request this fixture to opt out of ``_standalone_docker_inspect``."""
+
+
+@pytest.fixture(autouse=True)
+def _standalone_docker_inspect(monkeypatch, request):
+    """B-039: the Docker owner gate is always on, so tests that exercise executor
+    mechanics must supply the resolver explicitly. Default to a standalone,
+    unlabelled container whose canonical ID is derived from the target; the gate
+    and its argv binding stay real. Tests of the production resolver itself
+    request ``real_docker_inspect``."""
+    import hashlib
+
+    if "real_docker_inspect" in request.fixturenames:
+        return
+
+    def _inspect(target: str):
+        return [
+            {
+                "Id": hashlib.sha256(target.encode()).hexdigest(),
+                "Name": "/" + target,
+                "Config": {"Labels": {}},
+            }
+        ]
+
+    monkeypatch.setattr("topos.actions.owner_safety.default_owner_inspect", _inspect)
 
 
 def systemctl_fixture_runner(name: str):

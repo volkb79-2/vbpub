@@ -190,6 +190,33 @@ def read_io_max_caps(path: Path) -> tuple[dict[str, int | None], MetricSource]:
     return sums, "exact"
 
 
+def read_io_max_caps_by_device(path: Path) -> tuple[dict[str, dict[str, int]], MetricSource]:
+    """Parse io.max into ``{device: {field: finite cap}}`` (B-012).
+
+    Unlike :func:`read_io_max_caps` nothing is summed: a cap on one device says
+    nothing about another, so saturation must be judged per device. ``max`` and
+    malformed values are omitted; devices without any finite cap are omitted.
+    """
+    result = read_text(path)
+    if result.value is None:
+        return {}, result.src
+    devices: dict[str, dict[str, int]] = {}
+    for line in str(result.value).splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+        for part in parts[1:]:
+            key, _, raw = part.partition("=")
+            if key not in _IO_MAX_FIELDS or not raw or raw == "max":
+                continue
+            try:
+                value = int(raw)
+            except ValueError:
+                continue
+            devices.setdefault(parts[0], {})[key] = value
+    return devices, "exact"
+
+
 def read_cpu_max(path: Path) -> tuple[int | None, int | None, MetricSource]:
     result = read_text(path)
     if result.value is None:
@@ -311,6 +338,10 @@ def collect_cgroup(root: Path, key: EntityKey, entity: Entity) -> CgroupSample:
         for field, cap in io_caps.items():
             if cap is not None:
                 sample.raw_counters[f"io.max:{field}"] = cap
+        device_caps, _device_caps_src = read_io_max_caps_by_device(path / "io.max")
+        for device, fields in device_caps.items():
+            for field, cap in fields.items():
+                sample.raw_counters[f"io.max@{device}:{field}"] = cap
     quota, period, cpu_max_src = read_cpu_max(path / "cpu.max")
     sample.metrics["cpu_quota_us"] = MetricValue(quota, cpu_max_src)
     sample.metrics["cpu_period_us"] = MetricValue(period, "exact" if period is not None else cpu_max_src)
@@ -340,6 +371,9 @@ def collect_cgroup(root: Path, key: EntityKey, entity: Entity) -> CgroupSample:
     if io_stat_src == "exact":
         for raw_name in ("rbytes", "wbytes", "rios", "wios", "dbytes"):
             sample.raw_counters[f"io.stat:{raw_name}"] = _sum_io(io_stat, raw_name)
+            for device, values in io_stat.items():
+                if raw_name in values:
+                    sample.raw_counters[f"io.stat@{device}:{raw_name}"] = values[raw_name]
     for name in ("net_rx_bps", "net_tx_bps", "net_rx_pps", "net_tx_pps", "pressure"):
         sample.metrics[name] = MetricValue(None, "unavail_kernel")
     return sample

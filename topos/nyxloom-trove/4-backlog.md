@@ -64,7 +64,7 @@ items:
     component: daemon-security
     context_estimate: large
   - id: B-012
-    title: "Retain per-device cgroup I/O rates/cap saturation and device attribution (current collection sums devices too early)"
+    title: "[FIXED 2026-11-04 (d4b6aac9f)] Retain per-device cgroup I/O rates/cap saturation and device attribution (current collection sums devices too early)"
     type: bugfix
     component: diagnostics
     folds_into: F007
@@ -222,13 +222,13 @@ items:
     folds_into: F036
     context_estimate: large
   - id: B-039
-    title: "The P87 owner gate engages only when a caller passes owner_inspect (default None); flip the seam fail-closed-by-default once any non-CLI caller appears"
+    title: "[FIXED 2026-11-04 (2f8ef27b2)] The P87 owner gate engages only when a caller passes owner_inspect (default None); flip the seam fail-closed-by-default once any non-CLI caller appears"
     type: bugfix
     component: actions
     folds_into: F033
     context_estimate: medium
   - id: B-040
-    title: "Docker verbs still execute by the raw accepted name/ID string, so a name reassigned between authorizing inspect and runner still races; P93 should decide the canonical-ID argv contract"
+    title: "[FIXED 2026-11-04 (2f8ef27b2)] Docker verbs still execute by the raw accepted name/ID string, so a name reassigned between authorizing inspect and runner still races; P93 should decide the canonical-ID argv contract"
     type: bugfix
     component: actions
     folds_into: F033

@@ -65,6 +65,8 @@ class Collector:
         )
         self._prev_ts: float | None = None
         self._prev_counters: dict[tuple[EntityKey, str], int] = {}
+        self.io_saturation_device: dict[EntityKey, str] = {}
+        """Per entity: ``"<maj:min> <io.max field>"`` that set io_cap_saturation_pct (B-012)."""
         self._prev_device_counters: dict[str, list[dict[str, object]]] | None = None
         # Entity and metric filtering state
         self._entity_predicate = build_entity_predicate(entities_globs, slice_names)
@@ -272,18 +274,37 @@ class Collector:
         # io_cap_saturation_pct: compare each I/O rate to its finite io.max cap
         # and take the highest ratio; clamp at 0, allow overshoot above 100.
         io_sat: float | None = None
-        for rate_name, cap_field in (
-            ("io_r_bps", "io.max:rbps"),
-            ("io_w_bps", "io.max:wbps"),
-            ("io_r_iops", "io.max:riops"),
-            ("io_w_iops", "io.max:wiops"),
-        ):
-            rate = out.get(rate_name)
-            cap = raw.get(cap_field)
-            if rate is not None and rate.v is not None and isinstance(cap, int) and cap > 0:
-                ratio = float(rate.v) / float(cap)
+        self.io_saturation_device.pop(key, None)
+        # B-012: a cap on one device says nothing about another, so compare each
+        # device's own rate with its own cap (summing both sides hid a saturated
+        # capped device behind idle or uncapped ones) and keep the attribution.
+        stat_field = {"rbps": "rbytes", "wbps": "wbytes", "riops": "rios", "wiops": "wios"}
+        per_device_caps = [
+            name for name in raw if name.startswith("io.max@") and isinstance(raw[name], int)
+        ]
+        for cap_name in per_device_caps:
+            device, _, cap_field = cap_name[len("io.max@"):].rpartition(":")
+            counter = f"io.stat@{device}:{stat_field.get(cap_field, '')}"
+            cap = raw[cap_name]
+            dev_rate = self._rate_metric(key, counter, raw.get(counter), interval_s)
+            if dev_rate.v is not None and cap > 0:
+                ratio = float(dev_rate.v) / float(cap)
                 if io_sat is None or ratio > io_sat:
                     io_sat = ratio
+                    self.io_saturation_device[key] = f"{device} {cap_field}"
+        if not per_device_caps:
+            for rate_name, cap_field in (
+                ("io_r_bps", "io.max:rbps"),
+                ("io_w_bps", "io.max:wbps"),
+                ("io_r_iops", "io.max:riops"),
+                ("io_w_iops", "io.max:wiops"),
+            ):
+                rate = out.get(rate_name)
+                cap = raw.get(cap_field)
+                if rate is not None and rate.v is not None and isinstance(cap, int) and cap > 0:
+                    ratio = float(rate.v) / float(cap)
+                    if io_sat is None or ratio > io_sat:
+                        io_sat = ratio
         if io_sat is not None:
             out["io_cap_saturation_pct"] = MetricValue(max(0.0, io_sat * 100.0), "derived")
         else:
