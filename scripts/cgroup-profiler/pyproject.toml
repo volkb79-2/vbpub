@@ -64,7 +64,7 @@ where = ["src"]
 # renders (package 3) and the documented default config. The skill joins in
 # package 2. Nothing else is shipped as data.
 [tool.setuptools.package-data]
-cgprofile = ["data/*"]
+cgprofile = ["data/*", "skills/*/SKILL.md"]
 
 # Version comes from the git tag `cgprofile-vX.Y.Z` minted by the cmru release
 # transaction, resolved against the enclosing checkout (this project lives two
