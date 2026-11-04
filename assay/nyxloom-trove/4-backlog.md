@@ -14243,7 +14243,6 @@ phase is fsync (compare `io_sync = relaxed` with an eatmydata image, and `durabl
 **Design.** Worker-owned tree built once, verified fully once, then per candidate: apply replacement, run, stat-walk against the map, restore file/index/HEAD, delete new loose objects; full verify every N and after any anomaly (B222); candidate runs require `PYTHONDONTWRITEBYTECODE`, no pytest cache provider and report paths outside the tree, enforced by the stat-walk.
 
 **Acceptance.** Fixture lane with 3 workers, 200 candidates: results equal the btrfs-clone run bucket for bucket; the stat-walk detects an injected stale artifact and the candidate is reported as an infrastructure error, not a bucket; tmpfs memory stays within the declared per-worker size.
-||||||| 892dcba8c
 
 ## B225 — OpenZFS as a candidate-tree backend (clone per candidate or rollback per worker): evaluated on v1001, not worth building; criteria to reopen
 
