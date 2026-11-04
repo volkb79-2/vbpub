@@ -3,8 +3,9 @@ import re
 
 import pytest
 
-from iobench import dryrun, ladder, shape
+from iobench import dryrun, guard, ladder, shape
 from iobench.devio import parse_job
+from iobench.matrix import RDC_QD, Matrixer
 
 from helpers import INVERSION, calibrate, config, make_host
 
@@ -71,9 +72,31 @@ def test_r2_dryrun_matrix_plan_uses_the_work_dir_for_the_load_files_and_a_placeh
     calibrate(host)
     named = dryrun.matrix_plan(host, config(work_dir="/bench/w"))
     s3 = [parse_job(j["argv"]) for j in named["stages"][1]["jobs"]]
-    assert [j.filename for j in s3] == ["/bench/w/iobench-load-w", "/bench/w/iobench-load-f"]
+    stamp = r"run-[0-9TZ]+-[0-9a-f]+"
+    assert [re.fullmatch(rf"/bench/w/iobench-{stamp}-s3-{k}", j.filename) is not None for j, k in zip(s3, "wf")] == [True, True]
     bare = dryrun.matrix_plan(host, config(work_dir=None))
-    assert [parse_job(j["argv"]).filename for j in bare["stages"][1]["jobs"]] == ["<work-dir>/iobench-load-w", "<work-dir>/iobench-load-f"]
+    assert all(re.fullmatch(rf"<work-dir>/iobench-{stamp}-s3-[wf]", parse_job(j["argv"]).filename) for j in bare["stages"][1]["jobs"])
+
+
+def test_iob_bl_13_the_dry_run_jobs_are_the_real_runs_jobs():
+    host = make_host(cache=INVERSION)
+    calibrate(host)
+    cfg = config(work_dir="/bench/w")
+    run = Matrixer(host, cfg)
+    run.r_est = 1.0e9
+    run.target = guard.load_target(host, cfg.target)
+    writer, fsyncj = run.load_pair("s3", 30)
+    assert run.safety.files == []  # a plan journals nothing
+    run.safety.acquire()
+    run.safety.begin()
+    real = run.load_jobs("s3", 30)
+    assert real == (writer, fsyncj) and run.safety.files == [writer.filename, fsyncj.filename]
+    planned = dryrun.matrix_plan(host, cfg)
+    for stage in planned["stages"][1:]:
+        for entry in stage["jobs"]:
+            job = parse_job(entry["argv"])
+            assert job.name.startswith("run-") and (job.prefix or "").startswith("/run/iobench/run-") and "iobench-load" not in job.filename
+    assert [parse_job(e["argv"]).iodepth for e in planned["stages"][3]["jobs"]] == [RDC_QD] * 3
 
 
 def test_r2_dryrun_matrix_load_jobs_are_buffered_not_direct():

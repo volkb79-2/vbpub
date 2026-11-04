@@ -352,6 +352,8 @@ class _ProcHandle:
             self._p.wait(timeout=5)  # reap; a process stuck in D state is left to the kernel rather than blocking the restore
         except subprocess.TimeoutExpired:
             pass
+        self._out.close()  # the abort path never calls wait(): do not leave the temporary files to the garbage collector (IOB-BL-14)
+        self._err.close()
 
 
 class RealHost:

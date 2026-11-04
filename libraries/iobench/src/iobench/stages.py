@@ -209,6 +209,15 @@ class Runner:
         self.supervise([handle])
         return self.finish(job, handle, started)
 
+    def file_target_disk(self, target: str) -> str:
+        """The disk behind a file target's filesystem; a filesystem with no single block device (overlay, multi-device, network)
+        is refused cleanly (IOB-BL-11) instead of failing on a missing ``/sys/dev/block`` entry."""
+        fs = guard.fs_info(self.host, posixpath.dirname(target))
+        if not self.host.exists(f"/sys/dev/block/{fs.devno}"):
+            raise Refusal("target_fs_disk_unknown", f"{target} is on a filesystem with no single block device behind it ({fs.fstype} on {fs.source})",
+                          "use a file on a filesystem mounted from one block device (ext4 or xfs on a partition)")
+        return guard.device_chain(self.host, fs.devno).disk_name
+
     # -- S0 -----------------------------------------------------------------------------------------
     def s0(self, *, need_workdir: bool) -> None:
         """Preflight: fio, lock, leftover journal, live-host rules, the target, the work dir, identity."""
@@ -230,7 +239,7 @@ class Runner:
         self.target = guard.load_target(self.host, cfg.target)
         if self.target.kind == "device":
             devio.require_fio_option(self.host, "exclusive_open")
-        self.disk_name = self.target.disk_name or guard.device_chain(self.host, guard.fs_info(self.host, posixpath.dirname(cfg.target)).devno).disk_name
+        self.disk_name = self.target.disk_name or self.file_target_disk(cfg.target)
         workdir = None
         if need_workdir:
             if cfg.work_dir is None:

@@ -66,7 +66,9 @@ class Matrixer(Runner):
         return (self.meminfo_kb("Dirty") + self.meminfo_kb("Writeback")) * 1024
 
     def written_bytes(self) -> int:
-        line = next(ln.split() for ln in self.host.read_text("/proc/diskstats").splitlines() if ln.split()[2] == self.workdir.disk_name)
+        line = next((ln.split() for ln in self.host.read_text("/proc/diskstats").splitlines() if ln.split()[2] == self.workdir.disk_name), None)
+        if line is None:
+            raise RunFailed(f"/proc/diskstats has no row for {self.workdir.disk_name} (the device vanished mid-run)")
         return int(line[9]) * 512
 
     def read_knob(self, knob: str) -> int:
@@ -83,11 +85,17 @@ class Matrixer(Runner):
         return True
 
     def load_jobs(self, tag: str, seconds: int) -> tuple[devio.FioJob, devio.FioJob]:
+        writer, fsyncj = self.load_pair(tag, seconds)
+        for job in (writer, fsyncj):
+            self.safety.register_file(job.filename)
+        return writer, fsyncj
+
+    def load_pair(self, tag: str, seconds: int) -> tuple[devio.FioJob, devio.FioJob]:
+        """The cell's two load jobs, without journalling their files: ``--dry-run`` builds its plan from this (IOB-BL-13), so the
+        printed argv names are the real run's."""
         wd = self.cfg.work_dir
         bound = plan.volume_bound(self.r_est, seconds)
         names = [posixpath.join(wd, f"iobench-{self.run_id}-{tag}-{k}") for k in ("w", "f")]
-        for n in names:
-            self.safety.register_file(n)
         writer = self.job(f"{tag}-w", "write", MIB, RDC_QD, seconds, 0, WRITER_FILE, filename=names[0], io_size=min(bound, WRITER_FILE * seconds),
                           direct=False, log_avg_ms=1000)
         fsyncj = self.job(f"{tag}-f", "randwrite", 4096, 1, seconds, 0, FSYNC_FILE, filename=names[1], io_size=min(bound, FSYNC_FILE * 4),

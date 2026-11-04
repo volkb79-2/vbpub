@@ -1,6 +1,7 @@
 """``--dry-run``: print each stage's allotment, its fio argv and its written-byte bound; write nothing (IOB-PRF-01)."""
 from __future__ import annotations
 
+import dataclasses
 import math
 from typing import Any
 
@@ -9,7 +10,7 @@ from . import result as res
 from .calibrate import HIST_S, MIN_FILL_CHUNK, OBS_QD, REF_S, RUNG_S, Calibrator
 from .devio import FioJob
 from .errors import Refusal
-from .matrix import LOAD_S, Matrixer
+from .matrix import LOAD_S, RDC_QD, Matrixer
 from .stages import GIB, MIB, Config
 
 COLD_QD32_S = 70
@@ -97,20 +98,17 @@ def calibrate_plan(host: Any, cfg: Config) -> dict[str, Any]:
 
 
 def matrix_plan(host: Any, cfg: Config) -> dict[str, Any]:
+    if cfg.work_dir is None:
+        cfg = dataclasses.replace(cfg, work_dir="<work-dir>")  # the jobs are the run's own (names carry the run id); only the directory is a placeholder
     run = Matrixer(host, cfg)
     run.require_calibration()
     run.target = guard.load_target(host, cfg.target)
     run.r_est = run.cal["R_est_bps"]
     run.ws = run.cal["extent_written"][0][1]
-    wd = cfg.work_dir or "<work-dir>"
-    bound = plan.volume_bound(run.r_est, LOAD_S)
-    w = FioJob("s3-w", f"{wd}/iobench-load-w", "write", MIB, 4, LOAD_S, 0, GIB, min(bound, GIB * LOAD_S), direct=False, log_avg_ms=1000, prefix="/run/iobench/s3-w")
-    f = FioJob("s3-f", f"{wd}/iobench-load-f", "randwrite", 4096, 1, LOAD_S, 0, 256 * MIB, min(bound, 1 * GIB), direct=False, fsync=16, log_avg_ms=1000,
-               prefix="/run/iobench/s3-f")
     cells = plan.sweep_cells(cfg.full_sweep)
     stages = [{"name": "S0", "allotted_s": plan.S0_S, "jobs": []},
-              {"name": "S3", "allotted_s": plan.S3_S, "jobs": [entry(run, w), entry(run, f)]},
-              {"name": "S4", "allotted_s": plan.sweep_seconds(cells), "jobs": [entry(run, w.with_(name=f"s4-{k}-w", runtime_s=sweep.SWEEP_CELL_S)) for k in range(cells)]},
-              {"name": "S5", "allotted_s": sweep.rdc_seconds(3), "jobs": [entry(run, FioJob(f"rdc-{kb}", run.target.path, "read", MIB, 4, sweep.RDC_CELL_S, 0, run.ws, None,
-                                                                                           log_avg_ms=1000, prefix="/run/iobench/rdc")) for kb in (64, 128, 1280)]}]
+              {"name": "S3", "allotted_s": plan.S3_S, "jobs": [entry(run, j) for j in run.load_pair("s3", LOAD_S)]},
+              {"name": "S4", "allotted_s": plan.sweep_seconds(cells), "jobs": [entry(run, run.load_pair(f"s4-{k}", sweep.SWEEP_CELL_S)[0]) for k in range(cells)]},
+              {"name": "S5", "allotted_s": sweep.rdc_seconds(3),
+               "jobs": [entry(run, run.job(f"rdc-{kb}", "read", MIB, RDC_QD, sweep.RDC_CELL_S, 0, run.ws, direct=True, log_avg_ms=1000)) for kb in (64, 128, 1280)]}]
     return {"command": "matrix", "budget_s": plan.matrix_seconds(), "total_s": sum(s["allotted_s"] for s in stages), "stages": stages, **NOT_RUN}
