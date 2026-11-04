@@ -31,8 +31,15 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
   RestartMaxDelaySec and StartLimit*.
 - Contract-2 goldens (`config*`, `config-set*`, `config-reset*`, `version-c2*`, `status-c2*`, `export-*`) under `tests/fixtures/rg55/socket/`.
 
+- Docs for the native model (CP-45, CP-49, cgprofile 2.0 package 5): README "Product overview" (what it is, commands, config keys, sockets,
+  consumers, access, protection, install), CONSUMERS.md with the 1.x-to-`cgpctl` migration table and the native-service chapter, ATTACH-GUIDE,
+  PROTOCOL, DESIGN and DESIGN-GUIDE rewritten for `cgpctl`/`cgpd`; estate docs (mdt host-setup and templates, ciu v8 examples, debian-install-v2
+  usage guide) name `cgpctl` and the native service. `tests/test_docs_sync.py` keeps the README tables in step with the cli-extended registries,
+  the `daemon_config` schema, the sockets and the group names, and keeps the removed 1.x names out of the live documents.
+
 ### Fixed
 - `tests/test_serve.py` accept-loop flake: the crash injection is keyed on the request (CP-53).
+- CGPCTL-SPEC 3.1: `cgpd run` is an explicit verb, not a default.
 
 ### Removed
 - The 1.x client surface (CP-47): `cgprofile run/attach/mark/targets/doctor/ctl`, the bash shim `./cgprofile`, `setup.sh`, helper-container mode,
