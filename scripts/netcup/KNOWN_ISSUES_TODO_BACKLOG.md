@@ -16,6 +16,7 @@ docs landed together.
 | NC-02 | Runner provisioning scripts were host-specific task files with six first-run bugs; now generic under `runner/` | Minor | FIXED (this branch) |
 | NC-03 | The install wizard connects with `StrictHostKeyChecking=no`; the host-key pin is trust-on-first-use | Minor | OPEN |
 | NC-04 | A runner account must be uid 1003 (tester-unified lane uid); provisioning created uid 1000 | Major | FIXED (this branch) |
+| NC-13 | Flexible installer-created data area (`data_area` partition / LVM) replacing the post-install cow carve | Minor | CODE DONE 2026-11-05 (div2-data-area-20261105); live use OPEN |
 | NC-12 | Test-host disk layout: 40 GiB root, swap in the middle, cow behind it; root filled to 91-97% and neither root nor cow could grow | Major | CODE DONE 2026-11-05 (div2-disk-layout-20261105); live reinstall of v1001/r1002 OPEN |
 
 ---
@@ -157,6 +158,16 @@ with `PYTHONDONTWRITEBYTECODE=1` (or from a throw-away copy), or `provision`-tim
 **Status:** OPEN (observed 2026-11-04). The cockpit's `.env` carried the old protected-server key names; every verb stopped with `invalid protected-server denylist: legacy ... setting(s) are no longer read`.
 The two keys were renamed in place (values unchanged: the single protected server stays protected). Separately, running the same absolute command from another repository checkout's `scripts/truenas` cwd
 answered `missing NETCUP_SCP_API_REFRESH_TOKEN`, so `.env` is found relative to the cwd rather than to the script. **Fix.** Load `.env` from the script directory (documented), and print the rename recipe in the legacy-key error.
+
+## NC-13 — the cow area had to be carved after install; no installer-managed flexible data area
+
+**Status:** CODE DONE 2026-11-05 on `div2-data-area-20261105` (unit + hermetic runner tests, VM-guest LVM test wired into `r1-vm-real-commit`); no host reinstalled, live use OPEN with the NC-12 reinstall. Severity Minor (operator request).
+
+**Observed.** After NC-12 the gap between root and swap was unallocated and `provision-runner.sh` carved a btrfs cow partition from it. The operator wants the middle area configurable at install time: a plain partition (cow directly) or LVM with several LVs (btrfs for cow, a spare for ZFS or other use).
+
+**Fix.** debian-install-v2 `data_area = none | partition | lvm` (README "Data area", `tests/test_data_area.py`, `tests/test_data_area_vm.py`); `cow-carve.sh` `cow_select_device` matches any filesystem labelled `MDT_COW` (partition or LVM LV) and `provision-runner.sh` skips carving for it (`cow_fstab_entry_ok`, mount-point agreement check, exit 8). `install-host.py` unchanged.
+
+**Open.** Not run on a real host; ZFS is not managed (spare LV is left unformatted). Growing an existing data partition/LV in place is manual.
 
 ## NC-12 — test hosts were installed with swap in the middle of the disk and a 40 GiB root
 

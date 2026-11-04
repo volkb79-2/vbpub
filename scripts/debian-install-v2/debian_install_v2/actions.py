@@ -78,6 +78,17 @@ _SAFE_COMMANDS = {
     "lspci": set(),
     "mkdir": {"-p"},
     "mkfs.ext4": {"-F", "-q", "-O", "-L"},
+    # Data area (installer._configure_data_area): filesystems on a BLANK new
+    # partition/LV only; lvm2 for the optional PV/VG/LV layout.
+    "mkfs.btrfs": {"-f", "-L"},
+    "mkfs.xfs": {"-f", "-L"},
+    "pvcreate": {"-y"},
+    "vgcreate": {"-s"},  # non-empty so unknown options are refused
+    "vgchange": {"-ay"},
+    "lvcreate": {"-y", "-n", "-L"},
+    "lvs": {"--noheadings", "-o"},
+    "vgs": {"--noheadings", "-o"},
+    "pvs": {"--noheadings", "-o"},
     "mkswap": set(),
     "modprobe": {"zstd"},
     "mount": {"-t", "-o"},

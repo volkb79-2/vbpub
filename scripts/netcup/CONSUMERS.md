@@ -254,6 +254,10 @@ See [README](README.md#unattended-restore-iso-workflow) for the feature
 overview and [DESIGN-GUIDE](DESIGN-GUIDE.md#restore-iso-lifecycle) for the
 two-stage lifecycle rationale.
 
+## Install-time data area (debian-install-v2 `data_area`)
+
+The producer config keys `data_area`, `data_partition` and `data_lvm` (debian-install-v2 README "Data area") ride in the customScript config that `debian-install-v2.py build-customscript` embeds (`VBPUB_CONFIG_EXTRA_JSON`); `install-host.py` passes the customScript through untouched and needed no change. They require `swap_policy=on`, `root_resize_policy=resize` and `disk_layout=dev-host` (or `root_max_size_gb`); the bundle is refused at build time otherwise. When the installer created the cow (a partition or LVM LV with filesystem label `MDT_COW`, btrfs, mounted at the runner's `COW_MOUNT`, default `/srv/cow`), `runner/provision-runner.sh` detects it by label and skips carving; it exits 4 for a non-btrfs cow and 8 when the cow is mounted elsewhere than `COW_MOUNT`. With `data_area=none` the carve from the free row works as before.
+
 ## Remote gate (run a lane on a test host)
 
 `runner/remote-gate.py` runs one registered Run-Gate lane on a dedicated test host instead of the shared controller

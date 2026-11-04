@@ -352,6 +352,74 @@ keeps the thin-provisioned backing storage unused). `root_max_size_gb` overrides
 the root size (still checked against the minimum). Set via
 `"disk_layout": "dev-host"` in the config.
 
+#### Data area (`data_area = none | partition | lvm`)
+
+The cow area no longer has to be carved after the install. With `data_area` the
+installer creates the data partition itself, in the same partition-table
+transaction as swap, directly in front of swap:
+
+```
+ESP | /boot | root | reserve (unallocated) | DATA AREA | swap (END)
+```
+
+| `data_area` | what is created |
+| --- | --- |
+| `none` (default) | nothing; the gap stays unallocated and `scripts/netcup/runner/cow-carve.sh` may carve a cow partition after install (unchanged) |
+| `partition` | one GPT partition (PARTLABEL = `label`) with one filesystem `btrfs`/`ext4`/`xfs`, mounted at `mount` |
+| `lvm` | one GPT partition (PARTLABEL `MDT_LVM_PV`) used as the only PV of one VG, with the listed LVs; VG free space is left for later `lvcreate`/`lvextend` |
+
+`data_partition` keys (all optional, defaults give the 512 GiB layout): `fs`
+(`btrfs`), `size_gb` or `size_fraction` (`"1/3"` of the disk in 8 GiB steps, 168
+GiB on 512), `mount` (`/srv/cow`), `label` (`MDT_COW`, max 12 characters). With
+`disk_layout: "dev-host"` and `"data_area": "partition"` the 512 GiB numbers are
+root 160, data 168, swap 16, about 166 GiB reserve, as in the table above.
+
+`data_lvm` keys: `vg` (required), `pv_size_gb` or `pv_size_fraction` (default
+`"1/3"`) for the PV partition, `lvs`: list of `{name, size_gb, fs, mount, label}`
+with `fs` `btrfs`/`ext4`/`xfs` (needs `mount`; `label` optional) or `none` (an
+unformatted LV, e.g. for ZFS: zfs is NOT a managed filesystem). Example:
+
+```json
+{"schema_version": 1, "disk_layout": "dev-host", "data_area": "lvm",
+ "data_lvm": {"vg": "vg_data", "pv_size_gb": 200, "lvs": [
+   {"name": "cow", "size_gb": 120, "fs": "btrfs", "mount": "/srv/cow", "label": "MDT_COW"},
+   {"name": "spare", "size_gb": 40, "fs": "none"}]}}
+```
+
+Rules (config validation and planner; `tests/test_data_area.py`):
+
+- Needs `swap_policy=on` (managed tail swap), `root_resize_policy=resize` and a
+  capped root (`disk_layout=dev-host` or `root_max_size_gb`); otherwise the data
+  area has no guaranteed gap and the configuration is refused. Swap stays the last
+  allocation, the data area ends where swap starts, the reserve stays between
+  root and the data area, so root remains growable (root minimum applies as before).
+- Refused: unknown keys, a filesystem other than btrfs/ext4/xfs (LV: or `none`),
+  relative/nested/duplicate mount points, mounts on `/`, `/boot`, `/etc`, `/usr`
+  and other system trees, duplicate LV names or labels, LV sizes above the PV
+  (less 1 GiB LVM metadata), LV sizes that leave no free VG space, and a data
+  area that does not fit between root and swap.
+- `lvm2`, `btrfs-progs` and/or `xfsprogs` are installed in stage two exactly when
+  the chosen layout needs them.
+- Stage two runs after swap activation. `mkfs`/`pvcreate` only touch a BLANK
+  device; the same filesystem again is kept (re-runs converge), any other
+  signature, or a VG that lives on other PVs, is refused. The fstab entries use
+  `nofail`; btrfs gets `noatime,user_subvol_rm_allowed` (what the runner's cow
+  expects). Partition number: the first free number after the swap partitions;
+  find the volume by label, never by number.
+- Runner integration: `provision-runner.sh` finds an installer-created cow by
+  label (`PARTLABEL=MDT_COW`, or a partition/LV whose filesystem label is
+  `MDT_COW`; an LV is listed by `lsblk` under its PV as `/dev/mapper/<vg>-<lv>`)
+  and does NOT carve a second one. It refuses a non-btrfs cow, and a cow mounted
+  somewhere other than `COW_MOUNT`.
+- Reserve behaviour: the reserve (disk - boot - root - data - swap) is never
+  allocated by the installer. Grow root into it (`sfdisk -N` + `resize2fs`) or
+  create/extend things by hand; with `lvm`, free space inside the PV is the other
+  reserve.
+- No installer ref before this change knows `data_area`; a bundle that sets it
+  needs the matching branch. `install-host.py` needs no change: the keys travel in
+  the customScript config (`VBPUB_CONFIG_EXTRA_JSON`) built by
+  `debian-install-v2.py build-customscript`.
+
 ### zswap
 
 The feature is enabled by default through `run_zswap_config=true`; set that
