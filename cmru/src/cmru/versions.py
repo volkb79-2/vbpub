@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import base64
 import copy
+import hashlib
 import json
 import os
 import re
@@ -44,6 +45,7 @@ from cmru.version_config import deep_merge_versions, parse_versions_section
 from cmru.version_registry import (
     Candidate,
     RegistryError,
+    RegistryRateLimitedError,
     candidates,
     candidate_for,
     normalized_version,
@@ -67,6 +69,10 @@ class VersionsError(RuntimeError):
 
 class VersionsPrerequisiteError(VersionsError):
     """A required registry, environment value, or executable is unavailable."""
+
+
+class VersionsRateLimitedError(VersionsPrerequisiteError):
+    """A registry rate limit stopped resolution; exits ``RATE_LIMITED`` (5), distinct from 3."""
 
 
 class VersionsOperationError(VersionsError):
@@ -368,7 +374,14 @@ def _resolve_target(
 
         pools: dict[str, dict[str, Candidate]] = {}
         for source_type, source in source_tables.items():
-            records = candidates(source_type, source, constraint)
+            # A single-source OCI target needs only the newest age-eligible tag,
+            # so let the scan stop there instead of fetching every tag's
+            # manifests (Docker Hub meters each manifest GET).
+            scan_args = (
+                (cutoff,) if source_type == "oci" and len(source_tables) == 1 and target.get("mode") == "single"
+                else ()
+            )
+            records = candidates(source_type, source, constraint, *scan_args)
             compatible = {
                 key: candidate for key, candidate in records.items()
                 if version_satisfies(candidate.version, constraint)
@@ -425,9 +438,119 @@ def _resolve_target(
         )
     except RegistryError as exc:
         message = str(exc)
+        if isinstance(exc, RegistryRateLimitedError):
+            raise VersionsRateLimitedError(f"target {target_id!r}: {message}") from exc
         if message.startswith("registry does not publish exact version"):
             raise VersionsError(f"target {target_id!r}: {message}") from exc
         raise VersionsPrerequisiteError(f"target {target_id!r}: {message}") from exc
+
+
+RESUME_TTL = timedelta(hours=24)
+
+
+def _result_record(result: TargetResult) -> dict[str, object]:
+    return {
+        "target_id": result.target_id,
+        "version": result.version,
+        "resolved_at": _timestamp(result.resolved_at),
+        "age_cutoff": _timestamp(result.age_cutoff),
+        "override": result.override,
+        "reason": result.reason,
+        "expires": result.expires,
+        "owner": result.owner,
+        "sources": {
+            source_type: {
+                "version": candidate.version,
+                "released_at": _timestamp(candidate.released_at),
+                "age_source": candidate.age_source,
+                "tag": candidate.tag,
+                "digest": candidate.digest,
+            }
+            for source_type, candidate in result.sources.items()
+        },
+    }
+
+
+def _parse_timestamp(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+
+
+def _result_from_record(record: Mapping[str, Any]) -> TargetResult:
+    return TargetResult(
+        target_id=record["target_id"], version=record["version"],
+        resolved_at=_parse_timestamp(record["resolved_at"]),
+        age_cutoff=_parse_timestamp(record["age_cutoff"]),
+        override=bool(record["override"]), reason=record["reason"], expires=record["expires"],
+        owner=record["owner"],
+        sources={
+            source_type: Candidate(
+                version=item["version"], released_at=_parse_timestamp(item["released_at"]),
+                age_source=item["age_source"], tag=item["tag"], digest=item["digest"],
+            )
+            for source_type, item in record["sources"].items()
+        },
+    )
+
+
+def _resume_path(config_path: Path) -> Path:
+    """Per-config resume file in the user cache, never inside the repository."""
+    cache_home = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
+    digest = hashlib.sha256(str(config_path.resolve()).encode("utf-8")).hexdigest()[:16]
+    return Path(cache_home) / "cmru" / f"versions-resume-{digest}.json"
+
+
+class _ResumeStore:
+    """Targets resolved by an interrupted ``cmru versions resolve`` (registry rate limit).
+
+    Each entry is keyed by owner and target id and carries a fingerprint of the
+    target declaration plus the age window, so an edited target is re-resolved.
+    Entries older than ``RESUME_TTL`` are ignored. Saving is best-effort: a
+    cache that cannot be written must not hide the rate-limit message.
+    """
+
+    def __init__(self, path: Path, now: datetime):
+        self.path = path
+        self.now = now
+        self.entries: dict[str, dict[str, Any]] = {}
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+            loaded = document["entries"] if document["schema"] == 1 else {}
+            if isinstance(loaded, dict):
+                self.entries = loaded
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+
+    @staticmethod
+    def fingerprint(target: Mapping[str, object], age_window_days: int, owner: str) -> str:
+        declared = {key: value for key, value in target.items() if key != "resolved"}
+        text = json.dumps([declared, age_window_days, owner], sort_keys=True, default=str)
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _key(owner: str, target_id: str) -> str:
+        return f"{owner}\0{target_id}"
+
+    def get(self, owner: str, target_id: str, fingerprint: str) -> TargetResult | None:
+        entry = self.entries.get(self._key(owner, target_id))
+        try:
+            if entry is None or entry["fingerprint"] != fingerprint:
+                return None
+            result = _result_from_record(entry["result"])
+        except (KeyError, TypeError, ValueError, AttributeError):
+            return None
+        return result if self.now - result.resolved_at <= RESUME_TTL else None
+
+    def put(self, owner: str, fingerprint: str, result: TargetResult) -> None:
+        self.entries[self._key(owner, result.target_id)] = {
+            "fingerprint": fingerprint, "result": _result_record(result),
+        }
+        try:
+            _write_text_atomic(self.path, json.dumps({"schema": 1, "entries": self.entries}, indent=1, sort_keys=True) + "\n")
+        except OSError:
+            pass
+
+    def clear(self) -> None:
+        self.path.unlink(missing_ok=True)
 
 
 def _resolve_targets(
@@ -436,15 +559,27 @@ def _resolve_targets(
     age_window_days: int,
     resolved_at: datetime,
     owner: str,
+    resume: _ResumeStore | None = None,
 ) -> dict[str, TargetResult]:
     results: dict[str, TargetResult] = {}
+    reused = 0
     for target_id, target in targets.items():
         if not isinstance(target, dict):
             raise VersionsError(f"target {target_id!r} is not a table")
+        fingerprint = _ResumeStore.fingerprint(target, age_window_days, owner) if resume else ""
+        cached = resume.get(owner, target_id, fingerprint) if resume else None
+        if cached is not None:
+            results[target_id] = cached
+            reused += 1
+            continue
         results[target_id] = _resolve_target(
             target_id, target, age_window_days=age_window_days,
             resolved_at=resolved_at, owner=owner,
         )
+        if resume:
+            resume.put(owner, fingerprint, results[target_id])
+    if reused:
+        print(f"cmru versions: reused {reused} target(s) from an earlier interrupted run ({owner})", file=sys.stderr)
     return results
 
 
@@ -1847,6 +1982,27 @@ def _resolve_all_for_command(
     projects: list[str],
     *,
     resolved_at: datetime,
+    resume: _ResumeStore | None = None,
+) -> tuple[dict[str, TargetResult], dict[str, dict[str, TargetResult]], dict[str, dict[str, dict[str, object]]]]:
+    try:
+        return _resolve_all_targets(forge, projects, resolved_at=resolved_at, resume=resume)
+    except VersionsRateLimitedError as exc:
+        if resume is None:
+            raise
+        saved = len(resume.entries)
+        raise VersionsRateLimitedError(
+            f"{exc}. Rate limited: {saved} target(s) resolved and saved to {resume.path}; "
+            "rerun the same command after the rate-limit window to continue "
+            "(Docker Hub's window is 3600 s)"
+        ) from exc
+
+
+def _resolve_all_targets(
+    forge: ForgeConfig,
+    projects: list[str],
+    *,
+    resolved_at: datetime,
+    resume: _ResumeStore | None,
 ) -> tuple[dict[str, TargetResult], dict[str, dict[str, TargetResult]], dict[str, dict[str, dict[str, object]]]]:
     root_targets = forge.versions.get("targets", {})
     if not isinstance(root_targets, dict):
@@ -1856,6 +2012,7 @@ def _resolve_all_for_command(
         age_window_days=_age_window(forge.versions),
         resolved_at=resolved_at,
         owner="root",
+        resume=resume,
     )
     project_results: dict[str, dict[str, TargetResult]] = {}
     declarations: dict[str, dict[str, dict[str, object]]] = {}
@@ -1868,6 +2025,7 @@ def _resolve_all_for_command(
             age_window_days=_age_window(versions),
             resolved_at=resolved_at,
             owner=name,
+            resume=resume,
         )
         _validate_manifest_target_compatibility(
             _project_root(forge, name),
@@ -1921,8 +2079,9 @@ def _run_resolve(
     dry_run: bool,
 ) -> list[str]:
     resolved_at = datetime.now(timezone.utc).replace(microsecond=0)
+    resume = _ResumeStore(_resume_path(context.config_path), resolved_at)
     root_results, project_results, declarations = _resolve_all_for_command(
-        forge, projects, resolved_at=resolved_at,
+        forge, projects, resolved_at=resolved_at, resume=resume,
     )
     _emit_age_evidence_warnings(root_results, project_results)
     if dry_run:
@@ -2046,6 +2205,7 @@ def _run_resolve(
         transaction.rollback()
         raise
 
+    resume.clear()
     records = _recorded_versions(forge, root_results, project_results, declarations)
     for record in records:
         record["recorded_version"] = record["eligible_version"]
@@ -2094,12 +2254,17 @@ def versions_cli():
 def _run_versions(args, _runtime) -> int | None:
     """Run one verb; domain failures keep their documented exit codes.
 
+    5 = a registry rate limit stopped resolution (partial results saved; rerun),
     3 = a prerequisite or registry is unavailable, 2 = invalid configuration or
     selection, 1 = the operation failed (rendered by the library from
     ``expected_exceptions``: :class:`VersionsOperationError`, ``OSError``).
     """
     try:
         return _dispatch_versions(args)
+    except (VersionsRateLimitedError, RegistryRateLimitedError) as exc:
+        raise CliFailure(
+            f"CMRU versions: {exc}", exit_code=exit_codes.RATE_LIMITED,
+        ) from exc
     except (VersionsPrerequisiteError, RegistryError) as exc:
         raise CliFailure(
             f"CMRU versions: {exc}", exit_code=exit_codes.PREREQ_MISSING,

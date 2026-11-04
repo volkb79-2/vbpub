@@ -4,6 +4,11 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+- `cmru versions resolve|check` (KI-121): a single-source OCI target examines tags newest-first and stops at the first
+  age-eligible one instead of fetching every matching tag's manifests; a registry HTTP 429 is retried when `Retry-After` is
+  short, otherwise exits with the new code 5 (rate limited) naming the `ratelimit-*` headers; `resolve` saves finished targets
+  to a user-cache resume file and a rerun continues from them. Details in `docs/CONSUMERS.md`.
+
 - `tools/local_baseline_facts.py` + `docs/CONSUMERS.md`: how to start the `mutation` lane outside a release (builds `CMRU_ASSAY_BASELINE_FACTS`
   from local `cmru-v*` tags; the R1 pin must equal the selected tag).
 

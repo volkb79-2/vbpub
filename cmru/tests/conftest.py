@@ -66,6 +66,12 @@ def _pytest_disables_detached_git_maintenance():
 
 
 @pytest.fixture(autouse=True)
+def _versions_resume_cache_in_tmp(tmp_path_factory, monkeypatch):
+    """`cmru versions resolve` keeps its interrupted-run resume file under XDG_CACHE_HOME."""
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path_factory.mktemp("xdg-cache")))
+
+
+@pytest.fixture(autouse=True)
 def _each_test_reaps_its_process_descendants(request):
     """Fail a test if new process descendants outlive its boundary.
 
