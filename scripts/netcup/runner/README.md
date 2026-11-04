@@ -23,6 +23,8 @@ scripts can only check what the host itself reports.
 | `run-lane.sh` | runner, via `run-job` | runs one registered Run-Gate lane from a runner checkout inside the cockpit |
 | `run-r2-campaign.sh` | runner, via `run-job` | supervises a native Assay R2 campaign across budget exits (`exit 4`), with memory/PSI samples |
 | `run-cowtree-assay-smokes.sh` | runner, via `run-job` | cowtree and Assay workspace tests against the real CoW root |
+| `setup-cockpit-tools.sh` | runner | installs the pinned Run-Gate wheel and the checkout's Assay into the cockpit user's `~/.venvs/gate-tools` (run once after `start-cockpit-runner.sh`; `run-lane.sh` needs it) |
+| `run-jobs-window.sh`, `run-jobs-compare.sh` | runner, via `run-job` | native-R2 `--jobs 1/3/4/6/auto` comparison on fresh state: time-boxed throughput, or full wall time |
 
 ## One uid for everything
 
@@ -38,7 +40,7 @@ refuses a different existing uid unless `RUNNER_UID_ALLOW_CHANGE=1`; `start-cock
 2. `provision-runner.sh` as a detached root job (`EXIT` marker under `/root/jobs/runner-provision/`).
 3. Controller: bundle the reviewed source (`git bundle create ... refs/heads/<branch> refs/tags/assay-v*`), upload to `~/incoming`, run `sync-from-devcontainer`.
 4. `setup-assay-venvs.sh`, `setup-gate-tools.sh`, `build-tester-base.sh`, `build-tester-unified.sh` via `run-job`, each only after the previous `EXIT` is 0.
-5. mdt host-setup (`install.sh`), the cgprofile observer, then `start-cockpit-runner.sh`.
+5. mdt host-setup (`install.sh`; run it and the wizard with `PYTHONDONTWRITEBYTECODE=1`, NC-10), the cgprofile observer, then `start-cockpit-runner.sh` and `setup-cockpit-tools.sh`.
 6. Lanes and campaigns via `run-lane.sh` / `run-r2-campaign.sh`, one gate at a time unless the host is deliberately overcommitted.
 
 `build-tester-unified.sh` sets `BUILDX_BUILDER=default MDT_BUILDX_PASSTHROUGH=1`: the managed rootless BuildKit cannot see the locally

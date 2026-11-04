@@ -5971,3 +5971,52 @@ primary checkout without losing its data (the old volumes stay behind, unreferen
 **Acceptance criteria.** Test: generate with `--instance-id abc123` twice in two checkouts and get identical project/volume names; without the option behaviour is unchanged.
 
 **Note.** The backlog already carries two entries numbered CIU-163 (standalone root without git; new root in a linked worktree): one needs renumbering by the owner of that file.
+
+## CIU-168 — `ciu ssh` / `ciu up --host` need a fully generated local `ciu.env` (incl. `DOCKER_GID`) and a committed git repo on the control host
+
+**Status: OPEN (filed 2026-11-04, ops-v1001-20261104; measured on ciu 7.19.0 pushing a throwaway `whoami` stack from the mdt-cockpit devcontainer to v1001).**
+
+**Observed.** On a control host that only SSHes (no Docker daemon, no docker group): `ciu ssh v1001 -- true` stops with `could not load global configuration for remote
+operation: Missing required environment values ... CONTAINER_GID, CONTAINER_UID, DOCKER_GID, DOCKER_NETWORK_INTERNAL`. `DOCKER_GID=990 ciu env generate` is the only way
+forward, it needs at least one commit (`git rev-parse HEAD failed (128)` traceback on an unborn HEAD, same family as CIU-163), and it CREATES a docker network and connects
+the devcontainer to it (`ciu-remote-test-x5cmew-network`) on the control host, a local side effect of a verb that was only meant to reach a remote host.
+
+**Design.** The remote verbs (S14.1/S14.2) need the global config only for the host inventory and the repo layout; they must not require machine facts of the control host.
+Load the global config with placeholders for the four values (or lazily), never create a network for them, and report an unborn HEAD as a tagged error, not a traceback.
+
+**Acceptance criteria.** On a host without a docker group and without `ciu.env`, `ciu ssh HOST -- true` and `ciu up --host HOST --dry-run` work; no docker network is created locally.
+
+## CIU-169 — push-deploy preconditions are not checked or documented: `ciu` must be on the remote non-login PATH, `bundle_dir`'s parent must exist, and `**/.ciu/` must be gitignored although `.git` is not shipped
+
+**Status: OPEN (filed 2026-11-04, ops-v1001-20261104).**
+
+**Observed.** Three consecutive failures of `ciu up --host v1001 --dir whoami` against a fresh Debian host with ciu installed in a user venv: (1) the remote command `ciu env generate ...` finds no `ciu`
+(non-login SSH PATH does not include `~/.local/bin` or a venv); (2) `rsync: mkdir "/home/runner/ciu-remote-test/current" failed: No such file or directory` because rsync creates only the last
+path element of `bundle_dir`; (3) after the bundle arrived, `[S1.7] .../whoami/.ciu is not gitignored` although `.git` is excluded from the bundle, so the remote has no repository to ask (the check passed locally only because of the local `.gitignore`).
+
+**Design.** (1) `ciu up --host` runs a preflight `command -v ciu` over SSH and prints the exact fix (symlink into `/usr/local/bin`, or a `remote_ciu = "/path/to/ciu"` host key). (2) Create `bundle_dir` with `mkdir -p` before rsync/scp. (3) S1.7 must work on a bundle without `.git` by checking the shipped `.gitignore` text, or the bundle must ship a minimal `.git`-free equivalent marker.
+
+**Acceptance criteria.** The three steps succeed unattended on a host with ciu at an absolute path configured in the host row, with a nested `bundle_dir`, and a project whose `.gitignore` contains `**/.ciu/`.
+
+## CIU-170 — `ciu health --host` rejects `--dir`, and `ciu down --host --dir STACK` runs remotely outside the bundle (no ciu root, no env)
+
+**Status: OPEN (filed 2026-11-04, ops-v1001-20261104; SPEC S14.2 and FEATURES.md both list `--dir`/`--profile` after `--host` for up, down and health).**
+
+**Observed.** `ciu health --host v1001 --dir whoami` fails with `ciu: error: unrecognized arguments: --dir whoami`. `ciu down --host v1001 --dir whoami` connects but the remote command runs in the login directory:
+`[no-ciu-root] no CIU root above /home/runner; expected ciu.global.defaults.toml.j2`. Only `ciu up` does the `cd <bundle_dir> && ciu env generate && ciu render` chain. Manual teardown needed
+`ciu ssh v1001 -- 'cd BUNDLE && eval "$(ciu env print)" && ciu down --dir whoami'`, and that still refused with `[S18] --stack 'whoami' is not in the current deploy selection` (use `ciu clean -y`).
+
+**Design.** Build every remote command (up, down, clean, health, render) with the same `cd <bundle_dir> && eval "$(ciu env print)" && ...` prefix, and accept the same selection flags as the local verbs.
+
+**Acceptance criteria.** Test with a recorded SSH stub: `down --host X --dir S` and `health --host X --dir S` produce the same prefix as `up`.
+
+## CIU-171 — `ciu clean` leaves the compose default network and the workspace network of a remote or standalone bundle
+
+**Status: OPEN (filed 2026-11-04, ops-v1001-20261104).**
+
+**Observed.** After `ciu up --host v1001 --dir whoami` and `ciu clean -y` on the target the container is gone but `v1001-remote-test-rt-whoami_default` (the compose default network of the stack) and `current-qokpsa-network` (created by
+`ciu env generate`, "kept: ... workspace network of the main workspace (devcontainer residence)") remain, in a bundle that is not a devcontainer. S6.4 promises "zero project containers and volumes remain"; networks are outside that invariant but pin an address pool (`docker_default_address_pools`) on small hosts.
+
+**Design.** `clean` removes the stack's own compose networks; the workspace network is kept only when a devcontainer is actually attached to it, else removed with a one-line message.
+
+**Acceptance criteria.** After up + clean in a non-devcontainer bundle, `docker network ls` shows no network whose name carries the project name or the instance id.
