@@ -136,6 +136,13 @@ def validate_size_or_zero(value: str) -> str | None:
     return None
 
 
+def validate_optional_size(value: str) -> str | None:
+    """Empty and `-` (both: none) or a size (DEV_CACHE_MEMORY_LOW)."""
+    if value.strip() in ("", "-"):
+        return None
+    return validate_size_or_zero(value)
+
+
 _CORES_RE = re.compile(r"^\d+(\.\d)?$")
 
 
@@ -400,14 +407,16 @@ class DedicatedMemory:
     background_max: int | None = None
 
 # The tiers whose MemoryLow dev-gates / dev-background must leave room for.
-_PROTECTED_LOW_KEYS = ("DEV_INTERACTIVE_MEMORY_LOW", "DEV_BUILDKITD_MEMORY_LOW")
+# DEV_CACHE_MEMORY_LOW is the future dev-cache.slice's Low (AD2-2): a dev sibling too, so its protection must
+# not push dev past its High either. Absent / empty / `-` = 0 (the slice does not exist yet).
+_PROTECTED_LOW_KEYS = ("DEV_INTERACTIVE_MEMORY_LOW", "DEV_BUILDKITD_MEMORY_LOW", "DEV_CACHE_MEMORY_LOW")
 # Floor of a derived load-tier ceiling (a smaller value would stall every lane).
 DEDICATED_LOAD_FLOOR = 1024 ** 3
 
 
 _TIER_LOW_KEYS = (
     "DEV_INTERACTIVE_MEMORY_LOW", "DEV_BACKGROUND_MEMORY_LOW", "DEV_GATES_MEMORY_LOW",
-    "DEV_BUILDKITD_MEMORY_LOW", "DEV_MEMORY_MIN_GUARANTEED_LOW",
+    "DEV_BUILDKITD_MEMORY_LOW", "DEV_MEMORY_MIN_GUARANTEED_LOW", "DEV_CACHE_MEMORY_LOW",
 )
 
 

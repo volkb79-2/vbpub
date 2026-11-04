@@ -1403,3 +1403,13 @@ with no score, not a parse of the challenge HTML.
 
 **Status:** OPEN. `scripts/debian-install-v2/tools/cpu_benchmark.pins.json` holds only x86_64 (Geekbench 7.1.0, sha256 read from the real download in HB-1). An architecture without a pin is `warned` by the installer and refused by `install.sh cpu-benchmark`, never run unverified.
 **Acceptance.** Download the `LinuxARMPreview` 7.1.0 archive on an aarch64-capable path, record its sha256 in the pins file, add a test, and bump the pins together with the tool's `.sha256` where needed.
+
+## MDT-074 - dedicated-dev shared tree cache host plumbing (AD2-2) (2026-11-05)
+
+**Status:** DONE on branch `mdt-cache-slice-20261105` (host half). `dev-cache.slice`, `/srv/tree-cache` and `/srv/tree-upper` tmpfs mount units, `tree_cache` block of `/etc/mdt/host-capacity.json`, `mdt-tree-cache-gc.timer`, env keys, host-check, tests (host-setup/README.md "Shared tree cache of the dedicated-dev role"). Applied live on v1001 then r1002.
+**Open (other packages / follow-ups).**
+1. AD2-3: cowtree `cache` (ensure, lease, last-used, gc) must publish exactly the directory/lease format of `mdt_tree_cache.py`; once it does, the timer may call `cowtree cache gc` instead of the built-in GC (the hosts have no cowtree wheel in `/opt/mdt`).
+2. AD2-5: run-gate checks `CGROUP_PARENT_DEV_CACHE` (LoadState) and `MDT_TREE_CACHE_ROOT`/`MDT_TREE_UPPER_ROOT`; the host does not export these env keys itself (they travel the `containerEnv` path like `CGROUP_PARENT_DEV_GATES`): the devcontainer template and the runner env still need them, the values are in `host-capacity.json`.
+3. The GC cannot see a lane that holds a key only through a bind in a mount namespace it cannot read; it relies on the lease (flock) plus every /proc/*/mountinfo, and keeps everything when one mountinfo is unreadable. Verify with a real lane in AD2-5.
+4. `shared-prod` opt-in is not offered (design: opt-in on shared-prod); add a key only when a consumer needs it.
+5. `DEV_CACHE_MEMORY_LOW` default is empty: size it from the first measured populate (M-6 / AD2-6).

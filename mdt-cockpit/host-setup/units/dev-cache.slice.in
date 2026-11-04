@@ -1,0 +1,21 @@
+# RENDERED by host-setup/mdt_tree_cache.py (install.sh) from host-setup.env — do not edit the
+# installed copy; edit /etc/mdt/host-setup.env and re-run install.sh.
+# MDT-TREE-CACHE owned: HOST_ROLE=dedicated-dev only (AD2-2); removed again when the role is left.
+[Unit]
+Description=Shared tree cache owner (populate helpers' pages live here, not in a lane)
+Before=slices.target
+
+[Slice]
+# Dash-name nesting: "dev-cache.slice" sits under dev.slice, a SIBLING of dev-gates.slice and the
+# other tiers. PERSISTENT on purpose (started at install, never stopped by a lane): when a cgroup that
+# wrote or swapped pages dies, the charge moves to its PARENT (reparenting, measured 2026-11-05,
+# ad2-measurements-REPORT M-4/M-5), so a populate helper placed here via
+# `docker run --cgroup-parent dev-cache.slice` leaves its tmpfs/shmem pages and its swap entries
+# charged to this slice, not to dev.slice or to the lane that reads them.
+# Only MemoryLow: the cache is bounded by its tmpfs size (MDT_TREE_CACHE_SIZE), so there is no
+# MemoryHigh/Max/SwapMax here — a throttle on the owner of a shared lower would stall every lane that
+# faults in a page. MemoryLow is part of the protected-Low sum that gates/background and dev.slice's
+# own MemoryLow already subtract (mdt_capacity.py, DEV_CACHE_MEMORY_LOW).
+MemoryLow=@DEV_CACHE_MEMORY_LOW@
+# Same per-tier toggle every tier carries (does not inherit from dev.slice).
+MemoryZSwapWriteback=@DEV_CACHE_ZSWAP_WRITEBACK@

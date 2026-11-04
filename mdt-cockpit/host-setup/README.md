@@ -1197,6 +1197,41 @@ Apply and verify: `install.sh` (or `install.sh --wizard`), then `systemctl show 
 (they are ignored and named at every install) or be cleared. Back to the old behaviour: set `HOST_ROLE=shared-prod` (the installer removes its drop-ins) and restore the
 tier values.
 
+### Shared tree cache of the dedicated-dev role (AD2-2, MDT-074)
+
+Many lanes read the same checkout and assay template. Copying it per lane costs RAM once per lane; the design
+(`PARALLELISATION-DESIGN-MEMO-ADDENDUM-2`, sections 2-3) keeps one read-only tree in a host tmpfs and gives each worker an overlay on top of it. This
+section is the **host half**: where and under which policy. run-gate decides when and where a lane or helper is placed, assay owns the content and key, cowtree
+owns the publish/lease mechanism. `HOST_ROLE=dedicated-dev` only; any other role renders and mounts none of it, and a host that leaves the role gets the owned
+units removed by the next `install.sh` (a tmpfs that is still mounted stays until reboot or an operator `umount`).
+
+| Piece | What | Keys |
+|---|---|---|
+| `dev-cache.slice` | persistent, under dev.slice, started by `install.sh`; `MemoryLow` only (no High/Max/SwapMax: it is bounded by the tmpfs size) | `DEV_CACHE_MEMORY_LOW` (empty or `-` = none), `DEV_CACHE_ZSWAP_WRITEBACK` |
+| tree cache tmpfs | `MDT_TREE_CACHE_ROOT`, unit `srv-tree\x2dcache.mount`: `size`, `nr_inodes`, `mode=2770`, `gid` of the runner group, `nosuid,nodev,huge=never`, not `noexec`, never `noswap` | `MDT_TREE_CACHE_ROOT` (`/srv/tree-cache`), `MDT_TREE_CACHE_SIZE` (empty = 25 % of RAM, `-` = whole feature off), `MDT_TREE_CACHE_INODES`, `MDT_TREE_CACHE_GROUP` (`runner`) |
+| upper tmpfs | `MDT_TREE_UPPER_ROOT`, per-worker overlay `upperdir`/`workdir` (`<token>/w<k>/{u,w}`), same flags; pages charged to the writing lane | `MDT_TREE_UPPER_ROOT` (`/srv/tree-upper`), `MDT_TREE_UPPER_SIZE` (empty = 10 %, `-` = none), `MDT_TREE_UPPER_INODES` |
+| GC | `mdt-tree-cache-gc.timer` runs `mdt_tree_cache.py gc` | `MDT_TREE_CACHE_GC_IDLE` (6h), `MDT_TREE_UPPER_GC_IDLE` (1d), `MDT_TREE_CACHE_GC_INTERVAL` (15min) |
+| capacity document | `tree_cache` block merged into `/etc/mdt/host-capacity.json` (root, slice, `size_bytes`, `upper_root`, `upper_size_bytes`, `overlay_opts`, `group`, `mode`, `gc_idle_seconds`); other keys untouched, file created if absent | derived |
+
+Why the slice is persistent: when a cgroup that wrote or swapped pages dies, the charge moves to its parent (measured, `ad2-measurements-REPORT` M-4/M-5).
+A populate helper started with `--cgroup-parent dev-cache.slice` therefore leaves the tree's tmpfs pages and swap entries charged to this slice, not to a
+lane. The slice must exist before run-gate uses it (`systemctl show dev-cache.slice -p LoadState`); `mdt-host-check.sh` FAILs when it does not.
+`DEV_CACHE_MEMORY_LOW` is part of the protected-Low sum: dev.slice's MemoryLow includes it, and the load tiers' ceilings (gates, background) subtract it
+(`mdt_capacity.py`, `_PROTECTED_LOW_KEYS`), so protecting the cache never lets dev exceed its High. Sizes are bounded: cache + upper at most half of RAM.
+The overlay volumes are created by dockerd as `local` volumes (`redirect_dir=on,xino=auto`), which works with no new privilege; the options are published
+in the capacity block so consumers do not hard-code them.
+
+**Directory and lease format** (the contract between cowtree's `cache` module, which publishes, and the host GC, which removes; the module docstring of
+`mdt_tree_cache.py` is the normative text): `<root>/<key>/{COMPLETE,tree/,.lease,.last-used}`; a build happens in `<key>.tmp-<id>` under an exclusive flock on
+`<root>/.locks/<key>` and is `rename`d to `<key>` after `COMPLETE` is written; every lane holds `LOCK_SH` on `<key>/.lease` for its lifetime and touches
+`.last-used`. GC removes a key only if idle longer than the idle time, `LOCK_EX|LOCK_NB` on `.lease` succeeds, and no process's mountinfo holds it (a bind of
+`<key>/...` of the cache tmpfs, or an overlay `lowerdir=`/`upperdir=`/`workdir=` naming it); stale `<key>.tmp-*` builds when `.locks/<key>` is free; orphan
+upper `<token>` directories when idle and no overlay names them. Any doubt keeps the entry; GC refuses a root that is not a tmpfs mount point.
+
+Apply and verify: `install.sh`, then `systemctl show dev-cache.slice -p LoadState -p MemoryLow`, `findmnt /srv/tree-cache /srv/tree-upper`,
+`systemctl list-timers mdt-tree-cache-gc.timer`, `cat /etc/mdt/host-capacity.json` and `mdt-host-check.sh`. Remove again: `HOST_ROLE=shared-prod` or
+`MDT_TREE_CACHE_SIZE=-`, then `install.sh`. A host rebuilt from the repo plus `/etc/mdt/host-setup.env` gets all of it back; nothing here is host state.
+
 ### Observation: read volume under a low IOPS cap
 
 One R2 campaign container read 15-30 GB within an hour on a 8 GB host while the dev.slice cap was 300 IOPS. No cause is claimed; possible factors
