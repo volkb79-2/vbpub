@@ -540,8 +540,30 @@ class BaselinePlausibilityTests(unittest.TestCase):
             self.assertIn("stale", self.mod.results_problem(path) or "")
 
 
+def run_lister(args: list[str], env: dict[str, str], timeout: float = 30) -> subprocess.CompletedProcess:
+    """Run the lister in its own session and kill the whole process group on timeout (MDT-022):
+    subprocess.run kills only the direct child, which left `cat`/`column` blocked on a FIFO for 39 h."""
+    proc = subprocess.Popen(["bash", str(LISTER), *args], env=env, text=True, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, start_new_session=True)
+    try:
+        out, _ = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, 9)
+        proc.communicate()
+        raise
+    return subprocess.CompletedProcess(proc.args, proc.returncode, out, None)
+
+
 class ListingToolTests(unittest.TestCase):
     """The listing tool must read cgroup CONTENT: control files report size 0."""
+
+    def test_a_hung_cgroup_read_times_out_visibly_instead_of_blocking_forever(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "dev.slice").mkdir()
+            os.mkfifo(root / "dev.slice" / "io.max")  # no writer: a plain cat would block forever
+            r = run_lister(["dev.slice"], {**os.environ, "CGROUP_ROOT": str(root), "MDT_CG_READ_TIMEOUT": "1"}, timeout=20)
+            self.assertIn("timed out after 1s", r.stdout)
 
     @staticmethod
     def _fifo_file(path: Path, content: str) -> None:
@@ -579,8 +601,7 @@ class ListingToolTests(unittest.TestCase):
     def test_it_lists_limits_from_files_that_report_size_zero_with_effective_values(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = self._tree(tmp)
-            r = subprocess.run(["bash", str(LISTER), "dev.slice"], env={**os.environ, "CGROUP_ROOT": str(root)},
-                               text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
+            r = run_lister(["dev.slice"], {**os.environ, "CGROUP_ROOT": str(root)})
             self.assertEqual(r.returncode, 0, r.stdout)
             lines = {ln.split()[0]: ln for ln in r.stdout.splitlines()[1:] if ln.strip()}
             self.assertIn("EFFECTIVE", r.stdout.splitlines()[0])
@@ -599,11 +620,10 @@ class ListingToolTests(unittest.TestCase):
             state = Path(tmp) / "state.json"
             state.write_text(json.dumps({"unit": {}, "runtime": {"dev.slice": {"IOReadIOPSMax": []}}}))
             _write_exec(bin_dir / "systemctl", FAKE_SYSTEMCTL.replace("__PY__", sys.executable))
-            r = subprocess.run(
-                ["bash", str(LISTER), "dev.slice", "--systemd"],
-                env={**os.environ, "CGROUP_ROOT": str(root), "PATH": f"{bin_dir}:{os.environ['PATH']}",
-                     "FAKE_STATE": str(state), "FAKE_LOG": str(log), "CG": str(root)},
-                text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
+            r = run_lister(
+                ["dev.slice", "--systemd"],
+                {**os.environ, "CGROUP_ROOT": str(root), "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                 "FAKE_STATE": str(state), "FAKE_LOG": str(log), "CG": str(root)})
             self.assertEqual(r.returncode, 0, r.stdout)
             self.assertIn("== systemd view", r.stdout)
             self.assertIn("-- dev.slice", r.stdout)
@@ -629,8 +649,7 @@ class ListingToolTests(unittest.TestCase):
 
     def test_unknown_cgroup_is_an_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            r = subprocess.run(["bash", str(LISTER), "nope.slice"], env={**os.environ, "CGROUP_ROOT": tmp},
-                               text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            r = run_lister(["nope.slice"], {**os.environ, "CGROUP_ROOT": tmp}, timeout=30)
             self.assertEqual(r.returncode, 1)
 
 

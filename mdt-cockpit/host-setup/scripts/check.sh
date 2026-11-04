@@ -524,6 +524,47 @@ case "${DAMON_STAT_DISABLE_DEFAULT:-}" in
     ;;
 esac
 
+echo "== dedicated Docker API socket and pending daemon restart (MDT-037) =="
+# BEGIN docker-api-socket (tests extract this block; the MDT_DOCKER_* overrides exist for them)
+_docker_api_sock="${MDT_DOCKER_API_SOCK:-/run/docker-api/docker.sock}"
+_docker_dropin="${MDT_DOCKER_DROPIN:-/etc/systemd/system/docker.socket.d/50-mdt-dedicated-api-socket.conf}"
+_docker_daemon_json="${MDT_DOCKER_DAEMON_JSON:-/etc/docker/daemon.json}"
+if [ -f "$_docker_dropin" ]; then
+  ok "$_docker_dropin installed"
+else
+  fail "$_docker_dropin missing — new devcontainers bind-mount /run/docker-api and will not start; re-run install.sh"
+fi
+if [ -S "$_docker_api_sock" ]; then
+  _sock_meta=$(stat -c '%U:%G %a' "$_docker_api_sock" 2>/dev/null || echo "")
+  if [ "$_sock_meta" = "root:docker 660" ]; then
+    ok "$_docker_api_sock listening, root:docker 0660"
+  else
+    fail "$_docker_api_sock is '$_sock_meta', expected root:docker 660"
+  fi
+else
+  fail "$_docker_api_sock is not a listening socket — restart docker.socket and docker.service in a maintenance window (the setup was applied but not activated)"
+fi
+# Same test install.sh uses: daemon.json newer than the running dockerd's start (unknown start counts as pending).
+_dpid=$(systemctl show -p MainPID --value docker.service 2>/dev/null || true)
+_dstarted=""
+if [ -n "${MDT_DOCKER_STARTED_EPOCH:-}" ]; then
+  _dstarted="$MDT_DOCKER_STARTED_EPOCH"
+elif [ -n "$_dpid" ] && [ "$_dpid" != 0 ]; then
+  _dlstart=$(ps -o lstart= -p "$_dpid" 2>/dev/null || true)
+  [ -n "$_dlstart" ] && _dstarted=$(date -d "$_dlstart" +%s 2>/dev/null || true)
+fi
+if [ -f "$_docker_daemon_json" ]; then
+  _djmtime=$(stat -c %Y "$_docker_daemon_json" 2>/dev/null || echo 0)
+  if [ -z "$_dstarted" ]; then
+    warn "$_docker_daemon_json exists but docker.service's start time is unknown — a daemon restart may be pending"
+  elif [ "$_djmtime" -gt "$_dstarted" ]; then
+    warn "$_docker_daemon_json is newer than the running dockerd — a daemon restart is pending (systemctl restart docker.socket docker.service, in a window)"
+  else
+    ok "running dockerd is newer than $_docker_daemon_json (no restart pending)"
+  fi
+fi
+# END docker-api-socket
+
 echo "== Buildx guard confirmation =="
 if [ "${BUILDX_ACCIDENTAL_CONTAINER_POLICY:-}" = terminate ]; then
   if _mdt_guard_confirmed /var/lib/mdt/guard-terminate.confirmed terminate "${DEV_BUILDKITD_IMAGE:-}"; then

@@ -96,6 +96,12 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   were inspected (MDT-036).
 - The in-image PWMCP installer says "is the source commit pushed to GitHub?" on a 404, and `docs/BUILD-ARCHITECTURE.md`
   documents the push-before-build ordering (MDT-040).
+- host-setup (bugfix program `fix-mdt-3`): `mdt-host-check.sh` verifies the dedicated Docker API socket (drop-in, listener
+  `root:docker` 0660) and warns on a pending daemon restart (MDT-037); `install.sh` writes `max(live, shipped)` into
+  `99-mdt-inotify.conf` so a boot never lowers a higher host value (MDT-038); the synopsis and the `--observer-only` option
+  matrix are complete, and observer group/directory drift refuses before the commit point (MDT-039); the cgroup lister
+  bounds each control-file read (`MDT_CG_READ_TIMEOUT`, default 5 s) and its tests kill the process group on timeout
+  (MDT-022); a transient missing IO device with a valid baseline keeps the per-container IO caps for that sweep (MDT-019).
 
 <!-- cmru: release history -->
 

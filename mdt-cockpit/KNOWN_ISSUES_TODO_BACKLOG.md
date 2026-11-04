@@ -334,6 +334,8 @@ available but are not the protection.
 
 ## MDT-019 - a transient findmnt failure strips per-container IO caps for one sweep (pre-existing)
 
+**Status:** FIXED 2026-11-04 (fix-mdt-3): the sweep (`mdt-dev-governance-reconcile.sh`) keeps the caps when a valid baseline exists but no device was discovered; a missing baseline still clears. The events watcher's startup path is unchanged.
+
 With no block device discovered (for example a transient `findmnt` failure), `_mdt_derive_watcher_caps`
 sets `WATCHER_SKIP` and `_mdt_clear_container_caps` removes MDT's per-container transient IO caps for that
 one run; the next sweep or the Docker-events watcher re-applies them. The dev.slice and tier paths are
@@ -384,7 +386,7 @@ host-setup does not own yet". Follow-up:
 
 ## MDT-022 - a timed-out lister test left orphaned processes running for about 39 hours (2026-10-19 to 2026-10-20)
 
-**Status:** OPEN, severity low (it leaks processes on every timeout); recorded only; not fixed.
+**Status:** FIXED 2026-11-04 (fix-mdt-3): the lister reads through `timeout` (`MDT_CG_READ_TIMEOUT`, default 5 s) and the tests run it with `start_new_session` plus `killpg`.
 
 **What happened.** A test of `host-setup/scripts/mdt-cgroup-io-limits.sh` in worktree `mdt-hostsetup-io-20261019` left the
 chain `bash -x mdt-cgroup-io-limits.sh dev.slice` → `cat …/io.max`, plus `column -t`, running from 2026-10-19 08:27 to
@@ -555,6 +557,8 @@ page with a qualifying entry or a short page) and the error says how many entrie
 
 ## MDT-037 - `mdt-host-check.sh` does not check the dedicated Docker API socket or a pending daemon restart (2026-10-27)
 
+**Status:** FIXED 2026-11-04 (fix-mdt-3): drop-in and listener (`root:docker` 0660) FAIL, pending restart WARN.
+
 install.sh installs the `docker.socket` drop-in (`/run/docker-api/docker.sock`, the directory the devcontainer
 template bind-mounts) and merges `/etc/docker/daemon.json`, and reminds about the restart only at the end of its own
 run. check.sh verifies neither: the listener present and `0660 root:docker`, the drop-in installed, and daemon.json
@@ -564,6 +568,8 @@ source. Fix: three checks, the restart one a WARN.
 
 ## MDT-038 - the inotify sysctl file can lower a higher host value at boot (2026-10-27)
 
+**Status:** FIXED 2026-11-04 (fix-mdt-3): the file holds `max(live, shipped 1048576)`. Not done: check.sh does not yet detect a later sysctl file overriding it (the `_check_io_override` reuse suggested below).
+
 install.sh raises the live `fs.inotify.max_user_watches` only when it is below 524288 but installs
 `/etc/sysctl.d/99-mdt-inotify.conf` unconditionally; `sysctl --system` applies it at boot after any earlier-sorting
 file, so a host that set 1048576 elsewhere is lowered at the next boot (the README now says so). Fix: write
@@ -571,6 +577,8 @@ file, so a host that set 1048576 elsewhere is lowered at the next boot (the READ
 `/etc/sysctl.conf` overriding it (as it does for the writeback keys).
 
 ## MDT-039 - install.sh usage drift and a post-commit-point refusal (2026-10-27)
+
+**Status:** FIXED 2026-11-04 (fix-mdt-3): synopsis and `--observer-only` matrix complete; observer drift runs as `provision_cgprofile_observer / preflight` before the commit point (the control-directory check stays after it, since tmpfiles creates that directory).
 
 The header's one-line synopsis omits `--restart-buildkitd` and `--require-damon-disable` (which `usage()`
 lists); `--observer-only` rejects `--wizard`/`--reset`/`--with-baseline`/`--restart-docker` but silently accepts

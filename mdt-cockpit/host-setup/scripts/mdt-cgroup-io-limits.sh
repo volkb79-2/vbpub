@@ -24,6 +24,16 @@
 # report size 0.
 set -u
 ROOT="${CGROUP_ROOT:-/sys/fs/cgroup}"
+# MDT-022: a cgroup control file read that hangs (a wedged cgroup, or a FIFO fixture with no
+# writer) must become a visible error, not a process blocked forever. Reads still use cat
+# (content, never size); the bound is MDT_CG_READ_TIMEOUT seconds (default 5).
+_cg_read() {
+  local out rc
+  out=$(timeout "${MDT_CG_READ_TIMEOUT:-5}" cat "$1" 2>/dev/null); rc=$?
+  if [ "$rc" = 124 ]; then echo "mdt-cgroup-io-limits: read of $1 timed out after ${MDT_CG_READ_TIMEOUT:-5}s" >&2; fi
+  printf '%s\n' "$out"
+  return "$rc"
+}
 arg=""; all=""; sysd=""
 for a in "$@"; do
   case "$a" in
@@ -63,7 +73,7 @@ effective_for() {
   local -A min=([rbps]=max [wbps]=max [riops]=max [wiops]=max)
   cur="$dir"
   while :; do
-    content=$(cat "$cur/io.max" 2>/dev/null)
+    content=$(_cg_read "$cur/io.max")
     while read -r m line; do
       [ "$m" = "$mm" ] || continue
       for kv in $line; do
@@ -105,9 +115,9 @@ row() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$@"; }
     w=$(awk '$1=="default"{print $2}' "$cg/io.weight" 2>/dev/null); w=${w:--}
     declare -A lat=()
     if [ -r "$cg/io.latency" ]; then
-      while read -r mm t; do [ -n "$mm" ] && lat[$mm]=${t#target=}; done < <(cat "$cg/io.latency" 2>/dev/null)
+      while read -r mm t; do [ -n "$mm" ] && lat[$mm]=${t#target=}; done < <(_cg_read "$cg/io.latency")
     fi
-    iomax=$(cat "$cg/io.max" 2>/dev/null)
+    iomax=$(_cg_read "$cg/io.max")
     own=""
     while read -r mm rest; do
       [ -n "$mm" ] || continue

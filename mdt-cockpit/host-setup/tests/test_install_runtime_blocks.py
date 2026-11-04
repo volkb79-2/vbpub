@@ -242,5 +242,131 @@ class InotifyBudgetCheck(unittest.TestCase):
         self.assertIn("WARN fs.inotify.max_user_watches unreadable", self._run(live=None, installed=None))
 
 
+class DockerApiSocketCheck(unittest.TestCase):
+    """MDT-037: check.sh verifies the dedicated API socket, its drop-in and a pending daemon restart."""
+
+    BLOCK = CHECK_SH[CHECK_SH.index("# BEGIN docker-api-socket"):CHECK_SH.index("# END docker-api-socket")]
+
+    def _run(self, *, dropin: bool, socket: str | None, daemon_json_newer: bool | None, started: str = "1000") -> str:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            env = dict(os.environ)
+            if dropin:
+                (base / "dropin.conf").write_text("[Socket]\n", encoding="utf-8")
+            env["MDT_DOCKER_DROPIN"] = str(base / "dropin.conf")
+            env["MDT_DOCKER_API_SOCK"] = str(base / "docker.sock")
+            env["MDT_DOCKER_DAEMON_JSON"] = str(base / "daemon.json")
+            env["MDT_DOCKER_STARTED_EPOCH"] = started
+            if daemon_json_newer is not None:
+                (base / "daemon.json").write_text("{}", encoding="utf-8")
+                os.utime(base / "daemon.json", (2000, 2000) if daemon_json_newer else (500, 500))
+            prelude = "FAIL=0; WARN=0\nok(){ echo \"OK $*\"; }\nwarn(){ echo \"WARN $*\"; }\nfail(){ echo \"FAIL $*\"; }\n"
+            # a stat shim: the fixture is a plain file, so report the real socket's owner and mode
+            stat_shim = ""
+            if socket is not None:
+                stat_shim = f"stat() {{ if [ \"$1\" = -c ] && [ \"$2\" != %Y ]; then echo '{socket}'; else command stat \"$@\"; fi; }}\n"
+                # the test fixture is not a socket: replace the -S test for this run only
+                block = self.BLOCK.replace('[ -S "$_docker_api_sock" ]', '[ -e "$_docker_api_sock" ]')
+                (base / "docker.sock").write_text("", encoding="utf-8")
+            else:
+                block = self.BLOCK
+            harness = base / "h.sh"
+            harness.write_text(prelude + stat_shim + block + "\n", encoding="utf-8")
+            result = subprocess.run(["bash", str(harness)], capture_output=True, text=True, env=env)
+            return result.stdout
+
+    def test_a_healthy_host_passes_every_check(self) -> None:
+        out = self._run(dropin=True, socket="root:docker 660", daemon_json_newer=False)
+        self.assertNotIn("FAIL", out)
+        self.assertNotIn("WARN", out)
+        self.assertIn("no restart pending", out)
+
+    def test_a_missing_dropin_fails(self) -> None:
+        out = self._run(dropin=False, socket="root:docker 660", daemon_json_newer=False)
+        self.assertIn("FAIL", out)
+        self.assertIn("missing", out)
+
+    def test_a_missing_listener_fails(self) -> None:
+        out = self._run(dropin=True, socket=None, daemon_json_newer=False)
+        self.assertIn("is not a listening socket", out)
+
+    def test_a_socket_with_the_wrong_owner_or_mode_fails(self) -> None:
+        out = self._run(dropin=True, socket="root:root 666", daemon_json_newer=False)
+        self.assertIn("expected root:docker 660", out)
+
+    def test_a_daemon_json_newer_than_dockerd_is_a_pending_restart_warning_not_a_failure(self) -> None:
+        out = self._run(dropin=True, socket="root:docker 660", daemon_json_newer=True)
+        self.assertIn("WARN", out)
+        self.assertIn("restart is pending", out)
+        self.assertNotIn("FAIL", out)
+
+
+class InotifyInstallNeverLowers(unittest.TestCase):
+    """MDT-038: the installed sysctl file carries max(live value, shipped value)."""
+
+    START = INSTALL_SH.index("_inotify_value() {")
+    END = INSTALL_SH.index('if [ "$_have_watches" -lt "$_want_watches" ]; then')
+    BLOCK = INSTALL_SH[START:END]
+
+    def _installed(self, live: str) -> str:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            (base / "proc").write_text(live, encoding="utf-8")
+            block = self.BLOCK.replace("/proc/sys/fs/inotify/max_user_watches", str(base / "proc")).replace(
+                "/etc/sysctl.d/99-mdt-inotify.conf", str(base / "installed.conf")
+            )
+            result = run_bash(f'HERE="{ROOT}"\n{block}\ncat "{base}/installed.conf"')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return result.stdout
+
+    def test_a_higher_live_value_is_kept(self) -> None:
+        out = self._installed("4194304\n")
+        self.assertRegex(out, r"(?m)^fs\.inotify\.max_user_watches = 4194304$")
+
+    def test_a_lower_live_value_installs_the_shipped_file(self) -> None:
+        out = self._installed("8192\n")
+        self.assertRegex(out, r"(?m)^fs\.inotify\.max_user_watches = 1048576$")
+        self.assertNotIn("MDT-038", out)
+
+
+class ObserverPreflightAndOptionMatrix(unittest.TestCase):
+    """MDT-039: synopsis, observer-only option matrix, drift refusals before the COMMIT POINT."""
+
+    def test_the_header_synopsis_lists_every_option(self) -> None:
+        header = INSTALL_SH[:INSTALL_SH.index("# Idempotent.")]
+        for flag in ("--restart-buildkitd", "--require-damon-disable", "--confirm-no-disk-swap", "--apply-protection"):
+            self.assertIn(flag, header)
+
+    def test_observer_only_rejects_every_other_option(self) -> None:
+        block = INSTALL_SH[INSTALL_SH.index('if [ "$OBSERVER_ONLY" = 1 ]; then'):]
+        block = block[:block.index("provision_cgprofile_observer /")]
+        for var in ("WIZARD", "WITH_BASELINE", "RESET", "AUTO_RESTART_DOCKER", "RESTART_BUILDKITD",
+                    "REQUIRE_DAMON", "CONFIRM_NO_DISK_SWAP", "APPLY_PROTECTION"):
+            self.assertIn(f'"${var}" = 1', block)
+
+    def test_the_observer_drift_checks_run_before_the_commit_point(self) -> None:
+        pre = INSTALL_SH.index("provision_cgprofile_observer / preflight")
+        commit = INSTALL_SH.index("# === COMMIT POINT")
+        self.assertLess(pre, commit)
+        helper = shell_function(INSTALL_SH, "provision_cgprofile_observer")
+        # nothing that mutates the host sits before the preflight return
+        self.assertLess(helper.index('[ "$mode" = preflight ] && return 0'), helper.index("install -D"))
+        self.assertLess(helper.index('[ "$mode" = preflight ] && return 0'), helper.index("systemd-sysusers"))
+
+
+class ReconcileKeepsCapsOnTransientDeviceLoss(unittest.TestCase):
+    """MDT-019: a valid baseline with no discovered device does not clear the per-container caps."""
+
+    SRC = (ROOT / "scripts" / "mdt-dev-governance-reconcile.sh").read_text(encoding="utf-8")
+
+    def test_the_clear_is_guarded_by_the_baseline_probe(self) -> None:
+        start = self.SRC.index('if [ "${WATCHER_SKIP:-0}" = 1 ]; then')
+        block = self.SRC[start:self.SRC.index("else\n    for c in $(docker ps")]
+        self.assertIn('[ -z "${IO_DEV_PATH:-}" ]', block)
+        self.assertIn("RIOPS_MAX", block)
+        self.assertIn("keeping existing per-container IO caps", block)
+        self.assertLess(block.index("keeping existing"), block.index("_mdt_clear_container_caps"))
+
+
 if __name__ == "__main__":
     unittest.main()

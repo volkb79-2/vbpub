@@ -6,6 +6,8 @@
 # which this owns fully).
 #
 #   sudo ./install.sh [--wizard] [--with-baseline] [--reset] [--restart-docker]
+#                     [--restart-buildkitd] [--require-damon-disable]
+#                     [--confirm-no-disk-swap] [--apply-protection]
 #   sudo ./install.sh --wizard              # first install or preserve old values
 #   sudo ./install.sh --wizard --reset      # re-seed answers from this example
 #   sudo ./install.sh --with-baseline       # remeasure in a quiet disk window
@@ -43,7 +45,8 @@ Purpose
   mounts, or /etc.
 
 Usage
-  sudo ./install.sh --wizard [--reset] [--with-baseline] [--restart-docker]
+  sudo ./install.sh --wizard [--reset] [--with-baseline] [--restart-docker] [--restart-buildkitd]
+                    [--require-damon-disable] [--confirm-no-disk-swap]
   sudo ./install.sh --with-baseline
   sudo ./install.sh --restart-docker
   sudo ./install.sh --observer-only
@@ -129,11 +132,17 @@ provision_cgprofile_observer() {
   local sysusers_file="${prefix}/etc/sysusers.d/mdt-cgprofile.conf"
   local tmpfiles_file="${prefix}/etc/tmpfiles.d/mdt-cgprofile-observer.conf"
 
-  if [ -L "$control_directory" ] || [ ! -d "$control_directory" ]; then
-    echo "ERROR: $control_directory must already be a real directory; run the full host setup first" >&2
-    return 2
-  fi
+  # mode "preflight" (MDT-039): run only the refusals that need no host mutation, so the
+  # full install can call this BEFORE its commit point; the control directory does not
+  # exist yet on a fresh host there (tmpfiles creates it after the commit point).
+  local mode="${2:-apply}"
   local docker_entry docker_gid control_metadata
+  if [ "$mode" != preflight ]; then
+    if [ -L "$control_directory" ] || [ ! -d "$control_directory" ]; then
+      echo "ERROR: $control_directory must already be a real directory; run the full host setup first" >&2
+      return 2
+    fi
+  fi
   docker_entry="$(getent group docker 2>/dev/null)" || {
     echo "ERROR: could not resolve the host docker group" >&2
     return 2
@@ -143,14 +152,16 @@ provision_cgprofile_observer() {
     echo "ERROR: could not resolve a valid host docker group GID" >&2
     return 2
   }
-  control_metadata="$(stat -c '%u %g %a' "$control_directory")" || {
-    echo "ERROR: could not inspect $control_directory" >&2
-    return 2
-  }
-  [[ "$control_metadata" == "0 $docker_gid 770" ]] || {
-    echo "ERROR: $control_directory must be root:docker 0770; found $control_metadata" >&2
-    return 2
-  }
+  if [ "$mode" != preflight ]; then
+    control_metadata="$(stat -c '%u %g %a' "$control_directory")" || {
+      echo "ERROR: could not inspect $control_directory" >&2
+      return 2
+    }
+    [[ "$control_metadata" == "0 $docker_gid 770" ]] || {
+      echo "ERROR: $control_directory must be root:docker 0770; found $control_metadata" >&2
+      return 2
+    }
+  fi
   local existing_observer_group existing_observer_gid="" existing_observer_metadata
   existing_observer_group="$(getent group cgprofile-observer 2>/dev/null || true)"
   if [[ -n "$existing_observer_group" ]]; then
@@ -186,6 +197,7 @@ provision_cgprofile_observer() {
       return 2
     }
   fi
+  [ "$mode" = preflight ] && return 0
 
   install -D -m 0644 "$HERE/units/mdt-cgprofile.sysusers" "$sysusers_file"
   install -D -m 0644 "$HERE/units/mdt-cgprofile-observer.conf" "$tmpfiles_file"
@@ -255,7 +267,9 @@ fi
 
 if [ "$OBSERVER_ONLY" = 1 ]; then
   if [ "$WIZARD" = 1 ] || [ "$WITH_BASELINE" = 1 ] || [ "$RESET" = 1 ] \
-    || [ "$AUTO_RESTART_DOCKER" = 1 ]; then
+    || [ "$AUTO_RESTART_DOCKER" = 1 ] || [ "$RESTART_BUILDKITD" = 1 ] \
+    || [ "$REQUIRE_DAMON" = 1 ] || [ "$CONFIRM_NO_DISK_SWAP" = 1 ] \
+    || [ "$APPLY_PROTECTION" = 1 ]; then
     echo "ERROR: --observer-only cannot be combined with general host-setup options" >&2
     exit 2
   fi
@@ -859,6 +873,10 @@ if ! _env_defect="$(_mdt_environment_block_structure /etc/environment)"; then
   exit 2
 fi
 
+# Observer-directory/group drift and a missing docker group are refusals too (MDT-039): evaluate
+# them here, not after the units are rendered. Only the writes remain after the commit point.
+provision_cgprofile_observer / preflight || exit $?
+
 # === COMMIT POINT: nothing above this line mutates the host (MDT-HS-02) ===
 # Every refusal above has been evaluated. Only now are /etc/mdt, the buildx config
 # directory, the installed config and the guard confirmation record touched.
@@ -995,10 +1013,27 @@ install -m 0644 "$HERE/units/docker-api-socket.conf" \
 # file now; the sysctl.d copy re-applies it at every boot. MDT-003.
 # Non-fatal: an unprivileged or read-only /proc/sys must not abort the governance install.
 # Never lowers a limit the host already has above ours.
-install -m 0644 "$HERE/etc/sysctl.d/99-inotify.conf" /etc/sysctl.d/99-mdt-inotify.conf
-_want_watches=$(awk -F= '/^[[:space:]]*fs\.inotify\.max_user_watches[[:space:]]*=/ {gsub(/[[:space:]]/,"",$2); print $2}' /etc/sysctl.d/99-mdt-inotify.conf | tail -1)
+# MDT-038: the installed file carries max(live value, shipped value). `sysctl --system` applies
+# it at boot after any earlier-sorting file, so a static copy would lower a host that set a higher
+# value elsewhere; the live value is what that host runs with now.
+_inotify_value() { awk -F= '/^[[:space:]]*fs\.inotify\.max_user_watches[[:space:]]*=/ {gsub(/[[:space:]]/,"",$2); print $2}' "$1" 2>/dev/null | tail -1; }
+_want_watches=$(_inotify_value "$HERE/etc/sysctl.d/99-inotify.conf")
 _have_watches=$(cat /proc/sys/fs/inotify/max_user_watches 2>/dev/null || echo 0)
-if [ "${_have_watches:-0}" -lt "${_want_watches:-0}" ]; then
+case "$_want_watches" in ''|*[!0-9]*) _want_watches=1048576 ;; esac
+case "$_have_watches" in ''|*[!0-9]*) _have_watches=0 ;; esac
+_write_watches=$_want_watches
+[ "$_have_watches" -gt "$_write_watches" ] && _write_watches=$_have_watches
+if [ "$_write_watches" = "$_want_watches" ]; then
+  install -m 0644 "$HERE/etc/sysctl.d/99-inotify.conf" /etc/sysctl.d/99-mdt-inotify.conf
+else
+  { sed -n '/^#/p' "$HERE/etc/sysctl.d/99-inotify.conf"
+    echo "# MDT-038: raised to the host's live value ($_write_watches) so the boot-time apply never lowers it."
+    echo "fs.inotify.max_user_watches = $_write_watches"
+  } > /etc/sysctl.d/99-mdt-inotify.conf.tmp
+  chmod 0644 /etc/sysctl.d/99-mdt-inotify.conf.tmp
+  mv -f /etc/sysctl.d/99-mdt-inotify.conf.tmp /etc/sysctl.d/99-mdt-inotify.conf
+fi
+if [ "$_have_watches" -lt "$_want_watches" ]; then
   sysctl -q -p /etc/sysctl.d/99-mdt-inotify.conf \
     || echo "WARN: could not apply fs.inotify.max_user_watches now; /etc/sysctl.d/99-mdt-inotify.conf applies it at next boot" >&2
 fi

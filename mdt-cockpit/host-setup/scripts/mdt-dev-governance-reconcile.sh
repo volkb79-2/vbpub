@@ -349,7 +349,14 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
   # governed child scopes and explicitly-patterned out-of-tree Buildx workers.
   _mdt_derive_watcher_caps
   if [ "${WATCHER_SKIP:-0}" = 1 ]; then
-    _mdt_clear_container_caps
+    # MDT-019: a valid baseline with no discovered device is a transient discovery failure
+    # (findmnt), not a missing baseline; keep the caps already applied for this sweep.
+    if [ -z "${IO_DEV_PATH:-}" ] && [ -n "${RIOPS_MAX:-}" ] && [ -n "${WIOPS_MAX:-}" ] \
+       && [ -n "${RBW_MAX_BPS:-}" ] && [ -n "${WBW_MAX_BPS:-}" ]; then
+      log "WARN: no host IO device discovered although a baseline exists — keeping existing per-container IO caps this sweep"
+    else
+      _mdt_clear_container_caps
+    fi
   else
     for c in $(docker ps -q 2>/dev/null); do
       _mdt_classify_and_apply "$c"
