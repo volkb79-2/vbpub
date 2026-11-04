@@ -1571,8 +1571,21 @@ success the `push` step receives the protected `CMRU_RECORD_JSON` and `CMRU_RECO
 paths; the five `CMRU_RECORD_*` / `CMRU_BUILD_INVENTORY` / `CMRU_GATE_EVIDENCE_DIR` names
 are reserved (a project `[env]` may not declare them) and cleared for every other step.
 cmru never parses, signs or commits a record. `release --dry-run` prints the step's plan
-but does not run it (it needs built artifacts). Uploading the record and appending the body
-is the body handlers' job (rigor package C-2).
+but does not run it (it needs built artifacts); it prints each release body followed by a
+`## Rigor at publication` appendix placeholder naming the step.
+
+**Publication (rigor C-2).** When `CMRU_RECORD_JSON` and `CMRU_RECORD_BODY` are present (both
+or neither; one alone refuses with exit 4), the release-body handlers `wheel-publish`,
+`tarball-publish` (single and `--variant`) and `oci-image-release` (a) append
+`release-body.md` to the release body, after any curated changelog section, under the heading
+`## Rigor at publication`, and (b) upload `record.json` verbatim as
+`<prefix>-v<version>-rigor.json` plus a `.sha256` sidecar to the immutable version release
+(never to the `-latest` pointer; a dev build uploads nothing). After the upload the release's
+asset list is read back and each name must be present at the staged size, else exit 4.
+Absent both variables a handler behaves byte-identically to before. For `oci-image-release`,
+which otherwise lists, deletes and uploads no asset, this is the single named exception:
+exactly those two assets, attached only after the body write was read back and verified, each
+mutation preceded by the release-ID/tag/commit recheck, only same-named assets replaced.
 
 **S-REL.5 — Reproducibility / commit model.** The isolated worktree starts clean, so wheels
 cannot inherit unrelated caller dirt through setuptools-scm. cmru auto-commits **only**

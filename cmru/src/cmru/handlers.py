@@ -28,7 +28,7 @@ import tempfile
 from pathlib import Path
 from typing import NoReturn, Optional
 
-from cmru import exit_codes
+from cmru import exit_codes, rigor_publish
 from cmru.release import (
     GitHubReleases,
     build_oci_image_release_body,
@@ -205,11 +205,14 @@ def _publish_versioned_artifacts(
     extra_assets: Optional[list[Path]],
     build_output: Optional[dict],
     release_notes: Optional[ReleaseNotes] = None,
+    rigor_assets: tuple[Path, ...] = (),
 ) -> dict:
     """Publish selected files, isolating retained records from publisher byproducts."""
     # A project that declares no curated notes publishes exactly the generated
     # body, so the keystone is called without the argument.
     curated = _notes_kwargs(release_notes)
+    if rigor_assets:
+        curated = {**curated, "rigor_assets": rigor_assets}
     if build_output is None:
         return publish_versioned(
             gh, prefix=prefix, version=version, asset_path=asset_path,
@@ -715,11 +718,12 @@ def cmd_wheel_publish(args: argparse.Namespace) -> None:
         extras.extend(files)
 
     gh = GitHubReleases(owner, repo, token)
-    result = _publish_versioned_artifacts(
-        gh, prefix=args.prefix, version=version, asset_path=wheel,
-        notes=notes, extra_assets=extras or None, build_output=build_output,
-        **_notes_kwargs(release_notes),
-    )
+    with rigor_publish.staged_assets(args.prefix, version) as rigor:
+        result = _publish_versioned_artifacts(
+            gh, prefix=args.prefix, version=version, asset_path=wheel,
+            notes=notes, extra_assets=extras or None, build_output=build_output,
+            rigor_assets=tuple(rigor), **_notes_kwargs(release_notes),
+        )
     print(f"[INFO] Published {args.prefix} {version}")
     for item in extras:
         print(f"[INFO] {args.prefix.upper()}_EXTRA_ASSET={item.name}")
@@ -848,16 +852,18 @@ def _publish_tarball_variants(
     gh = GitHubReleases(owner, repo, token)
 
     def publish(sources: dict[str, Path], release_extras: list[Path], **guards) -> dict:
-        return publish_versioned_variants(
-            gh, prefix=args.prefix, version=version,
-            variants=[
-                VariantArtifact(name=name, asset_path=path, label=labels[name])
-                for name, path in sources.items()
-            ],
-            asset_suffix=args.asset_suffix, notes=notes,
-            extra_assets=release_extras, verify_assets=True,
-            **_notes_kwargs(release_notes), **guards,
-        )
+        with rigor_publish.staged_assets(args.prefix, version) as rigor:
+            return publish_versioned_variants(
+                gh, prefix=args.prefix, version=version,
+                variants=[
+                    VariantArtifact(name=name, asset_path=path, label=labels[name])
+                    for name, path in sources.items()
+                ],
+                asset_suffix=args.asset_suffix, notes=notes,
+                extra_assets=release_extras, verify_assets=True,
+                rigor_assets=tuple(rigor),
+                **_notes_kwargs(release_notes), **guards,
+            )
 
     if build_output is None:
         result = publish(selected, extras)
@@ -943,11 +949,12 @@ def cmd_tarball_publish(args: argparse.Namespace) -> None:
     release_notes = _curated_release_notes(cwd, args.prefix, version, build_output)
 
     gh = GitHubReleases(owner, repo, token)
-    result = _publish_versioned_artifacts(
-        gh, prefix=args.prefix, version=version, asset_path=art,
-        notes=notes, extra_assets=None, build_output=build_output,
-        **_notes_kwargs(release_notes),
-    )
+    with rigor_publish.staged_assets(args.prefix, version) as rigor:
+        result = _publish_versioned_artifacts(
+            gh, prefix=args.prefix, version=version, asset_path=art,
+            notes=notes, extra_assets=None, build_output=build_output,
+            rigor_assets=tuple(rigor), **_notes_kwargs(release_notes),
+        )
     print(f"[INFO] Published {args.prefix} {version}")
     print(result)
 
@@ -1123,7 +1130,9 @@ def cmd_oci_image_release(args: argparse.Namespace) -> None:
     """Publish the GitHub Release body for an image the project's own step pushed.
 
     Release metadata only: this handler never builds or pushes the image and
-    uploads no asset. The image coordinate (``--image`` plus ``:<version>``) and
+    uploads no asset, with ONE named exception (rigor-evidence C-2): when the
+    record step produced ``CMRU_RECORD_JSON``, exactly ``<prefix>-v<V>-rigor.json``
+    and its ``.sha256`` sidecar are attached after the body write was verified. The image coordinate (``--image`` plus ``:<version>``) and
     the notes are bound to CMRU's protected release tag and candidate commit;
     the changelog section is read from that commit, never the working tree.
     """
@@ -1143,7 +1152,8 @@ def cmd_oci_image_release(args: argparse.Namespace) -> None:
     owner = _require_env("GITHUB_USERNAME")
     repo = _require_env("GITHUB_REPO")
     gh = GitHubReleases(owner, repo, token)
-    gh.publish_release_body(tag, tag, body, tag_commit=commit)
+    with rigor_publish.staged_assets(args.prefix, version) as rigor:
+        gh.publish_release_body(tag, tag, body, tag_commit=commit, assets=rigor)
     print(f"[INFO] Published release notes for {args.image}:{version} under {tag}")
 
 

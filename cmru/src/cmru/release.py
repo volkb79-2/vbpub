@@ -34,6 +34,7 @@ from urllib.error import HTTPError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
+from cmru import rigor_publish
 from cmru.release_notes import ReleaseNotes, compose_release_body
 
 API_BASE = "https://api.github.com"
@@ -353,6 +354,7 @@ class GitHubReleases:
 
     def publish_release_body(
         self, tag: str, title: str, notes: str, *, tag_commit: str,
+        assets: Sequence[Path] = (),
     ) -> Dict[str, Any]:
         """Create or refresh ONLY the title and body of ``tag``'s GitHub Release.
 
@@ -392,7 +394,40 @@ class GitHubReleases:
         nothing was rolled back, and that the release and the tag must be inspected
         before any retry. A run is never reported as successful on the strength of
         the write's own response alone.
+
+        ``assets`` is the single named exception to "no asset" (rigor-evidence C-2):
+        the staged ``<prefix>-v<version>-rigor.json`` and its ``.sha256`` sidecar,
+        nothing else. They are attached only AFTER the body write was read back,
+        only same-named assets are replaced, each mutation is preceded by the
+        release/tag identity recheck, and the asset list is read back afterwards.
         """
+        record = self._write_release_body(tag, title, notes, tag_commit=tag_commit)
+        if assets:
+            self._attach_exact_assets(tag, tag_commit, record, list(assets))
+        return record
+
+    def _attach_exact_assets(
+        self, tag: str, tag_commit: str, record: Dict[str, Any], assets: List[Path],
+    ) -> None:
+        """Upload exactly ``assets`` to the already-verified release; read them back."""
+        release_id = self._release_record_id(tag, record)
+        for asset in assets:
+            current = {a.get("name"): a for a in self.list_assets(release_id)}
+            old = current.get(asset.name)
+            if old and type(old.get("id")) is int:
+                self._verified_existing_release(
+                    tag, release_id, tag_commit, expected_target_commit=tag_commit,
+                )
+                self.delete_asset(old["id"])
+            checked = self._verified_existing_release(
+                tag, release_id, tag_commit, expected_target_commit=tag_commit,
+            )
+            self.upload_asset(str(checked["upload_url"]), asset, asset.name)
+        rigor_publish.verify_uploaded(self, release_id, tag, assets)
+
+    def _write_release_body(
+        self, tag: str, title: str, notes: str, *, tag_commit: str,
+    ) -> Dict[str, Any]:
         if not isinstance(tag_commit, str) or not _FULL_SHA.fullmatch(tag_commit):
             _die(
                 f"refusing to publish GitHub Release {tag}: no valid 40-hex "
@@ -774,8 +809,12 @@ def publish_versioned(
     latest_pointer_recreate: bool = True,
     expected_tag_commit: Optional[str] = None,
     release_notes: Optional[ReleaseNotes] = None,
+    rigor_assets: Sequence[Path] = (),
 ) -> Dict[str, Any]:
     """Publish ``asset_path`` for ``version`` under the uniform scheme.
+
+    ``rigor_assets`` (C-2) are the staged ``<prefix>-v<version>-rigor.json`` and its
+    sidecar: uploaded to the immutable release only, and read back afterwards.
 
     The primary asset keeps its file name (a wheel must never be renamed). For an installer
     bundle that name must be :func:`bundle_asset_name`; the producer owns that (KI-89:
@@ -886,7 +925,13 @@ def publish_versioned(
             prefix, version, artifact_name=asset_path.name, sha256=digest,
             notes=notes, release_notes=release_notes,
         )
-        publish_assets(release_tag, release_tag, body, [asset_path, sidecar, *extras])
+        published = publish_assets(
+            release_tag, release_tag, body, [asset_path, sidecar, *extras, *rigor_assets],
+        )
+        rigor_publish.verify_uploaded(
+            gh, published.get("id") if isinstance(published, dict) else None,
+            release_tag, list(rigor_assets),
+        )
         result["release_tag"] = release_tag
         result["asset_url"] = gh.asset_download_url(release_tag, asset_path.name)
         print(f"[INFO] Published immutable release {release_tag} (+ .sha256)")
@@ -988,6 +1033,7 @@ def publish_versioned_variants(
     latest_pointer_recreate: bool = True,
     expected_tag_commit: Optional[str] = None,
     verify_assets: bool = False,
+    rigor_assets: Sequence[Path] = (),
 ) -> Dict[str, Any]:
     """Publish N per-interpreter variants under ONE ``<prefix>-v<version>`` release.
 
@@ -1065,6 +1111,8 @@ def publish_versioned_variants(
             "label": v.label,
         })
     assets.extend(release_level)
+    rigor_files = list(rigor_assets) if released else []
+    assets.extend(rigor_files)
     upload_names = [a.name for a in assets]
     duplicated = sorted({n for n in upload_names if upload_names.count(n) > 1})
     if duplicated:
@@ -1138,6 +1186,10 @@ def publish_versioned_variants(
             prefix, version, records=records, notes=notes, release_notes=release_notes,
         )
         published = publish_assets(release_tag, body, assets)
+        rigor_publish.verify_uploaded(
+            gh, published.get("id") if isinstance(published, dict) else None,
+            release_tag, rigor_files,
+        )
         if verify_assets:
             release_id = published.get("id") if isinstance(published, dict) else None
             if type(release_id) is not int:

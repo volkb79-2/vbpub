@@ -11,6 +11,10 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   `push` with protected `CMRU_BUILD_INVENTORY`, `CMRU_GATE_EVIDENCE_DIR`, `CMRU_RECORD_OUT`; it may write only `record.json`
   (64 KiB) and `release-body.md` (8 KiB); the push step receives `CMRU_RECORD_JSON` / `CMRU_RECORD_BODY`. Failure is a
   pre-publication failure (tag rolled back, resumable). KI-120 (`cmru rigor`) is superseded by this design.
+- Rigor C-2 (inert without a record step): `wheel-publish`, `tarball-publish` and `oci-image-release` append the record step's
+  `release-body.md` under `## Rigor at publication` and upload `record.json` as `<prefix>-v<V>-rigor.json` plus `.sha256`
+  (read back from the release asset list). `oci-image-release` gains exactly this one asset-and-sidecar exception to "uploads no
+  asset". `release --dry-run` prints the appendix placeholder. New module `cmru/rigor_publish.py`.
 
 <!-- KI-30 originally refused a tagged release while this body was non-empty. KI-78 now
      folds pending notes into the version section in the disposable release candidate.

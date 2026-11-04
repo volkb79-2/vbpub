@@ -5751,7 +5751,7 @@ def _preview_release_bodies(
                 "and tag):"
             )
             print("----- begin release body -----")
-            print(body)
+            print(_with_rigor_preview(project, body))
             print("----- end release body -----")
             continue
         body = build_release_body(
@@ -5766,8 +5766,22 @@ def _preview_release_bodies(
             "text replaces only the opening line):"
         )
         print("----- begin release body -----")
-        print(body)
+        print(_with_rigor_preview(project, body))
         print("----- end release body -----")
+
+
+def _with_rigor_preview(project: "ProjectConfig", body: str) -> str:
+    """The dry-run body with the ``## Rigor at publication`` appendix (C-2).
+
+    The record step is not run in a dry run, so the appendix is shown as its
+    heading plus a marked placeholder; a project without a record step is unchanged.
+    """
+    step = getattr(project, "record_step", "")
+    if not step:
+        return body
+    from cmru.rigor_publish import dry_run_appendix
+
+    return f"{body}\n\n{dry_run_appendix(step)}"
 
 
 def _prepare_release_projects(

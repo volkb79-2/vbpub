@@ -1318,7 +1318,8 @@ What it does and requires:
   There is no artifact name or SHA256. `cmru release <name> --dry-run` prints this very
   body, complete and without placeholders.
 - It writes release metadata only. It does not build or push the image (the step before it
-  does), it never uploads, deletes or replaces an asset, and a retry simply rewrites the
+  does), it never uploads, deletes or replaces an asset (sole exception: the rigor record
+  `<prefix>-v<V>-rigor.json` and its `.sha256` when a record step ran, see "Rigor record step"), and a retry simply rewrites the
   body of the same release. It requires the release tag to be on the remote at exactly the
   candidate commit (`cmru release` pushes it first) and refuses, before changing anything,
   if the tag is absent or points elsewhere or if an existing release targets another commit.
@@ -1937,6 +1938,15 @@ release tag is rolled back and the candidate stays resumable (`cmru release --re
 `push` step then receives `CMRU_RECORD_JSON` and `CMRU_RECORD_BODY`. cmru never parses or commits
 the record; committing it to `main` is the record tool's job (`rigor-record sync`). `release
 --dry-run` prints the step plan but does not run it.
+
+At `push`, the release-body handlers (`wheel-publish`, `tarball-publish`, `oci-image-release`)
+consume the two variables with no further configuration: `release-body.md` is appended to the
+GitHub Release body under `## Rigor at publication` (after the changelog section), and
+`record.json` is uploaded as `<prefix>-v<version>-rigor.json` with a `.sha256` sidecar, then
+read back from the release's asset list. `release --dry-run` shows the appendix heading with a
+placeholder naming the record step. `oci-image-release` otherwise uploads no asset; these two
+files are its only exception. A project whose `push` uses none of these handlers receives the
+variables and publishes the record itself.
 
 ### Previewing an external version
 
