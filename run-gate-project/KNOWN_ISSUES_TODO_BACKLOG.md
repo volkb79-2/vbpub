@@ -7581,3 +7581,27 @@ affected, `-x` only shows the first.
 **Fix.** Both lanes drop `TMPDIR` from `env_passthrough` and declare `[lanes.<n>.infrastructure] TMPDIR = "required-env:RUN_GATE_TMPDIR"` (Assay refuses the same
 name in both places). Oracle: `TestShippedGateFullDeclaration::test_assay_test_commands_use_the_tester_unified_python` pins the mapping and the absence of the
 dead passthrough; the live oracle is the `assay-r1` lane passing R0 in the lane container.
+
+## RG-158 — `test_capacity_probe_resolves_cowtree_from_the_pinned_pyz` assumes the interpreter has no `cowtree`: in the lane image (cowtree installed) the "without the artifact" half gets `RootInvalid`
+
+**Status:** FIXED 2026-11-05 (fix-r2-lanes-20261105). Found by the first full `assay-r1` run of run-gate-project (R0: expected `cowtree-probe-ModuleNotFoundError`,
+got `cowtree-probe-RootInvalid`).
+
+**Cause.** The RG-154 oracle's second half ran the probe with `sys.executable` and expected `ModuleNotFoundError`. That holds only where `cowtree` is not
+importable; in `tester-unified` it is, so the real `detect()` rejects the fixture `MDT_COW_ROOT` instead. Product code (probe) is correct; the fixture
+leaked the image into the oracle.
+
+**Fix.** The second half now probes through a wrapper `python` that execs the test interpreter with `-S` (no site-packages), so the result is
+`cowtree-probe-ModuleNotFoundError` in every image. Verified in the host venv and by the lane run.
+
+## RG-159 — `TestHistoryStoreReadableByTheReleasedReader` requires the `run-gate-v24.3.0` git tag, absent from Assay's tagless snapshot
+
+**Status:** FIXED 2026-11-05 (fix-r2-lanes-20261105).
+
+**Cause.** The released reader's source was read with `git show run-gate-v24.3.0:...`; the `assay-r1`/`assay-r2` lane judges a snapshot without tags, so the
+test failed in the lane (`invalid object name`).
+
+**Fix.** The test lists the `run-gate-v24.*` tags that exist, takes the oldest at or above 24.3.0 (24.3.0 itself where present), and skips with an explicit
+reason only when the checkout carries no `run-gate-v*` tag at all (the tagless snapshot): there is no hermetic route to a released reader without a tag, and
+vendoring a copy of the released source would drift. A checkout with tags but no usable 24.x tag fails. The skip is the third, documented structural exception in
+`tests/_testdeps.py` (`test_no_test_bypasses_the_policy` now pins three markers). Developer clones and the normal `cmru` gate still run the test.

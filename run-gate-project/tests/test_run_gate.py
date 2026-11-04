@@ -38068,19 +38068,23 @@ class TestHistoryStoreReadableByTheReleasedReader:
         # it (a later 24.x reader must read the same schema-2 store). A
         # tagless snapshot (the assay lane) has no hermetic route: skip.
         listed = subprocess.run(
-            ["git", "-C", str(RUN_GATE_DIR), "tag", "--list",
-             "run-gate-v24.*"], capture_output=True, text=True)
+            ["git", "-C", str(RUN_GATE_DIR), "tag", "--list", "run-gate-v*"],
+            capture_output=True, text=True)
+        if not listed.stdout.split():
+            # testdeps-exception: structural, see tests/_testdeps.py.
+            pytest.skip("this checkout carries no run-gate-v* release tag at "
+                        "all (the tagless Assay snapshot of the assay lanes); "
+                        "the released-reader compatibility cannot be checked "
+                        "hermetically here")
         candidates = []
         for tag in listed.stdout.split():
             match = re.fullmatch(r"run-gate-v24\.(\d+)\.(\d+)", tag)
             if match and int(match.group(1)) >= 3:
                 candidates.append((int(match.group(1)),
                                    int(match.group(2)), tag))
-        if not candidates:
-            pytest.skip("no released run-gate-v24.>=3 tag in this checkout "
-                        "(tagless snapshot, e.g. the assay lane); the "
-                        "released-reader compatibility cannot be checked "
-                        "hermetically here")
+        assert candidates, (
+            "a checkout with release tags must carry a run-gate-v24.>=3 tag "
+            f"for the compatibility test: {listed.stdout.split()[:5]}")
         tag = min(candidates)[2]
         for name in ("run_gate.py", "run_gate_admission.py"):
             shown = subprocess.run(

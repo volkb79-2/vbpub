@@ -9,8 +9,12 @@ missing thing. A checkout that really lacks it (a wheel consumer running the sui
 monorepo, a developer venv without PyYAML) opts out with ``RUN_GATE_ALLOW_MISSING_TEST_DEPS=1``,
 which restores the clean skip with the same reason.
 
-Two deliberate, documented exceptions remain plain skips, each with an explicit reason, because
+Three deliberate, documented exceptions remain plain skips, each with an explicit reason, because
 the condition is structural rather than a missing dependency:
+
+* ``TestHistoryStoreReadableByTheReleasedReader`` (RG-159) needs a released run-gate tag; the
+  Assay lanes judge a tagless snapshot BY DESIGN. It skips only when the checkout carries no
+  ``run-gate-v*`` tag at all; a checkout with tags but without a usable 24.x tag fails.
 
 * ``TestRgNarrowRealContainer`` needs a Docker socket, the ``tester-unified:local`` image and
   ``$CGROUP_PARENT_DEV_GATES``; inside the selftest lane's own container the socket is absent BY

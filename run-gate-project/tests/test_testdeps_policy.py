@@ -91,7 +91,7 @@ def test_no_test_bypasses_the_policy():
         "through tests/_testdeps.py (fail by default, opt-out skip):\n" + "\n".join(offenders))
     # The exception list is closed: a new structural skip is a policy change,
     # documented in _testdeps.py, not a marker someone adds in passing.
-    assert len(marked) == 2, marked
+    assert len(marked) == 3, marked
     assert all(m.startswith("test_run_gate.py:") for m in marked), marked
 
 
