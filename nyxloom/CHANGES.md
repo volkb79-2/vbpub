@@ -4,6 +4,11 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Fixed
+- `session-extract` R2 lane: the one-time SHA base pin aged into a 1204-candidate plan above the 1203 cap (every attempt exit 4,
+  MUTANT_LIMIT_EXCEEDED). The lane now takes `base_source = "request"` (`run-gate --base <previous nyxloom-v* tag> session-extract`;
+  `nyxloom-v0.11.1` plans 885 candidates) and the cap is 1500 with a documented rationale in `assay.toml`.
+
 <!-- cmru: release history -->
 
 ## [0.12.1] - 2026-11-04

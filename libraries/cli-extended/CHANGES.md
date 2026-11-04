@@ -202,6 +202,10 @@ Behaviour changes a consumer can see:
 
 ## [Unreleased]
 
+### Fixed
+- `run-gate.toml` lane `r2` puts `libraries/cowtree/src` on `PYTHONPATH` next to `assay/src`, so `assay.cli run` no longer crashes with
+  `No module named 'cowtree'` when CoW isolation is on (no host-local patch needed).
+
 ## [0.5.0] - 2026-10-21
 <!-- cmru: generated -->
 <!-- cmru: source-end=eaa1421fc7e2df2fbf287a4cb68243b7a73f238b -->
