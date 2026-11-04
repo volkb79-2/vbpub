@@ -858,13 +858,13 @@ class SessionServer:
     def _manifest_for(self, sess: _Session, *, status: str) -> Dict[str, Any]:
         started_epoch = self._parse_iso_epoch(sess.started_at)
         ended_epoch = self._parse_iso_epoch(sess.ended_at) if sess.ended_at else None
-        # CP-7 (C3): lazy, mirroring `cgprofile.py`'s own `cmd_serve` lazy
-        # import of `lib.serve` — `cgprofile.py` is the top-level script
+        # CP-7 (C3): lazy, mirroring `cli/legacy.py`'s own `cmd_serve` lazy
+        # import of `cgprofile.serve` — `legacy` is the CLI module
         # (never imported at this module's top level, so this stays a
         # one-directional dependency at call time only), and `_limits_snapshot`
         # is its own helper (the exact shape `cmd_collect` already writes)
         # rather than a duplicate reimplementation here.
-        import cgprofile as cg_module
+        from .cli import legacy as cg_module
         return {
             "session": sess.session_id,
             "status": status,
