@@ -275,7 +275,9 @@ remote-gate status|logs [-f] [--lane-log]|collect|cancel <id>
 - **Source.** The worktree must have a clean tracked tree (untracked files are ignored); commit first with
   `git commit --only -- <paths>` (agents do anyway). HEAD is shipped as a thin git bundle against the closest commit the host already
   has under `~/checkouts` (no bundle if the host already has HEAD), checksum-verified, then checked out detached as a throwaway
-  checkout `~/checkouts/rg-<id>-<sha12>` (visible as `/workspaces/rg-<id>-<sha12>` in the cockpit). A dirty tree is refused rather than
+  checkout `~/checkouts/vbpub/.worktrees/rg-<id>-<sha12>` (visible as `/workspaces/vbpub/.worktrees/rg-<id>-<sha12>` in the cockpit, so
+  lane scripts that require the worktree under `/workspaces/vbpub/.worktrees/` accept it; existing host checkouts are never touched, only
+  the empty `vbpub/.worktrees` parents remain after cleanup). A dirty tree is refused rather than
   patched in: one commit id is what the verdict is about.
 - **Run.** A detached host job (`run-job rg-<id>`, `~/rg/<id>/` and `~/jobs/rg-<id>/{job.log,EXIT}`) waits until PSI is <= 25
   (`--wait-psi`, default 900 s, else exit 75, verdict `PSI_REFUSED`), then runs `nice -n 19 run-gate <lane> [--base SHA] [extra]` in the

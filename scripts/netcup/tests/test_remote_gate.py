@@ -225,3 +225,13 @@ def test_rendered_job_script_is_valid_bash(tmp_path):
     path = tmp_path / "job.sh"
     path.write_text(text)
     subprocess.run(["bash", "-n", str(path)], check=True)
+
+
+def test_checkout_lives_under_vbpub_worktrees_and_cleanup_is_scoped(tmp_path):
+    ctx, _ = ctx_for(tmp_path, git_handlers() + [psi(1, 1), ("ls /home/runner/checkouts", rg.Result(0, ""))])
+    rg.cmd_run(ctx, run_args(tmp_path, "v1001", "/wt", "suite", "--detach", "--name", "t2"))
+    job = (tmp_path / "out" / "t2" / "job.sh").read_text()
+    assert "CKDIR=$CKROOT/$CK" in job and "CKROOT=$HOME/checkouts/vbpub/.worktrees" in job
+    assert "CKIN=/workspaces/vbpub/.worktrees/$CK" in job
+    assert '"$HOME"/checkouts/vbpub/.worktrees/rg-*' in job  # removal guard only matches our own rg-* dirs
+    assert '-w "$CKIN/$PROJ"' in job and "/workspaces/$CK" not in job

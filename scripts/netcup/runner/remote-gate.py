@@ -205,7 +205,9 @@ set -Euo pipefail
 umask 022
 D=$HOME/rg/@@NAME@@
 CK=rg-@@NAME@@-@@SHORT@@
-CKDIR=$HOME/checkouts/$CK
+CKROOT=$HOME/checkouts/vbpub/.worktrees
+CKDIR=$CKROOT/$CK
+CKIN=/workspaces/vbpub/.worktrees/$CK
 PROJ=@@PROJ@@
 LANE=@@LANE@@
 COCKPIT=@@COCKPIT@@
@@ -232,8 +234,8 @@ finish() {
   names=$(docker ps -a --format '{{.Names}}' 2>/dev/null | grep -E '^run-gate-' | grep -F -- "${SHA:0:12}" | grep -F -- "$LANE" || true)
   for n in $names; do docker rm -f "$n" >/dev/null 2>&1 && log "removed container $n"; done
   docker exec -u vscode "$COCKPIT" rm -f "$PIDF" 2>/dev/null || true
-  if [[ -d $CKDIR && $CK == rg-* && $CKDIR == "$HOME"/checkouts/rg-* ]]; then
-    docker exec -u vscode "$COCKPIT" rm -rf -- "/workspaces/$CK" 2>/dev/null || rm -rf -- "$CKDIR"
+  if [[ -d $CKDIR && $CK == rg-* && $CKDIR == "$HOME"/checkouts/vbpub/.worktrees/rg-* ]]; then
+    docker exec -u vscode "$COCKPIT" rm -rf -- "$CKIN" 2>/dev/null || rm -rf -- "$CKDIR"
     rm -rf -- "$CKDIR"
     log "removed checkout $CKDIR"
   fi
@@ -254,6 +256,7 @@ while psi_high; do
 done
 log "PSI ok (waited ${waited}s)"
 
+mkdir -p -- "$CKROOT"
 if [[ -n $SEED ]]; then
   git -c init.defaultBranch=main clone -q --no-checkout "$HOME/checkouts/$SEED" "$CKDIR"
 else
@@ -267,8 +270,8 @@ log "checkout $CKDIR at $SHA"
 
 args=("$LANE" "${EXTRA[@]}")
 [[ -n $BASE_SHA ]] && args+=(--base "$BASE_SHA")
-log "run-gate ${args[*]} (cwd /workspaces/$CK/$PROJ)"
-docker exec -u vscode -w "/workspaces/$CK/$PROJ" -e RUN_GATE_TESTER_UNIFIED_IMAGE="$IMAGE" -e RUN_GATE_ALLOW_MAIN_CHECKOUT=1 -e RUN_GATE_PROFILE=off \
+log "run-gate ${args[*]} (cwd $CKIN/$PROJ)"
+docker exec -u vscode -w "$CKIN/$PROJ" -e RUN_GATE_TESTER_UNIFIED_IMAGE="$IMAGE" -e RUN_GATE_ALLOW_MAIN_CHECKOUT=1 -e RUN_GATE_PROFILE=off \
   "$COCKPIT" sh -c 'echo $$ > "$1"; shift; exec nice -n 19 /home/vscode/.local/bin/run-gate "$@"' sh "$PIDF" "${args[@]}" > "$D/lane.log" 2>&1 &
 lanepid=$!
 wait "$lanepid"
