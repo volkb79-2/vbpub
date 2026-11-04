@@ -9,6 +9,26 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [25.0.0] - 2026-11-04
+<!-- cmru: generated -->
+<!-- cmru: source-end=2cb72acb1e6ec650d2c9ffa852ee818091edbc55 -->
+
+### Added
+- feat(run-gate)!: reach the cgprofile daemon over the control socket only (RG-154) (c14b897f9)
+
+### Changed
+- Merge main into feat-rg-socket-only-20261104; renumber RG-154 to RG-156 (main's RG-154/155 are the dstdns pilot findings); move CHANGES entry to Unreleased (088c923db)
+- Merge branch 'ops-dstdns-r2-20261104' (1e05860ad)
+
+### Documentation
+- docs(backlog): file RG-154, RG-155 and B213, B214 from the first dstdns native R2 pilot (fd834b932)
+
+### Testing
+- test(run-gate): drop the root-skipping real-socket permission test (the errno mapping is pinned by the parametrized case) (aaa8a02d1)
+
+<!-- cmru: pending release notes begin -->
 ### Changed
 - **BREAKING (RG-156): run-gate reaches the cgprofile daemon over its control socket only.** The
   `docker exec cgprofile-host-daemon cgprofile ctl ...` fallback is removed with its settings: the `[profile] transport`
@@ -22,8 +42,7 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   socket instead of the daemon name and transport; inflight records drop `profile_daemon`/`profile_transport` and
   `profile_ref` carries `socket_path` instead of `daemon`. Lanes need the `/run/cgprofile` directory mounted and the
   socket's group; a lane without access sets `RUN_GATE_PROFILE=off` as before.
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [24.4.0] - 2026-11-04
 <!-- cmru: generated -->
