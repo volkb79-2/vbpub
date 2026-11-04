@@ -834,6 +834,19 @@ effects = ["Creates one isolated Playwright context with the preset user agent a
 test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---user-agent-edge-windows]"]
 
 [[cases]]
+id = "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--storage-state/--storage-state"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:e438db3e13a9e70885413e45fbfd16a23ff9ece6eff884ba66fbb6d50fa08a9b"
+rationale = "A caller can reuse a session that a HUMAN exported from their own browser (PWMCP-32); it is opt-in, validated before connecting (regular file, mode 0600, Playwright storage-state shape, something for the URL's host), scoped to the URL's host so no other site's cookies reach the browser, and reported as counts only: values are never printed or logged. It is not a solver and does not bypass anything."
+invocation = ["inspect", "https://example.test", "--storage-state", "state.json"]
+expected_exit_status = 0
+expected_stdout_contains = "rendered page text"
+expected_stderr_contains = "storage state: 1 cookies and 0 origins applied"
+effects = ["Reads the local storage-state file (refused unless mode 0600), keeps only the cookies and origins of the URL's host, creates one isolated Playwright context seeded with them, reads rendered text, then closes the context (which discards them) and the lease; stderr states how many cookies/origins were applied (not silenced by --quiet) and --json prints an object with content and storage_state counts instead of the bare string. The file is never modified."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---storage-state-state.json]"]
+
+[[cases]]
 id = "case:route:entrypoint:pwmcp/inspect/option-choice/option:route:entrypoint:pwmcp/inspect/--format/1e1d0f251d"
 state = "active"
 decision = "accept"

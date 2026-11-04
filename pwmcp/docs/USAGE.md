@@ -85,6 +85,14 @@ resources. Use it only for a trusted target with a known certificate problem;
 it does not change PWMCP service defaults. See the
 [design rationale](DESIGN-GUIDE.md#certificate-errors-during-inspection).
 
+Bot protection (PWMCP-32): when the page is a challenge or block page (Cloudflare "Just a
+moment...", a CAPTCHA wall, ...), `inspect` exits **4**, says `blocked by bot protection (...)`,
+and with `--json` returns `blocked: true`, `provider`, `signals`, `status`, `final_url`,
+`waited_ms`; it never writes `--output` and never retries. `--storage-state FILE` reuses a
+session a human exported from their own browser (mode 0600, scoped to the URL's host, values
+never printed). See README "Bot protection" for the signatures, the limits, and the
+human-in-the-loop steps. Exit codes of `inspect`: 0 success, 1 failure, 2 usage, 4 blocked.
+
 Partial renders (staged hydration, assets answered 403) are the usual failure on
 heavy pages, so `inspect` says when it suspects one. All of these go to stderr
 and never change stdout:
