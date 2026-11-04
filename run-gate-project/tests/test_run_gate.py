@@ -280,14 +280,27 @@ class _FakeCgprofileDaemon:
                                                run_gate.socket.SOCK_STREAM)
         self.listener.bind(self.path)
         self.listener.listen(16)
-        threading.Thread(target=self._accept_loop, daemon=True).start()
+        # RG-162: closing a listener while another thread is blocked in
+        # accept() does not wake it, and the freed fd NUMBER is reused by the
+        # next test's listener; the stale accept thread then accepted that
+        # test's connections and answered them from a deleted plan directory
+        # (a 0-byte reply). The loop therefore polls with a short timeout and
+        # `close()` stops and JOINS it before the fd is released.
+        self.listener.settimeout(0.05)
+        self._stopping = threading.Event()
+        self._acceptor = threading.Thread(target=self._accept_loop,
+                                          daemon=True)
+        self._acceptor.start()
 
     def _accept_loop(self) -> None:
-        while True:
+        while not self._stopping.is_set():
             try:
                 conn, _ = self.listener.accept()
+            except run_gate.socket.timeout:
+                continue
             except OSError:
                 return
+            conn.settimeout(None)
             threading.Thread(target=self._handle, args=(conn,),
                              daemon=True).start()
 
@@ -327,6 +340,8 @@ class _FakeCgprofileDaemon:
                 pass
 
     def close(self) -> None:
+        self._stopping.set()
+        self._acceptor.join(timeout=5)
         self.listener.close()
         shutil.rmtree(self.root, ignore_errors=True)
 
@@ -2093,8 +2108,8 @@ class TestRG78ClosedExitTable:
         (repo / ".gitignore").write_text(".run-gate/\n")
         commit_all(repo, "ignore run-gate state")
         proj = self._host_config(repo, tmp_path,
-                                 ["bash", "-c", "sleep 0.75"],
-                                 budget="1s", shared="rg78-wait-budget")
+                                 ["bash", "-c", "sleep 0.5"],
+                                 budget="2s", shared="rg78-wait-budget")
         lock_dir = tmp_path / "locks"
         lock_dir.mkdir()
         monkeypatch.setenv("RUN_GATE_LOCK_DIR", str(lock_dir))
@@ -2102,15 +2117,20 @@ class TestRG78ClosedExitTable:
         fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
         fcntl.flock(fd, fcntl.LOCK_EX)
         release = threading.Thread(
-            target=lambda: (time.sleep(0.4), fcntl.flock(fd, fcntl.LOCK_UN)))
+            target=lambda: (time.sleep(2.2), fcntl.flock(fd, fcntl.LOCK_UN)))
         release.start()
         started = time.monotonic()
         try:
-            proc = run_tool(proj, "suite", "--lock-wait", "2s", "--json")
+            proc = run_tool(proj, "suite", "--lock-wait", "30s", "--json")
         finally:
             release.join()
             os.close(fd)
-        assert time.monotonic() - started >= 1.0
+        # RG-162: the oracle is unchanged (the lock wait ALONE already exceeds
+        # the lane budget, yet the lane passes), but the command's own run time
+        # (0.5 s) now has 1.5 s of headroom under the 2 s budget instead of
+        # 0.25 s, so scheduler delay cannot turn the budget check into a
+        # false BUDGET_EXCEEDED.
+        assert time.monotonic() - started >= 2.2 + 0.5
         assert proc.returncode == 0, proc.stderr
         result = json.loads(proc.stdout.splitlines()[-1])
         assert result["verdict"] == "PASS"
@@ -15990,8 +16010,7 @@ class TestJsonFlagScope:
     """`--json` belongs to history/footprint/status queries and lane results; every
     other use refuses by name instead of silently returning a human table."""
 
-    @pytest.mark.parametrize("args", [["--list", "--json"],
-                                      ["--json"],
+    @pytest.mark.parametrize("args", [["--json"],
                                       ["doctor", "--json"]])
     def test_other_verbs_refuse_json_by_name(self, tmp_path, args):
         _, proj = make_history_repo(tmp_path)
@@ -16024,6 +16043,231 @@ class TestJsonFlagScope:
         assert "REFUSES it by name" in out.stdout
         assert "run-gate history [LANE] [--worktree PATH] [--json]" \
             in out.stdout
+
+
+def _multi_inventory(*entries) -> str:
+    """An assay inventory document with several lanes (see `_inventory`)."""
+    base = json.loads(_inventory())["lanes"][0]
+    lanes = [{**base, **entry} for entry in entries]
+    return json.dumps({"assay_version": "12.0.0", "inventory_schema": 1,
+                       "lanes": lanes})
+
+
+LIST_JSON_CFG = """\
+    schema_version = 1
+
+    [lanes.cov]
+    kind = "assay"
+    environment = "bare-host"
+    assay_lane = "cov"
+    assay_command = ["assay"]
+    clean_tree = false
+
+    [lanes.canary]
+    kind = "assay"
+    environment = "bare-host"
+    assay_lane = "canary"
+    assay_command = ["assay"]
+    clean_tree = false
+
+    [lanes.ghost]
+    kind = "assay"
+    environment = "bare-host"
+    assay_lane = "not_declared"
+    assay_command = ["assay"]
+    clean_tree = false
+
+    [lanes.unit]
+    kind = "command"
+    environment = "bare-host"
+    argv = ["assay", "run", "cov"]
+    clean_tree = false
+
+    [lanes.gate]
+    kind = "sequence"
+    lanes = ["unit", "cov"]
+"""
+
+
+class TestListJsonDerivedRigor:
+    """R-55 / RG-d: `--list --json` is the machine form of the lane
+    inventory with each lane's DERIVED rigor. Levels are read from the judge
+    (`assay lanes --json`), never inferred from a command line."""
+
+    INVENTORY = _multi_inventory(
+        {"name": "cov", "rigor": ["R1", "R0"], "rigor_reachable": ["R1", "R3"]},
+        {"name": "canary", "rigor": ["R0", "R1", "R2", "R3"],
+         "rigor_reachable": []})
+
+    def _project(self, tmp_path, monkeypatch, judge=None):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, LIST_JSON_CFG)
+        (proj / "assay.toml").write_text("# judged by the fake judge\n")
+        commit_all(repo, "assay config")
+        install_fake_assay(monkeypatch, judge or _fake_judge(self.INVENTORY))
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ["run-gate"])
+        return repo, proj
+
+    def _rows(self, capsys):
+        document = json.loads(capsys.readouterr().out)
+        assert document["schema"] == "run-gate-list/1"
+        return {row["name"]: row for row in document["lanes"]}
+
+    def test_assay_lanes_carry_the_judges_levels_sorted(
+            self, tmp_path, monkeypatch, capsys):
+        self._project(tmp_path, monkeypatch)
+        assert run_gate.main(["--list", "--json"]) == 0
+        rows = self._rows(capsys)
+        assert rows["cov"] == {
+            "name": "cov", "kind": "assay", "environment": "bare-host",
+            "environments": ["bare-host"], "assay_lane": "cov",
+            "members": None, "imported": False, "rigor": ["R0", "R1"],
+            "rigor_reachable": ["R1", "R3"], "rigor_basis": "assay-declared",
+            "rigor_reason": None}
+        assert rows["canary"]["rigor"] == ["R0", "R1", "R2", "R3"]
+        assert rows["canary"]["rigor_reachable"] == []
+
+    def test_a_command_lane_is_declared_not_judged_whatever_it_runs(
+            self, tmp_path, monkeypatch, capsys):
+        self._project(tmp_path, monkeypatch)
+        assert run_gate.main(["--list", "--json"]) == 0
+        unit = self._rows(capsys)["unit"]
+        assert unit["rigor"] == ["R0"] and unit["rigor_reachable"] is None
+        assert unit["rigor_basis"] == "declared-not-judged"
+        assert unit["assay_lane"] is None and unit["members"] is None
+
+    def test_a_sequence_lists_its_members_and_holds_r0(
+            self, tmp_path, monkeypatch, capsys):
+        self._project(tmp_path, monkeypatch)
+        assert run_gate.main(["--list", "--json"]) == 0
+        gate = self._rows(capsys)["gate"]
+        assert gate["members"] == ["unit", "cov"]
+        assert gate["environment"] is None
+        assert gate["environments"] == ["bare-host"]
+        assert (gate["rigor"], gate["rigor_basis"]) == (["R0"], "sequence")
+
+    def test_rows_are_sorted_and_the_three_column_list_is_unchanged(
+            self, tmp_path, monkeypatch, capsys):
+        self._project(tmp_path, monkeypatch)
+        assert run_gate.main(["--list", "--json"]) == 0
+        names = [row["name"] for row in
+                 json.loads(capsys.readouterr().out)["lanes"]]
+        assert names == sorted(names) == ["canary", "cov", "gate", "ghost",
+                                          "unit"]
+        assert run_gate.main(["--list"]) == 0
+        assert capsys.readouterr().out.splitlines() == [
+            "canary\tassay\tbare-host", "cov\tassay\tbare-host",
+            "gate\tsequence\tbare-host", "ghost\tassay\tbare-host",
+            "unit\tcommand\tbare-host"]
+
+    def test_one_probe_serves_every_lane_of_the_same_judge(
+            self, tmp_path, monkeypatch, capsys):
+        self._project(tmp_path, monkeypatch)
+        calls = []
+        real = run_gate.assay_inventory
+
+        def counting(*args, **kwargs):
+            calls.append(args[1]["assay_lane"])
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(run_gate, "assay_inventory", counting)
+        assert run_gate.main(["--list", "--json"]) == 0
+        assert len(calls) == 1
+        assert self._rows(capsys)["cov"]["rigor"] == ["R0", "R1"]
+
+    def test_a_lane_the_judge_does_not_declare_is_unavailable_with_a_reason(
+            self, tmp_path, monkeypatch, capsys):
+        self._project(tmp_path, monkeypatch)
+        assert run_gate.main(["--list", "--json"]) == 0
+        ghost = self._rows(capsys)["ghost"]
+        assert ghost["rigor"] is None and ghost["rigor_reachable"] is None
+        assert ghost["rigor_basis"] == "unavailable"
+        assert "'not_declared' is not declared in assay.toml" \
+            in ghost["rigor_reason"]
+
+    def test_a_judge_that_cannot_answer_is_never_an_empty_list(
+            self, tmp_path, monkeypatch, capsys):
+        self._project(tmp_path, monkeypatch,
+                      judge=_fake_judge(self.INVENTORY, exit_code=1))
+        assert run_gate.main(["--list", "--json"]) == 0
+        rows = self._rows(capsys)
+        for name in ("cov", "canary", "ghost"):
+            assert rows[name]["rigor"] is None
+            assert rows[name]["rigor_basis"] == "unavailable"
+            assert "`assay lanes --json` did not run" \
+                in rows[name]["rigor_reason"]
+        assert rows["unit"]["rigor"] == ["R0"]
+
+    def test_a_container_environment_without_docker_is_unavailable(
+            self, monkeypatch):
+        monkeypatch.setattr(run_gate.shutil, "which", lambda _n: None)
+        monkeypatch.setattr(run_gate, "resolve_environment",
+                            lambda *_a: ({"mode": "ephemeral"}, "cfg"))
+        lanes = {"cov": {"kind": "assay", "environment": "runner",
+                         "assay_lane": "cov"}}
+        facts = run_gate.lane_rigor_facts(lanes, Path("."), {}, {},
+                                          Path("run-gate.toml"), None)
+        assert facts["cov"]["rigor"] is None
+        assert "docker not on PATH" in facts["cov"]["rigor_reason"]
+
+    def test_a_worktree_that_cannot_be_resolved_is_unavailable(
+            self, tmp_path, monkeypatch, capsys):
+        self._project(tmp_path, monkeypatch)
+
+        def refuse(*_args):
+            raise run_gate.GateError("fixture: no such worktree")
+
+        monkeypatch.setattr(run_gate, "resolve_worktree_scope", refuse)
+        assert run_gate.main(["--list", "--json"]) == 0
+        rows = self._rows(capsys)
+        assert rows["cov"]["rigor"] is None
+        assert rows["cov"]["rigor_reason"] == "fixture: no such worktree"
+        assert rows["unit"]["rigor"] == ["R0"]
+
+    def test_json_listing_needs_the_import_inventory_and_plain_list_does_not(
+            self):
+        declared = {"suite": {"kind": "sequence", "lanes": ["remote"]}}
+        spec = {"lanes": "all"}
+        listing = SimpleNamespace(check_env=False, list=True, json=False,
+                                  help=False, lane=None, target=None)
+        assert run_gate.assay_import_resolution_required(
+            listing, declared, spec) is False
+        listing.json = True
+        assert run_gate.assay_import_resolution_required(
+            listing, declared, spec) is True
+
+    def test_an_imported_lane_is_flagged_and_carries_the_judges_levels(
+            self, tmp_path, monkeypatch, capsys):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, """\
+            schema_version = 1
+            [environments.bare-host]
+            mode = "host"
+            [assay]
+            command = ["assay"]
+            environment = "bare-host"
+            import = { environment = "bare-host", lanes = "all" }
+            [assay.pins.assay]
+            sha256 = "tools/assay-7.2.0.pyz.sha256"
+            version = "7.2.0"
+        """)
+        (proj / "assay.toml").write_text("# judged by the fake judge\n")
+        artifact = proj / "tools" / "assay-7.2.0.pyz"
+        artifact.parent.mkdir(parents=True)
+        artifact.write_bytes(b"assay bytes")
+        artifact.with_suffix(".pyz.sha256").write_text(
+            f"{hashlib.sha256(artifact.read_bytes()).hexdigest()}  "
+            f"{artifact.name}\n")
+        commit_all(repo, "assay config")
+        install_fake_assay(monkeypatch, _fake_judge(self.INVENTORY))
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ["run-gate"])
+        assert run_gate.main(["--list", "--json"]) == 0
+        rows = self._rows(capsys)
+        assert sorted(rows) == ["canary", "cov"]
+        assert rows["cov"]["imported"] is True
+        assert rows["cov"]["rigor"] == ["R0", "R1"]
 
 
 class TestHistoryReadScopeInProcess:
@@ -16085,8 +16329,7 @@ class TestHistoryReadScopeInProcess:
         assert run_gate.main(["history", "--worktree", str(plain)]) == 2
         assert "not written yet" not in capsys.readouterr().out
 
-    @pytest.mark.parametrize("args", [["--list", "--json"], ["--json"],
-                                      ["doctor", "--json"]])
+    @pytest.mark.parametrize("args", [["--json"], ["doctor", "--json"]])
     def test_json_outside_history_refuses_by_name(self, tmp_path, monkeypatch,
                                                   capsys, args):
         repo, proj = make_history_repo(tmp_path)

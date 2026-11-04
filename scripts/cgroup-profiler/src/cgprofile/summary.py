@@ -362,6 +362,7 @@ class SummaryAccumulator:
         damon_enabled: bool = False,
         damon_kdamond: Optional[int] = None,
         damon_thresholds: Optional[Dict[str, Any]] = None,
+        machine: Optional[Dict[str, Any]] = None,
     ) -> None:
         if scope not in ("container", "container-shared"):
             raise ValueError(f"unknown scope {scope!r}")
@@ -375,6 +376,9 @@ class SummaryAccumulator:
         self.cgroup = cgroup
         self.token = token
         self.slice_name = slice_name
+        self.machine = machine
+        self._cpu_first: Dict[str, Any] = {}
+        self._cpu_last: Dict[str, Any] = {}
 
         self._damon_enabled = damon_enabled
         self._damon_kdamond = damon_kdamond
@@ -481,10 +485,16 @@ class SummaryAccumulator:
             "some": _dig(host, "psi", "memory", "some_total"),
             "full": _dig(host, "psi", "memory", "full_total"),
         }
+        host_cpu = {
+            "steal": _dig(host, "cpu", "steal_jiffies"),
+            "total": _dig(host, "cpu", "accounted_jiffies"),
+        }
         if self._sample_count == 0:
             self._host_start = host_block
             self._host_first_totals = host_totals
+            self._cpu_first = host_cpu
         self._host_end = host_block
+        self._cpu_last = host_cpu
         self._host_last_totals = host_totals
 
         if slice_cgroup is not None:
@@ -690,7 +700,16 @@ class SummaryAccumulator:
                 "memory_peak_bytes": self._maxima["slice_memory_peak"],
             }
 
+        hz = util.clk_tck()
+
+        def cpu_seconds(kind: str) -> Optional[float]:
+            delta = _delta(self._cpu_first[kind], self._cpu_last[kind])
+            return _round(None if delta is None else delta / hz)
+
         return {
+            "machine": self.machine,
+            "steal_seconds": cpu_seconds("steal"),
+            "cpu_seconds_total": cpu_seconds("total"),
             "start": {
                 "memory_pressure": dict(self._host_start["memory_pressure"]),
                 "cpu_pressure": dict(self._host_start["cpu_pressure"]),

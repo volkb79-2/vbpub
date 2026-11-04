@@ -341,6 +341,85 @@ reading a page that its owner has explicitly closed to automation acceptable. Wh
 given Anubis deployment lifts its block under these presets is not verified (see
 `KNOWN_ISSUES_TODO_BACKLOG.md` PWMCP-09).
 
+## Bot protection (PWMCP-32)
+
+Many sites answer an automated browser with a challenge or block page (Cloudflare
+"Just a moment...", a CAPTCHA wall, an Akamai "Access Denied"). `pwmcp inspect` used to
+return that page like any other content, so callers had to guess they were blocked. It now
+says so.
+
+**What `inspect` does.** After the page loads (or a wait ends) it checks the latest
+main-frame document's status and headers, the page title, the body text and the frames it
+embeds against a small signature table (`client/src/pwmcp_client/blocked.py`). On a match:
+
+- exit code **4** (distinct from 1 = failure, 2 = usage, 3 = not installed);
+- stderr: `[ERROR] blocked by bot protection (Cloudflare managed challenge); page content below
+  is the challenge page, not the target (HTTP 403, signals: ...)`, plus a hint;
+- stdout: that same sentence, a blank line, then the challenge page's text (at most 4000
+  characters), so no consumer can mistake it for the target. `--output` is NOT written;
+- `--json`: one object `{"blocked": true, "provider", "kind", "signals", "status",
+  "final_url", "waited_ms", "message", "content"}` (plus `user_agent*`/`storage_state` fields when
+  an override or session is active). A non-blocked `--json` result keeps its old shape, so the
+  absence of `blocked` with exit 0 means "not recognised as bot protection";
+- a `--wait-for` (or `--wait-until`) that ends while the page is still a challenge is reported as
+  blocked with the time waited (`waited_ms`, and `still blocked after waiting N s` on stderr), not
+  as a generic timeout. A blocked attempt is never retried by `--retries`.
+
+**Signatures** (the tables are data; extend them with a row plus a fixture test):
+
+| Kind | Signals | Counts as blocked |
+|---|---|---|
+| Definitive | `cf-mitigated: challenge`; a challenge title (`Just a moment...`, `Attention Required! \| Cloudflare`, `Pardon Our Interruption`, ...); challenge text (`Performing security verification`, `Checking your browser before accessing`, `Sorry, you have been blocked`, `DDoS protection by Cloudflare`, `Press & Hold to confirm you are human`, `verify you are human`, ...) on a page of at most 6000 characters of text | on its own |
+| Hint | provider headers (`server: cloudflare`, `cf-ray`, `server: AkamaiGHost`, `x-datadome`, `x-iinfo`, ...) | only with HTTP 403, 429 or 503 |
+| Hint | a captcha/challenge frame (`challenges.cloudflare.com`, `captcha-delivery.com`, `captcha.px-cdn.net`, `arkoselabs.com`, reCAPTCHA, hCaptcha) | with HTTP 403/429/503, or on a near-empty page (600 characters or less) |
+
+A plain 403 with no provider marker is not called bot protection (the existing
+`page diagnostics` line still reports the status), and neither is a normal login page that
+embeds a reCAPTCHA or an article that quotes "Just a moment...". Providers are detected
+only as DETECTION signatures: nothing here solves, bypasses or hides from them.
+
+**Limits.** Detection is a heuristic. A page that is not recognised is "not detected as
+blocked", not proof that it is the complete target. `inspect` reports the state when it
+loads the page: without `--wait-for` a self-resolving interstitial that would clear in a
+few seconds is reported as blocked, so pass `--wait-for SELECTOR` for content you expect.
+`pwmcp ocr URL --selector ...` does not check for bot protection.
+
+**Human in the loop (opt-in).** The legitimate way past a protection is a person. A HUMAN
+operator opens the site in their own browser, passes the check, and exports the session as a
+Playwright storage state:
+
+```bash
+# on the operator's machine (headed browser; solve the check by hand, then close it)
+playwright codegen --save-storage=geekbench.state.json https://browser.geekbench.com/
+chmod 600 geekbench.state.json
+# copy it to where pwmcp runs (scp keeps the mode), then:
+pwmcp inspect https://browser.geekbench.com/v7/cpu/1 --storage-state geekbench.state.json
+```
+
+(Any other way of producing a Playwright `{"cookies": [...], "origins": [...]}` file from your
+own browser session works equally; a headed/VNC browser session run by a human is fine.)
+The file holds session cookies, so it is a secret:
+
+- `inspect` refuses a file that is group- or other-accessible (it must be mode 0600), is not a
+  regular file, is not a storage state, or holds nothing for the URL's host;
+- only the cookies and origins that belong to the URL's host are handed to the browser (a
+  `.example.com` cookie applies to `www.example.com` but never to `notexample.com`), so one file
+  can hold several sites without leaking one to another;
+- values are never printed or logged: stderr says `storage state: N cookies and M origins applied`
+  and `--json` carries only those counts. Do not commit the file or paste it into a ticket;
+- the context is closed after the call, so nothing is stored in the browser service.
+
+Limits: a clearance cookie (for example Cloudflare's `cf_clearance`) usually expires after
+minutes to hours and may be bound to the IP address and user agent that earned it, so a state
+exported on one machine can be rejected from another. When the supplied session is itself
+challenged, the result is `blocked` again with a hint saying so; the human exports a fresh one.
+Using a session you are not entitled to use is out of scope.
+
+**Explicit non-goals.** No challenge solver, no CAPTCHA-solving service, no stealth or
+anti-detection patch, no fingerprint spoofing, and no dependency that does any of that. The
+`--user-agent` presets stay an identity string (see above); a site that blocks automation is
+asking you to ask its owner for an API, a data feed, or permission.
+
 ## OCR sidecar (PWMCP-11 phase 1, opt-in, off by default)
 
 **What it is.** A second, STATELESS container in the same ciu stack that turns an image

@@ -35,9 +35,15 @@ OBSOLETE_VARIABLES = {
     "BOOTSTRAP_STAGE",
     "NEVER_REBOOT_STAGE2",
 }
+# v1 keys that v2 replaced under a new name: still refused (a v1 file that sets
+# one must be edited, never silently ignored), with a pointer to the new key.
+RENAMED_V1_SETTINGS = {
+    "run_geekbench": "run_cpu_benchmark (v2 measures the host CPU once with the shared tools/cpu_benchmark.py "
+                     "and persists it in /var/lib/mdt/host-facts; see README 'Host CPU benchmark step')",
+}
 UNSUPPORTED_V2_SETTINGS = {
     "repo_url", "repo_branch", "clone_dir", "send_sysinfo",
-    "run_geekbench", "run_ssh_setup", "run_zswap_validation",
+    "run_ssh_setup", "run_zswap_validation",
     "telegram_use_forum_topic", "telegram_topic_prefix", "extend_root",
     "pre_shrink_root_extra_gb", "swap_ram_solution",
 }
@@ -195,10 +201,28 @@ class Config:
     # own requirement minus a safety margin) -- never let the benchmark
     # itself eat space the real swap layout needs.
     io_benchmark_max_size_gb: int = 32
+    # Per-host CPU benchmark (HB-2, rigor-evidence memo 4.6): runs the shared
+    # tools/cpu_benchmark.py ONCE at the end of stage two, while the host is
+    # still idle, and persists the Geekbench scores in
+    # /var/lib/mdt/host-facts/cpu-benchmark.json (+ the 0600 claim file).
+    # Advisory: any failure marks the step `warned` and the install continues.
+    # Replaces the v1 `run_geekbench` key (that name is now rejected with a
+    # pointer to this one). Needs outbound HTTPS to cdn.geekbench.com and
+    # browser.geekbench.com; an install without egress warns and moves on.
+    run_cpu_benchmark: bool = True
+    # Geekbench pin passed to the tool. Both empty = the installer's built-in
+    # pin for this CPU architecture (installer.CPU_BENCHMARK_PINS; an
+    # architecture without a pin is `warned`, never run unverified). Setting
+    # one requires the other: a version without the matching archive sha256
+    # (or the reverse) is refused at config load.
+    cpu_benchmark_geekbench_version: str = ""
+    cpu_benchmark_sha256: str = ""
 
 
 _SIZE_RE = re.compile(r"^[0-9]+$")
-_DOCKER_LOG_MAX_SIZE_RE = re.compile(r"^[0-9]+[bkmg]?$", re.IGNORECASE)
+_GEEKBENCH_VERSION_RE = re.compile(r"^[0-9]{1,2}\.[0-9]{1,3}\.[0-9]{1,3}$")
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_DOCKER_LOG_MAX_SIZE_RE =re.compile(r"^[0-9]+[bkmg]?$", re.IGNORECASE)
 _HHMM_RE = re.compile(r"^([01][0-9]|2[0-3]):[0-5][0-9]$")
 _SSH_KEY_TYPE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9@._+-]*$")
 MAX_SSH_AUTHORIZED_KEYS = 64
@@ -279,6 +303,9 @@ def _reject_obsolete(data: dict[str, Any]) -> None:
     if obsolete:
         names = ", ".join(obsolete)
         raise ConfigError(f"obsolete v1 setting(s) rejected by v2 clean break: {names}")
+    renamed = sorted({str(key).lower() for key in data} & set(RENAMED_V1_SETTINGS))
+    if renamed:
+        raise ConfigError("; ".join(f"{key} was replaced by {RENAMED_V1_SETTINGS[key]}" for key in renamed))
     unsupported = sorted({str(key).lower() for key in data} & UNSUPPORTED_V2_SETTINGS)
     if unsupported:
         raise ConfigError(f"setting(s) are not part of minimal v2: {', '.join(unsupported)}")
@@ -360,10 +387,20 @@ def validate_config(config: Config) -> None:
         "notify_backend", "mattermost_webhook_url", "notify_host_label",
         "docker_log_driver", "docker_log_max_size", "docker_log_max_file",
         "reboot_window_time", "controller_ssh_pubkey",
+        "cpu_benchmark_geekbench_version", "cpu_benchmark_sha256",
     ]
     for name in string_names:
         if not isinstance(getattr(config, name), str):
             raise ConfigError(f"{name} must be a string")
+    if bool(config.cpu_benchmark_geekbench_version) != bool(config.cpu_benchmark_sha256):
+        raise ConfigError(
+            "cpu_benchmark_geekbench_version and cpu_benchmark_sha256 must be set together "
+            "(a version pin needs its archive sha256, and the reverse)"
+        )
+    if config.cpu_benchmark_geekbench_version and not _GEEKBENCH_VERSION_RE.fullmatch(config.cpu_benchmark_geekbench_version):
+        raise ConfigError("cpu_benchmark_geekbench_version must look like 7.1.0")
+    if config.cpu_benchmark_sha256 and not _SHA256_RE.fullmatch(config.cpu_benchmark_sha256):
+        raise ConfigError("cpu_benchmark_sha256 must be 64 lowercase hex characters")
     if any(char in config.controller_ssh_pubkey for char in "\r\n\x00"):
         raise ConfigError(
             "controller_ssh_pubkey must be one authorized_keys line without CR, LF, or NUL"

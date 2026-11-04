@@ -225,7 +225,7 @@ lane runs; that lock serializes Assay lanes only.
 `--dry-run` previews a transaction without executing `run-tests`, so it cannot
 prove cgroup capacity or lane admission.
 
-### Judgment-fact fragment for the rigor-evidence record: `assay analyze export` (B219)
+### Judgment-fact fragment for the rigor-evidence record: `assay analyze export` (B227)
 
 ```bash
 assay analyze export --verdict .assay/verdict-r2.json [--progress .assay/progress-r2.jsonl] \

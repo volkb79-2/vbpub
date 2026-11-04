@@ -1329,3 +1329,63 @@ until measured: page-cache churn with little RAM, btrfs read amplification on `/
 dstdns `docs/testing/PARALLELISM-AND-PERFORMANCE.md`.
 **Acceptance.** A measurement (per-container `io.stat` rbytes vs. block-layer rbytes, cache hit ratio, `iostat`) on a dedicated host with the cap lifted;
 the result is recorded in the README observation and decides whether host-setup needs a change.
+
+## MDT-071 - host-setup cannot express "no IO limit"; dedicated-dev hosts need a pin above the device or a measurement (2026-11-05)
+
+**Status:** OPEN. Found lifting the 8000/4000 IOPS, 300M/250M pins on r1002 and v1001 (both `/dev/vda`, virtio, 512G disk, sole tenant).
+**Gap.** `DEV_IO_*_MAX` accepts only positive values ("0 is refused"), and on `HOST_ROLE=dedicated-dev` with no pin and no `/var/lib/iobench/result.json` the
+installer refuses (exit 2). `DEV_SUBSLICE_IOPS_PCT` is 1-100, so the gate/BuildKit sub-ceiling can only equal `dev.slice`, not vanish. The hosts have no iobench
+install and no result (MDT-063 is the producer), so the least-limiting expressible config is pins set above the measured device ceiling
+(applied: 2G / 1G bytes/s, 60000 / 40000 IOPS, `DEV_SUBSLICE_IOPS_PCT=100`; a 20 s fio probe outside dev.slice read 98k randread IOPS / 4.3 GB/s and wrote
+67k IOPS / 1.4 GB/s, burst-grade because of the hypervisor cache, so the pins are not sustained device facts).
+**Design.** Accept an explicit `unlimited` (renders `max`, skips the reconcile read-back mismatch) for the `dev.slice` pins and `DEV_SUBSLICE_IOPS_PCT=off`,
+only under `HOST_ROLE=dedicated-dev`; keep IOWeight and the PSI guard. Also: the installer reads `../../scripts/debian-install-v2/tools/` outside `host-setup/`, so a
+`host-setup/`-only copy fails midway (after rendering units) with "cannot stat iocost_coef_gen.py"; either vendor those two files or check for them up front.
+Also seen: the reconcile logs `Permission denied` writing `io.bfq.weight` on docker scopes (non-fatal, scheduler is not bfq).
+## MDT-069 - `mdt-psi-guard.py` writes `cpu.weight` and thereby silently resets `cpu.idle` on the dev slices (2026-11-05)
+
+**Status:** OPEN. Severity P3. Found by the Geekbench exploration on r1002/v1001 (`reports/geekbench-explore-REPORT.md`, finding 1, in the release-program reports dir).
+
+**Observed.** `/usr/local/sbin/mdt-psi-guard.py` writes `cpu.weight` (1 under pressure, then restores the saved value) on `dev-gates`, `dev-background` and `dev-buildkitd`.
+In the kernel a `cpu.weight` write resets `cpu.idle` to 0 (and leaving idle resets the weight to 100). An operator or benchmark that sets `cpu.idle=1` on
+`dev.slice/dev-gates.slice` loses it within minutes; on r1002 the first Geekbench launch lost idle that way, and the run wrapper had to re-assert `cpu.idle=1` every second.
+The guard's restore can also leave a wrong weight (dev-gates read 100 instead of 20 after a short run).
+
+**Design.** The guard reads `cpu.idle` together with `cpu.weight` before acting; on a slice with `cpu.idle=1` it skips the weight write (idle is already the strongest
+deprioritisation), and when it does write a weight it re-applies `cpu.idle` afterwards (write `cpu.idle` last, since it also resets the weight). Document the interaction in host-setup/README.md.
+
+**Acceptance criteria.** Unit test with a fake cgroup tree: a slice with `cpu.idle=1` keeps it through a pressure cycle and its weight is not rewritten; a slice with `cpu.idle=0` still
+gets the 1 -> original weight cycle and ends with the exact original values.
+
+## MDT-070 - Geekbench result pages are Cloudflare-challenged; the host CPU benchmark's `--resolve` page-parsing fallback cannot work (2026-11-05)
+
+**Status:** OPEN (documentation and tool change; related to MDT-066/067/068 on branch rigor-hb23-20261105, which are not on main yet). Severity P3.
+Evidence: `reports/geekbench-explore-REPORT.md` (finding 3) and `reports/geekbench-pwmcp-REPORT.md`.
+
+**Observed.** `browser.geekbench.com` and `www.geekbench.com` answer scripted clients (curl with the tool's User-Agent, from the devcontainer, r1002 and v1001) with the Cloudflare
+"Just a moment" challenge (HTTP 403). The PWMCP browser (chrome-windows and edge-windows profiles) does not pass the managed challenge either (page never resolves within 100 s). So the HB-1
+`--resolve` / result-page fallback can never retrieve a real result page; no result-page fixture could be captured. The stdout "Benchmark Summary" is the only reliable score source.
+Also seen: GB 6.7.0 ended with `unknown error (internal code 35)` at upload on r1002 twice (no scores printed, so no stdout fallback either); GB 7.1.0 uploaded fine.
+
+**Design.** Treat the result page as best-effort at most: the HB-1/HB-2/HB-3 docs and the tool's help state that scores come from stdout, that the `--resolve` fallback is unavailable behind the
+challenge, and that an upload failure or blocked page is a `warned` step (re-measure later, never fabricate a score). Prefer GB7 for the installer step; either remove the fallback or keep it
+documented as unreachable. When MDT-066..068 land, cross-reference this entry from them.
+
+**Acceptance criteria.** The HB docs and the tool text carry the Cloudflare/stdout-only statement; a test feeds the tool a challenge page and a missing-summary stdout and expects `warned`
+with no score, not a parse of the challenge HTML.
+## MDT-066 - HB-2 live verification: debian-install-v2 `run_cpu_benchmark` in a vm-system run (2026-11-05)
+
+**Status:** OPEN (hermetic tests done; nothing has run against a real guest).
+**What exists.** Installer step `run_cpu_benchmark` (default on, advisory) with mocked-tool tests: success, parse failure (exit 4), refusal, timeout, unpinned architecture, tool tamper, resume, dry-run.
+**Acceptance (needs a vm-system run on the `case-b` image).** (1) With the Browser egress allowlist (`scripts/debian-install-v2/docs/DESIGN-GUIDE.md`, VM section) the step ends `success`, `/var/lib/mdt/host-facts/cpu-benchmark.json` is 0644 and the claim file 0600, the guest reports `QEMU TCG CPU`, and the single `Install complete` milestone carries the scores and result URL but no claim link. (2) With egress locked the step ends `warned` and the install still completes. Free Geekbench under TCG can exceed 15 minutes; check the 1800 s tool timeout holds. (3) Record the real Geekbench 7 stdout from the run and replace `gb7-stdout-ASSUMED-SHAPE.txt` (HB-1 follow-up).
+
+## MDT-067 - HB-3 live verification: `install.sh cpu-benchmark` on the dev host, r1002 and v1001 (2026-11-05)
+
+**Status:** OPEN (operator hands; nothing has run on a real host).
+**What exists.** `sudo ./host-setup/install.sh cpu-benchmark [--force|--resolve]`, `mdt-host-check.sh` section "per-host CPU benchmark", hermetic tests over fixture files.
+**Acceptance.** Run once on the dev host in a quiet window (CPU `some avg10` below 5), then later on r1002 and v1001 (hosts already installed by debian-install-v2 before `run_cpu_benchmark` existed; NEVER nano1). For each: `cpu-benchmark.json` 0644 with both scores, claim file 0600, `mdt-host-check.sh` shows the OK line, a second run is refused without `--force`, and after a VM resize `mdt-host-check.sh` shows the STALE warning. Open the claim link once per host to attach it to the operator's Geekbench account.
+
+## MDT-068 - Geekbench archive pin for aarch64 (2026-11-05)
+
+**Status:** OPEN. `scripts/debian-install-v2/tools/cpu_benchmark.pins.json` holds only x86_64 (Geekbench 7.1.0, sha256 read from the real download in HB-1). An architecture without a pin is `warned` by the installer and refused by `install.sh cpu-benchmark`, never run unverified.
+**Acceptance.** Download the `LinuxARMPreview` 7.1.0 archive on an aarch64-capable path, record its sha256 in the pins file, add a test, and bump the pins together with the tool's `.sha256` where needed.

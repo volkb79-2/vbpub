@@ -127,7 +127,9 @@ def _install_review_browser(monkeypatch: pytest.MonkeyPatch) -> tuple[list[bool]
             return None
 
     class FakeBrowser:
-        def new_context(self, *, ignore_https_errors: bool, user_agent: str | None = None) -> FakeContext:
+        def new_context(
+            self, *, ignore_https_errors: bool, user_agent: str | None = None, storage_state: object | None = None
+        ) -> FakeContext:
             context_options.append(ignore_https_errors)
             return FakeContext()
 
@@ -208,6 +210,13 @@ def test_reviewed_case(
     is_ocr = "ocr" in invocation
     if "inspect" in invocation or is_ocr:
         context_options, captures = _install_review_browser(monkeypatch)
+    if "--storage-state" in invocation:
+        state = sandbox / invocation[invocation.index("--storage-state") + 1]
+        state.write_text(
+            json.dumps({"cookies": [{"name": "sid", "value": "v", "domain": "example.test", "path": "/"}]}),
+            encoding="utf-8",
+        )
+        state.chmod(0o600)
     if is_ocr:
         (sandbox / "screen.png").write_bytes(b"\x89PNG\r\n\x1a\nreviewed image")
         monkeypatch.delenv("PWMCP_OCR_URL", raising=False)

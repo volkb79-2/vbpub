@@ -31,7 +31,9 @@ targets = [
   "client/src/pwmcp_client/ocr.py",
   "containers/ocr/ocr_service.py",
   "client/src/pwmcp_client/session.py",
+  "client/src/pwmcp_client/storage_state.py",
   "client/src/pwmcp_client/user_agent.py",
+  "client/src/pwmcp_client/blocked.py",
   "scripts/resolve-playwright-version.py",
 ]
 fail_under = 100.0
@@ -73,7 +75,9 @@ targets = [
   "client/src/pwmcp_client/ocr.py",
   "containers/ocr/ocr_service.py",
   "client/src/pwmcp_client/session.py",
+  "client/src/pwmcp_client/storage_state.py",
   "client/src/pwmcp_client/user_agent.py",
+  "client/src/pwmcp_client/blocked.py",
   "scripts/resolve-playwright-version.py",
 ]
 fail_under = 100.0

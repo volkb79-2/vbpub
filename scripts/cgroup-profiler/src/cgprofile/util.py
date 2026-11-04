@@ -392,6 +392,14 @@ def parse_cpu_max(text: Optional[str]) -> Tuple[Optional[int], Optional[int]]:
     return (quota, period)
 
 
+def clk_tck() -> int:
+    """Kernel clock ticks per second (``SC_CLK_TCK``), 100 when unreadable."""
+    try:
+        return os.sysconf("SC_CLK_TCK")
+    except (ValueError, OSError, AttributeError):
+        return 100
+
+
 def _safe_int(text: str) -> Optional[int]:
     try:
         return int(text)
