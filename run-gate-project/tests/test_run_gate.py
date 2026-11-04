@@ -36353,6 +36353,12 @@ class TestR2JobsPR3:
         assert not any("WARNING" in line
                        for line in run_gate.assay_lane_budget_lines(lane))
         assert run_gate.assay_lane_budget_lines({"budget": "5m"}) == []
+        # an unparsable Assay budget is not disclosed (and never raises)
+        assert run_gate.assay_lane_budget_lines(
+            {"_assay_inventory": {"entry": {"budget": "soon"}}}) == []
+        # no inventory budget: nothing printed, not even a blank line
+        run_gate.print_assay_lane_budget({"budget": "5m"})
+        assert capsys.readouterr().out == ""
 
     @pytest.mark.parametrize("reason", [
         "cowtree-probe-ModuleNotFoundError", "cow-root-unset",

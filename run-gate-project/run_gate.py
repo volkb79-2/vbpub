@@ -14709,6 +14709,11 @@ def assay_lane_budget_lines(lane: dict) -> list[str]:
     return lines
 
 
+def print_assay_lane_budget(lane: dict) -> None:
+    print("".join(f"{line}\n" for line in assay_lane_budget_lines(lane)),
+          end="", flush=True)
+
+
 def print_lane_bounds(lane: dict, owner_pid: int | None = None) -> None:
     """RW-18 (review S6): the two numbers that can END this lane, disclosed
     before it is watched — on the fresh path, the RE-ATTACH path and the
@@ -14726,8 +14731,7 @@ def print_lane_bounds(lane: dict, owner_pid: int | None = None) -> None:
     if lane.get("budget"):
         print(f"run-gate: budget {lane['budget']} (hard limit; clock starts "
               f"after admission and lock waits)", flush=True)
-    for line in assay_lane_budget_lines(lane):
-        print(line, flush=True)
+    print_assay_lane_budget(lane)
     if lane.get("stall_timeout"):
         # R-40: what this bounds is SILENCE, not elapsed time. Saying so on
         # the line next to the hard budget is the whole point — the two
@@ -16155,8 +16159,7 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
     if lane.get("budget"):
         print(f"run-gate: budget {lane['budget']} (hard limit; clock starts "
               f"after admission and lock waits)", flush=True)
-    for line in assay_lane_budget_lines(lane):
-        print(line, flush=True)
+    print_assay_lane_budget(lane)
     # Review fix (R-05/R-28): exec lanes disclose the assembled plan exactly
     # like ephemeral lanes do — live AND dry, forwarded VALUES redacted
     # (RG-19). The slice name itself stays visible: it is mechanics, not a
@@ -16626,8 +16629,7 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     if lane.get("budget"):
         print(f"run-gate: budget {lane['budget']} (hard limit; clock starts "
               f"after admission and lock waits)", flush=True)
-    for line in assay_lane_budget_lines(lane):
-        print(line, flush=True)
+    print_assay_lane_budget(lane)
     if dry_run:
         if profile_plan and profile_plan["enabled"]:
             # Match the live bare-host order: only a discoverable Docker
