@@ -68,15 +68,49 @@ def wheel(tmp_path_factory) -> Path:
 
 
 @pytest.fixture(scope="module")
-def venv(wheel, tmp_path_factory) -> Path:
+def cli_extended_wheel(tmp_path_factory) -> Path:
+    """cli-extended built from THIS checkout (libraries/cli-extended), offline.
+
+    cgpctl imports cli_extended for real, and the gate image may carry an older release than the pin
+    (0.5.0 against >=0.5.1) with no index to resolve from. The clean venv therefore gets the checkout's own
+    cli-extended as a wheel, built the same way as the cgprofile wheel above (copied tree, pretend version).
+    """
+    source = PROJECT_ROOT.parents[1] / "libraries" / "cli-extended"
+    assert (source / "pyproject.toml").is_file(), f"cli-extended source missing at {source}"
+    work = tmp_path_factory.mktemp("cli-extended-build")
+    tree = work / "tree"
+    tree.mkdir()
+    for name in ("pyproject.toml", "README.md"):
+        shutil.copy2(source / name, tree / name)
+    shutil.copytree(source / "src", tree / "src", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    out = work / "dist"
+    env = dict(os.environ, SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CLI_EXTENDED="0.5.1")
+    proc = _run(
+        [sys.executable, "-m", "pip", "wheel", "--no-deps", "--no-build-isolation",
+         "--disable-pip-version-check", "-w", str(out), str(tree)],
+        env=env, cwd=str(work),
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    built = sorted(out.glob("cli_extended-*.whl"))
+    assert len(built) == 1, built
+    return built[0]
+
+
+@pytest.fixture(scope="module")
+def venv(wheel, cli_extended_wheel, tmp_path_factory) -> Path:
     root = tmp_path_factory.mktemp("clean-venv") / "venv"
     proc = _run([sys.executable, "-m", "venv", str(root)])
     assert proc.returncode == 0, proc.stderr
-    pip = _run(
-        [str(root / "bin" / "python"), "-m", "pip", "install", "--no-index", "--no-deps",
-         "--disable-pip-version-check", str(wheel)],
-    )
-    assert pip.returncode == 0, pip.stdout + pip.stderr
+    # No PYTHONPATH: the gate puts libraries/cli-extended/src on it, and pip would then see cli-extended as
+    # "already satisfied" and install nothing into the venv.
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    for artefact in (cli_extended_wheel, wheel):
+        pip = _run(
+            [str(root / "bin" / "python"), "-m", "pip", "install", "--no-index", "--no-deps",
+             "--disable-pip-version-check", str(artefact)],
+            env=env,
+        )
+        assert pip.returncode == 0, pip.stdout + pip.stderr
     return root
 
 
