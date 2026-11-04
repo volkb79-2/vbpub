@@ -7624,3 +7624,14 @@ the cause. No product defect is claimed. **Next step:** when either test fails a
 **Decisions the memo left open (review these).** (1) A sequence's own `rigor` is `["R0"]` and its `members` are its direct members; the members' levels sit on their own rows (the memo says "R0 for every member of a sequence lane": every row holds R0, assay rows hold what the judge declares). (2) `rigor` is the judge's DECLARED list; `rigor_reachable` is also passed through. A level is a claim only once a verdict proves it (assay `claims`). (3) A probe that fails gives `rigor: null` plus `rigor_reason`, not a refusal of the whole listing, so a consumer can still read command and sequence rows; the consumer decides. (4) `--list --json` resolves an `[assay.import]` (plain `--list` still never probes). (5) New schema id `run-gate-list/1`, owned by run-gate (SPEC R-55); the ciu v8 S16.9.2 port is CIU-V8-RIGOR.
 
 **Open.** Command lanes whose argv runs `assay run` (most estate R1/R3 lanes) stay `declared-not-judged` until adopters move them to `kind = "assay"`; that is an adoption task per project, not a run-gate change.
+
+## RG-162 — load-sensitive flaky selftest tests: `test_lock_wait_does_not_consume_lane_budget` (1 s budget timing) and `test_reattach_adopts_recorded_session_stop_called_with_it` (`profiling: cgprofile ctl stop produced an unparsable response`)
+
+**Status:** OPEN (watch), 2026-11-05 (rigor-rgd-20261105). Related to RG-160 (same reattach test).
+
+**Evidence.** Three local `run-gate selftest` runs on the rgd branch each failed exactly one test of ~2886, and the failing test differed between runs, with no relation to the change under test:
+`TestRG78ClosedExitTable.test_lock_wait_does_not_consume_lane_budget` (its 1-second lane budget is exceeded by scheduler delay under host load) and
+`TestReattachProfilingWiring.test_reattach_adopts_recorded_session_stop_called_with_it` (fails with `profiling: cgprofile ctl stop produced an unparsable response` under load).
+
+**Next step.** Make the lock-wait test's budget independent of wall-clock jitter (inject the clock or widen the budget relative to the measured wait) and, for the reattach test, read the length/prefix now named in the
+warning (RG-160 diagnostic) before changing code. Until then a differing single-test failure under load is inconclusive, not a PASS.
