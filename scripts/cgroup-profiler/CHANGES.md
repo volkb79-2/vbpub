@@ -8,6 +8,32 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
 
 ## [Unreleased]
 
+### Added
+- `cgpctl`, the cli-extended client (CP-47, cgprofile 2.0 package 2): `status`, `host`, `sessions`, `show`, `start`, `stop`, `watch`, `report`,
+  `prune`, `run`, `mark`, `config show|set|reset`, `doctor`, `skills`. Socket `--socket` > `$CGPCTL_SOCKET` > `/run/cgprofile/ctl.sock`; contract
+  negotiation through `version` (contract 2 verbs answer `contract-unsupported` from a contract-1 daemon, so `sessions`, `show`, `start`, `prune`,
+  `config` work only once the 2.x daemon of package 3 is deployed); `report` exports the stored session from the daemon, verifies the digests and
+  renders locally; `run` is the daemonless direct mode (`src/cgprofile/direct.py`, `self@follow`); `src/cgprofile/ctlwire.py` is the wire layer.
+- The reviewed command surface: `[tool.cli-extended]` in `pyproject.toml`, `docs/CLI-SPEC.md` (generated region), `docs/cli-surface.json`,
+  `docs/cli-review.toml` (171 cases run against a fake daemon by `tests/test_cli_review_cases.py`), `tests/test_cgpctl_contract.py`
+  (`assert_cli_contract`, `surface check`, `cli-extended audit` with no `fail`).
+- The agent skill is `src/cgprofile/skills/cgpctl/SKILL.md`, installed with `cgpctl skills install`.
+
+### Removed
+- The 1.x client surface (CP-47): `cgprofile run/attach/mark/targets/doctor/ctl`, the bash shim `./cgprofile`, `setup.sh`, helper-container mode,
+  the placement probe and the `docker logs` tailers (`logtail.py`). `src/cgprofile/cli/legacy.py` keeps only `_collect`, `serve` and the
+  `report --run-dir` subprocess the contract-1 daemon's `report` verb still runs; package 3 moves them. The frozen 1.x ctl client is kept as
+  `tests/_ctl_reference.py` for the contract-1 daemon goldens until package 3 retires it.
+
+### Changed
+- The image entrypoint is `python3 /opt/cgprofile/src/cgprofile/cli/legacy.py serve` (the `cgprofile` symlink and `COPY cgprofile` are gone), so
+  `docker exec cgprofile-host-daemon cgprofile ctl ...` no longer works: consumers use `cgpctl` over the socket (CONSUMERS.md migration table).
+  The 6th canary of `canary-run.sh` replaced the logtail canary (7 to 6).
+- `cgpctl watch` prints the terminal `end` line with the daemon's `reason`.
+- Gate: `tools/gate.sh` puts `libraries/cli-extended/src` on `PYTHONPATH` because the gate image carries cli-extended 0.5.0 while the pin is `>=0.5.1`.
+- Notes: `cgpctl show` falls back from live to stored; `stop` asks for confirmation only when uid 0 stops a session owned by another uid (`--yes` skips it); `prune`
+  previews with a dry-run `gc` and refuses (exit 2) to delete without `--yes` when stdin is not a terminal (the `gc` dry-run arguments are CP-52).
+
 <!-- cmru: release history -->
 
 ## [1.2.0] - 2026-11-04
