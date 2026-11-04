@@ -4,6 +4,29 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [0.5.0] - 2026-11-04
+<!-- cmru: generated -->
+<!-- cmru: source-end=090d30d874f287192a434b82a87dc12ec506a0d1 -->
+
+### Fixed
+- fix(topos): drop an unreachable fallback in the canonical-ID bind; cover the blank io.max line (B-040, B-012) (86b519394)
+- fix(topos): judge io.max saturation per device and keep the device attribution (B-012) (d4b6aac9f)
+- fix(topos): owner gate always on and Docker verbs run by the inspected canonical ID (B-039, B-040) (2f8ef27b2)
+
+### Changed
+- Merge branch 'fix-topos-2-20261104' (292dfcfbd)
+- topos: fix B-047/B-003/B-023, add B-024 network alias and B-031 integer limit schema (0be7631fd)
+
+### Documentation
+- docs(topos): backlog B-003/B-023/B-024/B-031/B-047 FIXED (0be7631fd) (64f6cdbd0)
+- docs(topos): CHANGES and backlog status for B-039, B-040, B-012; owner_inspect docstrings (9b35721a9)
+
+### Testing
+- test(topos): real_docker_inspect opt-out so the production resolver stays testable (B-039) (cadfc34d1)
+
+<!-- cmru: pending release notes begin -->
 - fix(topos/tests): B-047 version assertions compare against `topos.__version__` (fallback test reads pyproject `fallback_version`) instead of the literal "0.1.0"
 - fix(topos/tests): B-003 MCP-dependent smoke/server tests skip cleanly (`requires_mcp`) when the `topos[mcp]` extra is absent; the P84 gate still fails such a run
 - fix(topos/cli): B-023 an unresolvable selector in the live TUI exits 2 with the typed message, as `--once` does
@@ -12,8 +35,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - fix(actions): the Docker owner / protected-ID gate is always on; omitting `owner_inspect` uses the production `docker inspect` (B-039)
 - fix(actions): Docker verbs run by the inspected canonical full ID instead of the raw name, closing the rename race (B-040)
 - fix(collect): io_cap_saturation_pct is judged per device against that device's own io.max cap, with the device attributed (B-012)
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [0.4.2] - 2026-10-21
 <!-- cmru: generated -->
