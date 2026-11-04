@@ -177,8 +177,6 @@ the technical detail below it.
 - Review the exact relative targets and retry command before passing `--root-escalation BRANCH`; `-y` and `--force` do not imply root consent. CIU-151 still needs a live stack probe for physical owner-label path behavior.
 <!-- cmru: pending release notes end -->
 
-## [Unreleased]
-
 ## [7.18.0] - 2026-10-28
 <!-- cmru: generated -->
 <!-- cmru: source-end=2fa170b29ef870cd8e985d5ea895a1b87423ce98 -->
