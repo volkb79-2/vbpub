@@ -8,6 +8,43 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [1.2.0] - 2026-11-04
+<!-- cmru: generated -->
+<!-- cmru: source-end=088c923dbf11d1b749eb3c254ec107a4ce6bdaba -->
+
+### Added
+- feat(run-gate)!: reach the cgprofile daemon over the control socket only (RG-154) (c14b897f9)
+
+### Fixed
+- fix(cgprofile): fork-race foreign count, own report cap, shutdown inside the stop grace (delta review M1-M3) (dbd2f4740)
+- fix(cgprofile): control socket safety and concurrency (CP-34, CP-31, CP-33) and finalize failure handling (CP-27 N9-N11) (05ea66bda)
+- fix(cgprofile): lock pins coverage; contract test for extras vs lock (CP-32) (b23a13f0a)
+- fix(cgprofile): stop says session lock busy, not worker did not exit; pin one lock acquire (CP-27 N5 N6 N8) (51d42dad3)
+- fix(cgprofile): refuse an unknown @option early (CP-38) (84666766d)
+- fix(cgprofile): strict kernel-integer parsing of cgroup files (CP-37) (2d639675d)
+
+### Changed
+- Merge main into feat-rg-socket-only-20261104; renumber RG-154 to RG-156 (main's RG-154/155 are the dstdns pilot findings); move CHANGES entry to Unreleased (088c923db)
+- Merge branch 'backlog-platform-20261104' (e69a27940)
+- cgprofile backlog: wheel release, host-unit with protective limits, socket access model, ciu retirement, product docs (CP-41..45) (a96a0c046)
+- backlog(cgprofile): CP-39 and CP-40 implemented in branch fan-cgp-20261103, note on CP-23 (1437903f7)
+- cgprofile: observer contract 3 measurement windows and ancestor memory events (CP-39, CP-40) (2d1f0a6cf)
+- Merge branch 'req-renames-20261103' (1eaaf51c3)
+- chore(cgroup-profiler): rename report requirements lock (53723783e)
+- chore(cgprofile): pin deployed daemon image to published 1.1.0 (49f272a04)
+
+### Documentation
+- docs(cgprofile): package 0 of cgprofile 2.0, cgpctl/cgpd CLI spec, ctl contract 2, native deployment design (a615cc6c0)
+- docs(cgprofile): shutdown grace, report cap, 1.2.0 release notes, CP-33/39/40 backlog statuses (844855546)
+- docs: close CP-27, CP-31, CP-33, CP-34 in the cgprofile backlog (fix-cgp-1) (7ec70ae66)
+- docs(cgprofile): close CP-37/38/32, CP-27 N5/N6/N8, and stale CP-18/19/20/21 (c6598df4e)
+- docs(cgprofile): observer contract 3 windows and the ancestor-events Summary key (CP-39, CP-40) (dcb916001)
+- docs: every dependency manifest carries a use-case suffix; document .[test] origin of requirements-report.txt (c579bd3c6)
+- docs(cgprofile): file CP-39 (observer contract 3 windows) and CP-40 (ancestor memory events) (f35cde799)
+
+<!-- cmru: pending release notes begin -->
 ### Added
 - Observer contract 3 (CP-39): `window-open` and `window-close` on the observer socket return per-subject measurement windows (peak RSS, CPU, I/O bytes and operations, memory and swap peaks, PSI) in `process-tree` mode (works in a shared container) or `cgroup` mode (exact while the leaf holds nothing foreign; otherwise `SHARED_CGROUP`). Every null metric carries a reason code. `version.resource_observer` gains `"contracts": [2, 3]` while `"contract"` stays 2; contract 2 and `resource-limits` are unchanged. New error codes `window-refused` (reason `limit`) and `window-lost`. Fixtures: `tests/fixtures/rg55/observer-window-v3-*.json`. Release as 1.2.0 together with CP-40.
 - Summary key `ancestors_memory_events_local` (CP-40): the increase in local `high`, `max`, `oom` and `oom_kill` of each ancestor up to `dev.slice` over the session, and the same list in every window's `context`, so a consumer can tell reclaim driven from above the lane from the lane's own limit. Optional key; the Summary schema stays v1.1. Fixture: `tests/fixtures/rg55/summary-v1.1-ancestors.json`.
@@ -28,8 +65,7 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
 ### Changed
 - Rename the report dependency lock to `requirements-report.txt`; keep the same pinned packages in `setup.sh` and the image build.
 - Release notes for 1.2.0: release with `cmru release --set-version 1.2.0` (the conventional bump would compute 1.1.1; check the dry-run version). `ciu.toml.j2` still pins image `1.1.0`: bump it to 1.2.0 after the image is published, then deploy (checklist: `docs/DESIGN-GUIDE.md`, "Release checklist for 1.2.0"). R2 mutation did not run for this delta (CP-30 open, waived).
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [1.1.0] - 2026-10-27
 <!-- cmru: generated -->
