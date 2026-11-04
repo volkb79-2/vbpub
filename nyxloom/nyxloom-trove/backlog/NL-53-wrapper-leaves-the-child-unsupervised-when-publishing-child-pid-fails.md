@@ -3,12 +3,14 @@ kind: backlog-entry
 schema_version: 1
 id: NL-53
 title: "wrapper leaves the spawned child unsupervised when publishing child.pid fails"
-status: open
+status: fixed
 type: "bugfix"
 severity: "low"
 component: "wrapper"
 provenance: "independent review of the atomic child.pid change, 2026-11-01"
 filed_date: "2026-11-01"
+closed_date: "2026-11-03"
+closed_reason: "FIXED 2026-11-04 (55792dfe6)"
 ---
 
 ## Observed mechanism

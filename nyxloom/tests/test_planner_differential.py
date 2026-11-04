@@ -49,6 +49,7 @@ package. It is not written down as expected.
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import hashlib
 import inspect
@@ -60,11 +61,31 @@ from typing import Callable
 import pytest
 
 import corpus_profiles
-import legacy_planner
+import legacy_planner as _legacy_planner_module
 import planner_corpus
 import planner_synthetic
 from nyxloom import planning, reconcile
 from nyxloom.types import AttemptState, CarverStatus, Role, TaskState
+
+
+def _plan_with_legacy_policy(inp):
+    """Run the frozen planner on an input carrying the policy knob it reads.
+
+    NL-14 retired `Policy.gate_verify_interval_days` (and
+    `ReconcileInput.days_since_gate_verify`) from production. The frozen
+    baseline is byte-identical and still reads the knob unconditionally, so
+    the retired value (0 = disabled, the only value production now models) is
+    supplied here, on a COPY, instead of editing the baseline.
+    """
+    policy = copy.copy(inp.cfg.policy)
+    policy.gate_verify_interval_days = 0
+    cfg = copy.copy(inp.cfg)
+    cfg.policy = policy
+    return _legacy_planner_module.plan_project(dataclasses.replace(inp, cfg=cfg))
+
+
+class legacy_planner:  # noqa: N801 -- stands in for the frozen module
+    plan_project = staticmethod(_plan_with_legacy_policy)
 
 
 def _real_states() -> set:

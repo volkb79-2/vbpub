@@ -225,6 +225,63 @@ class TestHappyPath:
         assert int(child_pid_path.read_text(encoding="utf-8")) == int(source_contents)
         assert not (attempt_dir / "child.pid.tmp").exists()
 
+    def test_child_pid_publish_failure_terminates_child(
+            self, tmp_state, tmp_path, mock_adapters, monkeypatch):
+        """NL-53: a failed child.pid write must not orphan the child."""
+        project, task_id, attempt_id = "demo", "demo-P01-sample", "att-1"
+        seed(project, task_id, attempt_id)
+        attempt_dir = tmp_path / "attempt"
+        attempt_dir.mkdir(parents=True)
+        spec = WrapperSpec(
+            project=project,
+            task_id=task_id,
+            attempt_id=attempt_id,
+            argv=[sys.executable, "-c", "import time; time.sleep(60)"],
+            cwd=str(tmp_path),
+            log_path=str(attempt_dir / "attempt.log"),
+            receipt_path=str(attempt_dir / "receipt.json"),
+            attempt_dir=str(attempt_dir),
+            route_def=OPERATOR_ROUTE,
+            term_grace_seconds=1,
+        )
+        spec_path = attempt_dir / "spec.json"
+        spec_path.write_text(json.dumps(spec.to_dict()), encoding="utf-8")
+
+        spawned = []
+        real_popen = subprocess.Popen
+
+        def recording_popen(*args, **kwargs):
+            proc = real_popen(*args, **kwargs)
+            spawned.append(proc)
+            return proc
+
+        def failing_replace(source, destination):
+            raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr(wrapper.subprocess, "Popen", recording_popen)
+        monkeypatch.setattr(wrapper.os, "replace", failing_replace)
+        mock_adapters.can_capture_session.return_value = False
+
+        try:
+            exit_code = wrapper_main(str(spec_path))
+        finally:
+            for proc in spawned:
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.wait()
+
+        assert len(spawned) == 1
+        child = spawned[0]
+        with pytest.raises(ProcessLookupError):
+            os.kill(child.pid, 0)
+        assert exit_code == 75
+        receipt = json.loads((attempt_dir / "receipt.json").read_text(encoding="utf-8"))
+        assert receipt["blocked_reason"] == "child-pid-publish-failed"
+        assert not (attempt_dir / "child.pid").exists()
+        assert not (attempt_dir / "child.pid.tmp").exists()
+        state = storage.load_state(project, task_id)
+        assert state.attempt_by_id(attempt_id).state == AttemptState.FAILED
+
     def test_happy_path_in_process(self, tmp_state, tmp_path, fake_cli, mock_adapters):
         """Call wrapper_main directly with script printing 2 lines, exit 0."""
         project = "demo"

@@ -4,6 +4,10 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+- fix(nyxloom): wrapper terminates the child and records a `child-pid-publish-failed` refusal when `child.pid` cannot be published (NL-53, 55792dfe6)
+- fix(nyxloom): scaffolded gate Dockerfile no longer points at the retired `nyxloom gate verify` (NL-13, 55792dfe6)
+- fix(nyxloom): remove dead `Policy.gate_verify_interval_days` and `ReconcileInput.days_since_gate_verify`; a toml still carrying the key loads and warns (NL-14, 55792dfe6)
+
 <!-- cmru: release history -->
 
 ## [0.12.0] - 2026-10-30
