@@ -18,7 +18,8 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   tmpfs mount units for `MDT_TREE_CACHE_ROOT` (`/srv/tree-cache`) and `MDT_TREE_UPPER_ROOT` (`/srv/tree-upper`) (`mode=2770 root:runner`, `nosuid,nodev,huge=never`,
   sizes default 25 % / 10 % of RAM, inode bounds), a `tree_cache` block merged into `/etc/mdt/host-capacity.json`, and `mdt-tree-cache-gc.timer`
   (idle, unleased, unmounted keys, stale builds, orphan uppers; documented directory/lease format in `mdt_tree_cache.py` and the README). Keys `MDT_TREE_*`,
-  `DEV_CACHE_*`; wizard, env example, README, `mdt-host-check.sh` and hermetic tests included.
+  `DEV_CACHE_*`; wizard, env example, README, `mdt-host-check.sh` and hermetic tests included. Optional convenience: the neutral host contract any host can meet
+  without mdt-cockpit is `libraries/cowtree/HOST-CONTRACT.md`.
 - host-setup `HOST_ROLE=dedicated-dev` load tiers yield first (MDT-TESTHOST-MEM-2; shared-prod byte-identical): `dev-gates.slice` and `dev-background.slice` MemoryHigh =
   dev.slice MemoryHigh minus (`DEV_INTERACTIVE_MEMORY_LOW` + `DEV_BUILDKITD_MEMORY_LOW`), MemoryMax derived the same way from dev.slice MemoryMax (floor 1G, never above
   dev.slice's, MemoryMax >= MemoryHigh); MemorySwapMax and CPU weights unchanged. `DEV_{GATES,BACKGROUND}_MEMORY_{HIGH,MAX}` are now pins on this role (`-`/`0` omit).

@@ -1221,6 +1221,10 @@ lane. The slice must exist before run-gate uses it (`systemctl show dev-cache.sl
 The overlay volumes are created by dockerd as `local` volumes (`redirect_dir=on,xino=auto`), which works with no new privilege; the options are published
 in the capacity block so consumers do not hard-code them.
 
+**This is optional and vbpub-specific.** The neutral contract any host can meet without mdt-cockpit (tmpfs path, mode/owner, lease layout, GC rules,
+charging slice, a ten-line systemd example) is `libraries/cowtree/HOST-CONTRACT.md`; the keys and units here are one implementation of it, and consumers
+fall back to private copies when it is absent. cowtree and assay never name host-setup keys.
+
 **Directory and lease format** (the contract between cowtree's `cache` module, which publishes, and the host GC, which removes; the module docstring of
 `mdt_tree_cache.py` is the normative text): `<root>/<key>/{COMPLETE,tree/,.lease,.last-used}`; a build happens in `<key>.tmp-<id>` under an exclusive flock on
 `<root>/.locks/<key>` and is `rename`d to `<key>` after `COMPLETE` is written; every lane holds `LOCK_SH` on `<key>/.lease` for its lifetime and touches

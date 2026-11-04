@@ -15,6 +15,9 @@ Everything is derived from /etc/mdt/host-setup.env, so a reinstalled host is reb
 env keys. HOST_ROLE other than dedicated-dev: nothing is rendered, and everything this module owns is removed
 again (owned = a marker line in the unit file), so shared-prod stays exactly as it was.
 
+This is the vbpub implementation of the neutral host contract in libraries/cowtree/HOST-CONTRACT.md (optional
+for every consumer; no other tool names this module's keys).
+
 Directory and lease format (the contract cowtree's ``cache`` module publishes and this GC consumes)
 ------------------------------------------------------------------------------------------------
 Under ``MDT_TREE_CACHE_ROOT`` (a tmpfs mount point; GC refuses anything else)::
