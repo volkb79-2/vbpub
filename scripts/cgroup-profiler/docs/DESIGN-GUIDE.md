@@ -150,7 +150,7 @@ The detailed metric-source and disclosure rules are in the
 [`RG-55 placement design`](../../../run-gate-project/nyxloom-trove/DESIGN-2026-09-12-liveness-placement-admission.md#a3-placement-ownership-correction-delegated-scope-below-dev-gatesslice-2026-09-30).
 
 The daemon's host system bus is separate from the consumer control socket. The
-cockpit receives only the cgprofile ctl surface; it does not need the system
+cockpit receives only the cgprofile control socket; it does not need the system
 bus. P1 and P6 introduced the observer and opt-in placement capabilities in
 separate implementation tranches. RW-434 settles their combined tree as the
 first 1.0.0 release, including the system-bus manager bridge and writable host
@@ -735,25 +735,23 @@ completion.
 ## The daemon proves the slice it is in, not a slice by name
 
 Docker and systemd accept any `cgroup_parent` and auto-create an uninstalled
-slice without limits, so a daemon whose compose file names `cgprofile.slice`
-can still run unbounded next to production workloads. `serve` therefore refuses
-to start unless the cgroup it is actually running in, derived from the host
-proc view (`/proc/<host pid>/cgroup` normalized through the cgroup-namespace
-root, the same path derivation placement uses), is under the top-level
-`cgprofile.slice` and that slice's `memory.max` is a finite positive integer.
-A bounded `cgprofile.slice` that merely exists while the container was created
-under another parent, or a nested look-alike, does not pass (name for object).
+slice without limits, so a service whose unit names `cgprofile.slice` can
+still run unbounded next to production workloads if the slice file is absent.
+`cgpd run` therefore refuses to start unless the cgroup it is actually running
+in, derived from `/proc/<pid>/cgroup` (the same path derivation placement
+uses), is under the top-level `cgprofile.slice` and that slice's `memory.max`
+is a finite positive integer. A bounded `cgprofile.slice` that merely exists
+while the process runs under another parent, or a nested look-alike, does not
+pass (name for object).
 Zero is refused: it is finite but a slice that can hold no memory is a
 misconfiguration, and `read_int` folds `max`, empty, unreadable and garbage
 into one "not a number" outcome, so the message names every cause.
 
-Rejected alternatives: reading `LoadState` from inside the container (the
-daemon has no view of `/etc/systemd/system` or the host systemd, so it cannot
-be proven there); a flag to run unbounded anyway (the point is that unbounded
-must not look governed). The pre-creation Docker-host `LoadState=loaded` probe
-remains the complete fix and is CIU-150, outside the 1.1.0 window. The
-refusal runs after container creation, so on `restart: unless-stopped` a host
-without the unit crash-loops; that loud failure is intended.
+Rejected alternative: a flag to run unbounded anyway (the point is that
+unbounded must not look governed). The refusal runs after the unit starts, so
+under the unit's restart policy a host without the slice crash-loops; that
+loud failure is intended, and `cgpd unit check` plus `cgpctl doctor` report
+the missing or drifted slice before it comes to that.
 
 ### A wedged worker has a bounded way out
 
