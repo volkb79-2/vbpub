@@ -571,6 +571,30 @@ class TestContract2Goldens:
             _golden(f"{name}-request.json", request, home)
             _golden(f"{name}-response.json", response, home)
 
+    def test_connection_falls_back_to_the_bare_uid_when_full_credentials_are_unavailable(self, server):
+        import socket as _socket
+
+        seen: Dict[str, Any] = {}
+        server._peer_credentials = lambda conn: None
+        server._peer_uid = lambda conn: 1000
+        original = server._dispatch
+
+        def spy(req, peer=None):
+            seen["peer"] = peer
+            return original(req, peer=peer)
+
+        server._dispatch = spy
+        client, daemon = _socket.socketpair()
+        client.settimeout(5.0)
+        try:
+            client.sendall((json.dumps(_req("version")) + "\n").encode())
+            server._handle_connection(daemon)
+            data = client.recv(65536)
+        finally:
+            client.close()
+        assert json.loads(data.decode().splitlines()[0])["ok"] is True
+        assert seen["peer"] == (0, 1000, 0)
+
     def test_every_golden_error_carries_contract_2(self, server):
         resp = server._dispatch(_req("config-set", key="keep_days", value=7), peer=ALICE)
         assert resp["contract"] == 2
