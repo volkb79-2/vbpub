@@ -12,6 +12,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - `assay lanes --json` capabilities `r2-resource-profile` and `verdict-v18`.
 
 ### Fixed
+- B216: the packaged verdict schema's `$id` and `title` now name v18 (they still said v17 after B208, so the wheel and zipapp loaded a schema whose identity disagreed with `VERDICT_SCHEMA_VERSION`); unused imports removed from the B206/B208 tests; the standalone real-R2 gate tests state the v18 `judgment.r2` fields (`worker_counts`, `profile`, `schedule`) and `first_failing_test`, normalizing only the host-dependent observer breakdown.
 - B085: the R3 canary target's test-path veto honours `judge.allow_test_path_targets` (a test FILENAME is still refused) and its refusal names the flag.
 - B187: R0 result classification maps the observation status through `contention.observation_input` instead of a hand-written copy.
 - B194: `tools/b110_pilot_select.py --size` below the per-file plus missing-operator minimum falls back to a seeded operator-covering fill; only a size below the operator count is refused.

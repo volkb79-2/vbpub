@@ -14164,3 +14164,10 @@ phase is fsync (compare `io_sync = relaxed` with an eatmydata image, and `durabl
 **Acceptance criteria.** Test: `plan` on a lane with an ingested `judge.mutation` exits with the refusal text and no traceback; the lane's declaration is unchanged.
 
 **Dependencies and order.** None. The dstdns consumer falls back to a written provisional budget (D-569 section 5) until this lands.
+
+
+## B216 — 12.0.0 release gate: packaged verdict schema still named v17, unused imports, and standalone R2 expectations missing the v18 fields
+
+**Status: FIXED on branch fix-assay-rel-20261104 (2026-11-04); not yet on main, not released (12.0.0).** The `cmru release assay --set-version 12.0.0` gate failed 6 of 11024 tests. Causes: (1) `src/assay/schemas/verdict.schema.json` had its content moved to v18 by B208 but its `$id` and `title` still said v17 (the schema is hand-written, there is no generator; the frozen-bytes test pinned the stale file); (2) B206/B208 tests left unused imports (`select`, `subprocess`, `json`) that the gate's pyflakes phase rejects; (3) `gate/tests/test_standalone.py` expected R2 documents without the v18 `judgment.r2` fields (`worker_counts`, `profile`, `schedule`) and without `first_failing_test` on native killed entries. Fix: `$id`/`title` set to v18 and the frozen digest updated; imports removed; the expected artifact now states the v18 fields, and the observer-dependent part of `profile` (status and reason breakdown, modes) is validated for consistency and normalized, because whether the host observer measures is an environment fact. A conformance test now asserts the schema identity follows `VERDICT_SCHEMA_VERSION`.
+
+**Open observation.** In the gate container the observer answered `OBSERVER_CONTRACT_UNSUPPORTED` for every started candidate, so the standalone R2 lanes recorded NO_MEASUREMENT: the host cgprofile daemon on this machine does not yet speak contract 3 (cgprofile 1.2.0). Deploying it is a release-program step, not an assay change.
