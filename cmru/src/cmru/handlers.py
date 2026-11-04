@@ -53,6 +53,11 @@ def _notes_kwargs(release_notes: Optional[ReleaseNotes]) -> dict:
     return {} if release_notes is None else {"release_notes": release_notes}
 
 
+def _rigor_kwargs(rigor: list[Path]) -> dict:
+    """A project without a record step publishes through the unchanged call shape."""
+    return {"rigor_assets": tuple(rigor)} if rigor else {}
+
+
 def _curated_release_notes(
     cwd: Path, prefix: str, version: str, build_output: Optional[dict],
 ) -> Optional[ReleaseNotes]:
@@ -722,7 +727,7 @@ def cmd_wheel_publish(args: argparse.Namespace) -> None:
         result = _publish_versioned_artifacts(
             gh, prefix=args.prefix, version=version, asset_path=wheel,
             notes=notes, extra_assets=extras or None, build_output=build_output,
-            rigor_assets=tuple(rigor), **_notes_kwargs(release_notes),
+            **_rigor_kwargs(rigor), **_notes_kwargs(release_notes),
         )
     print(f"[INFO] Published {args.prefix} {version}")
     for item in extras:
@@ -953,7 +958,7 @@ def cmd_tarball_publish(args: argparse.Namespace) -> None:
         result = _publish_versioned_artifacts(
             gh, prefix=args.prefix, version=version, asset_path=art,
             notes=notes, extra_assets=None, build_output=build_output,
-            rigor_assets=tuple(rigor), **_notes_kwargs(release_notes),
+            **_rigor_kwargs(rigor), **_notes_kwargs(release_notes),
         )
     print(f"[INFO] Published {args.prefix} {version}")
     print(result)
