@@ -1,5 +1,5 @@
 {
-  "schema_version": 17,
+  "schema_version": 18,
   "assay_version": "0.1.0",
   "lane": "package",
   "commit": "333333333333333333333333333333333333333c",
@@ -45,6 +45,9 @@
       "r2_command": null,
       "equivalence_ledger": null,
       "jobs": 1,
+      "worker_counts": {},
+      "profile": {"status_counts": {"MEASURED": 0, "PARTIAL": 0, "NO_MEASUREMENT": 0}, "reason_counts": {}, "observer": {"name": "cgprofile", "version": null, "contracts": [3], "modes": []}},
+      "schedule": {"policy": "canonical", "thresholds": null, "memory_budget_bytes": null, "jobs": 1, "prediction_sources": {}, "error": null},
       "max_mutants": 50,
       "operators": [
         "python:compare-swap"

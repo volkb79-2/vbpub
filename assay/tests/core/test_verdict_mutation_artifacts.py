@@ -47,7 +47,7 @@ import hashlib
 import json
 
 import pytest
-from conftest import native_mutation, native_outcome, mutation_verdict_fixture, why_invalid
+from conftest import R2_TELEMETRY, native_mutation, native_outcome, mutation_verdict_fixture, why_invalid
 from jsonschema import Draft202012Validator
 
 from assay.errors import Outcome, ReasonCode
@@ -104,7 +104,31 @@ UNATTRIBUTED = {
     "attribution": "serial",
     "kill_attribution": "unattributed",
     "cold_witness_kills": False,
+    **R2_TELEMETRY,
 }
+
+
+def _telemetry(statuses: dict, reasons: dict, modes: list, candidates: int) -> dict:
+    """The v18 `worker_counts`/`profile` pair of a one-worker run of
+    *candidates* candidates (the golden fixtures' own values)."""
+    return {
+        "worker_counts": {"1": candidates} if candidates else {},
+        "profile": {
+            "status_counts": {"MEASURED": 0, "PARTIAL": 0, "NO_MEASUREMENT": 0, **statuses},
+            "reason_counts": reasons,
+            "observer": {"name": "cgprofile", "version": None, "contracts": [3], "modes": modes},
+        },
+    }
+
+
+#: Two candidates, both measured in cgroup mode (`r2_pass.json`).
+MEASURED_2 = _telemetry({"MEASURED": 2}, {}, ["cgroup"], 2)
+#: One measured and one partial (`r2_fail_mutants_survived.json`).
+PARTIAL_2 = _telemetry({"MEASURED": 1, "PARTIAL": 1}, {}, ["cgroup"], 2)
+#: No observer: both candidates NO_MEASUREMENT (the budget/crash fixtures).
+UNMEASURED_2 = _telemetry(
+    {"NO_MEASUREMENT": 2}, {"OBSERVER_UNAVAILABLE": 2}, [], 2
+)
 
 #: Replacement hashes, hand-computed rather than read back from the code
 #: under test (A-067). Each is sha256 of the REPLACEMENT BYTES only.
@@ -130,6 +154,7 @@ def test_pass_matches_the_hand_written_fixture(validator: Draft202012Validator):
                 path="pkg/checks.py", lineno=12, start_byte=100, end_byte=101,
                 replacement_sha256=SHA_LTE, operator="python:compare-swap",
                 description="Lt->LtE",
+                first_failing_test="tests/test_checks.py::test_boundary",
             ),
             native_outcome(
                 path="pkg/checks.py", lineno=18, start_byte=240, end_byte=243,
@@ -154,7 +179,7 @@ def test_pass_matches_the_hand_written_fixture(validator: Draft202012Validator):
                 jobs=1,
                 max_mutants=50,
                 operators=("python:compare-swap", "python:boolop-swap"),
-                **UNATTRIBUTED,
+                **{**UNATTRIBUTED, **MEASURED_2},
             ),
         ),
         claims=(R0_PASS, r2_claim),
@@ -195,7 +220,7 @@ def test_mutants_survived_matches_the_hand_written_fixture(validator: Draft20201
                 jobs=1,
                 max_mutants=50,
                 operators=("python:compare-swap",),
-                **UNATTRIBUTED,
+                **{**UNATTRIBUTED, **PARTIAL_2},
             ),
         ),
         claims=(R0_PASS, r2_claim),
@@ -271,7 +296,7 @@ def test_budget_exceeded_matches_the_hand_written_fixture(validator: Draft202012
                 jobs=1,
                 max_mutants=50,
                 operators=("python:boolop-swap", "python:compare-swap"),
-                **UNATTRIBUTED,
+                **{**UNATTRIBUTED, **UNMEASURED_2},
             ),
         ),
         claims=(R0_PASS, r2_claim),
@@ -315,7 +340,7 @@ def test_a_crashed_mutant_matches_the_hand_written_fixture(validator: Draft20201
                 jobs=1,
                 max_mutants=50,
                 operators=("python:bool-const-flip", "python:compare-swap"),
-                **UNATTRIBUTED,
+                **{**UNATTRIBUTED, **UNMEASURED_2},
             ),
         ),
         claims=(R0_PASS, r2_claim),
@@ -561,6 +586,7 @@ def _sql_r2_policy(
         cold_witness_kills=False,
         kill_signal_artifact=kill_signal_artifact,
         equivalence_artifact=equivalence_artifact,
+        **R2_TELEMETRY,
     )
 
 

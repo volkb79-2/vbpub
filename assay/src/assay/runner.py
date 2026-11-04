@@ -109,6 +109,7 @@ from . import (
     measurability,
     mutation,
     mutation_parsers,
+    observer_windows,
     r2_command,
     result_reports,
     safeio,
@@ -5222,7 +5223,6 @@ def _run_prepared_lane(
                     pre_first_event_within_s=(
                         liveness_calibration.pre_first_event_within_s
                     ),
-                    sampler=liveness.tree_sample,
                     cpu_window_s=lane.judge.mutation.liveness_cpu_window_s,
                 )
             else:
@@ -5643,6 +5643,11 @@ def _run_prepared_lane(
                     cold_witness_kills=cold_witness,
                     r2_command=(
                         r2_command_payload
+                        if r2_claim.mutation is not None
+                        else None
+                    ),
+                    r2_telemetry=(
+                        r2_claim.mutation.r2_telemetry
                         if r2_claim.mutation is not None
                         else None
                     ),
@@ -6068,6 +6073,10 @@ def _build_judgment_r2(
     liveness_idle_floor_s: float | None = None,
     cold_witness_kills: bool = False,
     r2_command: R2Command | None = None,
+    #: (B203/B206/B207) `Mutation.r2_telemetry`: the run's profile counters,
+    #: per-worker-count candidate totals and schedule summary, or `None` when
+    #: no candidate was executed or resumed.
+    r2_telemetry: Mapping[str, Any] | None = None,
 ) -> JudgmentR2:
     """(P33/V5-4) the R2 policy, with ``kill_attribution`` DERIVED.
 
@@ -6096,6 +6105,13 @@ def _build_judgment_r2(
     # file's `judge.mode` is optional and `None` means `"changed_lines"`, so
     # the artifact records what judged rather than what a human typed.
     effective_mode = lane.judge.mode if lane.judge.mode is not None else "changed_lines"
+    configured_jobs = mutation_config.jobs if mutation_config.jobs is not None else 1
+    telemetry = r2_telemetry or {}
+    worker_counts: dict[str, int] = dict(telemetry.get("worker_counts") or {})
+    # (B203) The campaign maximum over resumed and executed records; the
+    # lane's own selection only while nothing ran or was resumed.
+    campaign_jobs = max((int(key) for key in worker_counts), default=configured_jobs)
+    profile_counters = telemetry.get("profile") or {}
     return JudgmentR2(
         # B046 (schema v9): stated explicitly rather than left to the
         # dataclass default. This function builds the policy for a run
@@ -6106,11 +6122,19 @@ def _build_judgment_r2(
         producer="native",
         # run_lane normalizes the one-worker default before reaching this
         # builder; otherwise this is the effective runtime selection.
-        jobs=(mutation_config.jobs if mutation_config.jobs is not None else 1),
-        attribution=(
-            "serial"
-            if mutation_config.jobs is None or mutation_config.jobs == 1
-            else "overlap-conservative"
+        jobs=campaign_jobs,
+        attribution="serial" if campaign_jobs == 1 else "overlap-conservative",
+        worker_counts=dict(sorted(worker_counts.items(), key=lambda item: int(item[0]))),
+        profile=observer_windows.summarize(
+            profile_counters.get("status_counts") or {},
+            profile_counters.get("reason_counts") or {},
+            profile_counters.get("modes") or (),
+        ),
+        schedule=(
+            telemetry.get("schedule")
+            or _schedule.canonical_verdict_summary(
+                jobs=campaign_jobs, memory_budget_bytes=None
+            )
         ),
         max_mutants=mutation_config.max_mutants,
         operators=mutation_config.operators,

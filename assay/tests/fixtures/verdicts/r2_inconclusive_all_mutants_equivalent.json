@@ -1,5 +1,5 @@
 {
-  "schema_version": 17,
+  "schema_version": 18,
   "assay_version": "0.1.0",
   "lane": "package",
   "commit": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
@@ -43,6 +43,9 @@
       "r2_command": null,
       "equivalence_ledger": null,
       "jobs": 1,
+      "worker_counts": {"1": 1},
+      "profile": {"status_counts": {"MEASURED": 0, "PARTIAL": 0, "NO_MEASUREMENT": 1}, "reason_counts": {"OBSERVER_UNAVAILABLE": 1}, "observer": {"name": "cgprofile", "version": null, "contracts": [3], "modes": []}},
+      "schedule": {"policy": "canonical", "thresholds": null, "memory_budget_bytes": null, "jobs": 1, "prediction_sources": {}, "error": null},
       "max_mutants": 50,
       "operators": [
         "sql:drop-check"

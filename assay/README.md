@@ -145,7 +145,7 @@ remains FAIL or ERROR. Receipts do not decide ACCEPT or REJECT. See the
 Machine consumers can validate manifests and receipts against the packaged
 `schemas/analysis-archive.schema.json`, `schemas/analysis-receipt.schema.json`,
 and `schemas/analysis-report.schema.json`.
-Receipt verdicts are checked against the current v17 verdict schema; a receipt
+Receipt verdicts are checked against the current v18 verdict schema; a receipt
 with an `--allow-dirty` override is refused by default.
 
 ## Why use it
@@ -252,12 +252,12 @@ assay exists to close that gap mechanically, not by policy:
   `assay run --reuse-from` always re-runs R0 first, then replays eligible prior
   kill witnesses against the current sequential pytest suite. Any uncertainty
   runs the candidate's full suite; a nonempty `PYTEST_ADDOPTS` disables witness
-  replay because it can override configured addopts. A v12 through v16 verdict
-  is a cold start under v17, and `assay verify` rejects all five. Assay 11.0.0
-  carries this v17 hard cut. See the
+  replay because it can override configured addopts. A v12 through v17 verdict
+  is a cold start under v18, and `assay verify` rejects all six. Assay 12.0.0
+  carries this v18 hard cut (11.0.0 carried v17). See the
   [B106 design](docs/DESIGN-GUIDE.md#selective-reuse-replays-a-current-failure-witness-b106)
   and [worked consumer example](docs/CONSUMERS.md#reusing-killed-native-mutants-after-the-baseline-b106),
-  plus the [v16-to-v17 migration notes](docs/CONSUMERS.md#migration-notes-v16-to-v17).
+  plus the [v17-to-v18 migration notes](docs/CONSUMERS.md#migration-notes-v17-to-v18).
 - **Refusals name the usable cause and keep unrelated failures distinct.** A
   Git dubious-ownership refusal explains why `safe.directory` cannot be set in
   assay's replacement environment and points to the ownership fix. Unknown or
@@ -366,15 +366,14 @@ assay exists to close that gap mechanically, not by policy:
   refused with `--candidates-file`. The run progress
   header records `jobs` and `attribution` (`serial` or
   `overlap-conservative`), and each candidate event records `worker_index`.
-  Verdict schema v17 records this invocation's effective
-  `judgment.r2.jobs` count and its `serial` or `overlap-conservative`
-  attribution. A resumed campaign may contain candidates from an earlier
-  worker count; these fields are not a campaign-wide summary. See backlog
-  [B203](nyxloom-trove/4-backlog.md#b203-verdict-worker-attribution-is-invocation-local-on-resume)
-  and the
-  [parallel-window rationale](docs/DESIGN-GUIDE.md#native-r2-parallel-candidate-windows)
+  Verdict schema v18 records the campaign's maximum worker count as
+  `judgment.r2.jobs` (and its `serial` or `overlap-conservative`
+  attribution), with `judgment.r2.worker_counts` giving the candidates per
+  worker count across resumed and executed records (B203). Each candidate also
+  carries its cgprofile resource profile; see
+  the [parallel-window rationale](docs/DESIGN-GUIDE.md#native-r2-parallel-candidate-windows)
   and [consumer setup](docs/CONSUMERS.md#native-r2-parallel-candidate-windows-pr1b),
-  plus the [v16-to-v17 migration notes](docs/CONSUMERS.md#migration-notes-v16-to-v17).
+  plus the [v17-to-v18 migration notes](docs/CONSUMERS.md#migration-notes-v17-to-v18).
   After R0/R1, Assay checks the complete hierarchy before any native R2
   candidate starts. If its private cgroup view hides ancestors, it may use
   the explicitly configured observer-only socket; without a usable local view
@@ -434,7 +433,8 @@ assay cannot parse a v2 file's `[isolation]` table at all. Repin the release
 and bump `schema_version` **in the same commit** — see
 [the consumer guide's ordered adoption step](docs/CONSUMERS.md#adopting-a-v2-capable-release)
 for why the order matters and what breaks if you split it across two commits.
-For the v17 verdict fields and the effect on old verdicts and resume, see
+For the v18 verdict fields and the effect on old verdicts and resume, see
+the [v17-to-v18 migration notes](docs/CONSUMERS.md#migration-notes-v17-to-v18),
 the [v16-to-v17 migration notes](docs/CONSUMERS.md#migration-notes-v16-to-v17),
 the [v15-to-v16 migration notes](docs/CONSUMERS.md#migration-notes-v15-to-v16)
 and the earlier [v14-to-v15 migration notes](docs/CONSUMERS.md#migration-notes-v14-to-v15).
@@ -528,7 +528,7 @@ on this module" is `mode = "whole_target"` + `require_branch = true` +
 | Capability | Current support | Limit |
 |---|---|---|
 | Native R2 resource-event attribution and serial tail retry | Assay checks candidate counters and each visible ancestor's own local counters. A positive ancestor-local pids or OOM event counts conservatively for the candidate when the corresponding candidate counter is zero or unavailable throughout the stable window; `memory.events:max` remains telemetry. When a private cgroup namespace hides ancestors, Run-Gate can opt an ephemeral native R2 lane into cgprofile's read-only observer contract 2. | If required observation is unavailable before candidate execution, R2 is `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE`. After preflight, a lost or identity-changed candidate window is recorded as unobserved telemetry and the campaign continues. Configured limit-value changes preserve the window. Each `candidate` progress event includes `resource_limit_changes` (empty when unchanged). PASS with an exited leader remains `survived`; a PASS with a signaled leader is `crashed`. An unobserved FAIL needs a current-run failed-call witness to count as `killed`, while any observed positive failure event makes a non-PASS candidate `crashed`, even with a witness. Only a completed witness replay with a positive event falls back to the full command; a replay error propagates. A new Assay build re-executes resumed campaign state because the Assay version is part of the judge identity. After the sweep, each current-invocation `crashed`, per-candidate `budget_exceeded` or `hung` result gets one serial retry while campaign time remains. A campaign-deadline mask closes the retry phase. Matching cached `crashed` records are reused on `--resume`; pass `--resume --rejudge crashed` to re-execute them explicitly. See the [retry rationale](docs/DESIGN-GUIDE.md#serial-tail-retries-for-native-r2-b179) and [consumer guidance](docs/CONSUMERS.md#retry-unresolved-native-r2-candidates-at-sweep-end-b179). R0/R1 evidence remains valid. The observer does not expose the daemon control socket. |
-| Per-test liveness and process measurements | Native R2 only, when the declared command activates a supported liveness monitor. Pytest test events and `tests_completed` are command-shape-specific; otherwise candidate progress remains available but those fields can be `null`. Candidate progress adds `resources.cpu_seconds`, `resources.peak_rss_bytes`, `resources.write_bytes`, and `judge_rss_bytes`; unavailable measurements are `null`. | These are execution features, not language-wide guarantees; see [resource measurement details](docs/DESIGN-GUIDE.md#per-candidate-resource-phase-and-startup-evidence-b111-ap-6), the [campaign lifecycle comparison](docs/DESIGN-GUIDE.md#native-and-ingested-r2-campaign-features) and [consumer guidance](docs/CONSUMERS.md#r2-for-javascript-by-ingesting-strykers-report-b046). |
+| Per-test liveness and process measurements | Native R2 only, when the declared command activates a supported liveness monitor. Pytest test events and `tests_completed` are command-shape-specific; otherwise candidate progress remains available but those fields can be `null`. Candidate progress carries `profile`, the candidate's cgprofile resource profile (a `NO_MEASUREMENT` with a reason code when the observer is unavailable); Assay no longer samples resources itself (assay 12). | These are execution features, not language-wide guarantees; see [resource measurement details](docs/DESIGN-GUIDE.md#per-candidate-resource-phase-and-startup-evidence-b111-ap-6), the [campaign lifecycle comparison](docs/DESIGN-GUIDE.md#native-and-ingested-r2-campaign-features) and [consumer guidance](docs/CONSUMERS.md#r2-for-javascript-by-ingesting-strykers-report-b046). |
 | Bounded native R2 pilots | B118 provides a plan-bound candidate selector and report checks. | A bounded pilot measures a selected subset; it does not qualify the full lane. |
 | Analysis-package R2 | B131 has a dedicated whole-target lane and bounded pilot path. | The analysis package is not qualified for a full R2 campaign until the full plan is completed and reviewed. |
 | Campaign closeout | `assay analyze campaign` implements the phase-1 analysis of plan, progress, verdict, and supplied coverage inputs. | B108 remains open: phase-1 acceptance and documentation have residuals, and phase 2—Run-Gate's automatic post-lane closeout and SPEC wiring—is not implemented. |
@@ -943,8 +943,8 @@ The two adapter transforms are judged by the existing isolated canary runner;
   were qualified under Assay 9.0.0/schema v15; their retained verdicts and
   verifier transcripts document that release. Those canaries are distinct from
   the integrated Assay release gate. B087 did not add verdict fields; the
-  current verdict schema is v17, with the migration described in the
-  [v16-to-v17 consumer notes](docs/CONSUMERS.md#migration-notes-v16-to-v17).
+  current verdict schema is v18, with the migration described in the
+  [v17-to-v18 consumer notes](docs/CONSUMERS.md#migration-notes-v17-to-v18).
 
 **Branch coverage depends on the declared producer.** istanbul's `branchMap`
 means different things under different producers (real per-arm arcs under the

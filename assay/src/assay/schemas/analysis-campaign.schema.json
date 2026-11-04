@@ -12,7 +12,7 @@
       "additionalProperties": false,
       "required": ["schema_version", "analysis", "status", "qualifying", "complete_blockers", "expected_commit", "tree", "lane", "lane_file", "torn_final_record", "verdict", "plan", "campaign", "runs", "coverage", "timing", "evidence", "candidate_details", "adverse", "unresolved", "reclassified", "state", "projection"],
       "properties": {
-        "schema_version": {"const": 2, "type": "integer"},
+        "schema_version": {"const": 3, "type": "integer"},
         "analysis": {"const": "mutation_campaign"},
         "status": {"enum": ["complete", "incomplete"]},
         "qualifying": {"type": "boolean"},
@@ -79,7 +79,7 @@
       "additionalProperties": false,
       "required": ["schema_version", "kind", "status", "lane", "expected_commit", "errors", "errors_truncated"],
       "properties": {
-        "schema_version": {"const": 2, "type": "integer"},
+        "schema_version": {"const": 3, "type": "integer"},
         "kind": {"const": "assay-campaign-analysis"},
         "status": {"const": "evidence_error"},
         "lane": {"type": "string"},
@@ -345,7 +345,7 @@
     },
     "candidate": {
       "type": "object", "additionalProperties": false,
-      "required": ["candidate_id", "outcome", "path", "lineno", "operator", "description", "start_byte", "end_byte", "execution_mode", "elapsed_seconds", "cpu_seconds", "peak_rss_bytes", "phase_seconds", "startup_seconds", "started_count", "evidence_command", "outcome_source", "run_id", "liveness_decision", "liveness_evidence_status"],
+      "required": ["candidate_id", "outcome", "path", "lineno", "operator", "description", "start_byte", "end_byte", "execution_mode", "elapsed_seconds", "profile", "phase_seconds", "startup_seconds", "started_count", "evidence_command", "outcome_source", "run_id", "liveness_decision", "liveness_evidence_status"],
       "properties": {
         "candidate_id": {"$ref": "#/$defs/nullableString"},
         "outcome": {"enum": ["killed", "survived", "crashed", "budget_exceeded", "equivalent", "hung"]},
@@ -357,8 +357,20 @@
         "end_byte": {"$ref": "#/$defs/nullableInteger"},
         "execution_mode": {"$ref": "#/$defs/nullableString"},
         "elapsed_seconds": {"$ref": "#/$defs/nullableNumber"},
-        "cpu_seconds": {"$ref": "#/$defs/nullableNumber"},
-        "peak_rss_bytes": {"$ref": "#/$defs/nullableNumber"},
+        "profile": {
+          "description": "B206: the candidate's cgprofile resource-profile/1 object, or null for progress written by assay <= 11 (archived, read-only). Every number in it comes from the cgprofile observer; a candidate without one is NO_MEASUREMENT with a reason code.",
+          "type": ["object", "null"],
+          "required": ["schema", "status", "reason", "wall_seconds", "metrics", "missing", "observer"],
+          "properties": {
+            "schema": {"const": "resource-profile/1"},
+            "status": {"enum": ["MEASURED", "PARTIAL", "NO_MEASUREMENT"]},
+            "reason": {"$ref": "#/$defs/nullableString"},
+            "wall_seconds": {"$ref": "#/$defs/nullableNumber"},
+            "metrics": {"type": "object"},
+            "missing": {"type": "object"},
+            "observer": {"type": "object"}
+          }
+        },
         "phase_seconds": {"$ref": "#/$defs/phaseSeconds"},
         "startup_seconds": {"$ref": "#/$defs/startupSeconds"},
         "started_count": {"$ref": "#/$defs/nullableInteger"},

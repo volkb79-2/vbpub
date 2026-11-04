@@ -19,7 +19,7 @@ forbids.
 from __future__ import annotations
 
 import pytest
-from conftest import native_mutation, native_outcome, verdict_fixture, why_invalid
+from conftest import R2_TELEMETRY, native_mutation, native_outcome, verdict_fixture, why_invalid
 from jsonschema import Draft202012Validator
 
 from assay.errors import Outcome, ReasonCode
@@ -350,6 +350,7 @@ def test_a_verdict_whose_claims_cover_the_declared_rigor_is_built():
                 operators=("python:compare-swap",),
                 kill_attribution="unattributed",
                 cold_witness_kills=False,
+                **R2_TELEMETRY,
             ),
         ),
         snapshot_policy=SnapshotPolicy(selection="repository"),

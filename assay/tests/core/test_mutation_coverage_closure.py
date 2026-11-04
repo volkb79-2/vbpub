@@ -20,7 +20,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from assay import liveness, process_tree
+from assay import liveness, observer_windows, process_tree
 from assay.adapters.python import PythonAdapter
 from assay.runner import CommandResult, execute_command
 from conftest import (
@@ -312,6 +312,13 @@ def _record(job=None, **overrides):
         "mutated_file_sha256": hashlib.sha256(job.site.apply(source)).hexdigest(),
         "resource_limit_evidence": zero_resource_limit_evidence_dict(),
         "process_tree_evidence": process_tree_evidence_dict(),
+        # B203/B205/B206: a current record states its worker count and
+        # profile, and a killed one its first failing test.
+        "worker_count": 1,
+        "profile": observer_windows.build_profile(
+            None, subject={"tool": "assay"}, wall_seconds=0.5, not_started=True
+        ),
+        "first_failing_test": None,
     }
     payload.update(overrides)
     return payload

@@ -1,5 +1,5 @@
 {
-  "schema_version": 17,
+  "schema_version": 18,
   "assay_version": "0.1.0",
   "lane": "package",
   "commit": "555555555555555555555555555555555555555e",
@@ -45,6 +45,9 @@
       "r2_command": null,
       "equivalence_ledger": null,
       "jobs": 1,
+      "worker_counts": {"1": 2},
+      "profile": {"status_counts": {"MEASURED": 0, "PARTIAL": 0, "NO_MEASUREMENT": 2}, "reason_counts": {"OBSERVER_UNAVAILABLE": 2}, "observer": {"name": "cgprofile", "version": null, "contracts": [3], "modes": []}},
+      "schedule": {"policy": "canonical", "thresholds": null, "memory_budget_bytes": null, "jobs": 1, "prediction_sources": {}, "error": null},
       "max_mutants": 50,
       "operators": [
         "python:boolop-swap",
@@ -90,6 +93,7 @@
             "replacement_sha256": "b60080dc8b8982d2a2bff6f8f3715c1939614dc553cd223ef21832b88c815866",
             "operator": "python:compare-swap",
             "description": "Lt->LtE",
+            "first_failing_test": null,
             "candidate_id": "6c408146e8531fd0a1d7edeed6932b8e87bb1cd44aae811eaf6d959461bbf3e0",
             "source_sha256": "0a92f45540369284bbab0d19e107b78836b8e6c5345ab48b45a30ee8acf94bab",
             "mutated_file_sha256": "77e8f4f4fc93e8d7d64ae7e0a4f456fdcd2b6a3dfb408615f2faa667118707c4",

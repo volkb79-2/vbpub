@@ -517,6 +517,25 @@ def _stable_view(code, document):
     }
 
 
+def _measured_profile(wall_seconds):
+    """A MEASURED cgprofile profile (the golden cgroup window) for one candidate."""
+    from pathlib import Path
+
+    from assay import observer_windows
+
+    fixture = Path(__file__).parents[2] / "tests" / "fixtures" / "observer" / (
+        "observer-window-v3-close-cgroup.json"
+    )
+    reply = json.loads(fixture.read_text(encoding="utf-8"))["response"]
+    reply["metrics"]["cpu_seconds"] = 9000.5
+    reply["metrics"]["rss_peak_bytes"] = 123456789
+    return observer_windows.build_profile(
+        observer_windows.WindowResult(reply=reply, mode="cgroup", window=reply["window"], asked=True),
+        subject={"tool": "assay", "lane": "r2", "kind": "r2-candidate"},
+        wall_seconds=wall_seconds,
+    )
+
+
 def test_o8_timing_and_resources_never_change_classification(tmp_path, monkeypatch):
     root, head, verdict, progress = _complete_fixture(
         tmp_path, monkeypatch, "r2_fail_mutants_survived"
@@ -530,8 +549,7 @@ def test_o8_timing_and_resources_never_change_classification(tmp_path, monkeypat
             if item["event"] == "candidate":
                 item["elapsed_seconds"] = item["elapsed_seconds"] * 500.0
                 item["emitted_at"] = item["emitted_at"].replace("T12:", "T15:")
-                item["cpu_seconds"] = 9000.5
-                item["peak_rss_bytes"] = 123456789
+                item["profile"] = _measured_profile(item["elapsed_seconds"])
                 item["phase_seconds"] = {
                     "materialize": 10.0, "command": 20.0, "integrity": 30.0, "teardown": 40.0,
                 }

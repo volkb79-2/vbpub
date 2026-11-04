@@ -53,6 +53,9 @@ _TARGETS = (MutationTarget(path="pkg/flags.py", text=_TEXT, lines=frozenset({2, 
 
 @pytest.fixture(autouse=True)
 def _hosted_windows(monkeypatch):
+    # The gate container exports a real observer socket; these tests assert the
+    # no-observer (OBSERVER_UNAVAILABLE) profile, so the ambient one must not leak in.
+    monkeypatch.delenv("ASSAY_RESOURCE_OBSERVER_SOCKET", raising=False)
     counters = ResourceLimitCounters(
         pids_max=0,
         memory_oom=0,
@@ -71,14 +74,22 @@ def _hosted_windows(monkeypatch):
     monkeypatch.setattr(
         _window_host,
         "run_window",
-        lambda plan, *, cwd, timeout, process_runner, clock: runner_module.execute_plan(
+        lambda plan, *, cwd, timeout, process_runner, clock, profile=None: runner_module.execute_plan(
             plan, cwd=cwd, timeout=timeout, process_runner=process_runner, clock=clock
         ),
     )
     monkeypatch.setattr(_window_host, "can_host", lambda *_args: True)
 
 
-def _run(tmp_path: Path, name: str, *, jobs: int, state_root: Path | None = None, schedule=None):
+def _run(
+    tmp_path: Path,
+    name: str,
+    *,
+    jobs: int,
+    state_root: Path | None = None,
+    schedule=None,
+    resume: bool = False,
+):
     lane = make_lane(argv=("pytest", "-q"))
     repo = _seed_repo(tmp_path, f"repo-{name}")
     scratch_root = tmp_path / f"scratch-{name}"
@@ -110,6 +121,7 @@ def _run(tmp_path: Path, name: str, *, jobs: int, state_root: Path | None = None
             state_root=state_root,
             progress_artifact=progress,
             schedule=schedule,
+            resume=resume,
         )
     events = [
         json.loads(line)
@@ -234,6 +246,60 @@ def test_admission_with_a_tiny_budget_still_completes_every_candidate(tmp_path):
     assert sorted(e["candidate_index"] for e in events) == [0, 1, 2]
 
 
+def test_a_parallel_sweep_carries_profile_worker_count_and_schedule_telemetry(tmp_path):
+    mutation, events = _run(
+        tmp_path, "telemetry", jobs=3, state_root=tmp_path / "state",
+        schedule=_schedule.ScheduleOptions(memory_budget_bytes=4 * MIB * 1024),
+    )
+    telemetry = mutation.r2_telemetry
+    assert telemetry is not None
+    # No observer in this test: every candidate is an explicit NO_MEASUREMENT.
+    assert telemetry["profile"]["status_counts"] == {"NO_MEASUREMENT": 3}
+    assert telemetry["profile"]["reason_counts"] == {"OBSERVER_UNAVAILABLE": 3}
+    assert telemetry["worker_counts"] == {"3": 3}
+    schedule = telemetry["schedule"]
+    assert schedule["policy"] == "tem-lpt" and schedule["jobs"] == 3
+    assert schedule["memory_budget_bytes"] == 4 * MIB * 1024
+    assert sum(schedule["prediction_sources"].values()) == 3
+    assert set(schedule["error"]) == {
+        "rss_ratio", "wall_ratio", "class_confusion", "admission_overshoots",
+    }
+    for event in events:
+        assert event["worker_count"] == 3
+        assert event["profile"]["reason"] == "OBSERVER_UNAVAILABLE"
+        # the scheduler's error record names the profile's reason, not a guess
+        assert event["prediction_error"]["profile_reason"] == "OBSERVER_UNAVAILABLE"
+        assert "OBSERVER_UNAVAILABLE" in event["prediction_error"]["reason"]
+
+
+def test_a_serial_sweep_reports_the_canonical_schedule(tmp_path):
+    mutation, _ = _run(tmp_path, "serial-telemetry", jobs=1)
+    schedule = mutation.r2_telemetry["schedule"]
+    assert schedule["policy"] == "canonical"
+    assert schedule["thresholds"] is None and schedule["error"] is None
+    assert mutation.r2_telemetry["worker_counts"] == {"1": 3}
+
+
+def test_a_resumed_campaign_with_mixed_worker_counts_reports_each_count(tmp_path):
+    """B203: every state record states the worker count that produced it, and
+    the telemetry (hence the verdict) carries per-count totals, not just the
+    latest invocation's selection."""
+    state = tmp_path / "state"
+    _run(tmp_path, "first", jobs=1, state_root=state)
+    records = sorted(state.glob("[0-9a-f]*.json"))
+    assert len(records) == 3
+    assert {json.loads(p.read_text())["worker_count"] for p in records} == {1}
+    records[0].unlink()  # one candidate must run again, now at 3 workers
+    mutation, events = _run(tmp_path, "second", jobs=3, state_root=state, resume=True)
+    assert len(events) == 1 and events[0]["worker_count"] == 3
+    assert mutation.r2_telemetry["worker_counts"] == {"1": 2, "3": 1}
+    assert mutation.r2_telemetry["profile"]["status_counts"] == {"NO_MEASUREMENT": 3}
+    counts = {
+        json.loads(p.read_text())["worker_count"] for p in state.glob("[0-9a-f]*.json")
+    }
+    assert counts == {1, 3}
+
+
 # -- configuration and CLI --------------------------------------------------
 
 
@@ -319,4 +385,9 @@ def test_memory_budget_resolution_prefers_the_flag_and_refuses_garbage(monkeypat
 def test_lane_inventory_advertises_the_scheduling_capabilities():
     from assay import cli
 
-    assert cli.CAPABILITIES == ("r2-memory-budget", "r2-schedule-tem")
+    assert cli.CAPABILITIES == (
+        "r2-memory-budget",
+        "r2-schedule-tem",
+        "r2-resource-profile",
+        "verdict-v18",
+    )

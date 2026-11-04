@@ -100,6 +100,8 @@ def _mutant(
                     else "exited"
                 )
             ),
+            # B205/schema v18: only a killed entry names its failing test.
+            **({"first_failing_test": None} if bucket == "killed" else {}),
         }
     )
     return item
@@ -171,6 +173,20 @@ def _r2_document(*, bucket: str, operator: str) -> dict:
                 "equivalence_ledger": None,
                 "jobs": 1,
                 "attribution": "serial",
+                # B203/B206/B207 (schema v18): the telemetry summaries.
+                "worker_counts": {"1": 1},
+                "profile": {
+                    "status_counts": {"MEASURED": 0, "PARTIAL": 0, "NO_MEASUREMENT": 1},
+                    "reason_counts": {"OBSERVER_UNAVAILABLE": 1},
+                    "observer": {
+                        "name": "cgprofile", "version": None, "contracts": [3], "modes": [],
+                    },
+                },
+                "schedule": {
+                    "policy": "canonical", "thresholds": None,
+                    "memory_budget_bytes": None, "jobs": 1,
+                    "prediction_sources": {}, "error": None,
+                },
                 "max_mutants": 50,
                 "operators": ["python:compare-swap"],
                 "kill_attribution": "unattributed",
@@ -661,6 +677,9 @@ def _sql_r2_document(*, language: str = "sql", **overrides) -> dict:
             "process_tree_evidence": process_tree_evidence_dict(
                 leader_status="exited"
             ),
+            # B205/schema v18: a native killed entry states its failing test
+            # (null: a SQL lane has no pytest plugin events).
+            "first_failing_test": None,
         }
     )
     document = {
@@ -700,6 +719,20 @@ def _sql_r2_document(*, language: str = "sql", **overrides) -> dict:
                 "equivalence_ledger": None,
                 "jobs": 1,
                 "attribution": "serial",
+                # B203/B206/B207 (schema v18): the telemetry summaries.
+                "worker_counts": {"1": 1},
+                "profile": {
+                    "status_counts": {"MEASURED": 0, "PARTIAL": 0, "NO_MEASUREMENT": 1},
+                    "reason_counts": {"OBSERVER_UNAVAILABLE": 1},
+                    "observer": {
+                        "name": "cgprofile", "version": None, "contracts": [3], "modes": [],
+                    },
+                },
+                "schedule": {
+                    "policy": "canonical", "thresholds": None,
+                    "memory_budget_bytes": None, "jobs": 1,
+                    "prediction_sources": {}, "error": None,
+                },
                 "max_mutants": 50,
                 "operators": ["sql:drop-check"],
                 "kill_attribution": "unattributed",

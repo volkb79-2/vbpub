@@ -869,9 +869,7 @@ def _check_progress(
             latest_liveness[identity] = event.get("liveness_resource_evidence")
             latest_cost_resources[identity] = {
                 field: cost_measurements[field]
-                for field in (
-                    "cpu_seconds", "peak_rss_bytes", "phase_seconds", "startup_seconds"
-                )
+                for field in ("phase_seconds", "startup_seconds", "profile")
             }
         elif kind == "end":
             if (

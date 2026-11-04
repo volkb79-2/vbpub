@@ -599,31 +599,46 @@ records without a structurally valid complete trace are refused and rerun.
 
 Every candidate records `phase_seconds` (`materialize`, `command`, `integrity`,
 `teardown`, the worker's own monotonic split); a liveness candidate also
-records `cpu_seconds`, `peak_rss_bytes`, `write_bytes` for its process tree,
-and `startup_seconds` (`to_session_start`, `to_first_test`). `cpu_seconds` is
-the maximum over 1 Hz samples of utime+stime+cutime+cstime summed over the
-live tree, a lower bound (the series is not monotone, and CPU after the last
-sample is missing); `peak_rss_bytes` is a 1 Hz lower bound on peak Σ RSS, and
-Σ RSS overcounts shared and copy-on-write pages, so it is not a bound on true
-peak memory use. `write_bytes` is the maximum sampled sum of each live
-process's `/proc/<pid>/io` counter. A sample is `None` if any process lacks a
-readable I/O counter; the maximum of available samples remains a lower bound
-because a child can exit between samples. `judge_rss_bytes` is one sample of
-the Assay process's resident memory after candidate teardown, independent of
-the candidate process tree.
+records `startup_seconds` (`to_session_start`, `to_first_test`). Both are
+Assay's own clock.
 
-The `candidate` progress event adds a nested `resources` object with
-`cpu_seconds`, `peak_rss_bytes`, and `write_bytes`, plus `judge_rss_bytes`.
-The previous flat CPU/RSS and phase/startup fields remain for existing
-readers. The state record's `resources` map carries these measurements with
-the phase and startup fields. The baseline `test` events carry the tests' own
-`setup_s`/`teardown_s`. The monitor writes a `<events>.resources.json`
-sidecar on every exit path (a `try/finally` around the poll loop), and the
-sampler runs after the B107 resource read, so it can never feed the CPU-growth
-or hang decision. The values are measured once, are `None` when unavailable,
-and never enter a classification, a verdict or the `judge_sha256` inputs;
-they exist so a campaign can be sized from measurement rather than from the
-declared budget.
+**Resource numbers are not Assay's (B206, assay 12).** Assay used to sample a
+candidate's process tree itself (`cpu_seconds`, `peak_rss_bytes`,
+`write_bytes`, `judge_rss_bytes`); that duplicated the cgprofile observer, and
+the numbers carried no record of their source or why they were missing. The
+observer is now the single source. For every started native candidate the
+process that spawns the root (the isolated window host, or the coordinator for
+an injected in-process runner) sends `window-open` right after spawn and
+`window-close` after the root exits and before it is reaped, so the daemon reads
+exact CPU; the root is a child subreaper, so orphaned grandchildren stay in its
+tree. The reply becomes the candidate's `resource-profile/1` object: `status`
+(`MEASURED`, `PARTIAL`, `NO_MEASUREMENT`), one `reason` code when there is no
+measurement, `wall_seconds` (Assay's own clock, always present), and the
+daemon's `metrics`, `missing` reasons, `sources`, `context` and `attribution`.
+
+There is no fallback and no second sampler. If the observer is absent, refuses,
+errors, or does not speak contract 3, the profile is `NO_MEASUREMENT` with the
+reason, and the lane runs and judges unchanged. The coordinator owns the
+run-wide policy (`ProfileCollector`): contract support is asked once, three
+consecutive failures stop the asking, and each candidate's exchange is a plain
+JSON record sent back over the window-host protocol. The only `/proc` read
+left in liveness is the CPU progress of the process tree (`/proc/<pid>/stat`),
+a control input for hang detection that is never recorded; a source test pins
+that no module other than the observer client reads `/proc/*/io`, `statm`,
+`smaps`, `memory.peak` or `io.stat`. The B107/B145 pressure and limit reads of
+the liveness monitor are control inputs of the same kind and are unchanged.
+
+The `candidate` progress event carries `profile`, `worker_count` and, for a
+killed candidate, `first_failing_test` beside `phase_seconds` and
+`startup_seconds`; the state record's `resources` map carries only the phase
+and startup fields and gains `profile`, `worker_count` and
+`first_failing_test`; and `profile-<lane>.jsonl` next to the progress file holds
+one profile per candidate. The baseline `test` events carry the tests' own
+`setup_s`/`teardown_s`. The monitor writes a `<events>.resources.json` sidecar
+(`format`, `spawned_at`) on every exit path. Profiles never enter a
+classification, a bucket or the `judge_sha256` inputs, and the verdict carries
+only counts of them (`judgment.r2.profile`); they exist so a campaign can be
+sized from measurement rather than from the declared budget.
 
 #### Native R2 cgroup resource-limit events (B145)
 
@@ -702,15 +717,16 @@ state on the coordinator in candidate-index order, and keeps resume identity
 independent of N. WP7's end-of-sweep retry remains serial. Native pilots still
 require `--pilot-jobs 1`; `--jobs` is refused with `--candidates-file`.
 
-Verdict schema v17 records this invocation's effective `judgment.r2.jobs`
-count and matching attribution (`serial` for one worker,
-`overlap-conservative` for multiple workers). Resume identity deliberately
-does not include the worker count, and state records do not retain it, so a
-verdict that reuses results from earlier invocations does not summarize their
-worker counts. Campaign-wide attribution needs per-record worker counts and a
-derived maximum; it is tracked in [B203](../nyxloom-trove/4-backlog.md#b203-verdict-worker-attribution-is-invocation-local-on-resume).
-Progress retains its run and worker events for resume revalidation. See the
-[v16-to-v17 consumer migration](CONSUMERS.md#migration-notes-v16-to-v17).
+Verdict schema v18 records the campaign's maximum worker count as
+`judgment.r2.jobs` with the matching attribution (`serial` for one worker,
+`overlap-conservative` for more) and the candidates per worker count as
+`judgment.r2.worker_counts`. Resume identity deliberately does not include the
+worker count, so a candidate result may be reused at a different count; each
+state record therefore stores the `worker_count` that produced it, and the
+verdict derives the maximum and the per-count totals over resumed and executed
+records (B203, closed by v18). Progress retains its run and worker events for
+resume revalidation. See the
+[v17-to-v18 consumer migration](CONSUMERS.md#migration-notes-v17-to-v18).
 
 WP8 also removes the host-varying `cleanup_seconds` from process-tree evidence,
 records the leader signal and identities of outliving descendants, and carries
@@ -815,7 +831,7 @@ happen.
 After the required pre-candidate capability probe succeeds, a missing endpoint
 or an uncomparable window is telemetry with status `unobserved`. Assay records
 the reason in the private mutation state and candidate progress stream, emits
-one advisory line, omits `resource_limit_evidence` from that candidate's v17
+one advisory line, omits `resource_limit_evidence` from that candidate's v18
 verdict entry, and continues the campaign. An identity change reports the
 specific cgroup index, path or mount, controller file, or observation-mode
 field that changed. A configured limit-value change leaves the window
@@ -1029,7 +1045,7 @@ that root hook. It must preserve pytest's session exit status; if it changes
 the status, Assay refuses to use the receipt to prove a kill or survivor.
 Every other unreviewed hook keeps the proof unavailable.
 
-These proofs were introduced in v15 and remain in the current v17 verdict,
+These proofs were introduced in v15 and remain in the current v18 verdict,
 where they are checked independently by `assay verify`. B105 adds a separate
 source-bound check: it reads the lane
 argv and pytest configuration from the judged Git commit, independently
@@ -1758,7 +1774,7 @@ costly case where source and tests changed: it uses a prior result only to
 choose a test node worth replaying, never to carry an old kill into the new
 verdict.
 
-The prior artifact must be a current-verifier-accepted v17, complete,
+The prior artifact must be a current-verifier-accepted v18, complete,
 unsharded native campaign. Each candidate ID commits to the canonical path,
 operator, source-file digest, byte span, and full mutated-file digest. On the
 new run Assay passes the current R0 baseline first, rediscovers the complete

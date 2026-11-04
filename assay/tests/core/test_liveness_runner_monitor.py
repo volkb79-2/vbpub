@@ -125,7 +125,6 @@ def _runner(
     resource_reader=None,
     expect_next_event_within_s: float = 15.0,
     pre_first_event_within_s: float | None = None,
-    sampler=None,
     sleep=None,
 ) -> tuple[liveness.LivenessRunner, Path]:
     events_dir = tmp_path / "candidates"
@@ -145,7 +144,6 @@ def _runner(
             if resource_reader is not None
             else lambda pid: _clear_resource_snapshot()
         ),
-        sampler=sampler,
         popen=_FakePopen(proc),
         process_group_killer=_ignore_process_group,
     )
@@ -1435,38 +1433,12 @@ _EXPECTED_OUTCOME = {
     "hung": ("LivenessHungExpired",),
     "timeout": ("TimeoutExpired",),
 }
-_SIDECAR_KEYS = {
-    "format",
-    "samples",
-    "cpu_seconds",
-    "peak_rss_bytes",
-    "write_bytes",
-    "spawned_at",
-}
+# B206: the sidecar keeps the spawn time only; every resource number comes
+# from the cgprofile observer.
+_SIDECAR_KEYS = {"format", "spawned_at"}
 
 
-def _constant_sampler(pid: int) -> liveness.TreeSample:
-    return liveness.TreeSample(1e9, 10**12, 2048)
-
-
-def _raising_sampler(pid: int) -> liveness.TreeSample:
-    raise OSError("no /proc")
-
-
-@pytest.mark.parametrize(
-    ("write_samples", "expected"),
-    [((100, 50), 100), ((None, None), None), ((100, None), 100)],
-)
-def test_resource_tally_keeps_the_maximum_available_write_counter(
-    write_samples: tuple[int | None, int | None], expected: int | None
-) -> None:
-    tally = liveness._ResourceTally()
-    for write_bytes in write_samples:
-        tally.add(liveness.TreeSample(1.0, 1024, write_bytes))
-    assert tally.write_bytes == expected
-
-
-def _row(tmp_path: Path, row: str, *, sampler, log: list[str] | None = None):
+def _row(tmp_path: Path, row: str, *, log: list[str] | None = None):
     """Run one scripted row and return ``(outcome, clock, runner, cwd)``.
 
     ``normal`` finishes on the third tick; ``hung`` is idle with flat CPU;
@@ -1506,17 +1478,12 @@ def _row(tmp_path: Path, row: str, *, sampler, log: list[str] | None = None):
         trail.append("sleep")
         clock.advance(dt)
 
-    def spy(pid: int):
-        trail.append("sampler")
-        return sampler(pid)
-
     runner, cwd = _runner(
         tmp_path,
         proc=proc,
         clock=clock,
         cpu_reader=cpu,
         resource_reader=resources,
-        sampler=None if sampler is None else spy,
         sleep=sleep,
     )
     try:
@@ -1528,35 +1495,20 @@ def _row(tmp_path: Path, row: str, *, sampler, log: list[str] | None = None):
 
 
 @pytest.mark.parametrize("row", _ROWS)
-def test_o6_the_sampler_never_changes_the_outcome_or_the_tick_count(
+def test_o6_a_tick_is_cpu_then_resource_then_sleep_and_a_killed_tick_stops_after_resource(
     tmp_path: Path, row: str
 ) -> None:
-    results = {}
-    for name, sampler in (
-        ("none", None),
-        ("constant", _constant_sampler),
-        ("raising", _raising_sampler),
-    ):
-        outcome, clock, _runner_, _cwd = _row(tmp_path / name, row, sampler=sampler)
-        results[name] = (outcome, clock.t)
-    assert results["none"][0] == _EXPECTED_OUTCOME[row]
-    assert results["constant"] == results["none"]
-    assert results["raising"] == results["none"]
-
-
-@pytest.mark.parametrize("row", _ROWS)
-def test_o6_a_sampled_tick_is_cpu_resource_sampler_sleep_and_a_killed_tick_has_no_sampler(
-    tmp_path: Path, row: str
-) -> None:
+    """B206: no resource sampler runs. The liveness tick reads only the CPU
+    progress and the pressure snapshot (control inputs), then sleeps."""
     log: list[str] = []
-    outcome, _clock, _runner_, _cwd = _row(tmp_path, row, sampler=_constant_sampler, log=log)
+    outcome, _clock, _runner_, _cwd = _row(tmp_path, row, log=log)
     assert outcome == _EXPECTED_OUTCOME[row]
     ticks: list[list[str]] = []
     for entry in log:
         if entry == "cpu":
             ticks.append([])
         ticks[-1].append(entry)
-    full = ["cpu", "resource", "sampler", "sleep"]
+    full = ["cpu", "resource", "sleep"]
     if row == "normal":
         assert len(ticks) >= 3
         assert all(tick == full for tick in ticks)
@@ -1566,55 +1518,28 @@ def test_o6_a_sampled_tick_is_cpu_resource_sampler_sleep_and_a_killed_tick_has_n
         assert ticks[-1] == ["cpu", "resource"]
 
 
+def test_o6_the_runner_takes_no_sampler_argument() -> None:
+    with pytest.raises(TypeError):
+        liveness.LivenessRunner(  # type: ignore[call-arg]
+            events_dir=Path("/nonexistent"), expect_next_event_within_s=1.0, sampler=lambda pid: None
+        )
+
+
 @pytest.mark.parametrize("row", _ROWS)
-def test_o7_the_sidecar_is_written_on_every_exit_path(tmp_path: Path, row: str) -> None:
-    returned = {"n": 0}
-
-    def counting(pid: int) -> liveness.TreeSample:
-        sample = _constant_sampler(pid)
-        returned["n"] += 1
-        return sample
-
-    outcome, _clock, runner, cwd = _row(tmp_path, row, sampler=counting)
+def test_o7_the_sidecar_is_written_on_every_exit_path_with_the_spawn_time_only(
+    tmp_path: Path, row: str
+) -> None:
+    outcome, _clock, runner, cwd = _row(tmp_path, row)
     assert outcome == _EXPECTED_OUTCOME[row]
     sidecar = liveness.read_resource_sidecar(runner._events_path_for_cwd(cwd))
     assert sidecar is not None
     assert set(sidecar) == _SIDECAR_KEYS
     assert sidecar["format"] == 1
-    assert sidecar["samples"] == returned["n"]
-    assert returned["n"] >= 2
-    assert sidecar["cpu_seconds"] == 1e9
-    assert sidecar["peak_rss_bytes"] == 10**12
-    assert sidecar["write_bytes"] == 2048
     assert isinstance(sidecar["spawned_at"], float)
 
 
-def test_o7_a_sampler_that_always_raises_leaves_null_measurements(tmp_path: Path) -> None:
-    _outcome, _clock, runner, cwd = _row(tmp_path, "hung", sampler=_raising_sampler)
-    sidecar = liveness.read_resource_sidecar(runner._events_path_for_cwd(cwd))
-    assert sidecar is not None
-    assert (
-        sidecar["samples"],
-        sidecar["cpu_seconds"],
-        sidecar["peak_rss_bytes"],
-        sidecar["write_bytes"],
-    ) == (0, None, None, None)
-
-
-def test_o7_no_sampler_still_writes_a_sidecar_with_null_measurements(tmp_path: Path) -> None:
-    _outcome, _clock, runner, cwd = _row(tmp_path, "normal", sampler=None)
-    sidecar = liveness.read_resource_sidecar(runner._events_path_for_cwd(cwd))
-    assert sidecar is not None
-    assert (
-        sidecar["samples"],
-        sidecar["cpu_seconds"],
-        sidecar["peak_rss_bytes"],
-        sidecar["write_bytes"],
-    ) == (0, None, None, None)
-
-
 def test_o7_a_later_call_whose_popen_raises_leaves_no_stale_sidecar(tmp_path: Path) -> None:
-    _outcome, _clock, runner, cwd = _row(tmp_path, "normal", sampler=_constant_sampler)
+    _outcome, _clock, runner, cwd = _row(tmp_path, "normal")
     events_path = runner._events_path_for_cwd(cwd)
     assert liveness.read_resource_sidecar(events_path) is not None
 
@@ -1638,15 +1563,6 @@ def test_o7_a_failing_sidecar_write_never_changes_the_outcome(
         raise OSError("replace failed")
 
     monkeypatch.setattr(liveness.os, "replace", refuse)
-    outcome, _clock, runner, cwd = _row(tmp_path, row, sampler=_constant_sampler)
-    assert outcome == _EXPECTED_OUTCOME[row]
-    assert liveness.read_resource_sidecar(runner._events_path_for_cwd(cwd)) is None
-
-
-@pytest.mark.parametrize("row", _ROWS)
-def test_o7_a_non_serializable_sample_never_changes_the_outcome(tmp_path: Path, row: str) -> None:
-    outcome, _clock, runner, cwd = _row(
-        tmp_path, row, sampler=lambda pid: liveness.TreeSample(object(), 1)
-    )
+    outcome, _clock, runner, cwd = _row(tmp_path, row)
     assert outcome == _EXPECTED_OUTCOME[row]
     assert liveness.read_resource_sidecar(runner._events_path_for_cwd(cwd)) is None

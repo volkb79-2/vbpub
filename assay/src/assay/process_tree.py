@@ -25,6 +25,7 @@ import time
 from pathlib import Path
 from typing import Mapping, Sequence
 
+from . import observer_windows
 from .records import record
 
 __all__ = [
@@ -659,8 +660,10 @@ class ProcessTreeProcessRunner:
         ) as stderr:
             window = ProcessTreeWindow(cleanup_seconds=self.cleanup_seconds)
             registered_group: int | None = None
+            observer_window: observer_windows.OpenWindow | None = None
             try:
                 with window:
+                    observer_slot = observer_windows.current_slot()
                     try:
                         proc = window.spawn(
                             command,
@@ -671,6 +674,10 @@ class ProcessTreeProcessRunner:
                             stderr=stderr,
                             start_new_session=True,
                             pass_fds=pass_fds,
+                            # B206: with an observer window requested the root
+                            # is a child subreaper, so orphaned grandchildren
+                            # stay in its tree.
+                            **observer_windows.subreaper_preexec(observer_slot),
                         )
                     except OSError as exc:
                         evidence = window.finish()
@@ -680,9 +687,20 @@ class ProcessTreeProcessRunner:
                     liveness.register_live_group(proc.pid)
                     registered_group = proc.pid
                     _report_window_host_candidate_pid(proc.pid)
+                    observer_window = observer_windows.open_for_root(proc.pid)
                     try:
-                        returncode = proc.wait(timeout=timeout)
+                        if observer_window is None:
+                            returncode = proc.wait(timeout=timeout)
+                        else:
+                            # Close the observer window while the root is
+                            # still a zombie so its CPU is exact, then reap.
+                            if not observer_window.wait_exited(proc, timeout):
+                                raise subprocess.TimeoutExpired(command, timeout)
+                            observer_window.close()
+                            returncode = proc.wait(timeout=timeout)
                     except subprocess.TimeoutExpired as exc:
+                        if observer_window is not None:
+                            observer_window.close()
                         evidence = window.finish(timed_out=True, force=True)
                         out, out_dropped = _read_tail(
                             stdout, sensitive_values=self.sensitive_values
@@ -718,5 +736,7 @@ class ProcessTreeProcessRunner:
                     f"native process-tree runner failed after starting the command: {exc}"
                 ) from exc
             finally:
+                if observer_window is not None:
+                    observer_window.close()
                 if registered_group is not None:
                     liveness.unregister_live_group(registered_group)

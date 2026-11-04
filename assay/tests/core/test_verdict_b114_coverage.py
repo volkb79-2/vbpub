@@ -12,7 +12,7 @@ from copy import deepcopy
 from dataclasses import replace
 
 import pytest
-from conftest import PROJECT_ROOT
+from conftest import PROJECT_ROOT, R2_TELEMETRY
 
 from assay.errors import Outcome
 from assay.r2_command import R2_APPENDED, R2_TRANSFORM_ID, transform_argv
@@ -319,7 +319,8 @@ def test_native_outcome_requires_typed_resource_and_attempt_evidence(changes, me
 def test_native_policy_requires_typed_cold_and_ledger_fields(changes, message):
     fields = dict(jobs=1, attribution="serial", max_mutants=50,
                   operators=("python:compare-swap",),
-                  kill_attribution="unattributed", cold_witness_kills=False)
+                  kill_attribution="unattributed", cold_witness_kills=False,
+                  **R2_TELEMETRY)
     fields.update(changes)
     with pytest.raises(ValueError, match=message):
         JudgmentR2(**fields)
@@ -610,6 +611,7 @@ def test_non_kill_attempt_evidence_does_not_claim_a_failed_call_prefix():
     base = _cold_verdict()
     mutation = base.claims[-1].mutation
     crashed = replace(mutation.killed[0], execution=MutationExecution(mode="full"),
+                      first_failing_test=None,  # only a killed entry names a test
                       evidence=_evidence(
         started_count=None, failed_call_index=None))
     moved = replace(mutation, killed=mutation.killed[1:], crashed=(crashed,),

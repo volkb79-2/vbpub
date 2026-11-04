@@ -2815,6 +2815,12 @@ def _reconstruct_judgment_r2(raw: dict) -> JudgmentR2:
         ),
         jobs=raw.get("jobs"),
         attribution=raw.get("attribution"),
+        # (B203/B206/B207, schema v18) read with `.get` like `jobs`: absent
+        # under `producer = "ingested"`, and `JudgmentR2`'s producer fork
+        # decides whether the absence is legal.
+        worker_counts=raw.get("worker_counts"),
+        profile=raw.get("profile"),
+        schedule=raw.get("schedule"),
         max_mutants=raw.get("max_mutants"),
         operators=None if operators is None else tuple(operators),
         kill_attribution=raw["kill_attribution"],
@@ -2949,7 +2955,7 @@ def _reconstruct_red_first(raw: dict) -> RedFirstResult:
     return red_first
 
 
-def _reconstruct_mutant_outcome(raw: dict) -> MutantOutcome:
+def _reconstruct_mutant_outcome(raw: dict, *, killed: bool = False) -> MutantOutcome:
     raw_execution = raw.get("execution")
     execution = None
     if isinstance(raw_execution, dict):
@@ -2976,6 +2982,7 @@ def _reconstruct_mutant_outcome(raw: dict) -> MutantOutcome:
         operator=raw["operator"],
         description=raw["description"],
         kill_signal=raw.get("kill_signal"),
+        first_failing_test=raw.get("first_failing_test"),
         discard_reason=raw.get("discard_reason"),
         candidate_id=raw.get("candidate_id"),
         source_sha256=raw.get("source_sha256"),
@@ -3002,7 +3009,17 @@ def _reconstruct_mutant_outcome(raw: dict) -> MutantOutcome:
             else None
         ),
     )
-    _reject_unknown_keys(raw, item.to_dict(), "mutant outcome")
+    expected = item.to_dict()
+    if killed and item.candidate_id is not None:
+        # (B205/schema v18) every native killed entry states its failing test
+        # id, or null when unknown; the key is never merely absent.
+        if "first_failing_test" not in raw:
+            raise ValueError(
+                "a native killed mutant must carry first_failing_test "
+                "(the failing test id, or null when unknown)"
+            )
+        expected["first_failing_test"] = item.first_failing_test
+    _reject_unknown_keys(raw, expected, "mutant outcome")
     return item
 
 
@@ -3018,7 +3035,7 @@ def _reconstruct_mutation(raw: dict) -> Mutation:
     candidate_ids = raw.get("candidate_ids")
     bucket_kwargs = {
         name: tuple(
-            _reconstruct_mutant_outcome(item)
+            _reconstruct_mutant_outcome(item, killed=name == "killed")
             for item in (
                 # (B091/RW-33, P7 A3) `hung` is additive under schema v11
                 # (no v12 cut, matching A1's own `budget_per_candidate_

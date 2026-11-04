@@ -36,6 +36,8 @@ def _entry(row, bucket="killed"):
         "replacement_sha256": "c" * 64,
         "candidate_id": row["id"],
         "execution": {"mode": "full"},
+        # B205/schema v18: every native killed entry states its failing test.
+        **({"first_failing_test": None} if bucket == "killed" else {}),
         "process_tree_evidence": process_tree_evidence_dict(leader_status=leader),
         "resource_limit_evidence": {
             "cgroup_version": 2,
@@ -334,6 +336,7 @@ def test_a_never_started_leftover_under_a_non_timeout_reason_is_unresolved(tmp_p
     extra["lineno"] += 50
     extra["mutated_file_sha256"] = "ab" * 32
     extra.pop("kill_signal", None)
+    extra.pop("first_failing_test", None)  # only a killed entry names a test
     extra["process_tree_evidence"] = process_tree_evidence_dict(leader_status="not-started")
     extra["candidate_id"] = candidate_id_from_fields(**{k: extra[k] for k in (
         "path", "source_sha256", "start_byte", "end_byte", "mutated_file_sha256", "operator")})

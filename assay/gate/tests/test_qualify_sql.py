@@ -749,6 +749,13 @@ _PLACEHOLDERS = {
     "@BASE_OID@": "2" * 40,
     "@STARTED@": "2026-08-18T00:00:00+00:00",
     "@ENDED@": "2026-08-18T00:01:00+00:00",
+    # B206: what the cgprofile observer answered is a property of the gate
+    # host, so the witness canonicalizes the profile summary.
+    "@PROFILE_SUMMARY@": {
+        "status_counts": {"MEASURED": 0, "PARTIAL": 0, "NO_MEASUREMENT": 24},
+        "reason_counts": {"OBSERVER_UNAVAILABLE": 24},
+        "observer": {"name": "cgprofile", "version": None, "contracts": [3], "modes": []},
+    },
 }
 
 

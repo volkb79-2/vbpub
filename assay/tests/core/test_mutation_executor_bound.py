@@ -104,7 +104,7 @@ def _resource_counters_are_faked_for_executor_unit_tests(monkeypatch):
     monkeypatch.setattr(
         _window_host,
         "run_window",
-        lambda plan, *, cwd, timeout, process_runner, clock: runner_module.execute_plan(
+        lambda plan, *, cwd, timeout, process_runner, clock, profile=None: runner_module.execute_plan(
             plan,
             cwd=cwd,
             timeout=timeout,
@@ -1646,7 +1646,7 @@ def test_keyboard_interrupt_terminates_every_live_window_and_leaves_them_unclass
     progress_events: list[dict] = []
     state_root = tmp_path / "interrupt-state"
 
-    def fake_window(plan, *, cwd, timeout, process_runner, clock):
+    def fake_window(plan, *, cwd, timeout, process_runner, clock, profile=None):
         with host_lock:
             host_threads.add(threading.get_ident())
             if len(host_threads) == 2:

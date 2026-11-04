@@ -7,22 +7,29 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ### Added
 - B207: two-ended-matching candidate scheduling for parallel native R2 (`--jobs` above 1). Candidates are classed high, normal or low by predicted peak RSS and dispatched longest-first with at most one high running; `--memory-budget-bytes` (`ASSAY_R2_MEMORY_BUDGET_BYTES`) adds an admission rule on the predicted RSS sum (one candidate always runs, a queued high reserves the slot). Predictions come from what assay already records (`elapsed_seconds`, `peak_rss_bytes`, kept in `.schedule-history.v1` in the state directory), then live and last-campaign file medians, lane medians, and the new lane keys `judge.mutation.prediction_wall_seconds` and `prediction_rss_bytes`; the class factors are `schedule_high_factor` and `schedule_low_factor`. Progress candidate events gain `dispatch_position`, `prediction` and `prediction_error`; the state directory gains `schedule-summary.v1` (not `*.json`, so candidate-record globs stay exact); `assay lanes --json` gains `capabilities` (`r2-memory-budget`, `r2-schedule-tem`). Results are unchanged and independent of the order. Cgprofile-sourced numbers (B206) and the verdict schema fields (B208) are not part of this change.
 
+- B206: native R2 resource numbers come only from the cgprofile observer (contract 3). Every started candidate gets one measurement window on its root process (`window-open` after spawn, `window-close` after the root exits and before it is reaped, so CPU is exact; `cgroup` mode at `--jobs 1`, `process-tree` above) and records a `resource-profile/1` object as progress `profile`, state `profile` and one line in `profile-<lane>.jsonl`. Without the observer the profile is an explicit `NO_MEASUREMENT` with a reason code (`OBSERVER_UNAVAILABLE`, `OBSERVER_REFUSED`, `OBSERVER_CONTRACT_UNSUPPORTED`, `OBSERVER_ERROR`, `WINDOW_LOST`, `NOT_STARTED`); there is no fallback reader and no second sampler, and a missing measurement never changes a bucket, an outcome or an exit code. The candidate root is a child subreaper. The scheduler history is `assay-schedule-history/2` (profile digests; history/1 from 11.x is still read).
+- B203, B205: every native state record stores its `worker_count`; every native killed candidate records `first_failing_test` (progress, state and verdict; null when unknown).
+- `assay lanes --json` capabilities `r2-resource-profile` and `verdict-v18`.
+
 ### Fixed
 - B085: the R3 canary target's test-path veto honours `judge.allow_test_path_targets` (a test FILENAME is still refused) and its refusal names the flag.
 - B187: R0 result classification maps the observation status through `contention.observation_input` instead of a hand-written copy.
 - B194: `tools/b110_pilot_select.py --size` below the per-file plus missing-operator minimum falls back to a seeded operator-covering fill; only a size below the operator count is refused.
 - B184: synthetic 10.0.1-shape `crashed` and `budget_exceeded` state fixtures prove the resume rejection for every bucket.
-
-### Changed
-- Extend the provisional-release R2 postponement (B169) to assay versions below 12.1.0 (operator decision D1, 2026-11-04) so 12.0.0 ships under it; R2 runs later with `--jobs` on the scratch host. The window is one constant in `tools/self-qualification-gate.sh` and the full `self-qualification` lane is unchanged.
-- Native R2 progress and state now drain by dispatch position instead of canonical index when scheduling is active (`--jobs` above 1); a serial run is unchanged. `assay analyze campaign` accepts a progress stream whose finished candidates are a contiguous prefix of dispatch order rather than of canonical index.
-- Documented the supported `--jobs` range and the limits that bind at high worker counts (consumer guide, "Candidate scheduling and the admission budget").
-
-### Fixed
+- Test hygiene: the cold-witness child-pytest tests that rely on plugin autoload now switch off the unrelated entry-point plugins the runner image installs (xdist, anyio, run-gate profile, platformdirs), which made the "pytest-cov only" receipt assertions fail with the current tester image. The scheduler integration tests no longer inherit the gate container's `ASSAY_RESOURCE_OBSERVER_SOCKET` (they assert the no-observer profile).
 - B196: the copy-on-write adapter no longer imports `cowtree` when `MDT_COW_ROOT` is unset (and `COWTREE_MODE` is `auto` or `off`), so a missing sibling package cannot become an import error before any verdict.
 - B197: a run now collects dead copy-on-write runs (killed by SIGKILL or a container kill) through `cowtree.gc` before opening its own run; collection failure is an advisory.
 - B199: a copy-on-write workspace that fails to close after the measurement finished is reported as `assay: advisory:` and the verdict stands; a leaked snapshot state still refuses.
 - B200: the CoW-versus-plain snapshot parity test now compares `git status`, the index entries and the index tree against HEAD's tree. The real-btrfs CI run of it remains open.
+
+### Changed
+- **Verdict schema v18 (B208), a hard cut from v17** (assay 12.0.0; requires run-gate 24.4.0, which reads both shapes). `judgment.r2` gains `worker_counts` (candidates per worker count; `jobs` is now the campaign maximum), `profile` (counts of profile statuses and reason codes, with the observer identity) and `schedule` (policy, thresholds, budget, prediction-source counts, error summary), and every native killed mutant carries `first_failing_test`. No per-candidate resource number enters the verdict. `assay verify` refuses v17; `assay analyze campaign` still reads an archived v17 verdict (shape-checked, read-only) and writes analysis schema 3, where a candidate carries `profile` instead of `peak_rss_bytes` and `cpu_seconds`. The judge identity label is `assay-judge-identity/14`, so assay 11 state records are cache misses on resume.
+- Extend the provisional-release R2 postponement (B169) to assay versions below 12.1.0 (operator decision D1, 2026-11-04) so 12.0.0 ships under it; R2 runs later with `--jobs` on the scratch host. The window is one constant in `tools/self-qualification-gate.sh` and the full `self-qualification` lane is unchanged.
+- Native R2 progress and state now drain by dispatch position instead of canonical index when scheduling is active (`--jobs` above 1); a serial run is unchanged. `assay analyze campaign` accepts a progress stream whose finished candidates are a contiguous prefix of dispatch order rather than of canonical index.
+- Documented the supported `--jobs` range and the limits that bind at high worker counts (consumer guide, "Candidate scheduling and the admission budget").
+
+### Removed
+- B206 (no aliases; run-gate 24.4.0 reads both shapes): the progress, state and analysis keys `peak_rss_bytes`, `cpu_seconds`, `write_bytes`, `judge_rss_bytes` and the progress `resources` object; the liveness monitor's own RSS and IO reads (`tree_sample`, `process_rss_bytes`, `/proc/<pid>/io`, `/proc/<pid>/statm`) and numeric tally; the `LivenessRunner` `sampler` argument; the sidecar's numeric keys (it keeps `spawned_at`). Liveness keeps only its CPU-progress read of `/proc/<pid>/stat`, never recorded.
 
 <!-- cmru: release history -->
 

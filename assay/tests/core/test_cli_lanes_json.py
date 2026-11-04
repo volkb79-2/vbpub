@@ -154,7 +154,12 @@ def test_document_envelope(project: Project):
         "inventory_schema",
         "lanes",
     ]
-    assert doc["capabilities"] == ["r2-memory-budget", "r2-schedule-tem"]
+    assert doc["capabilities"] == [
+        "r2-memory-budget",
+        "r2-schedule-tem",
+        "r2-resource-profile",
+        "verdict-v18",
+    ]
 
 
 def test_an_r0_only_lane(project: Project):

@@ -257,11 +257,10 @@ def test_worker_entry_point_reports_invalid_requests_as_protocol_errors():
     assert response["error_type"] == "JSONDecodeError"
 
 
-def test_liveness_window_host_preserves_pr0_resource_metrics(tmp_path):
+def test_liveness_window_host_keeps_the_spawn_time_sidecar_and_no_measured_numbers(tmp_path):
     process_runner = liveness.LivenessRunner(
         events_dir=tmp_path / "events",
         expect_next_event_within_s=1.0,
-        sampler=liveness.tree_sample,
         cpu_window_s=0.1,
     )
     plan = _plan((sys.executable, "-c", "pass"))
@@ -278,11 +277,87 @@ def test_liveness_window_host_preserves_pr0_resource_metrics(tmp_path):
     events_path = process_runner._events_path_for_cwd(tmp_path)
     metrics = liveness.read_resource_sidecar(events_path)
     assert metrics is not None
-    assert {"cpu_seconds", "peak_rss_bytes", "write_bytes"} <= set(metrics)
-    cpu, peak_rss, write_bytes, _startup = mutation._measured_resources(events_path)
-    assert cpu is not None
-    assert peak_rss is not None
-    assert write_bytes is not None
+    assert set(metrics) == {"format", "spawned_at"}
+    startup = mutation._startup_seconds(events_path)
+    assert set(startup) == {"to_session_start", "to_first_test"}
+
+
+def test_the_host_opens_the_window_and_returns_the_golden_profile(tmp_path):
+    """B206 over the real host protocol: the worker (a separate process, whose
+    environment holds only PATH) gets the socket path in its request, opens the
+    window on the candidate root, closes it before the reap, and the exchange's
+    result comes back beside the command result."""
+    from assay import observer_windows as ow
+    from observer_support import FakeObserver, golden, golden_handler
+
+    config = ow.WindowConfig(str(tmp_path / "o.sock"), "cgroup", 250, None)
+    with FakeObserver(tmp_path / "o.sock", golden_handler("close-cgroup")) as observer:
+        with ow.activate(config) as slot:
+            result = _window_host.run_window(
+                _plan((sys.executable, "-c", "pass")),
+                cwd=tmp_path,
+                timeout=30.0,
+                process_runner=ProcessTreeProcessRunner(),
+                clock=runner._utc_now,
+                profile=slot,
+            )
+    assert result.outcome is Outcome.PASS
+    assert [r["verb"] for r in observer.requests] == ["window-open", "window-close"]
+    assert slot.result is not None and slot.result.reply == golden("close-cgroup")["response"]
+    assert slot.result.asked is True
+
+
+def test_the_host_reports_an_absent_observer_as_a_reason_and_still_runs_the_command(tmp_path):
+    from assay import observer_windows as ow
+
+    config = ow.WindowConfig(str(tmp_path / "absent.sock"), "cgroup", 250, None)
+    with ow.activate(config) as slot:
+        result = _window_host.run_window(
+            _plan((sys.executable, "-c", "pass")),
+            cwd=tmp_path,
+            timeout=30.0,
+            process_runner=ProcessTreeProcessRunner(),
+            clock=runner._utc_now,
+            profile=slot,
+        )
+    assert result.outcome is Outcome.PASS
+    assert slot.result is not None
+    assert slot.result.reason == ow.OBSERVER_UNAVAILABLE and slot.result.asked is True
+
+
+def test_a_malformed_profile_record_never_changes_the_command_result(monkeypatch, tmp_path):
+    from assay import observer_windows as ow
+
+    def refuse(cls, value):
+        raise ValueError("malformed")
+
+    monkeypatch.setattr(ow.WindowResult, "from_wire", classmethod(refuse))
+    config = ow.WindowConfig(str(tmp_path / "absent.sock"), "cgroup", 250, None)
+    with ow.activate(config) as slot:
+        result = _window_host.run_window(
+            _plan((sys.executable, "-c", "pass")),
+            cwd=tmp_path,
+            timeout=30.0,
+            process_runner=ProcessTreeProcessRunner(),
+            clock=runner._utc_now,
+            profile=slot,
+        )
+    assert result.outcome is Outcome.PASS
+    assert slot.result is not None and slot.result.reason == ow.OBSERVER_ERROR
+
+
+def test_the_host_request_shape_is_strict_but_the_profile_key_is_optional(tmp_path):
+    base = {
+        "protocol": _window_host._PROTOCOL,
+        "plan": _window_host._command_plan_to_payload(_plan((sys.executable, "-c", "pass"))),
+        "cwd": str(tmp_path), "timeout": 5.0,
+        "runner": ProcessTreeProcessRunner().assay_window_host_spec(),
+    }
+    assert _window_host._execute_request(base)["profile"] is None
+    with pytest.raises(ValueError, match="unexpected shape"):
+        _window_host._execute_request({**base, "extra": 1})
+    with pytest.raises(ValueError, match="profile config"):
+        _window_host._execute_request({**base, "profile": {"mode": "cgroup"}})
 
 
 def test_candidate_budget_kills_the_child_tree_inside_the_window_host(tmp_path):

@@ -269,6 +269,96 @@ def test_complete_campaign_json_and_text_bind_plan_progress_and_verdict(tmp_path
     assert "planned=2 completed=2 pending=0" in out
 
 
+def _archived_v17(document: dict) -> dict:
+    """The v17 shape of a v18 fixture: no worker_counts/profile/schedule, no
+    first_failing_test."""
+    archived = json.loads(json.dumps(document))
+    archived["schema_version"] = 17
+    for key in ("worker_counts", "profile", "schedule"):
+        archived["judgment"]["r2"].pop(key, None)
+    for claim in archived["claims"]:
+        for entry in (claim.get("mutation") or {}).get("killed", []):
+            entry.pop("first_failing_test", None)
+    return archived
+
+
+def test_analysis_reads_an_archived_v17_verdict_and_writes_only_the_new_shape(tmp_path, monkeypatch):
+    document = _archived_v17(_fixture_document("r2_pass"))
+    root, head, verdict = _repository(tmp_path, document)
+    rows = _plan_rows(document)
+    _install_plan(monkeypatch, document, rows)
+    progress = tmp_path / "progress.jsonl"
+    _write_progress(progress, head=head, document=document, plan_rows=rows)
+
+    code, out, err = _invoke(root, head, verdict, progress, command_exit=0)
+    assert (code, err) == (0, "")
+    result = json.loads(out)
+    _validate(result)
+    assert result["schema_version"] == 3
+    assert result["status"] == "complete"
+    assert result["campaign"]["completed_total"] == 2
+
+
+def test_analysis_refuses_a_verdict_of_an_unknown_old_version(tmp_path, monkeypatch):
+    document = _fixture_document("r2_pass")
+    document["schema_version"] = 16
+    root, head, verdict = _repository(tmp_path, document)
+    rows = _plan_rows(document)
+    _install_plan(monkeypatch, document, rows)
+    progress = tmp_path / "progress.jsonl"
+    _write_progress(progress, head=head, document=_fixture_document("r2_pass"), plan_rows=rows)
+    code, out, err = _invoke(root, head, verdict, progress, command_exit=0)
+    assert code == 2
+    assert "invalid Assay verdict" in err
+
+
+def test_a_candidate_with_a_resource_profile_keeps_it_and_an_old_one_has_none(tmp_path, monkeypatch):
+    from assay import observer_windows
+
+    document = _fixture_document("r2_pass")
+    root, head, verdict = _repository(tmp_path, document)
+    rows = _plan_rows(document)
+    _install_plan(monkeypatch, document, rows)
+    progress = tmp_path / "progress.jsonl"
+    _write_progress(progress, head=head, document=document, plan_rows=rows)
+    records = [json.loads(line) for line in progress.read_text().splitlines()]
+    candidates = [item for item in records if item["event"] == "candidate"]
+    profile = observer_windows.build_profile(
+        observer_windows.WindowResult(reason=observer_windows.OBSERVER_UNAVAILABLE),
+        subject={"tool": "assay"}, wall_seconds=1.0,
+    )
+    candidates[0]["profile"] = profile
+    candidates[1].pop("profile", None)  # progress written by assay <= 11
+    progress.write_text("".join(json.dumps(item) + "\n" for item in records))
+
+    code, out, err = _invoke(root, head, verdict, progress, command_exit=0)
+    assert (code, err) == (0, "")
+    result = json.loads(out)
+    _validate(result)
+    details = result["candidate_details"]["candidates"]
+    assert len(details) == 2
+    profiles = {item["candidate_id"]: item["profile"] for item in details}
+    assert profiles[candidates[0]["candidate_id"]]["reason"] == "OBSERVER_UNAVAILABLE"
+    assert profiles[candidates[1]["candidate_id"]] is None
+    for item in details:
+        assert "peak_rss_bytes" not in item and "cpu_seconds" not in item
+
+
+def test_a_malformed_candidate_profile_is_an_evidence_error(tmp_path, monkeypatch):
+    document = _fixture_document("r2_pass")
+    root, head, verdict = _repository(tmp_path, document)
+    rows = _plan_rows(document)
+    _install_plan(monkeypatch, document, rows)
+    progress = tmp_path / "progress.jsonl"
+    _write_progress(progress, head=head, document=document, plan_rows=rows)
+    records = [json.loads(line) for line in progress.read_text().splitlines()]
+    next(item for item in records if item["event"] == "candidate")["profile"] = {"status": "FINE"}
+    progress.write_text("".join(json.dumps(item) + "\n" for item in records))
+    code, _out, err = _invoke(root, head, verdict, progress, command_exit=0)
+    assert code == 2
+    assert "candidate profile is invalid" in err
+
+
 def test_failed_baseline_verdict_does_not_establish_native_r2_inventory(tmp_path):
     declared_native = _fixture_document("r2_pass")
     root, head, verdict_path = _repository(tmp_path, declared_native)
@@ -1079,12 +1169,12 @@ def test_native_r2_verdict_attribution_must_match_effective_workers(tmp_path):
         )
 
 
-def test_native_r2_campaign_uses_v17_effective_jobs_and_attribution(
+def test_native_r2_campaign_uses_v18_campaign_maximum_jobs_and_attribution(
     tmp_path, monkeypatch
 ):
     document = _fixture_document("r2_pass")
     document["judgment"]["r2"].update(
-        jobs=4, attribution="overlap-conservative"
+        jobs=4, attribution="overlap-conservative", worker_counts={"4": 2}
     )
     root, head, verdict = _repository(
         tmp_path, document, lane_jobs_key="jobs_max", lane_jobs_value=4
@@ -1124,7 +1214,7 @@ def test_analysis_refuses_a_v16_verdict_with_exactly_one_diagnostic(
     assert result["status"] == "evidence_error"
     assert len(result["errors"]) == 1
     assert "schema_version 16" in result["errors"][0]["message"]
-    assert "schema_version 16 is not this verifier's version 17" in error
+    assert "schema_version 16 is not this verifier's version 18" in error
 
 
 def test_native_r2_campaign_projection_rejects_a_parallel_worker_assumption(

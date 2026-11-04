@@ -113,10 +113,30 @@ def _run_child_pytest(
     env.pop("PYTEST_ADDOPTS", None)
     # These subprocesses pin their own hook shapes; ambient entry-point plugins
     # from the cockpit would make the expected builtin-only baseline vary.
+    # Autoload would also pull in whatever else the runner image installs (xdist,
+    # anyio, the run-gate profile plugin), which adds unreviewed hook sets and
+    # makes the expected "pytest-cov only" receipt vary by image. Keep autoload
+    # (the reviewed hooks are checked by entry-point plugin name) and switch the
+    # known unrelated entry points off.
     if autoload_plugins:
         env.pop("PYTEST_DISABLE_PLUGIN_AUTOLOAD", None)
     else:
         env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+    reviewed_plugin_args = (
+        tuple(
+            arg
+            for name in (
+                "xdist",
+                "xdist.looponfail",
+                "run_gate_profile",
+                "anyio",
+                "platformdirs",
+            )
+            for arg in ("-p", f"no:{name}")
+        )
+        if autoload_plugins
+        else ()
+    )
     env.pop("INSTALL_FORGER", None)
     env.pop("FAIL_CALL", None)
     if env_overrides:
@@ -127,7 +147,16 @@ def _run_child_pytest(
         else ()
     )
     plan = _plan(
-        (sys.executable, "-m", "pytest", "-q", *liveness_args, *pytest_args, "tests"),
+        (
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            *reviewed_plugin_args,
+            *liveness_args,
+            *pytest_args,
+            "tests",
+        ),
         env=env,
     )
     injected = inject_witness_plugin(

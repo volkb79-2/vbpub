@@ -39,7 +39,7 @@ from types import SimpleNamespace
 import pytest
 from conftest import GitRepo, make_lane, make_plan, zero_resource_limit_evidence_dict
 
-from assay import isolation, mutation
+from assay import isolation, mutation, observer_windows
 from assay.cli import main
 from assay.errors import Outcome, ReasonCode
 from assay.mutation import MutationStateError, judge_sha256
@@ -545,6 +545,12 @@ def _record(job, *, judge: str, **overrides) -> dict:
         "source_sha256": hashlib.sha256(job.original_text.encode("utf-8")).hexdigest(),
         "judge_sha256": judge,
         "outcome_bucket": "survived",
+        # B203/B206: every current record states its worker count and profile.
+        "worker_count": 1,
+        "profile": observer_windows.build_profile(
+            None, subject={"tool": "assay", "id": mutation.candidate_id(job)},
+            wall_seconds=0.5, not_started=True,
+        ),
         "resource_limit_evidence": zero_resource_limit_evidence_dict(),
         "process_tree_evidence": {
             "protocol": "assay-process-tree/2",
@@ -1580,8 +1586,11 @@ def test_corrupt_pre_current_b145_state_shape_is_still_an_error(tmp_path: Path):
         mutation._load_validated_state_record(root, job, judge="n" * 64)
 
 
-def test_b155_advances_judge_identity_for_event_scope_attribution():
-    assert mutation._JUDGE_DIGEST_LABEL == "assay-judge-identity/13"
+def test_b206_advances_judge_identity_for_worker_counts_and_failing_tests():
+    """/13 was B155's event-scope label; /14 is assay 12: a state record now
+    states its worker count (B203) and a kill its failing test (B205), so a
+    record written by assay <= 11 cannot be resumed into a v18 verdict."""
+    assert mutation._JUDGE_DIGEST_LABEL == "assay-judge-identity/14"
 
 
 def test_a_different_judge_is_rejected_not_treated_as_tampering(tmp_path: Path):

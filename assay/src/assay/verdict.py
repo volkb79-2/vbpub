@@ -59,6 +59,7 @@ import hashlib
 import json
 import math
 import re
+from . import observer_windows as _observer_windows
 from .records import record
 from .process_tree import ProcessTreeEvidence
 from .result_reports import ReportSummary
@@ -397,7 +398,17 @@ __all__ = [
 #: cold/declared attempts. Liveness policy discloses its effective CPU and
 #: idle windows. Campaign deadlines bind resumed work to one commit and plan.
 #: Versions 12-15 are bounded `--reuse-from` cold starts; v11 and older remain
-#: refused. Producers emit v17, and `assay verify` refuses every other version.
+#: refused. Producers emit v18, and `assay verify` refuses every other version.
+#:
+#: **Bumped 17 -> 18 (B203/B205/B206/B207/B208, assay 12.0.0; hard cut).**
+#: `judgment.r2` gains `worker_counts` (candidates per worker count; `jobs`
+#: becomes the campaign maximum), `profile` (counts of the cgprofile resource
+#: profile statuses and reason codes, with the observer identity) and `schedule`
+#: (the candidate scheduling policy, thresholds, budget and error summary), and
+#: every native killed mutant carries `first_failing_test` (string or null). No
+#: per-candidate resource number enters the verdict. v17 is refused on write
+#: (the verifier and the analyzer's writer path); the analyzer still READS v17
+#: for archived campaigns.
 #:
 #: **Bumped 15 -> 16 (B157).** Native R2 fixes `judgment.r2.jobs` at 1 because
 #: candidate cgroup-event windows share counters and overlapping runs cannot
@@ -407,7 +418,251 @@ __all__ = [
 #: native worker count and attribution, receipt cause for R3, stable process
 #: tree identities and signal evidence, and the suite result beneath a
 #: cleanup crash. Host-varying cleanup duration is removed.
-VERDICT_SCHEMA_VERSION = 17
+VERDICT_SCHEMA_VERSION = 18
+
+#: (B206/schema v18) The closed `judgment.r2.profile` vocabularies, spelled in
+#: :mod:`assay.observer_windows` (the one module that produces profiles).
+R2_PROFILE_STATUSES: tuple[str, ...] = _observer_windows.STATUSES
+R2_PROFILE_REASONS: tuple[str, ...] = _observer_windows.REASONS
+#: (B207/schema v18) `judgment.r2.schedule.policy`.
+R2_SCHEDULE_POLICIES: tuple[str, ...] = ("canonical", "tem-lpt")
+#: (B207) the candidate prediction sources a schedule summary counts, and the
+#: three predicted/actual classes of its confusion table.
+R2_SCHEDULE_SOURCES: tuple[str, ...] = (
+    "profile",
+    "live-file-median",
+    "history-file-median",
+    "history-lane-median",
+    "operator",
+    "none",
+)
+R2_SCHEDULE_CLASSES: tuple[str, ...] = ("high", "normal", "low")
+
+
+def check_resource_profile(profile: Any) -> None:
+    """Raise ``ValueError`` unless *profile* is a well-formed
+    ``resource-profile/1`` object as Assay writes it (B206). The analysis
+    package reads candidate profiles through this one door."""
+    _observer_windows.validate_profile(profile)
+
+
+def _plain(value: Any) -> Any:
+    """A JSON-plain deep copy of a mapping/sequence tree (frozen records may
+    hold read-only mappings)."""
+    if isinstance(value, Mapping):
+        return {key: _plain(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain(item) for item in value]
+    return value
+
+
+def _is_count(value: Any) -> bool:
+    return is_strict_int(value) and value >= 0
+
+
+def check_r2_worker_counts(value: Any, jobs: int) -> None:
+    """(B203) ``judgment.r2.worker_counts``: positive-integer worker counts as
+    decimal-string keys, non-negative candidate counts as values; ``jobs`` is
+    their maximum (any positive value while nothing was run or resumed)."""
+    if not isinstance(value, Mapping):
+        raise ValueError(f"judgment.r2.worker_counts must be a mapping, got {value!r}")
+    counts: list[int] = []
+    for key, candidates in value.items():
+        if (
+            not isinstance(key, str)
+            or not key.isascii()
+            or not key.isdigit()
+            or key != str(int(key))
+            or int(key) < 1
+        ):
+            raise ValueError(
+                f"judgment.r2.worker_counts keys must be positive decimal "
+                f"integers, got {key!r}"
+            )
+        if not is_strict_int(candidates) or candidates < 1:
+            raise ValueError(
+                f"judgment.r2.worker_counts[{key!r}] must be a positive integer, "
+                f"got {candidates!r}"
+            )
+        counts.append(int(key))
+    if counts and jobs != max(counts):
+        raise ValueError(
+            f"judgment.r2.jobs ({jobs}) must be the campaign maximum worker "
+            f"count {max(counts)} recorded in worker_counts"
+        )
+
+
+def check_r2_profile_summary(value: Any) -> None:
+    """(B206) ``judgment.r2.profile`` is counts plus the observer identity."""
+    if not isinstance(value, Mapping) or set(value) != {
+        "status_counts", "reason_counts", "observer",
+    }:
+        raise ValueError(
+            "judgment.r2.profile must be a mapping with exactly the keys "
+            "status_counts/reason_counts/observer"
+        )
+    statuses = value["status_counts"]
+    if not isinstance(statuses, Mapping) or set(statuses) != set(R2_PROFILE_STATUSES):
+        raise ValueError(
+            f"judgment.r2.profile.status_counts must name exactly "
+            f"{list(R2_PROFILE_STATUSES)}"
+        )
+    if not all(_is_count(count) for count in statuses.values()):
+        raise ValueError("judgment.r2.profile.status_counts must be non-negative integers")
+    reasons = value["reason_counts"]
+    if not isinstance(reasons, Mapping) or not set(reasons) <= set(R2_PROFILE_REASONS):
+        raise ValueError(
+            f"judgment.r2.profile.reason_counts keys must be reason codes from "
+            f"{list(R2_PROFILE_REASONS)}"
+        )
+    if not all(is_strict_int(count) and count >= 1 for count in reasons.values()):
+        raise ValueError("judgment.r2.profile.reason_counts must be positive integers")
+    if sum(reasons.values()) != statuses[_observer_windows.STATUS_NO_MEASUREMENT]:
+        raise ValueError(
+            "judgment.r2.profile.reason_counts must account for exactly the "
+            "NO_MEASUREMENT candidates"
+        )
+    observer = value["observer"]
+    if not isinstance(observer, Mapping) or set(observer) != {
+        "name", "version", "contracts", "modes",
+    }:
+        raise ValueError(
+            "judgment.r2.profile.observer must have exactly the keys "
+            "name/version/contracts/modes"
+        )
+    if observer["name"] != _observer_windows.OBSERVER_NAME:
+        raise ValueError("judgment.r2.profile.observer.name must be 'cgprofile'")
+    version = observer["version"]
+    if version is not None and (not isinstance(version, str) or not version):
+        raise ValueError("judgment.r2.profile.observer.version must be a string or null")
+    contracts = observer["contracts"]
+    if (
+        not isinstance(contracts, (list, tuple))
+        or not contracts
+        or not all(is_strict_int(item) and item >= 1 for item in contracts)
+    ):
+        raise ValueError(
+            "judgment.r2.profile.observer.contracts must be a non-empty list of integers"
+        )
+    modes = observer["modes"]
+    if (
+        not isinstance(modes, (list, tuple))
+        or not set(modes) <= set(_observer_windows.MODES)
+        or list(modes) != sorted(set(modes))
+    ):
+        raise ValueError(
+            f"judgment.r2.profile.observer.modes must be a sorted, duplicate-free "
+            f"subset of {list(_observer_windows.MODES)}"
+        )
+
+
+def _check_optional_number(value: Any, what: str, *, integer: bool = False) -> None:
+    if value is None:
+        return
+    ok = is_strict_int(value) if integer else (
+        isinstance(value, (int, float)) and not isinstance(value, bool)
+    )
+    if not ok or not math.isfinite(value) or value < 0:
+        raise ValueError(f"{what} must be a non-negative {'integer' if integer else 'number'} or null")
+
+
+def check_r2_schedule_summary(value: Any, jobs: int) -> None:
+    """(B207) ``judgment.r2.schedule``."""
+    if not isinstance(value, Mapping) or set(value) != {
+        "policy", "thresholds", "memory_budget_bytes", "jobs",
+        "prediction_sources", "error",
+    }:
+        raise ValueError(
+            "judgment.r2.schedule must be a mapping with exactly the keys "
+            "policy/thresholds/memory_budget_bytes/jobs/prediction_sources/error"
+        )
+    if value["policy"] not in R2_SCHEDULE_POLICIES:
+        raise ValueError(
+            f"judgment.r2.schedule.policy must be one of {list(R2_SCHEDULE_POLICIES)}"
+        )
+    if not is_strict_int(value["jobs"]) or value["jobs"] < 1:
+        raise ValueError("judgment.r2.schedule.jobs must be a positive integer")
+    _check_optional_number(
+        value["memory_budget_bytes"], "judgment.r2.schedule.memory_budget_bytes", integer=True
+    )
+    if value["memory_budget_bytes"] is not None and value["memory_budget_bytes"] < 1:
+        raise ValueError("judgment.r2.schedule.memory_budget_bytes must be at least 1 or null")
+    canonical = value["policy"] == "canonical"
+    thresholds = value["thresholds"]
+    if canonical != (thresholds is None):
+        raise ValueError(
+            "judgment.r2.schedule.thresholds is null exactly for the canonical policy"
+        )
+    if thresholds is not None:
+        if not isinstance(thresholds, Mapping) or set(thresholds) != {
+            "high_bytes", "low_bytes", "high_factor", "low_factor",
+        }:
+            raise ValueError(
+                "judgment.r2.schedule.thresholds must have exactly the keys "
+                "high_bytes/low_bytes/high_factor/low_factor"
+            )
+        for name in ("high_bytes", "low_bytes"):
+            _check_optional_number(
+                thresholds[name], f"judgment.r2.schedule.thresholds.{name}", integer=True
+            )
+        for name in ("high_factor", "low_factor"):
+            number = thresholds[name]
+            if isinstance(number, bool) or not isinstance(number, (int, float)) or not (
+                math.isfinite(number) and number > 0
+            ):
+                raise ValueError(
+                    f"judgment.r2.schedule.thresholds.{name} must be a positive number"
+                )
+    sources = value["prediction_sources"]
+    if not isinstance(sources, Mapping) or not set(sources) <= set(R2_SCHEDULE_SOURCES):
+        raise ValueError(
+            f"judgment.r2.schedule.prediction_sources keys must be from "
+            f"{list(R2_SCHEDULE_SOURCES)}"
+        )
+    if not all(_is_count(count) for count in sources.values()):
+        raise ValueError(
+            "judgment.r2.schedule.prediction_sources must be non-negative integers"
+        )
+    error = value["error"]
+    if canonical:
+        if error is not None:
+            raise ValueError("judgment.r2.schedule.error is null for the canonical policy")
+        return
+    if not isinstance(error, Mapping) or set(error) != {
+        "rss_ratio", "wall_ratio", "class_confusion", "admission_overshoots",
+    }:
+        raise ValueError(
+            "judgment.r2.schedule.error must have exactly the keys "
+            "rss_ratio/wall_ratio/class_confusion/admission_overshoots"
+        )
+    for name in ("rss_ratio", "wall_ratio"):
+        quantiles = error[name]
+        if not isinstance(quantiles, Mapping) or set(quantiles) != {"p50", "p95"}:
+            raise ValueError(
+                f"judgment.r2.schedule.error.{name} must have exactly the keys p50/p95"
+            )
+        for key in ("p50", "p95"):
+            _check_optional_number(quantiles[key], f"judgment.r2.schedule.error.{name}.{key}")
+    confusion = error["class_confusion"]
+    if not isinstance(confusion, Mapping) or set(confusion) != set(R2_SCHEDULE_CLASSES):
+        raise ValueError(
+            f"judgment.r2.schedule.error.class_confusion must name {list(R2_SCHEDULE_CLASSES)}"
+        )
+    for predicted, row in confusion.items():
+        if (
+            not isinstance(row, Mapping)
+            or set(row) != set(R2_SCHEDULE_CLASSES)
+            or not all(_is_count(count) for count in row.values())
+        ):
+            raise ValueError(
+                f"judgment.r2.schedule.error.class_confusion[{predicted!r}] must "
+                f"count each of {list(R2_SCHEDULE_CLASSES)}"
+            )
+    if not _is_count(error["admission_overshoots"]):
+        raise ValueError(
+            "judgment.r2.schedule.error.admission_overshoots must be a non-negative integer"
+        )
+
 
 #: (P21/A-183) the closed R1 exclusion-capability vocabulary, restoring A-008's
 #: distinction inside the artifact. `"unavailable"` means the coverage FORMAT
@@ -2019,6 +2274,12 @@ class MutantOutcome:
     #: they live one and two levels up rather than here; what this class owns
     #: is the field's own grammar.
     kill_signal: str | None = None
+    #: (B205/schema v18) The node id of the first test the suite reported as
+    #: failed for this kill, or ``None`` when it is unknown (no plugin events,
+    #: a collection error, a reused witness). Meaningful ONLY on a native
+    #: ``killed`` entry, where the wire carries the key (string or ``null``);
+    #: forbidden on every other bucket and on ingested entries.
+    first_failing_test: str | None = None
     #: (B079/schema v12) present only on ``judgment.r2.discarded`` entries;
     #: bucket entries are attempted mutants and must omit it.
     discard_reason: str | None = None
@@ -2104,6 +2365,8 @@ class MutantOutcome:
             )
         if self.kill_signal is not None:
             _check_nonempty(self.kill_signal, "MutantOutcome.kill_signal")
+        if self.first_failing_test is not None:
+            _check_nonempty(self.first_failing_test, "MutantOutcome.first_failing_test")
         if self.discard_reason is not None and self.discard_reason not in DISCARD_REASONS:
             raise ValueError(
                 f"MutantOutcome.discard_reason must be one of "
@@ -2192,6 +2455,8 @@ class MutantOutcome:
             )
         elif self.underlying_outcome is not None:
             raise ValueError("ingested MutantOutcome cannot carry underlying_outcome")
+        elif self.first_failing_test is not None:
+            raise ValueError("ingested MutantOutcome cannot carry first_failing_test")
 
     @property
     def identity(self) -> tuple[str, int, int, str, str]:
@@ -2353,6 +2618,13 @@ class Mutation:
     #: number, with the caller reading it back rather than recomputing it
     #: (B088's own "how a reader and a writer drift apart").
     budget_per_candidate_derived_s: float | None = None
+    #: (B206/B203/B207, schema v18) Run-level telemetry of a native sweep:
+    #: ``{"profile": {status_counts, reason_counts, modes}, "worker_counts":
+    #: {"<n>": candidates}, "schedule": {...}}``. **Internal carrier, not wire
+    #: state**, exactly like :attr:`budget_per_candidate_derived_s`: the runner
+    #: places it on the wire as ``judgment.r2.profile``, ``.schedule``, ``.jobs``
+    #: and ``.worker_counts``, and :meth:`to_dict` never emits it.
+    r2_telemetry: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         _require_non_negative_ints(self, ("candidate_count", "total"), "mutation")
@@ -2470,6 +2742,12 @@ class Mutation:
             if name == "killed":
                 continue
             for item in getattr(self, name):
+                if item.first_failing_test is not None:
+                    raise ValueError(
+                        f"mutation.{name} entry {item.identity} carries "
+                        f"first_failing_test, which names the test that "
+                        f"killed a mutant -- only a killed mutant has one"
+                    )
                 if item.kill_signal is not None:
                     raise ValueError(
                         f"mutation.{name} entry {item.identity} carries "
@@ -2566,7 +2844,14 @@ class Mutation:
             "total": self.total,
         }
         for name in MUTATION_BUCKETS:
-            payload[name] = [item.to_dict() for item in getattr(self, name)]
+            entries = [item.to_dict() for item in getattr(self, name)]
+            if name == "killed":
+                # (B205/schema v18) every native killed entry carries the key:
+                # the failing test id, or null when it is unknown.
+                for entry, item in zip(entries, self.killed):
+                    if item.candidate_id is not None:
+                        entry["first_failing_test"] = item.first_failing_test
+            payload[name] = entries
         if self.candidate_ids is not None:
             payload["candidate_ids"] = list(self.candidate_ids)
         return payload
@@ -3088,6 +3373,20 @@ class JudgmentR2:
     #: overlap-conservative for multiple workers whose resource windows may
     #: overlap. Required for native R2 and absent for ingested R2.
     attribution: str | None = None
+    #: (B203/schema v18) How many candidates were produced under each worker
+    #: count, across resumed and newly executed state records: ``{"1": 40,
+    #: "3": 16}``. :attr:`jobs` is the maximum count (the campaign maximum),
+    #: no longer the invocation's own selection. Required for native R2.
+    worker_counts: Mapping[str, int] | None = None
+    #: (B206/schema v18) ``{status_counts: {MEASURED, PARTIAL, NO_MEASUREMENT},
+    #: reason_counts: {<code>: n}, observer: {name, version, contracts,
+    #: modes}}``. Counts only; per-candidate numbers are telemetry and never
+    #: enter the verdict. Required for native R2.
+    profile: Mapping[str, Any] | None = None
+    #: (B207/schema v18) ``{policy, thresholds, memory_budget_bytes, jobs,
+    #: prediction_sources, error}``; see ``docs/CONSUMERS.md``. Required for
+    #: native R2.
+    schedule: Mapping[str, Any] | None = None
     #: (P21/A-163) the declared candidate ceiling, in ``1..10_000``. Recorded
     #: because the limit terminal's whole evidence is arithmetic against it:
     #: ``candidate_count == max_mutants + 1``. Without the cap in the
@@ -3296,6 +3595,9 @@ class JudgmentR2:
     _NATIVE_REQUIRED_FIELDS: ClassVar[tuple[str, ...]] = (
         "jobs",
         "attribution",
+        "worker_counts",
+        "profile",
+        "schedule",
         "max_mutants",
         "operators",
         "cold_witness_kills",
@@ -3378,6 +3680,9 @@ class JudgmentR2:
                 f"judgment.r2.attribution must be {expected_attribution!r} "
                 f"for jobs={self.jobs}"
             )
+        check_r2_worker_counts(self.worker_counts, self.jobs)
+        check_r2_profile_summary(self.profile)
+        check_r2_schedule_summary(self.schedule, self.jobs)
         if not is_strict_int(self.max_mutants):
             raise ValueError(
                 f"judgment.r2.max_mutants must be an integer, got "
@@ -3581,6 +3886,10 @@ class JudgmentR2:
         if self.producer == "native":
             payload["jobs"] = self.jobs
             payload["attribution"] = self.attribution
+            assert self.worker_counts is not None  # _check_producer_fork
+            payload["worker_counts"] = dict(self.worker_counts)
+            payload["profile"] = _plain(self.profile)
+            payload["schedule"] = _plain(self.schedule)
             payload["max_mutants"] = self.max_mutants
             payload["operators"] = list(self.operators or ())
             payload["cold_witness_kills"] = self.cold_witness_kills

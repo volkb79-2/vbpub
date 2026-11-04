@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 import pytest
-from conftest import native_mutation, native_outcome
+from conftest import R2_TELEMETRY, native_mutation, native_outcome
 
 from assay.errors import Outcome, ReasonCode
 from assay.r2_command import R2_APPENDED, R2_TRANSFORM_ID, transform_argv
@@ -28,7 +28,6 @@ from assay.verdict import (
     Helper,
     Judgment,
     JudgmentR1,
-    JudgmentR2,
     JudgmentR3,
     JudgmentResolved,
     MutantEvidence,
@@ -42,6 +41,18 @@ from assay.verdict import (
     SnapshotPolicy,
     Verdict,
 )
+from assay.verdict import JudgmentR2 as _JudgmentR2
+
+
+def JudgmentR2(**kwargs):  # noqa: N802 -- stands in for the record's own name
+    """Build a native `JudgmentR2` with the schema-v18 telemetry fields
+    (worker counts, profile and schedule summaries) defaulted: this file tests
+    the OTHER policy fields. `test_verdict_v18.py` owns the new fields."""
+    if kwargs.get("producer", "native") == "native":
+        for name, value in R2_TELEMETRY.items():
+            kwargs.setdefault(name, value)
+    return _JudgmentR2(**kwargs)
+
 
 #: sha256(b"<=") -- the replacement half of a `compare-swap` Lt->LtE site.
 #: Hand-computed, not read back from the code under test (A-067): a hash the
@@ -75,6 +86,7 @@ BASE_R2_POLICY = dict(
     attribution="serial",
     kill_attribution="unattributed",
     cold_witness_kills=False,
+    **R2_TELEMETRY,
 )
 
 BASE_VERDICT = {
@@ -467,6 +479,10 @@ def test_judgment_r2_untouched_form_builds():
     assert r2.to_dict() == {
         "jobs": 1,
         "attribution": "serial",
+        # (B203/B206/B207, schema v18)
+        "worker_counts": {},
+        "profile": R2_TELEMETRY["profile"],
+        "schedule": R2_TELEMETRY["schedule"],
         "max_mutants": 50,
         "operators": ["python:compare-swap", "python:boolop-swap"],
         "kill_attribution": "unattributed",

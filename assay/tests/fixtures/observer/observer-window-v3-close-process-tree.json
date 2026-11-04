@@ -1,0 +1,92 @@
+{
+  "request": {
+    "verb": "window-close",
+    "args": {
+      "thread_id": 50,
+      "window": "w-0123456789abcdef0123456789abcdef"
+    },
+    "contract": 3
+  },
+  "response": {
+    "ok": true,
+    "contract": 3,
+    "window": "w-0123456789abcdef0123456789abcdef",
+    "metrics": {
+      "rss_peak_bytes": 6144000,
+      "memory_peak_bytes": null,
+      "swap_peak_bytes": null,
+      "cpu_seconds": 4.6,
+      "cpu_user_seconds": 3.5,
+      "cpu_system_seconds": 1.1,
+      "io_read_bytes": 1010,
+      "io_write_bytes": 5200,
+      "io_read_ops": null,
+      "io_write_ops": null,
+      "psi_memory_some_seconds": null,
+      "psi_memory_full_seconds": null,
+      "psi_cpu_some_seconds": null,
+      "psi_io_some_seconds": null,
+      "psi_io_full_seconds": null
+    },
+    "missing": {
+      "memory_peak_bytes": "REQUIRES_CGROUP_MODE",
+      "swap_peak_bytes": "REQUIRES_CGROUP_MODE",
+      "io_read_ops": "REQUIRES_CGROUP_MODE",
+      "io_write_ops": "REQUIRES_CGROUP_MODE",
+      "psi_memory_some_seconds": "REQUIRES_CGROUP_MODE",
+      "psi_memory_full_seconds": "REQUIRES_CGROUP_MODE",
+      "psi_cpu_some_seconds": "REQUIRES_CGROUP_MODE",
+      "psi_io_some_seconds": "REQUIRES_CGROUP_MODE",
+      "psi_io_full_seconds": "REQUIRES_CGROUP_MODE"
+    },
+    "sources": {
+      "rss_peak_bytes": "sampled-sum-rss",
+      "io_read_bytes": "proc-io-lower-bound",
+      "io_write_bytes": "proc-io-lower-bound",
+      "cpu_seconds": "proc-stat-exact",
+      "cpu_user_seconds": "proc-stat-exact",
+      "cpu_system_seconds": "proc-stat-exact"
+    },
+    "context": {
+      "container_psi_memory_some_seconds": 0.0,
+      "container_psi_memory_full_seconds": 0.0,
+      "container_psi_cpu_some_seconds": 0.0,
+      "container_psi_io_some_seconds": 0.0,
+      "container_psi_io_full_seconds": 0.0,
+      "host_psi_memory_some_seconds": 0.0,
+      "host_psi_memory_full_seconds": 0.0,
+      "host_psi_cpu_some_seconds": 0.0,
+      "host_psi_io_some_seconds": 0.0,
+      "host_psi_io_full_seconds": 0.0,
+      "container_memory_events_local": {
+        "high": 0,
+        "max": 0,
+        "oom": 0,
+        "oom_kill": 0
+      },
+      "ancestors_memory_events_local": [
+        {
+          "path": "/dev.slice/dev-gates.slice",
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0
+        },
+        {
+          "path": "/dev.slice",
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0
+        }
+      ]
+    },
+    "attribution": {
+      "mode": "process-tree",
+      "foreign_pids_max": 0,
+      "tree_pids_max": 2,
+      "samples": 1,
+      "baseline_bytes": null
+    }
+  }
+}
