@@ -4,6 +4,10 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Added
+- feat(pwmcp): `inspect` recognises bot protection (Cloudflare managed challenge/block page, Akamai, PerimeterX, DataDome, Imperva, generic CAPTCHA) from status/headers/title/text/frames, exits 4 with an honest message, `--json` `blocked: true` + `provider`/`signals`/`status`/`final_url`/`waited_ms`, never writes `--output`, never retries, and reports a wait that ends on a challenge as blocked instead of a timeout (PWMCP-32)
+- feat(pwmcp): `inspect --storage-state FILE` reuses a human-exported Playwright session (mode 0600, scoped to the URL's host, counts only in output); README "Bot protection" and the pwmcp-fetch skill say to report BLOCKED and offer the human-in-the-loop route. No solver or circumvention (PWMCP-32)
+
 <!-- cmru: release history -->
 
 ## [1.64.1-r1] - 2026-11-04
