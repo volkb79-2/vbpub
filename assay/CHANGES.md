@@ -4,6 +4,67 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [12.0.0] - 2026-11-04
+<!-- cmru: generated -->
+<!-- cmru: source-end=506744371ccb24276854b2f6d3e1e5f774f614d1 -->
+
+### Fixed
+- fix(assay): scheduler integration tests ignore the ambient observer socket (64ff04a77)
+- fix(assay): cold-witness autoload tests ignore unrelated runner-image plugins; merge status in backlog/CHANGES (33bea83cd)
+- fix(assay): extend the B169 R2 postponement window to below 12.1.0 (operator D1, 2026-11-04) (48d7ba544)
+- fix(assay): B085 R3 canary honours allow_test_path_targets, B187 shared R0 observation mapping, B194 small pilot fill; test: B184 synthetic 10.0.1 fixtures (a3aefbd49)
+- fix(assay): lazy cowtree import, dead-run collection, cleanup advisory (B196 B197 B199) (301d31d10)
+- fix(run-gate): address PR3 capacity review (5e1a2aae2)
+
+### Changed
+- assay: B216 backlog note (e961ab176)
+- assay: B216 SQL qualification launcher probes the daemon socket DOCKER_HOST names when the host path is absent in the devcontainer (4a9850613)
+- assay: B216 cover the archived-v17 verdict shape check (analysis R1 gate) (263df0409)
+- assay: B216 standalone R2 gate tests state the v18 fields; frozen schema digest; CHANGES, backlog (07957f01f)
+- assay: verdict schema id/title v18; drop unused imports (gate pyflakes); temp artifact diff (395158d74)
+- Merge branch 'main' into merge-assay-20261104 (f867dc322)
+- Merge branch 'finish-p220-assay-20261104' (a6b7827e2)
+- Merge branch 'fix-assay-1-20261104' (db7125e2f)
+- Merge branch 'fix-assay-2-20261104' (1439be1ed)
+- assay tests: window-host fakes accept the optional profile kwarg (22fc4ac69)
+- Merge fan-assay-b206-20261103 (B206 observer profiles, B208 verdict v18) into B207 scheduler line (418f6a2b4)
+- Merge branch 'backlog-platform-20261104' (e69a27940)
+- Merge branch 'finish-assay-1-20261104' (82ffbccbf)
+- Merge branch 'finish-assay-rg-iob-1-20261104' (475d6e8c7)
+- Merge branch 'fan-assay-sched-20261103' (406201506)
+- assay backlog: owner-uid launcher overlay, drop ASSAY_GATE_HOST_DOCKER_GID (B211, B212) (9df778234)
+- assay: B207 coverage gaps: guard-path tests, drop unreachable canonical-exhausted return (88db8c2ee)
+- assay: _schedule.parse_history catches RecursionError like every untrusted JSON parse site (a9403e9bc)
+- assay: shift B105 coverage-exclusion map for mutation.py import added by B207 (ef55a1a84)
+- assay(gate): the SQL witness canonicalizes the profile summary only when the verdict carries one (7769d3037)
+- assay: B207 _schedule.py joins whole-source target lists, records decorators, dataclass contract (0c3b7fffd)
+- assay: observer profiles replace Assay's own resource sampler; verdict schema v18 (B206, B208, B203, B205) (cf620c444)
+- assay: cgprofile observer contract 3 client and resource-profile/1 builder (B206) (b4f2e6e00)
+- assay backlog: B209 durability and fsync cost under the relaxed default (0887e93c7)
+- assay: wire B207 scheduling into native R2 dispatch, config, CLI and analysis (c557efd46)
+- assay: two-ended-matching scheduler core for parallel native R2 (B207) (19eb687c2)
+
+### Documentation
+- docs(assay): renumber the duplicate backlog id B213 (ingested-lane plan TypeError) to B215 (68f64423b)
+- docs(backlog): file RG-154, RG-155 and B213, B214 from the first dstdns native R2 pilot (fd834b932)
+- docs(assay): file B213 (plan crashes on an ingested-mutation lane; dstdns@8250c2ee context) (180c9706e)
+- docs(assay): backlog status for B085 B187 B194 B184 (a3154e1a0)
+- docs(assay): backlog status for B196 B197 B199 B200 (3f98df4f4)
+- docs(assay): file B210, rename build/lint requirements manifests to the use-case-prefix convention (ed21a05d0)
+- docs: point B103 and RG-56 at their archive tags after worktree close-out (94f3ee478)
+- docs(assay): B206 resource profiles from the cgprofile observer, verdict v18 migration notes, backlog status (e5ca644b4)
+- docs(assay): file B206-B208 (resource numbers from cgprofile only, ordering, profile schema) (c1d6f0698)
+
+### Testing
+- test(assay): liveness window close, mutation B203/B206 record/telemetry, schedule history edges (56da20b22)
+- test(assay): verdict v18 summary checkers and bucket rules edge coverage (B203/B206/B207/B208) (e9e44e9a6)
+- test(assay): observer_windows edge coverage (B206) (ce8964463)
+- test(assay): cover B197/B199 adapter and runner branches (d91af0feb)
+- test(assay): CoW parity test compares git status and index (B200) (43f38ef7c)
+
+<!-- cmru: pending release notes begin -->
 ### Added
 - B207: two-ended-matching candidate scheduling for parallel native R2 (`--jobs` above 1). Candidates are classed high, normal or low by predicted peak RSS and dispatched longest-first with at most one high running; `--memory-budget-bytes` (`ASSAY_R2_MEMORY_BUDGET_BYTES`) adds an admission rule on the predicted RSS sum (one candidate always runs, a queued high reserves the slot). Predictions come from what assay already records (`elapsed_seconds`, `peak_rss_bytes`, kept in `.schedule-history.v1` in the state directory), then live and last-campaign file medians, lane medians, and the new lane keys `judge.mutation.prediction_wall_seconds` and `prediction_rss_bytes`; the class factors are `schedule_high_factor` and `schedule_low_factor`. Progress candidate events gain `dispatch_position`, `prediction` and `prediction_error`; the state directory gains `schedule-summary.v1` (not `*.json`, so candidate-record globs stay exact); `assay lanes --json` gains `capabilities` (`r2-memory-budget`, `r2-schedule-tem`). Results are unchanged and independent of the order. Cgprofile-sourced numbers (B206) and the verdict schema fields (B208) are not part of this change.
 
@@ -31,8 +92,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ### Removed
 - B206 (no aliases; run-gate 24.4.0 reads both shapes): the progress, state and analysis keys `peak_rss_bytes`, `cpu_seconds`, `write_bytes`, `judge_rss_bytes` and the progress `resources` object; the liveness monitor's own RSS and IO reads (`tree_sample`, `process_rss_bytes`, `/proc/<pid>/io`, `/proc/<pid>/statm`) and numeric tally; the `LivenessRunner` `sampler` argument; the sidecar's numeric keys (it keeps `spawned_at`). Liveness keeps only its CPU-progress read of `/proc/<pid>/stat`, never recorded.
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [11.0.0] - 2026-11-02
 <!-- cmru: generated -->
