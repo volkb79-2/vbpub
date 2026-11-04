@@ -48,7 +48,9 @@ artifact = "coverage.json"
 scope = "S1"
 rigor = ["R0", "R1", "R2"]
 enforcement = "gate"
-argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "client/tests", "-q", "--cov=.", "--cov-branch", "--cov-report=json:coverage.json"]
+# -x: a killed mutant stops at its first failing test (assay warns that fail-fast
+# can leave a coverage artifact incomplete; the green baseline runs everything).
+argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "client/tests", "-q", "-x", "--cov=.", "--cov-branch", "--cov-report=json:coverage.json"]
 env = { PYTHONPATH = "client/src", PYTHONDONTWRITEBYTECODE = "1" }
 env_passthrough = ["PATH"]
 budget = "4h"
@@ -90,11 +92,13 @@ artifact = "coverage.json"
 
 [lanes.r2.judge.mutation]
 # Ceiling for concurrent candidate windows (assay >= 11; run-gate's `jobs = "auto"`
-# in run-gate.toml picks the count). Measured on r1002 2026-11-05: ~300 s per
-# candidate, ~3% of one core, ~260 MiB RSS (the suite waits on subprocess and
-# browser-less IO), so 4 workers cost about 12% of one core. No fixed ports
-# or shared dirs in tests/ and client/tests. Audit: reports/assay-jobs-audit-REPORT.md.
-jobs_max = 4
+# in run-gate.toml picks the count). The suite is single-threaded and CPU-bound:
+# 1091 tests take ~300 s on one CPU (310 s without --cov; slowest: imagegen
+# degrade tests, glyphgrid perf corpus, nested pytest spawns in test_testdeps),
+# ~260 MiB RSS. So one worker per CPU: 3 workers on the 3-CPU lane. No fixed
+# ports or shared dirs in tests/ and client/tests. Audit:
+# reports/assay-jobs-audit-REPORT.md.
+jobs_max = 3
 max_mutants = 1000
 operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-flip", "python:falsy-swap"]
 budget_per_candidate = "900s"
