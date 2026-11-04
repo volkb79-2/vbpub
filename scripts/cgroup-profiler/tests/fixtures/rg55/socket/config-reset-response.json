@@ -1,0 +1,16 @@
+{
+  "ok": true,
+  "contract": 2,
+  "config-reset": {
+    "reset": [
+      "keep_days"
+    ],
+    "values": {
+      "keep_days": {
+        "value": 14,
+        "source": "default"
+      }
+    },
+    "audit_id": "5"
+  }
+}

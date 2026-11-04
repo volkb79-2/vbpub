@@ -393,3 +393,13 @@ class TestOverridesFileIsDefensive:
         assert s.get("ctl_socket") == "/run/cgprofile/ctl.sock"
         assert s.overrides_ignored == 3
         assert len([line for line in lines if "ignored" in line]) == 3
+
+
+class TestSeed:
+    def test_seed_takes_non_default_values_as_the_file_layer(self, tmp_path):
+        s = _settings(tmp_path)
+        s.load()
+        s.seed({"keep_days": 3, "interval": 1.0, "allow_uids": [7]})
+        assert s.get("keep_days") == 3 and s.source("keep_days") == "file"
+        assert s.source("interval") == "default"   # equal to the default: skipped
+        assert s.get("allow_uids") == [7]

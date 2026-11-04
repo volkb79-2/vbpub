@@ -1,0 +1,18 @@
+{
+  "ok": true,
+  "contract": 2,
+  "config-set": {
+    "key": "keep_days",
+    "old": {
+      "value": 5,
+      "source": "override"
+    },
+    "new": {
+      "value": 6,
+      "source": "override"
+    },
+    "persisted": false,
+    "applied": false,
+    "audit_id": "2"
+  }
+}

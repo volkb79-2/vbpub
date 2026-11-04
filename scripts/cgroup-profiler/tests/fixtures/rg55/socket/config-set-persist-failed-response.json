@@ -1,0 +1,8 @@
+{
+  "ok": false,
+  "contract": 2,
+  "error": {
+    "code": "persist-failed",
+    "message": "cannot write /var/lib/cgprofile/blocker/x.toml: File exists"
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "verb": "config-set",
+  "args": {
+    "key": "keep_days",
+    "value": 6,
+    "dry_run": true
+  },
+  "contract": 2
+}

@@ -1,0 +1,7 @@
+{
+  "verb": "status",
+  "args": {
+    "state": "all"
+  },
+  "contract": 2
+}
