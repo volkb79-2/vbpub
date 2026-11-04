@@ -54,7 +54,8 @@ class FakeHost:
     def _effect(self, argv, input):
         tool = argv[0].rsplit("/", 1)[-1]
         if tool == "blockdev":
-            return f"{self.kernel}\n"
+            assert argv[1] == "--getsize64"  # the only size option HostActions allowlists
+            return f"{self.kernel * 512}\n"
         if tool == "sfdisk":
             assert "-N" in argv and input is not None
             self.table = int(input.strip().lstrip(",").split()[0])
@@ -127,7 +128,7 @@ def _clean_call_count(tmp_path, monkeypatch) -> int:
 @pytest.mark.parametrize("when", ["before", "after"])
 def test_rerun_converges_after_interruption_at_every_command(tmp_path, monkeypatch, when):
     total = _clean_call_count(tmp_path / "clean", monkeypatch)
-    assert total == 5  # sfdisk, partx, blockdev --getsz, resize2fs, dumpe2fs
+    assert total == 5  # sfdisk, partx, blockdev --getsize64, resize2fs, dumpe2fs
     for crash_at in range(1, total + 1):
         root = tmp_path / f"{when}-{crash_at}"
         root.mkdir()

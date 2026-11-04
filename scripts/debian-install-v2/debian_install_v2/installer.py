@@ -3820,13 +3820,13 @@ MaxFileSec=1month
     def _kernel_partition_sectors(self) -> int:
         """Root partition size as the KERNEL sees it (512-byte sectors), not as the table says."""
         out = self._run(
-            ["/usr/sbin/blockdev", "--getsz", self.root_partition_path],
+            ["/usr/sbin/blockdev", "--getsize64", self.root_partition_path],
             "read the kernel's root partition size",
         )
         try:
-            return int(out.split()[0])
+            return int(out.split()[0]) // 512
         except (IndexError, ValueError) as exc:
-            raise InstallerError(f"cannot parse blockdev --getsz output for {self.root_partition_path}: {out!r}") from exc
+            raise InstallerError(f"cannot parse blockdev --getsize64 output for {self.root_partition_path}: {out!r}") from exc
 
     def _root_filesystem_bytes(self) -> int:
         """Current ext filesystem size (block count x block size) of the root partition."""
