@@ -247,7 +247,13 @@ def _show(args: argparse.Namespace, runtime: CliRuntime) -> None:
         stored = [e for e in done.get("sessions", []) if isinstance(e, dict) and e.get("session") == args.session]
         if not stored:
             raise _bad(f"unknown-session: no session {args.session}", "unknown-session")
-        body = {"state": stored[0].get("state", "done"), "summary": stored[0].get("summary", stored[0])}
+        # PROTOCOL.md section 10.4 does not put the Summary on listing entries: read it from the export.
+        parts = ctlwire.export_parts(path, args.session)
+        try:
+            summary = json.loads(parts["summary.json"].decode("utf-8"))
+        except (KeyError, ValueError) as exc:
+            raise _bad(f"the export of {args.session} carries no readable summary.json") from exc
+        body = {"state": stored[0].get("state", "done"), "summary": summary}
     emit(runtime, body, [json.dumps(body, indent=2, sort_keys=True)])
 
 
