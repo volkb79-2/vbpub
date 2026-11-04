@@ -21,6 +21,74 @@ the technical detail below it.
 
 <!-- cmru: release history -->
 
+## [7.20.0] - 2026-11-04
+<!-- cmru: generated -->
+<!-- cmru: source-end=30ef50114b6da9ad7a0e72165104e7687f20af18 -->
+
+### Added
+- feat(vss): fluxer-server tryout ciu project (21 containers, LiveKit 7891/7892, idempotent admin + dummy users) (55dd900db)
+- feat(tls-edge): installer packaging - bundled ciu wheels per interpreter, stable stack root, wizard, adapter; file CIU-163 and KI-115 (c247cc5cb)
+- feat(ciu): worktree rm cleans every committed root (CIU-138); add worktree refork (CIU-142) (ac6d1bc35)
+
+### Fixed
+- fix(ciu): refuse dirty checkout before any sibling clean; refuse sibling root outside checkout; fix two test fakes (delta review M2/L3) (3e69065f6)
+- fix(ciu): restricted down stops only selected stacks (CIU-146); config content hash label recreates changed-config services (CIU-147) (98fd3677d)
+- fix(worktree): refuse workspace removal when a mount sits under the checkout (WT-OW-01) (b59dbf12d)
+- fix(ciu): resolve/exec seed from the root's instance record; JSON-verb notices go to stderr (CIU-139, CIU-144, CIU-86) (428f19310)
+- fix(ciu): CIU-150 governance preflight checks compose-authored cgroup_parent; inconclusive probe warns (c2a7285d5)
+- fix(ciu): CIU-102 ctx.secret_file resolves hook-persisted secrets (06f50a8c1)
+
+### Changed
+- netcup: runner cockpit-tools and --jobs comparison scripts, NC-08..NC-11; ciu remote-deploy defects CIU-168..CIU-171 (v1001 reinstall findings) (5c68e7c4d)
+- ciu backlog: renumber the worktree S16.3 entry to CIU-167 (CIU-163 was used twice) (8a210fa9a)
+- ops(vss): jitsi stable-11248-3 (GHCR, operator 14-day exception), rootless-image contract, fluxer expose_public=true, client links, CIU-164..166 (415e2fbb0)
+- Merge branch 'feat-vss-fluxer-20261104' (958f5f3ff)
+- Merge branch 'fix-ciu-2-20261104' (f596dd1ba)
+- Merge branch 'backlog-platform-20261104' (e69a27940)
+- Merge branch 'finish-cmru-1-20261104' (77a973875)
+- Merge branch 'fix-ciu-3-20261104' (079c05cdc)
+- Merge branch 'fix-ciu-4-20261104' (df6daa0c9)
+- ciu backlog: socket-derived docker gid, worktree create defects, side-effecting dry runs (CIU-160..162) (aa014e713)
+- chore(ciu,tls-edge): re-render the committed get.py with the new template; point refs at cmru installer render (e28bc5015)
+
+### Documentation
+- docs: SPEC refork operation, rm ordering, CONSUMERS TOCTOU and release order, CHANGES (ciu, cmru) (1424ae707)
+- docs(ciu): mark CIU-146 and CIU-147 FIXED (7e7192d81)
+- docs(ciu): mark CIU-139, CIU-144, CIU-86 FIXED (3fd1443a0)
+- docs(ciu): mark CIU-138 and CIU-142 fixed in the backlog (60539652f)
+- docs(ciu): close CIU-102/148/150/101 and stale CIU-137/140/149/152; CHANGES entries (6a0f7cf8c)
+- docs(ciu): CIU-148 repoint KSM measurement citations to RESOURCE-GOVERNANCE.md (60685e456)
+- docs: the estate Python is the image's /opt/mdt/venv, not a home venv (298e77424)
+- docs(ciu): file CIU-159 (worktree create/rm uses the cowtree declaration) (d2ce0498b)
+
+### Testing
+- test(ciu): cover the mount-probe failure path in worktree remove (30ef50114)
+- test(ciu): CIU-101 stabilise engine --help module-guard warning test (9323e2e77)
+
+<!-- cmru: pending release notes begin -->
+### Fixed
+- WT-OW-01: `ciu worktree rm` refuses, before `ciu clean` or any deletion, when a mount (CoW subvolume, bind mount) sits at or under the checkout; each mount is named ("detach it first"), nothing is unmounted, and `--force` does not override it. The check lives in the shared `libraries/worktree` (identical copy embedded in cmru).
+- CIU-144: the CIU-117 worktree image-scoping notice now goes to stderr, so `ciu resolve --json` and `ciu check --json` keep stdout to one JSON document in a linked worktree whose stack declares `build:`.
+- CIU-86: `ciu graph --format json` (every format) writes its own notices and validation errors to stderr; stdout carries only the graph (S13.5).
+- CIU-139: `ciu resolve` and `ciu exec` seed identity and machine facts from the selected root's instance record (as `ciu up`/`check` do), so they work in an unprimed shell and from any cwd with `--root-folder`; a root with no record refuses naming `ciu env generate`.
+- CIU-102: `ctx.secret_file(name)` now resolves a secret a hook persisted itself (S9.4a, found through the stack's provenance sidecar) instead of raising `KeyError`; a name never persisted still raises.
+- CIU-150: the governance slice preflight also checks a literal `cgroup_parent: <name>.slice` authored in a stack's compose file. A slice systemd definitely reports absent refuses (exit 2); an inconclusive probe (cockpit, no systemd PID 1) now WARNs and continues.
+- CIU-148: SPEC S15.20 and DESIGN-NOTES D8 cite dstdns `docs/RESOURCE-GOVERNANCE.md` (sections 4 and 6) instead of the merged-away `KSM-OPTIN-MEASUREMENTS.md`.
+- CIU-101: the engine `--help` module-guard test no longer fails when an unrelated finalizer warning lands in its recording window.
+- CIU-146: `ciu down --profile`/`--phases` stops only the containers (running or exited) of the selected stacks, enumerated by each stack's exact compose-project label; an empty selection refuses instead of widening, and bare `ciu down` stays project-wide (S7.8).
+- CIU-147: the generated overlay stamps each service that mounts rendered configfiles with a `ciu.configfile.sha256` label (content hash of the mounted staging directories), so a changed rendered config recreates exactly that service on `ciu up` and an unchanged render recreates nothing (S8.3 step 15/16).
+- fix(ciu): `ciu worktree rm` cleans every committed CIU root of the checkout (discovered at the target's own HEAD), each under its own identity, before deleting it; any discovery, identity or clean failure preserves the checkout and records and reports the roots already cleaned (CIU-138).
+- CIU-138: `ciu worktree rm` now also refuses a checkout that gained uncommitted changes since the initial inventory BEFORE the first sibling root is cleaned, and refuses a discovered sibling root that resolves outside the checkout (symlink swap). SPEC S16.4 lists `refork` in the closed `operation` vocabulary; S16.9 states that resources of already-cleaned sibling roots are gone when a later step refuses.
+- WT-OW-01: the shared worktree library re-reads the mount table immediately before the Git deletion and before each permission-retry deletion (`git worktree remove` retry and residual `rmtree`), narrowing the time-of-check window (still a point-in-time read; see `libraries/worktree/CONSUMERS.md`).
+
+### Changed
+- `ciu/get.py` was re-rendered from the installer template (tls-edge installer work; `cmru.toml` comments now point at `cmru installer render`); the byte-identity test in `test_ciu_host_enroll.py` guards drift. Installed `get.py` consumers pick up the new installer on the next fetch.
+- First `ciu up` after upgrading recreates each service that mounts rendered configfiles once (existing containers lack the `ciu.configfile.sha256` label, CIU-147). File mode and symlinks are not hashed: a mode-only change does not recreate.
+
+### Added
+- feat(ciu): `ciu worktree refork LOGICAL [--onto TRUNK] [--json]` re-records `fork_point_sha` after a legitimate rebase so run-gate's derived base (R-35a) works again without a hand-passed `--base` (CIU-142). It refuses a dirty tree and a trunk that is not an ancestor of HEAD, is idempotent, and leaves record schema 6 unchanged (the previous value and timestamp are reported in its JSON document, operation `refork`). `ciu worktree inspect` now reports a `fork_point` status (`current`/`stale`/`unrecorded`/`unknown`) and names the verb for a stale record.
+<!-- cmru: pending release notes end -->
+
 ## [7.19.0] - 2026-11-02
 <!-- cmru: generated -->
 <!-- cmru: source-end=1852853efc14b6491f5eec3e3ee81199fbf51ec0 -->
@@ -90,28 +158,6 @@ the technical detail below it.
 <!-- cmru: pending release notes end -->
 
 ## [Unreleased]
-
-### Fixed
-- WT-OW-01: `ciu worktree rm` refuses, before `ciu clean` or any deletion, when a mount (CoW subvolume, bind mount) sits at or under the checkout; each mount is named ("detach it first"), nothing is unmounted, and `--force` does not override it. The check lives in the shared `libraries/worktree` (identical copy embedded in cmru).
-- CIU-144: the CIU-117 worktree image-scoping notice now goes to stderr, so `ciu resolve --json` and `ciu check --json` keep stdout to one JSON document in a linked worktree whose stack declares `build:`.
-- CIU-86: `ciu graph --format json` (every format) writes its own notices and validation errors to stderr; stdout carries only the graph (S13.5).
-- CIU-139: `ciu resolve` and `ciu exec` seed identity and machine facts from the selected root's instance record (as `ciu up`/`check` do), so they work in an unprimed shell and from any cwd with `--root-folder`; a root with no record refuses naming `ciu env generate`.
-- CIU-102: `ctx.secret_file(name)` now resolves a secret a hook persisted itself (S9.4a, found through the stack's provenance sidecar) instead of raising `KeyError`; a name never persisted still raises.
-- CIU-150: the governance slice preflight also checks a literal `cgroup_parent: <name>.slice` authored in a stack's compose file. A slice systemd definitely reports absent refuses (exit 2); an inconclusive probe (cockpit, no systemd PID 1) now WARNs and continues.
-- CIU-148: SPEC S15.20 and DESIGN-NOTES D8 cite dstdns `docs/RESOURCE-GOVERNANCE.md` (sections 4 and 6) instead of the merged-away `KSM-OPTIN-MEASUREMENTS.md`.
-- CIU-101: the engine `--help` module-guard test no longer fails when an unrelated finalizer warning lands in its recording window.
-- CIU-146: `ciu down --profile`/`--phases` stops only the containers (running or exited) of the selected stacks, enumerated by each stack's exact compose-project label; an empty selection refuses instead of widening, and bare `ciu down` stays project-wide (S7.8).
-- CIU-147: the generated overlay stamps each service that mounts rendered configfiles with a `ciu.configfile.sha256` label (content hash of the mounted staging directories), so a changed rendered config recreates exactly that service on `ciu up` and an unchanged render recreates nothing (S8.3 step 15/16).
-- fix(ciu): `ciu worktree rm` cleans every committed CIU root of the checkout (discovered at the target's own HEAD), each under its own identity, before deleting it; any discovery, identity or clean failure preserves the checkout and records and reports the roots already cleaned (CIU-138).
-- CIU-138: `ciu worktree rm` now also refuses a checkout that gained uncommitted changes since the initial inventory BEFORE the first sibling root is cleaned, and refuses a discovered sibling root that resolves outside the checkout (symlink swap). SPEC S16.4 lists `refork` in the closed `operation` vocabulary; S16.9 states that resources of already-cleaned sibling roots are gone when a later step refuses.
-- WT-OW-01: the shared worktree library re-reads the mount table immediately before the Git deletion and before each permission-retry deletion (`git worktree remove` retry and residual `rmtree`), narrowing the time-of-check window (still a point-in-time read; see `libraries/worktree/CONSUMERS.md`).
-
-### Changed
-- `ciu/get.py` was re-rendered from the installer template (tls-edge installer work; `cmru.toml` comments now point at `cmru installer render`); the byte-identity test in `test_ciu_host_enroll.py` guards drift. Installed `get.py` consumers pick up the new installer on the next fetch.
-- First `ciu up` after upgrading recreates each service that mounts rendered configfiles once (existing containers lack the `ciu.configfile.sha256` label, CIU-147). File mode and symlinks are not hashed: a mode-only change does not recreate.
-
-### Added
-- feat(ciu): `ciu worktree refork LOGICAL [--onto TRUNK] [--json]` re-records `fork_point_sha` after a legitimate rebase so run-gate's derived base (R-35a) works again without a hand-passed `--base` (CIU-142). It refuses a dirty tree and a trunk that is not an ancestor of HEAD, is idempotent, and leaves record schema 6 unchanged (the previous value and timestamp are reported in its JSON document, operation `refork`). `ciu worktree inspect` now reports a `fork_point` status (`current`/`stale`/`unrecorded`/`unknown`) and names the verb for a stale record.
 
 ## [7.18.0] - 2026-10-28
 <!-- cmru: generated -->
