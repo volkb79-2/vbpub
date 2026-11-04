@@ -26,7 +26,7 @@ no signup, no attachments, bounded cache, conservative visitor limits — see
 ## Deploy (ciu-managed — primary since 2026-07-15)
 
 ```bash
-cd /workspaces/vbpub && ciu up --dir nyxloom/ntfy -y
+cd /workspaces/vbpub && ciu up --dir nyxloom/ntfy --yes
 ```
 
 Standalone-root ciu stack (own `ciu.global.defaults.toml.j2` + stack-local

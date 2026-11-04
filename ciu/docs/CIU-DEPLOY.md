@@ -24,13 +24,13 @@ ciu up
 ciu up --profile core_infra
 
 # Full restart
-ciu clean -y && ciu up
+ciu clean --yes && ciu up
 
 # Build images then deploy
 ciu bake && ciu up
 
 # Health check after deploy
-ciu health
+ciu status --gate
 ```
 
 ---
@@ -49,7 +49,7 @@ compose selection is controlled by `--profile` or `--dir` as documented in
 | `ciu bake` | `docker buildx bake all --load` | exit 1 on build failure |
 | `ciu bake --no-cache` | Same, with `--no-cache` | exit 1 on build failure |
 | `ciu up` | Starts stacks in phase/numeric order [S7.1] | Phase failed: skips rest of phase + later phases; exit 1 [S7.3] |
-| `ciu health` | Polls health gate after deploy [S7.7] | exit 1 if gate does not pass |
+| `ciu status --gate` | Polls health gate after deploy [S7.7] | exit 1 if gate does not pass |
 
 `--ignore-errors` continues on any phase failure but final exit code is still
 1 [S7.3]. `--phases 1,2` restricts execution to named phase numbers.

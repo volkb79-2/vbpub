@@ -269,4 +269,4 @@ app keeps its env interface with secrets via `*_FILE` / wrapper / `expose_env`.
 - [ ] `ciu up --dir <stack>` twice → `diff` of `.ciu/secrets/` is empty
   (idempotency, S4.11) and `ciu.compose.yml` contains no secret value.
 - [ ] `docker exec <c> cat /run/secrets/<name>` matches the store file.
-- [ ] `ciu health --profile <name>` honest (`starting` ≠ pass) [S7.7].
+- [ ] `ciu status --gate --profile <name>` honest (`starting` ≠ pass) [S7.7].

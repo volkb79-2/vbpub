@@ -196,8 +196,8 @@ class TestEnrollCLIShape:
             from cmru.getpy import installer_main
         except ImportError as exc:  # a missing cmru must be RED, never a silent skip
             pytest.fail(
-                "cmru is not importable; put ../cmru/src (and ../libraries/cli-extended/src, "
-                f"../libraries/worktree/src) on PYTHONPATH: {exc}"
+                "cmru is not importable; put ../cmru/src (and ../libraries/worktree/src) on "
+                f"PYTHONPATH and install the released cli-extended wheel: {exc}"
             )
         assert "extensions" in InstallerConfig.__dataclass_fields__, (
             "the importable cmru predates `[project.installer] extensions`"

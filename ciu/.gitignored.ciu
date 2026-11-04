@@ -30,7 +30,7 @@ ciu.global.toml
 # per-checkout sparse global override (S3.1b) -- gitignored (unlike the
 # committed ciu.global.toml.j2 above); hand-authored and machine-specific.
 # Renamed from ciu.global.worktree.toml.j2 by ciu-P47 (hard cutover: the old
-# name is not read, and `ciu migration-check` reports a leftover copy).
+# name is not read, and `ciu migrate --check` reports a leftover copy).
 ciu.global.instance.toml.j2
 # Atomic initial-overlay staging file (CIU-135); a hard interruption can
 # leave ignored scratch beside the destination for later inspection/cleanup.

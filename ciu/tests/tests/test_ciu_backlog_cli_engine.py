@@ -144,7 +144,7 @@ def test_clean_identity_cli_routes_and_rejects_mixed_options(monkeypatch, tmp_pa
             calls.append((root, identity, yes, expected_checkout)) or 0
         ),
     )
-    monkeypatch.setattr(sys, "argv", ["ciu", "clean", "--identity", "ab12cd", "-y"])
+    monkeypatch.setattr(sys, "argv", ["ciu", "clean", "--identity", "ab12cd", "--yes"])
     with pytest.raises(SystemExit) as exc:
         cli.main()
     assert exc.value.code == 0
@@ -153,7 +153,7 @@ def test_clean_identity_cli_routes_and_rejects_mixed_options(monkeypatch, tmp_pa
     expected_checkout = str(tmp_path / "old")
     monkeypatch.setattr(
         sys, "argv",
-        ["ciu", "clean", "--identity", "ab12cd", "--expected-checkout", expected_checkout, "-y"],
+        ["ciu", "clean", "--identity", "ab12cd", "--expected-checkout", expected_checkout, "--yes"],
     )
     with pytest.raises(SystemExit) as exc:
         cli.main()
@@ -164,7 +164,7 @@ def test_clean_identity_cli_routes_and_rejects_mixed_options(monkeypatch, tmp_pa
     with pytest.raises(SystemExit) as exc:
         cli.main()
     assert exc.value.code == 2
-    assert "cannot be combined" in capsys.readouterr().err
+    assert "cannot be used together" in capsys.readouterr().err
 
 
 def test_shipped_single_stack_healthcheck_success_and_failure_paths(monkeypatch, tmp_path, capsys):

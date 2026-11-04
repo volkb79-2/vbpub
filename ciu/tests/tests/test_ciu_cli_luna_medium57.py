@@ -27,22 +27,29 @@ def test_main_version_prints_version_and_exits_zero(monkeypatch, capsys, spellin
     assert captured.err == ""
 
 
-def test_unknown_verb_help_falls_back_to_top_level_usage(capsys):
-    cli._print_verb_help("nonexistent-verb")
+def test_unknown_verb_is_a_usage_error_with_the_headline(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["ciu", "nonexistent-verb"])
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
 
-    out = capsys.readouterr().out
-    assert "CIU" in out
-    assert "Container Infrastructure Utility" in out
-    assert f"CIU {get_cli_version()}" in out
+    captured = capsys.readouterr()
+    assert exc.value.code == 2
+    assert captured.out == ""
+    assert "nonexistent-verb" in captured.err
+    assert cli_headline() in captured.err
+    assert f"CIU {get_cli_version()}" in captured.err
 
-def test_nested_parser_diagnostics_start_with_the_headline(monkeypatch, capsys):
+
+def test_nested_parser_diagnostics_carry_the_headline(monkeypatch, capsys):
+    """The library leads with the diagnostic, then the identity headline and the usage."""
     with pytest.raises(SystemExit) as exc_info:
         monkeypatch.setattr(sys, "argv", ["ciu", "worktree", "create"])
         cli.main()
     captured = capsys.readouterr()
     assert exc_info.value.code == 2
     assert captured.out == ""
-    assert captured.err.splitlines()[0] == cli_headline()
+    assert captured.err.splitlines()[0].startswith("[ERROR]")
+    assert cli_headline() in captured.err.splitlines()
 
     with pytest.raises(SystemExit) as help_info:
         monkeypatch.setattr(sys, "argv", ["ciu", "worktree", "create", "--help"])

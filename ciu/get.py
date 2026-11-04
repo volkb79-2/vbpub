@@ -80,7 +80,7 @@ MANIFEST_PUBKEY  = ""
 REQUIRED_COMMANDS: List[str] = ["python3"]
 PRESERVE_PATHS: List[str]    = []
 # [(glob, distribution), ...] in install order (cli-extended is hoisted first at install).
-WHEEL_SPECS: List[Tuple[str, str]] = [["vendor/ciu-*.whl", "ciu"]]
+WHEEL_SPECS: List[Tuple[str, str]] = [["vendor/cli_extended-*.whl", "cli-extended"], ["vendor/ciu-*.whl", "ciu"]]
 # Commands exposed as <root>/bin/<cmd> -> ../current/venv/bin/<cmd>.
 LAUNCHERS: List[str] = []
 # Stable stack folder: "" = none; else <root>/<STABLE_DIR>/ mirrors the ACTIVE release's

@@ -562,7 +562,7 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-111 | io.cost benchmark source and ownership remain undecided | Medium | OPEN — design question |
 | CIU-112 | Rootless managed worktree teardown and removal | Medium | FIXED 2026-10-04 by CIU-126 |
 | CIU-113 | Consumer recipe for a project-owned inspection stack | Low | OPEN — documentation candidate |
-| CIU-114 | CLI grammar/help/wizard extension | Low | OPEN — design candidate |
+| CIU-114 | CLI grammar/help/wizard extension | Low | IMPLEMENTED 2026-11-04 on branch `feat-ciu-clix-20261104` (unmerged); acceptance = registered gate + release + deploy |
 | CIU-115 | CIU-owned outdated identity records block siblings and teardown | Medium | FIXED 2026-10-04 |
 | CIU-116 | Worktree shared-infrastructure reuse is not declared in project config | Medium | OPEN — waiting for shareability measurements |
 | CIU-117 | Worktree builds overwrite the primary checkout image tag | Medium | FIXED — linked-worktree Compose and Bake image tags include its instance id by default |
@@ -4512,7 +4512,7 @@ the wrapper now lets CIU perform that work. Include this in the recipe's
 
 ## CIU-114 Adopt cli-extended (unified adoption, order 8 of 8)
 
-**Status: OPEN — planned.** Originally filed as a one-line idea ("adopt `cli-extended` for CLI grammar, usage(), wizard, ..."); **updated 2026-10-05 by the cli-extended unified-adoption program (W10)** into the planned, evidenced adoption entry below. This is the single ciu entry for the adoption; do not file a parallel one.
+**Status: IMPLEMENTED 2026-11-04 on branch `feat-ciu-clix-20261104` (not merged; the operator's decisions and every surface change are in [`docs/CLI-SURFACE-DECISIONS-20261104.md`](docs/CLI-SURFACE-DECISIONS-20261104.md)).** ciu adopts cli-extended in v7 with v8 S18 names where a name changes: `ciu.cli_registry` registers every verb (identity, groups, constraints, `--json`/`--yes`/`--dry-run`/`--traceback`, exact spellings), `doctor` and `skills` are the shared verbs, the skills ship as package data, `cli-extended audit` has 0 failures (AC-08/AC-12 are recorded manual rows) and `surface check` passes against a 669-row reviewed catalog. Deliberately NOT done: the internal implementation parsers (`deploy`/`engine`/`worktree`) still sit behind the adapters (follow-up), `runtime.confirm` is not wired into `up`/`clean`, and C3/C9/C10/C13 wait for v8. Acceptance still pending: the registered ciu gate (8h lane, not run on the branch), release, devcontainer deploy. Previous status — OPEN, planned. Originally filed as a one-line idea ("adopt `cli-extended` for CLI grammar, usage(), wizard, ..."); **updated 2026-10-05 by the cli-extended unified-adoption program (W10)** into the planned, evidenced adoption entry below. This is the single ciu entry for the adoption; do not file a parallel one.
 
 **Source documents.** [`libraries/cli-extended/docs/PROGRAM-2026-10-UNIFIED-ADOPTION.md`](../libraries/cli-extended/docs/PROGRAM-2026-10-UNIFIED-ADOPTION.md) (decisions CX-D1..CX-D12, section "W10 - planned adoptions") and [`libraries/cli-extended/docs/ADOPTION-CHECKLIST.md`](../libraries/cli-extended/docs/ADOPTION-CHECKLIST.md) (AC-01..AC-25). **Dependency:** cli-extended 0.2.0 released first (W8, the controller). Not executed in the program's session. ciu is last in the order (CX-D11) because the v8 spec (`docs/SPEC-V8.md`) already assumes the shared verbs; the v7 line is maintenance-only, so the carve must decide whether the adoption lands in v7 or only in the v8 line.
 

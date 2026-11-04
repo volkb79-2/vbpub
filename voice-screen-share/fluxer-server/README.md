@@ -96,7 +96,7 @@ long voice session. The edge adds no CSP header (good: Fluxer sets its own) and 
 ```bash
 cd /workspaces/vbpub
 ciu env generate --root-folder voice-screen-share/fluxer-server     # creates ciu.env + a network (CIU-162)
-ciu up --dir voice-screen-share/fluxer-server -y --root-folder voice-screen-share/fluxer-server
+ciu up --dir voice-screen-share/fluxer-server --yes --root-folder voice-screen-share/fluxer-server
 ```
 
 `ciu up` runs the `pre_compose` hook (generates every secret once, see below), starts the stack and then the

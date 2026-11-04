@@ -27,5 +27,5 @@ def test_module_entrypoint_delegates_to_cli_help() -> None:
 
     assert result.returncode == 0
     assert "CIU " in result.stdout
-    assert "ENVIRONMENT" in result.stdout
+    assert "EXPLORATION" in result.stdout and "MODIFICATION" in result.stdout
     assert result.stderr == ""

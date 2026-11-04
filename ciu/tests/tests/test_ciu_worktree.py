@@ -2661,7 +2661,7 @@ class TestManagedRecordValidation:
         monkeypatch.setattr(worktree.subprocess, "run", run)
         assert worktree._clean_in(tmp_path, yes=True) == 17
         assert worktree._clean_in(tmp_path, yes=False) == 17
-        assert calls[0][0][-2:] == ["old123", "-y"]
+        assert calls[0][0][-2:] == ["old123", "--yes"]
         assert calls[1][0][-2:] == ["old123", "--yes"]
         assert all(call[2].get("INSTANCE_ID") is None for call in calls)
 
@@ -3361,7 +3361,7 @@ class TestWorktreeSubprocessEnvironment:
         env = seen["env"]
         assert isinstance(env, dict)
         assert env["REPO_ROOT"] == "/target"
-        assert seen["argv"][-1] == "-y"
+        assert seen["argv"][-1] == "--yes"
 
     def test_clean_refuses_to_guess_when_target_env_is_missing(self, tmp_path):
         with pytest.raises(
@@ -7218,7 +7218,7 @@ class TestRemovalHelpers:
             yes=True,
         ) == 0
         argv, kwargs = calls[0]
-        assert argv[-1] == "-y" and "right-id" in argv
+        assert argv[-1] == "--yes" and "right-id" in argv
         assert argv[argv.index("--expected-checkout") + 1] == str(
             tmp_repo / "old-checkout"
         )
