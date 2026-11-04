@@ -7,6 +7,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - fix(nyxloom): wrapper terminates the child and records a `child-pid-publish-failed` refusal when `child.pid` cannot be published (NL-53, 55792dfe6)
 - fix(nyxloom): scaffolded gate Dockerfile no longer points at the retired `nyxloom gate verify` (NL-13, 55792dfe6)
 - fix(nyxloom): remove dead `Policy.gate_verify_interval_days` and `ReconcileInput.days_since_gate_verify`; a toml still carrying the key loads and warns (NL-14, 55792dfe6)
+- fix(nyxloom): NL-9 lint L7 validates a bare scope.touch path into a sibling monorepo project against the real file instead of accepting it unchecked
+- fix(nyxloom): NL-28 lint L4 (P78) ignores path/command-shaped tokens and code fences and reports once per handoff naming every oracle
+- feat(nyxloom): NL-25 add `coverage-floor` to the gate asserts vocabulary (schema, config docs, STANDARD.md), distinct from `changed-line-coverage`
 
 <!-- cmru: release history -->
 

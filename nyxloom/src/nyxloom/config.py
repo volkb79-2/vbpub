@@ -62,7 +62,11 @@ class GateDef:
     # GA2 (docs/plan-gate-adoption.md checklist item 7 "rigor declared"): an
     # optional, self-reported list of what this gate actually enforces --
     # constrained by the schema enum to {tests-pass, changed-line-coverage,
-    # mutation, canary-verified, assay-verdict}. Defaults to [] (undeclared
+    # coverage-floor, mutation, canary-verified, assay-verdict}.
+    # `coverage-floor` (NL-25) = the gate enforces its own configured
+    # coverage floor (target and line/branch scope per the gate's contract);
+    # it is distinct from, and never aliased to, `changed-line-coverage`.
+    # Defaults to [] (undeclared
     # -- the GA1 behavior, unchanged).
     asserts: list[str] = field(default_factory=list)
 

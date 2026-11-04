@@ -3,12 +3,14 @@ kind: backlog-entry
 schema_version: 1
 id: NL-28
 title: "nyxloom lint L4 (P78) fires on any two quoted tokens, including file paths, and once per oracle"
-status: open
+status: fixed
 type: "bugfix"
 severity: "low"
 component: "nyxloom-lint"
 provenance: "dstdns 2026-09-30 (P136, P143, P189 carves)"
 filed_date: "2026-09-30"
+closed_date: "2026-11-03"
+closed_reason: "FIXED 2026-11-04 (4b4be42ba)"
 ---
 
 ## Observed mechanism and reproduction
