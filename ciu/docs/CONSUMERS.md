@@ -554,7 +554,7 @@ exists anywhere in this command: a branch one minute old that is fully merged
 is prunable, a branch six months old that is not is not.
 
 Automation allowlists the capability id `worktree.branches.v1`
-(`ciu capabilities --json`) instead of inferring the feature from SemVer;
+(`ciu schema capabilities --json`) instead of inferring the feature from SemVer;
 the `--json` document is versioned (`schema_version: 4` — 3 adds the current
 protected-reason field and checkout-wide walk cap, 2 predates the ignored-state categories,
 operations `branches`/`branches-prune`, statuses
@@ -648,7 +648,7 @@ pass exits **1** in both `--json` and human output. The returned document is a
 re-survey of the post-state, not the plan.
 
 Automation allowlists `worktree.reap.v1` (and `worktree.lease.v1`, which it
-consults) via `ciu capabilities --json`. The reap document is separately
+consults) via `ciu schema capabilities --json`. The reap document is separately
 versioned (`schema_version: 1`, operation `reap`, statuses
 `survey`/`dry-run`/`reaped`/`partial`), and `counts` always carries all seven
 categories including the zero-valued ones, so a consumer can key on them
@@ -817,7 +817,7 @@ container; it does not weaken project/service/network uniqueness.
 ## 9. Discover capabilities instead of guessing from the version
 
 ```console
-$ ciu capabilities --json
+$ ciu schema capabilities --json
 {"schema_version": 1, "capabilities": ["worktree.exec-local.v1",
  "worktree.exec-target.v1", "worktree.identity.v1",
  "worktree.inspect.v1", "worktree.lifecycle-json.v1", "worktree.up.v1"]}
@@ -1250,7 +1250,7 @@ deleted casually. It has always been declared gitignored (S3.1b), but it is now
 the only record of your instance identity. A checkout that loses it cannot name
 its own compose project, network or ownership labels until `ciu env generate`
 puts it back. `ciu clean --vanilla` removes it deliberately (that is a full
-reset); plain `ciu clean` preserves it. `ciu migration-check` reports a
+reset); plain `ciu clean` preserves it. `ciu migrate --check` reports a
 `.gitignore` missing either entry.
 
 ## 12. The implementation gate (Assay-backed, S18)
@@ -2035,7 +2035,7 @@ name and the `/run/secrets/<name>` basename).
 - `ciu check`'s `vault-presence` stage (`[S13.4d]`) refuses a stack declaring
   `ASK_VAULT`/`GEN_TO_VAULT` with no `topology.services.vault` — previously a
   runtime-only failure, mid-`ciu up`.
-- `ciu migration-check [--root-folder PATH] [--json]` (S13.7) reports stale
+- `ciu migrate --check [--root-folder PATH] [--json]` (S13.7) reports stale
   pre-cutover artifacts in a checkout. CIU performs hard cutovers with no
   legacy-compat shims anywhere in its normal code paths; this verb is the one
   place that knows the version history, so a stale artifact is a named
@@ -2069,10 +2069,10 @@ anywhere needs a single character edited.
 fallback read of `ciu.global.worktree.toml.j2` anywhere, and an existing
 checkout's copy of it stops being merged into any render the moment you
 upgrade. That is deliberate (no legacy-compat shims in normal code paths), and
-`ciu migration-check` is how you find out rather than being broken silently:
+`ciu migrate --check` is how you find out rather than being broken silently:
 
 ```console
-$ ciu migration-check
+$ ciu migrate --check
 [WARN] retired-overlay-file: found 'ciu.global.worktree.toml.j2' at the ciu root — this filename is retired and its content is NO LONGER merged into any render
           fix: move any hand-authored overrides from 'ciu.global.worktree.toml.j2' into 'ciu.global.instance.toml.j2' by hand, then delete 'ciu.global.worktree.toml.j2'. Its CIU-owned [ciu.instance.generated] table needs no hand-copying — `ciu env generate` rewrites those facts into 'ciu.instance.generated.toml'; copy nothing from it.
 [ERROR] migration-check: 1 finding(s)
@@ -2080,7 +2080,7 @@ $ ciu migration-check
 
 **Migration, per checkout, once:**
 
-1. `ciu migration-check` — or just `ciu up`/`ciu check`, whose `migration`
+1. `ciu migrate --check` — or just `ciu up`/`ciu check`, whose `migration`
    stage runs the same rule and notes the finding.
 2. Copy your OWN content out of `ciu.global.worktree.toml.j2` into
    `ciu.global.instance.toml.j2`: `[ciu.instance] service_profiles`, a
@@ -2096,7 +2096,7 @@ created by `ciu env generate` alone) needs only steps 3 and 4, in either order.
 **`.gitignore`:** `ciu init`'s canonical set now lists
 `ciu.global.instance.toml.j2` and `ciu.instance.generated.toml`, and no longer
 lists the retired name. Add both to an existing repo's `.gitignore`;
-`ciu migration-check`'s `gitignore-gaps` rule names them if you forget.
+`ciu migrate --check`'s `gitignore-gaps` rule names them if you forget.
 Removing the old pattern is optional hygiene and does not affect detection —
 the retired-overlay rule asks the filesystem, not your `.gitignore`.
 

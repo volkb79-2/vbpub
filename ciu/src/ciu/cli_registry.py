@@ -337,15 +337,49 @@ def _show_cli() -> Any:
     return registry.build()
 
 
-def _ksm_cli() -> Any:
-    registry = ciu_registry("ciu ksm", "Kernel Same-page Merging shim.")
-    options = (ROOT, flag("--force", "rebuild even when the shim is current", group="BEHAVIOUR"))
+def _governance_cli() -> Any:
+    """``ciu governance ksm|iops-baseline`` (v8 S18: governance absorbs ksm and iops-baseline)."""
+    registry = ciu_registry("ciu governance",
+                            "Resource-governance helpers (S15): KSM shim, IOPS baseline.")
+    ksm_options = (ROOT, flag("--force", "rebuild even when the shim is current", group="BEHAVIOUR"))
     registry.register(VerbSpec(
-        "build",
-        description="Build the KSM shim into .ciu/ksm/ (S15.17).",
-        group=VerbGroup.MODIFICATION.value, mutating=True, dry_run=True,
-        include_confirmation=False, include_json=False, include_progress=False,
-        options=options, handler=adapter(["ksm", "build"], options, dry_run=False),
+        "ksm",
+        description="Build the KSM shim into .ciu/ksm/ (S15.17, CIU-17).",
+        group=VerbGroup.MODIFICATION.value, mutating=True, include_confirmation=False,
+        include_json=False, include_progress=False, options=ksm_options,
+        handler=adapter(["ksm", "build"], ksm_options),
+    ))
+    iops = (
+        value("--path", "output file (default: /var/lib/ciu/io-baseline.env)", "PATH"),
+        value("--runtime", "fio measurement seconds (default: 10)", "N", kind=int),
+        flag("--force", "re-measure even when the existing result is under 30 days old"),
+    )
+    registry.register(VerbSpec(
+        "iops-baseline",
+        description=(
+            "Measure this host's disk randread IOPS ceiling with fio and write RIOPS_MAX/"
+            "RIOPS_ENGINE for governance read_iops derivation (S15.4/S15.9). Explicit opt-in; "
+            "generates ~10s of saturating read I/O. Without fio it prints a notice and exits 0."
+        ),
+        group=VerbGroup.MAINTENANCE.value, mutating=True, expensive=True, include_json=False,
+        include_progress=False, include_confirmation=False, options=iops,
+        handler=adapter(["iops-baseline"], iops),
+    ))
+    return registry.build()
+
+
+def _schema_cli() -> Any:
+    """``ciu schema capabilities`` (v8 S18: schema absorbs capabilities)."""
+    registry = ciu_registry("ciu schema", "Machine-readable contracts CIU publishes.")
+    registry.register(VerbSpec(
+        "capabilities",
+        description=(
+            "Print CIU's versioned, closed capability allowlist (D-009). Consumers allowlist "
+            "shipped machine-contract identifiers instead of inferring features from SemVer; "
+            "--json emits the separately versioned document."
+        ),
+        group=VerbGroup.EXPLORATION.value, include_progress=False,
+        handler=adapter(["capabilities"], json_tokens=["--json"]),
     ))
     return registry.build()
 
@@ -412,6 +446,30 @@ def _secrets_cli() -> Any:
         description="List the materialised secret store files (names only, never values).",
         group=VerbGroup.EXPLORATION.value, include_json=False, include_progress=False,
         options=common, handler=adapter(["secrets", "list"], common),
+    ))
+    host_name = ArgumentSpec("host", "host name in the inventory", metavar="HOST")
+    hs_options = (
+        ROOT,
+        flag("--materialize", "resolve all declared entries (prompt rules as ASK_EXTERNAL); "
+                              "prints store file paths", group="MODE", xgroup="hs-mode",
+             required=True),
+        flag("--list", "print entry names and store-file existence (never values)", group="MODE",
+             xgroup="hs-mode", required=True),
+        value("--path", "print the store file path for one declared entry", "NAME", group="MODE",
+              dest="path_name", xgroup="hs-mode", required=True),
+    )
+    registry.register(VerbSpec(
+        "host",
+        description=(
+            "Host-scoped local secrets (S14.3a / CIU-35): ASK_EXTERNAL/GEN_LOCAL entries declared "
+            "under [deploy.hosts.<host>.secrets], materialised under the project store's "
+            "hosts/<host>/ namespace, resolvable BEFORE any Vault exists on the target. "
+            "Explicit-only: values are never printed and nothing materialises inside ssh/up."
+        ),
+        group=VerbGroup.MIXED.value, mutating=True, include_json=False, include_progress=False,
+        arguments=(host_name,), options=hs_options,
+        handler=adapter(["host-secrets"], hs_options, (host_name,), yes=True,
+                        positional_first=True),
     ))
     reset_options = (*common, value("--name", "restrict the reset to one secret name", "N",
                                     group="SELECTION"))
@@ -697,22 +755,9 @@ def build_cli() -> Any:
     register(VerbSpec("env", description="Generate and print this checkout's instance environment.",
                       group=VerbGroup.AUTHENTICATION.value, mutating=True, delegate=_env_cli(),
                       include_json=False, include_progress=False))
-    iops = (
-        value("--path", "output file (default: /var/lib/ciu/io-baseline.env)", "PATH"),
-        value("--runtime", "fio measurement seconds (default: 10)", "N", kind=int),
-        flag("--force", "re-measure even when the existing result is under 30 days old"),
-    )
-    register(VerbSpec(
-        "iops-baseline",
-        description=(
-            "Measure this host's disk randread IOPS ceiling with fio and write RIOPS_MAX/"
-            "RIOPS_ENGINE for governance read_iops derivation (S15.4/S15.9). Explicit opt-in; "
-            "generates ~10s of saturating read I/O. Without fio it prints a notice and exits 0."
-        ),
-        group=VerbGroup.MAINTENANCE.value, mutating=True, expensive=True, include_json=False,
-        include_progress=False, include_confirmation=False, options=iops,
-        handler=adapter(["iops-baseline"], iops),
-    ))
+    register(VerbSpec("governance", description="Resource-governance helpers (S15): KSM shim, IOPS baseline.",
+                      group=VerbGroup.MAINTENANCE.value, mutating=True, delegate=_governance_cli(),
+                      include_json=False, include_progress=False))
 
     # ---- AUTHORING ------------------------------------------------------------------
     render_options = (
@@ -734,12 +779,9 @@ def build_cli() -> Any:
     register(VerbSpec("worktree", description="Managed worktree instances (S16).",
                       group=VerbGroup.MIXED.value, mutating=True, delegate=_worktree_cli(),
                       include_progress=False))
-    register(VerbSpec(
-        "capabilities",
-        description="Print CIU's versioned, closed capability allowlist (D-009).",
-        group=VerbGroup.EXPLORATION.value, include_progress=False,
-        handler=adapter(["capabilities"], json_tokens=["--json"]),
-    ))
+    register(VerbSpec("schema", description="Machine-readable contracts CIU publishes.",
+                      group=VerbGroup.EXPLORATION.value, delegate=_schema_cli(),
+                      include_progress=False))
     resolve_options = (
         ROOT, PROFILE,
         value("--stack", "selected repo-relative stack path; a unique basename works", "S"),
@@ -978,15 +1020,28 @@ def build_cli() -> Any:
         handler=adapter(["graph"], graph_options, json_tokens=["--format", "json"]),
         constraints=(Conflicts(("--format", "--json"), "--json selects the JSON format"),),
     ))
-    mig = (ROOT,)
+    # `migrate` absorbs `migration-check` (v8 S18: `ciu migrate [--check] ...`). v7 has only the
+    # report mode, so --check is mandatory here; v8 adds the mutating modes beside it.
+    mig = (ROOT, flag("--check", "report artifacts in THIS checkout left behind by an older "
+                                 "CIU (S13.7); exit non-zero on ANY finding", group="MODE"))
+    migrate_adapter = adapter(["migration-check"], (ROOT,), json_tokens=["--json"])
+
+    def migrate_handler(args: argparse.Namespace, runtime: Any) -> int | None:
+        if not args.check:
+            raise CliFailure("ciu migrate needs --check (the only mode in v7)", exit_code=EXIT_USAGE)
+        return migrate_adapter(args, runtime)
+
     register(VerbSpec(
-        "migration-check",
+        "migrate",
         description=(
-            "Report artifacts in THIS checkout left behind by an older CIU (S13.7). A diagnostic: "
-            "exit non-zero on ANY finding, regardless of WARN/ERROR."
+            "Report artifacts in THIS checkout left behind by an older CIU (S13.7). CIU performs "
+            "hard cutovers; this is the one place that knows its own version history, so a stale "
+            "artifact produces a named finding with a remediation. A diagnostic: exit non-zero on "
+            "ANY finding, regardless of WARN/ERROR. `ciu check`'s `migration` stage walks the same "
+            "rules."
         ),
         group=VerbGroup.EXPLORATION.value, include_progress=False, options=mig,
-        handler=adapter(["migration-check"], mig, json_tokens=["--json"]),
+        examples=("ciu migrate --check --json",), handler=migrate_handler,
     ))
 
     # ---- DEV LOOP -------------------------------------------------------------------
@@ -1007,9 +1062,6 @@ def build_cli() -> Any:
         include_progress=False, include_confirmation=False, arguments=(targets,),
         options=bake_options, handler=adapter(["bake"], bake_options, (targets,)),
     ))
-    register(VerbSpec("ksm", description="Kernel Same-page Merging shim.",
-                      group=VerbGroup.MAINTENANCE.value, mutating=True, delegate=_ksm_cli(),
-                      include_json=False, include_progress=False))
     stack = ArgumentSpec("stack", "stack directory (relative to repo root) carrying [<root>.dev]",
                          metavar="STACK")
     dev_options = (
@@ -1033,29 +1085,6 @@ def build_cli() -> Any:
     register(VerbSpec("secrets", description="Materialised secret store files (S4.25).",
                       group=VerbGroup.MIXED.value, mutating=True, delegate=_secrets_cli(),
                       include_json=False, include_progress=False))
-    host_name = ArgumentSpec("host", "host name in the inventory", metavar="HOST")
-    hs_options = (
-        ROOT,
-        flag("--materialize", "resolve all declared entries (prompt rules as ASK_EXTERNAL); "
-                              "prints store file paths", group="MODE", xgroup="hs-mode",
-             required=True),
-        flag("--list", "print entry names and store-file existence (never values)", group="MODE",
-             xgroup="hs-mode", required=True),
-        value("--path", "print the store file path for one declared entry", "NAME", group="MODE",
-              dest="path_name", xgroup="hs-mode", required=True),
-    )
-    register(VerbSpec(
-        "host-secrets",
-        description=(
-            "Host-scoped local secrets (S14.3a / CIU-35): ASK_EXTERNAL/GEN_LOCAL entries declared "
-            "under [deploy.hosts.<host>.secrets], materialised under the project store's "
-            "hosts/<host>/ namespace. Explicit-only: values are never printed."
-        ),
-        group=VerbGroup.MIXED.value, mutating=True, include_json=False, include_progress=False,
-        arguments=(host_name,), options=hs_options,
-        handler=adapter(["host-secrets"], hs_options, (host_name,), yes=True,
-                        positional_first=True),
-    ))
     register(VerbSpec("host", description="Remote host inventory (.ciu.hosts.toml).",
                       group=VerbGroup.AUTHENTICATION.value, mutating=True, delegate=_host_cli(),
                       include_json=False, include_progress=False))

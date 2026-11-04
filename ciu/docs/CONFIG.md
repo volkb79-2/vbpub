@@ -1539,7 +1539,7 @@ the same entry name without collision. `get_host` validates the subtable but
 **pops** it from the dict transport callers receive — connection facts never
 carry secret directives.
 
-**Explicit-only; values are never printed.** `ciu host-secrets <host>
+**Explicit-only; values are never printed.** `ciu secrets host <host>
 [--materialize | --list | --path <name>] [-y]` is the only materialization
 path; nothing happens implicitly inside `ssh` / `up --host`.
 
@@ -1560,9 +1560,9 @@ ssh_bootstrap_key = "GEN_LOCAL:edge-a-bootstrap" # inert locator; entry name is 
 
 ```bash
 export TS_AUTHKEY=tskey-auth-...                # never committed, never printed
-ciu host-secrets edge-a --materialize           # -> store file paths (never values)
-ciu host-secrets edge-a --list                  # names + present/absent
-TS_AUTHKEY_FILE=$(ciu host-secrets edge-a --path tailscale_authkey)
+ciu secrets host edge-a --materialize           # -> store file paths (never values)
+ciu secrets host edge-a --list                  # names + present/absent
+TS_AUTHKEY_FILE=$(ciu secrets host edge-a --path tailscale_authkey)
 ciu ssh edge-a -- "sh -c 'tailscale up --auth-key=\"$(cat "$TS_AUTHKEY_FILE")\"; …'"
 ```
 

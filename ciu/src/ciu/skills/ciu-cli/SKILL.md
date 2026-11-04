@@ -78,7 +78,7 @@ ciu show profiles             # list available host profiles (--json too)
 ciu show layouts              # list declared deploy layouts (--json too)
 ciu check [--profile NAME] [--live] [--json]   # validate the config pipeline, no deploy
 ciu graph [--format mermaid|dot|json]          # render the dependency graph, no deploy
-ciu capabilities [--json]                       # versioned, closed capability allowlist (D-009)
+ciu schema capabilities [--json]                # versioned, closed capability allowlist (D-009)
 ```
 
 ## Evidence

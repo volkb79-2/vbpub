@@ -75,7 +75,8 @@ failure · `2` config/validation error · `3` environment/bootstrap error (S10.3
 | `ciu diagnose` | Explain common container failures without changing state | `--project NAME`, `--logs N`, `--json` |
 | `ciu status` | Per-stack compose project, containers, and health (read-only) | `--profile NAME`, `--json` |
 | `ciu bake` | `docker buildx bake --load`; linked worktree tags are scoped unless shared tags are explicitly enabled | `[targets …]` \| `--profile NAME`, `--no-cache`, `--allow-shared-tag` |
-| `ciu ksm build` | Build CIU's shipped KSM shim cache | `--force` |
+| `ciu governance ksm` | Build CIU's shipped KSM shim cache | `--force` |
+| `ciu governance iops-baseline` | Measure the disk randread IOPS ceiling with fio (S15.9) | `--path`, `--runtime`, `--force` |
 | `ciu dev <stack>` | Run the stack's `[<root>.dev]` dev loop (S5a) | `--profile NAME`, `--no-prebuild`, `--root-folder PATH` |
 | `ciu secrets list` | List materialised secret names | `-d PATH` |
 | `ciu secrets reset` | Delete secret store files | `--name N`, `-y` |
@@ -83,8 +84,9 @@ failure · `2` config/validation error · `3` environment/bootstrap error (S10.3
 | `ciu graph` | Render the dependency graph to STDOUT (no deploy) | `--format mermaid\|dot\|json`, `--profile NAME`, `--phases N,M` |
 | `ciu ssh <host>` | Interactive shell or one-shot command on a remote host | `--admin` (use admin key), `-- <cmd...>` (one-shot command) |
 | `ciu worktree` | Create, adopt, ensure, remove, inspect, list, start, or exec managed CIU instances; survey and prune local branches | `create LOGICAL --prefix P --feature F`; `adopt LOGICAL PATH`; `ensure LOGICAL`; `rm LOGICAL [-y] [--keep-branch] [--delete-branch] [--discard-protected-state BRANCH] [--discard-changes BRANCH] [--root-escalation BRANCH] [--json]`; `list [--json]`; `inspect LOGICAL [--json]`; `branches [--base REF] [-y] [--discard-protected-state BRANCH] [--json]` (S16.8); `up LOGICAL`; `exec LOGICAL [--target ALIAS] -- ARGV...` (S16, S16.6, S16.7) |
-| `ciu capabilities` | Versioned, closed machine-contract allowlist (D-009) | `--json` (S16.5) |
-| `ciu host-secrets <host>` | Host-scoped local secrets (S14.3a): materialize/list/resolve path for pre-Vault bootstrap credentials | `--materialize`, `--list`, `--path NAME`, `-y` |
+| `ciu schema capabilities` | Versioned, closed machine-contract allowlist (D-009) | `--json` (S16.5) |
+| `ciu secrets host <host>` | Host-scoped local secrets (S14.3a): materialize/list/resolve path for pre-Vault bootstrap credentials | `--materialize`, `--list`, `--path NAME`, `--yes` |
+| `ciu migrate --check` | Report artifacts left behind by an older CIU (S13.7); exit non-zero on any finding | `--json` |
 | `ciu provenance` | Verify running images against the commit under test and the declared vendor baseline | `--ignore-mismatch` (`--force`), `--no-preflight`, `--json`, `--root-folder PATH`; `--no-preflight` and `--json` are incompatible |
 
 For the complete, copy/paste-oriented CLI surface, use `ciu` for the command

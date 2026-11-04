@@ -2374,7 +2374,7 @@ Stages, in order, each reusing the same function the real pipeline
 | `service-registry` | (ciu-P22, not part of the V8 proposal's own stage numbering — appended last) `[service.*]` identity registry (S3.14) two-directional consistency lint against the selected profile/phase's actual deployment (S3.15). **Registry-declaration-gated**: skipped entirely when `[service.*]` is absent/empty | warn only, both directions |
 | `vault-presence` | (ciu-P46, not part of the V8 proposal's own stage numbering — appended last) any `ASK_VAULT`/`GEN_TO_VAULT` directive in the stack requires `topology.services.vault` to be declared (S4.16a/S13.4d). Pure config shape: no probe, no Vault contact. Silent for a stack whose `secrets` stage already failed — one root cause, one finding | 2 |
 | `state-secrets` | (ciu-P46, appended last) no secret-shaped key in the stack's `[state]` table (S3.4a). Nested tables walked; the finding names the stack and KEY, never the value | 2 |
-| `migration` | (ciu-P46, appended last) `ciu migration-check`'s rule registry (S13.7), run once at GLOBAL scope — the SAME registry the standalone verb walks, never a second implementation. Findings carry no `stack` key | WARN → note · ERROR → 2 |
+| `migration` | (ciu-P46, appended last) `ciu migrate --check`'s rule registry (S13.7), run once at GLOBAL scope — the SAME registry the standalone verb walks, never a second implementation. Findings carry no `stack` key | WARN → note · ERROR → 2 |
 
 **Render fidelity.** Two pipeline steps `ciu check` does not run nevertheless
 supply values a compose template legitimately reads, so their *pure* halves
@@ -2480,7 +2480,7 @@ When a stack's `secrets` stage already failed (its directives could not be
 discovered), this stage stays silent for that stack: one root cause produces
 one finding, not a second complaint derived from untrustworthy input.
 
-### S13.7 — `ciu migration-check` (ciu-P46, normative)
+### S13.7 — `ciu migrate --check` (ciu-P46, normative; was `ciu migration-check` before the cli-extended adoption)
 
 `ciu migration-check [--root-folder PATH] [--json]` reports artifacts in the
 current checkout left behind by an OLDER CIU.
@@ -3047,7 +3047,7 @@ wiring — like secret/configfile wiring — lives only in the generated overlay
 `read_iops = ""` (the default) means "unset": CIU injects no read IOPS cap.
 Setting `read_iops = 0` in the resolved stack or global config explicitly opts
 into derivation: CIU reads a shell-style
-io-baseline file (`RIOPS_MAX=<int>`, written by `ciu iops-baseline` — S15.9 —
+io-baseline file (`RIOPS_MAX=<int>`, written by `ciu governance iops-baseline` — S15.9 —
 or by an external host measurement) and computes `RIOPS_MAX * 2 / 3`
 (integer division ≈ 66%). Host cgroup tooling caps the same device in the same
 60–80% band, so container and non-CIU workloads apply a consistent fraction of
@@ -3059,7 +3059,7 @@ existing file wins**):
 
 1. governance table key `baseline_path` (when non-empty)
 2. env `CIU_GOV_BASELINE_PATH` (when set)
-3. `/var/lib/ciu/io-baseline.env` (neutral default; `ciu iops-baseline`
+3. `/var/lib/ciu/io-baseline.env` (neutral default; `ciu governance iops-baseline`
    writes here)
 4. `/var/lib/mdt/io-baseline.env` (mdt host-setup's baseline, when that
    companion is installed)
@@ -3067,7 +3067,7 @@ existing file wins**):
 Step 4 is a search **candidate, not a dependency**: CIU never requires mdt: it
 reuses a measurement already present on the host rather than saturating the
 disk a second time to learn the same number. It ranks last so an explicit
-`ciu iops-baseline` always wins.
+`ciu governance iops-baseline` always wins.
 
 A configured but non-existent path (steps 1–2) falls through to the next
 candidate — resolution is by existence, not by declaration. If no candidate
@@ -3093,7 +3093,7 @@ derivation reports it:
 
 | Token | Measurement | Bias |
 |---|---|---|
-| `burst-v1` | `ciu iops-baseline`: 1G span, 10s, **no** `ramp_time` | reads **high** on a VM — the window includes the cache-warm burst, and `direct=1` bypasses the guest page cache but not the hypervisor's |
+| `burst-v1` | `ciu governance iops-baseline`: 1G span, 10s, **no** `ramp_time` | reads **high** on a VM — the window includes the cache-warm burst, and `direct=1` bypasses the guest page cache but not the hypervisor's |
 | `sustained-v3` | mdt host-setup `mdt-io-baseline.py`: 4G span, 10s ramp + 40s measure, incompressible buffers | conservative; the better input to a cap |
 
 A file with **no** marker predates it or came from a third tool: CIU still
@@ -3168,9 +3168,9 @@ starts. Explicitly configured `mem_limit`/`memswap_limit`/`mem_reservation`
 and `blkio_config` are per-container (not slice-dependent); absent memory
 keys remain unset rather than inheriting an invented CIU cap.
 
-### S15.9 — `ciu iops-baseline` (self-contained measurement)
+### S15.9 — `ciu governance iops-baseline` (self-contained measurement)
 
-`ciu iops-baseline [--path PATH] [--runtime N] [--force]` measures the
+`ciu governance iops-baseline [--path PATH] [--runtime N] [--force]` measures the
 disk's randread IOPS ceiling with fio and writes the S15.4 baseline file —
 so a wheel-installed CIU can produce its own baseline with no external
 script. It is **explicit opt-in only**: CIU MUST NOT run it automatically
@@ -3304,7 +3304,7 @@ silent (CIU-14). `ksm_optin = "builtin"` is the sentinel; every other
 non-empty value keeps its S15.11 meaning as a consumer-supplied path, so this
 is strictly additive.
 
-Build (`ciu ksm build [--force]`, or implicitly during render when no cached
+Build (`ciu governance ksm [--force]`, or implicitly during render when no cached
 artifact exists):
 
 - The artifact is cached at `<repo>/.ciu/ksm/ksm-optin-<machine>-<digest>.so`,
@@ -3529,7 +3529,7 @@ resolved device means no `device_read_bps`/`device_write_bps` fields (device
 resolution failure is reported once, in the S15.7 summary line, same as
 today for the iops caps).
 
-There is no baseline-derived mode for either key: the `ciu iops-baseline`
+There is no baseline-derived mode for either key: the `ciu governance iops-baseline`
 measurement (S15.9) and its `RIOPS_MAX`-derived formula (S15.4) are
 IOPS-specific — a bandwidth ceiling pulled from that number would not be
 measuring the thing it caps. `0` (uncapped) is therefore the only honest
@@ -4834,7 +4834,7 @@ If a protected ignored target is removed, the user must also give
 
 ### S16.5 — Capability discovery (D-009)
 
-`ciu capabilities [--json]` exposes a **separately versioned, closed
+`ciu schema capabilities [--json]` exposes a **separately versioned, closed
 allowlist** of shipped machine contracts (`schema_version: 1`,
 `capabilities`: sorted identifiers). Consumers allowlist these identifiers
 instead of inferring features from SemVer. An identifier is added only when

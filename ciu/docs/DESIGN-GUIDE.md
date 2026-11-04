@@ -3,7 +3,7 @@
 For adopters and reviewers who want the reasoning behind the machine-readable
 surface, not just how to use it. The authoritative normative contract is
 [SPEC.md](SPEC.md) (§S16.4, §S16.5); the adoption walkthrough is
-[CONSUMERS.md](CONSUMERS.md); the capability list is `ciu capabilities`.
+[CONSUMERS.md](CONSUMERS.md); the capability list is `ciu schema capabilities`.
 
 ## Workspace and root identity
 
@@ -246,7 +246,7 @@ replaces them with two explicit contracts:
 1. **Structured JSON documents** (`schema_version: 1`) with a closed
    `operation` and closed `status` vocabulary. A consumer can validate the
    shape against the shipped vocabulary instead of string-matching.
-2. **A versioned capability allowlist** (`ciu capabilities --json`). A consumer
+2. **A versioned capability allowlist** (`ciu schema capabilities --json`). A consumer
    allowlists the identifiers of the contracts it actually depends on; a CIU
    that does not advertise an identifier cannot be silently trusted to provide
    the feature, and a CIU that does is pinned to the code path that shipped
