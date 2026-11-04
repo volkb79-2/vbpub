@@ -712,10 +712,10 @@ admission.md` §A1 (D-27..D-29), §A2 (D-30), A3 (D-31), and A4 (D-32); the wire
   process that might judge a lane's liveness (run-gate's own in-process
   stall watcher, chief among them) dies with that process; the daemon
   outlives any one consumer AND already reads the lane's cgroup on a fixed
-  cadence through explicit host `/proc` and cgroup binds. The daemon uses the
-  host PID namespace so DAMON sysfs can resolve host `pid_target` values, but
-  keeps its cgroup namespace private. Host PID mode is not granted to
-  workload/helper/gate/test containers; the D-15 boundary still forbids
+  cadence through the host `/proc` and cgroup tree. The daemon runs natively
+  in the host PID namespace so DAMON sysfs can resolve host `pid_target`
+  values. Host PID visibility is not granted to
+  workload/gate/test containers; the D-15 boundary still forbids
   numeric PID signalling and uses systemd for delegated-scope ownership.
   Implemented as `cgprofile/liveness.py`'s `LivenessTracker` (the state machine:
   `ok`/`stalled`/`hung`/`runaway`/`throttled`/`over_ceiling`, the idle

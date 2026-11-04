@@ -1,6 +1,6 @@
 # cgprofile daemon protocol — the wire, verb by verb
 
-**Scope.** How a consumer talks to `cgprofile serve`. The authority for the
+**Scope.** How a consumer talks to `cgpd`. The authority for the
 CONTENT of every response is `RG55-INTERFACE-CONTRACT.md` (§2 the verbs, §3
 the Summary, §7 the computation rules, §8 the v1.1 amendment, §9 the native
 R2 observer); this file is
