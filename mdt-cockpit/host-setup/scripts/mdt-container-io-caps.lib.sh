@@ -337,11 +337,10 @@ _mdt_host_role() {
 # per process; set MDT_MEASURED_LOADED= to force a re-read.
 _mdt_load_iobench_caps() {
   [ -n "${MDT_MEASURED_LOADED:-}" ] && return 0
-  # shellcheck disable=SC2034  # read through eval "\${MDT_MEASURED_$field}" in the dedicated resolvers
-  MDT_MEASURED_LOADED=1; MDT_MEASURED_RIOPS=""; MDT_MEASURED_WIOPS=""; MDT_MEASURED_RBPS=""; MDT_MEASURED_WBPS=""
-  MDT_MEASURED_WHY=""
   local helper="${MDT_IOBENCH_CAPS_HELPER:-/usr/local/sbin/mdt_iobench_caps.py}" node majmin k v out rc
   local -a args=()
+  MDT_MEASURED_LOADED=1; MDT_MEASURED_WHY=""
+  for k in RIOPS WIOPS RBPS WBPS; do printf -v "MDT_MEASURED_$k" '%s' ""; done
   if [ ! -f "$helper" ]; then MDT_MEASURED_WHY="the reader $helper is not installed"; return 1; fi
   if ! node=$(_mdt_root_disk_node 2>/dev/null) || ! majmin=$(_mdt_root_disk_majmin 2>/dev/null); then
     MDT_MEASURED_WHY="the root disk could not be derived"; return 1
