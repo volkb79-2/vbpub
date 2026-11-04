@@ -7492,3 +7492,50 @@ The RG-150 preflight stays. Docs: one CONSUMERS statement of the lane user contr
 a test pins that no committed default names 1003.
 
 **Dependencies and order.** Last package of the rollout; then MDT-059.
+
+<!-- Id note (2026-11-04, ops-dstdns-r2 session): the ids below start at RG-154, one past the highest id on main (RG-153); other branches
+     carry RG-150 to RG-153 as well. The controller resolves ordering on merge. -->
+
+## RG-154 — `--jobs N>1` / `--jobs auto` are refused for every external consumer that pins an Assay zipapp: the R2 capacity probe imports `cowtree` from the lane interpreter, not from the pinned artifact
+
+**Status:** OPEN. Filed 2026-11-04. Severity: Major for external consumers (dstdns), none for vbpub's internal source-backed lanes. Found by the first dstdns native R2 pilot (`reports/DSTDNS-R2-PILOT-2026-11-04.md`).
+
+**Observed.** dstdns declares `command = ["python3", "tools/assay/assay-11.0.0.pyz"]` and runs lanes in its own `dstdns/test-runner` image on a host whose
+`/srv/cow/mdt-cow` is btrfs with `cheap_clone=True`. `run-gate inf_events_obs_r2 --jobs 3` ends with
+`--jobs 3 requires a cheap-clone workspace; Assay could not confirm the supported btrfs CoW backend`. The cause is `r2_capacity_probe`
+(`run_gate.py`, `_R2_CAPACITY_PROBE_CODE`): for an `assay_command` whose first token is a Python interpreter it runs `python3 -I -c '<probe>'`, and the
+probe starts with `import cowtree`. `-I` ignores `PYTHONPATH`, the pyz is not on `sys.path`, and the image has no `cowtree`, so the probe reports
+`cheap_clone_reason = cowtree-probe-ModuleNotFoundError` and `select_r2_jobs` fails. The same pyz bundles `cowtree/` (11 files), so the run itself would work;
+only the pre-flight cannot see it. (A first workaround attempt that copied the module into the image with mode 0600 gave `cowtree-probe-PermissionError`
+for the lane uid; the refusal text hides the probe's `cheap_clone_reason` in both cases.)
+
+**Workaround used.** A derived image `dstdns/test-runner` plus `COPY cowtree` (extracted from the pinned pyz) into site-packages, `chmod a+rX`.
+
+**Required.** (1) The probe must use the same artifact as the run: for a pyz `assay_command`, ask the pinned artifact (a small `assay` subcommand or
+`python3 pyz -c`-style entry) or insert the pyz on `sys.path` without `-I`. (2) The refusal message must include `cheap_clone_reason` (`cowtree-probe-<Exc>`,
+`cow-root-unset`, `cowtree-no-area`, `assay-requires-btrfs`) so the three causes are distinguishable. (3) CONSUMERS gets one paragraph: what an external image needs for
+`--jobs N>1`, and that `jobs_max` must be at least N in `assay.toml` (`jobs` is only an alias).
+
+**Oracles.** (a) A fake external pyz bundling a stub `cowtree` and an image without `cowtree` yields `cheap_clone=True` in the probe. (b) Each `cheap_clone_reason`
+value appears in the refusal text in a table test. (c) The dstdns pilot lane runs `--jobs 3` in the unmodified `dstdns/test-runner` image.
+
+## RG-155 — the lane header prints `budget 300m (hard limit)` while an Assay lane's own `budget` in `assay.toml` ends each attempt (LANE_TIMEOUT)
+
+**Status:** OPEN. Filed 2026-11-04. Severity: Minor.
+
+**Observed.** `inf_events_obs_r2` declares `budget = "3m"` in dstdns's `assay.toml` and its plan estimates 2880 s serial. Run-Gate printed
+`run-gate: budget 300m (hard limit; clock starts after admission and lock waits)` (its own wrapper limit) and the first attempt ended
+`BUDGET_EXCEEDED/LANE_TIMEOUT (exit 4)` after about 3 minutes with 7 of 32 candidates done; five or six resumed attempts were needed, each paying about 40 s for the
+baseline and snapshot again. Resuming is the designed path and the supervisor handled it, but nothing in the header, the dry run or `doctor` showed the effective bound.
+
+**Required.** Print the effective bound and its source (`assay.toml lane budget 3m` versus `run-gate.toml 300m`) in the header and in `--dry-run`, and WARN when the
+Assay lane `budget` is below the plan's estimated wall time (data from `assay plan --json`, see assay B213).
+
+**Oracle.** A dry run on a lane whose Assay budget is below the plan estimate prints the warning and both budgets.
+
+## RG-102 amendment (2026-11-04, evidence from the dstdns pilot)
+
+A pure-pytest native R2 lane (no PG/Redis) runs today on a raw `mode = "ephemeral"` environment built from the consumer's own test image, with
+`user = "invoker"`, `resource_observer = "cgprofile"`, `memory`/`pids` ceilings and the released Assay 11.0.0 zipapp: 32 of 32 candidates judged,
+identical buckets twice (v1001 and r1002). So `ciu run` (CIU-141) is required only for lanes that must attach to a CIU-rendered network, secrets or services;
+it is not on the critical path for the 80 dstdns R2 lanes whose tests use mocks (`MOCK_MODE=true`). Lanes that import `tests/pipeline` or live fixtures must be checked per lane.

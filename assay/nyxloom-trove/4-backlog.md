@@ -14111,3 +14111,45 @@ directory and the relay socket, and the host `docker` group); on a non-mdt host 
 **Test plan.** `bash` helper tests with injected `stat` results, plus the existing launcher tests updated.
 
 **Dependencies and order.** After CP-43 and with MDT-053; pairs with run-gate RG-152.
+
+<!-- Id note (2026-11-04, ops-dstdns-r2 session): the ids below start at B213, one past the highest id on main (B212); B210 exists only on
+     branch finish-assay-1-20261104. The controller resolves ordering on merge. -->
+
+## B213 — `assay plan` and a budget-bound R2 run should say when the lane budget cannot cover the plan, and what each resumed attempt costs
+
+**Status: OPEN (filed 2026-11-04).** Found by the first dstdns native R2 pilot (`reports/DSTDNS-R2-PILOT-2026-11-04.md`), assay 11.0.0.
+
+**Problem.** dstdns's `inf_events_obs_r2` declares `budget = "3m"`. `assay plan inf_events_obs_r2 --json` reports `candidate_count 32`,
+`budget_per_candidate "90s"`, `estimated_wall_seconds 2880` and exits normally, with no hint that the lane budget (180 s) is 16 times smaller than the
+estimate. The run then ended every attempt with `BUDGET_EXCEEDED/LANE_TIMEOUT` (exit 4) after 6 to 8 candidates (4 to 6 attempts for 32 candidates, at jobs 1 and jobs 3),
+because each attempt re-pays the baseline pytest run (about 7 to 13 s) plus the snapshot and plan phases (the `plan` event reports `elapsed_s` 41 s at the start of a
+resumed attempt). Resuming works, but the operator cannot tell from the plan or the header that a 4-6 attempt campaign is coming, or that a larger budget would
+have been a single attempt. All 80 dstdns R2 lanes carry budgets chosen as "plan estimate x 1.5" without any R2 run to calibrate them.
+
+**Design.**
+
+- `assay plan --json` adds `budget_seconds`, `budget_fits_estimate` (bool) and, when false, `attempts_estimate` (ceil of estimated wall over `budget - fixed_overhead`) and
+  `fixed_overhead_seconds` (baseline plus snapshot, from the last progress file when present, else the declared lane argv timing is unknown and the field is null).
+- The text form prints one WARN line in that case, naming the lane `budget` key.
+- No change to verdict semantics or exit codes; an R2 lane whose budget is below one candidate plus overhead is already an error today and stays one.
+
+**Acceptance criteria.** Plan output for a lane with `budget` below the estimate carries `budget_fits_estimate=false` and the warning; a lane that fits carries true
+and no warning; both fields are covered by a schema test; run-gate RG-155 consumes the field in its header.
+
+## B214 — R2 candidate materialization dominates the per-candidate cost for small test selections; investigate per-file clone cost and the strict fsync setting
+
+**Status: OPEN (investigation, filed 2026-11-04).** Evidence: dstdns pilot lane `inf_events_obs_r2`, 32 candidates, tree of about 2.7k tracked files (6 MB), ext4/btrfs hosts,
+tester image without eatmydata.
+
+| Run | host | mean `materialize` | mean `command` | mean candidate elapsed |
+| --- | --- | ---: | ---: | ---: |
+| jobs 1 | v1001 (idle) | 11.1 s | 7.7 s | 19.1 s |
+| jobs 1 | r1002 (two other campaigns running) | 13.5 s | 7.0 s | 20.9 s |
+| jobs 3 (cheap clone on btrfs) | r1002 | 31.3 s | 10.4 s | 42.9 s |
+
+The pytest selection takes 7 s but 55 to 73 percent of each candidate is the materialize phase, and at three workers it grows 2.3 times while the command phase grows 1.5 times,
+so the 3-worker wall clock was only 1.35 times faster than the serial run on the same host (12m44s versus 17m12s). The run uses the default `io_sync = strict`.
+
+**Questions to answer first (no fix is assumed).** (1) Is the btrfs path a subvolume snapshot per worker, or a per-file reflink/copy of the tree? (2) How much of the
+phase is fsync (compare `io_sync = relaxed` with an eatmydata image, and `durable`)? (3) Does materialization scale with file count (dstdns versus a 300-file project)?
+**Acceptance.** A measured breakdown of the phase for the three cases and, if per-file work dominates, a design note; the fix is a separate package. Pairs with run-gate RG-154 (pilot).
