@@ -6,7 +6,13 @@
       "guard": "test \"$(hostname -f)\" = host.example.org && test \"$(cat /etc/vbpub/server-id)\" = 000000",
       "runner_home": "/home/runner",
       "cockpit": "mdt-cockpit-runner",
-      "image": "tester-unified:local"
+      "image": "tester-unified:local",
+      "repos": {
+        "dstdns": {
+          "tester_image": "tester-unified:r25-e92d43b28b00",
+          "run_gate_bins": ["/home/vscode/.local/bin/run-gate", "/home/vscode/.venvs/gate-tools2502/bin/run-gate"]
+        }
+      }
     }
   }
 }

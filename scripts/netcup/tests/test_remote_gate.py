@@ -53,16 +53,20 @@ def hosts():
     return {n: rg.Host(name=n, ssh=row(n)["ssh"], api_check=row(n)["api_check"], guard=row(n)["guard"]) for n in ("r1002", "v1001")}
 
 
+PREFLIGHT_OK = ("check_prereqs || true", rg.Result(0, "OK /home/vscode/.local/bin/run-gate 25.0.2\n"))
+
+
 def ctx_for(tmp_path, handlers):
     out = []
     bundle_sum = rg.hashlib.sha256(b"bundle").hexdigest() + "  in.bundle\n"
-    handlers = [("test -e /home/runner/rg/", rg.Result(1))] + list(handlers) + [("sha256sum", rg.Result(0, bundle_sum))]
+    handlers = [("test -e /home/runner/rg/", rg.Result(1))] + list(handlers) + [("sha256sum", rg.Result(0, bundle_sum)), PREFLIGHT_OK]
     return rg.Ctx(runner=Fake(handlers), hosts=hosts(), out_dir=tmp_path / "out", sleep=lambda s: None, say=out.append), out
 
 
-def git_handlers(dirty="", base_ok=True, count="3"):
+def git_handlers(dirty="", base_ok=True, count="3", repo="vbpub"):
     return [
         ("--show-toplevel", rg.Result(0, "/wt\n")),
+        ("--git-common-dir", rg.Result(0, f"/ws/{repo}/.git\n")),
         ("rev-parse HEAD", rg.Result(0, SHA + "\n")),
         ("status --porcelain", rg.Result(0, dirty)),
         ("--show-prefix", rg.Result(0, "scripts/netcup/\n")),
@@ -74,7 +78,7 @@ def git_handlers(dirty="", base_ok=True, count="3"):
 
 
 def psi(cpu, mem):
-    return ("/proc/pressure/cpu /proc/pressure/memory", rg.Result(0, f"{cpu}\n{mem}\n"))
+    return ("print $2}' /proc/pressure/cpu /proc/pressure/memory", rg.Result(0, f"{cpu}\n{mem}\n"))
 
 
 def run_args(tmp_path, *extra):
@@ -296,10 +300,11 @@ def test_checkout_lives_under_vbpub_worktrees_and_cleanup_is_scoped(tmp_path):
     ctx, _ = ctx_for(tmp_path, git_handlers() + [psi(1, 1), ("ls /home/runner/checkouts", rg.Result(0, ""))])
     rg.cmd_run(ctx, run_args(tmp_path, "v1001", "/wt", "suite", "--detach", "--name", "t2"))
     job = (tmp_path / "out" / "t2" / "job.sh").read_text()
-    assert "CKDIR=$CKROOT/$CK" in job and "CKROOT=$HOME/checkouts/vbpub/.worktrees" in job
-    assert "CKIN=/workspaces/vbpub/.worktrees/$CK" in job
-    assert '"$HOME"/checkouts/vbpub/.worktrees/rg-*' in job  # removal guard only matches our own rg-* dirs
-    assert '-e ASSAY_GATE_HOST_REPO_ROOT="$HOME/checkouts/vbpub"' in job
+    assert "REPO=vbpub\n" in job
+    assert "CKDIR=$CKROOT/$CK" in job and "CKROOT=$HOME/checkouts/$REPO/.worktrees" in job
+    assert "CKIN=/workspaces/$REPO/.worktrees/$CK" in job
+    assert '"$HOME/checkouts/$REPO/.worktrees"/rg-*' in job  # removal guard only matches our own rg-* dirs of this repo
+    assert '-e ASSAY_GATE_HOST_REPO_ROOT="$HOME/checkouts/$REPO"' in job
     assert '-w "$CKIN/$PROJ"' in job and "/workspaces/$CK" not in job
 
 
