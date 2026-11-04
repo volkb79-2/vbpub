@@ -10,6 +10,15 @@ internal library, not a separately published release target.
   (SPEC P1-P4) and test that a truncated `owner.json` is untrusted and retained.
 
 ### Added
+- Add the shared keyed-tree mechanism (AD2-3): `cowtree.cache` (`Cache.ensure`
+  atomic publish with a verification manifest, flock and pid leases safe against
+  pid reuse, `release`, holder-checked `gc` that honours leases and
+  `/proc/self/mountinfo` binds and overlay `lowerdir=`, `survey`, `verify`,
+  `shared_roots` reading `MDT_TREE_CACHE_ROOT`/`MDT_TREE_UPPER_ROOT`), and
+  `cowtree.overlay` (dockerd local overlay volume and `--mount` builders,
+  per-worker upper/work creation, reuse guard, cleanup with a helper-container
+  fallback, `reset_worker`, `repair_entry`, `upper_full`). CLI:
+  `cowtree cache survey|gc|verify`; new exit statuses 8-11.
 - Add the stdlib-only run API, btrfs/reflink/copy backends, input-derived
   admission, owner manifests, flock leases, conservative garbage collection,
   CLI, fake ioctl tests, and opt-in live suite.

@@ -8,6 +8,7 @@ import sys
 import tempfile
 from collections.abc import Sequence
 
+from .cache import Cache, shared_roots
 from .detect import detect
 from .errors import CowError
 from .gc import gc, gc_json, make_shared, survey
@@ -19,6 +20,10 @@ _ERROR_EXIT_CODES = {
     "path": 5,
     "backend": 6,
     "lease": 7,
+    "busy": 8,
+    "key-missing": 9,
+    "tree-invalid": 10,
+    "unrepairable": 11,
 }
 
 
@@ -36,7 +41,45 @@ def _parser() -> argparse.ArgumentParser:
     shared_parser.add_argument("name")
     shared_parser.add_argument("--compression", help="btrfs value: zstd, zstd:N, lzo, or none")
     shared_parser.add_argument("--json", action="store_true")
+    cache_parser = commands.add_parser("cache", help="inspect and clean the shared keyed-tree cache (MDT_TREE_CACHE_ROOT)")
+    cache_commands = cache_parser.add_subparsers(dest="cache_command", required=True)
+    cache_commands.add_parser("survey", help="list keys, sizes, live leases and idle time").add_argument(
+        "--json", action="store_true")
+    cache_gc = cache_commands.add_parser("gc", help="remove idle, unleased, unmounted keys and stale scratch")
+    cache_gc.add_argument("--idle", type=float, default=3600.0, metavar="SECONDS", help="minimum idle time (default 3600)")
+    cache_gc.add_argument("--json", action="store_true")
+    cache_verify = cache_commands.add_parser("verify", help="check a key against its manifest")
+    cache_verify.add_argument("key")
+    cache_verify.add_argument("--shallow", action="store_true", help="only check the COMPLETE marker")
+    cache_verify.add_argument("--json", action="store_true")
     return parser
+
+
+def _cache_command(args) -> int:
+    roots = shared_roots()
+    if roots is None:
+        print("cowtree: INFO: MDT_TREE_CACHE_ROOT is not set; no shared cache on this host", file=sys.stderr)
+        _output([] if args.json else "no shared cache", args.json)
+        return 0
+    cache = Cache(roots.cache_root)
+    if args.cache_command == "survey":
+        rows = cache.survey()
+        if args.json:
+            _output(rows, True)
+        else:
+            for row in rows:
+                print(" ".join(f"{name}={value}" for name, value in row.items()))
+    elif args.cache_command == "gc":
+        items = cache.gc(args.idle)
+        if args.json:
+            print(json.dumps([item.__dict__ for item in items], sort_keys=True))
+        else:
+            for item in items:
+                print(f"{item.name}: {item.status}{(': ' + item.detail) if item.detail else ''}")
+    else:
+        document = cache.verify(args.key, deep=not args.shallow)
+        _output({"key": args.key, "digest": document["digest"], "ok": True}, args.json)
+    return 0
 
 
 def _output(document, as_json: bool) -> None:
@@ -92,6 +135,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 for item in items:
                     print(f"{item.name}: {item.status}{(': ' + item.detail) if item.detail else ''}")
             return 0
+        if args.command == "cache":
+            return _cache_command(args)
         if args.command == "make-shared":
             area = detect()
             if area is None:

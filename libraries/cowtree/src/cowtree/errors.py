@@ -51,3 +51,27 @@ class BackendFailed(CowError):
 
 class LeaseHeld(CowError):
     code = "lease"
+
+
+class CacheBusy(CowError):
+    """A key lock, or the global garbage-collection lock, could not be taken in time."""
+
+    code = "busy"
+
+
+class KeyMissing(CowError):
+    """The requested key is not published (or has no valid COMPLETE marker)."""
+
+    code = "key-missing"
+
+
+class TreeInvalid(CowError):
+    """A published tree no longer matches its verification manifest."""
+
+    code = "tree-invalid"
+
+
+class Unrepairable(CowError):
+    """An entry cannot be repaired from the template; the caller must degrade or reset the worker."""
+
+    code = "unrepairable"

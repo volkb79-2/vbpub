@@ -128,7 +128,8 @@ released. The external owner remains responsible for their lifecycle.
 Argparse reserves status `2` for syntax and usage errors. Cowtree maps each
 `CowError.code` to a separate nonzero status so a configured but invalid root
 cannot be mistaken for malformed command syntax: `cow` → `1`, `root-invalid`
-→ `3`, `space` → `4`, `path` → `5`, `backend` → `6`, and `lease` → `7`.
+→ `3`, `space` → `4`, `path` → `5`, `backend` → `6`, `lease` → `7`,
+`busy` → `8`, `key-missing` → `9`, `tree-invalid` → `10` and `unrepairable` → `11`.
 The generic `cow` status `1` is also the fallback for an unknown subclass code.
 
 Default `gc` scans only the configured area's run directory. Plain-mode runs
@@ -154,3 +155,18 @@ reservation is unchanged. A retry recomputes from memory and rewrites the
 manifest, so the window is self-healing, but a crash in between leaves the
 ledger ahead of reality until the next successful write. Fix: do the in-memory
 update before the final directory fsync, or re-read the manifest on error.
+
+## Shared keyed trees (AD2-3)
+
+Lock order is fixed: the global GC lock, then one key lock; leases are taken
+under a shared key lock and GC removes under an exclusive one, so a lease can
+never race a removal. State (`last-used`, lease files) lives in `.state/<key>`
+beside the key so a sealed key directory never blocks lease writes. Lock files
+under `.locks` are zero-byte and retained (unlinking a lock file races with
+waiters); a tmpfs root clears them on reboot. GC conservatism: anything it
+cannot judge (a pid lease from another boot or pid namespace, a key still
+named in mountinfo, a busy key lock) is kept, so a false negative costs disk
+and a false positive is impossible without a live holder disappearing.
+Overlay hazards (`redirect_dir=on` needs a root mount; the upper's mode and
+owner become the merged root's; an upper is bound to one lower) are encoded in
+`cowtree.overlay` rather than left to callers.

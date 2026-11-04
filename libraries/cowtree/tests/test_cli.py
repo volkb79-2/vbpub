@@ -7,7 +7,7 @@ import sys
 import pytest
 from cowtree import cli
 from cowtree.detect import Area, Capabilities
-from cowtree.errors import BackendFailed, CowError, LeaseHeld, PathRefused, RootInvalid, SpaceRefused
+from cowtree.errors import CacheBusy, KeyMissing, TreeInvalid, Unrepairable, BackendFailed, CowError, LeaseHeld, PathRefused, RootInvalid, SpaceRefused
 from cowtree.gc import GcItem
 
 from .fakes import FakeOps
@@ -45,6 +45,10 @@ def test_detect_cli_off_and_valid_area(monkeypatch, tmp_path, capsys):
         (PathRefused("name"), 5),
         (BackendFailed("clone", 5), 6),
         (LeaseHeld("held"), 7),
+        (CacheBusy("busy"), 8),
+        (KeyMissing("missing"), 9),
+        (TreeInvalid("bad"), 10),
+        (Unrepairable("dir"), 11),
     ],
 )
 def test_detect_cli_maps_typed_errors_to_distinct_statuses(monkeypatch, capsys, error, status):
@@ -141,3 +145,41 @@ def test_main_returns_unknown_command_status_if_parser_is_extended(monkeypatch):
 
     monkeypatch.setattr(cli, "_parser", lambda: Parser())
     assert cli.main([]) == 2
+
+
+def _cache_env(tmp_path, monkeypatch):
+    root = tmp_path / "tree-cache"
+    root.mkdir(mode=0o770)
+    monkeypatch.setenv("MDT_TREE_CACHE_ROOT", str(root))
+    from cowtree.cache import Cache
+    cache = Cache(str(root))
+    cache.ensure("a" * 16, lambda tree: open(tree + "/f", "w").write("x"))
+    return cache
+
+
+def test_cache_cli_without_root_is_a_logged_noop(monkeypatch, capsys):
+    monkeypatch.delenv("MDT_TREE_CACHE_ROOT", raising=False)
+    for argv, out in ((["cache", "survey"], "no shared cache\n"), (["cache", "gc", "--json"], "[]\n")):
+        assert cli.main(argv) == 0
+        output, error = capsys.readouterr()
+        assert output == out and "MDT_TREE_CACHE_ROOT is not set" in error
+
+
+def test_cache_cli_survey_gc_verify(tmp_path, monkeypatch, capsys):
+    _cache_env(tmp_path, monkeypatch)
+    assert cli.main(["cache", "survey"]) == 0
+    assert "kind=key" in capsys.readouterr().out
+    assert cli.main(["cache", "survey", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)[0]["files"] == 1
+    assert cli.main(["cache", "verify", "a" * 16]) == 0
+    assert "digest: " in capsys.readouterr().out
+    assert cli.main(["cache", "verify", "a" * 16, "--shallow", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["ok"] is True
+    assert cli.main(["cache", "verify", "b" * 16, "--json"]) == 9
+    assert json.loads(capsys.readouterr().err)["error"] == "key-missing"
+    assert cli.main(["cache", "gc"]) == 0
+    assert "a" * 16 + ": kept: idle" in capsys.readouterr().out
+    assert cli.main(["cache", "gc", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)[0]["status"] == "kept"
+    assert cli.main(["cache", "gc", "--idle", "0"]) == 0
+    assert "removed" in capsys.readouterr().out
