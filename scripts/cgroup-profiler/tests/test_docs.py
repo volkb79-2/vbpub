@@ -167,35 +167,34 @@ def test_the_registered_github_release_body_is_documented_in_every_adopter_docum
     """The docs describe the REAL registered push step: its handler, image, prefix and order."""
     config = tomllib.loads((ROOT / "cmru.toml").read_text(encoding="utf-8"))
     commands = config["steps"]["push"]["commands"]
-    handler = commands[-1]["argv"]  # the handler must be the LAST push command
-    assert handler[:3] == ["cmru", "handler", "oci-image-release"]
-    assert any(c["argv"][-2:] == ["build-push.py", "--push"] or c["argv"][-1] == "--push"
-               for c in commands[:-1]), "the image push must precede the handler"
-    prefix, image = handler[handler.index("--prefix") + 1], handler[handler.index("--image") + 1]
-    assert (prefix, image) == ("cgprofile", "ghcr.io/volkb79-2/cgprofile")
-    pasteable = f"cmru handler oci-image-release --prefix {prefix} --image {image} --cwd ."
+    # 2.0.0 ships the wheel only: the single push command is the one release-body handler.
+    assert len(commands) == 1
+    handler = commands[0]["argv"]
+    assert handler[:3] == ["cmru", "handler", "wheel-publish"]
+    prefix = handler[handler.index("--prefix") + 1]
+    assert prefix == "cgprofile"
+    pasteable = f"cmru handler wheel-publish --prefix {prefix} --cwd ."
 
     readme, design, consumers = (_flat(path) for path in DOCS)
-    design_anchor = "the-github-release-body-for-the-published-image"
+    design_anchor = "the-github-release-body-for-the-published-wheel"
     preview_anchor = "preview-the-github-release-body"
     assert design_anchor in _anchors(DOCS[1]) and preview_anchor in _anchors(DOCS[2])
 
     # README (what): the feature, its position, the preview, and the two links.
-    assert "GitHub Release body" in readme and "cmru handler oci-image-release" in readme
-    assert "last command" in readme and "after `build-push.py --push`" in readme
-    assert f"docker pull {image}:<version>" in readme and "`cmru release --dry-run`" in readme
+    assert "GitHub Release body" in readme and "cmru handler wheel-publish" in readme
+    assert "the wheel only" in readme and "oci-image-release" not in readme
+    assert "`cmru release --dry-run`" in readme
     assert f"docs/DESIGN-GUIDE.md#{design_anchor}" in readme
     assert f"docs/CONSUMERS.md#{preview_anchor}" in readme
 
     # DESIGN-GUIDE (why): the order is the contract, plus the before/after verification limits.
-    assert pasteable in design and "in this order" in design and "the last command" in design
-    assert "before any prepare step, gate, tag or image push" in design
+    assert pasteable in design and "Exactly one release-body handler" in design
+    assert "before any prepare step, gate or tag" in design
     assert "was written and not rolled back" in design and "exactly the intended body" in design
-    assert "not a second source of truth" in design
 
-    # CONSUMERS (how): a pasteable preview and the ordering rule.
-    assert "cmru release cgroup-profiler --config cmru.orchestration.toml --set-version 1.0.0 --dry-run" in consumers
+    # CONSUMERS (how): a pasteable preview and the single-handler rule.
+    assert "cmru release cgroup-profiler --config cmru.orchestration.toml --set-version 2.0.0 --dry-run" in consumers
     assert "----- begin release body -----" in consumers and "----- end release body -----" in consumers
-    assert f"docker pull {image}:1.0.0" in consumers and pasteable in consumers
-    assert "last command of `[steps.push]`" in consumers and "after the image push" in consumers
+    assert pasteable in consumers and "oci-image-release" in consumers  # named only as forbidden
+    assert "only command of `[steps.push]`" in consumers
     assert "inspect the `cgprofile-v<version>` release and its tag before retrying" in consumers

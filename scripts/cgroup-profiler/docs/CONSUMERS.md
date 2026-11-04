@@ -47,42 +47,30 @@ daemon already answering on the socket, the socket directory missing). Run
 
 ### Preview the GitHub Release body
 
-A CMRU release also publishes the GitHub Release body for `cgprofile-v<version>`: the pull
-instruction, then that version's dated section of `CHANGES.md` (pending `[Unreleased]` and
-`### Migration` notes are folded into it in the release candidate). Preview the exact text
-before releasing, from the repository root:
+From 2.0.0 a CMRU release publishes the wheel only (the OCI image is no longer built or
+pushed; CP-54). The GitHub Release for `cgprofile-v<version>` is written by the single
+`wheel-publish` handler: the wheel, its sha256 sidecar and `latest.json`, with that version's
+dated section of `CHANGES.md` as the body. Preview the exact text before releasing, from the
+repository root:
 
 ```bash
-cmru release cgroup-profiler --config cmru.orchestration.toml --set-version 1.0.0 --dry-run
+cmru release cgroup-profiler --config cmru.orchestration.toml --set-version 2.0.0 --dry-run
 ```
 
 The preview prints the complete body between `----- begin release body -----` and
-`----- end release body -----`, beginning with:
+`----- end release body -----`. It leaves `CHANGES.md` unchanged. The release body is written by the only command of
+`[steps.push]` in `cmru.toml`:
 
 ```text
-**Image:** `ghcr.io/volkb79-2/cgprofile:1.0.0`
-
-Pull: `docker pull ghcr.io/volkb79-2/cgprofile:1.0.0`
-
-## [1.0.0] - <date>
+cmru handler wheel-publish --prefix cgprofile --cwd .
 ```
 
-It uses the same builder as the release, leaves `CHANGES.md` unchanged, and has no artifact
-name or SHA256 because the image push is the only upload. The body is written by the last command of
-`[steps.push]` in `cmru.toml`, which must stay after the image push:
-
-```text
-build-push.py --push                      # pushes ghcr.io/volkb79-2/cgprofile:<version>
-cmru handler oci-image-release --prefix cgprofile --image ghcr.io/volkb79-2/cgprofile --cwd .
-```
-
-Do not add a command after it or reorder them: CMRU refuses a release (and the dry run) before
-any prepare step, gate, tag or image push when the handler is malformed, not last, names a
-prefix other than `cgprofile`, or gives an image without an explicit registry. Never run the
+Do not add a second release-body handler (`oci-image-release`, `tarball-publish`): each
+writes the whole body and CMRU refuses such a plan before any side effect. Never run the
 handler by hand; it needs the protected release identity that only `cmru release` supplies.
-If a release reports that the GitHub Release "was written" but could not be verified, the
-image is already published: inspect the `cgprofile-v<version>` release and its tag before
-retrying (see the [design note](DESIGN-GUIDE.md#the-github-release-body-for-the-published-image)).
+If a release reports that the GitHub Release "was written" but could not be verified,
+inspect the `cgprofile-v<version>` release and its tag before retrying (see the
+[design note](DESIGN-GUIDE.md#the-github-release-body-for-the-published-wheel)).
 
 ## One-shot collector behavior
 

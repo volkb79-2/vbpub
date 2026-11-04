@@ -181,14 +181,13 @@ Release identity (wheel version, tag, checksum) is described in the
 [release identity design](docs/DESIGN-GUIDE.md#release-identity).
 
 A CMRU release also publishes a **GitHub Release body** for `cgprofile-v<version>`: it
-opens with the exact pull instruction (`docker pull ghcr.io/volkb79-2/cgprofile:<version>`)
-and then carries that version's dated section of `CHANGES.md`, including any pending
-`[Unreleased]` and migration notes, which CMRU folds into the tagged candidate. It is written
-by `cmru handler oci-image-release`, the **last command** of the push step, so it runs only
-after `build-push.py --push` has pushed the image; it writes release metadata only and never
-builds or pushes. `cmru release --dry-run` previews that exact body, and CMRU refuses a
-misconfigured handler before any release side effect. See the
-[design](docs/DESIGN-GUIDE.md#the-github-release-body-for-the-published-image) and the
+carries that version's dated section of `CHANGES.md`, including any pending
+`[Unreleased]` and migration notes, which CMRU folds into the tagged candidate. From 2.0.0 the
+release is the wheel only (the OCI image is no longer published): the body is written by
+`cmru handler wheel-publish`, the only command of the push step, which uploads the wheel,
+its sha256 sidecar and `latest.json`. `cmru release --dry-run` previews that exact body, and
+CMRU refuses a second release-body handler before any release side effect. See the
+[design](docs/DESIGN-GUIDE.md#the-github-release-body-for-the-published-wheel) and the
 [pasteable preview](docs/CONSUMERS.md#preview-the-github-release-body).
 
 ## Where to read next

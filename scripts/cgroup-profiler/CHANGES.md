@@ -8,6 +8,12 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
 
 ## [Unreleased]
 
+### Changed
+- Release contract (CP-44, CP-54): cgprofile 2.0.0 ships the wheel only. `cmru.toml` now declares `artifacts = ["wheel"]`; the
+  daemon-image build, the image push and the `oci-image-release` handler are removed (the handler would have overwritten the
+  `wheel-publish` GitHub Release body, so CMRU refused the plan). The OCI image is no longer published from 2.0.0; the 1.x
+  container stack cannot start under the `cgpd` entrypoint. The Dockerfile and compose files stay in the tree for package 9 to delete.
+
 ### Added
 - `cgpctl`, the cli-extended client (CP-47, cgprofile 2.0 package 2): `status`, `host`, `sessions`, `show`, `start`, `stop`, `watch`, `report`,
   `prune`, `run`, `mark`, `config show|set|reset`, `doctor`, `skills`. Socket `--socket` > `$CGPCTL_SOCKET` > `/run/cgprofile/ctl.sock`; contract

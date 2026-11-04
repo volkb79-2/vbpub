@@ -30,9 +30,11 @@ id = "cgroup-profiler"
 description = "cgprofile — cgroup/DAMON resource profiler: a wrap/attach CLI for ad hoc use, and the RG-55 host daemon run-gate talks to per lane"
 template_revision = 4
 prefix = "cgprofile-v"
-artifacts = ["oci-image", "wheel"]
-# cgprofile 2.0 package 1: the wheel is the primary artifact (CP-46); the OCI
-# image stays until the ciu deployment is retired (package 9).
+artifacts = ["wheel"]
+# cgprofile 2.0.0 ships the WHEEL ONLY (CP-46). The OCI image is no longer
+# built or pushed: the 1.x container stack cannot start under the cgpd
+# entrypoint (CP-54), and `oci-image-release` would also overwrite the wheel
+# handler's GitHub Release body. Dockerfile/compose stay until package 9.
 scm_dist = "cgprofile"
 
 [project.version]
@@ -66,13 +68,10 @@ commands = [
 quiet = true
 commands = [
   { label = "cgprofile: build wheel", argv = ["cmru", "handler", "wheel-build", "--cwd", "."], cwd = "." },
-  { label = "cgprofile: build daemon image", argv = ["python3", "build-push.py", "--build"], cwd = "." },
 ]
 
 [steps.push]
 quiet = true
 commands = [
   { label = "cgprofile: publish wheel", argv = ["cmru", "handler", "wheel-publish", "--prefix", "cgprofile", "--cwd", "."], cwd = "." },
-  { label = "cgprofile: push daemon image", argv = ["python3", "build-push.py", "--push"], cwd = "." },
-  { label = "cgprofile: publish tagged release notes", argv = ["cmru", "handler", "oci-image-release", "--prefix", "cgprofile", "--image", "ghcr.io/volkb79-2/cgprofile", "--cwd", "."], cwd = "." },
 ]

@@ -626,32 +626,23 @@ Install, pin and verification live in
 - Installs follow [`NATIVE-DEPLOYMENT.md`](NATIVE-DEPLOYMENT.md): the wheel is
   the deployed artifact and `cgpd.service` drains before restart.
 
-## The GitHub Release body for the published image
+## The GitHub Release body for the published wheel
 
-The image on GHCR is cgprofile's only released artifact: nothing is uploaded to the GitHub
-Release, so the wheel-style body (artifact name, SHA256) has nothing true to say, and
-without a handler the `cgprofile-v<version>` release would have no body at all. CMRU's
-`oci-image-release` handler fills that gap. CGProfile's push step therefore has two commands,
-in this order:
+From 2.0.0 the wheel is cgprofile's only released artifact (the OCI image is retired from
+the release: the 1.x container stack cannot start under the `cgpd` entrypoint, CP-54).
+CGProfile's push step therefore has one command, `cmru handler wheel-publish --prefix
+cgprofile --cwd .`, which uploads the wheel, its sha256 sidecar and `latest.json` and writes the
+release body.
 
-1. `build-push.py --push`, which pushes the release image;
-2. `cmru handler oci-image-release --prefix cgprofile --image ghcr.io/volkb79-2/cgprofile
-   --cwd .`, which writes the release body.
+Exactly one release-body handler may run: `oci-image-release`, `wheel-publish` and
+`tarball-publish` each write the whole body, so CMRU refuses (before any release side effect) a
+plan that combines them, which is how a leftover image step is caught. The handler reads the
+notes from the protected candidate commit's `cgroup-profiler/CHANGES.md`, so the body always
+describes the tag that was gated.
 
-The order is the contract, not a convention: the body announces an image, so it must follow
-the push of that image, and CMRU refuses (before any release side effect) a configuration in
-which anything follows it. The handler derives `:<version>` from the protected
-`CMRU_RELEASE_TAG` and reads the notes from the protected candidate commit's
-`cgroup-profiler/CHANGES.md`, so the pull instruction and the notes always describe the tag
-that was gated. Its `--image` repeats the registered release coordinate with an explicit
-`ghcr.io` registry (a bare `owner/name` would be read by Docker as a Docker Hub namespace),
-and it is the image `build-push.py` pushes, not a second source of truth: change one and the
-published pull instruction no longer matches the image.
-
-What CMRU checks before any side effect, and what it cannot: it validates the handler's
-`--prefix`, `--image` and `--cwd`, and that it is the last command, for the selected project
-before any prepare step, gate, tag or image push; `cmru release --dry-run` runs the same check
-and prints the complete body. After it writes, it reads the release back and succeeds only if
+What CMRU checks before any side effect, and what it cannot: it validates the handler for the
+selected project before any prepare step, gate or tag; `cmru release --dry-run` runs the same
+check and prints the complete body. After it writes, it reads the release back and succeeds only if
 the release has the same ID and tag, exactly the intended body, and the Git tag is still at
 the release commit. GitHub cannot make that atomic with creating the release, so a difference
 is reported as "the release was written and not rolled back" for inspection; the workflow

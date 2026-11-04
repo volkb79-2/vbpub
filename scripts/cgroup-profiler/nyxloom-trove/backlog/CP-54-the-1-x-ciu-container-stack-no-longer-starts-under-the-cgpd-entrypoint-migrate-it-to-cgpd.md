@@ -30,3 +30,9 @@ decide between migrating and retiring the container stack.
 ## Oracles
 
 `ciu up` of the stack starts a daemon that answers `version` at contract 2; `test_deployment_contract` fails if any retired variable or flag returns.
+
+## Resolution note (2026-11-04, controller decision)
+
+Retire, not migrate: cgprofile 2.0.0 ships the wheel only. `cmru.toml` no longer builds or pushes the image (`artifacts = ["wheel"]`), so
+the stale stack is not released. The Dockerfile, compose and defaults templates stay in the tree for plan package 9 (CP-44) to delete.
+Status stays open until that deletion lands.
