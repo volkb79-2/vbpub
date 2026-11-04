@@ -52,5 +52,7 @@ After MDT-055 is live on both hosts and one release has shipped with the window 
   decision (drop; retention is 14 days; Q9) are specified in `docs/NATIVE-DEPLOYMENT.md` section 8.
 - The single-daemon guard of design point 4 is `cgpd run` preflight step 6 (`docs/CGPCTL-SPEC.md` section 3.1, `NATIVE-DEPLOYMENT.md` section 3.5)
   and ships with CP-48, not with this entry.
+- Controller decision 2026-11-04: the OCI image is not built or pushed for 2.0.0 (`cmru.toml` `artifacts = ["wheel"]`; `oci-image-release`
+  also conflicted with `wheel-publish`'s release body). Package 9 only deletes the leftover files. Original wording follows.
 - The OCI image is not built for 2.0.0 unless the report tier needs it; deletion list in `NATIVE-DEPLOYMENT.md` section 8 (plan package 9: release
   as 2.0.1, or 2.1.0 if anything is added). The helper and probe images are dropped (section 7).

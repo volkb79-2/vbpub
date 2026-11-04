@@ -116,19 +116,22 @@ def test_pyproject_wheel_facts():
     assert "fallback_version" not in scm
 
 
-def test_cmru_declares_the_wheel_beside_the_image():
+def test_cmru_declares_the_wheel_only():
     config = tomllib.loads((PROJECT_ROOT / "cmru.toml").read_text(encoding="utf-8"))
     project = config["project"]
     assert project["id"] == "cgroup-profiler"
-    assert project["artifacts"] == ["oci-image", "wheel"]
+    assert project["artifacts"] == ["wheel"]
     assert project["scm_dist"] == "cgprofile"
     assert config["project"]["release"]["artifact_dirs"] == ["dist"]
     build = [c["argv"] for c in config["steps"]["build"]["commands"]]
     push = [c["argv"] for c in config["steps"]["push"]["commands"]]
     assert ["cmru", "handler", "wheel-build", "--cwd", "."] in build
-    assert ["python3", "build-push.py", "--build"] in build
     assert ["cmru", "handler", "wheel-publish", "--prefix", "cgprofile", "--cwd", "."] in push
-    assert ["python3", "build-push.py", "--push"] in push
+    # The image is retired from the release (CP-54): no image build/push and no
+    # second release-body handler (oci-image-release would overwrite the wheel's).
+    assert len(build) == 1 and len(push) == 1
+    for argv in build + push:
+        assert "build-push.py" not in argv and "oci-image-release" not in argv
 
 
 def test_the_legacy_entry_runs_from_the_checkout_root():
