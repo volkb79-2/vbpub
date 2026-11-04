@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -83,10 +84,23 @@ def test_a_missing_file_a_directory_and_bad_json_are_refused_without_content(tmp
 def test_a_read_failure_is_reported_without_content(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = _write(tmp_path, STATE)
 
-    def refuse(self: Path, *args: object, **kwargs: object) -> str:
-        raise PermissionError(f"denied: {SECRET}")
+    class Broken:
+        def __init__(self, fd: int) -> None:
+            self.fd = fd
 
-    monkeypatch.setattr(Path, "read_text", refuse)
+        def __enter__(self) -> "Broken":
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            os.close(self.fd)
+
+        def fileno(self) -> int:
+            return self.fd
+
+        def read(self) -> bytes:
+            raise PermissionError(f"denied: {SECRET}")
+
+    monkeypatch.setattr(ss.os, "fdopen", lambda fd, mode: Broken(fd))
     with pytest.raises(ss.StorageStateError, match="not readable JSON") as info:
         ss.load_scoped(path, "https://browser.geekbench.com/")
     assert SECRET not in str(info.value)
@@ -109,3 +123,41 @@ def test_tilde_is_expanded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setenv("HOME", str(tmp_path))
     _write(tmp_path, STATE)
     assert ss.load_scoped("~/state.json", "https://browser.geekbench.com/").cookies == 2
+
+
+def test_a_public_suffix_cookie_domain_does_not_match_every_host(tmp_path: Path) -> None:
+    def names(domain: str, url: str) -> list[str]:
+        data = {"cookies": [{"name": "c", "value": SECRET, "domain": domain}], "origins": [{"origin": url}]}
+        return [c["name"] for c in ss.load_scoped(_write(tmp_path, data, name="p.json"), url).state["cookies"]]
+
+    assert names(".com", "https://a.com/") == []
+    assert names(".", "https://a.com/") == []
+    assert names("com", "https://a.com/") == []
+    assert names(".co.uk", "https://shop.co.uk/") == []
+    assert names(".com.au", "https://x.com.au/") == []
+    assert names(".example.co.uk", "https://www.example.co.uk/") == ["c"]
+    assert names("a.com", "https://a.com/") == ["c"]
+    assert names(".a.com", "https://sub.a.com/") == ["c"]
+    assert names(".co.uk", "https://co.uk/") == ["c"]  # the exact host is still the host
+
+
+def test_a_file_owned_by_someone_else_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = _write(tmp_path, STATE)
+    other = os.geteuid() + 1
+    monkeypatch.setattr(ss.os, "geteuid", lambda: other)
+    with pytest.raises(ss.StorageStateError, match="not owned by the current user"):
+        ss.load_scoped(path, "https://browser.geekbench.com/")
+
+
+def test_the_checked_descriptor_is_the_one_that_is_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = _write(tmp_path, STATE)
+    opened: list[int] = []
+    real_open = os.open
+
+    def spy(*args: object, **kwargs: object) -> int:
+        opened.append(real_open(*args, **kwargs))
+        return opened[-1]
+
+    monkeypatch.setattr(ss.os, "open", spy)
+    assert ss.load_scoped(path, "https://browser.geekbench.com/").cookies == 2
+    assert len(opened) == 1

@@ -116,7 +116,7 @@ def test_signal_text_is_clipped_and_whitespace_normalised() -> None:
 def test_every_signature_row_is_well_formed() -> None:
     import re
 
-    for table in (blocked.TITLE_SIGNATURES, blocked.TEXT_SIGNATURES):
+    for table in (blocked.TITLE_SIGNATURES, blocked.TEXT_SIGNATURES, blocked.WEAK_TEXT_SIGNATURES):
         for provider, kind, pattern in table:
             assert provider and kind
             re.compile(pattern)
@@ -140,8 +140,33 @@ def test_each_text_and_title_signature_matches_its_own_sample() -> None:
     }
     import re
 
-    for pattern in (row[2] for row in blocked.TEXT_SIGNATURES):
+    for pattern in (row[2] for row in (*blocked.TEXT_SIGNATURES, *blocked.WEAK_TEXT_SIGNATURES)):
         probe = next((text for key, text in samples.items() if key in pattern), None)
         if probe is not None:
             assert re.search(pattern, probe, re.IGNORECASE), pattern
     assert blocked.detect(status=200, headers={}, title="Robot or human?", text="").provider == "Akamai"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "DataDome is a bot management vendor. " + "Their blog covers it. " * 40,
+        "Tick the box labelled I'm not a robot to subscribe. " + "Newsletter copy. " * 40,
+        "Are you a robot? Notes on Turing tests. " + "History of the imitation game. " * 30,
+        "Please verify you are human by email. " + "Account notes. " * 60,
+        'The element id px-captcha appears in vendor docs. ' + "Docs. " * 120,
+    ],
+)
+def test_weak_text_on_a_short_ordinary_page_is_not_a_block(text: str) -> None:
+    assert 600 < len(text) < blocked.MAX_CHALLENGE_TEXT
+    assert blocked.detect(status=200, headers={}, title="Notes", text=text) is None
+    assert blocked.detect(status=200, headers={"server": "cloudflare"}, title="Notes", text=text) is None
+
+
+@pytest.mark.parametrize("status", [403, 429, 503])
+def test_weak_text_with_a_blocking_status_or_a_near_empty_page_is_a_block(status: int) -> None:
+    text = "Are you a robot? " + "filler " * 200
+    verdict = blocked.detect(status=status, headers={}, title="x", text=text)
+    assert verdict.provider == "Generic CAPTCHA" and "text:'Are you a robot'" in verdict.signals
+    near = blocked.detect(status=200, headers={}, title="x", text="Protected by DataDome")
+    assert near.provider == "DataDome"

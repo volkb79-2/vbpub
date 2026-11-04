@@ -52,11 +52,17 @@ TEXT_SIGNATURES: tuple[tuple[str, str, str], ...] = (
     ("Cloudflare", "block page", r"sorry, you have been blocked"),
     ("Akamai", "block page", r"errors\.edgesuite\.net"),
     ("PerimeterX", "bot check", r"press\s*(?:&|and)\s*hold to confirm you are (?:a )?human"),
+    ("Imperva", "interstitial", r"incapsula incident id"),
+    ("Generic CAPTCHA", "bot check", r"unusual traffic from your computer network"),
+)
+
+# (provider, kind, regex over the body text) - WEAK: a vendor page, a login checkbox label or an
+# article can say these words, so they count only with corroboration (a blocking status or a
+# near-empty page), never on text alone.
+WEAK_TEXT_SIGNATURES: tuple[tuple[str, str, str], ...] = (
     ("PerimeterX", "bot check", r"px-captcha"),
     ("DataDome", "bot check", r"datadome"),
-    ("Imperva", "interstitial", r"incapsula incident id"),
     ("Generic CAPTCHA", "bot check", r"verify you are (?:a )?human"),
-    ("Generic CAPTCHA", "bot check", r"unusual traffic from your computer network"),
     ("Generic CAPTCHA", "bot check", r"are you (?:a )?robot\b"),
     ("Generic CAPTCHA", "bot check", r"i'?m not a robot"),
 )
@@ -106,6 +112,7 @@ class _Hit:
     signal: str
     definitive: bool
     frame: bool = False
+    weak_text: bool = False
 
 
 def _clip(value: str) -> str:
@@ -125,6 +132,10 @@ def _hits(headers: dict[str, str], title: str, text: str, frames: list[str]) -> 
             found = re.search(pattern, text, _FLAGS)
             if found:
                 hits.append(_Hit(provider, kind, f"text:{_clip(found.group(0))!r}", True))
+        for provider, kind, pattern in WEAK_TEXT_SIGNATURES:
+            found = re.search(pattern, text, _FLAGS)
+            if found:
+                hits.append(_Hit(provider, kind, f"text:{_clip(found.group(0))!r}", False, weak_text=True))
     for provider, kind, needle in FRAME_SIGNATURES:
         if any(needle in url.lower() for url in frames):
             hits.append(_Hit(provider, kind, f"frame:{needle}", False, frame=True))
@@ -156,7 +167,7 @@ def detect(
     counted = [
         hit
         for hit in _hits(normalized, title, text, frames or [])
-        if hit.definitive or blocking or (hit.frame and near_empty)
+        if hit.definitive or blocking or ((hit.frame or hit.weak_text) and near_empty)
     ]
     if not counted:
         return None
