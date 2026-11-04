@@ -2776,7 +2776,8 @@ class ProfilerClient:
             doc = json.loads(raw)
         except json.JSONDecodeError:
             return None, (f"cgprofile ctl {verb} produced an unparsable "
-                          f"response from {self.socket_path}")
+                          f"response from {self.socket_path} "
+                          f"({len(raw)} bytes, starts {raw[:60]!r})")
         except Exception as exc:
             return None, (f"cgprofile ctl {verb} JSON parser failed "
                           f"unexpectedly: {exc}")
