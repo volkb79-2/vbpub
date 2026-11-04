@@ -1,0 +1,19 @@
+{
+  "cpu_model": "AMD EPYC 9634 84-Core Processor",
+  "cpus_available": 2.5,
+  "cpus_online": 4,
+  "hypervisor": true,
+  "schema": "machine/1",
+  "smt": false,
+  "speed": {
+    "baseline_score": 2500,
+    "basis": "geekbench7-measured",
+    "cpus_at_measurement": 4,
+    "geekbench_major": 7,
+    "geekbench_version": "7.1.0",
+    "measured_on": "2026-11-04",
+    "multi_core": 7800,
+    "single_core": 2100
+  },
+  "speed_reason": null
+}
