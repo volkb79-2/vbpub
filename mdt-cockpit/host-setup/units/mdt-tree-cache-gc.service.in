@@ -1,0 +1,14 @@
+# RENDERED by host-setup/mdt_tree_cache.py (install.sh) from host-setup.env.
+# MDT-TREE-CACHE owned: HOST_ROLE=dedicated-dev only (AD2-2).
+[Unit]
+Description=mdt tree cache — remove idle, unleased, unmounted keys and stale uppers
+ConditionPathIsMountPoint=@TREE_CACHE_ROOT@
+
+[Service]
+Type=oneshot
+Nice=10
+IOSchedulingClass=idle
+# Built-in implementation of the documented directory/lease format (mdt_tree_cache.py, "Directory and
+# lease format"); a `cowtree cache gc` that speaks the same format can replace it later without a
+# change of the format.
+ExecStart=/usr/local/sbin/mdt_tree_cache.py gc --config /etc/mdt/host-setup.env

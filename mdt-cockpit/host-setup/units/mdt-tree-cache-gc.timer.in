@@ -1,0 +1,12 @@
+# RENDERED by host-setup/mdt_tree_cache.py (install.sh) from host-setup.env.
+# MDT-TREE-CACHE owned: HOST_ROLE=dedicated-dev only (AD2-2).
+[Unit]
+Description=mdt tree cache — periodic garbage collection
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=@MDT_TREE_CACHE_GC_INTERVAL@
+Unit=mdt-tree-cache-gc.service
+
+[Install]
+WantedBy=timers.target
