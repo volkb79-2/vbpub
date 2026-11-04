@@ -21,8 +21,39 @@ the technical detail below it.
 
 <!-- cmru: release history -->
 
-## [Unreleased]
+## [7.21.0] - 2026-11-04
+<!-- cmru: generated -->
+<!-- cmru: source-end=c7df3cfe5a34ab3cf16eeed68e2b55f063831372 -->
 
+### Added
+- feat(ciu): reviewed CLI surface - manifest, 671-row characterization catalog, harness (AC-16..AC-18, AC-21, AC-22) (a9a8c9db1)
+- feat(ciu)!: governance, schema, migrate, secrets host (C7 + C8, v8 S18 parity) (33037fdaf)
+- feat(ciu)!: show absorbs profiles and layouts, both gain --json (C6, v8 S18 parity) (a0ddc6b36)
+- feat(ciu)!: status absorbs health (C5, v8 S18 parity) (530705442)
+- feat(ciu)!: adopt cli-extended - registry, identity, doctor, packaged skills (CIU-114) (b1964db2b)
+
+### Fixed
+- fix(ciu): the isolated enroll lane runs a partial pytest selection, so pass --cli-case-partial (c7df3cfe5)
+
+### Changed
+- Merge branch 'feat-ciu-clix-20261104' (f8c2cb6a3)
+- Merge branch 'finish-p220-ciu-20261104' (12c24d33a)
+- Merge branch 'ops-dstdns-r2-20261104' (1e05860ad)
+- build(ciu): cli-extended is a release/installer dependency; library source off every path (AC-24/25) (e08501b0d)
+- refactor(ciu): drop the abbreviation routing and the pre-registry front end (06fbadceb)
+
+### Documentation
+- docs: ciu v8 examples and debian-install-v2 usage guide use cgpctl (9b21b32c7)
+- docs(ciu): renumber the legacy worktree-record finding to CIU-172 (CIU-168 is taken) (3966cbaf2)
+- docs(ciu): SPEC S10 rewrite, CHANGES, README, backlog, skills text for the registered CLI (CIU-114) (55078f108)
+- docs(ciu): file CIU-168 (legacy worktree record vs path-derived id refuses up with no remedy; dstdns@8250c2ee context) (2afb09247)
+- docs(ciu): sweep callers of the adoption's forced spellings across the monorepo (bfb2a0b07)
+- docs(ciu): CLI surface decision record for the cli-extended adoption (CIU-114) (4ca91dfa2)
+
+### Testing
+- test(ciu): adapt the suite to the registered CLI; add registry, doctor and show tests (b2b07bc94)
+
+<!-- cmru: pending release notes begin -->
 ### Changed (BREAKING: CLI surface; no aliases)
 - ciu adopts `libraries/cli-extended` (CIU-114): every verb, argument and option is registered once in `ciu.cli_registry`; help, errors, `--json`, `--yes`, `--dry-run`, `--traceback`, exact option spellings, the surface manifest (`docs/cli-surface.json`) and the reviewed catalog derive from it. The hand-written dispatcher, `_USAGE`/`_VERB_HELP`, per-verb help interception and the `--host`/`--layout`/`--dir` abbreviation routing (SPEC S10.4) are gone. Every decision is in `docs/CLI-SURFACE-DECISIONS-20261104.md`.
 - Short options are gone (the library has long options only): `-y` is `--yes`, `-d` is `--dir`, `-f` is `--file`, `-h` is rejected (`--help`). Option prefixes (`--prof`, `--hos`) are usage errors, exit 2.
@@ -41,6 +72,10 @@ the technical detail below it.
 - Scripts: replace `-y` with `--yes`, `secrets ... -d` with `--dir`, and the renamed/removed verbs above (`git grep` for your own callers; the vbpub tree is already swept). dstdns migrates later.
 - Safe to ignore: output of every verb is unchanged except where listed; the implementation behind each verb is the same code.
 - Needs action if you parse help or error text: help is now generated (wording changed) and diagnostics lead with `[ERROR]`.
+<!-- cmru: pending release notes end -->
+
+## [Unreleased]
+
 ## [7.20.0] - 2026-11-04
 <!-- cmru: generated -->
 <!-- cmru: source-end=30ef50114b6da9ad7a0e72165104e7687f20af18 -->
