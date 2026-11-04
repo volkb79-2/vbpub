@@ -49,8 +49,10 @@ class PlanTests(TmpCase):
 
     def test_defaults_are_25_and_10_percent_of_ram_and_inodes_follow_the_size(self) -> None:
         p = plan_for({})
-        self.assertEqual((p.cache_size, p.upper_size), (2 * GIB, 8 * GIB // 10))
+        upper = 8 * GIB // 10 // 4096 * 4096  # whole pages: tmpfs rounds size= and the check compares the rounded value
+        self.assertEqual((p.cache_size, p.upper_size), (2 * GIB, upper))
         self.assertEqual(p.cache_inodes, 2 * GIB // (16 * 1024))
+        self.assertEqual(plan_for({"MDT_TREE_CACHE_SIZE": "100000001"}).cache_size % 4096, 0)
         self.assertEqual((p.cache_root, p.upper_root, p.group, p.gid), ("/srv/tree-cache", "/srv/tree-upper", "runner", GID))
         self.assertEqual((p.gc_idle, p.upper_gc_idle, p.gc_interval), (6 * HOURS, 24 * HOURS, "15min"))
 
@@ -130,7 +132,7 @@ class RenderTests(TmpCase):
         self.assertNotIn("noswap", re.sub(r"(?m)^#.*$", "", m))
         u = (sysdir / "srv-tree\\x2dupper.mount").read_text()
         self.assertIn("Where=/srv/tree-upper\n", u)
-        self.assertIn(f"size={8 * GIB // 10},", u)
+        self.assertIn(f"size={8 * GIB // 10 // 4096 * 4096},", u)
         self.assertIn("ConditionPathIsMountPoint=/srv/tree-cache", (sysdir / "mdt-tree-cache-gc.service").read_text())
         self.assertIn("OnUnitActiveSec=15min", (sysdir / "mdt-tree-cache-gc.timer").read_text())
         block = json.loads(cj.read_text())["tree_cache"]

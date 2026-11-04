@@ -70,6 +70,7 @@ DEFAULT_GROUP = "runner"
 DEFAULT_CACHE_PCT = 25
 DEFAULT_UPPER_PCT = 10
 MIN_AREA = 64 * MIB
+PAGE = 4096
 BYTES_PER_INODE = 16 * 1024
 MODE = "2770"
 OWN_MARK_SLICE = "# MDT-TREE-CACHE owned"
@@ -177,6 +178,7 @@ def _area(values: dict[str, str], size_key: str, inodes_key: str, pct: int, mem_
     if bad:
         raise TreeCacheError(f"{size_key}={raw!r}: {bad}")
     size = cap.parse_size_bytes(raw) if raw else max(MIN_AREA, mem_total * pct // 100)
+    size -= size % PAGE  # tmpfs rounds size= to whole pages: store the rounded value so the mount, the check and the JSON agree
     raw_i = _get(values, inodes_key)
     bad = validate_inodes(raw_i)
     if bad:
@@ -403,8 +405,11 @@ def all_mountinfo_text(proc: Path = Path("/proc")) -> str | None:
         except (FileNotFoundError, ProcessLookupError):
             continue
         except OSError as exc:
-            if exc.errno in (errno.ESRCH, errno.ENOENT):
+            # a process that exited while we scanned fails in several ways (ESRCH, ENOENT, EINVAL, ...): it is
+            # gone when its /proc entry is gone. Anything else may hide a holder: say which and keep everything.
+            if exc.errno in (errno.ESRCH, errno.ENOENT) or not (proc / pid).exists():
                 continue
+            print(f"cannot read {proc}/{pid}/mountinfo: {exc}", file=sys.stderr)
             return None
     return "\n".join(chunks)
 
