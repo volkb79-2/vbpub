@@ -261,9 +261,10 @@ time or container tag set changed, or it no longer qualifies. If CMRU skips a Re
 keeps that Release's Git tag. Whole-package deletion is planned only for a package CMRU can read
 during the preview; CMRU re-fetches its ID before deletion and skips if that ID changed. A GitHub
 404 for a package or version means it may be absent or inaccessible, so CMRU reports that it
-cannot verify cleanup and does not certify absence. The `ghcr_packages = ["*"]` selector lists
-packages visible to the configured GitHub credential; it cannot include packages that credential
-cannot read. The GitHub whole-package delete endpoint is name-addressed, so this identity recheck
+cannot verify cleanup and does not certify absence. The `ghcr_packages = ["*"]` selector (KI-117) resolves
+only to packages GitHub links to the configured repository (and only when a project publishes an
+`oci-image`); it never expands to the whole account, and cmru refuses it outside the repository
+(pass explicit package names instead). The GitHub whole-package delete endpoint is name-addressed, so this identity recheck
 is immediately before the request rather than an atomic compare-and-delete. A declared `steps.clean` and its
 generated-file commit are included in the same plan. The preview's `CMRU_VERSION` is an estimate;
 after confirmation, the clean step receives the highest-semver Release that actually survived

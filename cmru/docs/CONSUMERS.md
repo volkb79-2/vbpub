@@ -1798,8 +1798,12 @@ policy. A whole-package deletion is included only when the package exists in the
 the name-addressed GitHub deletion request, CMRU re-fetches the package and skips it if its ID
 changed. A GitHub 404 for a package or version is ambiguous: it can mean absent or inaccessible.
 CMRU skips the action and reports that it cannot verify cleanup; check that the configured
-credential can read the package before treating it as absent. With `ghcr_packages = ["*"]`, the
-GitHub listing selects only packages visible to that credential. When a Release deletion is
+credential can read the package before treating it as absent. `ghcr_packages = ["*"]` (KI-117) resolves to
+the packages GitHub links to the configured `owner/repo`, and only when a configured project
+publishes an `oci-image`; it never expands to the whole account (other repositories publish under
+the same owner). Outside the repository, or with no publishing project, cmru refuses the wildcard:
+run it from the repository or list package names explicitly. Packages without a repository link
+are skipped with a warning (name them explicitly to include them). When a Release deletion is
 skipped, CMRU leaves its matching Git tag too. If CMRU reports malformed output while listing
 origin tags, check `git ls-remote --tags origin` for tab-separated object-ID/ref records matching
 the configured prefix, then run a fresh cleanup preview; CMRU stops before applying a plan from an

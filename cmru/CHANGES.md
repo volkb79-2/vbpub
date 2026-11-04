@@ -39,6 +39,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - docs: `cleanup --policy` and `cleanup --remove-assets` selection grammars are contrasted in `docs/CONSUMERS.md` and the README; `max_age_days` is `--policy`-only (KI-105).
 - docs: a reproducible refresh procedure for digest-pinned probe and DinD images in `docs/CONSUMERS.md` (KI-60).
 - docs: backlog entries KI-58, KI-59, KI-68, KI-74, KI-75, KI-78, KI-80, KI-81, KI-82, KI-84 are closed against the 6.2.0 release notes.
+- fix: `cleanup.ghcr_packages = ["*"]` listed every GHCR package of the account and could delete versions of other repositories' images. It now resolves only to packages linked to the configured repository (and only when a project publishes an `oci-image`), and is refused with an actionable error outside the repository; explicit names always work (KI-117). Backlog KI-118 (`exclude_paths`), KI-119 (cross-repository pins), KI-120 (`cmru rigor`) filed.
 <!-- cmru: pending release notes end -->
 
 <!-- cmru: release history -->
