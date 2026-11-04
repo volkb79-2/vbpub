@@ -1,0 +1,122 @@
+{
+  "adopted_from": null,
+  "commits": [
+    {
+      "anchored": true,
+      "commit": "4444444444444444444444444444444444444444",
+      "judged_at": "2026-11-04T18:02:11Z",
+      "labels": [
+        "cgprofile-v2.1.0"
+      ],
+      "levels": {
+        "R0": "pass",
+        "R1": "pass",
+        "R2": "1/1 survivors",
+        "R3": "pass",
+        "review": "accept"
+      },
+      "r2_scope": {
+        "base_commit": "3333333333333333333333333333333333333333",
+        "kind": "changed-since"
+      }
+    },
+    {
+      "anchored": true,
+      "commit": "3333333333333333333333333333333333333333",
+      "judged_at": "2026-11-03T18:02:11Z",
+      "labels": [
+        "cgprofile-v2.0.0"
+      ],
+      "levels": {
+        "R0": "pass",
+        "R1": "pass",
+        "R2": "1/1 pass-with-waivers",
+        "R3": "pass",
+        "review": "accept"
+      },
+      "r2_scope": {
+        "base_commit": "2222222222222222222222222222222222222222",
+        "kind": "changed-since"
+      }
+    },
+    {
+      "anchored": true,
+      "commit": "2222222222222222222222222222222222222222",
+      "judged_at": "2026-11-02T18:02:11Z",
+      "labels": [
+        "cgprofile-v1.2.0"
+      ],
+      "levels": {
+        "R0": "pass",
+        "R1": "pass",
+        "R2": "1/1 pass",
+        "R3": "pass",
+        "review": "accept"
+      },
+      "r2_scope": {
+        "base_commit": null,
+        "kind": "whole-source"
+      }
+    },
+    {
+      "anchored": null,
+      "commit": "1111111111111111111111111111111111111111",
+      "judged_at": "2026-11-01T18:02:11Z",
+      "labels": [
+        "cgprofile-v1.1.0"
+      ],
+      "levels": {
+        "R0": "pass",
+        "R1": "pass",
+        "R2": "not-judged",
+        "R3": "pass",
+        "review": "accept"
+      },
+      "r2_scope": null
+    },
+    {
+      "anchored": true,
+      "commit": "6666666666666666666666666666666666666666",
+      "judged_at": "2026-11-04T17:30:00Z",
+      "labels": [],
+      "levels": {
+        "R0": "not-judged",
+        "R1": "not-judged",
+        "R2": "1/1 pass",
+        "R3": "not-judged",
+        "review": "missing"
+      },
+      "r2_scope": {
+        "base_commit": null,
+        "kind": "whole-source"
+      }
+    },
+    {
+      "anchored": true,
+      "commit": "5555555555555555555555555555555555555555",
+      "judged_at": "2026-11-04T17:30:00Z",
+      "labels": [],
+      "levels": {
+        "R0": "not-judged",
+        "R1": "not-judged",
+        "R2": "1/1 pass",
+        "R3": "not-judged",
+        "review": "missing"
+      },
+      "r2_scope": {
+        "base_commit": null,
+        "kind": "whole-source"
+      }
+    }
+  ],
+  "labels": {
+    "cgprofile-v1.1.0": "1111111111111111111111111111111111111111",
+    "cgprofile-v1.2.0": "2222222222222222222222222222222222222222",
+    "cgprofile-v2.0.0": "3333333333333333333333333333333333333333",
+    "cgprofile-v2.1.0": "4444444444444444444444444444444444444444"
+  },
+  "latest": "cgprofile-v2.1.0",
+  "project": "cgroup-profiler",
+  "schema": "urn:vbpub:rigor-index:1",
+  "stable": "cgprofile-v2.0.0"
+}
