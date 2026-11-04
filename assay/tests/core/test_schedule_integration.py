@@ -53,6 +53,9 @@ _TARGETS = (MutationTarget(path="pkg/flags.py", text=_TEXT, lines=frozenset({2, 
 
 @pytest.fixture(autouse=True)
 def _hosted_windows(monkeypatch):
+    # The gate container exports a real observer socket; these tests assert the
+    # no-observer (OBSERVER_UNAVAILABLE) profile, so the ambient one must not leak in.
+    monkeypatch.delenv("ASSAY_RESOURCE_OBSERVER_SOCKET", raising=False)
     counters = ResourceLimitCounters(
         pids_max=0,
         memory_oom=0,
