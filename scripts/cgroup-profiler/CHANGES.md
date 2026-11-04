@@ -8,6 +8,25 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [2.1.0] - 2026-11-04
+<!-- cmru: generated -->
+<!-- cmru: source-end=a12b0504d436db2a4c3ef268b53629259d1afb90 -->
+
+### Added
+- feat(assay): R2 lanes declare jobs_max and run-gate jobs=auto (assay-jobs audit) (fe53428a8)
+- feat(cgprofile): machine/1 facts, persisted host CPU benchmark reader, score table fallback, steal time (rigor CP-1, CP-58) (8fb865420)
+
+### Changed
+- Merge branch 'cgpd-rollout-20261105' (cd62d0299)
+- backlog: CP-57 (doctor caller-group fails for root), MDT-062 (cgprofile 1.x container cutover) (bff860d9b)
+- cgroup-profiler: retire the eb3af770 R2 base, document per-release request base (0f9ef3181)
+
+### Testing
+- test(cgprofile): host-facts isolation fixture must not share the monkeypatch instance (CP-58) (215f4518a)
+
+<!-- cmru: pending release notes begin -->
 ### Added
 - Machine facts (`machine/1`, rigor-evidence CP-1, CP-58): `host.machine`, `host.steal_seconds`, `host.cpu_seconds_total` in the `host` verb, the
   `status` host block and the Summary host block (additive; Summary v1.2). The CPU speed is read from the persisted
@@ -19,8 +38,7 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
 ### Fixed
 - R2 lane base: the recorded pre-wave base `eb3af770` exceeds Assay's 64 MiB git output bound (GIT_FAILED). `docs/CONSUMERS.md` now names the
   previous release tag as the request base, to be refreshed per release (`cgprofile-v1.2.0` plans 557 candidates).
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [2.0.0] - 2026-11-04
 <!-- cmru: generated -->
