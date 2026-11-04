@@ -480,7 +480,8 @@ class TestCliThinDispatch:
         monkeypatch.setattr(tssh, "ssh_sync",
                             lambda *a, **k: sync_calls.append(1) or 0)
         monkeypatch.setattr(tssh, "ssh_exec",
-                            lambda host, argv, *, config, repo_root: exec_calls.append(argv[0]) or 0)
+                            lambda host, argv, *, config, repo_root:
+                            0 if argv[0].startswith("command -v") else exec_calls.append(argv[0]) or 0)
         monkeypatch.setattr(act, "run_thin_up",
                             lambda *a, **k: pytest.fail("thin path must not run without --thin"))
         monkeypatch.setattr(sys, "argv", ["ciu", "up", "--host", "web"])
@@ -532,4 +533,4 @@ class TestCliThinDispatch:
         with pytest.raises(SystemExit) as exc:
             cli_mod.main()
         assert exc.value.code == 0
-        assert exec_calls[0] == "ciu status --gate"
+        assert exec_calls[0] == 'cd /opt/app && eval "$(ciu env print)" && ciu status --gate'

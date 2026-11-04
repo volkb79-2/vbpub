@@ -64,11 +64,11 @@ def remote(monkeypatch, tmp_path):
     monkeypatch.setitem(
         sys.modules,
         "ciu.deploy",
-        SimpleNamespace(load_global_config=lambda _root: GLOBAL,
+        SimpleNamespace(load_global_config=lambda _root, **_kw: GLOBAL,
                         resolve_repo_root=REAL_DEPLOY.resolve_repo_root),
     )
     host = {"ssh_host": "web", "ssh_key": "/key", "known_host": "pinned", "bundle_dir": "/opt/app"}
-    seen = {"hosts": [], "exec": [], "sync": []}
+    seen = {"hosts": [], "exec": [], "sync": [], "preflight": []}
 
     import ciu.hosts as hosts
     import ciu.transport_ssh as transport
@@ -77,9 +77,14 @@ def remote(monkeypatch, tmp_path):
                         lambda root: HOSTS)
     monkeypatch.setattr(hosts, "get_host",
                         lambda root, name, admin=False: seen["hosts"].append((root, name, admin)) or dict(host))
-    monkeypatch.setattr(transport, "ssh_exec",
-                        lambda cfg, argv, *, config, repo_root, **kwargs:
-                        seen["exec"].append((cfg, argv, config, repo_root, kwargs)) or 0)
+    def fake_exec(cfg, argv, *, config, repo_root, **kwargs):
+        if argv and argv[0].startswith("command -v"):  # the CIU-169 preflight probe
+            seen["preflight"].append((cfg, argv))
+            return 0
+        seen["exec"].append((cfg, argv, config, repo_root, kwargs))
+        return 0
+
+    monkeypatch.setattr(transport, "ssh_exec", fake_exec)
     monkeypatch.setattr(transport, "ssh_sync",
                         lambda cfg, local, target, *, config, repo_root, **kwargs:
                         seen["sync"].append((cfg, local, target, config, repo_root, kwargs)) or 0)
@@ -164,7 +169,7 @@ def test_up_layout_exec_failure_aborts_naming_host_and_remainder(remote, monkeyp
     monkeypatch.setattr(
         transport,
         "ssh_exec",
-        lambda cfg, argv, **kwargs: seen["exec"].append((cfg, argv)) or 7,
+        lambda cfg, argv, **kwargs: 0 if argv[0].startswith("command -v") else seen["exec"].append((cfg, argv)) or 7,
     )
     assert _run(monkeypatch, ["up", "--layout", "three-host"]) == 7
     assert len(seen["sync"]) == 1
@@ -239,6 +244,8 @@ def test_up_layout_last_host_failure_reports_no_remainder(remote, monkeypatch, c
     import ciu.transport_ssh as transport
 
     def fake_exec(cfg, argv, **kwargs):
+        if argv[0].startswith("command -v"):
+            return 0
         seen["exec"].append((cfg, argv))
         return 9 if len(seen["exec"]) == 3 else 0
 
@@ -259,8 +266,8 @@ def test_up_layout_last_host_failure_reports_no_remainder(remote, monkeypatch, c
 @pytest.mark.parametrize(
     ("extra", "needle"),
     [
-        (["--host", "web"], "not allowed with"),
-        (["--dir", "."], "not allowed with"),
+        (["--host", "web"], "cannot be used together"),
+        (["--dir", "."], "cannot be used together"),
         (["--profile", "core"], "cannot be used together"),
         (["--profile=core"], "cannot be used together"),
     ],

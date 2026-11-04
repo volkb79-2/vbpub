@@ -2033,12 +2033,16 @@ def generate_ciu_env(
         physical_git_root = _detect_physical_repo_root(git_root)
         workspace_id = shared.workspace_id_for_path(physical_git_root)
         root_instance_id = shared.workspace_id_for_path(physical_root)
-    except Exception:
+    except Exception as exc:
         # A CIU env can be generated before a Git repository exists in a
         # scaffold. The path-only derivation above is still deterministic; the
         # next Git-backed generation supplies the full workspace/root pair.
         if git_context_expected:
-            raise
+            raise WorkspaceEnvError(
+                f"[S2.8] cannot derive the workspace identity from the git checkout "
+                f"at {repo_root}: {exc}. A git checkout needs at least one commit "
+                "(`git commit --allow-empty -m init`) before `ciu env generate`."
+            ) from exc
     network_values = _compute_network_name(
         physical_root, workspace_id=workspace_id, root_instance_id=root_instance_id,
     )

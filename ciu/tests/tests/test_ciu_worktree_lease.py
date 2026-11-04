@@ -656,10 +656,10 @@ class TestOwnRecordOperations:
 
 
 class TestLeaseTtlConfig:
-    def test_the_table_key_set_is_closed_and_now_holds_five_keys(self):
+    def test_the_table_key_set_is_closed_and_now_holds_six_keys(self):
         assert worktree.WORKTREE_TABLE_KEYS == {
             "max_concurrent_instances", "lease_ttl_hours", "exec_targets", "up",
-            "shared_image_tags",
+            "shared_image_tags", "project_images",
         }
 
     def test_absent_table_means_no_lease_behavior_at_all(self):

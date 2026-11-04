@@ -1505,12 +1505,24 @@ def scope_worktree_compose_images(
     repo_root: Path, rendered_compose: str, *,
     primary_image_references: set[str] | Callable[[], set[str]] | None = None,
     check_primary_image_map: bool = False,
+    declared_images: frozenset[str] = frozenset(),
 ) -> str:
-    """Apply CIU-117's linked-worktree image tags to rendered Compose text."""
-    if not image_isolation.compose_may_require_image_scoping(rendered_compose):
+    """Apply CIU-117's linked-worktree image tags to rendered Compose text.
+
+    *declared_images* (CIU-173, ``[ciu.worktree] project_images``) names images the
+    project builds although no rendered service carries ``build:``; they are scoped
+    like build-declared ones, and a stack that uses one needs the checkout identity.
+    """
+    if not image_isolation.compose_may_require_image_scoping(rendered_compose) and not (
+        declared_images
+        and image_isolation.compose_uses_images(rendered_compose, declared_images)
+    ):
         return rendered_compose
     suffix = worktree.resolve_worktree_image_tag_suffix(repo_root)
-    scoped = image_isolation.scope_compose_images(rendered_compose, suffix)
+    scoped = (
+        image_isolation.scope_compose_images(rendered_compose, suffix, declared_images)
+        if declared_images else image_isolation.scope_compose_images(rendered_compose, suffix)
+    )
     if suffix is not None and check_primary_image_map:
         candidates = image_isolation.project_built_image_references(scoped)
         if candidates:
@@ -2185,6 +2197,7 @@ def main_execution(
             rendered_compose,
             primary_image_references=primary_image_references,
             check_primary_image_map=not dry_run,
+            **worktree.image_scope_kwargs(merged),
         )
         if compose_template.suffix == ".j2":
             # S8.4: atomic write via tmp sibling + os.replace (no partial write).
@@ -2419,6 +2432,7 @@ def run_shipped(
             shipped_compose,
             primary_image_references=primary_image_references,
             check_primary_image_map=not dry_run,
+            **worktree.image_scope_kwargs(global_config),
         )
         try:
             shipped_image_override = image_isolation.compose_image_override(
@@ -2548,6 +2562,33 @@ def run_shipped(
         os.chdir(original_cwd)
 
 
+_CIU_IGNORE_LINES = frozenset({
+    ".ciu", ".ciu/", "/.ciu", "/.ciu/", "**/.ciu", "**/.ciu/", ".ciu/*", "**/.ciu/*",
+})
+
+
+def _gitignore_text_ignores(stack_dir: Path) -> bool:
+    """True when a ``.gitignore`` at or above *stack_dir* lists the ``.ciu`` pattern.
+
+    A push-deployed bundle (S14.2) carries the project's ``.gitignore`` files but
+    its git metadata is excluded or foreign, so ``git check-ignore`` cannot answer
+    there. The shipped text is the same declaration the control host's check
+    passed on (CIU-169). Walks up to the first directory holding ``.git``.
+    """
+    for directory in (stack_dir.resolve(), *stack_dir.resolve().parents):
+        candidate = directory / ".gitignore"
+        if candidate.is_file():
+            try:
+                lines = candidate.read_text(encoding="utf-8").splitlines()
+            except (OSError, UnicodeDecodeError):
+                lines = []
+            if any(line.strip() in _CIU_IGNORE_LINES for line in lines):
+                return True
+        if (directory / ".git").exists():
+            return False
+    return False
+
+
 def _check_gitignore(stack_dir: Path) -> None:
     """S1.7 — abort when ``<stack>/.ciu`` is not gitignored inside a git work tree.
 
@@ -2583,6 +2624,8 @@ def _check_gitignore(stack_dir: Path) -> None:
     ignored_dir = procutil.run_cmd(["git", "check-ignore", "-q", str(ciu_dir)], check=False)
     if ignored_dir.returncode == 0:
         return
+    if _gitignore_text_ignores(stack_dir):
+        return  # a pushed bundle ships the .gitignore text but not always a usable repo (CIU-169)
     raise ValueError(
         f"[S1.7] {ciu_dir} is not gitignored. CIU machine-owned artifacts must be "
         "ignored. Add `**/.ciu/` to your .gitignore and retry."

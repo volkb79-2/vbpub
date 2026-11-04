@@ -173,12 +173,102 @@ def _load_remote_config(repo_root: Path) -> dict:
     from .deploy import load_global_config
 
     try:
-        return load_global_config(repo_root)
+        return load_global_config(repo_root, **_remote_render_kwargs(repo_root))
     except Exception as exc:
         cli_error(
             f"[ERROR] could not load global configuration for remote operation: {exc}",
         )
         raise SystemExit(2) from exc
+
+
+#: Names the remote verbs never consume from the control host (CIU-168): its
+#: machine facts and workspace identity. A push renders them on the TARGET.
+_REMOTE_PLACEHOLDER = "ciu-remote-placeholder"
+_REMOTE_NUMERIC_KEYS = frozenset({
+    "CONTAINER_UID", "CONTAINER_GID", "DOCKER_UID", "DOCKER_GID", "USER_UID", "USER_GID",
+})
+
+
+def _remote_render_kwargs(repo_root: Path) -> dict:
+    """Keyword arguments for the global-config load behind a remote verb (CIU-168).
+
+    The remote verbs (S14.1/S14.2) need the config only for the host inventory,
+    Vault-backed credentials and the repo layout, never for the control host's
+    machine facts. Every identity/machine key the templates may reference and the
+    process environment lacks gets an inert placeholder, and nothing is written
+    (``ciu.global.toml`` stays untouched), so a control host without Docker, a
+    docker group or a generated ``ciu.env`` can still reach a remote host.
+    """
+    from .workspace_env import (
+        GENERATED_FACT_ENV_KEYS, MACHINE_FACT_ENV_KEYS, REQUIRED_KEYS_CORE,
+    )
+
+    environ = dict(os.environ)
+    wanted = {*REQUIRED_KEYS_CORE, *GENERATED_FACT_ENV_KEYS.values(),
+              *MACHINE_FACT_ENV_KEYS.values()}
+    for key in sorted(wanted):
+        if environ.get(key):
+            continue
+        if key in ("REPO_ROOT", "PHYSICAL_REPO_ROOT"):
+            environ[key] = str(repo_root)
+        elif key in _REMOTE_NUMERIC_KEYS:
+            environ[key] = "0"
+        else:
+            environ[key] = _REMOTE_PLACEHOLDER
+    return {"write_rendered": False, "environ": environ}
+
+
+def _remote_ciu(host_cfg: dict) -> str:
+    """The `ciu` executable on the target: the host row's ``remote_ciu`` or ``ciu``."""
+    return str(host_cfg.get("remote_ciu") or "ciu")
+
+
+def _remote_bundle_command(host_cfg: dict, argv: list[str]) -> str:
+    """ONE remote command running ``ciu *argv`` inside the pushed bundle (CIU-170).
+
+    Every remote verb after the push (render, down, status --gate) must run in
+    the bundle with its ``ciu.env`` exported; a login-directory run has no CIU
+    root and no environment.
+    """
+    ciu = _remote_ciu(host_cfg)
+    bundle = shlex.quote(str(host_cfg.get("bundle_dir", "/opt/ciu/current")))
+    return (
+        f'cd {bundle} && eval "$({shlex.quote(ciu)} env print)" && '
+        + shlex.join([ciu, *argv])
+    )
+
+
+def _remote_preflight(host_cfg: dict, host_label: str, *, config: dict, repo_root: Path) -> int:
+    """Check the push preconditions on the target and create ``bundle_dir`` (CIU-169).
+
+    One SSH round trip: ``ciu`` must resolve on the non-login PATH (exit 127), and
+    ``bundle_dir`` is created with its parents because rsync makes only the last
+    path element (exit 126). Prints the exact remedy and returns the exit code;
+    0 means the push may proceed.
+    """
+    from .transport_ssh import ssh_exec
+
+    ciu = _remote_ciu(host_cfg)
+    bundle = str(host_cfg.get("bundle_dir", "/opt/ciu/current"))
+    probe = (
+        f"command -v {shlex.quote(ciu)} >/dev/null 2>&1 || exit 127; "
+        f"mkdir -p {shlex.quote(bundle)} || exit 126"
+    )
+    rc = ssh_exec(host_cfg, [probe], config=config, repo_root=repo_root)
+    if rc == 127:
+        print(
+            f"[ERROR] host '{host_label}': '{ciu}' is not on the remote non-login PATH. "
+            "Symlink it into /usr/local/bin on the target, or set "
+            f"remote_ciu = \"/absolute/path/to/ciu\" in [deploy.hosts.{host_label}] (CIU-169).",
+            file=sys.stderr,
+        )
+    elif rc == 126:
+        print(
+            f"[ERROR] host '{host_label}': cannot create bundle_dir '{bundle}' on the target; "
+            f"choose a path the ssh user can write in [deploy.hosts.{host_label}] (CIU-169).",
+            file=sys.stderr,
+        )
+    return rc
 
 
 def _push_host(
@@ -217,6 +307,9 @@ def _push_host(
         )
     bundle_dir = host_cfg.get("bundle_dir", "/opt/ciu/current")
     from .transport_ssh import ssh_exec, ssh_sync
+    rc = _remote_preflight(host_cfg, host_label, config=config, repo_root=repo_root)
+    if rc != 0:
+        return "preflight", rc
     rc = ssh_sync(host_cfg, str(repo_root), bundle_dir, config=config, repo_root=repo_root)
     if rc != 0:
         return "sync", rc
@@ -226,8 +319,9 @@ def _push_host(
     # shell ssh spawns already interprets the operators natively.
     remote_cmd = (
         extra_exports
-        + f"cd {shlex.quote(str(bundle_dir))} && ciu env generate && ciu render && "
-        + shlex.join(["ciu", "up", *remaining])
+        + f"cd {shlex.quote(str(bundle_dir))} && {shlex.quote(_remote_ciu(host_cfg))} env generate && "
+        + f"{shlex.quote(_remote_ciu(host_cfg))} render && "
+        + shlex.join([_remote_ciu(host_cfg), "up", *remaining])
     )
     rc = ssh_exec(host_cfg, [remote_cmd], config=config, repo_root=repo_root)
     return "exec", rc
@@ -1649,7 +1743,7 @@ def _legacy_dispatch(raw: list[str]) -> None:
             from .hosts import get_host
             from .transport_ssh import ssh_exec
             host_cfg = get_host(repo_root, opts.host)
-            remote_cmd = shlex.join(["ciu", "render", *remaining])
+            remote_cmd = _remote_bundle_command(host_cfg, ["render", *remaining])
             # Pass the whole command as ONE argv element: ssh space-joins remote
             # args into a single string for the remote login shell to re-parse, so
             # an "sh -c" wrapper here would be re-split and break "&&"/cd. The login
@@ -1741,7 +1835,8 @@ def _legacy_dispatch(raw: list[str]) -> None:
                     extra_exports=exports,
                 )
                 if rc != 0:
-                    verb_text = "bundle sync failed" if stage == "sync" else "up failed"
+                    verb_text = {"preflight": "remote preflight failed",
+                                 "sync": "bundle sync failed"}.get(stage, "up failed")
                     print(
                         f"[ERROR] layout '{layout.name}': {verb_text} on host "
                         f"'{host}' ({rc}); not deployed: {remainder}.",
@@ -1821,7 +1916,7 @@ def _legacy_dispatch(raw: list[str]) -> None:
             from .hosts import get_host
             from .transport_ssh import ssh_exec
             host_cfg = get_host(repo_root, opts.host)
-            remote_cmd = shlex.join(["ciu", "down", *remaining])
+            remote_cmd = _remote_bundle_command(host_cfg, ["down", *remaining])
             # Pass the whole command as ONE argv element: ssh space-joins remote
             # args into a single string for the remote login shell to re-parse, so
             # an "sh -c" wrapper here would be re-split and break "&&"/cd. The login
@@ -1904,12 +1999,32 @@ def _legacy_dispatch(raw: list[str]) -> None:
                     raise SystemExit(2)
                 raise SystemExit(rc)
             from .transport_ssh import ssh_exec
-            remote_cmd = shlex.join(["ciu", "status", "--gate", *remaining])
+            remote_cmd = _remote_bundle_command(host_cfg, ["status", "--gate", *remaining])
             # Pass the whole command as ONE argv element: ssh space-joins remote
             # args into a single string for the remote login shell to re-parse, so
             # an "sh -c" wrapper here would be re-split and break "&&"/cd. The login
             # shell ssh spawns already interprets the operators natively.
             raise SystemExit(ssh_exec(host_cfg, [remote_cmd], config=config, repo_root=repo_root))
+        if _flag_given(rest, "--dir"):
+            # `status --gate --dir STACK` (CIU-170): the S7.7 gate over ONE stack, the
+            # same single-stack gate `ciu up --dir --healthcheck` applies.
+            define_root, rest = _extract_define_root(rest)
+            parser = CiuArgumentParser(prog="ciu status --gate --dir")
+            parser.add_argument("--dir", metavar="PATH")
+            parser.add_argument("--profile", action="append", default=None)
+            parser.add_argument("--phases", default=None)
+            opts = parser.parse_args(rest)
+            repo_root = _resolve_repo_root_deploy(define_root)
+            from .deploy import load_global_config
+            from .engine import _run_single_stack_healthcheck
+            try:
+                config = load_global_config(repo_root)
+            except ValueError as exc:
+                print(f"[ERROR] {exc}", file=sys.stderr)
+                raise SystemExit(2)
+            raise SystemExit(
+                _run_single_stack_healthcheck(Path(opts.dir), define_root, config)
+            )
         from .deploy import main as deploy_main
         if "--preflight" in rest:
             extra = [r for r in rest if r != "--preflight"]

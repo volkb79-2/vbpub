@@ -1116,6 +1116,9 @@ class TestCliUpHostRouting:
             return 0
 
         def fake_ssh_exec(host_cfg, argv, *, config, repo_root, interactive=False, admin=False):
+            if argv[0].startswith("command -v"):  # CIU-169 preflight probe
+                assert "mkdir -p /opt/app" in argv[0]
+                return 0
             exec_calls.append({"argv": argv})
             return 0
 
