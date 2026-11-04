@@ -13,6 +13,11 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   `~/.nanorc` still overrides per setting. Runtime test `test_system_defaults.py` updated.
 
 ### Added
+- host-setup `HOST_ROLE=dedicated-dev` load-tier ceilings made reachable (AD2-0; shared-prod byte-identical): `dev-gates.slice` / `dev-background.slice` MemoryMax = dev.slice
+  MemoryHigh (dev's own RAM+swap Max is never reachable), MemorySwapMax = dev.slice swap max minus the protected tiers' MemoryLow sum (floor 256M); that sum now also counts the
+  new optional `DEV_CACHE_MEMORY_LOW` (future `dev-cache.slice`, default empty = 0). Pins still win (`DEV_{GATES,BACKGROUND}_MEMORY_{HIGH,MAX,SWAP_MAX}`). A lane with no swap left is
+  OOM-killed inside gates instead of thrashing (intended). `mdt-host-check.sh` verifies memory.max and memory.swap.max against the derivation. README "Load tiers yield first" and env example 4.0b updated;
+  supersedes the MemoryMax/MemorySwapMax statements of the entry below.
 - host-setup `HOST_ROLE=dedicated-dev` load tiers yield first (MDT-TESTHOST-MEM-2; shared-prod byte-identical): `dev-gates.slice` and `dev-background.slice` MemoryHigh =
   dev.slice MemoryHigh minus (`DEV_INTERACTIVE_MEMORY_LOW` + `DEV_BUILDKITD_MEMORY_LOW`), MemoryMax derived the same way from dev.slice MemoryMax (floor 1G, never above
   dev.slice's, MemoryMax >= MemoryHigh); MemorySwapMax and CPU weights unchanged. `DEV_{GATES,BACKGROUND}_MEMORY_{HIGH,MAX}` are now pins on this role (`-`/`0` omit).

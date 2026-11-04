@@ -102,11 +102,34 @@ class DerivationTests(unittest.TestCase):
         self.assertEqual(m.protected, 768 * MIB)
         for tier in ("gates", "background"):
             self.assertEqual(getattr(m, f"{tier}_high"), m.high - 768 * MIB)
-            self.assertEqual(getattr(m, f"{tier}_max"), m.maximum - 768 * MIB)
+            self.assertEqual(getattr(m, f"{tier}_max"), m.high)  # AD2-0: MemoryMax = dev.slice MemoryHigh
             self.assertEqual(getattr(m, f"{tier}_high_source"), "derived")
-        # unprotected tiers (gates' / background's own Low do not count) and no Lows at all: equal to dev.slice
+        # unprotected tiers (gates' / background's own Low do not count) and no Lows at all: High equal to dev.slice
         m0 = cap.dedicated_memory({"DEV_GATES_MEMORY_LOW": "1G"}, **HOST)
-        self.assertEqual((m0.gates_high, m0.gates_max), (m0.high, m0.maximum))
+        self.assertEqual((m0.gates_high, m0.gates_max), (m0.high, m0.high))
+
+    def test_cache_low_counts_in_the_subtraction_and_defaults_to_zero(self) -> None:
+        m = cap.dedicated_memory({**self.LOWS, "DEV_CACHE_MEMORY_LOW": "256M"}, **HOST)
+        self.assertEqual(m.protected, GIB)
+        self.assertEqual(m.gates_high, m.high - GIB)
+        for off in ("", "-"):
+            self.assertEqual(cap.dedicated_memory({**self.LOWS, "DEV_CACHE_MEMORY_LOW": off}, **HOST).protected, 768 * MIB)
+        with self.assertRaises(cap.CapacityError):
+            cap.dedicated_memory({"DEV_CACHE_MEMORY_LOW": "lots"}, **HOST)
+
+    def test_load_tier_swap_is_dev_swap_minus_protected_with_floor_and_cap(self) -> None:
+        # T 7.75 G (MemTotal 8 G, keep 1 G -> dev High 7 G) x dev swap in {0, 8, 16} G, protected 768 MiB
+        for swap_gib, want in ((0, 0), (8, 8 * GIB - 768 * MIB), (16, 16 * GIB - 768 * MIB)):
+            self.assertEqual(cap.load_tier_swap(swap_gib * GIB, 768 * MIB), want)
+        self.assertEqual(cap.load_tier_swap(512 * MIB, 768 * MIB), 256 * MIB)  # floor
+        self.assertEqual(cap.load_tier_swap(128 * MIB, 768 * MIB), 128 * MIB)  # never above dev.slice's
+        self.assertEqual(cap.load_tier_swap(8 * GIB, 0), 8 * GIB)
+
+    def test_load_tier_max_is_dev_high_on_each_swap_size(self) -> None:
+        for swap_gib in (0, 8, 16):
+            m = cap.dedicated_memory(self.LOWS, mem_total=8 * GIB, swap_total=swap_gib * GIB)
+            self.assertEqual((m.gates_max, m.background_max), (m.high, m.high))
+            self.assertEqual(m.gates_high, m.high - 768 * MIB)
 
     def test_load_tier_floor_cap_and_omission(self) -> None:
         m = cap.dedicated_memory({**self.LOWS, "DEV_MEMORY_HIGH": "1500M", "DEV_MEMORY_MAX": "2G"}, **HOST)
@@ -121,7 +144,7 @@ class DerivationTests(unittest.TestCase):
         m = cap.dedicated_memory({**self.LOWS, "DEV_GATES_MEMORY_HIGH": "3G", "DEV_BACKGROUND_MEMORY_MAX": "-"}, **HOST)
         self.assertEqual(m.gates_high, 3 * GIB)
         self.assertIn("pin", m.gates_high_source)
-        self.assertEqual(m.gates_max, m.maximum - 768 * MIB)  # the other side stays derived
+        self.assertEqual(m.gates_max, m.high)  # the other side stays derived (dev.slice MemoryHigh)
         self.assertIsNone(m.background_max)
         self.assertEqual(m.background_high, m.high - 768 * MIB)
         low_max = cap.dedicated_memory({**self.LOWS, "DEV_GATES_MEMORY_MAX": "4G"}, **HOST)
@@ -193,6 +216,18 @@ class CliTests(unittest.TestCase):
         self.assertEqual(out["DEDICATED_MEM_HIGH"], str(8 * GIB - GIB))
         self.assertEqual(out["DEDICATED_MEM_KEEP"], str(GIB))
         self.assertEqual(out["DEDICATED_PROTECTED_UNITS"], cap.DEDICATED_PROTECTED_UNITS_DEFAULT)
+
+    def test_dedicated_memory_prints_the_load_tier_swap_for_a_dev_swap(self) -> None:
+        mi = str(meminfo(self.tmp / "mi"))
+        env = "HOST_ROLE=dedicated-dev\nDEV_INTERACTIVE_MEMORY_LOW=512M\nDEV_BUILDKITD_MEMORY_LOW=256M\nDEV_CACHE_MEMORY_LOW=256M\n"
+        for swap_gib in (0, 8, 16):
+            r = self.run_cli(env, "dedicated-memory", "--meminfo", mi, "--dev-swap", str(swap_gib * GIB))
+            self.assertEqual(r.returncode, 0, r.stderr)
+            out = dict(line.split("=", 1) for line in r.stdout.splitlines())
+            self.assertEqual(out["DEDICATED_PROTECTED_LOW"], str(GIB))
+            self.assertEqual(out["DEDICATED_LOAD_SWAP"], str(cap.load_tier_swap(swap_gib * GIB, GIB)))
+            self.assertEqual(out["DEDICATED_GATES_MAX"], out["DEDICATED_MEM_HIGH"])
+        self.assertNotIn("DEDICATED_LOAD_SWAP", self.run_cli(env, "dedicated-memory", "--meminfo", mi).stdout)
 
     def test_dedicated_memory_refuses_a_bad_keep_with_exit_2(self) -> None:
         r = self.run_cli("HOST_ROLE=dedicated-dev\nDEV_HOST_MEMORY_KEEP=0\n", "dedicated-memory", "--meminfo", str(meminfo(self.tmp / "mi")))
@@ -289,7 +324,14 @@ echo "HIGH=${{DEV_MEMORY_HIGH:-}} MAX=${{DEV_MEMORY_MAX:-}} LOW=${{DEV_MEMORY_LO
         r = self.run_pre("HOST_ROLE=dedicated-dev\nDEV_INTERACTIVE_MEMORY_LOW=512M\nDEV_BUILDKITD_MEMORY_LOW=256M\n")
         self.assertEqual(r.returncode, 0, r.stderr)
         want = 7 * GIB - 768 * MIB
-        self.assertIn(f"GATES_HIGH={want} GATES_MAX={23 * GIB - 768 * MIB}", r.stdout)
+        self.assertIn(f"GATES_HIGH={want} GATES_MAX={7 * GIB}", r.stdout)  # AD2-0: Max = dev.slice MemoryHigh
+
+    def test_the_install_swap_loop_uses_the_one_python_derivation_for_the_load_tiers_on_dedicated_dev_only(self) -> None:
+        self.assertIn("DEV_GATES_MEMORY_SWAP_MAX|DEV_BACKGROUND_MEMORY_SWAP_MAX)", INSTALL_SH)
+        self.assertIn("--dev-swap \"$DEV_SWAP_MAX\"", INSTALL_SH)
+        self.assertIn('[ "$MDT_DEDICATED_MEM" = 1 ]', INSTALL_SH)
+        # an explicit value (pin) never reaches the derivation: the branch is inside the `-z ${!_swap_var}` condition
+        self.assertIn('if [ -z "${!_swap_var:-}" ] && [ "${!_unset_var:-0}" != 1 ] && [ -n "${DEV_SWAP_MAX:-}" ]; then\n      case', INSTALL_SH)
 
     def test_a_refused_derivation_exits_2_before_anything_is_changed(self) -> None:
         r = self.run_pre("HOST_ROLE=dedicated-dev\nDEV_HOST_MEMORY_KEEP=0\n")
@@ -496,6 +538,10 @@ class TemplateAndDocsTests(unittest.TestCase):
         self.assertIn("dedicated-memory", CHECK_SH)
         self.assertIn("DEDICATED_${_tier_key}_", CHECK_SH)
         self.assertIn("is below dev.slice memory.high", CHECK_SH)
+        # AD2-0: swap derivation checked too
+        self.assertIn("minus the protected tiers' MemoryLow sum (AD2-0)", CHECK_SH)
+        self.assertIn("--dev-swap", CHECK_SH)
+        self.assertIn("DEV_CACHE_MEMORY_LOW", EXAMPLE.read_text())
 
     def test_no_text_calls_memory_max_a_leak_backstop_and_the_bounds_are_documented_honestly(self) -> None:
         readme = (ROOT / "README.md").read_text()

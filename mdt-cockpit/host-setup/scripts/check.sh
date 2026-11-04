@@ -276,6 +276,23 @@ if [ -d "$DEV_PATH" ]; then
           if [ "$eff" = "$want" ]; then ok "$_tier_unit $prop=$eff matches the HOST_ROLE=dedicated-dev derivation (dev.slice minus the protected tiers' MemoryLow)"
           else fail "$_tier_unit $prop=$eff but the HOST_ROLE=dedicated-dev derivation says $want (dev.slice minus the protected tiers' MemoryLow, or a DEV_${_tier_key}_MEMORY_${prop_label#*:} pin). Re-run install.sh."; fi
         done
+        # AD2-0: memory.max = dev.slice memory.high (checked above), memory.swap.max = dev.slice's minus the protected Lows' sum.
+        _d_swap="$(cat "$DEV_PATH/memory.swap.max" 2>/dev/null)"; _t_swap="$(cat "$_tier_dir/memory.swap.max" 2>/dev/null)"
+        if [ "${_d_swap:-max}" = max ]; then
+          info "$_tier_unit memory.swap.max=$_t_swap (dev.slice has no swap ceiling: nothing to derive from)"
+        elif _ded_swap=$(python3 "$_CAPACITY_PY" dedicated-memory "$CONF" --meminfo /proc/meminfo --dev-swap "$_d_swap" 2>&1); then
+          _want_swap="$(printf '%s\n' "$_ded_swap" | sed -n 's/^DEDICATED_LOAD_SWAP=//p')"
+          _cfg_swap_var="DEV_${_tier_key}_MEMORY_SWAP_MAX"
+          if [ -n "${!_cfg_swap_var:-}" ]; then
+            info "$_tier_unit memory.swap.max=$_t_swap ($_cfg_swap_var is a pin: not compared with the derivation)"
+          elif [ "$_t_swap" = "$_want_swap" ]; then
+            ok "$_tier_unit memory.swap.max=$_t_swap = dev.slice's $_d_swap minus the protected tiers' MemoryLow sum (AD2-0)"
+          else
+            fail "$_tier_unit memory.swap.max=$_t_swap but the HOST_ROLE=dedicated-dev derivation says $_want_swap (dev.slice's $_d_swap minus the protected tiers' MemoryLow sum). Re-run install.sh."
+          fi
+        else
+          warn "HOST_ROLE=dedicated-dev load-tier swap derivation failed: $_ded_swap"
+        fi
         _t_high="$(cat "$_tier_dir/memory.high" 2>/dev/null)"; _d_high="$(cat "$DEV_PATH/memory.high" 2>/dev/null)"
         if [ "$_t_high" != max ] && [ "$_d_high" != max ] && [ "$_t_high" -lt "$_d_high" ] 2>/dev/null; then
           ok "$_tier_unit memory.high=$_t_high is below dev.slice memory.high=$_d_high (the load yields before the protected tiers)"

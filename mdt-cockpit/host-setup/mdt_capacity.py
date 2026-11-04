@@ -136,6 +136,13 @@ def validate_size_or_zero(value: str) -> str | None:
     return None
 
 
+def validate_optional_size(value: str) -> str | None:
+    """Empty and `-` (both: none) or a size (DEV_CACHE_MEMORY_LOW)."""
+    if value.strip() in ("", "-"):
+        return None
+    return validate_size_or_zero(value)
+
+
 _CORES_RE = re.compile(r"^\d+(\.\d)?$")
 
 
@@ -400,7 +407,18 @@ class DedicatedMemory:
     background_max: int | None = None
 
 # The tiers whose MemoryLow dev-gates / dev-background must leave room for.
-_PROTECTED_LOW_KEYS = ("DEV_INTERACTIVE_MEMORY_LOW", "DEV_BUILDKITD_MEMORY_LOW")
+# DEV_CACHE_MEMORY_LOW is the future dev-cache.slice's Low (AD2-2): a dev sibling too, so its protection must
+# not push dev past its High either. Absent / empty / `-` = 0 (the slice does not exist yet).
+_PROTECTED_LOW_KEYS = ("DEV_INTERACTIVE_MEMORY_LOW", "DEV_BUILDKITD_MEMORY_LOW", "DEV_CACHE_MEMORY_LOW")
+# Floor of a derived load-tier swap ceiling (when dev.slice's own swap allows that much).
+DEDICATED_LOAD_SWAP_FLOOR = 256 * 1024 * 1024
+
+
+def load_tier_swap(dev_swap: int, protected: int) -> int:
+    """gates / background MemorySwapMax on HOST_ROLE=dedicated-dev: dev.slice's swap minus the protected
+    tiers' MemoryLow sum, so the cockpit's above-Low pages can always be swapped out; floor 256M, never above
+    dev.slice's own. A load leak then ends in a memcg OOM inside the tier once its swap is spent."""
+    return min(dev_swap, max(DEDICATED_LOAD_SWAP_FLOOR, dev_swap - protected))
 # Floor of a derived load-tier ceiling (a smaller value would stall every lane).
 DEDICATED_LOAD_FLOOR = 1024 ** 3
 
@@ -487,6 +505,8 @@ def dedicated_memory(values: dict[str, str], *, mem_total: int, swap_total: int)
     protected = 0
     for key in _PROTECTED_LOW_KEYS:
         raw = (values.get(key, "") or "").strip()
+        if key == "DEV_CACHE_MEMORY_LOW" and raw not in ("", "-") and parse_size_bytes(raw) is None:
+            raise CapacityError(f"{key}={raw!r} is not a size (use a size such as 512M, `-` or empty for none)")
         protected += (parse_size_bytes(raw) or 0) if raw not in ("", "-") else 0
 
     def derive_load(dev_value: int | None) -> int | None:
@@ -494,8 +514,11 @@ def dedicated_memory(values: dict[str, str], *, mem_total: int, swap_total: int)
             return None
         return min(dev_value, max(DEDICATED_LOAD_FLOOR, dev_value - protected))
 
+    # MemoryMax of a load tier = dev.slice's MemoryHigh (AD2-0): memory.max counts RAM only, so dev's own
+    # (RAM+swap-derived) Max is unreachable; a RAM-sized Max is a real backstop that, once the tier can no
+    # longer swap, OOM-kills inside the tier instead of thrashing the host.
     load_high = derive_load(high)
-    load_max = derive_load(maximum)
+    load_max = high
     if load_high is not None and load_max is not None:
         load_max = max(load_max, load_high)
     resolved: dict[str, tuple[int | None, str]] = {}
@@ -505,7 +528,7 @@ def dedicated_memory(values: dict[str, str], *, mem_total: int, swap_total: int)
         if hs == "derived" and load_high is None:
             h, hs = None, "omitted (dev.slice has no MemoryHigh)"
         if ms == "derived" and load_max is None:
-            m, ms = None, "omitted (dev.slice has no MemoryMax)"
+            m, ms = None, "omitted (dev.slice has no MemoryHigh)"
         # one side pinned, the other derived: the derived value follows the pin instead of refusing the pair
         if h is not None and m is not None and h > m:
             if hs == "derived":
@@ -1023,6 +1046,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     m = sub.add_parser("dedicated-memory", help="HOST_ROLE=dedicated-dev: print the dev.slice memory limits as KEY=VALUE lines")
     m.add_argument("env", type=Path)
     m.add_argument("--meminfo", type=Path, default=Path("/proc/meminfo"))
+    m.add_argument("--dev-swap", type=int, default=None, help="dev.slice MemorySwapMax in bytes: also print the derived load-tier swap ceiling")
     d = sub.add_parser("derive", help="print the derived MDT capacity as KEY=VALUE lines")
     d.add_argument("env", type=Path)
     d.add_argument("--meminfo", type=Path, default=Path("/proc/meminfo"))
@@ -1103,6 +1127,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"DEDICATED_{_tier}_MAX={'' if _vals[1] is None else _vals[1]}")
             print(f"DEDICATED_{_tier}_HIGH_SOURCE={_vals[2]}")
             print(f"DEDICATED_{_tier}_MAX_SOURCE={_vals[3]}")
+        print(f"DEDICATED_PROTECTED_LOW={mem.protected}")
+        if args.dev_swap is not None:
+            print(f"DEDICATED_LOAD_SWAP={load_tier_swap(args.dev_swap, mem.protected)}")
         print(f"DEDICATED_PROTECTED_UNITS={' '.join(protected)}")
         return 0
     try:

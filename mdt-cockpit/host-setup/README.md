@@ -1144,21 +1144,29 @@ tier, minus what the host keeps (`DEV_HOST_MEMORY_KEEP`, default 1G, minimum 256
 | `dev.slice` MemoryHigh | `DEV_MEMORY_HIGH` | pin, else `MemTotal - MDT_EXCLUDED_RAM - DEV_HOST_MEMORY_KEEP` |
 | `dev.slice` MemoryLow | `DEV_MEMORY_LOW` | pin, else the sum of the tiers' MemoryLow (a tier's Low protects only when its ancestors carry it) |
 | `dev-interactive` / `dev-buildkitd` MemoryHigh / MemoryMax | `DEV_<TIER>_MEMORY_{HIGH,MAX}` | ignored: no directive rendered (install.sh names the values it ignored) |
-| `dev-gates` / `dev-background` MemoryHigh / MemoryMax | `DEV_{GATES,BACKGROUND}_MEMORY_{HIGH,MAX}` | pin, else `dev.slice` value minus (`DEV_INTERACTIVE_MEMORY_LOW` + `DEV_BUILDKITD_MEMORY_LOW`), never below 1G and never above dev.slice's (see "Load tiers yield first"); `-`/`0` omits |
+| `dev-gates` / `dev-background` MemoryHigh | `DEV_{GATES,BACKGROUND}_MEMORY_HIGH` | pin, else `dev.slice` MemoryHigh minus P = (`DEV_INTERACTIVE_MEMORY_LOW` + `DEV_BUILDKITD_MEMORY_LOW` + `DEV_CACHE_MEMORY_LOW`), never below 1G and never above dev.slice's (see "Load tiers yield first"); `-`/`0` omits |
+| `dev-gates` / `dev-background` MemoryMax | `DEV_{GATES,BACKGROUND}_MEMORY_MAX` | pin, else `dev.slice` MemoryHigh (a reachable RAM ceiling; AD2-0) |
+| `dev-gates` / `dev-background` MemorySwapMax | `DEV_{GATES,BACKGROUND}_MEMORY_SWAP_MAX` | pin, else `dev.slice` swap max minus P (floor 256M, never above dev.slice's) |
 | tier MemoryLow / MemoryMin | as configured | as configured: this is the protection between tiers (e.g. the IDE, BuildKit) |
-| tier MemorySwapMax | `DEV_SWAP_CASCADE_PCT`% of dev.slice's | equal to dev.slice's |
+| interactive / buildkitd MemorySwapMax | `DEV_SWAP_CASCADE_PCT`% of dev.slice's | equal to dev.slice's |
 | `system.slice` | untouched | MemoryLow = `DEV_HOST_MEMORY_KEEP` |
 | host services (`DEV_HOST_PROTECTED_UNITS`: docker, containerd, cgpd, mdt-psi-guard, journald, oomd; never ssh) | untouched | OOMScoreAdjust=-900 drop-in (never weakening a unit that already has a lower value, e.g. containerd -999); a unit that leaves the list loses its drop-in on the next install |
 | mdt-psi-guard signals | `MDT_PROTECTED_UNITS` + host memory `full` | the same plus the host services above |
 
 Load tiers yield first (MDT-TESTHOST-MEM-2). A running cockpit (`dev-interactive`, MemoryLow 512M) and BuildKit (`dev-buildkitd`, 256M) only keep their Low while the
-siblings that carry the load stay below dev.slice by at least that sum. So `dev-gates.slice` and `dev-background.slice` get MemoryHigh = dev.slice MemoryHigh minus
-(`DEV_INTERACTIVE_MEMORY_LOW` + `DEV_BUILDKITD_MEMORY_LOW`), floored at 1G and capped at dev.slice's value; MemoryMax is derived the same way from dev.slice MemoryMax
-(and kept >= the tier's MemoryHigh). MemoryHigh is the value that acts: the kernel throttles and reclaims the load tier first. MemoryMax is derived only for
-consistency, since `memory.max` is not reachable here (see below). `memory.swap.max` stays equal to dev.slice's: swap is one shared pool and a smaller tier cap would
-kill the load earlier without returning any RAM. A `DEV_{GATES,BACKGROUND}_MEMORY_{HIGH,MAX}` pin wins (floor 256M, HIGH <= MAX); `-`/`0` omit. If dev.slice itself has no
-MemoryHigh/MemoryMax (pin `-`), the tier's is omitted too. CPU weights are unchanged (the load already yields on CPU). Example (8 GB RAM, 16 GB swap, keep 1G, Low 512M+256M):
-dev.slice high 7246938112, gates/background high 6441631744 (= minus 805306368).
+siblings that carry the load stay below dev.slice by at least that sum, P = `DEV_INTERACTIVE_MEMORY_LOW` + `DEV_BUILDKITD_MEMORY_LOW` + `DEV_CACHE_MEMORY_LOW`
+(the last is the future `dev-cache.slice`'s Low, default empty = 0). So `dev-gates.slice` and `dev-background.slice` get (AD2-0):
+- MemoryHigh = dev.slice MemoryHigh minus P, floored at 1G and capped at dev.slice's value. It is the value that acts: the kernel throttles and reclaims the load tier first.
+- MemoryMax = dev.slice MemoryHigh (never below the tier's MemoryHigh). dev.slice's own Max is a RAM+swap figure that `memory.max` (RAM only) can never reach; a RAM-sized
+  Max is a reachable backstop.
+- MemorySwapMax = dev.slice swap max minus P, floored at 256M and capped at dev.slice's. If gates could take all of dev's swap, dev-level reclaim could not move the
+  cockpit's above-Low pages out and would only throttle it; the subtraction keeps that room.
+- Consequence (intended): a lane that needs more than MemoryHigh..MemoryMax resident with no swap left is OOM-killed inside gates (`oom_kill` in the tier's `memory.events`)
+  instead of thrashing the host. An infrastructure event, never a product verdict. oomd, zswap writeback and dev.slice's values are unchanged.
+
+A `DEV_{GATES,BACKGROUND}_MEMORY_{HIGH,MAX,SWAP_MAX}` pin wins (HIGH/MAX floor 256M, HIGH <= MAX); `-`/`0` omit. If dev.slice itself has no MemoryHigh (pin `-`), the tier's
+High and Max are omitted too. CPU weights are unchanged. Example (8 GB RAM, 16 GB swap, keep 1G, Low 512M+256M, no cache): dev.slice high 7246938112, gates/background high 6441631744
+(= minus 805306368), gates/background max 7246938112, swap max = dev swap minus 805306368.
 
 Sizing the keep: `DEV_HOST_MEMORY_KEEP` must cover the host's own working set (dockerd, containerd, journald, cgpd, page cache). Measured on both test hosts:
 `system.slice` memory.current 1.0-1.1 GB, hence the 1G default; `mdt-host-check.sh` warns when the measured `system.slice` memory.current exceeds the keep.

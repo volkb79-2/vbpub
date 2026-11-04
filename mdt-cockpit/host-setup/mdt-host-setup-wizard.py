@@ -846,6 +846,7 @@ def _config_value_validators() -> dict[str, Validator]:
         "HOST_ROLE": validate_host_role,
         "DEV_HOST_MEMORY_KEEP": mdt_capacity.validate_host_memory_keep,
         "DEV_HOST_PROTECTED_UNITS": mdt_capacity.validate_host_protected_units,
+        "DEV_CACHE_MEMORY_LOW": mdt_capacity.validate_optional_size,
         "IO_DEV_PATH": validate_io_dev_path,
         "DEV_STATIC_RIOPS": validate_positive_int,
         "DEV_STATIC_WIOPS": validate_positive_int,

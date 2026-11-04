@@ -1403,3 +1403,10 @@ with no score, not a parse of the challenge HTML.
 
 **Status:** OPEN. `scripts/debian-install-v2/tools/cpu_benchmark.pins.json` holds only x86_64 (Geekbench 7.1.0, sha256 read from the real download in HB-1). An architecture without a pin is `warned` by the installer and refused by `install.sh cpu-benchmark`, never run unverified.
 **Acceptance.** Download the `LinuxARMPreview` 7.1.0 archive on an aarch64-capable path, record its sha256 in the pins file, add a test, and bump the pins together with the tool's `.sha256` where needed.
+
+## MDT-073 - VM-only leak test for the load-tier ceilings (AD2-0 gate) (2026-11-05)
+
+**Status:** OPEN. AD2-0 (gates/background MemoryMax = dev.slice MemoryHigh, MemorySwapMax = dev swap minus the protected Lows) is covered by hermetic host-setup tests and verified live by `mdt-host-check.sh`; the behavioural gate of the addendum needs a real VM.
+
+**Next steps.** In `testing/vm` (next to `vm-governance-acceptance.sh`): install host-setup on `HOST_ROLE=dedicated-dev` with swap, start a leaking process in a `dev-gates.slice` leaf, hold an interactive scope with a working set above its Low.
+**Acceptance.** The leaf ends with `oom_kill` in `dev-gates.slice` `memory.events` once its swap is spent, while the interactive scope's memory PSI stays below 5 % and its allocations are not throttled. Never run on a live host.

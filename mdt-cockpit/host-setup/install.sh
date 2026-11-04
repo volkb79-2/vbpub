@@ -979,7 +979,7 @@ if [ "$MDT_DEDICATED_MEM" = 1 ]; then
     esac
     printf -v "$_ded_tier_key" '%s' ""
   done
-  echo "HOST_ROLE=dedicated-dev memory: dev.slice MemoryHigh=${DEV_MEMORY_HIGH:-none} (${_ded_high_src}), MemoryMax=${DEV_MEMORY_MAX:-none} (${_ded_max_src}), MemoryLow=${DEV_MEMORY_LOW:-none} (${_ded_low_src}); host keeps ${MDT_DEDICATED_KEEP}B (DEV_HOST_MEMORY_KEEP); dev-gates MemoryHigh=${DEV_GATES_MEMORY_HIGH:-none} MemoryMax=${DEV_GATES_MEMORY_MAX:-none} (${_ded_gates_high_src}/${_ded_gates_max_src}), dev-background MemoryHigh=${DEV_BACKGROUND_MEMORY_HIGH:-none} MemoryMax=${DEV_BACKGROUND_MEMORY_MAX:-none} (${_ded_bg_high_src}/${_ded_bg_max_src}); interactive and buildkitd tiers carry no MemoryHigh/MemoryMax; every tier's swap ceiling equals dev.slice's"
+  echo "HOST_ROLE=dedicated-dev memory: dev.slice MemoryHigh=${DEV_MEMORY_HIGH:-none} (${_ded_high_src}), MemoryMax=${DEV_MEMORY_MAX:-none} (${_ded_max_src}), MemoryLow=${DEV_MEMORY_LOW:-none} (${_ded_low_src}); host keeps ${MDT_DEDICATED_KEEP}B (DEV_HOST_MEMORY_KEEP); dev-gates MemoryHigh=${DEV_GATES_MEMORY_HIGH:-none} MemoryMax=${DEV_GATES_MEMORY_MAX:-none} (${_ded_gates_high_src}/${_ded_gates_max_src}), dev-background MemoryHigh=${DEV_BACKGROUND_MEMORY_HIGH:-none} MemoryMax=${DEV_BACKGROUND_MEMORY_MAX:-none} (${_ded_bg_high_src}/${_ded_bg_max_src}); interactive and buildkitd tiers carry no MemoryHigh/MemoryMax; interactive/buildkitd swap ceilings equal dev.slice's, gates/background swap = dev.slice's minus the protected tiers' MemoryLow sum"
   if [ -n "$_ded_ignored" ]; then
     echo "NOTICE: HOST_ROLE=dedicated-dev ignores the per-tier memory ceilings still set in $CONFIG_PATH (clear them to silence this):${_ded_ignored}" >&2
   fi
@@ -1011,6 +1011,21 @@ if [ -n "${_host_swap_bytes:-}" ] && [ "$_host_swap_bytes" -gt 0 ]; then
   for _swap_var in DEV_INTERACTIVE_MEMORY_SWAP_MAX DEV_BACKGROUND_MEMORY_SWAP_MAX DEV_GATES_MEMORY_SWAP_MAX DEV_BUILDKITD_MEMORY_SWAP_MAX; do
     _unset_var="${_swap_var}_UNSET"
     if [ -z "${!_swap_var:-}" ] && [ "${!_unset_var:-0}" != 1 ] && [ -n "${DEV_SWAP_MAX:-}" ]; then
+      case "$_swap_var" in
+        DEV_GATES_MEMORY_SWAP_MAX|DEV_BACKGROUND_MEMORY_SWAP_MAX)
+          if [ "$MDT_DEDICATED_MEM" = 1 ]; then
+            # AD2-0: the load tiers get dev.slice's swap minus the protected tiers' MemoryLow sum (one
+            # implementation: mdt_capacity.load_tier_swap), so a leak ends in a memcg OOM inside the tier.
+            if ! _ded_swap=$(python3 "$HERE/mdt_capacity.py" dedicated-memory "$CANDIDATE_PATH" --meminfo /proc/meminfo --dev-swap "$DEV_SWAP_MAX"); then
+              echo "ERROR: HOST_ROLE=dedicated-dev: the load-tier swap ceiling cannot be derived; nothing was changed." >&2
+              exit 2
+            fi
+            printf -v "$_swap_var" '%s' "$(printf '%s\n' "$_ded_swap" | sed -n 's/^DEDICATED_LOAD_SWAP=//p')"
+            echo "$_swap_var: HOST_ROLE=dedicated-dev -> dev.slice's ${DEV_SWAP_MAX}B minus the protected tiers' MemoryLow sum -> ${!_swap_var}B"
+            continue
+          fi
+          ;;
+      esac
       printf -v "$_swap_var" '%s' "$(_pct_of "$DEV_SWAP_MAX" "$DEV_SWAP_CASCADE_PCT")"
       echo "$_swap_var: auto-detected (${DEV_SWAP_CASCADE_PCT}% of dev.slice's ${DEV_SWAP_MAX}B) -> ${!_swap_var}B"
     elif [ -z "${!_swap_var:-}" ] && [ "${!_unset_var:-0}" != 1 ]; then
