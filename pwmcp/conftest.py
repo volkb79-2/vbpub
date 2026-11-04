@@ -1,43 +1,134 @@
-"""Project-wide test isolation checks for the PWMCP suite."""
+"""Project-wide test isolation checks for the PWMCP suite.
+
+Repository-cleanliness guard contract (PWMCP-12..16):
+
+* Scope: Git-visible paths under ``pwmcp/`` only (``git status`` limited to this directory), measured
+  before the first test and after the last one. Changes elsewhere in the monorepo are not blamed on PWMCP.
+* Out of scope: ignored paths (``.pytest_cache/``, ``__pycache__/``, ``.assay/``, ``coverage.json``) and
+  files interpreter-exit writers such as coverage create after the session ends. The guard certifies
+  "no new or changed Git-visible entries", not whole-tree cleanliness.
+* Prerequisite: a Git checkout this user may read. Missing ``git``, a non-worktree snapshot and a
+  ``safe.directory`` refusal each stop the run before the suite with one actionable message;
+  ``PWMCP_ALLOW_NO_GIT_GUARD=1`` is the explicit, warned opt-out for snapshot lanes without Git.
+* Runs once, in the pytest-xdist controller (or the only process), never in workers, so one worker's
+  temporary write can never be attributed to another worker's snapshot window.
+* The status query uses ``--no-optional-locks`` (no index refresh contention), has a timeout, and the
+  failure report lists a bounded number of added/removed entries plus a count of omitted ones.
+"""
 
 from __future__ import annotations
 
 import os
 import shutil
 import subprocess
-from collections.abc import Iterator
+import sys
 from pathlib import Path
 
 import pytest
 
 _REPOSITORY = Path(__file__).resolve().parent
 _GIT_EXECUTABLE_ENV = "PWMCP_TEST_GIT_EXECUTABLE"
+_ALLOW_NO_GUARD_ENV = "PWMCP_ALLOW_NO_GIT_GUARD"
+_GIT_TIMEOUT_SECONDS = 60
+_REPORT_LIMIT = 20
+_SNAPSHOT_KEY = pytest.StashKey[tuple[str, ...]]()
 
 
-def _git_status_porcelain() -> str:
-    git_executable = os.environ.get(_GIT_EXECUTABLE_ENV) or shutil.which("git")
-    if git_executable is None:
-        raise RuntimeError(
-            f"the PWMCP Git-status guard requires git on PATH or {_GIT_EXECUTABLE_ENV}"
+class GitGuardUnavailable(RuntimeError):
+    """The Git prerequisite of the cleanliness guard is not met; the message says how to fix it."""
+
+
+def classify_git_failure(stderr: str) -> str:
+    """Turn a failed ``git status`` into one actionable diagnostic."""
+
+    text = stderr.strip()
+    if "dubious ownership" in text or "safe.directory" in text:
+        return (
+            "git refuses this checkout (dubious ownership). Run "
+            f"'git config --global --add safe.directory {_REPOSITORY}' (or set it in the gate's "
+            "environment) so the PWMCP cleanliness guard can read it."
         )
-    result = subprocess.run(
-        [git_executable, "status", "--porcelain", "--untracked-files=all"],
-        cwd=_REPOSITORY,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return result.stdout
+    if "not a git repository" in text:
+        return (
+            f"{_REPOSITORY} is not inside a Git worktree (a source snapshot?). Run the suite from a "
+            f"checkout, or set {_ALLOW_NO_GUARD_ENV}=1 to run without the repository-cleanliness guard."
+        )
+    return f"git status failed: {text[-500:] or '<no stderr>'}"
 
 
-@pytest.fixture(scope="session", autouse=True)
-def git_tree_unchanged() -> Iterator[None]:
-    """Fail if the test session leaves Git-visible files in the repository."""
-    before = _git_status_porcelain()
-    yield
-    after = _git_status_porcelain()
-    assert after == before, (
-        "PWMCP tests changed Git-visible repository state during the session.\n"
-        f"Before:\n{before or '<clean>'}\n"
-        f"After:\n{after or '<clean>'}"
-    )
+def snapshot(
+    repository: Path = _REPOSITORY,
+    git_executable: str | None = None,
+    timeout: float = _GIT_TIMEOUT_SECONDS,
+) -> tuple[str, ...]:
+    """Git-visible status entries under ``repository`` (sorted lines); raises ``GitGuardUnavailable``."""
+
+    git = git_executable or os.environ.get(_GIT_EXECUTABLE_ENV) or shutil.which("git")
+    if git is None:
+        raise GitGuardUnavailable(
+            f"git is not on PATH. Install it, set {_GIT_EXECUTABLE_ENV}, or set "
+            f"{_ALLOW_NO_GUARD_ENV}=1 to run without the repository-cleanliness guard."
+        )
+    try:
+        result = subprocess.run(
+            [git, "--no-optional-locks", "status", "--porcelain", "--untracked-files=all", "--", "."],
+            cwd=repository,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise GitGuardUnavailable(f"git executable {git!r} cannot be run: {exc}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise GitGuardUnavailable(f"git status did not finish within {timeout:g}s in {repository}") from exc
+    if result.returncode != 0:
+        raise GitGuardUnavailable(classify_git_failure(result.stderr))
+    return tuple(sorted(result.stdout.splitlines()))
+
+
+def describe_change(before: tuple[str, ...], after: tuple[str, ...], limit: int = _REPORT_LIMIT) -> str:
+    """Bounded report of entries that appeared or disappeared between two snapshots."""
+
+    added = sorted(set(after) - set(before))
+    removed = sorted(set(before) - set(after))
+    lines = ["PWMCP tests changed Git-visible repository state under pwmcp/ during the session."]
+    for label, entries in (("Added/changed", added), ("No longer listed", removed)):
+        if not entries:
+            continue
+        lines.append(f"{label} ({len(entries)}):")
+        lines.extend(f"  {entry}" for entry in entries[:limit])
+        if len(entries) > limit:
+            lines.append(f"  ... and {len(entries) - limit} more")
+    return "\n".join(lines)
+
+
+def _is_xdist_worker(config: pytest.Config) -> bool:
+    return hasattr(config, "workerinput")
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    if _is_xdist_worker(session.config):
+        return
+    try:
+        session.config.stash[_SNAPSHOT_KEY] = snapshot()
+    except GitGuardUnavailable as exc:
+        if os.environ.get(_ALLOW_NO_GUARD_ENV) == "1":
+            sys.stderr.write(f"WARNING: PWMCP repository-cleanliness guard disabled: {exc}\n")
+            return
+        raise pytest.UsageError(f"PWMCP repository-cleanliness guard cannot run: {exc}") from exc
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    before = session.config.stash.get(_SNAPSHOT_KEY, None)
+    if before is None or _is_xdist_worker(session.config):
+        return
+    try:
+        after = snapshot()
+    except GitGuardUnavailable as exc:
+        sys.stderr.write(f"PWMCP repository-cleanliness guard could not re-read the tree: {exc}\n")
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
+        return
+    if after != before:
+        sys.stderr.write(describe_change(before, after) + "\n")
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED

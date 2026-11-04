@@ -22,8 +22,15 @@ def _install_cli_browser(
     contract: object | None = None,
     reported_user_agent: object = None,
     cdp_fails: bool = False,
+    texts: list[str] | None = None,
+    fail_navigations: int = 0,
+    page_events: list[tuple[str, object]] | None = None,
+    main_status: int | None = None,
 ) -> dict[str, object]:
+    texts_left = list(texts or ["rendered page text"])
     calls: dict[str, object] = {
+        "handlers": {},
+        "settles": [],
         "connect": [],
         "goto": [],
         "locators": [],
@@ -55,7 +62,7 @@ def _install_cli_browser(
 
         def inner_text(self, *, timeout: int) -> str:
             calls["inner_text_timeout"] = timeout
-            return "rendered page text"
+            return texts_left.pop(0) if len(texts_left) > 1 else texts_left[0]
 
         def aria_snapshot(self, *, timeout: int) -> str:
             calls["snapshot_timeout"] = timeout
@@ -65,10 +72,20 @@ def _install_cli_browser(
             calls["wait_for"].append({"state": state, "timeout": timeout})
 
     class FakePage:
-        def goto(self, url: str, *, wait_until: str, timeout: int) -> None:
+        def on(self, event: str, handler: object) -> None:
+            calls["handlers"].setdefault(event, []).append(handler)
+
+        def wait_for_timeout(self, milliseconds: int) -> None:
+            calls["settles"].append(milliseconds)
+
+        def goto(self, url: str, *, wait_until: str, timeout: int) -> object:
             calls["goto"].append({"url": url, "wait_until": wait_until, "timeout": timeout})
-            if navigation_fails:
+            if navigation_fails or len(calls["goto"]) <= fail_navigations:
                 raise FakePlaywrightError("navigation failed")
+            for event, payload in page_events or []:
+                for handler in calls["handlers"].get(event, []):
+                    handler(payload)
+            return types.SimpleNamespace(status=main_status) if main_status is not None else None
 
         def locator(self, selector: str) -> FakeLocator:
             calls["locators"].append(selector)
@@ -178,7 +195,7 @@ def test_inspect_can_ignore_https_errors_for_its_context(
 ) -> None:
     calls = _install_cli_browser(monkeypatch)
     assert cli_module.main([
-        "inspect", "https://self-signed.example", "--ignore-https-errors"
+        "inspect", "https://self-signed.example", "--ignore-https-errors", "--wait-for", "body"
     ]) == 0
     captured = capsys.readouterr()
     assert captured.out == "rendered page text\n"
@@ -339,7 +356,7 @@ def test_per_call_preset_sets_context_ua_client_hints_and_reports_source(
 ) -> None:
     calls = _install_cli_browser(monkeypatch, contract=_contract())
     edge = ua_module.PRESETS["edge-windows"]
-    assert cli_module.main(["inspect", "https://example.test", "--user-agent", "edge-windows"]) == 0
+    assert cli_module.main(["inspect", "https://example.test", "--user-agent", "edge-windows", "--wait-for", "body"]) == 0
     captured = capsys.readouterr()
     assert captured.out == "rendered page text\n"
     assert captured.err == f"[INFO] user agent: {edge} (source: preset:edge-windows)\n"
@@ -381,7 +398,7 @@ def test_json_result_without_an_override_keeps_the_original_bare_shape(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     _install_cli_browser(monkeypatch, reported_user_agent="Mozilla/5.0 HeadlessChrome/156.0.0.0")
-    assert cli_module.main(["inspect", "https://example.test", "--json"]) == 0
+    assert cli_module.main(["inspect", "https://example.test", "--json", "--wait-for", "body"]) == 0
     captured = capsys.readouterr()
     assert json.loads(captured.out) == "rendered page text"  # a bare JSON string, as before
     assert captured.err == ""
@@ -420,7 +437,7 @@ def test_default_mode_identity_line_obeys_quiet_and_is_absent(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     _install_cli_browser(monkeypatch)
-    assert cli_module.main(["inspect", "https://example.test", "--quiet"]) == 0
+    assert cli_module.main(["inspect", "https://example.test", "--quiet", "--wait-for", "body"]) == 0
     assert capsys.readouterr().err == ""
 
 
@@ -443,7 +460,7 @@ def test_per_call_default_beats_the_server_level_override(
     calls = _install_cli_browser(
         monkeypatch, contract=_contract(user_agent="x", user_agent_source="custom")
     )
-    assert cli_module.main(["inspect", "https://example.test", "--user-agent", "default"]) == 0
+    assert cli_module.main(["inspect", "https://example.test", "--user-agent", "default", "--wait-for", "body"]) == 0
     assert calls["context_options"] == [{"ignore_https_errors": False}]
     assert capsys.readouterr().err == ""  # back to default: no identity line
 
@@ -494,3 +511,122 @@ def test_contract_parses_the_published_user_agent_and_defaults_when_absent() -> 
         {**base, "user_agent": {"value": "ua", "source": "preset:edge-windows"}}
     )
     assert (active.user_agent, active.user_agent_source) == ("ua", "preset:edge-windows")
+
+
+# --- PWMCP-24..26: --retries with a stable-DOM check, page diagnostics, small-result warning ---
+
+
+def _resp(status: int, resource_type: str) -> types.SimpleNamespace:
+    return types.SimpleNamespace(status=status, request=types.SimpleNamespace(resource_type=resource_type))
+
+
+BIG = "x" * 2000
+
+
+def test_retries_recovers_from_a_failed_navigation_with_a_fresh_context(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls = _install_cli_browser(monkeypatch, texts=[BIG], fail_navigations=1)
+    assert cli_module.main(["inspect", "https://example.test", "--retries", "2"]) == 0
+    captured = capsys.readouterr()
+    assert captured.out == BIG + "\n"
+    assert "attempt 1/3 failed: navigation failed; retrying" in captured.err
+    assert len(calls["goto"]) == 2 and calls["context_closed"] == [True, True]
+    assert len(calls["context_options"]) == 2 and calls["closed"] == [True]  # one lease, a fresh context each
+
+
+def test_retries_exhausted_reports_the_last_failure(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls = _install_cli_browser(monkeypatch, fail_navigations=5)
+    assert cli_module.main(["inspect", "https://example.test", "--retries", "1"]) == 1
+    captured = capsys.readouterr()
+    assert "attempt 1/2 failed" in captured.err and "pwmcp inspect failed: navigation failed" in captured.err
+    assert len(calls["goto"]) == 2
+
+
+def test_default_has_no_retry_and_no_settle_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _install_cli_browser(monkeypatch, fail_navigations=1)
+    assert cli_module.main(["inspect", "https://example.test"]) == 1
+    assert len(calls["goto"]) == 1 and calls["settles"] == []
+
+
+def test_unstable_page_is_retried_and_stable_one_is_not(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls = _install_cli_browser(monkeypatch, texts=["a" * 2000, "b" * 2000, "c" * 2000])
+    assert cli_module.main(["inspect", "https://example.test", "--retries", "1"]) == 0
+    captured = capsys.readouterr()
+    assert captured.out == "c" * 2000 + "\n"  # the last attempt is returned as it is, unchecked
+    assert "attempt 1/2: the page was still changing; retrying" in captured.err
+    assert len(calls["goto"]) == 2 and calls["settles"] == [500]
+
+    calls = _install_cli_browser(monkeypatch, texts=[BIG], main_status=200)
+    assert cli_module.main(["inspect", "https://example.test", "--retries", "3"]) == 0
+    captured = capsys.readouterr()
+    assert captured.out == BIG + "\n" and captured.err == ""
+    assert len(calls["goto"]) == 1 and calls["settles"] == [500]
+
+
+@pytest.mark.parametrize("bad", ["-1", "11"])
+def test_retries_out_of_range_is_rejected_before_connecting(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], bad: str
+) -> None:
+    calls = _install_cli_browser(monkeypatch)
+    assert cli_module.main(["inspect", "https://example.test", "--retries", bad]) == 1
+    assert "--retries must be between 0 and 10" in capsys.readouterr().err
+    assert calls["connect"] == []
+
+
+def test_snapshot_format_is_checked_for_stability_too(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls = _install_cli_browser(monkeypatch)
+    assert cli_module.main(["inspect", "https://example.test", "--format", "snapshot", "--retries", "1"]) == 0
+    assert calls["settles"] == [500]
+    assert capsys.readouterr().out == '- heading "Sample page" [level=1]\n'
+
+
+def test_page_diagnostics_are_reported_on_stderr_only(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    events = [
+        ("console", types.SimpleNamespace(type="error")),
+        ("console", types.SimpleNamespace(type="log")),
+        ("response", _resp(403, "script")),
+        ("response", _resp(403, "stylesheet")),
+        ("response", _resp(404, "image")),
+        ("response", _resp(404, "document")),  # the main document is reported separately, not as a subresource
+        ("response", _resp(200, "script")),
+        ("requestfailed", object()),
+    ]
+    _install_cli_browser(monkeypatch, texts=[BIG], page_events=events, main_status=403)
+    assert cli_module.main(["inspect", "https://example.test", "--quiet"]) == 0  # --quiet cannot hide it
+    captured = capsys.readouterr()
+    assert captured.out == BIG + "\n"
+    assert (
+        "[WARN] page diagnostics: main document HTTP 403; 1 console errors; "
+        "3 failed subresources (403 x2, 404 x1); 1 requests failed outright "
+        "(the page may not have rendered completely)\n"
+    ) in captured.err
+
+
+def test_small_result_without_wait_for_warns(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _install_cli_browser(monkeypatch)
+    assert cli_module.main(["inspect", "https://example.test"]) == 0
+    captured = capsys.readouterr()
+    assert captured.out == "rendered page text\n"
+    assert "[WARN] result is only 18 bytes and no --wait-for was given" in captured.err
+    assert "--retries N" in captured.err
+
+
+def test_result_much_smaller_than_an_earlier_attempt_warns(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _install_cli_browser(monkeypatch, texts=["a" * 5000, "b" * 4000, "tiny"])
+    assert cli_module.main(["inspect", "https://example.test", "--wait-for", "body", "--retries", "1"]) == 0
+    err = capsys.readouterr().err
+    assert "result is 4 bytes, much smaller than an earlier attempt (4000 bytes)" in err
+    assert "only 4 bytes" not in err  # the shrink warning wins; --wait-for was given anyway

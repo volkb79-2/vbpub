@@ -16,7 +16,6 @@ import importlib.util
 import io
 import json
 import os
-import shutil
 import socket
 import stat
 import sys
