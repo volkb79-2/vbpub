@@ -66,7 +66,7 @@ from .paths import to_physical_path
 # imports `worktree.py` (verified — no cycle), so this is a safe top-level
 # import, unlike the rest of this module's `workspace_env` uses, which stay
 # local/deferred by established convention.
-from .workspace_env import GENERATED_FACT_ENV_KEYS, NETWORK_OWNER_LABEL
+from .workspace_env import DOCKER_GID_OPTIONAL_ENV, GENERATED_FACT_ENV_KEYS, NETWORK_OWNER_LABEL
 
 DEFAULT_WORKTREE_DIR = ".worktrees"
 WORKTREE_INSTANCE_RECORD = "ciu.worktree-instance.json"
@@ -2040,6 +2040,9 @@ def _generate_env_in(
     env = {
         k: v for k, v in os.environ.items() if k not in _CIU_IDENTITY_ENV_KEYS
     }
+    # CIU-161: preparing a checkout never touches Docker, so its env generation
+    # must not die on a missing Docker group id.
+    env[DOCKER_GID_OPTIONAL_ENV] = "1"
     argv = [sys.executable, "-m", "ciu.cli", "env", "generate"]
     if identity_only:
         if allocation_lock_held:
@@ -4633,12 +4636,14 @@ def _sanitized_target_env(
     if facts["instance_id"] != record.instance_id:
         raise WorktreeError(
             f"[S16] {facts_path} instance_id {facts['instance_id']!r} does "
-            f"not match the selected record's {record.instance_id!r}"
+            f"not match the selected record's {record.instance_id!r}. "
+            + _IDENTITY_MISMATCH_REMEDY.format(name=record.logical_name)
         )
     if facts["network"] != record.network:
         raise WorktreeError(
             f"[S16] {facts_path} network {facts['network']!r} does not "
-            f"match the selected record's {record.network!r}"
+            f"match the selected record's {record.network!r}. "
+            + _IDENTITY_MISMATCH_REMEDY.format(name=record.logical_name)
         )
     env.update(identity_env_from_facts(facts))
     return env
@@ -5111,6 +5116,30 @@ def _check_runtime_collision(
             )
 
 
+#: CIU-172: the recovery named by every generated-vs-recorded identity refusal
+#: (a legacy record whose id differs from the path-derived one).
+_IDENTITY_MISMATCH_REMEDY = (
+    "Remedy: run `ciu worktree ensure {name}` to re-derive and record the "
+    "checkout's identity; if it then reports it cannot prove ownership of an "
+    "existing runtime network, run `ciu worktree ensure {name} "
+    "--adopt-existing-network`."
+)
+
+
+def _docker_socket_absent() -> bool:
+    """True only when the Docker endpoint is a unix socket that does not exist.
+
+    Remote endpoints (tcp://, ssh://) are never "absent": an unreachable one is
+    an indeterminate probe, not proof that Docker is not in use.
+    """
+    from .workspace_env import _docker_socket_candidates
+
+    host = os.environ.get("DOCKER_HOST", "")
+    if host and not host.startswith("unix://"):
+        return False
+    return not any(Path(path).exists() for path in _docker_socket_candidates())
+
+
 def _docker_network_exists(network: str) -> bool:
     """Check one exact host network name; Docker absence means local-only CIU."""
     try:
@@ -5129,9 +5158,22 @@ def _docker_network_exists(network: str) -> bool:
             f"{network!r}: {exc}"
         ) from exc
     if result.returncode != 0:
+        if _docker_socket_absent():
+            # CIU-161: preparing a checkout does not need Docker. With no
+            # socket at all there is no host network that could collide, which
+            # is the same "local-only CIU" answer as a missing docker binary.
+            print(
+                "[INFO] [S16] no Docker socket in this environment; runtime-network "
+                "uniqueness is not checked (set DOCKER_HOST=unix:///path/to/docker.sock "
+                "before `ciu up` to use Docker).",
+                flush=True,
+            )
+            return False
         raise RuntimeNetworkProbeError(
             f"[S16] could not verify host runtime-network uniqueness for "
-            f"{network!r}: {(result.stderr or result.stdout or '').strip()}"
+            f"{network!r}: {(result.stderr or result.stdout or '').strip()}. "
+            "Remedy: start the Docker daemon or point DOCKER_HOST at a reachable "
+            "socket, then run `ciu worktree ensure <name>` to resume."
         )
     return network in {line.strip() for line in (result.stdout or "").splitlines()}
 
@@ -5423,7 +5465,8 @@ def verify_own_runtime_network(
         ):
             raise RuntimeNetworkVerificationError(
                 f"[S16] generated runtime identity for {ciu_root} does not match "
-                "its managed worktree record"
+                "its managed worktree record. "
+                + _IDENTITY_MISMATCH_REMEDY.format(name=record.logical_name)
             )
         try:
             _check_runtime_collision(

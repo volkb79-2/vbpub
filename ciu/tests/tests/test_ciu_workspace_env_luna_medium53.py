@@ -36,6 +36,7 @@ def test_detect_env_type_defaults_to_native_without_markers(monkeypatch) -> None
 def test_detect_docker_gid_uses_existing_first_socket(monkeypatch) -> None:
     """Without an explicit GID, the first existing Docker socket supplies it."""
     monkeypatch.delenv("DOCKER_GID", raising=False)
+    monkeypatch.delenv("DOCKER_HOST", raising=False)  # CIU-161: probed first when set
     first_socket = Path("/var/run/docker-host.sock")
     second_socket = Path("/var/run/docker.sock")
 

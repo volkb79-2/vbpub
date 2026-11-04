@@ -80,6 +80,13 @@ the technical detail below it.
 
 ## [Unreleased]
 
+### Fixed
+- `ciu worktree create`/`ensure` work from the cockpit and from hosts without a Docker socket (CIU-161). The Docker group is now read from the socket the client actually uses (`DOCKER_HOST=unix://...`, e.g. the devcontainer relay) before the classic `/var/run` paths; worktree preparation never requires Docker: with no derivable group the generated `ciu.env` carries an empty `DOCKER_GID` plus one INFO line, and an absent Docker socket skips the runtime-network uniqueness probe (INFO) instead of failing. Docker-using verbs keep a hard refusal whose text now names the remedy (`DOCKER_HOST=unix:///path/to/docker.sock` or `DOCKER_GID=<gid>`). A requested `--branch` name is honoured exactly (oracle test; the rename was not reproducible once preparation no longer aborts).
+- The identity-mismatch refusals of `ciu worktree up` / `ciu up` (a legacy record whose id differs from the path-derived one) now name the recovery: `ciu worktree ensure <name>`, then `--adopt-existing-network` when ownership of the existing network cannot be proven (CIU-172, refusal-text half).
+
+### Adoption / Migration Notes
+- Safe to ignore: additive. A checkout prepared without a Docker socket has an empty `DOCKER_GID`; set `DOCKER_HOST` (or `DOCKER_GID`) and run `ciu env generate` there before `ciu up`.
+
 ## [7.20.0] - 2026-11-04
 <!-- cmru: generated -->
 <!-- cmru: source-end=30ef50114b6da9ad7a0e72165104e7687f20af18 -->

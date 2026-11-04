@@ -2984,6 +2984,9 @@ class TestManagedHelperRefusals:
             worktree.procutil, "docker",
             lambda *_a, **_kw: subprocess.CompletedProcess([], 1, "", "denied"),
         )
+        # CIU-161: an absent socket is "no Docker"; this case is a present but
+        # refusing daemon, whatever sockets the test machine has.
+        monkeypatch.setattr(worktree, "_docker_socket_absent", lambda: False)
         with pytest.raises(worktree.WorktreeError, match="uniqueness.*denied"):
             worktree._docker_network_exists("wanted")
         monkeypatch.setattr(
@@ -7679,8 +7682,13 @@ class TestExactWorktreeControl:
         ]
         for key, value, match in cases:
             write_instance_facts(record.ciu_root, **{**good, key: value})
-            with pytest.raises(worktree.WorktreeError, match=match):
+            with pytest.raises(worktree.WorktreeError, match=match) as err:
                 worktree._sanitized_target_env(repo_root, record)
+            if key != "repo_root":
+                # CIU-172: the refusal names the recovery commands.
+                name = record.logical_name
+                assert f"`ciu worktree ensure {name}`" in str(err.value)
+                assert f"`ciu worktree ensure {name} --adopt-existing-network`" in str(err.value)
             write_instance_facts(record.ciu_root, **good)
 
     def test_sanitized_env_surfaces_unreadable_env(self, ready):
