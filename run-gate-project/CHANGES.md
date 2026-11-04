@@ -9,10 +9,38 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [25.1.0] - 2026-11-04
+<!-- cmru: generated -->
+<!-- cmru: source-end=436c6b69f5aa030dc9d1173edfc741903002715f -->
+
+### Added
+- feat(assay): isolation.materialize = tmpfs-worker, one restored-in-place tmpfs tree per mutation worker (B223) (14930488a)
+- feat(assay): R2 lanes declare jobs_max and run-gate jobs=auto (assay-jobs audit) (fe53428a8)
+- feat(run-gate): RG-161 --list --json, the lane inventory with derived rigor (rigor-evidence RG-d) (1d9739420)
+- feat(cgprofile): machine/1 facts, persisted host CPU benchmark reader, score table fallback, steal time (rigor CP-1, CP-58) (8fb865420)
+
+### Fixed
+- fix(run-gate): RG-161 tolerate arg namespaces without json; list --json tests (385d14eab)
+
+### Changed
+- Merge branch 'assay-jobs-audit-20261105' (5cda69dc0)
+- Merge branch 'fix-assay-mat-20261105' into assay-tmpfs-20261105 (5a9bb98e3)
+- Merge branch 'rigor-cp1-20261105' (40941fb2f)
+
+### Documentation
+- docs: replace stale one-candidate-at-a-time comments (review LOW-1) (a44e2da85)
+- docs(run-gate): RG-162 update with remote-run findings (582522c68)
+- docs(run-gate): RG-162 backlog entry for load-sensitive flaky selftest tests (24958e04a)
+
+### Testing
+- test(run-gate): fix fake cgprofile daemon accept-thread fd-reuse race and lock-wait budget jitter (RG-162) (8bbc11d4d)
+
+<!-- cmru: pending release notes begin -->
 ### Added
 - `run-gate --list --json` (RG-161, SPEC R-55, rigor-evidence package RG-d): the lane inventory as one JSON document (`run-gate-list/1`) with `kind`, `environments`, `assay_lane`, a sequence's `members` and each lane's derived `rigor` (assay lanes from `assay lanes --json`; command lanes `["R0"]`, `declared-not-judged`; sequences `["R0"]`). A judge that cannot answer gives `rigor: null` and a reason. Plain `--list` is unchanged (three columns); `--json` with any other verb is still refused.
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [25.0.2] - 2026-11-04
 <!-- cmru: generated -->
