@@ -272,6 +272,17 @@ def test_remote_down_and_health_accept_dir_and_run_in_the_bundle(remote, monkeyp
     assert seen["exec"][0][1] == [expected]
 
 
+def test_remote_down_dir_forwards_the_profile_that_declares_an_optional_stack(remote, monkeypatch):
+    """CIU-170 residue: S10.2a needs `--profile` for an optional stack on the target.
+
+    The remote `down --dir STACK` must carry `--profile` through to the bundle verb,
+    otherwise the target's deploy selection omits the stack and refuses with [S18].
+    """
+    seen, _ = remote
+    assert _run(monkeypatch, ["down", "--host", "web", "--dir", "tools/dbg", "--profile", "admin"]) == 0
+    assert seen["exec"][0][1] == [f"{BUNDLE}ciu down --profile admin --dir tools/dbg"]
+
+
 def test_remote_up_accepts_dir_with_host(remote, monkeypatch):
     """CIU-170: `up --host H --dir STACK` (SPEC S14.2) is not a mode conflict."""
     seen, _ = remote
