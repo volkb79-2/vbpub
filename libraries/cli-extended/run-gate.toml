@@ -22,7 +22,7 @@ resource_observer = "cgprofile"
 environment = "tester-unified"
 argv = [
   "bash", "-c",
-  "export PYTHONPATH={worktree}/assay/src && cd {worktree}/libraries/cli-extended && mkdir -p .assay && exec /opt/tester-venv/bin/python3 -m assay.cli run cli-extended --resume --state-dir .assay/mutation-state-r2 --progress .assay/progress-r2.jsonl --verdict-json .assay/verdict-r2.json",
+  "export PYTHONPATH={worktree}/assay/src:{worktree}/libraries/cowtree/src && cd {worktree}/libraries/cli-extended && mkdir -p .assay && exec /opt/tester-venv/bin/python3 -m assay.cli run cli-extended --resume --state-dir .assay/mutation-state-r2 --progress .assay/progress-r2.jsonl --verdict-json .assay/verdict-r2.json",
 ]
 clean_tree = false
 budget = "720m"
