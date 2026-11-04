@@ -92,6 +92,8 @@ the technical detail below it.
 - Declared project images are instance-scoped in a linked worktree without a `build:` stanza (CIU-173): `[ciu.worktree] project_images = ["dstdns/api:local", ...]` lists images the project builds with `ciu bake`; every service using one gets the `-<instance_id>` tag like a build-declared image, a stack using none still needs no worktree identity, and the key can only add scoping.
 - A failed `ciu worktree create` preparation names its way out (CIU-174): the kept checkout and record are reported as a partial allocation with `ciu worktree ensure NAME` / `ciu worktree rm NAME`, and the "path is already recorded" refusal (a stale shared record after a manual `git worktree remove`) names the same two commands. The exception type is unchanged.
 
+- New run-gate lane `ciu-gate` (assay.toml `[lanes.ciu-gate]`): the release gate R0+R1+R3 (full suite at the 100% line and branch floor, diff coverage, import-break canary) without the R2 mutation sweep, which stays on lane `ciu` and runs async on the latest release (operator decision 2026-11-05). Run it as `run-gate --base <previous release tag> ciu-gate`.
+
 ### Adoption / Migration Notes
 - Safe to ignore: additive. A checkout prepared without a Docker socket has an empty `DOCKER_GID`; set `DOCKER_HOST` (or `DOCKER_GID`) and run `ciu env generate` there before `ciu up`.
 - Needs action if you push-deploy to a host whose ciu is not on the non-login PATH: set `remote_ciu = "/path/to/ciu"` in `[deploy.hosts.<name>]` (or symlink into `/usr/local/bin`); the push now stops with that instruction instead of failing mid-chain. Remote `down`/`render`/`status --gate` now require the bundle (and its `ciu.env`) to exist on the target.

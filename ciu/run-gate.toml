@@ -23,6 +23,18 @@ cpus = "3"
 memory = "2g"
 memory_swap = "16g"
 
+# Release gate (R0+R1+R3, no R2 mutation; assay.toml [lanes.ciu-gate]). Outer budget = assay budget (90m) + 10m.
+[lanes.ciu-gate]
+kind = "assay"
+assay_lane = "ciu-gate"
+environment = "tester-unified"
+budget = "100m"
+
+[lanes.ciu-gate.resources]
+cpus = "3"
+memory = "2g"
+memory_swap = "16g"
+
 [environments.enroll-tester]
 mode = "host"
 
