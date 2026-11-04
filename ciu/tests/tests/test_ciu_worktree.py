@@ -556,6 +556,29 @@ class TestCreateRemoveList:
         assert (mount / "disk.img").read_text(encoding="utf-8") == "precious"
         assert target.exists()
 
+    def test_remove_reports_mount_probe_failure_as_lifecycle_preflight(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        """A failing mount probe refuses removal in the lifecycle_preflight phase
+        before any cleanup runs."""
+        target = create_path(tmp_repo, "wt1", base="main")
+        shared = worktree._shared_worktree()
+        monkeypatch.setattr(
+            shared,
+            "mounts_under",
+            lambda *_a, **_kw: (_ for _ in ()).throw(
+                shared.WorkspaceError("mountinfo unreadable", category="git-error")
+            ),
+        )
+        calls: list[str] = []
+        monkeypatch.setattr(
+            worktree, "_clean_in", lambda wt, *, yes: calls.append("clean") or 0
+        )
+        with pytest.raises(worktree.WorktreeError, match="mountinfo unreadable"):
+            worktree.remove(tmp_repo, "wt1")
+        assert calls == []
+        assert target.exists()
+
     def test_remove_surfaces_git_remove_failure_after_clean(
         self, tmp_repo, fake_generate_env, monkeypatch
     ):
