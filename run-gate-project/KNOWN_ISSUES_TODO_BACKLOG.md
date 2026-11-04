@@ -7635,3 +7635,8 @@ the cause. No product defect is claimed. **Next step:** when either test fails a
 
 **Next step.** Make the lock-wait test's budget independent of wall-clock jitter (inject the clock or widen the budget relative to the measured wait) and, for the reattach test, read the length/prefix now named in the
 warning (RG-160 diagnostic) before changing code. Until then a differing single-test failure under load is inconclusive, not a PASS.
+
+**Update 2026-11-05 (remote runs on v1001 and r1002, quiet hosts, PSI cpu under 3).** Run 1 (v1001) failed the reattach test with `0 bytes, starts ''`: the fake daemon closed without a body, so this is a
+race or plan-file gap in `_FakeCgprofileDaemon`, not load. Run 2 (r1002) did not hit it but failed a doctor test (`'[OK] profiler daemon'` missing from the doctor output), another intermittent failure of the same family.
+Both runs also failed `TestHistoryStoreReadableByTheReleasedReader` deterministically: the remote-gate checkout is built from a thin git bundle and carries only a few `run-gate-v25.*` tags, so RG-159's
+"tags present but no `run-gate-v24.>=3` tag" assertion fires. Remote `selftest` can therefore never be clean until remote-gate syncs all `run-gate-v*` tags (or the test skips on a tag-incomplete checkout).
