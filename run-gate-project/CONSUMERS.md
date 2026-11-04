@@ -345,7 +345,16 @@ Run-Gate leaves Assay's one-worker default in place unless the lane declares
 that exact count, or `"auto"` to let Run-Gate derive and pass an explicit
 count. The CLI wins over the lane setting. The selected Assay lane must report
 native R2 in `assay lanes --json`, and its
-`[lanes.<name>.judge.mutation].jobs_max` is the hard ceiling.
+`[lanes.<name>.judge.mutation].jobs_max` is the hard ceiling (`jobs` is only an
+alias: `jobs_max` must be at least N for `--jobs N`).
+
+For `--jobs N>1` and `auto`, Run-Gate first probes cheap-clone capacity. With
+an `assay_command` of the form `python3 path/assay-X.pyz`, the probe imports
+`cowtree` from that pinned zipapp, so the lane image needs no `cowtree`; it
+needs only `MDT_COW_ROOT` (forwarded by the environment) on a supported btrfs
+area. A refusal names its cause as `cheap_clone_reason=` (`cow-root-unset`,
+`cowtree-no-area`, `assay-requires-btrfs`, `cowtree-probe-<Exception>`,
+`capacity-probe-unavailable`).
 
 <!-- run-gate-config -->
 ```toml
