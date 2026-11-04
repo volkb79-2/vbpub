@@ -96,6 +96,7 @@ def test_clean_shipped_stack_skips_native_reset_but_enforces_project_cleanup(mon
     monkeypatch.setattr(deploy, "_workspace_identity_network", lambda _root: "")
     monkeypatch.setattr(deploy, "render_selected_stacks", lambda *_args, **_kw: {})
     monkeypatch.setattr(deploy, "_remove_project_volumes", lambda _cfg=None, **_kw: cleanup_calls.append("volumes") or [])
+    monkeypatch.setattr(deploy, "_tagged_project_networks", lambda *_a, **_k: [])
     monkeypatch.setattr(
         deploy.engine,
         "reset_service",
