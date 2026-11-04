@@ -1,0 +1,246 @@
+{
+  "assay_fragment_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+  "completed_at": "2026-11-04T17:30:00Z",
+  "config_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+  "duration_seconds": 34200.0,
+  "environment": "tester-unified",
+  "exit": 1,
+  "image": {
+    "image_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "labels": {
+      "org.opencontainers.image.revision": "3333333333333333333333333333333333333333"
+    },
+    "ref": "tester-unified:local"
+  },
+  "io_sync": "durable",
+  "judged_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "kind": "run-gate-lane",
+  "lane": "r2",
+  "machine_classes": [
+    {
+      "cpu_model": "AMD EPYC 9634 84-Core Processor",
+      "cpus_available": 4,
+      "hypervisor": true,
+      "id": "m1",
+      "speed": {
+        "basis": "geekbench-measured",
+        "cpus_at_measurement": 4,
+        "geekbench_major": 7,
+        "geekbench_version": "7.1.0",
+        "measured_on": "2026-11-04",
+        "multi_core": 11800,
+        "single_core": 3120
+      }
+    },
+    {
+      "cpu_model": "Unknown Virtual CPU",
+      "cpus_available": 2,
+      "hypervisor": true,
+      "id": "m3",
+      "speed": {
+        "reason": "NO_HOST_MEASUREMENT_AND_MODEL_NOT_IN_TABLE",
+        "unavailable": true
+      }
+    }
+  ],
+  "perf": [
+    {
+      "host_psi_some_avg": {
+        "cpu": 3.1,
+        "io": 1.2,
+        "memory": 0.4
+      },
+      "lane": "r2",
+      "level": "R2",
+      "machine_classes": {
+        "m1": 557
+      },
+      "metrics": {
+        "cpu_per_wall": {
+          "max": 0.8,
+          "n": 554,
+          "n_excluded": {
+            "contaminated": 3,
+            "no_measurement": 0
+          },
+          "p50": 0.8,
+          "p90": 0.8,
+          "p98": 0.8,
+          "p99": 0.8,
+          "source": "cgroup-cpu-stat",
+          "unit": "ratio"
+        },
+        "cpu_seconds_ref": {
+          "max": 129.54240000000001,
+          "n": 554,
+          "n_excluded": {
+            "contaminated": 3,
+            "no_measurement": 0
+          },
+          "p50": 79.3728,
+          "p90": 119.55840000000002,
+          "p98": 127.5456,
+          "p99": 128.7936,
+          "source": "cgroup-cpu-stat",
+          "unit": "s_ref"
+        },
+        "io_read_ops": {
+          "reason": "REQUIRES_CGROUP_MODE",
+          "unavailable": true
+        },
+        "memory_peak_bytes": {
+          "max": 200308841,
+          "n": 40,
+          "n_excluded": {
+            "contaminated": 0,
+            "no_measurement": 517
+          },
+          "p50": 200150461,
+          "p90": 200277165,
+          "p98": null,
+          "p99": null,
+          "source": "memory.peak",
+          "unit": "bytes"
+        },
+        "phase_seconds.materialize": {
+          "max": 1.3,
+          "n": 554,
+          "n_excluded": {
+            "contaminated": 3,
+            "no_measurement": 0
+          },
+          "p50": 0.9,
+          "p90": 1.3,
+          "p98": 1.3,
+          "p99": 1.3,
+          "source": "assay-clock",
+          "unit": "s"
+        },
+        "rss_peak_bytes": {
+          "max": 207915137,
+          "n": 554,
+          "n_excluded": {
+            "contaminated": 3,
+            "no_measurement": 0
+          },
+          "p50": 178905204,
+          "p90": 202155042,
+          "p98": 206763118,
+          "p99": 207391492,
+          "source": "sampled-sum-rss",
+          "unit": "bytes"
+        },
+        "steal_fraction": {
+          "max": 0.008,
+          "n": 554,
+          "n_excluded": {
+            "contaminated": 3,
+            "no_measurement": 0
+          },
+          "p50": 0.004,
+          "p90": 0.008,
+          "p98": 0.008,
+          "p99": 0.008,
+          "source": "proc-stat",
+          "unit": "ratio"
+        },
+        "wall_seconds": {
+          "max": 129.75,
+          "n": 554,
+          "n_excluded": {
+            "contaminated": 3,
+            "no_measurement": 0
+          },
+          "p50": 79.5,
+          "p90": 119.75,
+          "p98": 127.75,
+          "p99": 129.0,
+          "source": "assay-clock",
+          "unit": "s"
+        },
+        "wall_seconds_ref": {
+          "max": 161.928,
+          "n": 554,
+          "n_excluded": {
+            "contaminated": 3,
+            "no_measurement": 0
+          },
+          "p50": 99.216,
+          "p90": 149.448,
+          "p98": 159.432,
+          "p99": 160.992,
+          "source": "assay-clock",
+          "unit": "s_ref"
+        }
+      },
+      "normalisation": {
+        "basis": "geekbench-measured",
+        "divisor": "single_core",
+        "geekbench_major": 7,
+        "reason": null,
+        "reference_score": 2500
+      },
+      "status_counts": {
+        "MEASURED": 40,
+        "NO_MEASUREMENT": 0,
+        "PARTIAL": 517
+      },
+      "subject": "r2-candidate",
+      "window": "this-campaign"
+    },
+    {
+      "host_psi_some_avg": {
+        "cpu": null,
+        "io": null,
+        "memory": null
+      },
+      "lane": "r2",
+      "level": "R2",
+      "machine_classes": {
+        "m3": 4
+      },
+      "metrics": {
+        "wall_seconds": {
+          "max": 133.0,
+          "n": 4,
+          "n_excluded": {
+            "contaminated": 0,
+            "no_measurement": 0
+          },
+          "p50": 100.0,
+          "p90": null,
+          "p98": null,
+          "p99": null,
+          "source": "run-gate-clock",
+          "unit": "s"
+        },
+        "wall_seconds_ref": {
+          "reason": "NO_HOST_MEASUREMENT_AND_MODEL_NOT_IN_TABLE",
+          "unavailable": true
+        }
+      },
+      "normalisation": {
+        "basis": "none",
+        "divisor": "none",
+        "geekbench_major": null,
+        "reason": "NO_HOST_MEASUREMENT_AND_MODEL_NOT_IN_TABLE",
+        "reference_score": null
+      },
+      "status_counts": {
+        "MEASURED": 0,
+        "NO_MEASUREMENT": 0,
+        "PARTIAL": 4
+      },
+      "subject": "xdist-worker",
+      "window": "this-campaign"
+    }
+  ],
+  "project": "cgroup-profiler",
+  "project_tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "run_gate": {
+    "version": "25.0.1",
+    "wheel_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  },
+  "schema": "urn:vbpub:rigor-fragment:1",
+  "started_at": "2026-11-04T08:00:00Z"
+}

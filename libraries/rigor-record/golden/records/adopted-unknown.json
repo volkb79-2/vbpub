@@ -1,0 +1,70 @@
+{
+  "adopted_from": "cgprofile-v2.0.0",
+  "levels": {
+    "R0": {
+      "judged_commit": null,
+      "lanes": [],
+      "status": "unknown",
+      "toolset": null,
+      "waiver": null
+    },
+    "R1": {
+      "judged_commit": null,
+      "lanes": [],
+      "status": "unknown",
+      "toolset": null,
+      "waiver": null
+    },
+    "R2": {
+      "buckets": null,
+      "campaign": null,
+      "candidates": null,
+      "deviations": [],
+      "history": [],
+      "judged_commit": null,
+      "lanes": [],
+      "scope": null,
+      "score": null,
+      "status": "unknown",
+      "survivors": null,
+      "toolset": null,
+      "waiver": null,
+      "worker_counts": {}
+    },
+    "R3": {
+      "judged_commit": null,
+      "lanes": [],
+      "status": "unknown",
+      "toolset": null,
+      "waiver": null
+    },
+    "review": {
+      "document_sha256": null,
+      "range": null,
+      "reviewer_role": null,
+      "status": "missing"
+    }
+  },
+  "machine_classes": [],
+  "perf": [],
+  "project": "cgroup-profiler",
+  "qualifications": {},
+  "release": {
+    "artifacts": [
+      {
+        "name": "cgprofile-2.0.0-py3-none-any.whl",
+        "sha256": "6666666666666666666666666666666666666666666666666666666666666666"
+      }
+    ],
+    "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "project_tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "published_at": "2026-11-04T18:02:11Z",
+    "state": "current",
+    "tag": "cgprofile-v2.0.0",
+    "version": "2.0.0",
+    "withdrawn": null
+  },
+  "revision": 1,
+  "schema": "urn:vbpub:rigor-record:1",
+  "toolsets": {}
+}

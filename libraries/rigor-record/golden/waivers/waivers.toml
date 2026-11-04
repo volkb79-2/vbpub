@@ -1,0 +1,26 @@
+schema = "urn:vbpub:rigor-waivers:1"
+
+[[lane]]
+lane = "worker_io_dns_operations"
+level = "R1"
+reason = "1040/1218 lines; P-xyz restores full coverage"
+plan_item = "P-xyz"
+expires_before = "1.6.0"
+
+[[lane]]
+lane = "slow-io"
+level = "R0"
+reason = "flaky under load until the fixture is rewritten"
+expires_before = "2.1.0"
+
+[[survivor]]
+candidate_id = "cand-0001"
+disposition = "equivalent"
+reason = "swapping < and <= is unobservable: both branches clamp to the same bound"
+reviewed_by = "independent-review"
+
+[[survivor]]
+candidate_id = "cand-0002"
+disposition = "accepted"
+reason = "accepted risk: path only reached on a removed platform"
+reviewed_by = "independent-review"

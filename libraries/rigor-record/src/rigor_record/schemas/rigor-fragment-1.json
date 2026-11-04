@@ -1,0 +1,152 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:vbpub:rigor-fragment:1",
+  "title": "rigor-fragment/1",
+  "description": "One producer's facts about one lane run, at most 256 KiB. kind selects the producer: assay-lane (judgment facts) or run-gate-lane (run, tool, environment and performance facts).",
+  "oneOf": [
+    {"$ref": "#/$defs/assay_lane"},
+    {"$ref": "#/$defs/run_gate_lane"}
+  ],
+  "$defs": {
+    "assay_lane": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema", "kind", "project", "lane", "judged_commit", "project_tree", "outcome", "reason", "verdict_sha256",
+        "config_sha256", "verified", "judge", "coverage", "canary", "r2"
+      ],
+      "properties": {
+        "schema": {"const": "urn:vbpub:rigor-fragment:1"},
+        "kind": {"const": "assay-lane"},
+        "project": {"$ref": "rigor-common-1.json#/$defs/project"},
+        "lane": {"$ref": "rigor-common-1.json#/$defs/lane"},
+        "judged_commit": {"$ref": "rigor-common-1.json#/$defs/git_oid"},
+        "project_tree": {"$ref": "rigor-common-1.json#/$defs/git_oid"},
+        "outcome": {"$ref": "rigor-common-1.json#/$defs/outcome"},
+        "reason": {"oneOf": [{"type": "null"}, {"$ref": "rigor-common-1.json#/$defs/reason_code"}]},
+        "verdict_sha256": {"$ref": "rigor-common-1.json#/$defs/sha256"},
+        "config_sha256": {"$ref": "rigor-common-1.json#/$defs/sha256"},
+        "verified": {"const": true},
+        "judge": {"$ref": "rigor-common-1.json#/$defs/judge"},
+        "coverage": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/coverage"}]},
+        "canary": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/canary"}]},
+        "r2": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/assay_r2"}]}
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["line_pct", "branch_pct", "floor", "excluded_lines"],
+      "properties": {
+        "line_pct": {"$ref": "rigor-common-1.json#/$defs/percent"},
+        "branch_pct": {"$ref": "rigor-common-1.json#/$defs/percent"},
+        "floor": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["line", "branch"],
+          "properties": {
+            "line": {"$ref": "rigor-common-1.json#/$defs/percent"},
+            "branch": {"$ref": "rigor-common-1.json#/$defs/percent"}
+          }
+        },
+        "excluded_lines": {"$ref": "rigor-common-1.json#/$defs/count"}
+      }
+    },
+    "canary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mechanism", "targets", "outcome"],
+      "properties": {
+        "mechanism": {"$ref": "rigor-common-1.json#/$defs/identifier"},
+        "targets": {"type": "array", "minItems": 1, "maxItems": 50, "items": {"$ref": "rigor-common-1.json#/$defs/relpath"}},
+        "outcome": {"$ref": "rigor-common-1.json#/$defs/outcome"}
+      }
+    },
+    "survivor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["candidate_id", "path", "line", "operator", "first_failing_test"],
+      "properties": {
+        "candidate_id": {"$ref": "rigor-common-1.json#/$defs/identifier"},
+        "path": {"$ref": "rigor-common-1.json#/$defs/relpath"},
+        "line": {"type": "integer", "minimum": 1},
+        "operator": {"$ref": "rigor-common-1.json#/$defs/operator"},
+        "first_failing_test": {"oneOf": [{"type": "null"}, {"$ref": "rigor-common-1.json#/$defs/test_node_id"}]}
+      }
+    },
+    "assay_r2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["candidates", "buckets", "score", "worker_counts", "profile_status_counts", "campaign", "survivors"],
+      "properties": {
+        "candidates": {"$ref": "rigor-common-1.json#/$defs/candidates"},
+        "buckets": {"$ref": "rigor-common-1.json#/$defs/survivor_buckets"},
+        "score": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "worker_counts": {"$ref": "rigor-common-1.json#/$defs/worker_counts"},
+        "profile_status_counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["MEASURED", "PARTIAL", "NO_MEASUREMENT"],
+          "properties": {
+            "MEASURED": {"$ref": "rigor-common-1.json#/$defs/count"},
+            "PARTIAL": {"$ref": "rigor-common-1.json#/$defs/count"},
+            "NO_MEASUREMENT": {"$ref": "rigor-common-1.json#/$defs/count"}
+          }
+        },
+        "campaign": {
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["started_at", "completed_at"],
+              "properties": {
+                "started_at": {"$ref": "rigor-common-1.json#/$defs/timestamp"},
+                "completed_at": {"$ref": "rigor-common-1.json#/$defs/timestamp"}
+              }
+            }
+          ]
+        },
+        "survivors": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["total", "listed", "sidecar_sha256"],
+          "properties": {
+            "total": {"$ref": "rigor-common-1.json#/$defs/count"},
+            "listed": {"type": "array", "maxItems": 500, "items": {"$ref": "#/$defs/survivor"}},
+            "sidecar_sha256": {"oneOf": [{"type": "null"}, {"$ref": "rigor-common-1.json#/$defs/sha256"}]}
+          }
+        }
+      }
+    },
+    "run_gate_lane": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema", "kind", "project", "lane", "judged_commit", "project_tree", "run_gate", "environment", "image",
+        "config_sha256", "io_sync", "exit", "started_at", "completed_at", "duration_seconds", "assay_fragment_sha256",
+        "machine_classes", "perf"
+      ],
+      "properties": {
+        "schema": {"const": "urn:vbpub:rigor-fragment:1"},
+        "kind": {"const": "run-gate-lane"},
+        "project": {"$ref": "rigor-common-1.json#/$defs/project"},
+        "lane": {"$ref": "rigor-common-1.json#/$defs/lane"},
+        "judged_commit": {"$ref": "rigor-common-1.json#/$defs/git_oid"},
+        "project_tree": {"$ref": "rigor-common-1.json#/$defs/git_oid"},
+        "run_gate": {"$ref": "rigor-common-1.json#/$defs/run_gate_tool"},
+        "environment": {"$ref": "rigor-common-1.json#/$defs/identifier"},
+        "image": {"oneOf": [{"type": "null"}, {"$ref": "rigor-common-1.json#/$defs/tester_image"}]},
+        "config_sha256": {"$ref": "rigor-common-1.json#/$defs/sha256"},
+        "io_sync": {"$ref": "rigor-common-1.json#/$defs/identifier"},
+        "exit": {"type": "integer", "minimum": 0, "maximum": 255},
+        "started_at": {"$ref": "rigor-common-1.json#/$defs/timestamp"},
+        "completed_at": {"$ref": "rigor-common-1.json#/$defs/timestamp"},
+        "duration_seconds": {"type": "number", "minimum": 0},
+        "assay_fragment_sha256": {"oneOf": [{"type": "null"}, {"$ref": "rigor-common-1.json#/$defs/sha256"}]},
+        "machine_classes": {"type": "array", "maxItems": 16, "items": {"$ref": "rigor-common-1.json#/$defs/machine_class"}},
+        "perf": {"type": "array", "maxItems": 16, "items": {"$ref": "rigor-common-1.json#/$defs/perf_entry"}}
+      }
+    }
+  }
+}

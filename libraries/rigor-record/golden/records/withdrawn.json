@@ -1,0 +1,257 @@
+{
+  "adopted_from": null,
+  "levels": {
+    "R0": {
+      "judged_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "lanes": [
+        {
+          "config_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "lane": "unit",
+          "outcome": "PASS",
+          "verdict_sha256": "5555555555555555555555555555555555555555555555555555555555555555"
+        }
+      ],
+      "status": "pass",
+      "toolset": "t1",
+      "waiver": null
+    },
+    "R1": {
+      "coverage": {
+        "branch_pct": 100.0,
+        "excluded_lines": 0,
+        "floor": {
+          "branch": 100,
+          "line": 100
+        },
+        "line_pct": 100.0
+      },
+      "judged_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "lanes": [
+        {
+          "config_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "lane": "assay-r1",
+          "outcome": "PASS",
+          "verdict_sha256": "7777777777777777777777777777777777777777777777777777777777777777"
+        }
+      ],
+      "status": "pass",
+      "toolset": "t1",
+      "waiver": null
+    },
+    "R2": {
+      "buckets": null,
+      "campaign": null,
+      "candidates": null,
+      "deviations": [],
+      "history": [],
+      "judged_commit": null,
+      "lanes": [],
+      "scope": null,
+      "score": null,
+      "status": "pending",
+      "survivors": null,
+      "toolset": null,
+      "waiver": null,
+      "worker_counts": {}
+    },
+    "R3": {
+      "canaries": [
+        {
+          "lane": "assay-r3",
+          "mechanism": "import-break",
+          "outcome": "PASS",
+          "targets": [
+            "src/cgprofile/daemon.py"
+          ]
+        }
+      ],
+      "judged_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "lanes": [
+        {
+          "config_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "lane": "assay-r3",
+          "outcome": "PASS",
+          "verdict_sha256": "8888888888888888888888888888888888888888888888888888888888888888"
+        }
+      ],
+      "status": "pass",
+      "toolset": "t1",
+      "waiver": null
+    },
+    "review": {
+      "document_sha256": "9999999999999999999999999999999999999999999999999999999999999999",
+      "range": {
+        "from": "cgprofile-v1.2.0",
+        "to": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "reviewer_role": "independent-reviewer",
+      "status": "accept"
+    }
+  },
+  "machine_classes": [
+    {
+      "cpu_model": "AMD EPYC 9634 84-Core Processor",
+      "cpus_available": 4,
+      "hypervisor": true,
+      "id": "m1",
+      "speed": {
+        "basis": "geekbench-measured",
+        "cpus_at_measurement": 4,
+        "geekbench_major": 7,
+        "geekbench_version": "7.1.0",
+        "measured_on": "2026-11-04",
+        "multi_core": 11800,
+        "single_core": 3120
+      }
+    },
+    {
+      "cpu_model": "Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz",
+      "cpus_available": 3.5,
+      "hypervisor": true,
+      "id": "m2",
+      "speed": {
+        "basis": "geekbench-table",
+        "cpus_at_measurement": null,
+        "geekbench_major": 6,
+        "geekbench_version": "6.3.0",
+        "measured_on": null,
+        "multi_core": null,
+        "single_core": 1650
+      }
+    }
+  ],
+  "perf": [
+    {
+      "host_psi_some_avg": {
+        "cpu": 1.0,
+        "io": 0.5,
+        "memory": 0.1
+      },
+      "lane": "r0-r1",
+      "level": "R1",
+      "machine_classes": {
+        "m1": 1
+      },
+      "metrics": {
+        "io_write_bytes": {
+          "max": 8388608,
+          "n": 1,
+          "n_excluded": {
+            "contaminated": 0,
+            "no_measurement": 0
+          },
+          "p50": 8388608,
+          "p90": null,
+          "p98": null,
+          "p99": null,
+          "source": "io.stat",
+          "unit": "bytes"
+        },
+        "memory_peak_bytes": {
+          "max": 412000000,
+          "n": 1,
+          "n_excluded": {
+            "contaminated": 0,
+            "no_measurement": 0
+          },
+          "p50": 412000000,
+          "p90": null,
+          "p98": null,
+          "p99": null,
+          "source": "memory.peak",
+          "unit": "bytes"
+        },
+        "wall_seconds": {
+          "max": 570.0,
+          "n": 1,
+          "n_excluded": {
+            "contaminated": 0,
+            "no_measurement": 0
+          },
+          "p50": 570.0,
+          "p90": null,
+          "p98": null,
+          "p99": null,
+          "source": "run-gate-clock",
+          "unit": "s"
+        },
+        "wall_seconds_ref": {
+          "max": 711.36,
+          "n": 1,
+          "n_excluded": {
+            "contaminated": 0,
+            "no_measurement": 0
+          },
+          "p50": 711.36,
+          "p90": null,
+          "p98": null,
+          "p99": null,
+          "source": "run-gate-clock",
+          "unit": "s_ref"
+        }
+      },
+      "normalisation": {
+        "basis": "geekbench-measured",
+        "divisor": "single_core",
+        "geekbench_major": 7,
+        "reason": null,
+        "reference_score": 2500
+      },
+      "status_counts": {
+        "MEASURED": 1,
+        "NO_MEASUREMENT": 0,
+        "PARTIAL": 0
+      },
+      "subject": "lane-run",
+      "window": "this-run"
+    }
+  ],
+  "project": "cgroup-profiler",
+  "qualifications": {},
+  "release": {
+    "artifacts": [
+      {
+        "name": "cgprofile-2.0.0-py3-none-any.whl",
+        "sha256": "6666666666666666666666666666666666666666666666666666666666666666"
+      }
+    ],
+    "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "project_tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "published_at": "2026-11-04T18:02:11Z",
+    "state": "withdrawn",
+    "tag": "cgprofile-v2.0.0",
+    "version": "2.0.0",
+    "withdrawn": {
+      "reason": "defect unsafe to leave published",
+      "replacement": "cgprofile-v2.0.1"
+    }
+  },
+  "revision": 1,
+  "schema": "urn:vbpub:rigor-record:1",
+  "toolsets": {
+    "t1": {
+      "assay": {
+        "artifact_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "judge_identity": "assay-judge-identity/14",
+        "verdict_schema": "urn:assay:schema:verdict:18",
+        "version": "12.0.0"
+      },
+      "cgprofile": {
+        "ctl_contract": 2,
+        "daemon_version": "2.0.0",
+        "observer_contract": 3
+      },
+      "run_gate": {
+        "version": "25.0.1",
+        "wheel_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "tester_image": {
+        "image_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "labels": {
+          "org.opencontainers.image.revision": "3333333333333333333333333333333333333333"
+        },
+        "ref": "tester-unified:local"
+      }
+    }
+  }
+}
