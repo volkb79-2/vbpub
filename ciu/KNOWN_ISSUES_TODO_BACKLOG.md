@@ -6055,3 +6055,43 @@ the shared workspace registry, and the next create at that path refuses with "ph
 record and the remedy (`ciu worktree rm <name>`, and for a record whose path no longer exists, a prune such as `ciu worktree prune`/`rm --stale`).
 
 **Acceptance criteria.** Test: a forced preparation failure leaves no checkout or record (or a record that `ciu worktree rm` removes); after a manual `git worktree remove` the next create refuses with a text containing the remedy command, and that command succeeds.
+
+## CIU-176 — `ciu worktree adopt` fails on `DOCKER_GID not found` and leaves a `recovery-required` record that `ensure` cannot resume (circular)
+
+**Status: OPEN (filed 2026-11-05 from dstdns CP0, installed ciu 7.21.0 and the unreleased source; evidence `reports/dstdns-cp0-CONTINUATION.md` F1). Severity: P2. Related: CIU-160, CIU-161, CIU-172.**
+
+**Observed.** `ciu worktree adopt` of a plain `git worktree add` checkout fails in its env generation with `DOCKER_GID not found` when the caller shell lacks `DOCKER_GID`. The record is left `recovery-required`. `ciu worktree ensure <name>` then repeats the same env generation and refuses with the same recovery-required state, so the loop never closes. The unreleased source (CIU-161 fix) repairs `create` but `adopt` still fails after one failed attempt because the record already exists. Only `ciu worktree rm` (which itself needs two tries, CIU-179) clears it.
+
+**Design.** `adopt` and `ensure` derive `DOCKER_GID` themselves (docker group or socket stat, CIU-160 design) and treat a record that is `recovery-required` solely because of a missing env value as resumable; `adopt` rolls the record back (or leaves it resumable) on failure (cf. CIU-174).
+
+**Acceptance criteria.** Test: `adopt` in an environment without `DOCKER_GID` either succeeds or leaves a record that a second `adopt`/`ensure` completes; never a state only `rm` clears.
+
+## CIU-177 — `ciu worktree up` on a stack whose images were never baked under the plain `:local` ref stops with a registry `pull access denied`, and would otherwise run main's stale image
+
+**Status: OPEN (filed 2026-11-05 from dstdns CP0; evidence `reports/dstdns-cp0-REPORT.md` "Stack bring-up". Companion of CIU-173, which is the root cause and gets this live confirmation). Severity: P2 (stale-image false-green trap).**
+
+**Observed.** Compose names `dstdns/<svc>:local`; `ciu bake` in a worktree writes `dstdns/<svc>:local-<id>` (CIU-173 confirmed live). `ciu worktree up` for a service whose `:local` tag never existed failed with `pull access denied for dstdns/test-runner-ui` (a registry pull of a local-only image); for services whose `:local` existed from main's older bake it silently ran that stale image (the 2026-10-16 test-runner). The manual remedy was `docker tag dstdns/<svc>:local-<id> dstdns/<svc>:local` for every project image, which is only safe when exactly one stack is live.
+
+**Design.** Fix CIU-173 so the rendered refs carry the suffix; independently, `up` in a worktree should fail early with "image <ref> is project-built; run `ciu bake`" when a baked-suffix image is missing, and never attempt a registry pull of a ref matching the project images table.
+
+**Acceptance criteria.** Test: worktree with a missing suffixed image refuses before any pull and names `ciu bake`; with the suffixed image present the container's image id equals the baked id, never main's `:local`.
+
+## CIU-178 — `ciu bake` in a worktree reports `Missing required environment values in <MAIN>/ciu.global.defaults.toml.j2` until `eval "$(ciu env print)"` is exported; the message names the wrong file
+
+**Status: OPEN (filed 2026-11-05 from dstdns CP0; evidence `reports/dstdns-cp0-CONTINUATION.md` F2). Severity: P3.**
+
+**Observed.** In a worktree created by `ciu worktree create`, `ciu bake` stops with `Missing required environment values in <main checkout>/ciu.global.defaults.toml.j2` although the missing values are instance facts of the worktree. Exporting `eval "$(ciu env print | grep -E '^(export )?[A-Z_]+=')"` first makes bake succeed (all 11 images, exit 0). The message points at the main checkout's template, not at the worktree or the missing keys' source.
+
+**Design.** `bake` loads the same instance facts as `ciu up` (generated TOML) without needing the shell exports; if values are truly missing, name the keys, the worktree root and `ciu env print`.
+
+**Acceptance criteria.** Test: `ciu bake` in a fresh worktree with an empty environment runs; a forced missing key yields a message naming the key and the worktree path, not the main checkout.
+
+## CIU-179 — `ciu worktree rm` after `ciu up` needs two or three tries, a committed tree and `--discard-protected-state <branch>`; the first refusals do not say so
+
+**Status: OPEN (filed 2026-11-05 from dstdns CP0; evidence `reports/dstdns-cp0-CONTINUATION.md` F4). Severity: P3. Related: CIU-164 (`ciu clean` exit 1 after complete cleanup), CIU-174.**
+
+**Observed.** After `ciu up`, `ciu worktree rm <name> --yes --keep-branch` refuses with `ignored state changed` (the stack's `vol-*` data), then needs `--discard-protected-state <branch>` and a committed tree; the first attempt only establishes identity, a second or third removes the stack. `ciu clean` exits 1 although the cleanup completed. A root-owned `vol-redis-data/appendonlydir` also survived the removal and needed a privileged exact-path remove via a throwaway container (the devcontainer cannot delete it).
+
+**Design.** One guided command: `rm` states the exact flags it needs in the first refusal, completes in one invocation, and removes container-owned volume content through the same helper that created it (or lists the exact leftover paths).
+
+**Acceptance criteria.** Test: up then `rm <name> --yes --discard-protected-state <branch>` removes containers, networks, volumes and the directory in one call; the refusal without the flag names it.
