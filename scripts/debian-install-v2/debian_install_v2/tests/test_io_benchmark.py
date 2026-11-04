@@ -342,6 +342,9 @@ def test_too_small_free_space_skips_cleanly_and_swap_still_applied(tmp_path):
     assert not (Path(installer.config.state_dir) / "io-benchmark.json").exists()
 
 
+# NOTE (review F6): this deliberately fabricates the OLD adjacent-swap shape, which the planner no longer
+# produces. The benchmark runs on the pre-swap live table and removes its own partition before the final shape
+# is applied, so these tests exercise the benchmark, not the layout; do not "fix" them to the new layout.
 def _legacy_adjacent(disk: SimDisk, partitions: list[tuple[int, int]]) -> list[tuple[int, int]]:
     """Move planned swap directly after root: free space then lies at the disk tail.
 

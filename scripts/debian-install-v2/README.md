@@ -308,11 +308,20 @@ in `tests/test_layout_policy.py`):
   (40 GiB root, swap in the middle, 455 GiB cow behind it) could never grow root
   or cow and filled root at 91-97%.
 - **Root has a minimum.** `min_root_gib(disk) = clamp(20% of disk, 8, 100)` GiB
-  (100 GiB on 512 GiB). A capped or `dev-host` root below it is refused (unless
-  `root_resize_policy=untouched`, which keeps the existing geometry).
+  (100 GiB on 512 GiB). It is enforced for a capped root, for `dev-host`, and for
+  a `full-root` plan in which the installer itself shrinks root to make room for
+  managed swap (`swap_policy=on`, `root_resize_policy=resize`). It is not judged
+  for `root_resize_policy=untouched` or a root the installer leaves as it is.
+  `root_max_size_gb` below the minimum is a plan-time error (breaking change,
+  see CHANGES.md): remove it and use `"disk_layout": "dev-host"`.
+- **`untouched` / `grow-only` with `swap_policy=on`:** swap now goes to the END
+  of the disk, so a gap appears between root and swap where swap used to follow
+  root directly. The gap is never formatted by the installer.
 - **Alignment:** 1 MiB (2048 sectors), a 1 MiB end buffer, partition order
-  ESP, `/boot`, root, free gap, swap; the partition numbers of swap stay
-  `root+1..` (the gap is later numbered after them, e.g. cow = vda8).
+  ESP, `/boot`, root, free gap, swap. Swap partition numbers follow root
+  (`root+1..`); the cow partition is created last by `provision-runner.sh` and
+  gets whatever number parted assigns (the script finds it by its `MDT_COW`
+  label, not by number).
 - **Gap, not a data partition, by default.** The installer does not format
   anything it does not own: the unallocated gap is carved into the Btrfs cow
   partition by `scripts/netcup/runner/provision-runner.sh` (`COW_SIZE_GIB`,

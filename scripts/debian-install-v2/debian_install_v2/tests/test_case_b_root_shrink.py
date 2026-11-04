@@ -193,7 +193,9 @@ def test_plan_root_shrink_refuses_when_preserve_is_smaller_than_filesystem_minim
     installer, actions = make_case_b_installer(
         tmp_path, preserve_root_size_gb=1, swap_disk_total_gb=45
     )
-    with pytest.raises(RuntimeError, match="root filesystem minimum plus 256 MiB"):
+    # Since the layout policy (NC-12) the generic root minimum (20% of the disk) refuses this shrink first; the
+    # filesystem-minimum refusal stays behind it as the second guard. Either way: refuse, write nothing.
+    with pytest.raises(RuntimeError, match="root filesystem minimum plus 256 MiB|below the minimum of 10 GiB"):
         installer._plan_root_shrink()
     assert "/etc/vbpub/root-shrink-plan.env" not in actions.files
 

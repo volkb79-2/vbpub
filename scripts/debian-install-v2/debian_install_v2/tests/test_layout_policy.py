@@ -84,7 +84,7 @@ def test_planner_dev_host_places_swap_last_and_root_by_rule(tmp_path):
     object.__setattr__(installer.config, "disk_layout", "dev-host")
     partitions, root = installer._plan_swap_partitions()
     disk_sectors, root_start, _ = installer._disk_facts()
-    assert root * 512 == 160 * GIB - 0 or abs(root * 512 - 160 * GIB) < GIB
+    assert root * 512 == 160 * GIB
     assert len(partitions) == 4
     last_end = partitions[-1][0] + partitions[-1][1]
     assert disk_sectors - last_end <= lp.SWAP_END_SLACK_SECTORS
@@ -107,3 +107,60 @@ def test_planner_default_layout_still_ends_with_swap(tmp_path):
     partitions, _root = installer._plan_swap_partitions()
     disk_sectors, _s, _r = installer._disk_facts()
     assert disk_sectors - (partitions[-1][0] + partitions[-1][1]) <= lp.SWAP_END_SLACK_SECTORS
+
+
+@pytest.mark.parametrize(
+    ("disk_gib", "expected"),
+    [(1, 8), (40, 8), (41, 9), (128, 26), (129, 26), (499, 100), (500, 100), (513, 100), (4096, 100)],
+)
+def test_min_root_boundaries(disk_gib, expected):
+    assert lp.min_root_gib(disk_gib) == expected
+
+
+def test_root_size_exactly_at_minimum_passes_and_one_sector_below_fails():
+    disk = 512 * S
+    lp.validate_root_size(100 * S, disk)
+    with pytest.raises(lp.LayoutPolicyError, match="below the minimum"):
+        lp.validate_root_size(100 * S - 1, disk)
+    # small disk: 20 GiB -> minimum 8 GiB
+    lp.validate_root_size(8 * S, 20 * S)
+    with pytest.raises(lp.LayoutPolicyError, match="below the minimum"):
+        lp.validate_root_size(8 * S - 1, 20 * S)
+
+
+def test_swap_end_slack_boundary():
+    disk = 512 * S
+    size = 16 * S
+    lp.validate_swap_last([(disk - lp.SWAP_END_SLACK_SECTORS - size, size)], [(2048, 100 * S)], disk)
+    with pytest.raises(lp.LayoutPolicyError, match="END of the disk"):
+        lp.validate_swap_last([(disk - lp.SWAP_END_SLACK_SECTORS - 1 - size, size)], [(2048, 100 * S)], disk)
+    # a non-swap partition ending exactly where swap starts is fine, one sector over is not
+    start = disk - lp.SWAP_END_SLACK_SECTORS - size
+    lp.validate_swap_last([(start, size)], [(2048, start - 2048)], disk)
+    with pytest.raises(lp.LayoutPolicyError, match="last allocation"):
+        lp.validate_swap_last([(start, size)], [(2048, start - 2048 + 1)], disk)
+
+
+def test_planner_root_cap_exactly_at_minimum_is_accepted_and_one_gib_below_refused(tmp_path):
+    ok = make_planner(
+        tmp_path / "ok", disk_gib=512, root_gib=500, root_max_size_gb=100,
+        swap_disk_total_gb=16, preserve_root_size_gb=10,
+    )
+    _parts, root = ok._plan_swap_partitions()
+    assert root * 512 == 100 * GIB
+    bad = make_planner(
+        tmp_path / "bad", disk_gib=512, root_gib=500, root_max_size_gb=99,
+        swap_disk_total_gb=16, preserve_root_size_gb=10,
+    )
+    with pytest.raises(InstallerError, match="below the minimum"):
+        bad._plan_swap_partitions()
+
+
+def test_full_root_layout_refuses_a_root_made_tiny_by_swap_sizing(tmp_path):
+    # review F4: 20 GiB disk + 16 GiB swap used to leave a 4 GiB root silently.
+    installer = make_planner(tmp_path, disk_gib=20, root_gib=19, swap_disk_total_gb=16, preserve_root_size_gb=2)
+    with pytest.raises(InstallerError, match="below the minimum"):
+        installer._plan_swap_partitions()
+    fine = make_planner(tmp_path / "fine", disk_gib=20, root_gib=19, swap_disk_total_gb=4, preserve_root_size_gb=2)
+    _parts, root = fine._plan_swap_partitions()
+    assert root * 512 >= 8 * GIB

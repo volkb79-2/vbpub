@@ -49,26 +49,57 @@ getent group docker >/dev/null || groupadd docker
 usermod -aG docker "$RUNNER_USER"
 
 identity_check
-if test -b "$COW_DEVICE"; then
-  test "$(lsblk -dn -o PKNAME "$COW_DEVICE")" = "$(basename "$COW_PARENT_DISK")"
+# shellcheck source=cow-carve.sh
+source "$here/cow-carve.sh"
+# Idempotence is keyed on the PARTITION LABEL (PARTLABEL=MDT_COW or a btrfs filesystem labelled MDT_COW), never on a
+# device number: partition numbering differs between layouts, and a re-run must never carve a second cow.
+cow_rc=0
+cow_found="$(lsblk -P -o PATH,PARTLABEL,FSTYPE,LABEL "$COW_PARENT_DISK" | cow_select_device)" || cow_rc=$?
+if test "$cow_rc" = 3; then
+  echo "more than one MDT_COW candidate on $COW_PARENT_DISK; resolve by hand" >&2
+  exit 6
+elif test "$cow_rc" = 0; then
+  COW_DEVICE=$cow_found
+elif test -b "$COW_DEVICE" && test "$(lsblk -dn -o PKNAME "$COW_DEVICE")" = "$(basename "$COW_PARENT_DISK")"; then
+  # legacy: an unlabelled partition at the configured device; the filesystem checks below refuse anything foreign
+  :
 else
   # The debian-install-v2 layout (disk_layout=dev-host) leaves the cow area + reserve UNALLOCATED between root and
   # the END-of-disk swap, so the cow partition is carved from the LARGEST free row (never the last row, which is a
   # sliver after swap), ends at the row end, and takes COW_SIZE_GIB (default: a third of the disk, 8 GiB steps,
   # capped to the row). The rest stays unallocated reserve directly behind root.
-  free_row="$(parted -m -s "$COW_PARENT_DISK" unit MiB print free | awk -F: 'tolower($5) ~ /^free/ {s=int($2+0.999); e=int($3); if (e - s > best) {best=e - s; start=s; end=e}} END {if (start != "") print start ":" end}')"
-  test -n "$free_row"
+  disk_mib=$(( $(blockdev --getsize64 "$COW_PARENT_DISK") / 1048576 ))
+  cow_gib=${COW_SIZE_GIB:-$(( disk_mib / 1024 / 3 / 8 * 8 ))}
+  # The free row must hold the whole cow (no silent clipping) and at least COW_MIN_GIB (default 20): a tail sliver
+  # or a small leftover is refused, never turned into a useless partition.
+  if test "$cow_gib" -lt "${COW_MIN_GIB:-20}"; then cow_gib=${COW_MIN_GIB:-20}; fi
+  cow_mib=$(( cow_gib * 1024 ))
+  free_row="$(parted -m -s "$COW_PARENT_DISK" unit MiB print free | cow_pick_free_row "$cow_mib")"
   free_start_mib=${free_row%%:*}
   free_end_mib=${free_row##*:}
-  disk_mib=$(( $(blockdev --getsize64 "$COW_PARENT_DISK") / 1048576 ))
-  cow_mib=$(( ${COW_SIZE_GIB:-$(( disk_mib / 1024 / 3 / 8 * 8 ))} * 1024 ))
   # The cow partition is placed at the END of the gap (right before swap); the reserve stays directly behind root,
   # so root can grow into it (sfdisk + resize2fs) and cow, a disposable cache, is re-created larger if needed.
-  cow_start_mib=$(( free_end_mib - cow_mib ))
-  if test "$cow_start_mib" -lt "$free_start_mib"; then cow_start_mib=$free_start_mib; fi
-  parted -s "$COW_PARENT_DISK" mkpart primary "${cow_start_mib}MiB" "${free_end_mib}MiB"
+  cow_range="$(cow_plan_range "$free_start_mib" "$free_end_mib" "$cow_mib")"
+  cow_start_mib=${cow_range%%:*}
+  echo "carving $COW_LABEL: ${cow_start_mib}..${free_end_mib} MiB ($(( (free_end_mib - cow_start_mib) / 1024 )) GiB) from the free row ${free_start_mib}..${free_end_mib} MiB"
+  parted -s "$COW_PARENT_DISK" mkpart "$COW_LABEL" btrfs "${cow_start_mib}MiB" "${free_end_mib}MiB"
   partprobe "$COW_PARENT_DISK"
   udevadm settle
+  COW_DEVICE="$(lsblk -P -o PATH,PARTLABEL,FSTYPE,LABEL "$COW_PARENT_DISK" | cow_select_device)" \
+    || { echo "the new $COW_LABEL partition is not visible after partprobe" >&2; exit 7; }
+  # Stale signatures from an earlier install in the carved range (a provider reinstall need not zero the disk):
+  # refuse and give the range back unless the operator allows wiping.
+  stale="$(wipefs -n -p "$COW_DEVICE" | awk '!/^#/ && NF')"
+  if test -n "$stale"; then
+    if test "${COW_WIPE_STALE:-0}" = 1; then
+      wipefs -a "$COW_DEVICE"
+    else
+      echo "stale signature(s) inside the new cow partition $COW_DEVICE: $stale" >&2
+      parted -s "$COW_PARENT_DISK" rm "$(cat "/sys/class/block/$(basename "$COW_DEVICE")/partition")"
+      echo "partition removed again; re-run with COW_WIPE_STALE=1 after checking the old data is disposable" >&2
+      exit 4
+    fi
+  fi
 fi
 test -b "$COW_DEVICE"
 fs_type="$(blkid -s TYPE -o value "$COW_DEVICE" 2>/dev/null || true)"

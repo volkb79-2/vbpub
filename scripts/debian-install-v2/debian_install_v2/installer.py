@@ -2149,8 +2149,13 @@ MaxFileSec=1month
                 )
             except layout_policy.LayoutPolicyError as exc:
                 raise InstallerError(str(exc)) from exc
+        # The root minimum binds capped/dev-host roots and, for full-root, every plan in which the installer
+        # itself shrinks root to make room for managed swap (a tiny root caused by swap sizing is refused too).
+        # An untouched root, or one the installer does not shrink, is never judged here.
         if policy != "untouched" and (
-            self.config.disk_layout == "dev-host" or root_size_cap is not None
+            self.config.disk_layout == "dev-host"
+            or root_size_cap is not None
+            or (self.config.swap_policy == "on" and bool(partitions) and target_root_size < root_size)
         ):
             try:
                 layout_policy.validate_root_size(target_root_size, disk_sectors)
@@ -3697,7 +3702,11 @@ MaxFileSec=1month
         state_path = Path(self.config.state_dir) / "state.json"
         if state_path.is_file():
             prior_status = self.state.load().get("steps", {}).get("root_resize", {}).get("status", "")
-        if current_size == target_size and prior_status in {"success", "not_needed"}:
+        if (
+            current_size == target_size
+            and prior_status in {"success", "not_needed"}
+            and (self.actions.dry_run or self._kernel_partition_sectors() == current_size)
+        ):
             return
         # The planner only grows supported ext filesystems. This read-only
         # probe also refuses unknown root filesystems before growpart edits GPT.
@@ -3775,12 +3784,63 @@ MaxFileSec=1month
                 )
         else:
             grown_size = current_size
+        # Crash safety: the table (sfdisk --dump) can be ahead of the kernel when an earlier run died between
+        # `sfdisk -N` and `partx -u` (or growpart was interrupted). Compare the KERNEL size to the table and
+        # re-inform the kernel before resize2fs, otherwise resize2fs sees the old size, reports "nothing to do"
+        # and success would be recorded with a small filesystem.
+        kernel_sectors = self._kernel_partition_sectors()
+        if kernel_sectors != grown_size:
+            self._run(
+                ["/usr/bin/partx", "-u", "--nr", str(self.root_number), f"/dev/{self.root_disk}"],
+                f"tell the kernel the root partition is {grown_size} sectors (kernel has {kernel_sectors})",
+                dangerous=True,
+            )
+            kernel_sectors = self._kernel_partition_sectors()
+            if kernel_sectors != grown_size:
+                raise InstallerError(
+                    f"kernel reports root partition {kernel_sectors} sectors but the table says {grown_size} "
+                    "after partx -u; refusing to resize the filesystem or record success (reboot, then re-run)"
+                )
         self._run(
             ["/usr/sbin/resize2fs", self.root_partition_path],
             "grow root filesystem to fill its partition",
             dangerous=True,
         )
+        fs_bytes = self._root_filesystem_bytes()
+        partition_bytes = kernel_sectors * 512
+        # resize2fs fills the partition up to a partial block/group; a filesystem more than 1 MiB + 0.1 percent
+        # short of the partition means the resize did not happen.
+        if fs_bytes > partition_bytes or partition_bytes - fs_bytes > 1048576 + partition_bytes // 1000:
+            raise InstallerError(
+                f"root filesystem is {fs_bytes} bytes but the partition is {partition_bytes} bytes after resize2fs; "
+                "refusing to record root_resize success"
+            )
         self._mark_step("root_resize", "success", f"root partition/filesystem grown to {grown_size} sectors")
+
+    def _kernel_partition_sectors(self) -> int:
+        """Root partition size as the KERNEL sees it (512-byte sectors), not as the table says."""
+        out = self._run(
+            ["/usr/sbin/blockdev", "--getsz", self.root_partition_path],
+            "read the kernel's root partition size",
+        )
+        try:
+            return int(out.split()[0])
+        except (IndexError, ValueError) as exc:
+            raise InstallerError(f"cannot parse blockdev --getsz output for {self.root_partition_path}: {out!r}") from exc
+
+    def _root_filesystem_bytes(self) -> int:
+        """Current ext filesystem size (block count x block size) of the root partition."""
+        out = self._run(["/usr/sbin/dumpe2fs", "-h", self.root_partition_path], "read root filesystem size")
+        block_size = block_count = 0
+        for line in out.splitlines():
+            key, _sep, value = line.partition(":")
+            if key.strip() == "Block size":
+                block_size = int(value.strip())
+            elif key.strip() == "Block count":
+                block_count = int(value.strip())
+        if block_size <= 0 or block_count <= 0:
+            raise InstallerError("could not read the root filesystem size from dumpe2fs -h")
+        return block_size * block_count
 
     def _ensure_disk_transaction_manifest(self) -> None:
         """Persist a checksummed pre-change table even when the policy is a no-op."""
