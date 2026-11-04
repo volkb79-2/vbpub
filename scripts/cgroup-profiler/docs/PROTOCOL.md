@@ -13,8 +13,8 @@ Started in RG-55 P6 C6 (socket carrier); `watch` (§8.2) and the stall policy
 and every error code below is live.
 
 > **Planned change (cgprofile 2.0.0).** Sections 1 to 9 describe the wire as shipped in 1.x and stay
-> accurate for every 1.x daemon. Section 10 specifies **ctl contract 2** (the `export` and `config`
-> operations, the removal of `report` and of the exec carrier, session ownership) and how 1.x and 2.x
+> accurate for every 1.x daemon. Section 10 specifies **ctl contract 2** (the `export`, `config`, `config-set`
+> and `config-reset` operations, the removal of `report` and of the exec carrier, session ownership) and how 1.x and 2.x
 > peers recognise each other. The command-line half is [`CGPCTL-SPEC.md`](CGPCTL-SPEC.md).
 
 ## 1. Two carriers, one protocol (§8.1, design D-30)
@@ -393,12 +393,12 @@ every verb that exists in contract 1 except one: the `report` verb is removed. T
   `contracts`; a client treats its absence as `[1]`. The `transports.exec` key is dropped from the
   contract-2 reply of a 2.x daemon (the exec carrier no longer exists) and kept, `false`, in the
   contract-1 reply so 1.x consumers that read it do not break.
-* `export` and `config` exist only at contract 2. At contract 1 they are refused with `bad-argument`
+* `export`, `config`, `config-set` and `config-reset` exist only at contract 2. At contract 1 they are refused with `bad-argument`
   naming both numbers, exactly as a 1.x daemon refuses contract 2 today.
 * A contract-2 client always opens with `version` at contract 1 (every daemon understands it), reads
   `contracts`, and uses contract 2 only when it is listed. Against a 1.x daemon, `cgpctl` therefore keeps
   working for `status`, `host`, `start`, `stop`, `watch`, `prune` (all contract 1) and fails `report` and
-  `config show` with exit 3, cause `contract-unsupported`, naming the daemon version that provides them.
+  `config show` / `config set` / `config reset` with exit 3, cause `contract-unsupported`, naming the daemon version that provides them.
 * **How 1.x clients are told.** A 1.x client (run-gate's `_wire_args`, the 1.x in-image `ctl`) that sends
   `report` to a 2.x daemon at contract 1 receives a normal contract-1 error, never a silent drop:
   `{"ok": false, "contract": 1, "error": {"code": "report-removed", "message": "the daemon no longer
@@ -481,19 +481,54 @@ exact gates-slice containers). Every other `start` argument keeps its meaning. A
 `observe` with a non-`containerid:` target, or `observe` with a `containerid:` target, is `bad-argument`.
 The manifest records `owner_uid` for every session (section 10.5).
 
-**`config`** (read-only):
+**`config`** (get; open to every authorised peer):
 
 ```json
 {"verb": "config", "args": {}, "contract": 2}
 ```
 
 Response: `{"ok": true, "contract": 2, "config": {"file": "/etc/cgprofile/cgpd.toml", "digest":
-"sha256:<hex>", "loaded_at": "...", "reloads": 0, "last_reload_error": null, "keys": {"<key>": {"value":
-..., "source": "default" | "file", "reloadable": true}}}}`. The key set is `CGPCTL-SPEC.md` section 3.2.
-There is no write counterpart.
+"sha256:<hex>", "loaded_at": "...", "reloads": 0, "last_reload_error": null, "overrides_file":
+"/var/lib/cgprofile/overrides.toml", "overrides_ignored": 0, "keys": {"<key>": {"value": ..., "source":
+"default" | "file" | "override", "reloadable": true, "tunable": true, "persisted": false, "shadows":
+{"value": ..., "source": "file" | "default"}}}}}`. `shadows` is present only for an override. The key set
+is `CGPCTL-SPEC.md` section 3.2; the precedence and the runtime-tunable allow-list are its section 3.5.
 
-**`version`** at contract 2 also carries `config: {"digest": "...", "last_reload_error": null}`, so
-`cgpctl status` and the host-setup check read the digest without a second call.
+**`config-set`** (write; uid 0 only, section 10.5):
+
+```json
+{"verb": "config-set", "args": {"key": "allow_uids", "value": [1003, 1004], "persist": true}, "contract": 2}
+```
+
+| `args` key | type | required | notes |
+|---|---|---|---|
+| `key` | string | yes | a key on the runtime-tunable allow-list; any other key is `bad-argument` whose message lists the tunable keys |
+| `value` | JSON value of the key's type | yes | typed on the wire (a number, integer, `"on"`/`"off"` string, string, or array), validated with the same schema function the config file uses; a wrong type or range is `bad-argument` naming the rule |
+| `persist` | boolean | no | default `false`: memory only. `true` also writes `/var/lib/cgprofile/overrides.toml` before answering |
+| `dry_run` | boolean | no | default `false`: validate and report the would-be change, apply and write nothing |
+
+Response: `{"ok": true, "contract": 2, "config-set": {"key": "allow_uids", "old": {"value": [1003],
+"source": "file"}, "new": {"value": [1003, 1004], "source": "override"}, "persisted": true, "applied":
+true, "audit_id": "17"}}`. The daemon applies the value (atomically, with the reload swap of
+`CGPCTL-SPEC.md` section 3.3) before it answers; `applied` is `false` only for `dry_run`. If `persist` was
+requested and the write fails the daemon leaves the override unapplied and answers `persist-failed`.
+Every attempt, accepted or refused, writes the audit line of `CGPCTL-SPEC.md` section 3.5.
+
+**`config-reset`** (write; uid 0 only):
+
+```json
+{"verb": "config-reset", "args": {"key": "allow_uids"}, "contract": 2}
+{"verb": "config-reset", "args": {"all": true}, "contract": 2}
+```
+
+`key` (one tunable key) and `all` (boolean) are mutually exclusive and one is required. Removes the
+override from memory and from the overrides file. Response: `{"ok": true, "contract": 2, "config-reset":
+{"reset": ["allow_uids"], "values": {"allow_uids": {"value": [1003], "source": "file"}}, "audit_id":
+"18"}}`; a key without an override yields an empty `reset`, not an error.
+
+**`version`** at contract 2 also carries `config: {"digest": "...", "last_reload_error": null,
+"overrides": 0}`, so `cgpctl status` and the host-setup check read the digest and the override count
+without a second call.
 
 ### 10.5 Session ownership
 
@@ -504,6 +539,7 @@ There is no write counterpart.
 | `status`, `watch`, `host`, `version`, `config` | every authorised peer (group plus `allow_uids`) |
 | `stop`, `export` | the session's `owner_uid`, or uid 0 |
 | `gc` | every authorised peer; removes only sessions the peer owns, uid 0 removes any |
+| `config-set`, `config-reset` | uid 0 only, including when `allow_uids` is empty; the access list itself (`allow_uids`) is therefore changeable only by uid 0 over the socket |
 
 Anything else is `peer-refused` with a message naming the owner uid. Unreadable credentials fail closed
 for these operations even when no `allow_uids` is configured. This rule is hygiene, not a security
@@ -515,13 +551,16 @@ rules: run-gate starts and stops its sessions as one uid, so nothing changes for
 ### 10.6 New error codes
 
 Additive at contract 2: `report-removed` (also answered at contract 1), `session-live` (`export` of a
-live session), `export-too-large`, `export-failed` (only inside an aborted stream end line). `peer-refused`
+live session), `export-too-large`, `export-failed` (only inside an aborted stream end line),
+`persist-failed` (`config-set` with `persist` could not write the overrides file; nothing was applied). `peer-refused`
 gains the ownership meaning of section 10.5. `busy` also covers the 4-export bound.
 
 ### 10.7 Goldens
 
 Package 3 adds, under `tests/fixtures/rg55/socket/`: `export-request.json`, `export-response.ndjson`
-(header, one data line per part, end), `config-request.json`, `config-response.json`,
+(header, one data line per part, end), `config-request.json`, `config-response.json` (with one `override` entry),
+`config-set-request.json`, `config-set-response.json`, `config-set-refused-nonroot-response.json`,
+`config-set-persist-failed-response.json`, `config-reset-request.json`, `config-reset-response.json`,
 `report-removed-response.json` (a contract-1 request answered by a 2.x daemon) and contract-2 variants of
 `version-response.json` and `status-response.json`. The existing contract-1 goldens stay byte-for-byte
 as the 1.x compatibility oracle.

@@ -28,7 +28,7 @@ cockpit image. There is no container, no docker use by the daemon, and no helper
 | Runtime dependencies | `cli-extended>=0.5.1` (floor reason: CLI-EXT-30 collision filter). Nothing else. The daemon venv is stdlib plus cli-extended |
 | Extra `report` | `pandas`, `plotly`, `matplotlib`, `scipy`, `ruptures` with `>=` floors and a reason per floor. Not installed by host-setup and not part of the cockpit image's default closure |
 | Console scripts | `cgpctl = cgprofile.cli.cgpctl:main`, `cgpd = cgprofile.cli.cgpd:main` |
-| Package | `src/cgprofile/` absorbing `lib/` and `cgprofile.py`: `collect` (the stdlib collector and samplers), `daemon` (serve, store, placement, liveness, access), `client` (ctl client, export, report glue), `report` (analysis and renderers, imports the extra lazily), `cli`, `_damon`, `skills/cgpctl/SKILL.md`, `data/` |
+| Package | `src/cgprofile/` absorbing `lib/` and `cgprofile.py`: the target grouping is `collect` (the stdlib collector and samplers), `daemon` (serve, store, placement, liveness, access), `client` (ctl client, export, report glue), `report` (analysis and renderers, imports the extra lazily), `cli`, `_damon`, `skills/cgpctl/SKILL.md`, `data/`. **Package 1 lands the 1.x modules flat under `cgprofile/`** (their names and relative imports unchanged, `cgprofile.cli.legacy` holding the old `cgprofile.py`) together with `cli/`, `_damon/` and `data/`; the grouping into `collect`/`daemon`/`client`/`report` happens in packages 2 and 3 as they split and rewrite those modules, so package 1 stays a behaviour-neutral move |
 | Vendored DAMON | `cgprofile._damon`, a copy of `scripts/damon-analysis` module(s) the profiler uses, with a sync test that fails when the source and the copy differ (recorded decision Q7: vendor, do not publish damon-analysis as its own wheel). The relative-path import (`lib/damon.py`) is deleted |
 | Package data | the unit templates for `cgpd unit print` (`data/cgprofile.slice.in`, `data/cgpd.service.in`), the packaged skill, nothing else. No checkout path appears anywhere in the built wheel (a test greps the wheel) |
 | Release artifacts | `wheel` added to `cmru.toml` beside `oci-image` for the 2.0.x line: the wheel with a sha256 sidecar and `latest.json`, which the cockpit resolver reads as `cgprofile-latest`. The OCI image is not built for 2.0.0 unless the report tier needs it (decided in CP-44) |
@@ -54,6 +54,7 @@ nothing else beyond the standard library (a test pins it). This closes CP-17's o
 /etc/systemd/system/cgprofile.slice   # rendered by `cgpd unit print`, installed by host-setup
 /etc/systemd/system/cgpd.service
 /var/lib/cgprofile/            # StateDirectory=cgprofile; sessions/ below it
+/var/lib/cgprofile/overrides.toml   # root 0600; runtime `config set --persist` overrides (CGPCTL-SPEC.md 3.5); daemon-owned, never rendered by host-setup
 /run/cgprofile/                # created by the host's tmpfiles rule, never by the unit
 ```
 
@@ -80,6 +81,25 @@ The install is idempotent: create `/opt/cgprofile/<ver>`, build the venv from th
 at service start), write `MANIFEST`, run `cgpd --version` from the new venv and compare with the pin, then
 render the config and unit files and flip `current`. Nothing runs from a checkout and nothing is pip-
 installed into a system interpreter.
+
+### 3.2.1 Declared state versus runtime overrides
+
+Host-setup owns `/etc/cgprofile/cgpd.toml`; it renders the file from `host-setup.env` and never touches
+`/var/lib/cgprofile/overrides.toml`. The daemon accepts runtime changes from uid 0 (`cgpctl config set KEY
+VALUE [--persist]`, runtime-tunable keys only, CGPCTL-SPEC.md section 3.5) and layers them above the file:
+override, then file, then default. Consequences host-setup must honour:
+
+* Re-rendering the file and `systemctl reload cgpd` keep every override. Host-setup never passes
+  `--reset-overrides` on its own; only an operator does, deliberately (`cgpd reload --reset-overrides`).
+* The host-setup drift check compares the rendered file and the installed file, not effective values.
+  `check.sh` surfaces shadowing through `cgpctl doctor` (`overrides` check, a `warn`): an override that
+  hides a value host-setup declared is visible, never silent, and never a failed check.
+* `StateDirectory=cgprofile` already makes `/var/lib/cgprofile` writable under `ProtectSystem=strict`, so
+  persisted overrides need no extra unit setting; the file is created 0600 by the daemon.
+* The upgrade drain (section 5) is unaffected. A restart keeps persisted overrides and drops memory-only
+  ones; a rollback keeps the file, and a version that does not know an entry ignores it with a warning.
+* Every change is audit-logged by the daemon (journal line `config-audit ...`), so the journal answers who
+  changed the access list and when.
 
 ### 3.3 Groups and directories
 
@@ -219,7 +239,7 @@ Section 5, with the new `CGPROFILE_WHEEL` value. Host-setup keeps the two newest
 ### 6.3 `check.sh`
 
 Replaces the directory-and-group-only check with `cgpctl doctor --json` run as root (against the local
-socket), asserting: no `fail` check, `daemon.version` equals the pinned version, the group and mode of
+socket), asserting: no `fail` check (an `overrides` warning is reported, not asserted against), `daemon.version` equals the pinned version, the group and mode of
 both socket directories, `cgprofile.slice` bounded, and `systemd-analyze verify` clean on both units.
 Host-setup's `test-render.sh` pins the rendered config and the unit golden.
 
@@ -227,7 +247,8 @@ Host-setup's `test-render.sh` pins the rendered config and the unit golden.
 
 Rollback is an upgrade to the previous pinned version: point `CGPROFILE_WHEEL` at it, run the same drain
 and restart path. The previous directory is still present, so no download is needed and `current` flips
-back atomically. Config keys the old version does not know would be refused by the old `cgpd`, so each
+back atomically. The overrides file is kept across a rollback (entries the older version does not know are ignored with a
+warning, section 3.2.1). Config keys the old version does not know would be refused by the old `cgpd`, so each
 release documents the keys it adds and host-setup renders only the keys the pinned version supports (a
 version-to-keys table in the installer, tested). Rollback past 2.0.0 into the 1.x container is the section 8 rollback.
 

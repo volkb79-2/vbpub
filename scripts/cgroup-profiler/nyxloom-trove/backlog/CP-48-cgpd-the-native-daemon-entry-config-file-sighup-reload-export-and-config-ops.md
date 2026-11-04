@@ -24,8 +24,9 @@ ownership, and has no native unit. It also carries container-shaped checks (`CGP
 Contract: `docs/CGPCTL-SPEC.md` section 3, `docs/PROTOCOL.md` section 10, `docs/NATIVE-DEPLOYMENT.md` sections 3 to 5. Branch
 `cgp2-3-cgpd-20261104`; adopts CP-17 for the daemon half and implements CP-42.
 
-- `cgpd` registry: `run` (default verb, service entrypoint rules), `unit print|check`, `config check`.
-- Config loader for the 15 keys of the spec (fixed versus reloadable), unknown keys refused with the nearest valid key, no env fallbacks, stale
+- `cgpd` registry: `run` (default verb, service entrypoint rules), `unit print|check`, `config check`, `reload [--reset-overrides]`.
+- Runtime overrides layer (`config-set` / `config-reset`, `/var/lib/cgprofile/overrides.toml`, audit log, doctor shadow warning): acceptance list in CP-50.
+- Config loader for the 17 keys of the spec (fixed, reloadable, and the runtime-tunable subset; includes the new `max_exports`, `max_watchers`), unknown keys refused with the nearest valid key, no env fallbacks, stale
   `CGPROFILE_*` daemon variables refused naming the replacing key; SIGHUP atomic swap of reloadable keys, invalid file keeps old settings, fixed
   key change reported as restart-required.
 - Native preflight: root, pid-namespace identity (always on, default `/proc`), bounded slice, writable sessions dir, single-daemon guard.

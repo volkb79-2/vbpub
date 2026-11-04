@@ -826,7 +826,7 @@ and no 1.3.0.
 | mdt-cockpit image | Gains the `cgprofile` wheel (core only, no `report` extra) in `pip/wheels.list` and the first-party sets, and `cgpctl` in the skills table, so the finalize step runs `cgpctl skills check` and `install` | Not applicable (image content) | MDT-048 |
 | mdt host-setup | Installs and pins the native service from a released wheel, renders `/etc/cgprofile/cgpd.toml` and the units, drains before restart, and runs `cgpctl doctor --json` in `check.sh`. Tmpfiles, sysusers and the socket paths are unchanged | Not applicable | MDT-055 |
 | Devcontainers and runners that bind `/run/cgprofile` | No change to the mount. They gain the ability to run `cgpctl --socket PATH` (or `CGPCTL_SOCKET`) from the image | Yes | none |
-| Operators and agents | Replace `docker exec cgprofile-host-daemon cgprofile ctl <verb>` with `cgpctl <verb>`; `attach`, `targets` and helper mode are gone (use `cgpctl start`, `start --dry-run`, `run`) | Mixed: contract-1 verbs work against a 1.x daemon, `report` and `config show` need 2.x | each user |
+| Operators and agents | Replace `docker exec cgprofile-host-daemon cgprofile ctl <verb>` with `cgpctl <verb>`; `attach`, `targets` and helper mode are gone (use `cgpctl start`, `start --dry-run`, `run`) | Mixed: contract-1 verbs work against a 1.x daemon, `report`, `config show`, `config set` and `config reset` need 2.x | each user |
 
 What a 1.x consumer sees from a 2.x daemon: `version` answers as before with extra fields; a contract-1
 `report` request is answered with the error code `report-removed` and a message naming `cgpctl report`;
