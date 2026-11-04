@@ -262,8 +262,17 @@ def test_retired_gate_verify_interval_days_loads_ignored_and_warns(tmp_path, mon
     still loads, is dropped, and is reported (no silent no-op)."""
     from nyxloom import config as config_module
     warnings: list = []
-    monkeypatch.setattr(config_module.log, "warning",
-                        lambda event, **kw: warnings.append((event, kw)))
+
+    class _SpyLog:
+        """Replaces the module's `log` entry (never a level method on the lazy proxy)."""
+
+        def warning(self, event, **kw):
+            warnings.append((event, kw))
+
+        def __getattr__(self, name):
+            return lambda *_args, **_kw: None
+
+    monkeypatch.setattr(config_module, "log", _SpyLog())
     root = _write_policy_project(tmp_path, policy_lines="gate_verify_interval_days = 14")
     cfg = ProjectConfig.load(root)
     assert not hasattr(cfg.policy, "gate_verify_interval_days")
