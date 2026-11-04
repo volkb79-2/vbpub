@@ -9,11 +9,19 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 authors = [{name = "Volker Badziong"}]
-# Stdlib-only at runtime by design (memo 2026-11-05 section 0 decision 3): producers vendor the
-# schemas and golden fixtures instead of importing this wheel, and the validator must run
-# anywhere a release runs. tomllib (waivers/1) is why the floor is 3.11.
-dependencies = []
+# The library modules (schemas, validator, lint, assemble, render, check) import only the
+# standard library (memo 2026-11-05 section 0 decision 3): producers vendor the schemas and
+# golden fixtures instead of importing this wheel. Only the `rigor-record` command line
+# (rigor_record.cli) uses cli-extended, a REAL wheel dependency like every estate CLI (RR-2,
+# operator instruction; RRK-01). cli-extended itself is stdlib-only, so the wheel still has no
+# third-party runtime dependency. Floor 0.3.0: the version cmru adopted; the surface used
+# (CliIdentity.resolve, CliRegistry, VerbSpec confirmation_required) exists from 0.2.0.
+# tomllib (waivers/1) is why the Python floor is 3.11.
+dependencies = ["cli-extended>=0.3.0"]
 dynamic = ["version"]
+
+[project.scripts]
+rigor-record = "rigor_record.cli:main"
 
 [project.optional-dependencies]
 test = ["pytest>=8", "pytest-cov>=6"]

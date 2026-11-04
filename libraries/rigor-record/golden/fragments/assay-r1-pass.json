@@ -1,5 +1,15 @@
 {
   "canary": null,
+  "claims": [
+    {
+      "outcome": "PASS",
+      "rigor": "R0"
+    },
+    {
+      "outcome": "PASS",
+      "rigor": "R1"
+    }
+  ],
   "config_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
   "coverage": {
     "branch_pct": 100.0,
@@ -10,6 +20,9 @@
     },
     "line_pct": 100.0
   },
+  "inputs": [
+    "node_modules"
+  ],
   "judge": {
     "artifact_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
     "judge_identity": "assay-judge-identity/14",
@@ -17,6 +30,9 @@
     "version": "12.0.0"
   },
   "judged_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "judged_paths": [
+    "src"
+  ],
   "kind": "assay-lane",
   "lane": "assay-r1",
   "outcome": "PASS",

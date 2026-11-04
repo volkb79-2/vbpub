@@ -1,160 +1,32 @@
 {
-  "adopted_from": null,
-  "levels": {
-    "R0": {
-      "judged_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "lanes": [
-        {
-          "config_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-          "lane": "unit",
-          "outcome": "PASS",
-          "verdict_sha256": "5555555555555555555555555555555555555555555555555555555555555555"
-        }
-      ],
-      "status": "pass",
-      "toolset": "t1",
-      "waiver": null
-    },
-    "R1": {
-      "coverage": {
-        "branch_pct": 100.0,
-        "excluded_lines": 0,
-        "floor": {
-          "branch": 100,
-          "line": 100
-        },
-        "line_pct": 100.0
-      },
-      "judged_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "lanes": [
-        {
-          "config_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-          "lane": "assay-r1",
-          "outcome": "PASS",
-          "verdict_sha256": "7777777777777777777777777777777777777777777777777777777777777777"
-        }
-      ],
-      "status": "pass",
-      "toolset": "t1",
-      "waiver": null
-    },
-    "R2": {
-      "buckets": {
-        "budget_exceeded": 0,
-        "crashed": 0,
-        "equivalent": 0,
-        "hung": 0,
-        "killed": 553,
-        "survived": 4
-      },
-      "campaign": {
-        "attempts": 2,
-        "closeout_exit": 0,
-        "completed_at": "2026-11-04T17:30:00Z",
-        "started_at": "2026-11-04T08:00:00Z"
-      },
-      "candidates": {
-        "executed": 557,
-        "resumed": 0,
-        "total": 557
-      },
-      "deviations": [],
-      "history": [],
-      "judged_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "lanes": [],
-      "scope": {
-        "anchored": false,
-        "base_tag": "cgprofile-v1.2.0",
-        "kind": "changed-since"
-      },
-      "score": 0.9928,
-      "status": "pass-with-waivers",
-      "survivors": {
-        "accepted": 1,
-        "by_file": {},
-        "equivalent": 3,
-        "listed": [
-          {
-            "candidate_id": "cand-0000",
-            "disposition": "equivalent",
-            "line": 10,
-            "operator": "python:compare-swap",
-            "path": "src/cgprofile/mod0.py",
-            "reason": "swapping < and <= is unobservable: both branches clamp to the same bound",
-            "resolved_by": null
-          },
-          {
-            "candidate_id": "cand-0001",
-            "disposition": "equivalent",
-            "line": 11,
-            "operator": "python:compare-swap",
-            "path": "src/cgprofile/mod1.py",
-            "reason": "swapping < and <= is unobservable: both branches clamp to the same bound",
-            "resolved_by": null
-          },
-          {
-            "candidate_id": "cand-0002",
-            "disposition": "equivalent",
-            "line": 12,
-            "operator": "python:compare-swap",
-            "path": "src/cgprofile/mod2.py",
-            "reason": "swapping < and <= is unobservable: both branches clamp to the same bound",
-            "resolved_by": null
-          },
-          {
-            "candidate_id": "cand-0003",
-            "disposition": "accepted",
-            "line": 13,
-            "operator": "python:compare-swap",
-            "path": "src/cgprofile/mod0.py",
-            "reason": "accepted risk: path only reached on a removed platform",
-            "resolved_by": null
-          }
-        ],
-        "open": 0,
-        "resolved": 0,
-        "sidecar_sha256": null
-      },
-      "toolset": "t1",
-      "waiver": null,
-      "worker_counts": {
-        "1": 557
-      }
-    },
-    "R3": {
-      "canaries": [
-        {
-          "lane": "assay-r3",
-          "mechanism": "import-break",
-          "outcome": "PASS",
-          "targets": [
-            "src/cgprofile/daemon.py"
-          ]
-        }
-      ],
-      "judged_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "lanes": [
-        {
-          "config_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-          "lane": "assay-r3",
-          "outcome": "PASS",
-          "verdict_sha256": "8888888888888888888888888888888888888888888888888888888888888888"
-        }
-      ],
-      "status": "pass",
-      "toolset": "t1",
-      "waiver": null
-    },
-    "review": {
-      "document_sha256": "9999999999999999999999999999999999999999999999999999999999999999",
-      "range": {
-        "from": "cgprofile-v1.2.0",
-        "to": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-      },
-      "reviewer_role": "independent-reviewer",
-      "status": "accept"
-    }
+  "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "inventory": {
+    "members": [
+      "r0-r1",
+      "assay-r1",
+      "assay-r3"
+    ],
+    "r2_lanes": [
+      "assay-r2"
+    ],
+    "sequence": "release"
   },
+  "labels": [
+    {
+      "artifacts": [
+        {
+          "name": "cgprofile-2.0.0-py3-none-any.whl",
+          "sha256": "6666666666666666666666666666666666666666666666666666666666666666"
+        }
+      ],
+      "kind": "release",
+      "published_at": "2026-11-04T18:02:11Z",
+      "state": "current",
+      "tag": "cgprofile-v2.0.0",
+      "version": "2.0.0",
+      "withdrawn": null
+    }
+  ],
   "machine_classes": [
     {
       "cpu_model": "AMD EPYC 9634 84-Core Processor",
@@ -162,7 +34,8 @@
       "hypervisor": true,
       "id": "m1",
       "speed": {
-        "basis": "geekbench-measured",
+        "baseline_score": 2500,
+        "basis": "geekbench7-measured",
         "cpus_at_measurement": 4,
         "geekbench_major": 7,
         "geekbench_version": "7.1.0",
@@ -243,7 +116,7 @@
         }
       },
       "normalisation": {
-        "basis": "geekbench-measured",
+        "basis": "geekbench7-measured",
         "divisor": "single_core",
         "geekbench_major": 7,
         "reason": null,
@@ -260,36 +133,168 @@
   ],
   "project": "cgroup-profiler",
   "qualifications": {},
-  "release": {
-    "artifacts": [
-      {
-        "name": "cgprofile-2.0.0-py3-none-any.whl",
-        "sha256": "6666666666666666666666666666666666666666666666666666666666666666"
+  "results": [
+    {
+      "config_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "judged_by": "run-gate",
+      "kind": "command",
+      "lane": "r0-r1",
+      "levels": {
+        "R0": "pass"
+      },
+      "note": "declared, not judged",
+      "targets": {
+        "cgroup-profiler": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "toolset": "t1",
+      "verdict_sha256": null
+    },
+    {
+      "config_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "coverage": {
+        "branch_pct": 100.0,
+        "excluded_lines": 0,
+        "floor": {
+          "branch": 100,
+          "line": 100
+        },
+        "line_pct": 100.0
+      },
+      "judged_by": "assay",
+      "kind": "assay",
+      "lane": "assay-r1",
+      "levels": {
+        "R0": "pass",
+        "R1": "pass"
+      },
+      "targets": {
+        "cgroup-profiler": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "node_modules": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "toolset": "t2",
+      "verdict_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    },
+    {
+      "canary": {
+        "mechanism": "import-break",
+        "outcome": "PASS",
+        "targets": [
+          "src/cgprofile/daemon.py"
+        ]
+      },
+      "config_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "judged_by": "assay",
+      "kind": "assay",
+      "lane": "assay-r3",
+      "levels": {
+        "R0": "pass",
+        "R3": "pass"
+      },
+      "targets": {
+        "cgroup-profiler": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "toolset": "t2",
+      "verdict_sha256": "8888888888888888888888888888888888888888888888888888888888888888"
+    },
+    {
+      "attributed_from": null,
+      "buckets": {
+        "budget_exceeded": 3,
+        "crashed": 2,
+        "equivalent": 0,
+        "hung": 2,
+        "killed": 548,
+        "survived": 2
+      },
+      "campaign": {
+        "attempts": 1,
+        "closeout_exit": 0,
+        "completed_at": "2026-11-04T17:30:00Z",
+        "started_at": "2026-11-04T08:00:00Z"
+      },
+      "candidates": {
+        "executed": 557,
+        "resumed": 0,
+        "total": 557
+      },
+      "config_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "deviations": [],
+      "history": [],
+      "judged_by": "assay",
+      "kind": "assay",
+      "lane": "assay-r2",
+      "levels": {
+        "R0": "pass",
+        "R2": "pass-with-waivers"
+      },
+      "scope": {
+        "anchored": true,
+        "base_commit": null,
+        "kind": "whole-source"
+      },
+      "score": 0.9964,
+      "survivors": {
+        "accepted": 0,
+        "by_file": {},
+        "equivalent_reviewed": 2,
+        "listed": [
+          {
+            "candidate_id": "cand-0000",
+            "disposition": "equivalent-reviewed",
+            "line": 10,
+            "operator": "python:compare-swap",
+            "path": "src/cgprofile/mod0.py",
+            "reason": "unobservable ordering swap",
+            "resolved_by": null
+          },
+          {
+            "candidate_id": "cand-0001",
+            "disposition": "equivalent-reviewed",
+            "line": 11,
+            "operator": "python:compare-swap",
+            "path": "src/cgprofile/mod1.py",
+            "reason": "same bound either way",
+            "resolved_by": null
+          }
+        ],
+        "open": 0,
+        "resolved": 0,
+        "sidecar_sha256": null
+      },
+      "targets": {
+        "cgroup-profiler": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "toolset": "t2",
+      "verdict_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "worker_counts": {
+        "1": 557
       }
-    ],
-    "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    "project_tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-    "published_at": "2026-11-04T18:02:11Z",
-    "state": "current",
-    "tag": "cgprofile-v2.0.0",
-    "version": "2.0.0",
-    "withdrawn": null
+    },
+    {
+      "kind": "sequence",
+      "lane": "release",
+      "members": [
+        "r0-r1",
+        "assay-r1",
+        "assay-r3"
+      ],
+      "outcome": "PASS",
+      "toolset": "t3"
+    }
+  ],
+  "review": {
+    "document_sha256": "90d5345015a1c951c8fc58bc412086c1831030ef06dc1ebcde7ff374182a7236",
+    "range": {
+      "from": "cgprofile-v1.2.0",
+      "to": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "reviewer_role": "independent-reviewer",
+    "status": "accept"
   },
-  "revision": 1,
+  "revision": 3,
   "schema": "urn:vbpub:rigor-record:1",
   "toolsets": {
     "t1": {
-      "assay": {
-        "artifact_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-        "judge_identity": "assay-judge-identity/14",
-        "verdict_schema": "urn:assay:schema:verdict:18",
-        "version": "12.0.0"
-      },
-      "cgprofile": {
-        "ctl_contract": 2,
-        "daemon_version": "2.0.0",
-        "observer_contract": 3
-      },
       "run_gate": {
         "version": "25.0.1",
         "wheel_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
@@ -300,6 +305,20 @@
           "org.opencontainers.image.revision": "3333333333333333333333333333333333333333"
         },
         "ref": "tester-unified:local"
+      }
+    },
+    "t2": {
+      "assay": {
+        "artifact_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "judge_identity": "assay-judge-identity/14",
+        "verdict_schema": "urn:assay:schema:verdict:18",
+        "version": "12.0.0"
+      }
+    },
+    "t3": {
+      "run_gate": {
+        "version": "25.0.1",
+        "wheel_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
       }
     }
   }

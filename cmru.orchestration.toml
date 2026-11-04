@@ -29,7 +29,7 @@ registry = ["ghcr.io"]
 #   nyxloom <- cli-extended  (declared release order)
 #   pwmcp <- cli-extended  (declared release order)
 #   iobench <- cli-extended  (declared release order)
-#   rigor-record <- none  (declared release order)
+#   rigor-record <- cli-extended  (declared release order)
 #   tls-edge <- none  (declared release order)
 #   modern-debian-tools-python-debug <- cli-extended, ciu, cmru, pwmcp, topos, nyxloom  (declared release order)
 #     consumes first-party wheels: cli-extended, ciu, cmru, topos, nyxloom
@@ -38,8 +38,8 @@ registry = ["ghcr.io"]
 #   tester-base <- none  (declared release order)
 #
 # LEVELS (a project releases after every project on a lower level; longest declared chain)
-#   L0: cli-extended, assay, topos, rigor-record, tls-edge, tester-base
-#   L1: tnt, cgroup-profiler, ciu, nyxloom, pwmcp, iobench
+#   L0: cli-extended, assay, topos, tls-edge, tester-base
+#   L1: tnt, cgroup-profiler, ciu, nyxloom, pwmcp, iobench, rigor-record
 #   L2: run-gate-project
 #   L3: cmru
 #   L4: modern-debian-tools-python-debug, mdt-cockpit
@@ -242,12 +242,13 @@ depends_on = []
 config = "libraries/iobench/cmru.toml"
 depends_on = ["cli-extended"]
 
-# rigor-record (libraries/rigor-record, RR-1): the stdlib-only interchange layer of the rigor-evidence
-# record (schemas, validator, privacy lint). No runtime dependency on any first-party package; producers
-# vendor its schemas and golden fixtures instead of importing the wheel.
+# rigor-record (libraries/rigor-record, RR-1/RR-2): the interchange layer of the rigor-evidence record
+# (schemas, validator, privacy lint, assemble, render, check). Its library modules are stdlib-only and
+# producers vendor its schemas and golden fixtures instead of importing the wheel; only the
+# `rigor-record` command line uses the cli-extended wheel (cli-extended>=0.3.0, RR-2).
 [orchestration.project.rigor-record]
 config = "libraries/rigor-record/cmru.toml"
-depends_on = []
+depends_on = ["cli-extended"]
 
 # Consumes no first-party package (stdlib-only wheel); cmru is the source-built
 # release controller, not a published artifact dependency. id == directory name is a cmru

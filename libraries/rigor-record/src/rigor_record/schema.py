@@ -28,6 +28,8 @@ ANNOTATION_KEYWORDS = frozenset({"$schema", "$id", "$comment", "title", "descrip
 SCHEMA_FILES = (
     "rigor-common-1.json",
     "rigor-fragment-1.json",
+    "rigor-index-1.json",
+    "rigor-machine-1.json",
     "rigor-record-1.json",
     "rigor-waivers-1.json",
 )

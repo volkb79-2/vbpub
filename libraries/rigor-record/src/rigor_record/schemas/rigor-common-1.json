@@ -1,6 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:vbpub:rigor-common:1",
+  "$comment": "Shared definitions. Parts are VENDORED COPIES of producer-owned shapes: judge, survivor_buckets, candidates, campaign (assay, assay/docs/CONSUMERS.md); run_gate_tool, tester_image, distribution, metric, perf_entry (run-gate); speed references the cgprofile machine/1 schema (rigor-machine-1.json). The run-gate half is provisional until RG-a and RG-d land (backlog RRK-11). Copied at vbpub@aa4052259 plus RR-2a.",
   "title": "Shared definitions for rigor-fragment/1 and rigor-record/1",
   "description": "Every string that can reach a published record is restricted here by pattern (privacy layer 1, SPEC section 8).",
   "$defs": {
@@ -24,6 +25,18 @@
       "maxLength": 256,
       "pattern": "^[A-Za-z0-9_][A-Za-z0-9._+-]*(?:/[A-Za-z0-9_][A-Za-z0-9._+-]*)*$"
     },
+    "target_path": {
+      "type": "string",
+      "maxLength": 256,
+      "pattern": "^(?:\\.|[A-Za-z0-9_][A-Za-z0-9._+-]*(?:/[A-Za-z0-9_][A-Za-z0-9._+-]*)*)$"
+    },
+    "targets": {
+      "type": "object",
+      "propertyNames": {"$ref": "#/$defs/target_path"},
+      "additionalProperties": {"$ref": "#/$defs/git_oid"}
+    },
+    "claim_level": {"type": "string", "enum": ["R1", "R2", "R3"]},
+    "stored_status": {"type": "string", "enum": ["pass", "fail", "survivors", "pass-with-waivers", "incomplete", "error"]},
     "test_node_id": {"type": "string", "pattern": "^[A-Za-z0-9_./:\\[\\]-]{1,256}$"},
     "short_reason": {"type": "string", "pattern": "^[A-Za-z0-9 .,;:()_<>=!+*/-]{1,200}$"},
     "count": {"type": "integer", "minimum": 0},
@@ -68,18 +81,25 @@
     },
 
     "speed": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["basis", "geekbench_major", "geekbench_version", "single_core", "multi_core", "cpus_at_measurement", "measured_on"],
-      "properties": {
-        "basis": {"type": "string", "enum": ["geekbench-measured", "geekbench-table"]},
-        "geekbench_major": {"type": "integer", "enum": [6, 7]},
-        "geekbench_version": {"type": "string", "pattern": "^[67]\\.[0-9]+\\.[0-9]+$"},
-        "single_core": {"type": "integer", "minimum": 1},
-        "multi_core": {"type": ["integer", "null"], "minimum": 1},
-        "cpus_at_measurement": {"type": ["integer", "null"], "minimum": 1},
-        "measured_on": {"type": ["string", "null"], "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"}
-      }
+      "$comment": "The cgprofile machine/1 speed object (rigor-machine-1.json speed_measured / speed_table) without source_url and retrieved. The measured form is referenced from the vendored schema; the table form is its projection.",
+      "oneOf": [
+        {"$ref": "rigor-machine-1.json#/$defs/speed_measured"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["basis", "geekbench_major", "geekbench_version", "baseline_score", "single_core", "multi_core", "cpus_at_measurement", "measured_on"],
+          "properties": {
+            "basis": {"type": "string", "pattern": "^geekbench[0-9]{1,2}-table$"},
+            "geekbench_major": {"type": "integer", "minimum": 1},
+            "geekbench_version": {"type": "null"},
+            "baseline_score": {"type": "integer", "minimum": 1},
+            "single_core": {"type": "integer", "minimum": 1},
+            "multi_core": {"type": "null"},
+            "cpus_at_measurement": {"type": "null"},
+            "measured_on": {"type": "null"}
+          }
+        }
+      ]
     },
     "machine_class": {
       "type": "object",
@@ -136,8 +156,8 @@
           "additionalProperties": false,
           "required": ["basis", "geekbench_major", "divisor", "reference_score", "reason"],
           "properties": {
-            "basis": {"type": "string", "enum": ["geekbench-measured", "geekbench-table", "none"]},
-            "geekbench_major": {"type": ["integer", "null"], "enum": [6, 7, null]},
+            "basis": {"type": "string", "pattern": "^(?:geekbench[0-9]{1,2}-(?:measured|table)|none)$"},
+            "geekbench_major": {"type": ["integer", "null"], "minimum": 1},
             "divisor": {"type": "string", "enum": ["single_core", "none"]},
             "reference_score": {"type": ["integer", "null"], "minimum": 1},
             "reason": {"type": ["string", "null"], "pattern": "^[A-Z][A-Z0-9_]{0,63}$"}

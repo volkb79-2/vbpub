@@ -23,7 +23,8 @@
       "hypervisor": true,
       "id": "m1",
       "speed": {
-        "basis": "geekbench-measured",
+        "baseline_score": 2500,
+        "basis": "geekbench7-measured",
         "cpus_at_measurement": 4,
         "geekbench_major": 7,
         "geekbench_version": "7.1.0",
@@ -104,7 +105,7 @@
         }
       },
       "normalisation": {
-        "basis": "geekbench-measured",
+        "basis": "geekbench7-measured",
         "divisor": "single_core",
         "geekbench_major": 7,
         "reason": null,

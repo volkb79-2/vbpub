@@ -186,6 +186,8 @@ def test_schema_documents_are_valid_json_with_urns():
     assert ids == {
         "rigor-common-1.json": "urn:vbpub:rigor-common:1",
         "rigor-fragment-1.json": "urn:vbpub:rigor-fragment:1",
+        "rigor-index-1.json": "urn:vbpub:rigor-index:1",
+        "rigor-machine-1.json": "urn:vbpub:rigor-machine:1",
         "rigor-record-1.json": "urn:vbpub:rigor-record:1",
         "rigor-waivers-1.json": "urn:vbpub:rigor-waivers:1",
     }

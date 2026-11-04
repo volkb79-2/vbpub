@@ -4,7 +4,9 @@ from conftest import DELETE, edit, has
 from rigor_record import validate_fragment
 from rigor_record.validate import canonical_json, check_size
 
-GOLDEN_FRAGMENTS = ["assay-r1-pass", "assay-r2-survivors", "run-gate-r0-r1", "run-gate-r2-assay"]
+TABLE_SPEED = {"basis": "geekbench7-table", "geekbench_major": 7, "geekbench_version": None, "baseline_score": 2500,
+               "single_core": 1650, "multi_core": None, "cpus_at_measurement": None, "measured_on": None}
+GOLDEN_FRAGMENTS = ["assay-r1-pass", "assay-r2-survivors", "run-gate-r0-r1", "run-gate-r2-assay", "run-gate-composite"]
 
 
 @pytest.mark.parametrize("name", GOLDEN_FRAGMENTS)
@@ -17,7 +19,7 @@ def test_golden_fragments_validate_and_are_canonical(pf, name):
 
 
 def test_kind_must_be_known():
-    assert has(validate_fragment({"kind": "other"}), "$.kind", "assay-lane or run-gate-lane")
+    assert has(validate_fragment({"kind": "other"}), "$.kind", "assay-lane, run-gate-lane or run-gate-composite")
     assert has(validate_fragment([]), "$.kind", "assay-lane")
 
 
@@ -57,6 +59,22 @@ def test_assay_survivor_fields_are_restricted(pf):
                        ("first_failing_test", "tests/a b.py::t"), ("candidate_id", "x" * 200)]:
         doc = edit(base, (("r2", "survivors", "listed", 0, field), bad))
         assert any(v.path == f"$.r2.survivors.listed[0].{field}" for v in validate_fragment(doc)), (field, bad)
+
+
+def test_claims_inputs_and_judged_paths_are_ordered(pf):
+    base = pf("assay-r2-survivors")
+    claims = base["claims"]
+    assert has(validate_fragment(edit(base, (("claims",), claims[::-1]))), "$.claims", "ordered R0..R3")
+    assert has(validate_fragment(edit(base, (("claims",), claims + claims[:1]))), "$.claims", "ordered R0..R3")
+    for key in ("inputs", "judged_paths"):
+        out = validate_fragment(edit(base, ((key,), ["src/b", "src/a"])))
+        assert has(out, f"$.{key}", "sorted and distinct"), key
+
+
+def test_composite_members_are_distinct_and_exclude_the_sequence(pf):
+    base = pf("run-gate-composite")
+    assert has(validate_fragment(edit(base, (("members",), ["r0-r1", "r0-r1"]))), "$.members", "distinct lanes")
+    assert has(validate_fragment(edit(base, (("members",), ["r0-r1", base["lane"]]))), "$.members", "distinct lanes")
 
 
 def test_assay_fragment_may_not_carry_resource_numbers(pf):
@@ -137,11 +155,11 @@ def test_run_gate_schema_violations(pf):
         (("machine_classes", 0, "cpus_available"), 0, "$.machine_classes[0].cpus_available"),
         (("machine_classes", 0, "id"), "host1", "$.machine_classes[0].id"),
         (("machine_classes", 0, "speed", "geekbench_major"), 5, "$.machine_classes[0].speed.geekbench_major"),
-        (("machine_classes", 0, "speed", "geekbench_version"), "5.4.0", "$.machine_classes[0].speed.geekbench_version"),
+        (("machine_classes", 0, "speed", "geekbench_version"), "5.4.0", "$.machine_classes[0].speed"),
         (("perf", 0, "subject"), "host", "$.perf[0].subject"),
         (("perf", 0, "level"), "R9", "$.perf[0].level"),
         (("perf", 0, "window"), "yesterday", "$.perf[0].window"),
-        (("perf", 0, "normalisation", "geekbench_major"), 5, "$.perf[0].normalisation.geekbench_major"),
+        (("perf", 0, "normalisation", "geekbench_major"), 5, "$.perf[0]"),
         (("perf", 0, "host_psi_some_avg", "cpu"), 101, "$.perf[0].host_psi_some_avg.cpu"),
         (("perf", 0, "metrics", "Bad Name"), {"unavailable": True, "reason": "X"}, "$.perf[0].metrics.Bad Name"),
     ]:
@@ -164,15 +182,10 @@ def test_machine_class_rules(pf):
     base = pf("run-gate-r2-assay")
     dup = edit(base, (("machine_classes", 1, "id"), "m1"))
     assert has(validate_fragment(dup), "$.machine_classes[1].id", "duplicate")
-    table = edit(base, (("machine_classes", 0, "speed", "basis"), "geekbench-table"))
-    assert has(validate_fragment(table), "$.machine_classes[0].speed.multi_core", "no multi_core")
-    for key in ("multi_core", "cpus_at_measurement", "measured_on"):
-        doc = edit(base, (("machine_classes", 0, "speed", key), None))
-        assert has(validate_fragment(doc), f"$.machine_classes[0].speed.{key}", "measured speed")
     major = edit(base, (("machine_classes", 0, "speed", "geekbench_major"), 6))
     assert has(validate_fragment(major), "$.machine_classes[0].speed.geekbench_major", "major part")
-    ok_table = edit(base, (("machine_classes", 0, "speed", "basis"), "geekbench-table"),
-                    (("machine_classes", 0, "speed", "multi_core"), None))
+    assert has(validate_fragment(major), "$.machine_classes[0].speed.basis", "own Geekbench major")
+    ok_table = edit(base, (("machine_classes", 0, "speed"), TABLE_SPEED))
     assert validate_fragment(ok_table) == []
     # an unavailable speed is a valid class (m3 in the golden)
     assert base["machine_classes"][1]["speed"]["unavailable"] is True
@@ -228,16 +241,13 @@ def test_normalisation_must_be_internally_consistent(pf):
         [(("perf", 1, "normalisation", "divisor"), "single_core")],
     ]:
         out = validate_fragment(edit(base, *steps))
-        assert any(v.path.endswith("normalisation") for v in out), steps
+        assert any("normalisation" in v.path for v in out), steps
 
 
-def test_reference_score_follows_the_major(pf, monkeypatch):
-    from rigor_record import validate
-
+def test_reference_score_follows_the_machine_baseline(pf):
     base = pf("run-gate-r2-assay")
-    monkeypatch.setitem(validate.BASELINES, 7, 3000)
-    out = validate_fragment(base)
-    assert any(v.path == "$.perf[0].normalisation" for v in out)
+    out = validate_fragment(edit(base, (("machine_classes", 0, "speed", "baseline_score"), 3000)))
+    assert has(out, "$.perf[0].normalisation.reference_score", "baseline_score of machine class m1")
 
 
 def test_normalised_metric_without_a_basis_is_refused(pf):
@@ -251,13 +261,12 @@ def test_majors_must_not_be_mixed_within_an_entry(pf):
     doc = edit(base, (("perf", 0, "machine_classes"), {"m1": 5, "m2": 1}),
                (("machine_classes",), base["machine_classes"] + [{
                    "id": "m2", "cpu_model": "Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz", "cpus_available": 3.5,
-                   "hypervisor": True, "speed": {"basis": "geekbench-table", "geekbench_major": 6,
-                                                 "geekbench_version": "6.3.0", "single_core": 1650, "multi_core": None,
-                                                 "cpus_at_measurement": None, "measured_on": None}}]))
+                   "hypervisor": True, "speed": dict(TABLE_SPEED, basis="geekbench6-table", geekbench_major=6)}]))
     assert has(validate_fragment(doc), "$.perf[0].machine_classes.m2", "must not be mixed")
-    same = edit(doc, (("machine_classes", 2, "speed", "geekbench_major"), 7),
-                (("machine_classes", 2, "speed", "geekbench_version"), "7.0.0"))
+    same = edit(doc, (("machine_classes", 2, "speed"), TABLE_SPEED))
     assert validate_fragment(same) == []
+    off_baseline = edit(same, (("machine_classes", 2, "speed", "baseline_score"), 2000))
+    assert has(validate_fragment(off_baseline), "$.perf[0].normalisation.reference_score", "baseline_score of machine class m2")
 
 
 def test_perf_may_only_name_declared_machine_classes(pf):
@@ -287,3 +296,19 @@ def test_fragment_size_limit():
     assert check_size("fragment", big.encode()) != []
     assert check_size("fragment", "x" * (256 * 1024)) == []
     assert check_size("release-body", "x" * (8 * 1024 + 1))[0].message.startswith("release-body is")
+
+
+def test_every_percentile_vector_satisfies_the_structural_distribution_rule():
+    import json
+
+    from conftest import GOLDEN
+    from rigor_record.validate import _check_distribution
+
+    vectors = json.loads((GOLDEN / "percentile-vectors.json").read_text())
+    assert vectors["cases"]
+    for case in vectors["cases"]:
+        expect = case["expect"]
+        size = len(case["values"]) if "values" in case else case["range"][1] - case["range"][0] + 1
+        assert expect["n"] == size, case["id"]
+        assert _check_distribution(expect, "$.d") == [], case["id"]
+        assert all(expect[k] is None for k in ("p90", "p98", "p99") if expect["n"] < {"p90": 10, "p98": 50, "p99": 100}[k])

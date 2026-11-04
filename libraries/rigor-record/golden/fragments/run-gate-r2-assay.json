@@ -1,5 +1,5 @@
 {
-  "assay_fragment_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+  "assay_fragment_sha256": "7c3de907b241aa825ea28c8b3a79fee9b03a08ef684dbe418dfb1ba3b440acef",
   "completed_at": "2026-11-04T17:30:00Z",
   "config_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
   "duration_seconds": 34200.0,
@@ -23,7 +23,8 @@
       "hypervisor": true,
       "id": "m1",
       "speed": {
-        "basis": "geekbench-measured",
+        "baseline_score": 2500,
+        "basis": "geekbench7-measured",
         "cpus_at_measurement": 4,
         "geekbench_major": 7,
         "geekbench_version": "7.1.0",
@@ -174,7 +175,7 @@
         }
       },
       "normalisation": {
-        "basis": "geekbench-measured",
+        "basis": "geekbench7-measured",
         "divisor": "single_core",
         "geekbench_major": 7,
         "reason": null,

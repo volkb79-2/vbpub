@@ -15,7 +15,7 @@ expires_before = "2.1.0"
 
 [[survivor]]
 candidate_id = "cand-0001"
-disposition = "equivalent"
+disposition = "equivalent-reviewed"
 reason = "swapping < and <= is unobservable: both branches clamp to the same bound"
 reviewed_by = "independent-review"
 

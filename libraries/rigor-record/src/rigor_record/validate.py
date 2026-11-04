@@ -14,13 +14,20 @@ from typing import Any, Callable, Iterable
 
 from .privacy import lint
 from .schema import Validator, Violation
-from .stats import BASELINES, MIN_N
 
 #: Size limits in bytes (SPEC 10).
 LIMITS = {"record": 64 * 1024, "fragment": 256 * 1024, "release-body": 8 * 1024, "view": 128 * 1024}
 
-#: Level-entry statuses that carry no judged data.
-_EMPTY_LEVEL_STATUSES = ("not-applicable", "unknown")
+#: Minimum sample count at which a percentile is reported (run-gate owns the computation; this is the structural rule).
+MIN_N = {50: 1, 90: 10, 98: 50, 99: 100}
+
+#: Fields of a lane result that exist exactly when the result holds R2.
+R2_KEYS = ("scope", "campaign", "candidates", "buckets", "score", "worker_counts", "survivors", "deviations",
+           "attributed_from", "history")
+#: Worst-first ordering of stored statuses (higher is worse).
+STATUS_RANK = {"pass": 0, "pass-with-waivers": 1, "survivors": 2, "fail": 3, "incomplete": 4, "error": 5}
+_GATE_STATUSES = ("pass", "fail")
+_R2_STATUSES = ("pass", "pass-with-waivers", "survivors", "incomplete", "error")
 
 _SEMVER = re.compile(r"^([0-9]+)\.([0-9]+)\.([0-9]+)(?:-([0-9A-Za-z.-]+))?$")
 
@@ -99,15 +106,12 @@ def _check_speed(speed: dict, path: str) -> list[Violation]:
     if "basis" not in speed:  # the `unavailable` form
         return []
     out: list[Violation] = []
-    if int(speed["geekbench_version"].split(".")[0]) != speed["geekbench_major"]:
+    # the schema already fixes which fields a measured and a published-table speed carry
+    if speed["basis"].partition("-")[0] != f"geekbench{speed['geekbench_major']}":
+        out += _bad(f"{path}.basis", "must name the speed's own Geekbench major")
+    version = speed["geekbench_version"]
+    if version is not None and int(version.split(".")[0]) != speed["geekbench_major"]:
         out += _bad(f"{path}.geekbench_major", "must be the major part of geekbench_version")
-    if speed["basis"] == "geekbench-table":
-        if speed["multi_core"] is not None:
-            out += _bad(f"{path}.multi_core", "a published-table speed has no multi_core (it describes the whole chip)")
-    else:
-        for key in ("multi_core", "cpus_at_measurement", "measured_on"):
-            if speed[key] is None:
-                out += _bad(f"{path}.{key}", "a measured speed records this value")
     return out
 
 
@@ -126,26 +130,31 @@ def _check_perf(entries: list[dict], classes: dict[str, dict], path: str) -> lis
     out: list[Violation] = []
     for i, entry in enumerate(entries):
         base = f"{path}[{i}]"
+        norm = entry["normalisation"]
         for cid in entry["machine_classes"]:
             if cid not in classes:
                 out += _bad(f"{base}.machine_classes.{cid}", "machine class is not declared")
-            elif "geekbench_major" in classes[cid]["speed"] and entry["normalisation"]["geekbench_major"] not in (
-                None, classes[cid]["speed"]["geekbench_major"]
-            ):
+                continue
+            speed = classes[cid]["speed"]
+            if "basis" not in speed:
+                continue
+            if norm["geekbench_major"] not in (None, speed["geekbench_major"]):
                 out += _bad(f"{base}.machine_classes.{cid}", "Geekbench majors must not be mixed within one entry")
-        norm = entry["normalisation"]
+            elif norm["reference_score"] not in (None, speed["baseline_score"]):
+                out += _bad(f"{base}.normalisation.reference_score", f"must equal the baseline_score of machine class {cid}")
         has_basis = norm["basis"] != "none"
         major = norm["geekbench_major"]
         consistent = (
             (norm["divisor"] == "single_core") == has_basis
             and (major is not None) == has_basis
-            and norm["reference_score"] == (BASELINES[major] if has_basis else None)
+            and (norm["reference_score"] is not None) == has_basis
+            and (not has_basis or norm["basis"].startswith(f"geekbench{major}-"))
             and (norm["reason"] is None) == has_basis
         )
         if not consistent:
             out += _bad(f"{base}.normalisation",
                         "basis none needs no major, divisor none, no reference score and a reason; "
-                        "otherwise a major, single_core, that major's baseline score and no reason")
+                        "otherwise a basis naming the major, single_core, the machine classes' baseline score and no reason")
         for name, metric in entry["metrics"].items():
             mpath = f"{base}.metrics.{name}"
             if "unit" not in metric:  # the `unavailable` form
@@ -189,9 +198,19 @@ def _check_assay_r2(r2: dict, path: str) -> list[Violation]:
 
 def _fragment_semantics(doc: dict) -> list[Violation]:
     out: list[Violation] = []
+    if doc["kind"] == "run-gate-composite":
+        if len(set(doc["members"])) != len(doc["members"]) or doc["lane"] in doc["members"]:
+            out += _bad("$.members", "members are distinct lanes other than the sequence itself")
+        return out
     if doc["kind"] == "assay-lane":
         if (doc["outcome"] == "PASS") != (doc["reason"] is None):
             out += _bad("$.reason", "reason is null exactly when the outcome is PASS")
+        levels = [claim["rigor"] for claim in doc.get("claims", [])]
+        if levels != sorted(set(levels)):
+            out += _bad("$.claims", "claims are ordered R0..R3 with one entry per level")
+        for key in ("inputs", "judged_paths"):
+            if doc.get(key, []) != sorted(set(doc.get(key, []))):
+                out += _bad(f"$.{key}", f"{key} are sorted and distinct")
         if doc["r2"] is not None:
             out += _check_assay_r2(doc["r2"], "$.r2")
         return out
@@ -201,56 +220,24 @@ def _fragment_semantics(doc: dict) -> list[Violation]:
     return out + class_out + _check_perf(doc["perf"], ids, "$.perf")
 
 
+_FRAGMENT_POINTERS = {
+    "assay-lane": "/$defs/assay_lane",
+    "run-gate-lane": "/$defs/run_gate_lane",
+    "run-gate-composite": "/$defs/run_gate_composite",
+}
+
+
 def validate_fragment(document: Any, *, hosts: Iterable[str] = (), users: Iterable[str] = ()) -> list[Violation]:
     """Validate one ``urn:vbpub:rigor-fragment:1`` document (schema, semantics, privacy)."""
-    if not isinstance(document, dict) or document.get("kind") not in ("assay-lane", "run-gate-lane"):
-        return _bad("$.kind", "must be assay-lane or run-gate-lane")
-    pointer = "/$defs/assay_lane" if document["kind"] == "assay-lane" else "/$defs/run_gate_lane"
-    violations = Validator("rigor-fragment-1.json").validate(document, pointer)
+    if not isinstance(document, dict) or document.get("kind") not in _FRAGMENT_POINTERS:
+        return _bad("$.kind", "must be assay-lane, run-gate-lane or run-gate-composite")
+    violations = Validator("rigor-fragment-1.json").validate(document, _FRAGMENT_POINTERS[document["kind"]])
     if not violations:
         violations = _fragment_semantics(document)
     return violations + _privacy(document, hosts, users)
 
 
 # -- records --------------------------------------------------------------------------------------------------
-def _gate_level(level: dict, path: str, name: str | None) -> list[Violation]:
-    out: list[Violation] = []
-    status, lanes = level["status"], level["lanes"]
-    waived_lanes = [lane for lane in lanes if "waiver" in lane]
-    bad_lanes = [lane for lane in lanes if lane["outcome"] != "PASS"]
-    if status in _EMPTY_LEVEL_STATUSES:
-        if lanes or level["toolset"] is not None or level["judged_commit"] is not None or level["waiver"] is not None:
-            out += _bad(path, f"{status} carries no lanes, toolset, judged commit or waiver")
-    elif status == "waived":
-        if level["waiver"] is None:
-            out += _bad(f"{path}.waiver", "a waived level names its waiver")
-    else:
-        if level["toolset"] is None or level["judged_commit"] is None or not lanes:
-            out += _bad(path, f"{status} needs a toolset, a judged commit and at least one lane")
-        if level["waiver"] is not None:
-            out += _bad(f"{path}.waiver", "only a waived level carries a level waiver")
-        if status == "pass" and (bad_lanes or waived_lanes):
-            out += _bad(f"{path}.lanes", "pass means every lane passed without a waiver")
-        if status == "pass-with-waivers" and (
-            not waived_lanes or any(lane["outcome"] == "PASS" or "waiver" not in lane for lane in bad_lanes)
-            or any(lane["outcome"] == "PASS" for lane in waived_lanes)
-        ):
-            out += _bad(f"{path}.lanes", "pass-with-waivers needs at least one failed lane, and exactly the failed lanes carry a waiver")
-    if name == "R1" and status == "pass":
-        cov = level.get("coverage")
-        if cov is None or cov["line_pct"] < cov["floor"]["line"] or cov["branch_pct"] < cov["floor"]["branch"]:
-            out += _bad(f"{path}.coverage", "R1 pass needs coverage at or above its floor")
-    if name == "R3" and status == "pass":
-        canaries = level.get("canaries") or []
-        if not canaries or any(c["outcome"] != "PASS" for c in canaries):
-            out += _bad(f"{path}.canaries", "R3 pass needs at least one canary and all of them passing")
-    if name != "R1" and "coverage" in level:
-        out += _bad(f"{path}.coverage", "only R1 carries coverage")
-    if name != "R3" and "canaries" in level:
-        out += _bad(f"{path}.canaries", "only R3 carries canaries")
-    return out
-
-
 def _review(review: dict, path: str) -> list[Violation]:
     filled = [review["range"], review["reviewer_role"], review["document_sha256"]]
     accept = review["status"] == "accept"
@@ -261,123 +248,173 @@ def _review(review: dict, path: str) -> list[Violation]:
 
 def _r2_survivors(surv: dict, path: str) -> list[Violation]:
     out: list[Violation] = []
-    total = surv["open"] + surv["equivalent"] + surv["accepted"] + surv["resolved"]
+    names = ("open", "equivalent_reviewed", "accepted", "resolved")
+    total = sum(surv[n] for n in names)
     listed = surv["listed"]
     if total <= 200:
         if len(listed) != total or surv["by_file"] or surv["sidecar_sha256"] is not None:
             out += _bad(path, "up to 200 survivors are all listed, with no per-file counts and no sidecar")
-        for disposition in ("open", "equivalent", "accepted", "resolved"):
-            if sum(1 for s in listed if s["disposition"] == disposition) != surv[disposition]:
-                out += _bad(f"{path}.{disposition}", "count differs from the listed survivors")
+        for name in names:
+            if sum(1 for s in listed if s["disposition"].replace("-", "_") == name) != surv[name]:
+                out += _bad(f"{path}.{name}", "count differs from the listed survivors")
     else:
         if listed or sum(surv["by_file"].values()) != total or surv["sidecar_sha256"] is None:
             out += _bad(path, "over 200 survivors collapse to per-file counts that add up, plus the sidecar digest")
     for i, s in enumerate(listed):
         if (s["disposition"] == "resolved") != (s["resolved_by"] is not None):
             out += _bad(f"{path}.listed[{i}].resolved_by", "set exactly when the disposition is resolved")
-        if s["disposition"] in ("equivalent", "accepted") and s["reason"] is None:
-            out += _bad(f"{path}.listed[{i}].reason", "an equivalent or accepted survivor states why")
+        if s["disposition"] in ("equivalent-reviewed", "accepted") and s["reason"] is None:
+            out += _bad(f"{path}.listed[{i}].reason", "an equivalent-reviewed or accepted survivor states why")
     return out
 
 
-def _r2_complete(r2: dict, path: str) -> list[Violation]:
+def _r2_complete(result: dict, path: str) -> list[Violation]:
     out: list[Violation] = []
-    needed = ("toolset", "judged_commit", "scope", "campaign", "candidates", "buckets", "survivors")
-    missing = [k for k in needed if r2[k] is None]
-    if missing:
-        return _bad(path, f"{r2['status']} needs {', '.join(missing)}")
-    cand, buckets, surv = r2["candidates"], r2["buckets"], r2["survivors"]
+    status = result["levels"]["R2"]
+    cand, buckets, surv = result["candidates"], result["buckets"], result["survivors"]
     if cand["executed"] != cand["total"]:
-        out += _bad(f"{path}.candidates", f"{r2['status']} means every candidate ran")
+        out += _bad(f"{path}.candidates", f"{status} means every candidate ran")
     if sum(buckets.values()) != cand["executed"]:
         out += _bad(f"{path}.buckets", "bucket counts must add up to candidates.executed")
-    if r2["campaign"]["closeout_exit"] not in (0, 1):
+    if result["campaign"]["closeout_exit"] not in (0, 1):
         out += _bad(f"{path}.campaign.closeout_exit", "a completed campaign closes out with exit 0 or 1")
-    if surv["open"] + surv["equivalent"] + surv["accepted"] + surv["resolved"] != buckets["survived"]:
+    names = ("open", "equivalent_reviewed", "accepted", "resolved")
+    if sum(surv[n] for n in names) != buckets["survived"]:
         out += _bad(f"{path}.survivors", "survivor dispositions must add up to buckets.survived")
-    waived = surv["equivalent"] + surv["accepted"]
-    status = r2["status"]
+    waived = surv["equivalent_reviewed"] + surv["accepted"]
     if status == "survivors" and surv["open"] < 1:
-        out += _bad(f"{path}.status", "survivors needs at least one open survivor")
+        out += _bad(f"{path}.levels.R2", "survivors needs at least one open survivor")
     if status == "pass-with-waivers" and (surv["open"] != 0 or waived < 1):
-        out += _bad(f"{path}.status", "pass-with-waivers needs no open survivor and at least one equivalent or accepted one")
+        out += _bad(f"{path}.levels.R2", "pass-with-waivers needs no open survivor and at least one equivalent-reviewed or accepted one")
     if status == "pass" and (surv["open"] != 0 or waived != 0):
-        out += _bad(f"{path}.status", "pass needs no open, equivalent or accepted survivor")
+        out += _bad(f"{path}.levels.R2", "pass needs no open, equivalent-reviewed or accepted survivor")
     return out + _r2_survivors(surv, f"{path}.survivors")
 
 
-def _r2_scope(scope: dict | None, path: str) -> list[Violation]:
-    if scope is None:
-        return []
-    if scope["kind"] == "whole-source" and (scope["base_tag"] is not None or not scope["anchored"]):
-        return _bad(path, "a whole-source campaign has no base tag and is anchored")
-    if scope["kind"] == "changed-since" and scope["base_tag"] is None:
-        return _bad(path, "a changed-since campaign names its base tag")
+def _r2_scope(scope: dict, path: str) -> list[Violation]:
+    if scope["kind"] == "whole-source":
+        if scope["base_commit"] is not None or "base_label" in scope or not scope["anchored"]:
+            return _bad(path, "a whole-source campaign has no base and is anchored")
+    elif scope["base_commit"] is None:
+        return _bad(path, "a changed-since campaign names its base commit")
     return []
 
 
-def _r2(r2: dict, path: str, nested: bool) -> list[Violation]:
+def _r2_result(result: dict, path: str) -> list[Violation]:
     out: list[Violation] = []
-    status = r2["status"]
-    if nested and r2["history"]:
-        out += _bad(f"{path}.history", "a history entry carries no history of its own")
+    status = result["levels"]["R2"]
     if status in ("pass", "pass-with-waivers", "survivors"):
-        out += _r2_complete(r2, path)
-    elif status in ("incomplete", "error"):
+        if "survivors" not in result:
+            return out + _bad(path, f"{status} needs the survivor block")
+        out += _r2_complete(result, path)
+    else:
         wanted = 3 if status == "incomplete" else 2
-        if r2["campaign"] is None or r2["candidates"] is None:
-            out += _bad(path, f"{status} needs the campaign and candidate counts")
+        if "survivors" in result:
+            out += _bad(f"{path}.survivors", f"{status} carries no survivor block")
+        if result["campaign"]["closeout_exit"] != wanted:
+            out += _bad(f"{path}.campaign.closeout_exit", f"{status} closes out with exit {wanted}")
+        if result["candidates"]["executed"] > result["candidates"]["total"]:
+            out += _bad(f"{path}.candidates", "executed exceeds total")
+    return out + _r2_scope(result["scope"], f"{path}.scope")
+
+
+def _lane_result(result: dict, path: str) -> list[Violation]:
+    out: list[Violation] = []
+    levels = result["levels"]
+    if not levels:
+        out += _bad(f"{path}.levels", "a result holds at least one level")
+    if not result["targets"]:
+        out += _bad(f"{path}.targets", "a result names the targets it judged")
+    if result["kind"] == "command":
+        if result["judged_by"] != "run-gate" or list(levels) != ["R0"] or result.get("note") != "declared, not judged" or (
+            result["verdict_sha256"] is not None or result["toolset"] is None
+        ):
+            out += _bad(path, "a command lane is judged by run-gate, holds R0 only, is noted 'declared, not judged' and has no verdict")
+    else:
+        if result["judged_by"] != "assay" or "R0" not in levels or "note" in result or result["verdict_sha256"] is None:
+            out += _bad(path, "an assay lane is judged by assay, holds R0, carries a verdict digest and no note")
+    for name in ("R0", "R1", "R3"):
+        if name in levels and levels[name] not in _GATE_STATUSES:
+            out += _bad(f"{path}.levels.{name}", "R0, R1 and R3 are stored as pass or fail")
+    if "R2" in levels and levels["R2"] not in _R2_STATUSES:
+        out += _bad(f"{path}.levels.R2", "R2 is stored as pass, pass-with-waivers, survivors, incomplete or error")
+    failed = [n for n in ("R0", "R1", "R3") if levels.get(n) == "fail"]
+    if bool(failed) != ("waiver" in result):
+        out += _bad(f"{path}.waiver", "a failed level is stored only with its waiver, and a waiver needs a failed level")
+    if ("coverage" in result) != ("R1" in levels):
+        out += _bad(f"{path}.coverage", "coverage is stored exactly when the result holds R1")
+    elif levels.get("R1") == "pass":
+        cov = result["coverage"]
+        if cov["line_pct"] < cov["floor"]["line"] or cov["branch_pct"] < cov["floor"]["branch"]:
+            out += _bad(f"{path}.coverage", "R1 pass needs coverage at or above its floor")
+    if ("canary" in result) != ("R3" in levels):
+        out += _bad(f"{path}.canary", "a canary is stored exactly when the result holds R3")
+    elif levels.get("R3") == "pass" and result["canary"]["outcome"] != "PASS":
+        out += _bad(f"{path}.canary", "R3 pass needs a passing canary")
+    present = [k for k in R2_KEYS if k in result]
+    if "R2" in levels:
+        missing = [k for k in R2_KEYS if k not in result and k != "survivors"]
+        if missing:
+            out += _bad(path, f"an R2 result carries {', '.join(missing)}")
         else:
-            if r2["campaign"]["closeout_exit"] != wanted:
-                out += _bad(f"{path}.campaign.closeout_exit", f"{status} closes out with exit {wanted}")
-            if r2["candidates"]["executed"] > r2["candidates"]["total"]:
-                out += _bad(f"{path}.candidates", "executed exceeds total")
-    elif status == "partial":
-        states = {lane["state"] for lane in r2["lanes"]}
-        if states != {"complete", "not-runnable"}:
-            out += _bad(f"{path}.lanes", "partial needs at least one complete and one not-runnable lane")
-    elif status == "waived":
-        if r2["waiver"] is None:
-            out += _bad(f"{path}.waiver", "a waived level names its waiver")
-    else:  # pending, not-applicable, unknown carry no campaign data
-        empty = (
-            r2["campaign"] is None and r2["candidates"] is None and r2["buckets"] is None
-            and r2["survivors"] is None and r2["score"] is None and not r2["worker_counts"]
-            and not r2["lanes"] and r2["waiver"] is None
-        )
-        if not empty:
-            out += _bad(path, f"{status} carries no campaign data")
-    if status != "waived" and r2["waiver"] is not None:
-        out += _bad(f"{path}.waiver", "only a waived level carries a level waiver")
-    return out + _r2_scope(r2["scope"], f"{path}.scope")
+            out += _r2_result(result, path)
+    elif present:
+        out += _bad(path, f"{', '.join(present)} belong to an R2 result")
+    return out
 
 
-def _toolset_refs(doc: dict) -> list[tuple[str, str]]:
-    refs = [(f"$.levels.{n}.toolset", doc["levels"][n]["toolset"]) for n in ("R0", "R1", "R3", "R2")]
-    refs += [(f"$.levels.R2.history[{i}].toolset", h["toolset"]) for i, h in enumerate(doc["levels"]["R2"]["history"])]
-    refs += [(f"$.qualifications.{k}.toolset", v["toolset"]) for k, v in doc["qualifications"].items()]
+def _toolset_refs(doc: dict) -> list[tuple[str, str | None]]:
+    refs: list[tuple[str, str | None]] = []
+    for i, r in enumerate(doc["results"]):
+        refs.append((f"$.results[{i}].toolset", r["toolset"]))
+        refs += [(f"$.results[{i}].history[{j}].toolset", h["toolset"]) for j, h in enumerate(r.get("history", []))]
+    for name, qual in doc["qualifications"].items():
+        refs += [(f"$.qualifications.{name}.results[{i}].toolset", r["toolset"]) for i, r in enumerate(qual["results"])]
     return refs
 
 
 def _record_semantics(doc: dict) -> list[Violation]:
     out: list[Violation] = []
-    rel = doc["release"]
-    if not rel["tag"].endswith(f"-v{rel['version']}"):
-        out += _bad("$.release.version", "must be the version part of the tag")
-    if (rel["state"] == "withdrawn") != (rel["withdrawn"] is not None):
-        out += _bad("$.release.withdrawn", "set exactly when the state is withdrawn")
+    tags = [label["tag"] for label in doc["labels"]]
+    if len(set(tags)) != len(tags):
+        out += _bad("$.labels", "duplicate label tag")
+    for i, label in enumerate(doc["labels"]):
+        if not label["tag"].endswith(f"-v{label['version']}"):
+            out += _bad(f"$.labels[{i}].version", "must be the version part of the tag")
+        if (label["state"] == "withdrawn") != (label["withdrawn"] is not None):
+            out += _bad(f"$.labels[{i}].withdrawn", "set exactly when the state is withdrawn")
     for path, ref in _toolset_refs(doc):
         if ref is not None and ref not in doc["toolsets"]:
             out += _bad(path, "toolset is not declared in toolsets")
-    levels = doc["levels"]
-    for name in ("R0", "R1", "R3"):
-        out += _gate_level(levels[name], f"$.levels.{name}", name)
-    for key, qual in doc["qualifications"].items():
-        out += _gate_level(qual, f"$.qualifications.{key}", None)
-    out += _review(levels["review"], "$.levels.review")
-    out += _r2(levels["R2"], "$.levels.R2", nested=False)
-    for i, entry in enumerate(levels["R2"]["history"]):
-        out += _r2(entry, f"$.levels.R2.history[{i}]", nested=True)
+    lanes: set[str] = set()
+    sequences = []
+    for i, result in enumerate(doc["results"]):
+        if result["lane"] in lanes:
+            out += _bad(f"$.results[{i}].lane", "duplicate lane result")
+        lanes.add(result["lane"])
+        if result["kind"] == "sequence":
+            sequences.append(result)
+            continue
+        out += _lane_result(result, f"$.results[{i}]")
+        for j, attempt in enumerate(result.get("history", [])):
+            out += _r2_scope(attempt["scope"], f"$.results[{i}].history[{j}].scope")
+        if "R2" in result["levels"] and result["lane"] not in doc["inventory"]["r2_lanes"]:
+            out += _bad(f"$.results[{i}]", "an R2 result's lane is listed in inventory.r2_lanes")
+    inv = doc["inventory"]
+    if len(sequences) > 1:
+        out += _bad("$.results", "at most one sequence result")
+    if sequences:
+        seq = sequences[0]
+        if inv["sequence"] != seq["lane"] or inv["members"] != seq["members"]:
+            out += _bad("$.inventory", "the inventory names the sequence result's lane and members")
+    elif inv["sequence"] is not None or inv["members"]:
+        out += _bad("$.inventory", "an inventory with a sequence or members needs the sequence result")
+    if not set(inv["r2_lanes"]).isdisjoint(inv["members"]):
+        out += _bad("$.inventory.r2_lanes", "an R2 lane is not a member of the release sequence")
+    out += _review(doc["review"], "$.review")
+    for name, qual in doc["qualifications"].items():
+        for i, result in enumerate(qual["results"]):
+            out += _lane_result(result, f"$.qualifications.{name}.results[{i}]")
     class_out, ids = _check_machine_classes(doc["machine_classes"], "$.machine_classes")
     return out + class_out + _check_perf(doc["perf"], ids, "$.perf")
 
@@ -422,3 +459,23 @@ def load_waivers(text: str, **kwargs: Any) -> tuple[dict | None, list[Violation]
     except tomllib.TOMLDecodeError as exc:
         return None, _bad("$", f"not valid TOML: {exc}")
     return document, validate_waivers(document, **kwargs)
+
+
+def validate_machine(document: Any) -> list[Violation]:
+    """Validate a cgprofile ``machine/1`` object against the vendored copy of its owner's schema.
+
+    The shape belongs to cgprofile (PROTOCOL section 11); the only rule added here is that a speed's ``basis``
+    names the same Geekbench major as its ``geekbench_major`` (``geekbench7-measured`` with major 7). There is no
+    privacy lint: this is the producer's local object (a table speed carries a source URL); the record keeps only a
+    projection of it.
+    """
+    violations = Validator("rigor-machine-1.json").validate(document)
+    speed = document.get("speed") if not violations else None
+    if speed and speed["basis"].split("-")[0] != f"geekbench{speed['geekbench_major']}":
+        violations += _bad("$.speed.basis", "must name the speed's own Geekbench major")
+    return violations
+
+
+def validate_index(document: Any, *, hosts: Iterable[str] = (), users: Iterable[str] = ()) -> list[Violation]:
+    """Validate a generated ``rigor/index.json`` (schema and privacy)."""
+    return Validator("rigor-index-1.json").validate(document) + _privacy(document, hosts, users)

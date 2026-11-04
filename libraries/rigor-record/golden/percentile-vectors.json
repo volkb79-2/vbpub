@@ -1,5 +1,6 @@
 {
   "schema": "rigor-percentile-vectors/1",
+  "vendored_from": "run-gate (owner; the percentile computation is run-gate's, work item RG-b not yet produced). Provisional copy kept here to check the structural rule of a distribution.",
   "rule": "nearest rank: element at 1-based rank ceil(q*n) of the ascending sample; p90 needs n>=10, p98 n>=50, p99 n>=100, otherwise null; max is null only for n=0",
   "cases": [
     {"id": "empty", "values": [], "expect": {"n": 0, "p50": null, "p90": null, "p98": null, "p99": null, "max": null}},

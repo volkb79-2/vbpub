@@ -33,7 +33,7 @@
         "required": ["candidate_id", "disposition", "reason", "reviewed_by"],
         "properties": {
           "candidate_id": {"$ref": "rigor-common-1.json#/$defs/identifier"},
-          "disposition": {"type": "string", "enum": ["equivalent", "accepted"]},
+          "disposition": {"type": "string", "enum": ["equivalent-reviewed", "accepted"]},
           "reason": {"$ref": "rigor-common-1.json#/$defs/short_reason"},
           "reviewed_by": {"$ref": "rigor-common-1.json#/$defs/role"}
         }

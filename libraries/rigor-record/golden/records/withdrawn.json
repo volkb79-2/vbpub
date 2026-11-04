@@ -1,93 +1,33 @@
 {
-  "adopted_from": null,
-  "levels": {
-    "R0": {
-      "judged_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "lanes": [
-        {
-          "config_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-          "lane": "unit",
-          "outcome": "PASS",
-          "verdict_sha256": "5555555555555555555555555555555555555555555555555555555555555555"
-        }
-      ],
-      "status": "pass",
-      "toolset": "t1",
-      "waiver": null
-    },
-    "R1": {
-      "coverage": {
-        "branch_pct": 100.0,
-        "excluded_lines": 0,
-        "floor": {
-          "branch": 100,
-          "line": 100
-        },
-        "line_pct": 100.0
-      },
-      "judged_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "lanes": [
-        {
-          "config_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-          "lane": "assay-r1",
-          "outcome": "PASS",
-          "verdict_sha256": "7777777777777777777777777777777777777777777777777777777777777777"
-        }
-      ],
-      "status": "pass",
-      "toolset": "t1",
-      "waiver": null
-    },
-    "R2": {
-      "buckets": null,
-      "campaign": null,
-      "candidates": null,
-      "deviations": [],
-      "history": [],
-      "judged_commit": null,
-      "lanes": [],
-      "scope": null,
-      "score": null,
-      "status": "pending",
-      "survivors": null,
-      "toolset": null,
-      "waiver": null,
-      "worker_counts": {}
-    },
-    "R3": {
-      "canaries": [
-        {
-          "lane": "assay-r3",
-          "mechanism": "import-break",
-          "outcome": "PASS",
-          "targets": [
-            "src/cgprofile/daemon.py"
-          ]
-        }
-      ],
-      "judged_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "lanes": [
-        {
-          "config_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-          "lane": "assay-r3",
-          "outcome": "PASS",
-          "verdict_sha256": "8888888888888888888888888888888888888888888888888888888888888888"
-        }
-      ],
-      "status": "pass",
-      "toolset": "t1",
-      "waiver": null
-    },
-    "review": {
-      "document_sha256": "9999999999999999999999999999999999999999999999999999999999999999",
-      "range": {
-        "from": "cgprofile-v1.2.0",
-        "to": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-      },
-      "reviewer_role": "independent-reviewer",
-      "status": "accept"
-    }
+  "commit": "1111111111111111111111111111111111111111",
+  "inventory": {
+    "members": [
+      "r0-r1",
+      "assay-r1",
+      "assay-r3"
+    ],
+    "r2_lanes": [],
+    "sequence": "release"
   },
+  "labels": [
+    {
+      "artifacts": [
+        {
+          "name": "cgprofile-1.1.0-py3-none-any.whl",
+          "sha256": "6666666666666666666666666666666666666666666666666666666666666666"
+        }
+      ],
+      "kind": "release",
+      "published_at": "2026-11-01T18:02:11Z",
+      "state": "withdrawn",
+      "tag": "cgprofile-v1.1.0",
+      "version": "1.1.0",
+      "withdrawn": {
+        "reason": "superseded by a fix",
+        "replacement": "cgprofile-v1.2.0"
+      }
+    }
+  ],
   "machine_classes": [
     {
       "cpu_model": "AMD EPYC 9634 84-Core Processor",
@@ -95,28 +35,14 @@
       "hypervisor": true,
       "id": "m1",
       "speed": {
-        "basis": "geekbench-measured",
+        "baseline_score": 2500,
+        "basis": "geekbench7-measured",
         "cpus_at_measurement": 4,
         "geekbench_major": 7,
         "geekbench_version": "7.1.0",
         "measured_on": "2026-11-04",
         "multi_core": 11800,
         "single_core": 3120
-      }
-    },
-    {
-      "cpu_model": "Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz",
-      "cpus_available": 3.5,
-      "hypervisor": true,
-      "id": "m2",
-      "speed": {
-        "basis": "geekbench-table",
-        "cpus_at_measurement": null,
-        "geekbench_major": 6,
-        "geekbench_version": "6.3.0",
-        "measured_on": null,
-        "multi_core": null,
-        "single_core": 1650
       }
     }
   ],
@@ -191,7 +117,7 @@
         }
       },
       "normalisation": {
-        "basis": "geekbench-measured",
+        "basis": "geekbench7-measured",
         "divisor": "single_core",
         "geekbench_major": 7,
         "reason": null,
@@ -208,39 +134,94 @@
   ],
   "project": "cgroup-profiler",
   "qualifications": {},
-  "release": {
-    "artifacts": [
-      {
-        "name": "cgprofile-2.0.0-py3-none-any.whl",
-        "sha256": "6666666666666666666666666666666666666666666666666666666666666666"
-      }
-    ],
-    "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    "project_tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-    "published_at": "2026-11-04T18:02:11Z",
-    "state": "withdrawn",
-    "tag": "cgprofile-v2.0.0",
-    "version": "2.0.0",
-    "withdrawn": {
-      "reason": "defect unsafe to leave published",
-      "replacement": "cgprofile-v2.0.1"
+  "results": [
+    {
+      "config_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "judged_by": "run-gate",
+      "kind": "command",
+      "lane": "r0-r1",
+      "levels": {
+        "R0": "pass"
+      },
+      "note": "declared, not judged",
+      "targets": {
+        "cgroup-profiler": "1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f"
+      },
+      "toolset": "t1",
+      "verdict_sha256": null
+    },
+    {
+      "config_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "coverage": {
+        "branch_pct": 100.0,
+        "excluded_lines": 0,
+        "floor": {
+          "branch": 100,
+          "line": 100
+        },
+        "line_pct": 100.0
+      },
+      "judged_by": "assay",
+      "kind": "assay",
+      "lane": "assay-r1",
+      "levels": {
+        "R0": "pass",
+        "R1": "pass"
+      },
+      "targets": {
+        "cgroup-profiler": "1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f",
+        "node_modules": "1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f"
+      },
+      "toolset": "t2",
+      "verdict_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    },
+    {
+      "canary": {
+        "mechanism": "import-break",
+        "outcome": "PASS",
+        "targets": [
+          "src/cgprofile/daemon.py"
+        ]
+      },
+      "config_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "judged_by": "assay",
+      "kind": "assay",
+      "lane": "assay-r3",
+      "levels": {
+        "R0": "pass",
+        "R3": "pass"
+      },
+      "targets": {
+        "cgroup-profiler": "1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f"
+      },
+      "toolset": "t2",
+      "verdict_sha256": "8888888888888888888888888888888888888888888888888888888888888888"
+    },
+    {
+      "kind": "sequence",
+      "lane": "release",
+      "members": [
+        "r0-r1",
+        "assay-r1",
+        "assay-r3"
+      ],
+      "outcome": "PASS",
+      "toolset": "t3"
     }
+  ],
+  "review": {
+    "document_sha256": "ef17aa6f01fe183db08b8da93bf0296d72b371cac9e9503dbf53584e116d3a5c",
+    "range": {
+      "from": null,
+      "to": "1111111111111111111111111111111111111111"
+    },
+    "reviewer_role": "independent-reviewer",
+    "status": "accept"
   },
-  "revision": 1,
+  "revision": 2,
   "schema": "urn:vbpub:rigor-record:1",
   "toolsets": {
     "t1": {
-      "assay": {
-        "artifact_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-        "judge_identity": "assay-judge-identity/14",
-        "verdict_schema": "urn:assay:schema:verdict:18",
-        "version": "12.0.0"
-      },
-      "cgprofile": {
-        "ctl_contract": 2,
-        "daemon_version": "2.0.0",
-        "observer_contract": 3
-      },
       "run_gate": {
         "version": "25.0.1",
         "wheel_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
@@ -251,6 +232,20 @@
           "org.opencontainers.image.revision": "3333333333333333333333333333333333333333"
         },
         "ref": "tester-unified:local"
+      }
+    },
+    "t2": {
+      "assay": {
+        "artifact_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "judge_identity": "assay-judge-identity/14",
+        "verdict_schema": "urn:assay:schema:verdict:18",
+        "version": "12.0.0"
+      }
+    },
+    "t3": {
+      "run_gate": {
+        "version": "25.0.1",
+        "wheel_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
       }
     }
   }

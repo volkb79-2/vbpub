@@ -2,10 +2,12 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:vbpub:rigor-fragment:1",
   "title": "rigor-fragment/1",
-  "description": "One producer's facts about one lane run, at most 256 KiB. kind selects the producer: assay-lane (judgment facts) or run-gate-lane (run, tool, environment and performance facts).",
+  "$comment": "VENDORED COPY. The assay-lane part and the shared assay defs are byte-copies from assay (assay/analysis/tests/fixtures/rigor/schemas/rigor-fragment-1.json at vbpub@063519163; assay/docs/CONSUMERS.md is normative). The run-gate-lane part is run-gate's: its fragment writer RG-a has not landed, so it keeps the RR-1 shape (backlog RRK-11). The run-gate-composite def is rigor-record's provisional addition for the release sequence lane (RRK-11).",
+  "description": "One producer's facts about one lane run, at most 256 KiB. kind selects the producer: assay-lane (judgment facts), run-gate-lane (run, tool, environment and performance facts) or run-gate-composite (the release sequence lane and its members).",
   "oneOf": [
     {"$ref": "#/$defs/assay_lane"},
-    {"$ref": "#/$defs/run_gate_lane"}
+    {"$ref": "#/$defs/run_gate_lane"},
+    {"$ref": "#/$defs/run_gate_composite"}
   ],
   "$defs": {
     "assay_lane": {
@@ -30,7 +32,33 @@
         "judge": {"$ref": "rigor-common-1.json#/$defs/judge"},
         "coverage": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/coverage"}]},
         "canary": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/canary"}]},
-        "r2": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/assay_r2"}]}
+        "r2": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/assay_r2"}]},
+        "claims": {
+          "description": "A-1a. The verified claim set: one entry per computed claim the verdict carries (all verified_by_assay), ordered R0..R3. The only source of R1, R2 and R3. Absent in a pre-A-1a fragment: read every level above R0 as not-judged.",
+          "type": "array",
+          "maxItems": 4,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["rigor", "outcome"],
+            "properties": {
+              "rigor": {"type": "string", "enum": ["R0", "R1", "R2", "R3"]},
+              "outcome": {"$ref": "rigor-common-1.json#/$defs/outcome"}
+            }
+          }
+        },
+        "inputs": {
+          "description": "A-1a. The lane's declared out-of-project inputs: isolation.link_paths (repository-top-relative, sorted). Names only; their content is outside the identity.",
+          "type": "array",
+          "maxItems": 64,
+          "items": {"$ref": "rigor-common-1.json#/$defs/relpath"}
+        },
+        "judged_paths": {
+          "description": "A-1a. The project-relative paths the lane judges: judge.source_roots, sorted. Empty for a lane without a judge.",
+          "type": "array",
+          "maxItems": 64,
+          "items": {"$ref": "rigor-common-1.json#/$defs/relpath"}
+        }
       }
     },
     "coverage": {
@@ -117,6 +145,22 @@
             "sidecar_sha256": {"oneOf": [{"type": "null"}, {"$ref": "rigor-common-1.json#/$defs/sha256"}]}
           }
         }
+      }
+    },
+    "run_gate_composite": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "kind", "project", "lane", "members", "stop_on", "outcome", "judged_commit", "run_gate"],
+      "properties": {
+        "schema": {"const": "urn:vbpub:rigor-fragment:1"},
+        "kind": {"const": "run-gate-composite"},
+        "project": {"$ref": "rigor-common-1.json#/$defs/project"},
+        "lane": {"$ref": "rigor-common-1.json#/$defs/lane"},
+        "members": {"type": "array", "minItems": 1, "maxItems": 64, "items": {"$ref": "rigor-common-1.json#/$defs/lane"}},
+        "stop_on": {"type": "string", "enum": ["fail", "never"]},
+        "outcome": {"$ref": "rigor-common-1.json#/$defs/outcome"},
+        "judged_commit": {"$ref": "rigor-common-1.json#/$defs/git_oid"},
+        "run_gate": {"$ref": "rigor-common-1.json#/$defs/run_gate_tool"}
       }
     },
     "run_gate_lane": {

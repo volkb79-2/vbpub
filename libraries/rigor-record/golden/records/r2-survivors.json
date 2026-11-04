@@ -1,21 +1,156 @@
 {
-  "adopted_from": null,
-  "levels": {
-    "R0": {
-      "judged_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "lanes": [
+  "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "inventory": {
+    "members": [
+      "r0-r1",
+      "assay-r1",
+      "assay-r3"
+    ],
+    "r2_lanes": [
+      "assay-r2"
+    ],
+    "sequence": "release"
+  },
+  "labels": [
+    {
+      "artifacts": [
         {
-          "config_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-          "lane": "unit",
-          "outcome": "PASS",
-          "verdict_sha256": "5555555555555555555555555555555555555555555555555555555555555555"
+          "name": "cgprofile-2.0.0-py3-none-any.whl",
+          "sha256": "6666666666666666666666666666666666666666666666666666666666666666"
         }
       ],
-      "status": "pass",
+      "kind": "release",
+      "published_at": "2026-11-04T18:02:11Z",
+      "state": "current",
+      "tag": "cgprofile-v2.0.0",
+      "version": "2.0.0",
+      "withdrawn": null
+    }
+  ],
+  "machine_classes": [
+    {
+      "cpu_model": "AMD EPYC 9634 84-Core Processor",
+      "cpus_available": 4,
+      "hypervisor": true,
+      "id": "m1",
+      "speed": {
+        "baseline_score": 2500,
+        "basis": "geekbench7-measured",
+        "cpus_at_measurement": 4,
+        "geekbench_major": 7,
+        "geekbench_version": "7.1.0",
+        "measured_on": "2026-11-04",
+        "multi_core": 11800,
+        "single_core": 3120
+      }
+    }
+  ],
+  "perf": [
+    {
+      "host_psi_some_avg": {
+        "cpu": 1.0,
+        "io": 0.5,
+        "memory": 0.1
+      },
+      "lane": "r0-r1",
+      "level": "R1",
+      "machine_classes": {
+        "m1": 1
+      },
+      "metrics": {
+        "io_write_bytes": {
+          "max": 8388608,
+          "n": 1,
+          "n_excluded": {
+            "contaminated": 0,
+            "no_measurement": 0
+          },
+          "p50": 8388608,
+          "p90": null,
+          "p98": null,
+          "p99": null,
+          "source": "io.stat",
+          "unit": "bytes"
+        },
+        "memory_peak_bytes": {
+          "max": 412000000,
+          "n": 1,
+          "n_excluded": {
+            "contaminated": 0,
+            "no_measurement": 0
+          },
+          "p50": 412000000,
+          "p90": null,
+          "p98": null,
+          "p99": null,
+          "source": "memory.peak",
+          "unit": "bytes"
+        },
+        "wall_seconds": {
+          "max": 570.0,
+          "n": 1,
+          "n_excluded": {
+            "contaminated": 0,
+            "no_measurement": 0
+          },
+          "p50": 570.0,
+          "p90": null,
+          "p98": null,
+          "p99": null,
+          "source": "run-gate-clock",
+          "unit": "s"
+        },
+        "wall_seconds_ref": {
+          "max": 711.36,
+          "n": 1,
+          "n_excluded": {
+            "contaminated": 0,
+            "no_measurement": 0
+          },
+          "p50": 711.36,
+          "p90": null,
+          "p98": null,
+          "p99": null,
+          "source": "run-gate-clock",
+          "unit": "s_ref"
+        }
+      },
+      "normalisation": {
+        "basis": "geekbench7-measured",
+        "divisor": "single_core",
+        "geekbench_major": 7,
+        "reason": null,
+        "reference_score": 2500
+      },
+      "status_counts": {
+        "MEASURED": 1,
+        "NO_MEASUREMENT": 0,
+        "PARTIAL": 0
+      },
+      "subject": "lane-run",
+      "window": "this-run"
+    }
+  ],
+  "project": "cgroup-profiler",
+  "qualifications": {},
+  "results": [
+    {
+      "config_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "judged_by": "run-gate",
+      "kind": "command",
+      "lane": "r0-r1",
+      "levels": {
+        "R0": "pass"
+      },
+      "note": "declared, not judged",
+      "targets": {
+        "cgroup-profiler": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
       "toolset": "t1",
-      "waiver": null
+      "verdict_sha256": null
     },
-    "R1": {
+    {
+      "config_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
       "coverage": {
         "branch_pct": 100.0,
         "excluded_lines": 0,
@@ -25,20 +160,44 @@
         },
         "line_pct": 100.0
       },
-      "judged_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "lanes": [
-        {
-          "config_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-          "lane": "assay-r1",
-          "outcome": "PASS",
-          "verdict_sha256": "7777777777777777777777777777777777777777777777777777777777777777"
-        }
-      ],
-      "status": "pass",
-      "toolset": "t1",
-      "waiver": null
+      "judged_by": "assay",
+      "kind": "assay",
+      "lane": "assay-r1",
+      "levels": {
+        "R0": "pass",
+        "R1": "pass"
+      },
+      "targets": {
+        "cgroup-profiler": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "node_modules": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "toolset": "t2",
+      "verdict_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
     },
-    "R2": {
+    {
+      "canary": {
+        "mechanism": "import-break",
+        "outcome": "PASS",
+        "targets": [
+          "src/cgprofile/daemon.py"
+        ]
+      },
+      "config_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "judged_by": "assay",
+      "kind": "assay",
+      "lane": "assay-r3",
+      "levels": {
+        "R0": "pass",
+        "R3": "pass"
+      },
+      "targets": {
+        "cgroup-profiler": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "toolset": "t2",
+      "verdict_sha256": "8888888888888888888888888888888888888888888888888888888888888888"
+    },
+    {
+      "attributed_from": null,
       "buckets": {
         "budget_exceeded": 3,
         "crashed": 2,
@@ -48,8 +207,8 @@
         "survived": 31
       },
       "campaign": {
-        "attempts": 2,
-        "closeout_exit": 1,
+        "attempts": 1,
+        "closeout_exit": 0,
         "completed_at": "2026-11-04T17:30:00Z",
         "started_at": "2026-11-04T08:00:00Z"
       },
@@ -58,21 +217,26 @@
         "resumed": 0,
         "total": 557
       },
+      "config_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
       "deviations": [],
       "history": [],
-      "judged_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "lanes": [],
-      "scope": {
-        "anchored": false,
-        "base_tag": "cgprofile-v1.2.0",
-        "kind": "changed-since"
+      "judged_by": "assay",
+      "kind": "assay",
+      "lane": "assay-r2",
+      "levels": {
+        "R0": "pass",
+        "R2": "survivors"
       },
-      "score": 0.9436,
-      "status": "survivors",
+      "scope": {
+        "anchored": true,
+        "base_commit": null,
+        "kind": "whole-source"
+      },
+      "score": 0.9443,
       "survivors": {
-        "accepted": 1,
+        "accepted": 0,
         "by_file": {},
-        "equivalent": 3,
+        "equivalent_reviewed": 0,
         "listed": [
           {
             "candidate_id": "cand-0000",
@@ -319,220 +483,79 @@
           },
           {
             "candidate_id": "cand-0027",
-            "disposition": "equivalent",
+            "disposition": "open",
             "line": 37,
             "operator": "python:compare-swap",
             "path": "src/cgprofile/mod0.py",
-            "reason": "swapping < and <= is unobservable: both branches clamp to the same bound",
+            "reason": null,
             "resolved_by": null
           },
           {
             "candidate_id": "cand-0028",
-            "disposition": "equivalent",
+            "disposition": "open",
             "line": 38,
             "operator": "python:compare-swap",
             "path": "src/cgprofile/mod1.py",
-            "reason": "swapping < and <= is unobservable: both branches clamp to the same bound",
+            "reason": null,
             "resolved_by": null
           },
           {
             "candidate_id": "cand-0029",
-            "disposition": "equivalent",
+            "disposition": "open",
             "line": 39,
             "operator": "python:compare-swap",
             "path": "src/cgprofile/mod2.py",
-            "reason": "swapping < and <= is unobservable: both branches clamp to the same bound",
+            "reason": null,
             "resolved_by": null
           },
           {
             "candidate_id": "cand-0030",
-            "disposition": "accepted",
+            "disposition": "open",
             "line": 40,
             "operator": "python:compare-swap",
             "path": "src/cgprofile/mod0.py",
-            "reason": "accepted risk: path only reached on a removed platform",
+            "reason": null,
             "resolved_by": null
           }
         ],
-        "open": 27,
+        "open": 31,
         "resolved": 0,
         "sidecar_sha256": null
       },
-      "toolset": "t1",
-      "waiver": null,
+      "targets": {
+        "cgroup-profiler": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "toolset": "t2",
+      "verdict_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
       "worker_counts": {
         "1": 557
       }
     },
-    "R3": {
-      "canaries": [
-        {
-          "lane": "assay-r3",
-          "mechanism": "import-break",
-          "outcome": "PASS",
-          "targets": [
-            "src/cgprofile/daemon.py"
-          ]
-        }
+    {
+      "kind": "sequence",
+      "lane": "release",
+      "members": [
+        "r0-r1",
+        "assay-r1",
+        "assay-r3"
       ],
-      "judged_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "lanes": [
-        {
-          "config_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-          "lane": "assay-r3",
-          "outcome": "PASS",
-          "verdict_sha256": "8888888888888888888888888888888888888888888888888888888888888888"
-        }
-      ],
-      "status": "pass",
-      "toolset": "t1",
-      "waiver": null
+      "outcome": "PASS",
+      "toolset": "t3"
+    }
+  ],
+  "review": {
+    "document_sha256": "90d5345015a1c951c8fc58bc412086c1831030ef06dc1ebcde7ff374182a7236",
+    "range": {
+      "from": "cgprofile-v1.2.0",
+      "to": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     },
-    "review": {
-      "document_sha256": "9999999999999999999999999999999999999999999999999999999999999999",
-      "range": {
-        "from": "cgprofile-v1.2.0",
-        "to": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-      },
-      "reviewer_role": "independent-reviewer",
-      "status": "accept"
-    }
+    "reviewer_role": "independent-reviewer",
+    "status": "accept"
   },
-  "machine_classes": [
-    {
-      "cpu_model": "AMD EPYC 9634 84-Core Processor",
-      "cpus_available": 4,
-      "hypervisor": true,
-      "id": "m1",
-      "speed": {
-        "basis": "geekbench-measured",
-        "cpus_at_measurement": 4,
-        "geekbench_major": 7,
-        "geekbench_version": "7.1.0",
-        "measured_on": "2026-11-04",
-        "multi_core": 11800,
-        "single_core": 3120
-      }
-    }
-  ],
-  "perf": [
-    {
-      "host_psi_some_avg": {
-        "cpu": 1.0,
-        "io": 0.5,
-        "memory": 0.1
-      },
-      "lane": "r0-r1",
-      "level": "R1",
-      "machine_classes": {
-        "m1": 1
-      },
-      "metrics": {
-        "io_write_bytes": {
-          "max": 8388608,
-          "n": 1,
-          "n_excluded": {
-            "contaminated": 0,
-            "no_measurement": 0
-          },
-          "p50": 8388608,
-          "p90": null,
-          "p98": null,
-          "p99": null,
-          "source": "io.stat",
-          "unit": "bytes"
-        },
-        "memory_peak_bytes": {
-          "max": 412000000,
-          "n": 1,
-          "n_excluded": {
-            "contaminated": 0,
-            "no_measurement": 0
-          },
-          "p50": 412000000,
-          "p90": null,
-          "p98": null,
-          "p99": null,
-          "source": "memory.peak",
-          "unit": "bytes"
-        },
-        "wall_seconds": {
-          "max": 570.0,
-          "n": 1,
-          "n_excluded": {
-            "contaminated": 0,
-            "no_measurement": 0
-          },
-          "p50": 570.0,
-          "p90": null,
-          "p98": null,
-          "p99": null,
-          "source": "run-gate-clock",
-          "unit": "s"
-        },
-        "wall_seconds_ref": {
-          "max": 711.36,
-          "n": 1,
-          "n_excluded": {
-            "contaminated": 0,
-            "no_measurement": 0
-          },
-          "p50": 711.36,
-          "p90": null,
-          "p98": null,
-          "p99": null,
-          "source": "run-gate-clock",
-          "unit": "s_ref"
-        }
-      },
-      "normalisation": {
-        "basis": "geekbench-measured",
-        "divisor": "single_core",
-        "geekbench_major": 7,
-        "reason": null,
-        "reference_score": 2500
-      },
-      "status_counts": {
-        "MEASURED": 1,
-        "NO_MEASUREMENT": 0,
-        "PARTIAL": 0
-      },
-      "subject": "lane-run",
-      "window": "this-run"
-    }
-  ],
-  "project": "cgroup-profiler",
-  "qualifications": {},
-  "release": {
-    "artifacts": [
-      {
-        "name": "cgprofile-2.0.0-py3-none-any.whl",
-        "sha256": "6666666666666666666666666666666666666666666666666666666666666666"
-      }
-    ],
-    "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    "project_tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-    "published_at": "2026-11-04T18:02:11Z",
-    "state": "current",
-    "tag": "cgprofile-v2.0.0",
-    "version": "2.0.0",
-    "withdrawn": null
-  },
-  "revision": 1,
+  "revision": 2,
   "schema": "urn:vbpub:rigor-record:1",
   "toolsets": {
     "t1": {
-      "assay": {
-        "artifact_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-        "judge_identity": "assay-judge-identity/14",
-        "verdict_schema": "urn:assay:schema:verdict:18",
-        "version": "12.0.0"
-      },
-      "cgprofile": {
-        "ctl_contract": 2,
-        "daemon_version": "2.0.0",
-        "observer_contract": 3
-      },
       "run_gate": {
         "version": "25.0.1",
         "wheel_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
@@ -543,6 +566,20 @@
           "org.opencontainers.image.revision": "3333333333333333333333333333333333333333"
         },
         "ref": "tester-unified:local"
+      }
+    },
+    "t2": {
+      "assay": {
+        "artifact_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "judge_identity": "assay-judge-identity/14",
+        "verdict_schema": "urn:assay:schema:verdict:18",
+        "version": "12.0.0"
+      }
+    },
+    "t3": {
+      "run_gate": {
+        "version": "25.0.1",
+        "wheel_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
       }
     }
   }

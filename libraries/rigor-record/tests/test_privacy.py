@@ -142,6 +142,11 @@ def test_finding_str():
 
 def test_all_goldens_are_privacy_clean():
     paths = sorted(glob.glob(str(GOLDEN / "**" / "*.json"), recursive=True))
-    assert len(paths) == 16  # 4 fragments, 11 records, the percentile vectors
+    # 5 fragments, 9 records, the percentile vectors, 6 assemble inputs/outputs, 6 project records + index, 3 machine/1 goldens
+    assert len(paths) == 31
     for path in paths:
+        if path.endswith("assemble/build.json"):
+            continue  # a cmru-local input (its build id carries a commit); it is never published
+        if "/golden/machine/" in path:
+            continue  # cgprofile's own machine/1 objects (a table speed carries a source URL); the record keeps a projection
         assert lint(json.load(open(path))) == [], path

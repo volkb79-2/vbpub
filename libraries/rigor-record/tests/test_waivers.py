@@ -11,7 +11,7 @@ def test_golden_waivers_load_clean():
     doc, violations = load_waivers(TEXT)
     assert violations == []
     assert doc["lane"][0]["lane"] == "worker_io_dns_operations"
-    assert [s["disposition"] for s in doc["survivor"]] == ["equivalent", "accepted"]
+    assert [s["disposition"] for s in doc["survivor"]] == ["equivalent-reviewed", "accepted"]
 
 
 def test_schema_only_document_is_valid():
@@ -32,7 +32,7 @@ def test_schema_violations():
     assert has(replace('urn:vbpub:rigor-waivers:1', 'urn:vbpub:rigor-waivers:2'), "$.schema", "must equal")
     assert has(replace('level = "R1"', 'level = "R2"'), "$.lane[0].level", "must be one of")
     assert has(replace('expires_before = "1.6.0"', 'expires_before = "soon"'), "$.lane[0].expires_before", "pattern")
-    assert has(replace('disposition = "equivalent"', 'disposition = "open"'), "$.survivor[0].disposition", "must be one of")
+    assert has(replace('disposition = "equivalent-reviewed"','disposition = "open"'), "$.survivor[0].disposition", "must be one of")
     assert has(replace('reviewed_by = "independent-review"\n\n[[survivor]]', 'reviewed_by = "Jane Doe"\n\n[[survivor]]'),
                "$.survivor[0].reviewed_by", "pattern")
     assert has(replace('plan_item = "P-xyz"\n', 'plan_item = "P-xyz"\nowner = "x"\n'), "$.lane[0].owner", "unexpected key")
