@@ -189,3 +189,16 @@ def test_imagegen_closed_cli_vocabulary_is_documented():
     documentation = "\n".join(path.read_text(encoding="utf-8") for path in DOCS)
     missing = sorted(value for value in vocabulary if value not in documentation)
     assert missing == []
+
+
+def test_eval_glyphgrid_defaults_derive_from_the_script_location():
+    """PWMCP-21: no home-directory or worktree path; the series default is the documented artifacts folder."""
+
+    sys.path.insert(0, str(ROOT / "tools" / "glyphgrid"))
+    try:
+        import eval_glyphgrid
+    finally:
+        sys.path.pop(0)
+    assert Path(eval_glyphgrid.DEFAULT_SERIES) == ROOT / "artifacts" / "console-corpus" / "frames"
+    assert Path(eval_glyphgrid.DEFAULT_CORPUS) == ROOT / "tests" / "corpus" / "console" / "truenas-27-vanilla"
+    assert Path(eval_glyphgrid.DEFAULT_CORPUS).is_dir()

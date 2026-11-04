@@ -115,7 +115,7 @@ gate validates the implementation and documentation change.
 
 ## PWMCP-05 — the canonical `pwmcp-fetch` skill hard-codes a consumer's literal ciu instance id in its examples
 
-**Status:** OPEN. Filed 2026-10-15 from dstdns (docs-sync W05, dstdns@16fc5d7e). Severity Low. Type: bugfix (docs).
+**Status:** STALE-FIXED 2026-11-04 (already fixed by 948080489 "keep fetch skill install agnostic"; the skill at `client/src/pwmcp_client/skills/pwmcp-fetch/SKILL.md` has no literal instance id, oracle grep finds none; the skill moved from `.claude/skills/`). Filed 2026-10-15 from dstdns (docs-sync W05, dstdns@16fc5d7e). Severity Low. Type: bugfix (docs).
 
 **Observed.** `.claude/skills/pwmcp-fetch/SKILL.md:30` and `:34` give `dstdns-98535c-pwmcp` and `dstdns-98535c-network` as examples. `98535c` is a ciu instance id that dstdns's checkout path once derived. Instance ids are dynamic: dstdns's current main instance has another id, and every worktree has its own. A reader who copies the example targets a container that does not exist. A consumer that vendors the skill also trips its own literal-instance-id check (dstdns `tests/config/test_instance_identity_contract.py`).
 
@@ -277,7 +277,7 @@ does not mistake it for page content; the `pwmcp-fetch` skill documents the outc
 
 ## PWMCP-10 — two concurrent clients collide on the single shared browser ("Browser is already in use")
 
-**Status: OPEN (filed 2026-10-27).** Running four `browser_navigate` clients in parallel against
+**Status: MESSAGES FIXED 2026-11-04 (6be337905): the `pwmcp-fetch` skill and `docs/CONSUMERS.md` say fetches must be serialised and the `--isolated` hint must not be followed. The error text itself is emitted by the upstream Playwright MCP and cannot be changed here. Concurrent sessions remain OPEN (per-session contexts) (filed 2026-10-27).** Running four `browser_navigate` clients in parallel against
 `http://pwmcp:8931/mcp` made all but one fail with: `Browser is already in use for
 /tmp/.cache/ms-playwright-mcp/mcp-chrome-for-testing-8a5edab, use --isolated to run multiple instances of the
 same browser`. Sequential use works. `containers/pwmcp/supervisord.shared.conf:27,114` records that `--isolated`
@@ -520,7 +520,7 @@ the module's import-time setup.
 
 ## PWMCP-18 — RGB PNG color-key transparency is not composited before OCR
 
-**Status:** OPEN. Severity: P2. Filed 2026-11-02 from the PWMCP R2 survivor
+**Status:** FIXED 2026-11-04 (6be337905; `_flatten` now composites P/L/RGB with `tRNS`; test `test_rgb_and_gray_colour_key_transparency_is_composited_onto_white`). Severity: P2. Filed 2026-11-02 from the PWMCP R2 survivor
 triage (`ocr_service.py:387`, `And->Or`).
 
 **Observed.** The OCR service accepts PNG images and the README says transparent
@@ -560,7 +560,7 @@ rows and remaining survivors, then record the final verdict and any accepted sur
 
 ## PWMCP-21 — corpus tooling should consume the per-project VM layout
 
-**Status:** OPEN (filed 2026-11-03). The console-capture launcher now defaults to
+**Status:** PARTLY FIXED 2026-11-04 (6be337905): `eval_glyphgrid.py` defaults derive from the script location and the docs name `pwmcp/artifacts/console-corpus` as the place to point `PWMCP_CONSOLE_CORPUS_DIR` at (unset still raises `CorpusMissing`). Still open: `console_corpus.py run --out`/verifier defaults (explicit paths) (filed 2026-11-03). The console-capture launcher now defaults to
 `pwmcp/artifacts/vm-lab/<vm-name>/` and resolves bare ISO names in the repo `downloads/` directory (root `AGENTS.md`,
 "VM files and downloads"). The corpus side does not yet follow: capture output (`console_capture.py run --out`) and the
 verifier still take explicit paths, and `tools/glyphgrid/eval_glyphgrid.py` hardcodes `DEFAULT_SERIES` under a home directory.
