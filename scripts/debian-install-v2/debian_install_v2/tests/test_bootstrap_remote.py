@@ -960,3 +960,10 @@ def test_bootstrap_debug_never_prints_the_webhook_url(mod, monkeypatch, tmp_path
     assert "SECRETID123" not in err.err + err.out
     assert key not in err.err + err.out
     assert "<redacted>" in err.err
+
+
+def test_sparse_checkout_ships_the_cpu_benchmark_tool_and_its_pin():
+    module = load_module()
+    assert "/scripts/debian-install-v2/tools/cpu_benchmark.py" in module._SPARSE_PATHS
+    assert "/scripts/debian-install-v2/tools/cpu_benchmark.py.sha256" in module._SPARSE_PATHS
+    assert "/scripts/debian-install-v2/tools/cpu_benchmark.pins.json" in module._SPARSE_PATHS

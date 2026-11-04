@@ -533,15 +533,20 @@ alongside existing entries, and never treated as temporary controller keys.
 ## Not yet in v2 (v1 had some of this)
 
 `scripts/debian-install/bootstrap.sh` (v1) had a benchmark/adaptive-sizing
-layer v2 has no equivalent of: fio/Geekbench-based benchmarking,
+layer v2 has no equivalent of: fio-based adaptive benchmarking,
 `TEST_ZSWAP_LATENCY`, a "matrix test" that picked how many pre-created swap
 partitions to actually activate based on measured performance (v2's swap
 count is a static config value, never measured), ZRAM support, and multiple
 swap-backing strategies (files-in-root, partitions, zvol). v2's
 `config.py` `UNSUPPORTED_V2_SETTINGS` explicitly rejects a v1 config file
-that still sets `run_geekbench`, `run_ssh_setup`, `swap_ram_solution`,
+that still sets `run_ssh_setup`, `swap_ram_solution`,
 `pre_shrink_root_extra_gb`, or `extend_root` — these were deliberately not
-ported, not merely forgotten.
+ported, not merely forgotten. `run_geekbench` is no longer in that list: it
+is still refused when a v1 file sets it, but with a pointer to its v2
+replacement `run_cpu_benchmark` (`RENAMED_V1_SETTINGS`), described under
+[Host CPU benchmark step](#host-cpu-benchmark-step-run_cpu_benchmark-hb-2).
+The v1 Geekbench scores were never sizing inputs; v2 does not use them to size
+anything either.
 
 The optional io.cost benchmark (`run_io_benchmark`, off by default;
 `io_benchmark_duration_s`, `io_benchmark_max_size_gb`) runs in stage 2 before
@@ -609,6 +614,29 @@ from the public result page. The claim link exists only in the 0600 file; the to
 elsewhere. It refuses when the record exists (unless `--force`), refuses when CPU `some avg10` is above `--max-psi`
 (default 25; host-setup passes a stricter value), and kills the whole process group on `--timeout`. Exit codes: 0 ok,
 2 refused, 3 failed, 4 record written without scores (complete it with `--resolve`).
+
+### Host CPU benchmark step (`run_cpu_benchmark`, HB-2)
+
+`run_cpu_benchmark` (default **on**; `vanilla` profile off) runs the tool above ONCE at the end of stage two: after the
+io.cost step, the swap health gate and before the apt timers are released, so the host is still idle. The installer:
+
+1. checks the tool against `tools/cpu_benchmark.py.sha256` (as for `iocost_coef_gen.py`);
+2. passes BOTH pins, `--geekbench-version` and `--sha256` (archive), from the per-architecture file
+   `tools/cpu_benchmark.pins.json` (shared with `mdt host-setup cpu-benchmark`; x86_64: Geekbench 7.1.0) or the config override pair `cpu_benchmark_geekbench_version`
+   / `cpu_benchmark_sha256` (set together or config load refuses). There is no "newest on the CDN" default in the
+   installer, and an architecture without a pin is `warned`, never run unverified (aarch64 has no verified pin yet);
+3. runs the tool with its 1800 s hard timeout (outer command bound 2700 s) and `--produced-by "debian-install-v2 <version>"`;
+   it never passes `--force`, so a re-install keeps the existing measurement (tool exit 2, `warned`);
+4. records the `cpu_benchmark` step. Tool exit 0 gives `success` with the tool's summary line (scores, CPU, vCPUs, result
+   URL), which is appended to the single `Install complete` milestone. Any failure (no egress, sha256 mismatch,
+   timeout, parse failure, refusal, unpinned architecture) is **advisory**: step `warned`, the install continues.
+   Exit 4 (record written without scores) is `warned` with the later command
+   `mdt host-setup cpu-benchmark --resolve`, which re-reads the result page without re-running.
+
+The claim link only ever lands in the 0600 `cpu-benchmark.claim.json`; the tool redacts it from everything it prints, and
+the step additionally withholds a summary line that mentions a claim. The step needs outbound HTTPS to
+`cdn.geekbench.com` and `browser.geekbench.com`; set `run_cpu_benchmark` false for an air-gapped install. The step is
+idempotent across stage-two resumes (a terminal `cpu_benchmark` step is not repeated).
 
 Still not done: the result is NOT written to `io.cost.model`/`io.cost.qos`
 and io.cost is not enabled; choosing and applying those is a separate,
