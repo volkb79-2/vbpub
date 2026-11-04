@@ -69,7 +69,7 @@ def wheel(tmp_path_factory) -> Path:
 
 @pytest.fixture(scope="module")
 def cli_extended_wheel(tmp_path_factory) -> Path:
-    """cli-extended built from THIS checkout (libraries/cli-extended), offline.
+    """cli-extended built from THIS checkout (the library directory below the repository root), offline.
 
     cgpctl imports cli_extended for real, and the gate image may carry an older release than the pin
     (0.5.0 against >=0.5.1) with no index to resolve from. The clean venv therefore gets the checkout's own
