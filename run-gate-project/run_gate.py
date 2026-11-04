@@ -102,7 +102,7 @@ __revision__ = 68  # rev 68: pin worktree Git pointers and harden host Git reade
 # five new `series_stats` series -- median, never mean, same RG-27 reasoning
 # `duration_stats` already used). Precisely from the daemon
 # (`cgprofile-host-daemon`, `docker exec ... cgprofile ctl ...`,
-# `ProfilerClient`; since RG-154 the control socket only) when reachable, or a coarser in-lane `docker exec`
+# `ProfilerClient`; since RG-156 the control socket only) when reachable, or a coarser in-lane `docker exec`
 # cgroup sample (`method: "basic"`, `BasicSampler`/`ResourceAccumulator`,
 # the three cgroupfs parsers ported verbatim from
 # scripts/cgroup-profiler/lib/util.py) when it is not -- never nothing,
@@ -709,7 +709,7 @@ PROFILE_CTL_TIMEOUTS = {"version": 5, "host": 5, "start": 10,
 PROFILE_STOP_INCOMPLETE_CODE = "stop-incomplete"
 PROFILE_STOP_RETRY_ATTEMPTS = 4
 PROFILE_STOP_RETRY_SECONDS = 2.0
-# RG-154: the control socket is the ONLY carrier. The removed settings are
+# RG-156: the control socket is the ONLY carrier. The removed settings are
 # kept as names only so a stale config or environment is refused by name
 # (never silently ignored) with the replacement spelled out.
 PROFILE_REMOVED_ENV_VAR = "RUN_GATE_PROFILE_TRANSPORT"
@@ -1577,7 +1577,7 @@ def _validate_profile_policy(table: object, where: str) -> None:
         fail(f"{where}: 'profile' must be a table")
     for removed, remedy in PROFILE_REMOVED_KEYS.items():
         if removed in table:
-            fail(f"{where} [profile]: '{removed}' was removed (RG-154): "
+            fail(f"{where} [profile]: '{removed}' was removed (RG-156): "
                  f"{remedy}")
     _check_keys(table, {"enabled", "interval", "damon", "socket_path",
                         "admission_wait"},
@@ -1697,7 +1697,7 @@ def resolve_profile_settings(lane: dict, cfg: dict, cfg_path: Path,
     silently ignored -- a mistyped override that appears to do nothing is
     the exact hazard a named refusal exists to catch)."""
     if os.environ.get(PROFILE_REMOVED_ENV_VAR, "") != "":
-        fail(f"{PROFILE_REMOVED_ENV_VAR} was removed (RG-154): the control "
+        fail(f"{PROFILE_REMOVED_ENV_VAR} was removed (RG-156): the control "
              "socket is the only carrier; unset it (a non-default socket is "
              "'socket_path' in [profile])")
     ambient = os.environ.get(PROFILE_AMBIENT_ENV_VAR)
@@ -10719,7 +10719,7 @@ def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
                "profiling disabled — no lane will be profiled; see "
                "'profile config' above for why")
     else:
-        # RG-154: the control socket is the only carrier, so doctor needs
+        # RG-156: the control socket is the only carrier, so doctor needs
         # no docker. An unreachable socket carries its CP-31 cause tag.
         client = ProfilerClient(profile_settings["socket_path"])
         version_doc, reason = client.version()
@@ -17248,7 +17248,7 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "  [profile]   enabled, interval, damon, socket_path (default",
         "              /run/cgprofile/ctl.sock; the only carrier), and bounded",
         "              admission_wait (default 10m); 'daemon' and 'transport' were",
-        "              removed (RG-154)",
+        "              removed (RG-156)",
         "  watch       one daemon reader per session records readings/verdicts;",
         "              killed follows the declared stall path, reported warns once;",
         "              an ended/failed watch retries once, then falls back to the",

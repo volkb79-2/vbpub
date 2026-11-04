@@ -50,7 +50,9 @@ real run (netcup test host, controller-driven) is still to happen. Open:
 (a) writing `io.cost.model`/`io.cost.qos` and enabling io.cost from the
 result (deliberately separate, "Not yet"); (b) Case B (hook already wrote
 swap) only benchmarks if tail free space remains, which is rarely the case;
-(c) `HostActions.run` has no timeout, so a hung `fio` would hang stage 2.
+(c) was "`HostActions.run` has no timeout": closed, `HostActions.run(timeout=)`
+exists (`actions.py:174-180`) and `_run_io_benchmark` passes timeouts for sync,
+umount, mkfs, dd and the tool (`installer.py:3138-3310`).
 
 ## Feature request: a zswap fill-watermark governor
 

@@ -184,6 +184,10 @@ python3 eval_glyphgrid.py --loo --probe --curve --colour --scale --run-series --
     --corrections ground-truth-corrections.json --out results.json   # LOO + leave-screen-group-out, original AND corrected transcript
 ```
 
+`eval_glyphgrid.py` defaults are derived from the script location, not from a home directory: `--corpus` is
+`pwmcp/tests/corpus/console/truenas-27-vanilla` and `--series` is `pwmcp/artifacts/console-corpus/frames` (the
+gitignored place for a local capture series; pass the flags to read elsewhere).
+
 `CORPUS_DIR` holds `frames/NN-name.png` and `ground-truth/NN-name.txt` (plain text, no box drawing, no
 column offsets). `learn_atlas.py` aligns each ground-truth line onto the grid by its blank/ink pattern
 (runs of spaces are collapsed in the transcript, so a gap may be any width), skips lines it cannot place or

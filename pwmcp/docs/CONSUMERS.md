@@ -90,6 +90,10 @@ the agent runtime. The default internal endpoint is `http://pwmcp:8931/mcp`
 when the agent shares the PWMCP network. A CLI install can inspect pages
 without configuring an MCP connection.
 
+One service has one shared browser, so fetches must be serialised. A second
+parallel MCP client fails with "Browser is already in use ... use --isolated";
+do not follow that hint (the service cannot take `--isolated`), wait and retry.
+
 ## Inspect a webpage
 
 Use the bundled CLI to read a rendered page through PWMCP's managed remote
@@ -168,7 +172,7 @@ subdirectory with the indexed frames:
 
 ```bash
 cd pwmcp
-export PWMCP_CONSOLE_CORPUS_DIR=/path/to/pwmcp-console-corpus
+export PWMCP_CONSOLE_CORPUS_DIR="$PWD/artifacts/console-corpus"   # the conventional, gitignored place
 python3 tools/corpus/console_corpus.py verify "$PWMCP_CONSOLE_CORPUS_DIR"
 ```
 

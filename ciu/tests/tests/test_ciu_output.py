@@ -6,6 +6,8 @@ import re
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from ciu import output
@@ -127,19 +129,31 @@ def test_argument_parser_usage_starts_with_the_product_headline():
     assert parser.format_usage().splitlines()[0] == cli_utils.cli_headline()
 
 
-def test_consume_cli_flags_preserves_command_passthrough_and_propagates_choice(monkeypatch):
+def test_time_prefix_is_a_registered_global_and_never_read_from_a_passthrough_command(monkeypatch):
+    """`--log-prefix-time-short` is a global of the registry: accepted before or after
+    the verb, never consumed from the command after `--`."""
+    import sys
+
+    from ciu import cli
+
     calls: list[bool] = []
     monkeypatch.setattr(output, "configure", calls.append)
-    monkeypatch.delenv("CIU_LOG_PREFIX_TIME_SHORT", raising=False)
+    monkeypatch.setenv("CIU_LOG_PREFIX_TIME_SHORT", "0")  # restored by monkeypatch afterwards
+    seen: list[list[str]] = []
+    monkeypatch.setattr(cli, "_legacy_dispatch", lambda tokens: seen.append(tokens))
 
-    assert output.consume_cli_flags(["up", "--log-prefix-time-short"]) == ["up"]
-    assert calls == [True]
+    monkeypatch.setattr(sys, "argv", ["ciu", "up", "--log-prefix-time-short"])
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 0
+    assert calls[-1] is True
     assert output.os.environ["CIU_LOG_PREFIX_TIME_SHORT"] == "1"
 
     calls.clear()
     monkeypatch.delenv("CIU_LOG_PREFIX_TIME_SHORT")
-    assert output.consume_cli_flags(["ssh", "--", "--log-prefix-time-short"]) == [
-        "ssh", "--", "--log-prefix-time-short",
-    ]
+    monkeypatch.setattr(sys, "argv", ["ciu", "ssh", "web", "--", "--log-prefix-time-short"])
+    with pytest.raises(SystemExit):
+        cli.main()
     assert calls == [False]
     assert "CIU_LOG_PREFIX_TIME_SHORT" not in output.os.environ
+    assert seen[-1] == ["ssh", "web", "--", "--log-prefix-time-short"]

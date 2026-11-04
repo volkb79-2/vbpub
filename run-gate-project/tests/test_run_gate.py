@@ -260,7 +260,7 @@ def make_project(repo: Path, config: str, name: str = "proj", *,
     return proj
 
 
-# RG-154: run-gate talks to the cgprofile daemon over its control socket only.
+# RG-156: run-gate talks to the cgprofile daemon over its control socket only.
 # `set_cgprofile_plan` starts an in-process fake daemon on a short AF_UNIX path
 # and points `run_gate.PROFILE_SOCKET_PATH_DEFAULT` at it; the per-verb plan
 # files $plan_dir/<verb>.{json,exit,sleep} are read on every request.
@@ -21523,7 +21523,7 @@ class TestProfileConfigValidation:
             argv = ["true"]
         """)
         with pytest.raises(run_gate.GateError,
-                           match=f"'{key}' was removed \\(RG-154\\)"):
+                           match=f"'{key}' was removed \\(RG-156\\)"):
             run_gate._validate_config(run_gate._read_toml(path), path, central=False)
 
     def test_top_level_profile_table_rejects_non_bool_damon(self, tmp_path):

@@ -266,7 +266,7 @@ def anchored_name_filter(project: str, env_tag: str, name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Healthcheck-probe validation (ciu health --preflight)
+# Healthcheck-probe validation (ciu status --preflight)
 # ---------------------------------------------------------------------------
 
 import json as _json

@@ -61,7 +61,7 @@ services:
       args:
         NYXLOOM_VERSION: "0.0.0-dev"
     image: ghcr.io/volkb79-2/nyxloomd:0.0.0-dev
-    container_name: nyxloom-1dd3d1-nyxloomd
+    container_name: ${NYXLOOM_CONTAINER_PREFIX:-nyxloom}-nyxloomd   # prefix = ciu `container_prefix`; per-checkout, never a literal id
     restart: unless-stopped
     init: true                                   # tini as PID 1: reaps zombies, forwards
                                                    # signals, and -- critically -- means the
@@ -185,6 +185,6 @@ services:
 
 networks:
   nyxloomd-net:
-    name: nyxloom-1dd3d1-nyxloomd-net   # ciu bridge network (P38); stable name the
+    name: ${NYXLOOM_CONTAINER_PREFIX:-nyxloom}-nyxloomd-net   # ciu bridge network (P38); stable name the
                                        # devcontainer joins as external to reach
                                        # the "nyxloomd" alias

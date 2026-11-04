@@ -33,7 +33,7 @@ test with three participants or two plus screen share, and check audio both ways
 ```bash
 ciu env generate --root-folder voice-screen-share/jitsi-server   # once (needs DOCKER_GID set if no docker group)
 ciu up --dir voice-screen-share/jitsi-server --dry-run           # render + validate
-ciu up --dir voice-screen-share/jitsi-server -y                  # start, register users
+ciu up --dir voice-screen-share/jitsi-server --yes               # start, register users
 ciu down --dir voice-screen-share/jitsi-server
 ```
 
@@ -108,7 +108,7 @@ accounts in `/var/lib/prosody` (hostdir `vol-prosody-data`). Still no TCP harves
 
 ## Verified (2026-11-04)
 
-Started with `ciu up --dir voice-screen-share/jitsi-server -y` from the main checkout; all four containers
+Started with `ciu up --dir voice-screen-share/jitsi-server --yes` from the main checkout; all four containers
 healthy; through the edge, `https://jitsi.<domain>/` answers 200 over HTTP/2 with a valid Let's Encrypt
 chain, `/xmpp-websocket` upgrades (101), the pre-join page renders (pwmcp). From a second host (other
 public IP): HTTPS, WebSocket, and UDP 10000 packets all arrive at the host and are forwarded to the jvb

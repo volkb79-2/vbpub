@@ -5,11 +5,21 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 
 ### Added
+- `pwmcp inspect --retries N` (0..10): extra attempts, each a fresh context and navigation, after a failed attempt or text that still changes over a 0.5 s settle window (PWMCP-24).
+- `pwmcp inspect` stderr diagnostics: a `page diagnostics:` line with the main-document status, console error count and failed subresources per status (PWMCP-25), and a warning when text output is under 1 KiB without `--wait-for` or much smaller than an earlier attempt (PWMCP-26). Stdout is unchanged.
 - GlyphGrid tooling: additional attributed console-font atlases, identity-checked faster reads with frame-sequence reuse, and the deterministic `imagegen` test-image generator. No behavior change in the service; the GlyphGrid engine remains unavailable (HTTP 501).
 - Installer: `get.py` is regenerated from the shared cmru installer template. New behaviour: unattended install (`install --unattended`, with `--answers FILE` for projects that ask wizard questions; pwmcp asks none), a maintenance copy of the installer at `<root>/bin/pwmcp-installer`, and the template's reworked install/update/rollback transaction. The `pwmcp` launcher, release layout and verified-wheel venv are unchanged.
 - Console-capture TrueNAS API helper: TLS verification is on by default; `TRUENAS_INSECURE_TLS=1` (throwaway test installs only, warns on stderr) or `TRUENAS_CA_FILE` is the explicit opt-out/alternative.
 
+### Fixed
+- fix: OCR sidecar composites RGB and grayscale PNGs with a `tRNS` colour key onto white before recognition, as the README promised (PWMCP-18).
+- fix: `eval_glyphgrid.py` defaults derive from the script location (`pwmcp/artifacts/console-corpus/frames`, the committed vanilla corpus) instead of a home directory and a deleted worktree; an unset `PWMCP_CONSOLE_CORPUS_DIR` still raises `CorpusMissing` (PWMCP-21).
+- docs: the `pwmcp-fetch` skill and consumer guide say plainly that fetches must be serialised and that the `--isolated` hint in "Browser is already in use" must not be followed (PWMCP-10, messages only; concurrent sessions stay open).
+- Test-suite repository-cleanliness guard (`pwmcp/conftest.py`): scoped to `pwmcp/`, `--no-optional-locks`, 60 s timeout, one actionable message for missing git / non-worktree / `safe.directory` (explicit opt-out `PWMCP_ALLOW_NO_GIT_GUARD=1`), runs once in the xdist controller, bounded failure report, and a stated contract that ignored paths are out of scope (PWMCP-12..16). PWMCP-17 no longer reproduces (an unused import was removed).
+
 ### Testing
+- Gateway tests reap the gateway process and close its stderr pipe in every path (no leaked process or open file).
+- Oracle for the cleanliness guard (`tests/test_git_guard.py`): real child pytest runs in a throwaway git repository, including `-n 2`.
 - Offline installer test (`tests/test_installer_offline.py`): the committed `get.py` runs unattended install, update and rollback against a fixture bundle with no network.
 - Keep the full 242-frame console capture local and unpublished. Corpus tests verify an explicit `PWMCP_CONSOLE_CORPUS_DIR` against the frame index and deterministic tar pin; they skip with a reason when unset, and `PWMCP_REQUIRE_CONSOLE_CORPUS=1` makes absence fail. The registered gate lanes remain corpus-free.
 

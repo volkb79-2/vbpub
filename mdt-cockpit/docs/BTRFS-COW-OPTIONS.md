@@ -114,7 +114,7 @@ raw image in a compressed subvolume versus a plain one versus no-CoW versus ext4
   `<git-common-dir>/.workspace-instances` family record (which already carries leases, S16.9) and uses the git-common-dir `flock` pattern.
   Reviewer's view: a neutral library that tcg and assay can use without ciu, not inside ciu and not baked into the mdt image. Our leaning
   was ciu (it will absorb `run-gate`). **Open (section 10).**
-- **ciu** owns ordering only: run the artifact check/clean before `git worktree remove`, make `branches -y` treat declared precious data as
+- **ciu** owns ordering only: run the artifact check/clean before `git worktree remove`, make `branches --yes` treat declared precious data as
   dirt. It must not learn about ISOs.
 - **mdt-cockpit / host-setup** own the mount, the preflight that it is present, `/tmp` semantics, `io.max`; they stay ciu-agnostic.
 - **tcg_vm** owns guest state; it needs a base-disk rebind and must publish its references to state directories so the survey sees them.

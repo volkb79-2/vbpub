@@ -7,6 +7,7 @@ import json
 import os
 import re
 import sys
+from collections import Counter
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -100,6 +101,137 @@ def _observed_user_agent(page: object) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+_SETTLE_MS = 500
+_SHELL_BYTES = 1024
+_SHRINK_FACTOR = 2
+_MAX_RETRIES = 10
+
+
+class _PageDiagnostics:
+    """What the page reported while loading: console errors and failed requests (PWMCP-25)."""
+
+    def __init__(self) -> None:
+        self.console_errors = 0
+        self.failed_requests = 0
+        self.statuses: Counter[int] = Counter()
+        self.main_status: int | None = None
+
+    def attach(self, page: object) -> None:
+        page.on("console", self._console)  # type: ignore[attr-defined]
+        page.on("response", self._response)  # type: ignore[attr-defined]
+        page.on("requestfailed", self._request_failed)  # type: ignore[attr-defined]
+
+    def _console(self, message: object) -> None:
+        if getattr(message, "type", None) == "error":
+            self.console_errors += 1
+
+    def _response(self, response: object) -> None:
+        status = getattr(response, "status", 0)
+        if status >= 400 and response.request.resource_type != "document":  # type: ignore[attr-defined]
+            self.statuses[status] += 1
+
+    def _request_failed(self, _request: object) -> None:
+        self.failed_requests += 1
+
+    def summary(self) -> str | None:
+        parts = []
+        if self.main_status is not None and self.main_status >= 400:
+            parts.append(f"main document HTTP {self.main_status}")
+        if self.console_errors:
+            parts.append(f"{self.console_errors} console errors")
+        if self.statuses:
+            by_status = ", ".join(f"{status} x{count}" for status, count in sorted(self.statuses.items()))
+            parts.append(f"{sum(self.statuses.values())} failed subresources ({by_status})")
+        if self.failed_requests:
+            parts.append(f"{self.failed_requests} requests failed outright")
+        if not parts:
+            return None
+        return "page diagnostics: " + "; ".join(parts) + " (the page may not have rendered completely)"
+
+
+class _Attempt:
+    """One navigation of ``pwmcp inspect``."""
+
+    def __init__(self, payload: str | bytes, observed_ua: str | None, stable: bool, diagnostics: _PageDiagnostics) -> None:
+        self.payload = payload
+        self.observed_ua = observed_ua
+        self.stable = stable
+        self.diagnostics = diagnostics
+
+
+def _inspect_once(
+    lease: object,
+    args: argparse.Namespace,
+    active: ResolvedUserAgent,
+    image_type: str,
+    runtime: CliRuntime,
+    *,
+    check_stable: bool,
+) -> _Attempt:
+    context_options: dict[str, object] = {"ignore_https_errors": args.ignore_https_errors}
+    if active.user_agent is not None:
+        context_options["user_agent"] = active.user_agent
+    # A fresh context per attempt: the override dies with it, which is the restore.
+    context = lease.browser.new_context(**context_options)  # type: ignore[attr-defined]
+    try:
+        page = context.new_page()
+        diagnostics = _PageDiagnostics()
+        diagnostics.attach(page)
+        if active.user_agent is not None:
+            _apply_client_hints(context, page, active.user_agent, runtime)
+        response = page.goto(args.url, wait_until=args.wait_until, timeout=args.timeout_ms)
+        diagnostics.main_status = getattr(response, "status", None)
+        if args.wait_for:
+            page.locator(args.wait_for).filter(visible=True).first.wait_for(
+                state="visible", timeout=args.timeout_ms
+            )
+
+        stable = True
+        if args.format in {"text", "snapshot"}:
+            def read() -> str:
+                if args.format == "text":
+                    return page.locator("body").inner_text(timeout=args.timeout_ms)
+                return page.locator("body").aria_snapshot(timeout=args.timeout_ms)
+
+            payload: str | bytes = read()
+            if check_stable:
+                # Stable-DOM check: the content must not change over a short settle window.
+                page.wait_for_timeout(_SETTLE_MS)
+                settled = read()
+                stable = settled == payload
+                payload = settled
+        else:
+            payload = page.screenshot(
+                full_page=args.full_page,
+                type=image_type,
+                animations="disabled",
+                timeout=args.timeout_ms,
+            )
+        return _Attempt(payload, _observed_user_agent(page), stable, diagnostics)
+    finally:
+        context.close()
+
+
+def _small_result_warning(args: argparse.Namespace, payload: str | bytes, sizes: list[int]) -> str | None:
+    """Warn when a text result is much smaller than an earlier attempt, or looks like a shell (PWMCP-26)."""
+
+    if not isinstance(payload, str):
+        return None
+    size = len(payload.encode("utf-8"))
+    earlier = sizes[:-1]
+    if earlier and size * _SHRINK_FACTOR < max(earlier):
+        return (
+            f"result is {size} bytes, much smaller than an earlier attempt ({max(earlier)} bytes); "
+            "the page probably rendered only partially this time"
+        )
+    if not args.wait_for and size < _SHELL_BYTES:
+        return (
+            f"result is only {size} bytes and no --wait-for was given; if more was expected the page "
+            "may not have finished rendering (pass --wait-for SELECTOR, a longer --timeout-ms or --retries N)"
+        )
+    return None
+
+
 def _inspect(args: argparse.Namespace, runtime: CliRuntime) -> None:
     """Read rendered page text, an ARIA snapshot, or a remote screenshot."""
 
@@ -112,6 +244,8 @@ def _inspect(args: argparse.Namespace, runtime: CliRuntime) -> None:
         raise CliFailure("URL must be an absolute http:// or https:// URL")
     if args.timeout_ms <= 0:
         raise CliFailure("--timeout-ms must be a positive integer")
+    if not 0 <= args.retries <= _MAX_RETRIES:
+        raise CliFailure(f"--retries must be between 0 and {_MAX_RETRIES}")
     if args.format == "screenshot" and not args.output:
         raise CliFailure("--output is required when --format=screenshot")
 
@@ -149,38 +283,37 @@ def _inspect(args: argparse.Namespace, runtime: CliRuntime) -> None:
             # Effective identity: the per-call --user-agent wins, else the server-level
             # setting the service publishes in its contract, else the browser default.
             active = call_override or _server_identity(getattr(lease, "contract", None))
-            context_options: dict[str, object] = {
-                "ignore_https_errors": args.ignore_https_errors
-            }
-            if active.user_agent is not None:
-                context_options["user_agent"] = active.user_agent
-            # A fresh context per call: the override dies with it, which is the restore.
-            context = lease.browser.new_context(**context_options)
-            try:
-                page = context.new_page()
-                if active.user_agent is not None:
-                    _apply_client_hints(context, page, active.user_agent, runtime)
-                page.goto(args.url, wait_until=args.wait_until, timeout=args.timeout_ms)
-                if args.wait_for:
-                    page.locator(args.wait_for).filter(visible=True).first.wait_for(
-                        state="visible", timeout=args.timeout_ms
+            # PWMCP-24: each attempt is a fresh context and navigation; --retries N allows N more
+            # after a failed or unstable attempt (a single attempt when it is 0, the default).
+            attempts = args.retries + 1
+            sizes: list[int] = []
+            number = 0
+            while True:  # the last attempt always ends the loop: it returns (break) or raises
+                number += 1
+                last = number == attempts
+                try:
+                    attempt = _inspect_once(lease, args, active, image_type, runtime, check_stable=not last)
+                except PlaywrightError as exc:
+                    if last:
+                        raise
+                    runtime.output.emit(
+                        LogLevel.WARN, f"attempt {number}/{attempts} failed: {exc}; retrying", force=True
                     )
-
-                if args.format == "text":
-                    payload = page.locator("body").inner_text(timeout=args.timeout_ms)
-                elif args.format == "snapshot":
-                    payload = page.locator("body").aria_snapshot(timeout=args.timeout_ms)
-                else:
-                    assert output_path is not None
-                    payload = page.screenshot(
-                        full_page=args.full_page,
-                        type=image_type,
-                        animations="disabled",
-                        timeout=args.timeout_ms,
-                    )
-                observed_ua = _observed_user_agent(page)
-            finally:
-                context.close()
+                    continue
+                if isinstance(attempt.payload, str):
+                    sizes.append(len(attempt.payload.encode("utf-8")))
+                if attempt.stable or last:
+                    break
+                runtime.output.emit(
+                    LogLevel.WARN,
+                    f"attempt {number}/{attempts}: the page was still changing; retrying",
+                    force=True,
+                )
+            payload, observed_ua = attempt.payload, attempt.observed_ua
+            # PWMCP-25 / PWMCP-26: say when the result may be partial (stderr only, stdout unchanged).
+            for note in (attempt.diagnostics.summary(), _small_result_warning(args, payload, sizes)):
+                if note:
+                    runtime.output.emit(LogLevel.WARN, note, force=True)
     except (PwmcpError, PlaywrightError, OSError, ValueError) as exc:
         raise CliFailure(
             f"pwmcp inspect failed: {exc}",
@@ -438,6 +571,7 @@ def build_cli(cli_identity: CliIdentity | None = None) -> RegisteredCli:
             "pwmcp inspect https://example.com --format snapshot --output page.yml",
             "pwmcp inspect https://example.com --format screenshot --output page.png --full-page",
             "pwmcp inspect https://example.com --wait-for '#content' --wait-until domcontentloaded",
+            "pwmcp inspect https://example.com --wait-for 'h1' --timeout-ms 45000 --retries 3",
             "pwmcp inspect https://self-signed.example --ignore-https-errors",
             "pwmcp inspect https://example.com --user-agent edge-windows",
         ),
@@ -483,6 +617,14 @@ def build_cli(cli_identity: CliIdentity | None = None) -> RegisteredCli:
                 group="WAIT",
                 metavar="MILLISECONDS",
                 parser_kwargs={"type": int, "default": 30_000},
+            ),
+            OptionSpec(
+                ("--retries",),
+                "retry up to N more times (fresh navigation each) when an attempt fails or the "
+                "page text is still changing after a 0.5 s settle window; 0 = single attempt",
+                group="WAIT",
+                metavar="N",
+                parser_kwargs={"type": int, "default": 0},
             ),
             OptionSpec(
                 ("--full-page",),

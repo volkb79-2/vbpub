@@ -3,11 +3,13 @@ kind: backlog-entry
 schema_version: 1
 id: NL-24
 title: "exec-nyxloom.py reports a stale version (0.5.1.dev4) from a leftover src/nyxloom.egg-info shadowing the installed dist metadata"
-status: open
+status: fixed
 type: "bugfix"
 severity: "low"
 provenance: "dstdns 2026-09-30, exec-nyxloom.py version vs nyxloom --version 0.8.1.dev519"
 filed_date: "2026-09-30"
+closed_date: "2026-11-04"
+closed_reason: "FIXED 2026-11-04 (684b785c6): nyxloom._resolve_version skips a src/nyxloom.egg-info that sits beside the imported package when a distribution installed elsewhere exists (tests/test_version_shadow.py)."
 ---
 
 ## Observed

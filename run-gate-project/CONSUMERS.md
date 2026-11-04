@@ -80,7 +80,7 @@ this host, the image on remote hosts, and the ciu/run-gate/assay seams).
    something a consumer's own gate config starts or stops. A runner
    without access to the daemon's control socket (a locked-down CI box, a
    sandboxed agent) should set `RUN_GATE_PROFILE=off`; run-gate reaches the
-   daemon only through `/run/cgprofile/ctl.sock` (RG-154: no `docker exec`
+   daemon only through `/run/cgprofile/ctl.sock` (RG-156: no `docker exec`
    carrier, no `transport`/`daemon` keys), so a lane needs that directory
    bind-mounted and the socket's group. `doctor`'s "profiler" check reports
    the socket's reachability; an unreachable socket is named by its cause tag
@@ -141,7 +141,7 @@ this host, the image on remote hosts, and the ciu/run-gate/assay seams).
    damon = true                   # default true; DAMON hot-set classification
                                   # when the daemon supports it (basic-path
                                   # sampling never has DAMON data either way)
-   socket_path = "/run/cgprofile/ctl.sock"  # the only carrier (RG-154)
+   socket_path = "/run/cgprofile/ctl.sock"  # the only carrier (RG-156)
    admission_wait = "10m"          # wait bound; then proceed with one warning
 
    # run-gate.toml or run-gate.root.toml — [footprint]: same whole-table

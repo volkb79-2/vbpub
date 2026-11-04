@@ -2123,7 +2123,7 @@ def _clean_in(worktree: Path, *, yes: bool, json_output: bool = False) -> int:
         env = {k: v for k, v in os.environ.items() if k not in _CIU_IDENTITY_ENV_KEYS}
         argv = [
             sys.executable, "-m", "ciu.cli", "clean", "--identity",
-            outdated["instance_id"], "-y" if yes else "--yes",
+            outdated["instance_id"], "--yes",
         ]
         try:
             return _run_cleanup_child(
@@ -2159,7 +2159,7 @@ def _clean_in(worktree: Path, *, yes: bool, json_output: bool = False) -> int:
     env = {k: v for k, v in os.environ.items() if k not in _CIU_IDENTITY_ENV_KEYS}
     env.update(identity)
 
-    argv = [sys.executable, "-m", "ciu.cli", "clean"] + (["-y"] if yes else [])
+    argv = [sys.executable, "-m", "ciu.cli", "clean"] + (["--yes"] if yes else [])
     try:
         return _run_cleanup_child(
             argv, cwd=worktree, env=env, json_output=json_output
@@ -6830,7 +6830,7 @@ def _clean_with_primary_identity(
         "--expected-checkout", str(expected_checkout),
     ]
     if yes:
-        argv.append("-y")
+        argv.append("--yes")
     try:
         return _run_cleanup_child(
             argv, cwd=primary_ciu_root, env=env, json_output=json_output

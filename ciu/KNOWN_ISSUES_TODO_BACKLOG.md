@@ -562,7 +562,7 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-111 | io.cost benchmark source and ownership remain undecided | Medium | OPEN — design question |
 | CIU-112 | Rootless managed worktree teardown and removal | Medium | FIXED 2026-10-04 by CIU-126 |
 | CIU-113 | Consumer recipe for a project-owned inspection stack | Low | OPEN — documentation candidate |
-| CIU-114 | CLI grammar/help/wizard extension | Low | OPEN — design candidate |
+| CIU-114 | CLI grammar/help/wizard extension | Low | IMPLEMENTED 2026-11-04 on branch `feat-ciu-clix-20261104` (unmerged); acceptance = registered gate + release + deploy |
 | CIU-115 | CIU-owned outdated identity records block siblings and teardown | Medium | FIXED 2026-10-04 |
 | CIU-116 | Worktree shared-infrastructure reuse is not declared in project config | Medium | OPEN — waiting for shareability measurements |
 | CIU-117 | Worktree builds overwrite the primary checkout image tag | Medium | FIXED — linked-worktree Compose and Bake image tags include its instance id by default |
@@ -4512,7 +4512,7 @@ the wrapper now lets CIU perform that work. Include this in the recipe's
 
 ## CIU-114 Adopt cli-extended (unified adoption, order 8 of 8)
 
-**Status: OPEN — planned.** Originally filed as a one-line idea ("adopt `cli-extended` for CLI grammar, usage(), wizard, ..."); **updated 2026-10-05 by the cli-extended unified-adoption program (W10)** into the planned, evidenced adoption entry below. This is the single ciu entry for the adoption; do not file a parallel one.
+**Status: IMPLEMENTED 2026-11-04 on branch `feat-ciu-clix-20261104` (not merged; the operator's decisions and every surface change are in [`docs/CLI-SURFACE-DECISIONS-20261104.md`](docs/CLI-SURFACE-DECISIONS-20261104.md)).** ciu adopts cli-extended in v7 with v8 S18 names where a name changes: `ciu.cli_registry` registers every verb (identity, groups, constraints, `--json`/`--yes`/`--dry-run`/`--traceback`, exact spellings), `doctor` and `skills` are the shared verbs, the skills ship as package data, `cli-extended audit` has 0 failures (AC-08/AC-12 are recorded manual rows) and `surface check` passes against a 669-row reviewed catalog. Deliberately NOT done: the internal implementation parsers (`deploy`/`engine`/`worktree`) still sit behind the adapters (follow-up), `runtime.confirm` is not wired into `up`/`clean`, and C3/C9/C10/C13 wait for v8. Acceptance still pending: the registered ciu gate (8h lane, not run on the branch), release, devcontainer deploy. Previous status — OPEN, planned. Originally filed as a one-line idea ("adopt `cli-extended` for CLI grammar, usage(), wizard, ..."); **updated 2026-10-05 by the cli-extended unified-adoption program (W10)** into the planned, evidenced adoption entry below. This is the single ciu entry for the adoption; do not file a parallel one.
 
 **Source documents.** [`libraries/cli-extended/docs/PROGRAM-2026-10-UNIFIED-ADOPTION.md`](../libraries/cli-extended/docs/PROGRAM-2026-10-UNIFIED-ADOPTION.md) (decisions CX-D1..CX-D12, section "W10 - planned adoptions") and [`libraries/cli-extended/docs/ADOPTION-CHECKLIST.md`](../libraries/cli-extended/docs/ADOPTION-CHECKLIST.md) (AC-01..AC-25). **Dependency:** cli-extended 0.2.0 released first (W8, the controller). Not executed in the program's session. ciu is last in the order (CX-D11) because the v8 spec (`docs/SPEC-V8.md`) already assumes the shared verbs; the v7 line is maintenance-only, so the carve must decide whether the adoption lands in v7 or only in the v8 line.
 
@@ -5971,3 +5971,61 @@ primary checkout without losing its data (the old volumes stay behind, unreferen
 **Acceptance criteria.** Test: generate with `--instance-id abc123` twice in two checkouts and get identical project/volume names; without the option behaviour is unchanged.
 
 **Note.** The backlog already carries two entries numbered CIU-163 (standalone root without git; new root in a linked worktree): one needs renumbering by the owner of that file.
+
+## CIU-168 — `ciu ssh` / `ciu up --host` need a fully generated local `ciu.env` (incl. `DOCKER_GID`) and a committed git repo on the control host
+
+**Status: OPEN (filed 2026-11-04, ops-v1001-20261104; measured on ciu 7.19.0 pushing a throwaway `whoami` stack from the mdt-cockpit devcontainer to v1001).**
+
+**Observed.** On a control host that only SSHes (no Docker daemon, no docker group): `ciu ssh v1001 -- true` stops with `could not load global configuration for remote
+operation: Missing required environment values ... CONTAINER_GID, CONTAINER_UID, DOCKER_GID, DOCKER_NETWORK_INTERNAL`. `DOCKER_GID=990 ciu env generate` is the only way
+forward, it needs at least one commit (`git rev-parse HEAD failed (128)` traceback on an unborn HEAD, same family as CIU-163), and it CREATES a docker network and connects
+the devcontainer to it (`ciu-remote-test-x5cmew-network`) on the control host, a local side effect of a verb that was only meant to reach a remote host.
+
+**Design.** The remote verbs (S14.1/S14.2) need the global config only for the host inventory and the repo layout; they must not require machine facts of the control host.
+Load the global config with placeholders for the four values (or lazily), never create a network for them, and report an unborn HEAD as a tagged error, not a traceback.
+
+**Acceptance criteria.** On a host without a docker group and without `ciu.env`, `ciu ssh HOST -- true` and `ciu up --host HOST --dry-run` work; no docker network is created locally.
+
+## CIU-169 — push-deploy preconditions are not checked or documented: `ciu` must be on the remote non-login PATH, `bundle_dir`'s parent must exist, and `**/.ciu/` must be gitignored although `.git` is not shipped
+
+**Status: OPEN (filed 2026-11-04, ops-v1001-20261104).**
+
+**Observed.** Three consecutive failures of `ciu up --host v1001 --dir whoami` against a fresh Debian host with ciu installed in a user venv: (1) the remote command `ciu env generate ...` finds no `ciu`
+(non-login SSH PATH does not include `~/.local/bin` or a venv); (2) `rsync: mkdir "/home/runner/ciu-remote-test/current" failed: No such file or directory` because rsync creates only the last
+path element of `bundle_dir`; (3) after the bundle arrived, `[S1.7] .../whoami/.ciu is not gitignored` although `.git` is excluded from the bundle, so the remote has no repository to ask (the check passed locally only because of the local `.gitignore`).
+
+**Design.** (1) `ciu up --host` runs a preflight `command -v ciu` over SSH and prints the exact fix (symlink into `/usr/local/bin`, or a `remote_ciu = "/path/to/ciu"` host key). (2) Create `bundle_dir` with `mkdir -p` before rsync/scp. (3) S1.7 must work on a bundle without `.git` by checking the shipped `.gitignore` text, or the bundle must ship a minimal `.git`-free equivalent marker.
+
+**Acceptance criteria.** The three steps succeed unattended on a host with ciu at an absolute path configured in the host row, with a nested `bundle_dir`, and a project whose `.gitignore` contains `**/.ciu/`.
+
+## CIU-170 — `ciu health --host` rejects `--dir`, and `ciu down --host --dir STACK` runs remotely outside the bundle (no ciu root, no env)
+
+**Status: OPEN (filed 2026-11-04, ops-v1001-20261104; SPEC S14.2 and FEATURES.md both list `--dir`/`--profile` after `--host` for up, down and health).**
+
+**Observed.** `ciu health --host v1001 --dir whoami` fails with `ciu: error: unrecognized arguments: --dir whoami`. `ciu down --host v1001 --dir whoami` connects but the remote command runs in the login directory:
+`[no-ciu-root] no CIU root above /home/runner; expected ciu.global.defaults.toml.j2`. Only `ciu up` does the `cd <bundle_dir> && ciu env generate && ciu render` chain. Manual teardown needed
+`ciu ssh v1001 -- 'cd BUNDLE && eval "$(ciu env print)" && ciu down --dir whoami'`, and that still refused with `[S18] --stack 'whoami' is not in the current deploy selection` (use `ciu clean -y`).
+
+**Design.** Build every remote command (up, down, clean, health, render) with the same `cd <bundle_dir> && eval "$(ciu env print)" && ...` prefix, and accept the same selection flags as the local verbs.
+
+**Acceptance criteria.** Test with a recorded SSH stub: `down --host X --dir S` and `health --host X --dir S` produce the same prefix as `up`.
+
+## CIU-171 — `ciu clean` leaves the compose default network and the workspace network of a remote or standalone bundle
+
+**Status: OPEN (filed 2026-11-04, ops-v1001-20261104).**
+
+**Observed.** After `ciu up --host v1001 --dir whoami` and `ciu clean -y` on the target the container is gone but `v1001-remote-test-rt-whoami_default` (the compose default network of the stack) and `current-qokpsa-network` (created by
+`ciu env generate`, "kept: ... workspace network of the main workspace (devcontainer residence)") remain, in a bundle that is not a devcontainer. S6.4 promises "zero project containers and volumes remain"; networks are outside that invariant but pin an address pool (`docker_default_address_pools`) on small hosts.
+
+**Design.** `clean` removes the stack's own compose networks; the workspace network is kept only when a devcontainer is actually attached to it, else removed with a one-line message.
+
+**Acceptance criteria.** After up + clean in a non-devcontainer bundle, `docker network ls` shows no network whose name carries the project name or the instance id.
+## CIU-172 — a legacy (schema v1) worktree record whose id differs from the path-derived id refuses every `ciu worktree up` / `ciu up`, and the refusals name no remedy
+
+**Status:** OPEN. Filed 2026-11-04 from dstdns (P220, worktree `p220-test-runner-ui`; ciu 7.19.0). Severity: P2.
+
+**Observed.** A worktree created on 2026-09-30 carries a schema-v1 record with `runtime.instance_id = f234d8`; a later `ciu env generate` (2026-10-02) wrote `ciu.instance.generated.toml` with the path-derived `20spbc` and created the network `p220-test-runner-ui-20spbc-network`. On 2026-11-04 `ciu worktree up <name>` stopped with `[S16] .../ciu.instance.generated.toml instance_id '20spbc' does not match the selected record's 'f234d8'`, and plain `ciu up` with `generated runtime identity for <root> does not match its managed worktree record`. Neither message names a remedy. `ciu env generate` alone fails without `DOCKER_GID` in the environment (`DOCKER_GID not found`), which a caller shell often lacks. The working recovery was undocumented: `DOCKER_GID=<gid> ciu worktree ensure <name>` (it regenerates the facts and then stops with `recovery-required`: `cannot prove ownership of existing runtime network '...-20spbc-network'`), then `ciu worktree ensure <name> --adopt-existing-network`.
+
+**Design.** Make both refusals name the remedy (`ciu worktree ensure <name>`, then `--adopt-existing-network` when the network is unlabeled), or have `ensure` migrate a v1 record whose generated facts disagree in one guarded step. `ciu env generate` should read `DOCKER_GID` from the docker group or the devcontainer env the same way `ciu up` does, or say how to set it.
+
+**Acceptance criteria.** Test: a schema-v1 record with a different id than the generated facts, plus an unlabeled legacy network, recovers through the message's own named commands; the two refusal texts contain the remedy.

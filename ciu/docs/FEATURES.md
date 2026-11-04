@@ -62,29 +62,31 @@ failure · `2` config/validation error · `3` environment/bootstrap error (S10.3
 |---|---|---|
 | `ciu --version` / `ciu version` | Print the CIU package version on stdout and exit 0 | Both spellings are supported; `--version` is the estate compatibility form; parser diagnostics at every depth begin with the CIU headline |
 | `ciu init` | Guided repo scaffolding (S19): validated global defaults template, gitignore entries, optional stack skeletons; never overwrites an existing target | `--project-name NAME`, `--environment-tag TAG`, `--stacks A,B`, `--hooks NAME1,NAME2` (S19.1: copies shipped, revision-stamped hook templates into every scaffolded stack; unknown name or no `--stacks` target refuses with exit 2 before any write) |
-| `ciu env` | Show `ciu.env` key=value pairs (read-only) | — |
+| `ciu env print` | Print the existing `ciu.env` as `export KEY='value'` lines (read-only); `eval "$(ciu env print)"` | `--root-folder PATH` |
 | `ciu env generate` | (Re)generate `ciu.env` from system state | `--root-folder PATH` |
 | `ciu render` | Render `ciu.global.toml` + per-stack `ciu.toml` | `--profile NAME`, `--root-folder PATH`, `--host NAME` (remote) |
-| `ciu profiles` | List host profiles | — |
-| `ciu layouts` | List declared deploy layouts (S7.5c) — shows what is DECLARED; `up --layout` validates | — |
+| `ciu show profiles` | List host profiles | `--json` |
+| `ciu show layouts` | List declared deploy layouts (S7.5c) — shows what is DECLARED; `up --layout` validates | `--json` |
 | `ciu up` | Render + materialise secrets + `compose up` | `--profile NAME` \| `--dir PATH`, `--phases N,M`, `--dry-run`, `-y`, `--ignore-errors`, `--no-preflight`; `--host NAME` push-deploys to a remote host (S14.2); `--thin` docker-optional push→activate (S14.6), `--bootstrap`/`--rollback` select activation verbs |
 | `ciu down` | Stop selected containers and preserve volumes | `--profile NAME`, `--host NAME`; `--dir PATH` stops one stack |
-| `ciu clean` | **Complete** teardown: containers (any state) + volumes + `vol-*` + rendered; enforces post-clean invariant (exit 1 on survivors) | `--profile NAME`, `-y`, `--ignore-errors` |
-| `ciu health` | Health gate over the selection | `--profile NAME`, `--host NAME` |
-| `ciu health --preflight` | Probe images for missing healthcheck tools | `--strict` |
+| `ciu clean` | **Complete** teardown: containers (any state) + volumes + `vol-*` + rendered; enforces post-clean invariant (exit 1 on survivors) | `--profile NAME`, `--yes`, `--ignore-errors` |
+| `ciu status --gate` | Health gate over the selection; the exit status is the verdict | `--profile NAME`, `--phases N,M`, `--host NAME [--thin]` |
+| `ciu status --preflight` | Probe images for missing healthcheck tools | `--strict` |
 | `ciu diagnose` | Explain common container failures without changing state | `--project NAME`, `--logs N`, `--json` |
 | `ciu status` | Per-stack compose project, containers, and health (read-only) | `--profile NAME`, `--json` |
 | `ciu bake` | `docker buildx bake --load`; linked worktree tags are scoped unless shared tags are explicitly enabled | `[targets …]` \| `--profile NAME`, `--no-cache`, `--allow-shared-tag` |
-| `ciu ksm build` | Build CIU's shipped KSM shim cache | `--force` |
+| `ciu governance ksm` | Build CIU's shipped KSM shim cache | `--force` |
+| `ciu governance iops-baseline` | Measure the disk randread IOPS ceiling with fio (S15.9) | `--path`, `--runtime`, `--force` |
 | `ciu dev <stack>` | Run the stack's `[<root>.dev]` dev loop (S5a) | `--profile NAME`, `--no-prebuild`, `--root-folder PATH` |
-| `ciu secrets list` | List materialised secret names | `-d PATH` |
+| `ciu secrets list` | List materialised secret names | `--dir PATH` |
 | `ciu secrets reset` | Delete secret store files | `--name N`, `-y` |
 | `ciu check` | Validate the whole config pipeline in memory (no deploy) | `--profile NAME`, `--live` (also probe live state), `--json` (versioned per-stage report), `--phases N,M` |
-| `ciu graph` | Render the dependency graph to STDOUT (no deploy) | `--format mermaid\|dot\|json`, `--profile NAME`, `--phases N,M` |
+| `ciu graph` | Render the dependency graph to STDOUT (no deploy) | `--format mermaid\|dot` or `--json`, `--profile NAME`, `--phases N,M` |
 | `ciu ssh <host>` | Interactive shell or one-shot command on a remote host | `--admin` (use admin key), `-- <cmd...>` (one-shot command) |
 | `ciu worktree` | Create, adopt, ensure, remove, inspect, list, start, or exec managed CIU instances; survey and prune local branches | `create LOGICAL --prefix P --feature F`; `adopt LOGICAL PATH`; `ensure LOGICAL`; `rm LOGICAL [-y] [--keep-branch] [--delete-branch] [--discard-protected-state BRANCH] [--discard-changes BRANCH] [--root-escalation BRANCH] [--json]`; `list [--json]`; `inspect LOGICAL [--json]`; `branches [--base REF] [-y] [--discard-protected-state BRANCH] [--json]` (S16.8); `up LOGICAL`; `exec LOGICAL [--target ALIAS] -- ARGV...` (S16, S16.6, S16.7) |
-| `ciu capabilities` | Versioned, closed machine-contract allowlist (D-009) | `--json` (S16.5) |
-| `ciu host-secrets <host>` | Host-scoped local secrets (S14.3a): materialize/list/resolve path for pre-Vault bootstrap credentials | `--materialize`, `--list`, `--path NAME`, `-y` |
+| `ciu schema capabilities` | Versioned, closed machine-contract allowlist (D-009) | `--json` (S16.5) |
+| `ciu secrets host <host>` | Host-scoped local secrets (S14.3a): materialize/list/resolve path for pre-Vault bootstrap credentials | `--materialize`, `--list`, `--path NAME`, `--yes` |
+| `ciu migrate --check` | Report artifacts left behind by an older CIU (S13.7); exit non-zero on any finding | `--json` |
 | `ciu provenance` | Verify running images against the commit under test and the declared vendor baseline | `--ignore-mismatch` (`--force`), `--no-preflight`, `--json`, `--root-folder PATH`; `--no-preflight` and `--json` are incompatible |
 
 For the complete, copy/paste-oriented CLI surface, use `ciu` for the command
@@ -127,12 +129,12 @@ ciu up --dir infra/api          # start the dependency first
 ciu dev applications/webapp-ui  # fetch:openapi → gen:api → vite dev, HMR on its port
 
 # Inspect secrets and health
-ciu secrets list -d infra/vault
-ciu health --preflight --strict
+ciu secrets list --dir infra/vault
+ciu status --preflight --strict
 ciu diagnose --project myproject
 
 # Tear everything down to a clean slate (disposable greenfield)
-ciu clean -y      # exits non-zero if any project container/volume survives (S6.4)
+ciu clean --yes   # exits non-zero if any project container/volume survives (S6.4)
 ```
 
 ---
@@ -155,7 +157,7 @@ ciu provenance --json
 
 # CIU cleans first, keeps an unmerged branch tip, and refuses protected state.
 cd -
-ciu worktree rm feature-x -y
+ciu worktree rm feature-x --yes
 ```
 
 Use `--keep-branch` to retain a merged branch or `--delete-branch` to delete
@@ -315,5 +317,5 @@ ciu up --host core1 --dir infra/vault    # second run: TOFU env unset, key now p
   without rsync) and runs the project's shell activation contract
   (`bootstrap|apply|health|rollback`) — no Docker or general-purpose Python needed on
   the target (fits a Passenger webhoster). `--bootstrap`/`--rollback` select the other
-  verbs; `ciu health --host <name> --thin` runs the `health` verb. The render-on-target
+  verbs; `ciu status --gate --host <name> --thin` runs the `health` verb. The render-on-target
   path (default, no `--thin`) is unchanged and needs Docker on the target.

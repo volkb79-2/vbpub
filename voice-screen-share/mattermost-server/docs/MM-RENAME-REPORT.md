@@ -123,7 +123,7 @@ standalone root with the stack files in the root dir (MM-MOVE).
      the compose project change anyway (items 1-2), so the old Postgres data would be reachable only via the bind path, and the secrets would be stale against fresh users.
    - Since the merge makes the tracked tree `mattermost-server/` while the old `mattermost/` keeps only ignored files, the cleanest order (INFERENCE) is: stop and remove the old
      containers by exact name (`mattermost-xm3foy-mattermost`, `-db`), archive the old `mattermost/` ignored files out of the way, then `ciu env generate --root-folder /workspaces/vbpub/mattermost-server`
-     and `ciu up --dir mattermost-server -y`. As in the MM-MOVE report, the Traefik router `nyxloom-mattermost` and the public Host rule are unchanged, so two live copies would contend for one route.
+     and `ciu up --dir mattermost-server --yes`. As in the MM-MOVE report, the Traefik router `nyxloom-mattermost` and the public Host rule are unchanged, so two live copies would contend for one route.
 4. **Consumers must be re-pointed anyway:** secret paths now `mattermost-server/.ciu/secrets/...` (updated in the docs above); the new instance mints new webhook ids/PATs.
 5. **Not verified at all:** whether `--dir mattermost-server` itself needs the folder to be listed anywhere (the root declares no profile, per MM-MOVE); how `ciu` treats an
    unreachable old identity network on the first run; the project-store secret subpath after a fresh generate (MM-MOVE's own open INFERENCE, still open).

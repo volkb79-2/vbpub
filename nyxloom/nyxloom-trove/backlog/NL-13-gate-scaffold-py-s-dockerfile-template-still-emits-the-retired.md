@@ -3,12 +3,14 @@ kind: backlog-entry
 schema_version: 1
 id: NL-13
 title: "gate_scaffold.py's Dockerfile template still emits the retired 'nyxloom gate verify' (GA1) into every scaffolded project"
-status: open
+status: fixed
 type: "bugfix"
 severity: "medium"
 component: "onboarding"
 provenance: "nyxloom-P102 retroactive adversarial review, 2026-09-08, F6"
 filed_date: "2026-09-08"
+closed_date: "2026-11-03"
+closed_reason: "FIXED 2026-11-04 (55792dfe6)"
 ---
 
 ## Observed mechanism and reproduction

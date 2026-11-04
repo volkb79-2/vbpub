@@ -205,6 +205,24 @@ def test_discovery_and_happy_paths_are_real_mcp_calls() -> None:
     assert history["data"]["series"] == [[1000.0, 2000.0], [1001.0, 2001.0], [1002.0, 2002.0]]  # type: ignore[index]
 
 
+def test_limit_is_advertised_as_integer_while_bool_stays_rejected() -> None:
+    """B-031: the published input schema types ``limit`` as integer for both tools."""
+
+    async def schemas() -> dict[str, dict[str, object]]:
+        app = McpServer(FakeClient()).build_mcp_server(FastMCP)
+        async with create_connected_server_and_client_session(app) as session:
+            tools = await session.list_tools()
+        return {tool.name: tool.inputSchema["properties"]["limit"] for tool in tools.tools if "limit" in tool.inputSchema["properties"]}
+
+    limits = asyncio.run(schemas())
+    assert set(limits) == {"topos_overview", "topos_history"}
+    assert all(schema["type"] == "integer" for schema in limits.values())
+
+    server = McpServer(FakeClient())
+    _, rejected = call(server, "topos_overview", sort_by="ram", limit=True)
+    assert error_code(rejected) == "over-limit"
+
+
 def test_discovered_descriptions_state_only_enforced_contracts() -> None:
     descriptions = asyncio.run(_discovered_descriptions(McpServer(FakeClient())))
     assert "at most 16 components" in descriptions["topos_health"]

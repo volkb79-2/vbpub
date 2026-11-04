@@ -48,3 +48,10 @@ A top-of-README "Product overview" section, each part two to six lines and a lin
 ## Dependencies and order
 
 Write after CP-42 and CP-43 settle the facts (protection and groups); the CLI and consumer parts can land earlier.
+
+## 2.0 plan amendment (2026-11-04, operator-accepted defaults)
+
+- The overview describes the 2.0 product, not the 1.x one: CLI part 2 lists the `cgpctl` verbs of `docs/CGPCTL-SPEC.md` and `cgpd`; sockets part 3
+  drops the exec carrier and names ctl contract 2 (`PROTOCOL.md` section 10); install part 7 points at `docs/NATIVE-DEPLOYMENT.md`.
+- Delivery moves into CP-49 (plan package 5) so it is written once, after the CLI and daemon exist; the docs-sync test additionally compares the
+  README verb list with the `cgpctl --help` surface and the config key table with `cgpd config check`'s key set.

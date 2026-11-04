@@ -45,3 +45,12 @@ No alias and no dual-ownership period beyond the dated window.
 ## Dependencies and order
 
 After MDT-055 is live on both hosts and one release has shipped with the window announcement. Last of the cgprofile packages.
+
+## 2.0 plan amendment (2026-11-04, operator-accepted defaults)
+
+- The migration procedure, the dated window, the rollback inside it (`ciu up --profile host` at the last 1.2.x image) and the session-volume
+  decision (drop; retention is 14 days; Q9) are specified in `docs/NATIVE-DEPLOYMENT.md` section 8.
+- The single-daemon guard of design point 4 is `cgpd run` preflight step 6 (`docs/CGPCTL-SPEC.md` section 3.1, `NATIVE-DEPLOYMENT.md` section 3.5)
+  and ships with CP-48, not with this entry.
+- The OCI image is not built for 2.0.0 unless the report tier needs it; deletion list in `NATIVE-DEPLOYMENT.md` section 8 (plan package 9: release
+  as 2.0.1, or 2.1.0 if anything is added). The helper and probe images are dropped (section 7).

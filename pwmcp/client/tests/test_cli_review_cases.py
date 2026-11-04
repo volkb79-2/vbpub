@@ -102,6 +102,9 @@ def _install_review_browser(monkeypatch: pytest.MonkeyPatch) -> tuple[list[bool]
         def wait_for_timeout(self, milliseconds: int) -> None:
             captures["waits"].append(milliseconds)
 
+        def on(self, _event: str, _handler: object) -> None:
+            return None
+
         def locator(self, _selector: str) -> FakeLocator:
             return FakeLocator()
 

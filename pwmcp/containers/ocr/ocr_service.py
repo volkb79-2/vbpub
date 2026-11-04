@@ -384,7 +384,8 @@ def _flatten(image: "object") -> "object":
     from PIL import Image
 
     mode = image.mode  # type: ignore[attr-defined]
-    if mode in ("RGBA", "LA", "PA") or (mode == "P" and "transparency" in image.info):  # type: ignore[attr-defined]
+    # Alpha modes, plus every mode that carries a tRNS entry: a palette index (P) or a colour key (L, RGB).
+    if mode in ("RGBA", "LA", "PA") or (mode in ("P", "L", "RGB") and "transparency" in image.info):  # type: ignore[attr-defined]
         rgba = image.convert("RGBA")  # type: ignore[attr-defined]
         backdrop = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
         return Image.alpha_composite(backdrop, rgba).convert("RGB")

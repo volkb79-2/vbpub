@@ -9,6 +9,70 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+### Changed
+- **BREAKING (RG-156): run-gate reaches the cgprofile daemon over its control socket only.** The
+  `docker exec cgprofile-host-daemon cgprofile ctl ...` fallback is removed with its settings: the `[profile] transport`
+  and `[profile] daemon` keys, the `RUN_GATE_PROFILE_TRANSPORT` variable and the `docker ps` check in `doctor`. Each is
+  refused by name (exit 2), with no alias; delete the key or unset the variable. The socket is
+  `[profile] socket_path` (default `/run/cgprofile/ctl.sock`) and works against the current 1.x daemon (the operations
+  run-gate uses, `version`, `host`, `status`, `start`, `stop` and `watch`, are unchanged; run-gate never sends `report` or
+  `gc`). An unreachable socket degrades exactly as an absent profiler did (basic or rusage profile, one warning) and the
+  warning now carries the CP-31 cause tag (`socket-not-mounted`, `socket-missing`, `daemon-refusing`,
+  `socket-permission`). `doctor`'s "profile config" line shows `socket=` instead of `daemon=`; `--dry-run` prints the
+  socket instead of the daemon name and transport; inflight records drop `profile_daemon`/`profile_transport` and
+  `profile_ref` carries `socket_path` instead of `daemon`. Lanes need the `/run/cgprofile` directory mounted and the
+  socket's group; a lane without access sets `RUN_GATE_PROFILE=off` as before.
+
+<!-- cmru: release history -->
+
+## [24.4.0] - 2026-11-04
+<!-- cmru: generated -->
+<!-- cmru: source-end=281c64123250d27c8abb9d9aee912846241556bd -->
+
+### Fixed
+- fix(run-gate): delta review H1-H3, M1-M3 (profile writes never fail a lane, selftest judges run_gate_profile, INCONCLUSIVE prints, resource env off argv) (f37283c6e)
+- fix(run-gate): exec-cleanup SIGTERM deferral, secrets off argv, safe log creation, slice nesting, ERROR on uncaught exception, passwd guard (RG-114, RG-117a-e, RG-118) (4568a5340)
+- fix(run-gate): admission resume binds the persisted owner; tombstones, collision wording, pid_ns grammar (RG-117e) (bdc80a4d2)
+- fix(cgprofile): control socket safety and concurrency (CP-34, CP-31, CP-33) and finalize failure handling (CP-27 N9-N11) (05ea66bda)
+- fix: footprint display, doctor and manifest read one I/O mode (RG-136) (270a15d83)
+- fix(run-gate): R2 closeout forwards --coverage (RG-139); follower skips closeout (RG-115) (1b5ecf768)
+- fix: judge both shipped modules, hunk-counted diff parsing, continuation lines (RG-116 items 3/4/6) and a precision-2 coverage floor (RG-122) (3fea77a5b)
+
+### Changed
+- Merge branch 'fix-cgp-1-20261104' (c82b11bd3)
+- Merge branch 'fix-rg-2-20261104' (855007054)
+- Merge branch 'fix-rg-4-20261104' (089f30791)
+- Merge branch 'backlog-platform-20261104' (e69a27940)
+- Merge branch 'fix-r1002-gate-ownership-20261104' (a1642a1e9)
+- Merge branch 'finish-assay-rg-iob-1-20261104' (475d6e8c7)
+- run-gate backlog: lane user owner with passwd overlay, socket-derived gids, default flip (RG-151..153) (ba48281ee)
+- Merge branch 'rg-int-20261103' (773375d05)
+- run-gate: resolve profile/xdist merge collisions (worker_nearest_rank/worker_distribution), harden observer argv test against ambient MDT_COW_ROOT (1dcd81881)
+- run-gate backlog: RG-149 relaxed io_sync as the default for ephemeral lanes (eeb4a66d5)
+- Merge branch 'fan-rg-xdist-20261103' into rg-int-20261103 (197e307ac)
+- run-gate: contamination flag and per-lane resource profiles (RG-144, RG-145) (6b9972007)
+- run-gate: xdist workers for command lanes, --scaling and --xdist-parity (RG-146, RG-147) (7273126b6)
+
+### Documentation
+- docs(run-gate): close RG-114, RG-117, RG-118 in the backlog with evidence (4bf1bc8c6)
+- docs: RG-136 changelog, spec and backlog status (fa90b9357)
+- docs(run-gate): RG-139 and RG-115 FIXED in backlog (1b5ecf768) (e7e415ef0)
+- docs: point B103 and RG-56 at their archive tags after worktree close-out (94f3ee478)
+- docs(run-gate): RG-150 runner-uid recipe for the worktree lane ownership failure (d85f61893)
+- docs: close RG-116 items 3/4/6 and RG-122 in the backlog (e43bf0278)
+- docs(run-gate): xdist workers and --scaling (README, SPEC R-54, CHANGES, backlog RG-146/RG-147) (c0596a172)
+- docs(run-gate): file RG-144..148 (contamination flag, worker sizing for plain lanes, history record) (f19efb7d5)
+
+### Testing
+- test: execute run_gate_profile module-level code under coverage via a fresh module copy (b30b69e17)
+- test(run-gate): cover the profile-dir chmod fallback and 0777 mode (143658faf)
+- test(run-gate): conflict-marker git-failure test stops Git's upward search so a basetemp inside a checkout is not a git tree (9a6deaf40)
+- test(run-gate): cover save_container_logs foreign-owner refusal and partial writes (RG-117b) (f99cf22e0)
+- test: cover footprint io_sync fallback when lane settings do not resolve (RG-136) (ea5feeb30)
+- test(run-gate): cover RG-139 coverage retention and disclosure branches (740d936fe)
+- test(run-gate): closed-result and wheel-layout pins cover the workers runner and plugin module (64839d9df)
+
+<!-- cmru: pending release notes begin -->
 ### Added
 - RG-150: documented the runner-uid recipe (CONSUMERS.md "Runner uid: one owner for checkout, cockpit and lane") and filed the
   open preflight: checkout, cockpit user and lane user must share uid 1003, otherwise the `worktree` lane fails as
@@ -48,18 +112,6 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   speedup/efficiency/per-worker-memory table.
 
 ### Changed
-- **BREAKING (RG-154): run-gate reaches the cgprofile daemon over its control socket only.** The
-  `docker exec cgprofile-host-daemon cgprofile ctl ...` fallback is removed with its settings: the `[profile] transport`
-  and `[profile] daemon` keys, the `RUN_GATE_PROFILE_TRANSPORT` variable and the `docker ps` check in `doctor`. Each is
-  refused by name (exit 2), with no alias; delete the key or unset the variable. The socket is
-  `[profile] socket_path` (default `/run/cgprofile/ctl.sock`) and works against the current 1.x daemon (the operations
-  run-gate uses, `version`, `host`, `status`, `start`, `stop` and `watch`, are unchanged; run-gate never sends `report` or
-  `gc`). An unreachable socket degrades exactly as an absent profiler did (basic or rusage profile, one warning) and the
-  warning now carries the CP-31 cause tag (`socket-not-mounted`, `socket-missing`, `daemon-refusing`,
-  `socket-permission`). `doctor`'s "profile config" line shows `socket=` instead of `daemon=`; `--dry-run` prints the
-  socket instead of the daemon name and transport; inflight records drop `profile_daemon`/`profile_transport` and
-  `profile_ref` carries `socket_path` instead of `daemon`. Lanes need the `/run/cgprofile` directory mounted and the
-  socket's group; a lane without access sets `RUN_GATE_PROFILE=off` as before.
 - `r2_candidate_ram_p95_bytes` / `r2_candidate_ram_samples` and the history
   duration and resource medians are computed from clean profiles only.
 - History keeps one entry per commit, io_sync and xdist worker count (was per
@@ -130,8 +182,7 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   at most `PRESSURE_PAUSE_MAX_SECONDS` (30 min).
 - Fix (RG-118): a lane that runs as an explicit `user` first checks `getent passwd "$(id -u)"` and refuses
   with exit 2 and a named line when the image has no entry for that uid.
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [24.3.0] - 2026-11-02
 <!-- cmru: generated -->

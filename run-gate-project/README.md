@@ -77,7 +77,7 @@ than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
    The project-level `[profile]` table also accepts `socket_path` (default
    `/run/cgprofile/ctl.sock`) and bounded `admission_wait`. The control socket
    is the only carrier; the former `transport` and `daemon` keys and
-   `RUN_GATE_PROFILE_TRANSPORT` were removed (RG-154) and are refused by name.
+   `RUN_GATE_PROFILE_TRANSPORT` were removed (RG-156) and are refused by name.
    An unreachable socket degrades to the basic profile with one warning that
    names the cause (`socket-not-mounted`, `socket-missing`, `daemon-refusing`
    or `socket-permission`).

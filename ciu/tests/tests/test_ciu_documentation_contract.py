@@ -305,16 +305,17 @@ def test_release_gate_child_env_uses_repo_sources_and_matches_the_assay_lane(
     assert parts == [
         str(REPO_ROOT / "src"),
         str(repo / "cmru" / "src"),
-        str(repo / "libraries" / "cli-extended" / "src"),
         str(repo / "libraries" / "worktree" / "src"),
         "/ambient",
     ]
+    # AC-25: the library checkout is on NO path; the image installs the released wheel.
+    assert not any("cli-extended" in part for part in parts)
     assert env["KEEP"] == "1"
-    assert helper["child_env"]({})["PYTHONPATH"].split(":") == parts[:4]
+    assert helper["child_env"]({})["PYTHONPATH"].split(":") == parts[:3]
     lane = tomllib.loads((REPO_ROOT / "assay.toml").read_text(encoding="utf-8"))["lanes"]["ciu"]
     assert [
         str((REPO_ROOT / p).resolve()) for p in lane["env"]["PYTHONPATH"].split(":")
-    ] == [str(Path(p).resolve()) for p in parts[:4]]
+    ] == [str(Path(p).resolve()) for p in parts[:3]]
 
 
 def test_assay_lane_declares_the_complete_rigor_ladder():

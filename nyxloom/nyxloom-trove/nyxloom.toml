@@ -247,7 +247,7 @@ channel = "intake"
 # <vbpub>/voice-screen-share/mattermost-server, so its container name is derived from that root's
 # `deploy.project_name` + `$INSTANCE_ID` and changes whenever the instance is
 # regenerated. A literal here is a stale copy by construction (that is what
-# NL-38 recorded: the 1dd3d1 -> 3oqua1 regeneration broke it silently), so no
+# NL-38 recorded: an instance-id regeneration broke it silently), so no
 # value is hard-coded. NL-38 owns the real fix: resolve both at poll time via
 # `ciu resolve`. Until that lands, the bridge needs these two keys supplied
 # (uncomment and fill from `voice-screen-share/mattermost-server/tools/mm_reachability.py` output for the

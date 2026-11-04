@@ -2487,7 +2487,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     `--dry-run` rehearses the plan (`container-shared`) and attempts
     nothing for real.
 
-- **`R-43j` Socket-only carrier (RG-55/P5 C2, RG-154).** Run-gate reaches
+- **`R-43j` Socket-only carrier (RG-55/P5 C2, RG-156).** Run-gate reaches
   the profiler daemon only through its control socket, `socket_path` of the
   `[profile]` table (default `/run/cgprofile/ctl.sock`). There is no
   `docker exec` carrier, no `transport` or `daemon` key and no

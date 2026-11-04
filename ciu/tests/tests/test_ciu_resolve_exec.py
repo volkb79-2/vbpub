@@ -904,11 +904,31 @@ def test_exec_refuses_two_exact_matches_before_running_command(resolvable_repo, 
     assert calls[0][0] == "ps"
 
 
-def test_exec_cli_passes_child_help_through_separator():
-    from ciu.cli import _wants_verb_help
+def test_exec_cli_passes_child_help_through_separator(monkeypatch, tmp_path, capsys):
+    """`--help` after `--` belongs to the child; before it, to ciu's own `exec` help."""
+    import sys
 
-    assert not _wants_verb_help("exec", ["tools/test-runner", "--", "python", "--help"])
-    assert _wants_verb_help("exec", ["--help"])
+    import ciu.deploy as deploy_mod
+
+    seen = {}
+    monkeypatch.setattr(cli, "_resolve_repo_root_deploy", lambda _root: tmp_path)
+    monkeypatch.setattr(cli, "_seed_selected_root_env", lambda _root: None)
+    monkeypatch.setattr(
+        deploy_mod, "exec_service",
+        lambda root, selector, command, *, profiles=None: seen.update(
+            selector=selector, command=command) or 0,
+    )
+    monkeypatch.setattr(sys, "argv", ["ciu", "exec", "tools/test-runner", "--", "python", "--help"])
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 0
+    assert seen == {"selector": "tools/test-runner", "command": ["python", "--help"]}
+
+    monkeypatch.setattr(sys, "argv", ["ciu", "exec", "--help"])
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 0
+    assert "STACK[:SERVICE]" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(

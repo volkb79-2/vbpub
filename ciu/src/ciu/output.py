@@ -109,22 +109,3 @@ def configure(time_short: bool) -> None:
             stream.configure(time_short=time_short, colour=colour)
         elif time_short or colour:
             setattr(sys, name, SeverityStream(stream, time_short=time_short, colour=colour))
-
-
-def consume_cli_flags(argv: list[str]) -> list[str]:
-    """Consume the global presentation flag before individual CIU verb parsers."""
-    time_short = os.environ.get(_TIME_ENV) == "1"
-    result: list[str] = []
-    passthrough = False
-    for arg in argv:
-        if arg == "--":
-            passthrough = True
-            result.append(arg)
-        elif not passthrough and arg == "--log-prefix-time-short":
-            time_short = True
-        else:
-            result.append(arg)
-    if time_short:
-        os.environ[_TIME_ENV] = "1"
-    configure(time_short)
-    return result

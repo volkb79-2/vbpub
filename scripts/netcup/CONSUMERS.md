@@ -79,8 +79,15 @@ guard.
 
 ## Create and restore a Netcup snapshot
 
-Snapshots are server-specific. Check feasibility first, create a named rollback
-point, and list it before restoring:
+Snapshots are server-specific. **A provider reinstall (image task) removes the
+server's snapshots**: after reinstalling v1001 the API listing was empty although the
+server record still reported a snapshot count of 1. A snapshot is therefore not a
+rollback path across a reinstall. Before reinstalling a host whose current state must
+stay recoverable, keep the state in an installable form instead (for TrueNAS: the
+golden restore ISO built by `install-restore-iso.py`) and save the snapshot listing
+(`./scp-api.py snapshots <id>`) next to the install log.
+
+Check feasibility first, create a named rollback point, and list it before restoring:
 
 ```bash
 ./scp-api.py snapshots 804027 dryrun

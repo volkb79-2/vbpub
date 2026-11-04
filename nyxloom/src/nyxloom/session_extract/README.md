@@ -760,7 +760,7 @@ contract for the VS Code extension: keys are pinned by tests, and a change needs
 
 Modules added: `shellcmd` (Bash segmenting, effect patterns), `compress` (collapsing repeated
 Edit/Read calls), `harness` (verified Claude Code versions), `presets`, `watch`. Residuals:
-NL-35 (shell-variable indirection hides an effect), NL-36 (Edit/Write intent is only a
+NL-35 (a `$VAR` command head is not resolved but is listed as "possible effect, head unresolved"), NL-36 (Edit/Write intent is only a
 best-effort `Intent:` line pairing). Re-verify the interrupt/denial/error classification for each
 new Claude Code version per the steps in `harness.py`.
 

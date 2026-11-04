@@ -879,25 +879,36 @@ def _check_l4(findings: list[LintFinding], path: Path, fm, body: str) -> None:
     """Check: no enumerated oracle under universal contract."""
     universal_pattern = r"\b(every|all)\s+\w+\s+(field|record|column|key|property)s?\b"
 
-    # Check body for universal pattern
-    body_has_universal = bool(re.search(universal_pattern, body, re.IGNORECASE))
+    # NL-28: scan the prose only -- code fences are not contract wording.
+    prose = re.sub(r"^(```|~~~).*?^\1[^\n]*$", "", body,
+                   flags=re.MULTILINE | re.DOTALL)
+    body_has_universal = bool(re.search(universal_pattern, prose, re.IGNORECASE))
 
-    # For each oracle, check if observable has universal pattern
+    flagged: list[str] = []
     for oracle in fm.oracles:
         oracle_has_universal = bool(
             re.search(universal_pattern, oracle.observable, re.IGNORECASE)
         )
 
-        # Count quoted/backticked identifiers in observable
-        identifiers = re.findall(r"[`\"]([^`\"]+)[`\"]", oracle.observable)
+        # Only identifier-shaped quoted tokens enumerate members of the
+        # universal set; paths, commands and file names (containing '/',
+        # whitespace or a file extension) do not (NL-28).
+        tokens = re.findall(r"[`\"]([^`\"]+)[`\"]", oracle.observable)
+        identifiers = [t for t in tokens
+                       if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", t)]
 
         if (body_has_universal or oracle_has_universal) and len(identifiers) >= 2:
-            findings.append(LintFinding(
-                rule="L4",
-                severity="warning",
-                message="universal contract with enumerated oracle subset (P78)",
-                path=str(path)
-            ))
+            flagged.append(oracle.id)
+
+    if flagged:
+        # One finding per handoff, naming every matching oracle (NL-28).
+        findings.append(LintFinding(
+            rule="L4",
+            severity="warning",
+            message=("universal contract with enumerated oracle subset (P78): "
+                     + ", ".join(flagged)),
+            path=str(path)
+        ))
 
 
 # ----- L5 -----
@@ -1045,6 +1056,26 @@ def _check_path_resolution(findings: list[LintFinding], path: Path, check_path: 
             path=str(path)
         ))
         return
+
+    # NL-9: a bare path whose first segment names a sibling project of the
+    # same monorepo checkout (and is not a directory of this project) is a
+    # sibling reference. Validate the REAL sibling file instead of treating
+    # it as a to-be-created file under cfg.root.
+    if is_touch and not full_path.exists():
+        parts = Path(check_path).parts
+        sibling_root = cfg.root.parent / parts[0] if parts else None
+        if (len(parts) > 1 and sibling_root is not None
+                and sibling_root.is_dir() and sibling_root != cfg.root
+                and not (cfg.root / parts[0]).exists()):
+            if not (cfg.root.parent / check_path).exists():
+                findings.append(LintFinding(
+                    rule="L7",
+                    severity="error",
+                    message=(f"sibling-project path '{check_path}' does not "
+                             f"exist (missing sibling file)"),
+                    path=str(path)
+                ))
+            return
 
     # Files to be created (in scope.touch) and absent forbid entries are exempt
     if must_exist and not is_touch and not full_path.exists():

@@ -22,6 +22,7 @@ def _args(**overrides):
         "strict": False,
         "live": False,
         "graph_format": "mermaid",
+        "json_output": False,
     }
     values.update(overrides)
     return argparse.Namespace(**values)
@@ -53,7 +54,7 @@ def test_run_dispatches_non_deploy_actions_and_caches_render_for_check_then_grap
 
     monkeypatch.setattr(deploy, "render_selected_stacks", render)
     monkeypatch.setattr(deploy, "action_list_phases", lambda config: calls.append(("phases", config)) or 0)
-    monkeypatch.setattr(deploy, "action_list_profiles", lambda config: calls.append(("profiles", config)) or 0)
+    monkeypatch.setattr(deploy, "action_list_profiles", lambda config, **_kw: calls.append(("profiles", config)) or 0)
     monkeypatch.setattr(deploy, "action_stop", lambda config: calls.append(("stop", config)) or 0)
     monkeypatch.setattr(deploy, "action_clean", lambda *args, **kwargs: calls.append(("clean", kwargs["ignore_errors"])) or 0)
     monkeypatch.setattr(deploy, "action_healthcheck", lambda *_args: calls.append(("health", None)) or 0)

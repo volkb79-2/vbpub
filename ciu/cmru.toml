@@ -59,6 +59,12 @@ signature_name = "manifest.json.minisig"
 # Hardening: CIU-122 / CIU-123.
 extensions = ["installer/enroll.py"]
 
+# cli-extended is a real wheel dependency of ciu (CIU-114): the bundle carries the released
+# wheel next to ciu's, and the installer installs it first (--no-index, hash-locked; KI-51).
+[[project.installer.wheels]]
+path = "vendor/cli_extended-*.whl"
+distribution = "cli-extended"
+
 [[project.installer.wheels]]
 path = "vendor/ciu-*.whl"
 distribution = "ciu"

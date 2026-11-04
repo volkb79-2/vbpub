@@ -3,12 +3,14 @@ kind: backlog-entry
 schema_version: 1
 id: NL-14
 title: "gate_verify_interval_days/days_since_gate_verify are dead, schema-validated config surface since GA4's retirement"
-status: open
+status: fixed
 type: "bugfix"
 severity: "low"
 component: "config"
 provenance: "nyxloom-P102 retroactive adversarial review, 2026-09-08, F2"
 filed_date: "2026-09-08"
+closed_date: "2026-11-03"
+closed_reason: "FIXED 2026-11-04 (55792dfe6)"
 ---
 
 ## Observed mechanism and reproduction

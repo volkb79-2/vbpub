@@ -3,12 +3,14 @@ kind: backlog-entry
 schema_version: 1
 id: NL-9
 title: "nyxloom lint L7 cannot correctly validate a scope.touch path in a sibling project of the same monorepo checkout"
-status: open
+status: fixed
 type: "bugfix"
 severity: "medium"
 component: "nyxloom-lint"
 provenance: "nyxloom-P103, Work item 7, 2026-09-08"
 filed_date: "2026-09-08"
+closed_date: "2026-11-03"
+closed_reason: "FIXED 2026-11-04 (4b4be42ba)"
 ---
 
 ## Observed mechanism and reproduction

@@ -418,17 +418,32 @@ def test_cli_routes_the_verb(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
     from ciu import cli
 
     root = _clean_repo(tmp_path)
-    monkeypatch.setattr(sys, "argv", ["ciu", "migration-check", "--root-folder", str(root)])
+    monkeypatch.setattr(sys, "argv", ["ciu", "migrate", "--check", "--root-folder", str(root)])
     with pytest.raises(SystemExit) as excinfo:
         cli.main()
     assert excinfo.value.code == 0
 
 
-def test_cli_help_documents_the_verb() -> None:
+def test_migrate_requires_check_in_v7(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    """C7: `migrate` absorbs `migration-check`; --check is the only mode v7 has."""
     from ciu import cli
 
-    assert "migration-check" in cli._USAGE
-    assert "S13.7" in cli._VERB_HELP["migration-check"]
+    monkeypatch.setattr(sys, "argv", ["ciu", "migrate"])
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main()
+    assert excinfo.value.code == 2
+    assert "--check" in capsys.readouterr().err
+
+
+def test_cli_help_documents_the_verb(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    from ciu import cli
+
+    monkeypatch.setattr(sys, "argv", ["ciu", "migrate", "--help"])
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main()
+    assert excinfo.value.code == 0
+    out = " ".join(capsys.readouterr().out.split())
+    assert "S13.7" in out and "--check" in out
 
 
 # ---------------------------------------------------------------------------

@@ -57,7 +57,8 @@ def test_dev_requires_stack_before_resolving_or_running(monkeypatch, capsys):
     monkeypatch.setattr(dev, "run_dev", lambda *_args, **_kwargs: pytest.fail("must not run dev"))
 
     assert _run(monkeypatch, ["dev"]) == 2
-    assert capsys.readouterr().err.splitlines()[0].startswith("CIU ")
+    err = capsys.readouterr().err
+    assert err.splitlines()[0].startswith("[ERROR]") and "STACK" in err
 
 
 def test_dev_forwards_all_public_options_and_handler_exit(monkeypatch, tmp_path):
@@ -87,7 +88,8 @@ def test_ssh_requires_host_with_headline_before_repository_resolution(monkeypatc
     monkeypatch.setattr(dev, "resolve_repo_root", lambda *_: pytest.fail("must not resolve root"))
 
     assert _run(monkeypatch, ["ssh"]) == 2
-    assert capsys.readouterr().err.splitlines()[0].startswith("CIU ")
+    err = capsys.readouterr().err
+    assert err.splitlines()[0].startswith("[ERROR]") and "HOST" in err
 
 
 def test_secrets_forwards_subcommand_without_reinterpreting_arguments(monkeypatch):
@@ -97,8 +99,8 @@ def test_secrets_forwards_subcommand_without_reinterpreting_arguments(monkeypatc
     calls: list[list[str]] = []
     monkeypatch.setattr(engine, "main", lambda argv: calls.append(argv) or 5)
 
-    assert _run(monkeypatch, ["secrets", "reset", "--name", "db", "-y"]) == 5
-    assert calls == [["secrets", "reset", "--name", "db", "-y"]]
+    assert _run(monkeypatch, ["secrets", "reset", "--name", "db", "--yes"]) == 5
+    assert calls == [["secrets", "reset", "--name", "db", "--yes"]]
 
 
 def test_top_level_and_unknown_verb_have_distinct_user_facing_outcomes(monkeypatch, capsys):
@@ -107,10 +109,11 @@ def test_top_level_and_unknown_verb_have_distinct_user_facing_outcomes(monkeypat
     out = capsys.readouterr().out
     assert "Container Infrastructure Utility" in out
     for public_verb in (
-        "env", "iops-baseline", "render", "profiles", "up", "down", "clean", "health",
-        "diagnose", "check", "graph", "bake", "dev", "secrets", "ssh",
+        "env", "governance", "render", "show", "up", "down", "clean", "status",
+        "diagnose", "check", "graph", "bake", "dev", "secrets", "ssh", "migrate",
+        "schema", "doctor", "skills",
     ):
         assert public_verb in out
 
     assert _run(monkeypatch, ["not-a-verb"]) == 2
-    assert "unknown verb 'not-a-verb'" in capsys.readouterr().err
+    assert "not-a-verb" in capsys.readouterr().err

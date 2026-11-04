@@ -39,7 +39,7 @@ def test_thin_health_maps_activation_value_error_to_error_exit(monkeypatch, tmp_
         "run_activation",
         lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("invalid activation")),
     )
-    monkeypatch.setattr(sys, "argv", ["ciu", "health", "--host", "web", "--thin"])
+    monkeypatch.setattr(sys, "argv", ["ciu", "status", "--gate", "--host", "web", "--thin"])
 
     with pytest.raises(SystemExit) as exc:
         cli.main()

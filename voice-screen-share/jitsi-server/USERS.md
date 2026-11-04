@@ -45,7 +45,7 @@ of `prosodyctl`; it is never on the host command line.)
 
 ```bash
 rm voice-screen-share/jitsi-server/.ciu/secrets/jitsi/user_dummy1   # exact path, one file
-ciu up --dir voice-screen-share/jitsi-server -y
+ciu up --dir voice-screen-share/jitsi-server --yes
 ```
 
 ciu generates a new password, the hook applies it, `credentials.txt` is rebuilt. Existing

@@ -187,7 +187,9 @@ def test_nameless_identity_is_matched_by_canonical_id() -> None:
     )
 
 
-def test_default_owner_inspect_delegates_once_and_returns_payload(monkeypatch) -> None:
+def test_default_owner_inspect_delegates_once_and_returns_payload(
+    monkeypatch, real_docker_inspect
+) -> None:
     from topos.actions import owner_safety
     from topos.collect import dockerjoin
 

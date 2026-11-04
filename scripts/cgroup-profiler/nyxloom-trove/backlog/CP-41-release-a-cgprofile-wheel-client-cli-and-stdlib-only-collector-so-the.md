@@ -53,3 +53,15 @@ Wheel build and clean-venv install test in the gate; a metadata test for the dep
 
 First of the cgprofile packages: CP-41, then CP-42 (host-unit), then mdt-cockpit MDT-055 (install and pin), then CP-44 (retire ciu).
 Unblocks MDT-048 step 2 (adding the wheel to the cockpit image list).
+
+## 2.0 plan amendment (2026-11-04, operator-accepted defaults)
+
+The open design choices above are decided; the contract is `docs/NATIVE-DEPLOYMENT.md` section 2 and `docs/CGPCTL-SPEC.md`.
+
+- Distribution is renamed to `cgprofile` (no mapping table); console scripts are `cgpctl` and `cgpd`, there is no `cgprofile` command.
+- The Python package is `src/cgprofile/`; DAMON is vendored as `cgprofile._damon` with a sync test (Q7).
+- The default closure is cli-extended only (`cli-extended>=0.5.1`); the `report` extra stays out of the cockpit image (Q6).
+- Version target is 2.0.0 for the whole breaking set (Q11); there is no 1.3.0, and the earlier "1.2.0 or 1.3.0" line is void. 1.2.0 ships the
+  delta fixes only.
+- Implementation moves to CP-46 (package 1); this entry keeps the release-level acceptance (wheel next to the artifact set, clean-venv install,
+  identical versions) and closes when CP-46 is merged and 2.0.0 is released.

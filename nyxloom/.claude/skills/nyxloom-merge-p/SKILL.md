@@ -71,7 +71,7 @@ ACCEPT unambiguously. Never merge on the implementer's self-report.
 4. **Progress row** in the program's current plan doc; commit.
 5. **Memory**: update the program state file + memory index (merged block: hash,
    gate numbers, pipeline summary, riders).
-6. **Teardown**: `ciu worktree rm <branch> -y` (preferred — runs `ciu clean` then
+6. **Teardown**: `ciu worktree rm <branch> --yes` (preferred — runs `ciu clean` then
    removes the checkout) or `git worktree remove .worktrees/<branch>` + `git
    branch -d` as a fallback; for Mode-B stacks verify the teardown resolved BOTH
    volume prefixes (`<branch>-<instance>-*` AND bare `<branch>-*`).

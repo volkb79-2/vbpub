@@ -1730,10 +1730,13 @@ class TestCapabilitiesAndCli:
         assert "never acted on" in capsys.readouterr().err
         assert docker.container_ids == {"f" * 32}
 
-    def test_the_verb_is_documented_in_usage_and_verb_help(self):
-        assert "worktree reap" in cli._USAGE
-        assert "ciu worktree reap" in cli._VERB_HELP["worktree"]
-        assert "--category" in cli._VERB_HELP["worktree"]
+    def test_the_verb_is_registered_with_its_category_option(self):
+        from ciu.cli_registry import build_cli
+
+        verbs = {v.name: v for v in build_cli().delegates["worktree"].registered_verbs}
+        flags = {f for option in verbs["reap"].options for f in option.flags}
+        assert "--category" in flags
+        assert verbs["reap"].dry_run is True and verbs["reap"].mutating is True
 
 
 class TestSpecAndDocs:

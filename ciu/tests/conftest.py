@@ -81,11 +81,52 @@ import pytest
 # test's own assertions.
 _REAL_SUBPROCESS_RUN = subprocess.run
 
+# The reviewed CLI catalog (docs/cli-review.toml, AC-17/AC-22): at collection the library's plugin
+# fails the session unless every active catalog row links a collected test through
+# ``@pytest.mark.cli_case``. A focused run of a few test files must pass ``--cli-case-partial``
+# (the full gate and the full suite need no flag).
+pytest_plugins = ["cli_extended.pytest_plugin"]
+
 CIU_TEST_SUITE_ENV = "CIU_TEST_SUITE"
 
 # Mechanism 1, at import time: collection-time module bodies and any `ciu`
 # subprocess a test spawns both read os.environ, and neither sees a fixture.
 os.environ[CIU_TEST_SUITE_ENV] = "1"
+
+
+def _ensure_ciu_distribution_metadata() -> None:
+    """Give a source-mode run the installed-distribution metadata ``ciu`` resolves its version from.
+
+    ``CliIdentity.resolve`` reads the version from the ``ciu`` distribution (and a build-time
+    ``_version.py``) and, by design, never invents one. The gate's tester image installs
+    cli-extended but NOT ciu (the tests import ``src``), so without this the CLI refuses to start
+    (exit 3). A minimal ``.dist-info`` in a throwaway directory on ``sys.path`` -- and on
+    ``PYTHONPATH``, so every ``ciu`` subprocess a test spawns resolves the same version -- stands in
+    for the install. A real install (or an editable one) is left alone.
+    """
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        version("ciu")
+        return
+    except PackageNotFoundError:
+        pass
+    import atexit
+    import sys
+
+    root = Path(tempfile.mkdtemp(prefix="ciu-test-dist-"))
+    info = root / "ciu-0.0.0+tests.dist-info"
+    info.mkdir()
+    (info / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: ciu\nVersion: 0.0.0+tests\n", encoding="utf-8"
+    )
+    sys.path.insert(0, str(root))
+    existing = os.environ.get("PYTHONPATH")
+    os.environ["PYTHONPATH"] = str(root) + (os.pathsep + existing if existing else "")
+    atexit.register(shutil.rmtree, root, True)
+
+
+_ensure_ciu_distribution_metadata()
 
 _AMBIENT_ENV_VARS = (
     "REPO_ROOT",
@@ -96,6 +137,9 @@ _AMBIENT_ENV_VARS = (
     "PUBLIC_FQDN",
     "CIU_EXIT_ON",
     "CIU_KSM",
+    # Set process-wide by the registered ``--log-prefix-time-short`` global; a leaked "1" would
+    # prefix every later diagnostic with a wall-clock time.
+    "CIU_LOG_PREFIX_TIME_SHORT",
 )
 
 

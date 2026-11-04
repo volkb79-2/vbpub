@@ -527,7 +527,7 @@ parallel mechanism (§4.1-style: one path, not two).
 **Open, in rough priority order:** how a `wrapper` strategy composes with an
 image's existing entrypoint (probably: refuse rather than override, and say so
 loudly, per the CIU-14/CIU-15 fail-closed lesson); where the wrapper binary
-itself comes from (the same build-and-cache question as CIU-17's `ciu ksm build`
+itself comes from (the same build-and-cache question as CIU-17's `ciu governance ksm`
 — a host-level cache keyed by arch and source hash, so worktrees do not each
 rebuild it); and whether `jvm_heap`/`go_memlimit` belong in governance at all or
 are simply service env, which is a real boundary question and not obviously

@@ -556,6 +556,29 @@ class TestCreateRemoveList:
         assert (mount / "disk.img").read_text(encoding="utf-8") == "precious"
         assert target.exists()
 
+    def test_remove_reports_mount_probe_failure_as_lifecycle_preflight(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        """A failing mount probe refuses removal in the lifecycle_preflight phase
+        before any cleanup runs."""
+        target = create_path(tmp_repo, "wt1", base="main")
+        shared = worktree._shared_worktree()
+        monkeypatch.setattr(
+            shared,
+            "mounts_under",
+            lambda *_a, **_kw: (_ for _ in ()).throw(
+                shared.WorkspaceError("mountinfo unreadable", category="git-error")
+            ),
+        )
+        calls: list[str] = []
+        monkeypatch.setattr(
+            worktree, "_clean_in", lambda wt, *, yes: calls.append("clean") or 0
+        )
+        with pytest.raises(worktree.WorktreeError, match="mountinfo unreadable"):
+            worktree.remove(tmp_repo, "wt1")
+        assert calls == []
+        assert target.exists()
+
     def test_remove_surfaces_git_remove_failure_after_clean(
         self, tmp_repo, fake_generate_env, monkeypatch
     ):
@@ -2638,7 +2661,7 @@ class TestManagedRecordValidation:
         monkeypatch.setattr(worktree.subprocess, "run", run)
         assert worktree._clean_in(tmp_path, yes=True) == 17
         assert worktree._clean_in(tmp_path, yes=False) == 17
-        assert calls[0][0][-2:] == ["old123", "-y"]
+        assert calls[0][0][-2:] == ["old123", "--yes"]
         assert calls[1][0][-2:] == ["old123", "--yes"]
         assert all(call[2].get("INSTANCE_ID") is None for call in calls)
 
@@ -3338,7 +3361,7 @@ class TestWorktreeSubprocessEnvironment:
         env = seen["env"]
         assert isinstance(env, dict)
         assert env["REPO_ROOT"] == "/target"
-        assert seen["argv"][-1] == "-y"
+        assert seen["argv"][-1] == "--yes"
 
     def test_clean_refuses_to_guess_when_target_env_is_missing(self, tmp_path):
         with pytest.raises(
@@ -7195,7 +7218,7 @@ class TestRemovalHelpers:
             yes=True,
         ) == 0
         argv, kwargs = calls[0]
-        assert argv[-1] == "-y" and "right-id" in argv
+        assert argv[-1] == "--yes" and "right-id" in argv
         assert argv[argv.index("--expected-checkout") + 1] == str(
             tmp_repo / "old-checkout"
         )

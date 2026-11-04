@@ -903,16 +903,6 @@ class ReconcileInput:
     # None deliberately means "fire" rather than "never fired": turning the
     # knob on is itself the request for a first pass.
     days_since_test_health_carve: float | None = None
-    # GA4 2026-07-25 (module contract item 16): age in DAYS of the most recent
-    # GATE_VERIFY_RECORDED (the daemon's periodic re-run of GA1's `nyxloom gate
-    # verify` canary probe), or None when this project has never had one. Same
-    # "None means fire" convention as days_since_test_health_carve above --
-    # turning the knob on is itself the request for a first pass -- and the
-    # daemon derives it the same way (a full log scan, not a recent-window
-    # dedup flag, so the cadence survives a daemon restart; see
-    # daemon._days_since_gate_verify). This module stays pure: it never reads
-    # a clock or an event log itself.
-    days_since_gate_verify: float | None = None
     # F007 2026-07-27 (gap-engine, module contract item 17): accumulated changed
     # lines (added+deleted via git diff --numstat) since the most recent gap-audit
     # carve, or None if the project has never had a gap-audit carve. The daemon

@@ -160,9 +160,11 @@ class TestReforkCli:
         )
         assert code == 2
 
-    def test_the_verb_is_documented(self):
-        assert "worktree refork" in cli._USAGE
-        assert "refork" in cli._VERB_HELP["worktree"]
+    def test_the_verb_is_registered(self):
+        from ciu.cli_registry import build_cli
+
+        verbs = {v.name: v for v in build_cli().delegates["worktree"].registered_verbs}
+        assert "--onto" in {f for option in verbs["refork"].options for f in option.flags}
 
 
 def test_inspect_reports_an_unrecorded_fork_point(tmp_repo, fake_generate_env):

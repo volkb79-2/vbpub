@@ -281,7 +281,7 @@ with sqlfluff in a command lane if the project wants it.
   starting and then proceeds after its bounded `admission_wait` with one
   warning; host load never becomes a lane verdict.
 - The project-level `[profile]` table may set `socket_path` (the only
-  carrier; RG-154 removed `transport` and `daemon`) and `admission_wait`.
+  carrier; RG-156 removed `transport` and `daemon`) and `admission_wait`.
   The daemon watch is one reader per session; if it is
   unavailable, the in-process assay watch bounds the R2 baseline by Assay's
   heartbeat (`300s` minimum; run-gate requests a 60 s heartbeat, so an assay

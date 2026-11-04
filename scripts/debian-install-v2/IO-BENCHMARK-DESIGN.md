@@ -81,8 +81,8 @@ controller-driven netcup test. The design below was worked out 2026-09-09;
   partition is removed and the install continues. No `io.cost.model` /
   `io.cost.qos` is written on a failed benchmark. (Update, LT-MEM 2026-10-06:
   on a VALID result a boot-time unit now writes both; see README "io.cost".)
-- **Residual risks:** `HostActions.run` has no timeout (a hung `fio` would hang
-  stage 2); the tool switches the whole disk's scheduler to `none` for the run.
+- **Residual risks:** (the earlier "`HostActions.run` has no timeout" risk is
+  closed: see the fix-round timeouts above); the tool switches the whole disk's scheduler to `none` for the run.
 
 ## Original design (2026-09-09), kept for rationale
 

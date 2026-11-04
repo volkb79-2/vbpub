@@ -13,7 +13,7 @@ items:
     component: ui-tests
     context_estimate: small
   - id: B-003
-    title: "Outside the declared [dev] gate, P75 subprocess smoke tests should explain/skip a missing MCP extra cleanly"
+    title: "[FIXED 2026-11-04 (0be7631fd)] Outside the declared [dev] gate, P75 subprocess smoke tests should explain/skip a missing MCP extra cleanly"
     type: bugfix
     component: mcp-tests
     folds_into: F022
@@ -64,7 +64,7 @@ items:
     component: daemon-security
     context_estimate: large
   - id: B-012
-    title: "Retain per-device cgroup I/O rates/cap saturation and device attribution (current collection sums devices too early)"
+    title: "[FIXED 2026-11-04 (d4b6aac9f)] Retain per-device cgroup I/O rates/cap saturation and device attribution (current collection sums devices too early)"
     type: bugfix
     component: diagnostics
     folds_into: F007
@@ -128,13 +128,13 @@ items:
     folds_into: F033
     context_estimate: medium
   - id: B-023
-    title: "Give live TUI/recording selector resolution the same typed clean exit as --once"
+    title: "[FIXED 2026-11-04 (0be7631fd)] Give live TUI/recording selector resolution the same typed clean exit as --once"
     type: bugfix
     component: cli-selectors
     folds_into: F014
     context_estimate: small
   - id: B-024
-    title: "Accept 'network' as an alias for 'net' (may instead be a configured query/profile vocabulary alias)"
+    title: "[FIXED 2026-11-04 (0be7631fd)] Accept 'network' as an alias for 'net' (may instead be a configured query/profile vocabulary alias)"
     type: feature
     component: cli-selectors
     folds_into: F014
@@ -175,7 +175,7 @@ items:
     folds_into: F028
     context_estimate: medium
   - id: B-031
-    title: "[Folds into the shared query/frontend contract] MCP limit schema should be integer while bool remains rejected"
+    title: "[FIXED 2026-11-04 (0be7631fd)] MCP limit schema should be integer while bool remains rejected"
     type: bugfix
     component: mcp
     folds_into: F028
@@ -222,13 +222,13 @@ items:
     folds_into: F036
     context_estimate: large
   - id: B-039
-    title: "The P87 owner gate engages only when a caller passes owner_inspect (default None); flip the seam fail-closed-by-default once any non-CLI caller appears"
+    title: "[FIXED 2026-11-04 (2f8ef27b2)] The P87 owner gate engages only when a caller passes owner_inspect (default None); flip the seam fail-closed-by-default once any non-CLI caller appears"
     type: bugfix
     component: actions
     folds_into: F033
     context_estimate: medium
   - id: B-040
-    title: "Docker verbs still execute by the raw accepted name/ID string, so a name reassigned between authorizing inspect and runner still races; P93 should decide the canonical-ID argv contract"
+    title: "[FIXED 2026-11-04 (2f8ef27b2)] Docker verbs still execute by the raw accepted name/ID string, so a name reassigned between authorizing inspect and runner still races; P93 should decide the canonical-ID argv contract"
     type: bugfix
     component: actions
     folds_into: F033
@@ -266,7 +266,7 @@ items:
     component: test-infra
     context_estimate: medium
   - id: B-047
-    title: "4 tests (test_record.py::test_cli_version_reports_package_version, test_acceptance.py::{test_run_smoke_json_fixture_root,test_subprocess_smoke_json,test_run_steady_json_small_samples}) hardcode package version '0.1.0'; setuptools_scm now resolves a live dev version off the newest topos-v* tag (topos-v0.2.1), making topos-suite exit 1 on a clean main checkout -- confirmed pre-existing/unrelated to any in-flight package (P93 port-forward control run against main tip 3dd08b12 in the tester-unified gate container)"
+    title: "[FIXED 2026-11-04 (0be7631fd)] 4 tests (test_record.py::test_cli_version_reports_package_version, test_acceptance.py::{test_run_smoke_json_fixture_root,test_subprocess_smoke_json,test_run_steady_json_small_samples}) hardcode package version '0.1.0'; setuptools_scm now resolves a live dev version off the newest topos-v* tag (topos-v0.2.1), making topos-suite exit 1 on a clean main checkout -- confirmed pre-existing/unrelated to any in-flight package (P93 port-forward control run against main tip 3dd08b12 in the tester-unified gate container)"
     type: bugfix
     component: test-infra
     context_estimate: small

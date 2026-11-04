@@ -2607,19 +2607,26 @@ def test_interrupt_attempt_signals_pgid(tmp_state, sample_project, patch_sibling
     attempt_dir.mkdir(parents=True, exist_ok=True)
 
     child = subprocess.Popen(["sleep", "5"], start_new_session=True)
-    (attempt_dir / "child.pid").write_text(str(child.pid), encoding="utf-8")
+    try:
+        (attempt_dir / "child.pid").write_text(str(child.pid), encoding="utf-8")
 
-    _scripted(monkeypatch, [[reconcile.InterruptAttempt(task_id=task_id, attempt_id=attempt_id)]])
-    d = daemon.Daemon({"demo": sample_project.root})
-    d.run_pass("demo")
+        _scripted(monkeypatch, [[reconcile.InterruptAttempt(task_id=task_id, attempt_id=attempt_id)]])
+        d = daemon.Daemon({"demo": sample_project.root})
+        d.run_pass("demo")
 
-    child.wait(timeout=5)
-    assert child.returncode is not None
+        child.wait(timeout=5)
+        assert child.returncode is not None
 
-    # ESRCH path: stale child.pid must not raise.
-    (attempt_dir / "child.pid").write_text("999999", encoding="utf-8")
-    _scripted(monkeypatch, [[reconcile.InterruptAttempt(task_id=task_id, attempt_id=attempt_id)]])
-    d.run_pass("demo")  # no exception
+        # ESRCH path: stale child.pid must not raise.
+        (attempt_dir / "child.pid").write_text("999999", encoding="utf-8")
+        _scripted(monkeypatch, [[reconcile.InterruptAttempt(task_id=task_id, attempt_id=attempt_id)]])
+        d.run_pass("demo")  # no exception
+    finally:
+        # A failed assertion (or an interrupt that did not land) must not leave the
+        # sleeper running into the next tests as a stray process of this session.
+        if child.poll() is None:
+            child.kill()
+        child.wait(timeout=5)
 
 
 def test_hang_detection_full_pipeline_real(tmp_state, sample_project, monkeypatch):

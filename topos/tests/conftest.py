@@ -3,6 +3,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 if str(SRC) not in sys.path:
@@ -21,6 +23,53 @@ def fixture_frame():
     payload = json.loads((fixture_root() / "frames" / "gstammtisch-once.jsonl").read_text())
     payload.pop("type", None)
     return frame_from_jsonable(payload)
+
+
+def _mcp_extra_installed() -> bool:
+    import importlib.util
+
+    return importlib.util.find_spec("mcp") is not None
+
+
+def requires_mcp(func):
+    """Skip a test that needs the optional ``topos[mcp]`` extra when it is absent (B-003).
+
+    The P84 gate in this file still fails the session when the extra is missing
+    in a gate environment, so a skip here can never read as a pass.
+    """
+    import pytest
+
+    return pytest.mark.skipif(
+        not _mcp_extra_installed(), reason="topos[mcp] extra not installed"
+    )(func)
+
+@pytest.fixture
+def real_docker_inspect():
+    """Request this fixture to opt out of ``_standalone_docker_inspect``."""
+
+
+@pytest.fixture(autouse=True)
+def _standalone_docker_inspect(monkeypatch, request):
+    """B-039: the Docker owner gate is always on, so tests that exercise executor
+    mechanics must supply the resolver explicitly. Default to a standalone,
+    unlabelled container whose canonical ID is derived from the target; the gate
+    and its argv binding stay real. Tests of the production resolver itself
+    request ``real_docker_inspect``."""
+    import hashlib
+
+    if "real_docker_inspect" in request.fixturenames:
+        return
+
+    def _inspect(target: str):
+        return [
+            {
+                "Id": hashlib.sha256(target.encode()).hexdigest(),
+                "Name": "/" + target,
+                "Config": {"Labels": {}},
+            }
+        ]
+
+    monkeypatch.setattr("topos.actions.owner_safety.default_owner_inspect", _inspect)
 
 
 def systemctl_fixture_runner(name: str):

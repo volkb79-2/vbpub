@@ -93,6 +93,7 @@ class GuardedRpc:
         self._issued_plans: dict[str, str] = {}
         self._execution_grants: dict[str, _ExecutionGrant] = {}
         self._live_capabilities: frozenset[str] | None = None
+        self._uploads: dict[str, Callable[[Any], Any]] = {}
         self._restricted_read_methods: frozenset[str] | None = None
         self._event_subscriptions: set[str] = set()
         self._worker_state = threading.local()
@@ -279,6 +280,8 @@ class GuardedRpc:
         self.calls.append((name, _rpc_values(params)))
         actual_params = tuple(_rpc_values(p, reveal=True) for p in params)
         try:
+            if name == "filesystem.put":
+                return self._run_upload(params)
             if job:
                 ticket = self._job_registry.ticket(name, self._job_generation, job_callback)
                 try:
@@ -293,6 +296,29 @@ class GuardedRpc:
             for secret in _rpc_secrets(params):
                 message = secret.scrub(message)
             raise TransportError("call", self._scrub(message)) from None
+
+    def supports(self, method: str) -> bool:
+        """Whether the live host listed this method at session open (True when no capability list was installed)."""
+        name = normalise_method(method)
+        return self._live_capabilities is None or name in self._live_capabilities
+
+    def register_upload(self, destination: str, perform: Callable[[Any], Any]) -> None:
+        """Bind one local upload to ``filesystem.put(destination, ...)``; the call runs only inside an applied plan.
+
+        The API upload is an HTTP POST rather than a WebSocket frame, so the guard owns the call and runs the
+        registered callable (which receives the raw client for job polling) in place of an RPC frame.
+        """
+        if not isinstance(destination, str) or not callable(perform):
+            raise Refused("upload-source", "an upload needs a destination path and a prepared sender")
+        with self._lock:
+            self._uploads[destination] = perform
+
+    def _run_upload(self, params: tuple[Any, ...]) -> Any:
+        destination = params[0] if params and isinstance(params[0], str) else None
+        perform = self._uploads.pop(destination, None) if destination is not None else None
+        if perform is None:
+            raise Refused("upload-source", "filesystem.put has no prepared local source for this destination")
+        return perform(self._inner)
 
     def close(self) -> None:
         try:

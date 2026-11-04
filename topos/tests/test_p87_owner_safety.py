@@ -399,16 +399,109 @@ class TestOracle3StandaloneExecutes:
         assert result.outcome == "success"
         assert len(calls) == 1
 
-    def test_legacy_path_without_inspect_is_a_noop(self, tmp_path: Path) -> None:
-        """No owner_inspect seam -> the gate is a no-op (legacy P46/P72 path)."""
+    def test_omitted_inspect_still_engages_the_gate(self, tmp_path: Path, monkeypatch) -> None:
+        """B-039: no owner_inspect argument means the production resolver, not "skip"."""
+        seen: list[str] = []
+
+        def production_inspect(ref: str):
+            seen.append(ref)
+            return [{"Id": FULL_ID, "Name": "/" + NAME,
+                     "Config": {"Labels": dict(COMPOSE_LABELS)}}]
+
+        monkeypatch.setattr("topos.actions.owner_safety.default_owner_inspect", production_inspect)
         runner, calls = _runner_spy()
         result = execute_plan(
             "docker-start", NAME,
             admin=True, confirm="EXECUTE",
             audit_path=tmp_path / "a.jsonl", root_check=lambda: True, runner=runner,
         )
+        assert result.outcome == "refusal"
+        assert "Docker Compose" in result.stderr
+        assert seen == [NAME]
+        assert calls == []
+
+    def test_omitted_inspect_failure_fails_closed(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.setattr("topos.actions.owner_safety.default_owner_inspect", lambda ref: None)
+        runner, calls = _runner_spy()
+        result = execute_plan(
+            "docker-stop", NAME,
+            admin=True, confirm="EXECUTE",
+            audit_path=tmp_path / "a.jsonl", root_check=lambda: True, runner=runner,
+        )
+        assert result.outcome == "refusal"
+        assert calls == []
+
+
+class TestCanonicalIdExecution:
+    """B-040: the verb runs against the inspected full ID, not the raw name."""
+
+    def test_start_runs_by_inspected_full_id_and_audits_it(self, tmp_path: Path) -> None:
+        runner, calls = _runner_spy()
+        audit = tmp_path / "a.jsonl"
+        result = _run_start(NAME, audit, inspect=_inspect(), runner=runner)
         assert result.outcome == "success"
-        assert len(calls) == 1
+        assert calls == [("/usr/bin/docker", "start", FULL_ID)]
+        assert result.argv == calls[0]
+        records = [json.loads(line) for line in audit.read_text().splitlines()]
+        assert records[0]["argv"][-1] == NAME
+        assert records[-1]["argv"][-1] == FULL_ID
+
+    def test_kill_and_update_bind_the_full_id(self, tmp_path: Path) -> None:
+        runner, calls = _runner_spy()
+        _run_kill(NAME, tmp_path / "k.jsonl", inspect=_inspect(), runner=runner)
+        _run_update(NAME, tmp_path / "u.jsonl", inspect=_inspect(), runner=runner)
+        assert [argv[-1] for argv in calls] == [FULL_ID, FULL_ID]
+        assert all(NAME not in argv for argv in calls)
+
+    def test_reassigned_name_cannot_redirect_the_verb(self, tmp_path: Path) -> None:
+        """Whatever the name points at *after* the inspect, argv carries the inspected ID."""
+        runner, calls = _runner_spy()
+        state = {"id": FULL_ID}
+
+        def inspect(ref: str):
+            payload = [{"Id": state["id"], "Name": "/" + NAME, "Config": {"Labels": {}}}]
+            state["id"] = "f" * 64  # the name is reassigned right after the single inspect
+            return payload
+
+        _run_start(NAME, tmp_path / "a.jsonl", inspect=inspect, runner=runner)
+        assert calls == [("/usr/bin/docker", "start", FULL_ID)]
+
+    def test_unresolvable_canonical_id_is_refused_without_name_fallback(self, tmp_path: Path) -> None:
+        runner, calls = _runner_spy()
+        no_id = lambda ref: [{"Name": "/" + NAME, "Config": {"Labels": {}}}]  # noqa: E731
+        result = _run_start(NAME, tmp_path / "a.jsonl", inspect=no_id, runner=runner)
+        assert result.outcome == "refusal"
+        assert calls == []
+
+    def test_binder_failure_is_an_audited_refusal_before_the_runner(self, tmp_path: Path) -> None:
+        from topos.actions import execute as ex
+
+        argv = ("/usr/bin/docker", "start", NAME)
+        runner, calls = _runner_spy()
+
+        def binder(_argv):
+            raise ValueError("cannot bind")
+
+        result = ex._execute_gated(
+            "docker-start", NAME, confirmation="EXECUTE", admin=True, confirm="EXECUTE",
+            audit_path=tmp_path / "a.jsonl", runner=runner, clock=None, identity=None,
+            root_check=lambda: True, timeout=30.0,
+            build_spec=lambda: ex._ExecutionSpec(
+                "docker-start", NAME, argv, ex._make_plan_stub("docker-start", NAME, argv)
+            ),
+            argv_binder=binder,
+        )
+        assert result.outcome == "refusal" and "cannot bind" in result.stderr
+        assert calls == []
+        assert len((tmp_path / "a.jsonl").read_text().splitlines()) == 2  # pre + post
+
+    def test_argv_without_the_target_token_is_refused(self, tmp_path: Path) -> None:
+        from topos.actions.execute import _make_owner_safety_gate
+
+        gate = _make_owner_safety_gate("docker-start", NAME, _inspect(), ())
+        assert gate() is None
+        with pytest.raises(ValueError, match="target token"):
+            gate.bind_argv(("/usr/bin/docker", "start", "other"))
 
 
 # ---------------------------------------------------------------------------

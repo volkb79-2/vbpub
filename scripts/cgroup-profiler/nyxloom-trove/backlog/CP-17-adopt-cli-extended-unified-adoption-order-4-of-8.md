@@ -47,3 +47,10 @@ Hand-rolled patterns an adoption replaces:
 **Why cgprofile owns it.** The change is to cgprofile's parser, packaging and image layout; the library cannot do it. Related existing entries: none (`INDEX.md` has CP-1..CP-16 and no cli-extended entry).
 
 **Oracles for the carver.** `cgprofile doctor` output sections are unchanged (golden compare); `cgprofile mark` still runs on the bare system `python3` with no venv present; a controlled wrong implementation that imports `cli_extended` only from the reporting venv must fail the bare-python3 `mark` oracle.
+
+## 2.0 plan amendment (2026-11-04)
+
+Adoption now happens as part of the 2.0.0 restructuring: `cgpctl` (CP-47) and `cgpd` (CP-48) are two registries in one wheel, and the bare-`python3`
+question above disappears because helper mode, `_collect` and the placement probe are removed and `mark` runs through the venv's `cgpctl` script
+(`docs/CGPCTL-SPEC.md`). The oracle "`mark` imports only the stdlib and cli-extended" replaces the bare-python3 oracle. This entry closes when CP-47
+and CP-48 are merged.

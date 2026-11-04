@@ -85,6 +85,22 @@ resources. Use it only for a trusted target with a known certificate problem;
 it does not change PWMCP service defaults. See the
 [design rationale](DESIGN-GUIDE.md#certificate-errors-during-inspection).
 
+Partial renders (staged hydration, assets answered 403) are the usual failure on
+heavy pages, so `inspect` says when it suspects one. All of these go to stderr
+and never change stdout:
+
+- `page diagnostics: ...` when the main document answered HTTP 4xx/5xx, the page
+  logged console errors, subresources failed (counted per status) or requests
+  failed outright.
+- `result is only N bytes and no --wait-for was given ...` for text or snapshot
+  output under 1 KiB without `--wait-for` (a legitimately tiny page also triggers
+  it; the line is advice, not an error), and `result is N bytes, much smaller
+  than an earlier attempt` after a retry.
+- `--retries N` (0 to 10, default 0) allows N more attempts, each a fresh context
+  and navigation, after a failed attempt or when the text/snapshot still changes
+  over a 0.5 s settle window. The last attempt is returned as it is. Pair it with a
+  content-based `--wait-for` and a `--timeout-ms` of 30000 or more.
+
 When an override is active (server-level or `--user-agent`), the result reports the
 user agent it presented and its source (`user_agent`, `user_agent_source`:
 `preset:<name>` or `custom`) as JSON fields with `--json`, or one `[INFO] user agent:`
