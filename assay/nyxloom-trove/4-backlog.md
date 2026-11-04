@@ -14153,3 +14153,14 @@ so the 3-worker wall clock was only 1.35 times faster than the serial run on the
 **Questions to answer first (no fix is assumed).** (1) Is the btrfs path a subvolume snapshot per worker, or a per-file reflink/copy of the tree? (2) How much of the
 phase is fsync (compare `io_sync = relaxed` with an eatmydata image, and `durable`)? (3) Does materialization scale with file count (dstdns versus a 300-file project)?
 **Acceptance.** A measured breakdown of the phase for the three cases and, if per-file work dominates, a design note; the fix is a separate package. Pairs with run-gate RG-154 (pilot).
+## B213 — `assay plan <lane>` crashes with a TypeError on an ingested-mutation lane (`max_mutants` is None)
+
+**Status:** OPEN. Filed 2026-11-04 from dstdns (P220, `ui_apierror_r2`; assay 9.0.0). Severity: P3 (no verdict affected; blocks plan-based budgeting of ingested lanes).
+
+**Observed.** For a lane that ingests a Stryker report (`judge.mutation = {format = "mutation-report-json", artifact, fail_under}`; `max_mutants`, `jobs` and `operators` are refused for ingested lanes) `python3 assay-9.0.0.pyz plan ui_apierror_r2` ends in a traceback instead of a plan or a refusal: `assay/cli.py:3823 _discover_plan_jobs: limit=lane.judge.mutation.max_mutants + 1` -> `TypeError: unsupported operand type(s) for +: 'NoneType' and 'int'`. The lane loads fine (`lanes`, `run-gate --dry-run`).
+
+**Design.** `plan` either refuses an ingested lane with one clear message ("candidates come from the ingested report, nothing to plan before the tool ran") or plans from the report artifact when one exists. It never raises a traceback.
+
+**Acceptance criteria.** Test: `plan` on a lane with an ingested `judge.mutation` exits with the refusal text and no traceback; the lane's declaration is unchanged.
+
+**Dependencies and order.** None. The dstdns consumer falls back to a written provisional budget (D-569 section 5) until this lands.
