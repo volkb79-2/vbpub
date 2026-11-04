@@ -2789,7 +2789,7 @@ Residual: packages not linked to the repository on GitHub are not covered by the
 
 ## KI-118 - `project.version.exclude_paths`: let doc-only / evidence-only commits not count as project changes
 
-**Status:** OPEN; severity: minor (quality of `cmru status`). Origin: dstdns adoption memo V2.
+**Status:** FIXED 2026-11-05 on branch `rigor-c13-20261105` (rigor package C-3; commit hash in `reports/rigor-c13-REPORT.md`; unreleased). **Re-scoped** by the rigor-evidence design memo (`RIGOR-EVIDENCE-DESIGN-MEMO-2026-11-05.md` sections 5.4, 7.5, 8): in addition to `project.version.exclude_paths`, the project's own `rigor/` directory and `RIGOR.md` are ALWAYS ignored by change detection and generated-note collection (anchored to the project directory, so a source package that happens to be called `rigor` deeper in the tree still counts), so `chore(rigor): ...` record commits never make a project changed. Implemented in `version.project_change_excludes` (used by `detect_changed_projects` and `changelog._generated_exclusions`); config validation in `config._version_exclude_paths`; tests `tests/test_exclude_paths_rigor_ki118.py`. Original severity: minor (quality of `cmru status`). Origin: dstdns adoption memo V2.
 A repository-root project (dstdns) watches the whole tree (`watch_paths = [cwd] + project.version.paths`, `cli.py` ~811-815), so a commit touching only
 `docs/`, `nyxloom-trove/` or `rigor/` makes `cmru status` report the project changed and a release due.
 Implement: new optional `project.version.exclude_paths = [..]` (project-relative; same validation as `paths`: no `..`, no absolute paths; globs via the
@@ -2815,7 +2815,7 @@ listing; tampered file fails integrity; unknown tag fails authenticity; newer re
 
 ## KI-120 - generic `cmru rigor` verb: per-release rigor evidence records
 
-**Status:** OPEN; severity: enhancement (blocks dstdns P12). Origin: dstdns adoption memo V4 and section 5 (`DSTDNS-CMRU-ADOPTION-MEMO-2026-11-05.md`).
+**Status:** SUPERSEDED 2026-11-05 by the rigor-evidence design (`RIGOR-EVIDENCE-DESIGN-MEMO-2026-11-05.md`, sections 2.4 and 8): the record is owned by a new `libraries/rigor-record` tool (URN `urn:vbpub:rigor-record:1`), written by `rigor-record sync` from a release asset, not by a cmru verb and not by a commit appended to the promote push. cmru keeps only the optional `[project.release].record_step` (rigor C-1, implemented on branch `rigor-c13-20261105`: S-REL.4c, no `cmru rigor` verb, no schema knowledge), the body-handler asset upload (C-2, still open) and the always-ignored `rigor/` + `RIGOR.md` paths (C-3, in KI-118). Kept from this entry: per-tag file plus index, digests instead of evidence bytes, an offline `check`, change-detection ignore. The text below is the historical proposal; do not implement it. Original: enhancement (blocks dstdns P12). Origin: dstdns adoption memo V4 and section 5 (`DSTDNS-CMRU-ADOPTION-MEMO-2026-11-05.md`).
 Goal: for any release and for `main` at any moment, show which rigor levels completed, on which commit, with which tool versions/gate configuration, and what is
 waived or pending, without reconstructing it from logs or the 10-run-capped `.run-gate/history.json`. Serves every vbpub tool and dstdns.
 Verbs: `cmru rigor record <project> --tag <tag> --level R0|R1|R3|R2|staging|promotion --from <evidence-json>` writes/updates `<project-dir>/rigor/<tag>.json`

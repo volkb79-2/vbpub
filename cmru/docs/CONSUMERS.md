@@ -159,6 +159,7 @@ proxy = "https://proxy.golang.org"
 # Add only outputs the release gate actually writes; these are retained separately
 # from publishable artifacts and bound to the gated commit.
 # evidence_paths = ["coverage.json"]
+# record_step = "record"   # optional: see "Rigor record step" below
 
 # Every phase is project-owned and explicit. The gate always runs through tester-unified.
 [steps.run-tests]
@@ -1905,6 +1906,37 @@ missing or unsafe declared path fails retention and keeps the release worktree a
 inspection. Use `release --discard evidence` only when deliberately discarding those
 outputs. `evidence_paths` is separate from `artifact_dirs`: evidence proves the gate's input
 commit and is not offered to a publisher.
+
+### Ignoring doc-only and rigor-record commits (`exclude_paths`)
+
+A project that owns a whole tree (a repository-root project such as dstdns) otherwise counts a
+commit that touches only `docs/` as a change and schedules a release. Declare
+`[project.version].exclude_paths = ["docs/", "nyxloom-trove/", "notes/*.md"]` (project-relative
+subtrees or git globs) and such commits are neither a change nor a generated-notes entry. The
+project's own `rigor/` directory and `RIGOR.md` are always ignored without configuration, so
+`chore(rigor): ...` record commits never make a project "changed". An exclude that equals or
+contains an explicit `paths` entry, an absolute path or one with `..` is a config error.
+
+### Rigor record step (`record_step`, optional)
+
+A project that wants a rigor record attached to its release declares
+`[project.release].record_step = "record"` and a `[steps.record]` command. Projects that declare
+nothing are unaffected (no variable, no extra output, identical dry-run). cmru runs the step after
+the build and before `push` with the release identity and these protected inputs:
+
+| Variable | Content |
+|---|---|
+| `CMRU_RELEASE_TAG`, `CMRU_RELEASE_COMMIT` | the tagged candidate |
+| `CMRU_BUILD_INVENTORY` | JSON inventory of `artifact_dirs` (sha256, bytes), outside the worktree |
+| `CMRU_GATE_EVIDENCE_DIR` | first declared `evidence_paths` directory, unset when none |
+| `CMRU_RECORD_OUT` | empty private output directory outside the worktree |
+
+The step writes exactly `record.json` (at most 64 KiB) and `release-body.md` (at most 8 KiB). Any
+other file, a missing, empty or oversized one is refused (exit 4) and nothing is published: the
+release tag is rolled back and the candidate stays resumable (`cmru release --resume`). The
+`push` step then receives `CMRU_RECORD_JSON` and `CMRU_RECORD_BODY`. cmru never parses or commits
+the record; committing it to `main` is the record tool's job (`rigor-record sync`). `release
+--dry-run` prints the step plan but does not run it.
 
 ### Previewing an external version
 

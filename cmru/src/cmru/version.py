@@ -60,6 +60,33 @@ _RELEASE_CONTROL_EXCLUDES = (
 )
 
 
+def _repo_path(cwd: str, relative: str) -> str:
+    """Join a project-relative path onto the project's repo-relative ``cwd``."""
+    return relative if cwd in ("", ".") else f"{cwd.rstrip('/')}/{relative}"
+
+
+def project_change_excludes(project: Any, cwd: str) -> List[str]:
+    """Repo-relative pathspecs that never count as project changes (KI-118, C-3).
+
+    ``rigor/`` and ``RIGOR.md`` of the project are rigor-evidence records and
+    generated views: committing them must not make the project "changed" or add
+    entries to generated notes. ``project.version.exclude_paths`` adds the
+    project's own doc-only / evidence-only subtrees. Entries are literal
+    subtrees unless they contain glob characters; every entry is emitted
+    as an ``exclude`` pathspec by :func:`pathspec_exclude`.
+    """
+    entries = [_repo_path(cwd, "rigor"), _repo_path(cwd, "RIGOR.md")]
+    version = getattr(project, "version", None)
+    for configured in getattr(version, "exclude_paths", None) or ():
+        entries.append(_repo_path(cwd, configured.rstrip("/")))
+    return entries
+
+
+def pathspec_exclude(path: str) -> str:
+    """The git ``exclude`` pathspec for a repo-relative path or glob."""
+    return f":(exclude,glob){path}"
+
+
 def _git_log(
     repo_root: Path, since_ref: str, *paths: str, end_ref: str = "HEAD",
     exclude: Sequence[str] = (),
@@ -79,7 +106,7 @@ def _git_log(
     if paths:
         cmd += (
             ["--"] + list(paths) + list(_RELEASE_CONTROL_EXCLUDES)
-            + [f":(exclude){path}" for path in exclude]
+            + [pathspec_exclude(path) for path in exclude]
         )
     try:
         result = subprocess.run(cmd, cwd=repo_root, capture_output=True, text=True)
@@ -697,7 +724,10 @@ def detect_changed_projects(
             changelog = getattr(proj, "changelog", None)
             messages = _git_log(
                 repo_root, last_tag, *paths, end_ref=end_ref,
-                exclude=[f"{getattr(proj, 'cwd', None) or name}/{changelog}"] if changelog else [],
+                exclude=[
+                    *([f"{getattr(proj, 'cwd', None) or name}/{changelog}"] if changelog else []),
+                    *project_change_excludes(proj, getattr(proj, "cwd", None) or name),
+                ],
             )
             if not messages:
                 if check_tag_at_head:

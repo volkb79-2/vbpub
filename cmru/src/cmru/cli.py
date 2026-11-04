@@ -2,6 +2,7 @@
 """Unified release orchestration for vbpub projects."""
 from __future__ import annotations
 
+import contextlib
 import fnmatch
 import json
 import logging
@@ -25,6 +26,7 @@ from urllib.request import Request, urlopen
 import tomllib
 
 from cmru.runner import StepConfig, execute_step, parse_step as _runner_parse_step
+from cmru import record_step
 from cmru import transaction
 from cmru import exit_codes
 from cmru.git_auth import GitHubGitAuth, run_local_git, run_remote_git
@@ -81,6 +83,7 @@ class VersionSpec:
     strategy: str = "scm"            # "scm" | "counter" | "file:<PATH>"
     bump: str = "conventional"       # "conventional" | "patch"
     paths: tuple = ()                # extra subtrees to watch for change detection
+    exclude_paths: tuple = ()        # subtrees/globs that never count as changes (KI-118)
     base_version: str = "1.0.0"      # counter strategy: <base>-r<N>
     file: str = "VERSION"            # filename for direct file-strategy construction
 
@@ -110,6 +113,7 @@ class ProjectConfig(ResolvesLazyTokens):
     artifact_dirs: tuple[str, ...] = ()  # declared project-relative output directories
     evidence_paths: tuple[str, ...] = ()  # declared project-relative gate evidence paths
     build_step: str = ""                # explicit [project.release].build_step
+    record_step: str = ""               # optional [project.release].record_step (rigor C-1)
     token_source: str = "cmru"          # "gh" | "cmru" (KI-94); "gh" reads the token lazily
     github_token: str = field(default="", repr=False, compare=False)  # root credential or explicit project-secret override
     runtime_kind: str = "none"           # declared lifecycle owner: none | ciu
@@ -395,6 +399,9 @@ def run_project_step(
             # artifact steps receive the exact pair above.
             for key in ("CMRU_RELEASE_COMMIT", "CMRU_RELEASE_TAG"):
                 internal_env.setdefault(key, None)
+            # Rigor record inputs/outputs (C-1) reach only the record and push steps.
+            for key in record_step.RECORD_ENV_KEYS:
+                internal_env.setdefault(key, None)
             internal_env.setdefault("CMRU_RELEASE_GATE_COMMIT", None)
             internal_env.setdefault("CMRU_RELEASE_GATE_VERSION", None)
             # CMRU-SKIP-01: the operator's recorded `--skip-gates` reason reaches
@@ -591,9 +598,11 @@ def _parse_version_spec(raw: object, name: str) -> Optional[VersionSpec]:
     if bump not in ("conventional", "patch"):
         raise ValueError(f"project.{name}.version.bump must be 'conventional' or 'patch'")
     paths = tuple(str(p) for p in (raw.get("paths") or []))
+    exclude_paths = tuple(str(p).rstrip("/") for p in (raw.get("exclude_paths") or []))
     base_version = str(raw.get("base_version") or "1.0.0").strip()
     version_file = str(raw.get("file") or "VERSION").strip()
     return VersionSpec(strategy=strategy, bump=bump, paths=paths,
+                       exclude_paths=exclude_paths,
                        base_version=base_version, file=version_file)
 
 
@@ -823,6 +832,7 @@ def load_config(
             artifact_dirs=tuple(parsed.artifact_dirs),
             evidence_paths=tuple(parsed.evidence_paths),
             build_step=parsed.build_step,
+            record_step=parsed.record_step,
             token_source=forge.github.token_source,
             github_token=forge.project_tokens.get(name, raw_field(forge.github, "token") or ""),
             tool_dependencies=tuple(parsed.tool_dependencies),
@@ -3626,27 +3636,92 @@ def _run_tagged_build_and_publish(
                 repo_root, workspace, tag, git_auth=git_auth, cause=exc,
             )
             raise
+    record_stack = contextlib.ExitStack()
+    push_env = dict(release_identity)
     try:
-        _assert_release_candidate_unchanged(
-            repo_root, name, candidate_sha, phase="before publication",
-        )
-    except Exception as exc:
-        _rollback_unpublished_release_tag(
-            repo_root, workspace, tag, git_auth=git_auth, cause=exc,
-        )
-        raise
-    try:
-        _run_project_steps(
-            repo_root, configs, [name], ["push"],
-            github_config=github_config, env_config=env_config,
-            protected_env=release_identity,
-        )
-        _assert_release_candidate_unchanged(
-            repo_root, name, candidate_sha, phase="after publication",
-        )
-    except Exception:  # deliberately broad: ANY failure after publish began must report it; re-raised
-        _report_publication_started(repo_root, workspace, tag)
-        raise
+        if getattr(configs.get(name), "record_step", ""):
+            try:
+                push_env.update(_run_record_step(
+                    repo_root, configs, name, tag, candidate_sha, release_identity,
+                    record_stack, github_config=github_config, env_config=env_config,
+                ))
+            except Exception as exc:  # deliberately broad: the record step runs before publication; re-raised
+                _rollback_unpublished_release_tag(
+                    repo_root, workspace, tag, git_auth=git_auth, cause=exc,
+                )
+                raise
+        try:
+            _assert_release_candidate_unchanged(
+                repo_root, name, candidate_sha, phase="before publication",
+            )
+        except Exception as exc:
+            _rollback_unpublished_release_tag(
+                repo_root, workspace, tag, git_auth=git_auth, cause=exc,
+            )
+            raise
+        try:
+            _run_project_steps(
+                repo_root, configs, [name], ["push"],
+                github_config=github_config, env_config=env_config,
+                protected_env=push_env,
+            )
+            _assert_release_candidate_unchanged(
+                repo_root, name, candidate_sha, phase="after publication",
+            )
+        except Exception:  # deliberately broad: ANY failure after publish began must report it; re-raised
+            _report_publication_started(repo_root, workspace, tag)
+            raise
+    finally:
+        record_stack.close()
+
+
+def _run_record_step(
+    repo_root: Path,
+    configs: Mapping[str, "ProjectConfig"],
+    name: str,
+    tag: str,
+    candidate_sha: str,
+    release_identity: Mapping[str, str],
+    stack: "contextlib.ExitStack",
+    *,
+    github_config: GitHubConfig,
+    env_config: ReleaseEnvConfig,
+) -> Mapping[str, str]:
+    """Run the optional ``release.record_step`` and return the push step's extra env.
+
+    Runs after the artifact build and before ``push`` with the release identity plus
+    the protected record inputs (rigor design 5.1). Any failure is a pre-publication
+    failure: the caller rolls the tag back and the candidate stays resumable."""
+    project = configs[name]
+    project_root = resolve_cwd(repo_root, _project_working_directory(project))
+    private = stack.enter_context(record_step.private_record_dir())
+    _assert_release_candidate_unchanged(
+        repo_root, name, candidate_sha, phase="before record step",
+    )
+    artifacts = [
+        {
+            "directory": Path(raw_dir).name,
+            "files": transaction._safe_digest_tree(project_root / raw_dir),
+        }
+        for raw_dir in project.artifact_dirs
+    ]
+    inventory = record_step.write_inventory(
+        private, project=name, tag=tag, commit=candidate_sha, artifacts=artifacts,
+    )
+    inputs = record_step.protected_inputs(
+        private, inventory,
+        record_step.first_evidence_directory(project_root, project.evidence_paths),
+    )
+    log_info(f"{name}: running record step {project.record_step!r}")
+    _run_project_steps(
+        repo_root, configs, [name], [project.record_step],
+        github_config=github_config, env_config=env_config,
+        protected_env={**release_identity, **inputs},
+    )
+    _assert_release_candidate_unchanged(
+        repo_root, name, candidate_sha, phase="after record step",
+    )
+    return record_step.validate_outputs(name, private / "out")
 
 
 def _cmru_derives_version(project: "ProjectConfig") -> bool:
@@ -5619,6 +5694,19 @@ def _preview_release_bodies(
         # (even for a project this preview would otherwise skip), so a dry run
         # refuses exactly what the release would refuse, before any change.
         oci_image = _validated_oci_release_image(project, repo_root)
+        if getattr(project, "record_step", "") and not no_build:
+            from cmru.runner import render_step_plan
+            log_info(
+                f"[DRY RUN] {name}: record step {project.record_step!r} would run after the "
+                "build and before push (not run in a dry run: it needs the built artifacts); "
+                "it must write exactly record.json and release-body.md (max "
+                f"{record_step.RECORD_BODY_MAX_BYTES} bytes) to CMRU_RECORD_OUT:"
+            )
+            for line in render_step_plan(
+                project.runner_steps[project.record_step],
+                resolve_cwd(repo_root, _project_working_directory(project)),
+            ):
+                log_info(f"[DRY RUN] {name}:{project.record_step}: {line}")
         if not getattr(project, "changelog", None) or not getattr(project, "git_tag", True):
             continue
         handler_argv = _release_body_handler_argv(project)
@@ -7084,8 +7172,8 @@ def _project_config_for_release_snapshot(
         commit_generated=commit_generated, changelog=parsed.changelog,
         project_root=source_git_root / project_rel, build_metadata=parsed.build_metadata,
         artifact_dirs=tuple(parsed.artifact_dirs), evidence_paths=tuple(parsed.evidence_paths),
-        build_step=parsed.build_step, runtime_kind=parsed.runtime_kind,
-        tool_dependencies=tuple(parsed.tool_dependencies),
+        build_step=parsed.build_step, record_step=parsed.record_step,
+        runtime_kind=parsed.runtime_kind, tool_dependencies=tuple(parsed.tool_dependencies),
     )
 
 
