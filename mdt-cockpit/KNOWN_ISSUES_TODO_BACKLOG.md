@@ -1282,3 +1282,18 @@ because tester-unified bakes 1003 and git refuses a differently-owned tree.
 user share it"; delete the 1003 wording from the README, the runner scripts and their tests, keeping the RG-150 owner preflight as the
 safety net. Lanes that need Docker add the socket gid derived by `stat` (MDT-054). A test pins the new wording and that
 the provisioning script no longer hardcodes 1003.
+
+## MDT-062 - cgprofile cutover from the 1.x container: the installer cannot drain it and does not stop it (2026-11-05)
+
+**Status:** OPEN. Found by the first live rollout (v1001, r1002; `reports/cgpd-rollout-REPORT.md`).
+
+**Observed.** (1) On a host whose 1.x `cgprofile-host-daemon` container still serves `/run/cgprofile/ctl.sock`, `cgpd` 2.0.0 refuses to start
+("another daemon already serves"), so `install.sh --cgprofile-only` only works after the container was stopped by hand; the stop, `docker update
+--restart=no` and the later removal were manual steps. (2) The drain looks at the NEW venv's `cgpctl sessions`, which needs ctl contract 2, so
+against a 1.x daemon it fails ("sessions needs ctl contract 2") and the drain cannot count live sessions; the operator used the container's own
+`cgprofile ctl status` instead. (3) `mdt-host-check.sh` ends with a FAIL for `caller-group` when run as root (CP-57).
+
+**Design.** A cutover step in `mdt-cgprofile-install.sh`, only when `/opt/cgprofile/current` is absent and a container named `cgprofile-host-daemon`
+exists: list live sessions through `docker exec cgprofile-host-daemon cgprofile ctl status` (contract 1), wait/refuse exactly like the drain, then
+`docker update --restart=no` + `docker stop` it, and print the rollback line (`docker start cgprofile-host-daemon` after `systemctl stop cgpd`). The
+container removal stays an operator step. `check.sh` ignores `caller-group` for uid 0 until CP-57 ships. Tests with the fake docker.
