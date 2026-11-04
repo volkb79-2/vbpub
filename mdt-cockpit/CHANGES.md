@@ -4,6 +4,11 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Fixed
+- nano 8.x printed `Command "set" not allowed in included file` for every line of the image defaults, because they were pulled in with an `include`
+  from `/etc/nanorc`. The Dockerfile now appends the defaults to `/etc/nanorc` itself (the `/usr/local/share/mdt-cockpit/nanorc` copy stays for reference);
+  `~/.nanorc` still overrides per setting. Runtime test `test_system_defaults.py` updated.
+
 ### Added
 - host-setup `HOST_ROLE` (`shared-prod` | `dedicated-dev`, section 4.0; the wizard asks it first): on a sole-tenant dev/test host `dev.slice` takes
   its absolute IO ceilings from the MEASURED iobench result (`proposals.caps.dev_aggregate`, identity-verified through the new
