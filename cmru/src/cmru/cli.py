@@ -1533,10 +1533,16 @@ def cleanup_ghcr(
     cleanup: CleanupConfig, *, plan: CleanupPlan | None = None,
 ) -> None:
 
-    # Only an explicit "*" is an all-packages selector.
-    wildcard_packages = "*" in cleanup.ghcr_packages
-    packages = list_container_packages(owner, token, owner_type) if wildcard_packages else cleanup.ghcr_packages
-    for package in packages:
+    # KI-117: GHCR package listings are owner-wide, so "*" is refused. Only the
+    # explicitly named packages are ever touched (config.py rejects it earlier;
+    # this guards programmatically built CleanupConfig values).
+    if "*" in cleanup.ghcr_packages:
+        raise ValueError(
+            'cleanup.ghcr_packages = ["*"] is refused (KI-117): it would select every '
+            "GHCR package of the owner, including other repositories' packages. "
+            "List the package names explicitly."
+        )
+    for package in cleanup.ghcr_packages:
         if package in cleanup.ghcr_delete_packages:
             preview = get_container_package(owner, package, token, owner_type)
             if preview is None:

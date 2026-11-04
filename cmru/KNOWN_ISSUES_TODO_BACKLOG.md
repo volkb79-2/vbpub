@@ -2773,3 +2773,58 @@ variant file against the retained build-output record exactly as the single-asse
 restore (leaving the tee attached) and replaced the exception already in flight. The flush is now guarded: both descriptors are always restored,
 the flush failure is attached as a note to the in-flight exception, or raised after the restore when nothing else is in flight.
 Tests: `tests/test_cmru1_bugfixes.py::test_tee_flush_broken_pipe_*` (subprocess with a stdout whose flush raises `BrokenPipeError`).
+
+## KI-117 - `cleanup.ghcr_packages = ["*"]` selected every GHCR package of the account and deleted old versions of all of them
+
+**Status:** FIXED 2026-11-05 (cmru-4 package; commit hash in the report); severity: high (cross-repository data loss). Origin: dstdns adoption memo V1.
+`cleanup_ghcr` expanded `"*"` through `list_container_packages`, which is owner-wide, so a second repository publishing images under the
+same account (dstdns) would have lost old versions of its images to vbpub's cleanup. Chosen fix (SPEC S2.5 already demanded explicit selectors):
+`"*"` in `ghcr_packages` is now a configuration error at load (`config._parse_cleanup`, exit 2) and a `ValueError` in `cleanup_ghcr` for
+programmatically built configs; the owner listing is no longer used for selection. Only explicitly named packages are touched. `release_tag_prefixes = ["*"]`
+is unchanged (it is scoped by the configured repository's releases). The vbpub root `cmru.orchestration.toml`, the sample, the template, SPEC, CONSUMERS and README were updated.
+Tests: `tests/test_cleanup_ghcr_scope.py` (fake listing with a foreign package; dry-run and real mode never touch it, no owner-wide listing, wildcard refused before any request).
+Migration: replace `["*"]` by the package names; `cmru standards` reports the error.
+
+## KI-118 - `project.version.exclude_paths`: let doc-only / evidence-only commits not count as project changes
+
+**Status:** OPEN; severity: minor (quality of `cmru status`). Origin: dstdns adoption memo V2.
+A repository-root project (dstdns) watches the whole tree (`watch_paths = [cwd] + project.version.paths`, `cli.py` ~811-815), so a commit touching only
+`docs/`, `nyxloom-trove/` or `rigor/` makes `cmru status` report the project changed and a release due.
+Implement: new optional `project.version.exclude_paths = [..]` (project-relative; same validation as `paths`: no `..`, no absolute paths; globs via the
+existing path-match helper, `docs/` means the subtree). Change detection (S12.2 `status`, release-needed, version-bump classification, commit-subject
+collection for CHANGES) drops files under any excluded path before deciding "changed"; a commit touching only excluded paths is "unchanged" and is not listed
+in generated notes. Excludes never remove a path that is also in `paths` explicitly (config error: ambiguous). Always-ignored release-control files (CHANGES.md,
+`rigor/`) stay ignored without configuration. Schema: `config.py` project-version parser (~578-608), `docs/SPEC.md` S12.2, CONSUMERS.md reference.
+Oracle tests: (1) docs-only commit since last tag -> status "unchanged"; (2) docs + src commit -> changed; (3) exclude overlapping an explicit watch path -> config error;
+(4) `..`/absolute -> config error; (5) release range notes omit docs-only commits.
+
+## KI-119 - version checks for files pinned from the vbpub repository (cross-repository providers, S15)
+
+**Status:** OPEN; severity: enhancement. Origin: dstdns adoption memo V3.
+A consumer repository vendors artifacts released by vbpub (dstdns: assay pyz, bundled ciu wheel) and today only hand-written tests
+(`test_assay_pin_integrity.py`, `.assay-inbox`) check them. Implement S15-style cross-repository providers in `cmru versions`/`cmru.orchestration.toml`:
+`provider = {github = "volkb79-2/vbpub", prefix = "assay-v"}` plus a pinned file declaration (`path`, expected version, expected sha256 or asset name).
+`cmru versions check` then verifies (a) integrity: the pinned file's sha256 equals the provider release asset's recorded digest; (b) authenticity: the release
+exists on the provider, its tag is reachable, signature/manifest checked when the provider publishes one; (c) freshness: report the newest provider release and
+flag the pin as stale beyond a configurable `max_behind` (releases) with the existing age-window semantic (no age window for first-party tools, D-672).
+Resolution reads only the provider's public Releases API (token optional); offline mode uses the recorded `versions/` snapshot. Oracle tests: fake provider
+listing; tampered file fails integrity; unknown tag fails authenticity; newer release reports stale; offline snapshot path never touches the network.
+`depends_on = []` in the consumer stays valid (providers are not orchestration dependencies).
+
+## KI-120 - generic `cmru rigor` verb: per-release rigor evidence records
+
+**Status:** OPEN; severity: enhancement (blocks dstdns P12). Origin: dstdns adoption memo V4 and section 5 (`DSTDNS-CMRU-ADOPTION-MEMO-2026-11-05.md`).
+Goal: for any release and for `main` at any moment, show which rigor levels completed, on which commit, with which tool versions/gate configuration, and what is
+waived or pending, without reconstructing it from logs or the 10-run-capped `.run-gate/history.json`. Serves every vbpub tool and dstdns.
+Verbs: `cmru rigor record <project> --tag <tag> --level R0|R1|R3|R2|staging|promotion --from <evidence-json>` writes/updates `<project-dir>/rigor/<tag>.json`
+and regenerates `<project-dir>/rigor/index.json`; `cmru rigor show [<project>] [--json]` prints current guarantees; `cmru rigor check` (offline, usable in tests)
+verifies: schema validity, every local `<prefix>*` tag has a record, the index matches the newest tag, no record claims a level whose verdict hash is missing.
+Schema `urn:cmru:rigor-record:1`: `project`, `release{tag,version,commit,published_at,artifacts{name:sha256}}`, `tools{cmru,run-gate,ciu,cgprofile_daemon,assay{version,pyz_sha256,verdict_schema},test_runner_image}`,
+`config{file:sha256}`, `levels{R0,R1,R3,R2,...}` each `status` (pass | pass-with-waivers | waived | pending | running | survivors | superseded | partial) plus level specifics
+(lanes/verdict hashes, components, waivers with `expires_before`, canaries, R2 host/base_watermark/lanes_run/survivors/fixed_in/evidence_asset), `review{path,verdict}`,
+`staging{host:{...}}`, `promotion{stable,at,commit}`. `rigor/index.json`: `latest`, `stable`, per-release one-line summary (highest completed level per component, R2 status).
+Evidence bytes are never committed; verdicts ship as release assets (`rigor.json`, later `...-r2-evidence.tar.xz`) and the record holds only their sha256.
+Placement: `rigor/` joins the release-control files ignored by S12.2 change detection (recording never marks a project changed). R0/R1/R3 run after the tagged commit,
+so cmru writes the record as a release asset bound to the tag and appends it as a commit to the promote push; later levels (R2, staging, promotion) are ordinary
+`chore(rigor):` commits made by the same verb. Oracle tests: schema validation, record/index regeneration idempotent, `check` fails on missing record, missing tag
+record, stale index, and a claimed level without verdict hash; `record` never commits evidence bytes. Docs: SPEC section, CONSUMERS reference, the cmru-cli skill.

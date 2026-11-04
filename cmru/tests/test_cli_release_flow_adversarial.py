@@ -65,7 +65,7 @@ depends_on = []
 [cleanup]
 release_tag_prefixes = ["*"]
 keep_release_tags = []
-ghcr_packages = ["*"]
+ghcr_packages = []
 ghcr_delete_packages = []
 ''', encoding="utf-8",
     )

@@ -127,7 +127,7 @@ depends_on = []
 [cleanup]
 release_tag_prefixes = ["*"]
 keep_release_tags = ["{name}-latest"]
-ghcr_packages = ["*"]
+ghcr_packages = []
 ghcr_delete_packages = []
 
 {root_versions}
