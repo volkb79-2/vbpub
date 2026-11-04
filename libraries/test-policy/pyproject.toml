@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools==82.0.1", "wheel==0.47.0", "setuptools_scm==10.0.5"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "estate-test-policy"
+description = "pytest policy plugin (load- and speed-independent tests) and the flakehunt stress-repeat runner"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{name = "Volker Badziong"}]
+# Standard library plus pytest. Floor 8: the plugin uses pytest.Pytester-era hooks only through the test suite
+# (pytester ships with pytest >= 6.2); 8 is the estate tester-base pytest line.
+dependencies = ["pytest>=8"]
+dynamic = ["version"]
+
+[project.optional-dependencies]
+test = ["pytest-cov>=6"]
+
+[project.entry-points.pytest11]
+estate_test_policy = "estate_test_policy.plugin"
+
+[project.scripts]
+flakehunt = "flakehunt.hunt:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# Version from the git tag `test-policy-vX.Y.Z` once a release contract exists (TP-01). No fallback_version.
+[tool.setuptools_scm]
+root = "../.."
+tag_regex = "^test-policy-v(?P<version>[0-9].*)$"
+git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--match", "test-policy-v*"]
