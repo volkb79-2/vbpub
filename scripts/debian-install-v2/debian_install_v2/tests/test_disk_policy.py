@@ -97,10 +97,11 @@ def test_root_max_size_leaves_the_remaining_disk_free_after_swap(tmp_path):
     aligned_root_end = (
         (root_start + target_root + 2048 - 1) // 2048
     ) * 2048
-    assert partitions[0][0] == aligned_root_end
+    # Swap sits at the END of the disk; the gap after root stays unallocated.
+    assert partitions[0][0] > aligned_root_end
     end_of_swap = partitions[-1][0] + partitions[-1][1]
-    assert end_of_swap > root_start + target_root
-    assert (disk_sectors - end_of_swap) * 512 >= 79 * GIB
+    assert (disk_sectors - end_of_swap) * 512 <= 2 * 1024 * 1024
+    assert (partitions[0][0] - aligned_root_end) * 512 >= 79 * GIB
     assert installer.show_plan()["root_max_size_gb"] == 40
 
 
@@ -116,7 +117,7 @@ def test_root_max_size_requires_managed_tail_swap_when_swap_is_off(tmp_path):
 
     with pytest.raises(
         InstallerError,
-        match=r"root_max_size_gb needs managed swap partitions directly after root",
+        match=r"need managed tail swap",
     ):
         installer._plan_swap_partitions()
 
@@ -270,7 +271,7 @@ def test_root_max_size_requires_tail_swap_when_pre_root_swap_meets_target(tmp_pa
 
     with pytest.raises(
         InstallerError,
-        match=r"root_max_size_gb needs managed swap partitions directly after root",
+        match=r"need managed tail swap",
     ):
         installer._plan_swap_partitions()
 

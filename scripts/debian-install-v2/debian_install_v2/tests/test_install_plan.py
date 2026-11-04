@@ -22,8 +22,24 @@ def run_dry_install(
     root_max_size_gb: int | None = None,
     preserve_root_size_gb: int = 10,
     will_reboot: bool = False,
+    current_root_gib: int | None = None,
 ) -> tuple[Installer, list[str]]:
     from debian_install_v2.state import StateStore
+    if current_root_gib is not None:
+        # The dry-run root is 8 GiB; a shrink below the layout's minimum root
+        # needs a bigger current root.
+        from unittest import mock
+        real = Installer._disk_facts
+
+        def facts(self):
+            disk, start, _size = real(self)
+            return disk, start, current_root_gib * 1024 ** 3 // 512
+
+        with mock.patch.object(Installer, "_disk_facts", facts):
+            return run_dry_install(
+                tmp_path, root_max_size_gb=root_max_size_gb,
+                preserve_root_size_gb=preserve_root_size_gb, will_reboot=will_reboot,
+            )
     config = Config(
         state_dir=str(tmp_path / "state"),
         log_dir=str(tmp_path / "logs"),
@@ -57,7 +73,7 @@ def test_stage1_plans_expected_configuration_without_host_mutation(tmp_path):
     assert "/bin/rm" not in joined
 
 
-@pytest.mark.parametrize("root_max_size_gb", [None, 40])
+@pytest.mark.parametrize("root_max_size_gb", [None, 160])
 def test_stage1_installs_root_cap_boot_guards_only_when_capped_before_reboot(
     tmp_path, root_max_size_gb
 ):
@@ -89,9 +105,10 @@ def test_stage1_installs_root_cap_boot_guards_only_when_capped_before_reboot(
 def test_stage1_writes_root_cap_boot_guards_before_installing_shrink_hook(tmp_path):
     _, descriptions = run_dry_install(
         tmp_path,
-        root_max_size_gb=5,
+        root_max_size_gb=100,
         preserve_root_size_gb=1,
         will_reboot=True,
+        current_root_gib=300,
     )
 
     last_guard_write = max(
@@ -120,7 +137,7 @@ def test_stage1_refused_root_cap_does_not_install_boot_guards(tmp_path):
     actions = HostActions(dry_run=True)
     installer = Installer(config, actions)
 
-    with pytest.raises(InstallerError, match="root_max_size_gb needs managed swap partitions"):
+    with pytest.raises(InstallerError, match="need managed tail swap"):
         installer.install()
 
     descriptions = [action.description for action in actions.planned]
@@ -194,7 +211,7 @@ def test_default_fstab_swap_entries_are_planned(tmp_path):
     assert len([line for line in fstab.splitlines() if " none swap sw,pri=10,discard=once 0 0" in line]) == 4
 
 
-@pytest.mark.parametrize("root_max_size_gb", [None, 40])
+@pytest.mark.parametrize("root_max_size_gb", [None, 160])
 def test_stage2_disables_boot_time_root_growth_only_when_capped(tmp_path, root_max_size_gb):
     config = Config(
         state_dir=str(tmp_path / "state"),

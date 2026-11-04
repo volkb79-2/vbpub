@@ -94,7 +94,7 @@ but never shrinks; `untouched` forbids root partition changes. Optional
 `root_max_size_gb` caps the root partition at that many GiB and leaves disk
 space after root and swap unallocated for a later data partition. It does not
 format or mount the remaining space. A cap requires `swap_policy: "on"` and at
-least one managed tail swap partition directly after root; swap off, untouched
+least one managed tail swap partition at the end of the disk (the gap after root stays unallocated; `disk_layout: "dev-host"` sizes root, cow and reserve by rule); swap off, untouched
 swap, or a layout where retained pre-root swap needs no tail partition is
 refused. The cap must be at least `preserve_root_size_gb`; `grow-only` and
 `untouched` refuse if the current root is larger than the cap. The cap is
