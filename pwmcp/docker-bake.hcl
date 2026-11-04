@@ -8,7 +8,7 @@ variable "NAMESPACE" {
 
 // One version is released only when npm, PyPI, and MCR all provide it.
 variable "PLAYWRIGHT_VERSION" {
-  default = "1.64.0"
+  default = "1.64.1"
 }
 
 variable "PLAYWRIGHT_DISTRO" {
@@ -18,7 +18,7 @@ variable "PLAYWRIGHT_DISTRO" {
 // Multi-arch manifest digest for the selected Playwright base image.
 // The resolver refreshes this together with PLAYWRIGHT_VERSION.
 variable "PLAYWRIGHT_IMAGE_DIGEST" {
-  default = "sha256:06a9939e57531807f8d5fd76ce44b53165ffb7d7501d87ab10e285c20b1e971f"
+  default = "sha256:2f05f8a734509a7b3f26a912639488ee08f58a7b292d14d62271bcff9038768f"
 }
 
 // @playwright/mcp pin (bundled MCP Streamable HTTP server).
@@ -44,7 +44,7 @@ variable "LIGHTHOUSE_VERSION" {
 
 // CMRU's prepared, Playwright-driven pwmcp release coordinate.
 variable "PWMCP_VERSION" {
-  default = "1.64.0-r4"
+  default = "1.64.1-r1"
 }
 
 // OCR sidecar base (containers/ocr/Dockerfile): debian:<release>-slim pinned by manifest digest.
