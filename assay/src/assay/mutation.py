@@ -1522,23 +1522,19 @@ CANDIDATE_FAIL_FAST_ID: Final = "assay-candidate-fail-fast/1"
 CANDIDATE_FAIL_FAST_APPENDED: Final[tuple[str, ...]] = ("-x", "-p", "no:pytest_cov")
 
 
-def candidate_fail_fast_plan(
-    plan: "CommandPlan", *, extra: Sequence[str] = ()
-) -> "CommandPlan":
+def candidate_fail_fast_plan(plan: "CommandPlan") -> "CommandPlan":
     """(WP1) Return *plan* as a CANDIDATE runs it under ``candidate_fail_fast``.
 
     The recognized pytest-cov options are removed (the shared
     :func:`assay.r2_command.transform_argv`, which REFUSES any coverage option
     it cannot remove without guessing) and ``-x -p no:pytest_cov`` is appended,
     so a mutant stops at its first failing test and pays no coverage cost. The
-    baseline never goes through this function. *extra* is appended last and
-    exists only for the collect-only preflight.
+    baseline never goes through this function.
     """
     declared = transform_argv(plan.argv_declared)
     appended = (
         *transform_argv(plan.argv_appended),
         *CANDIDATE_FAIL_FAST_APPENDED,
-        *extra,
     )
     # Assay's own tokens are not the lane's CLI-appended argv, so they must not
     # trip the `allow_argv_append` consent check (`cli_argv_appended` scopes it).
@@ -1551,6 +1547,32 @@ def candidate_fail_fast_plan(
         argv_appended=appended,
         argv_effective=declared + appended,
         cli_argv_appended=cli_only,
+    )
+
+
+def candidate_fail_fast_preflight_plan(
+    plan: "CommandPlan",
+    *,
+    plugin_dir: Path,
+    liveness_plugin_path: Path | None = None,
+) -> "CommandPlan":
+    """(WP1) The EXACT command a candidate runs, for the unmutated preflight.
+
+    Mirrors ``_run_one``: the witness plugin is injected on the declared plan
+    when the command supports it, the fail-fast transform is applied, and the
+    witness attempt environment is added (the receipt goes to a file in
+    *plugin_dir* instead of a descriptor).
+    """
+    injection = _inject_witness_plugin(
+        plan, plugin_dir=plugin_dir, liveness_plugin_path=liveness_plugin_path
+    )
+    candidate = candidate_fail_fast_plan(injection.plan)
+    if not injection.active:
+        return candidate
+    return _make_witness_attempt_plan(
+        candidate,
+        receipt_path=plugin_dir / "preflight-receipt.json",
+        target_node_id=None,
     )
 
 

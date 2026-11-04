@@ -91,6 +91,7 @@ from typing import (
     Callable,
     cast,
     ContextManager,
+    Final,
     Iterator,
     Mapping,
     Protocol,
@@ -1257,6 +1258,35 @@ def _resolve_candidate_fail_fast(
     return declared and not cold_witness
 
 
+#: (WP1) Preflight timeout: a multiple of the baseline's measured wall time
+#: (the same suite, minus coverage), never below the floor, never above what
+#: is left of the lane budget.
+_PREFLIGHT_BASELINE_FACTOR: Final = 2.0
+_PREFLIGHT_FLOOR_SECONDS: Final = 60.0
+
+
+def _preflight_timeout(baseline_seconds: float, remaining: float) -> float:
+    return min(
+        remaining,
+        max(_PREFLIGHT_FLOOR_SECONDS, _PREFLIGHT_BASELINE_FACTOR * baseline_seconds),
+    )
+
+
+def _baseline_seconds(result: "CommandResult") -> float:
+    return (
+        datetime.fromisoformat(result.ended) - datetime.fromisoformat(result.started)
+    ).total_seconds()
+
+
+def _first_failure_line(outcome: "CommandResult") -> str | None:
+    """The first pytest ``FAILED``/``ERROR`` summary line in the output tails."""
+    for tail in (outcome.stdout_tail, outcome.stderr_tail):
+        for line in (tail or "").splitlines():
+            if line.startswith(("FAILED ", "ERROR ")):
+                return line.strip()
+    return None
+
+
 def _candidate_fail_fast_preflight(
     *,
     prepared: Any,
@@ -1264,32 +1294,49 @@ def _candidate_fail_fast_preflight(
     deadline: "LaneDeadline",
     process_runner: ProcessRunner,
     clock: Clock,
+    baseline_seconds: float,
+    liveness_plugin_path: Path | None = None,
 ) -> None:
-    """(WP1) Refuse the lane if its candidate command is not a working pytest run.
+    """(WP1) Refuse the lane unless its candidate command PASSES unmutated.
 
-    Every nonzero exit is a ``killed`` mutant, so an option conflict (for
-    example ``addopts = --cov`` once ``-p no:pytest_cov`` removes the plugin)
-    would turn the whole sweep into false kills. This runs the candidate
-    command once, collect-only, on the UNMUTATED snapshot, and requires exit 0.
+    Every nonzero exit is a ``killed`` mutant, so anything that makes the
+    candidate command fail on the unmutated tree (an option conflict such as
+    ``addopts = --cov`` once ``-p no:pytest_cov`` removes the plugin, or a test
+    that needs pytest-cov at setup or run time) would turn the whole sweep into
+    false kills. This runs the exact candidate command (fail-fast transform and
+    the injected witness plugin included, ``-x`` and all) once on the UNMUTATED
+    snapshot and requires a full PASS. The timeout is a bounded multiple of the
+    baseline's own wall time, not the remaining lane budget.
     """
-    ff_plan = mutation.candidate_fail_fast_plan(
-        plan, extra=("--collect-only", "-q")
-    )
-    with prepared.materialize(timeout=deadline.remaining()) as snapshot:
-        outcome = execute_plan(
-            ff_plan,
-            cwd=snapshot.project_root,
-            timeout=deadline.remaining(),
-            process_runner=process_runner,
-            clock=clock,
+    with tempfile.TemporaryDirectory(prefix="assay-ff-preflight-") as scratch:
+        env = dict(plan.env_effective)
+        if liveness.ASSAY_LIVENESS_EVENTS_ENV in env:
+            env[liveness.ASSAY_LIVENESS_EVENTS_ENV] = str(
+                Path(scratch) / "events.ndjson"
+            )
+        ff_plan = mutation.candidate_fail_fast_preflight_plan(
+            replace(plan, env_effective=MappingProxyType(env)),
+            plugin_dir=Path(scratch),
+            liveness_plugin_path=liveness_plugin_path,
         )
+        with prepared.materialize(timeout=deadline.remaining()) as snapshot:
+            outcome = execute_plan(
+                ff_plan,
+                cwd=snapshot.project_root,
+                timeout=_preflight_timeout(baseline_seconds, deadline.remaining()),
+                process_runner=process_runner,
+                clock=clock,
+            )
     if outcome.outcome is not Outcome.PASS:
+        failing = _first_failure_line(outcome)
         raise AssayError(
             "judge.mutation.candidate_fail_fast: the candidate command "
-            f"({' '.join(ff_plan.argv_effective)}) did not collect the "
-            f"unmutated suite ({outcome.outcome.value}, exit {outcome.returncode}); every candidate "
-            "would be a false kill. Fix the pytest configuration (an addopts "
-            "entry that needs pytest-cov is the usual cause) or drop the key",
+            f"({' '.join(ff_plan.argv_effective)}) did not pass on the "
+            f"unmutated snapshot ({outcome.outcome.value}, exit {outcome.returncode}"
+            + (f"; {failing}" if failing else "")
+            + "); every candidate would be a false kill. Fix the pytest "
+            "configuration or the test (an addopts entry or a test that needs "
+            "pytest-cov is the usual cause) or drop the key",
             outcome=Outcome.ERROR,
             reason_code=ReasonCode.BAD_LANE_CONFIG,
         )
@@ -5541,6 +5588,12 @@ def _run_prepared_lane(
                     deadline=deadline,
                     process_runner=lane_process_runner,
                     clock=clock,
+                    baseline_seconds=_baseline_seconds(result),
+                    liveness_plugin_path=(
+                        Path(liveness_plugin_path)
+                        if liveness_plugin_path is not None
+                        else None
+                    ),
                 )
             try:
                 mutation_result = mutation.run_mutation(

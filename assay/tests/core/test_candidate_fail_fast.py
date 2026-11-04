@@ -107,11 +107,9 @@ def test_candidate_plan_drops_coverage_and_appends_fail_fast_only_for_candidates
               "--cov-report=json:cov.json", "-q")
     )
     plan = make_plan(lane, argv_append=("--tb=short",))
-    candidate = candidate_fail_fast_plan(plan, extra=("--collect-only",))
+    candidate = candidate_fail_fast_plan(plan)
     assert candidate.argv_declared == ("python", "-m", "pytest", "tests", "-q")
-    assert candidate.argv_appended == (
-        "--tb=short", *CANDIDATE_FAIL_FAST_APPENDED, "--collect-only"
-    )
+    assert candidate.argv_appended == ("--tb=short", *CANDIDATE_FAIL_FAST_APPENDED)
     assert candidate.argv_effective == candidate.argv_declared + candidate.argv_appended
     # the shared baseline plan is a different, untouched object
     assert plan.argv_effective[-2:] == ("-q", "--tb=short")
@@ -212,41 +210,127 @@ def test_without_the_key_candidates_keep_the_declared_argv(tmp_path: Path):
 # --- the runner: preflight and wiring ----------------------------------------
 
 
-def _plan_for_preflight():
-    return make_plan(make_lane(argv=("pytest", "tests", "--cov=pkg")))
+def _plan_for_preflight(argv=("pytest", "tests", "--cov=pkg"), **kwargs):
+    return make_plan(make_lane(argv=argv), **kwargs)
 
 
-def _run_preflight(tmp_path: Path, returncode: int, calls: list):
+def _run_preflight(
+    tmp_path: Path,
+    returncode: int,
+    calls: list,
+    *,
+    stdout: str = "",
+    seconds: float = 10.0,
+    budget: float = 1000.0,
+    plan=None,
+    liveness_plugin_path=None,
+):
     repo = _seed(tmp_path, {"pkg/a.py": _TEXT})
     scratch = tmp_path / "scratch"
     scratch.mkdir(parents=True)
 
     def process_runner(argv, *, env, cwd, timeout):
-        calls.append(tuple(argv))
-        return completed_process(list(argv), returncode=returncode, stdout="", stderr="")
+        calls.append((tuple(argv), timeout, dict(env)))
+        return completed_process(list(argv), returncode=returncode, stdout=stdout, stderr="")
 
     with prepared_snapshot(repo, scratch_root=scratch) as prepared:
         runner._candidate_fail_fast_preflight(
             prepared=prepared,
-            plan=_plan_for_preflight(),
-            deadline=make_deadline(),
+            plan=plan if plan is not None else _plan_for_preflight(),
+            deadline=make_deadline(budget_seconds=budget),
             process_runner=process_runner,
             clock=lambda: datetime.now(timezone.utc),
+            baseline_seconds=seconds,
+            liveness_plugin_path=liveness_plugin_path,
         )
 
 
-def test_preflight_runs_the_candidate_command_collect_only(tmp_path: Path):
+def test_preflight_runs_the_full_candidate_command_with_the_witness_plugin(tmp_path: Path):
     calls: list = []
     _run_preflight(tmp_path, 0, calls)
-    assert calls == [
-        ("pytest", "tests", "-x", "-p", "no:pytest_cov", "--collect-only", "-q")
-    ]
+    (argv, _timeout, env) = calls[0]
+    # not collect-only; the exact candidate plan: coverage gone, -x, the
+    # injected witness plugin, then the assay-owned fail-fast tokens
+    assert "--collect-only" not in argv
+    assert argv[:2] == ("pytest", "tests")
+    assert not any(token.startswith("--cov") for token in argv)
+    assert argv[-5:] == ("-p", "assay_mutation_witness_plugin", "-x", "-p", "no:pytest_cov")
+    assert "ASSAY_MUTATION_WITNESS_FILE" in env or any(
+        key.startswith("ASSAY_MUTATION_WITNESS") for key in env
+    )
 
 
-def test_preflight_refuses_a_command_that_cannot_collect(tmp_path: Path):
+def test_preflight_without_witness_support_still_runs_the_candidate_plan(tmp_path: Path):
+    calls: list = []
+    _run_preflight(
+        tmp_path, 0, calls,
+        plan=_plan_for_preflight(argv=("make", "test", "--cov=pkg")),
+    )
+    argv = calls[0][0]
+    assert argv == ("make", "test", "-x", "-p", "no:pytest_cov")
+
+
+def test_preflight_redirects_the_liveness_events_and_keeps_the_plugin(tmp_path: Path):
+    from assay import liveness
+
+    calls: list = []
+    events = tmp_path / "baseline.ndjson"
+    plan = _plan_for_preflight(passthrough_source={"A": "b"})
+    from dataclasses import replace
+
+    plan = replace(
+        plan,
+        env_effective={**plan.env_effective, liveness.ASSAY_LIVENESS_EVENTS_ENV: str(events)},
+    )
+    _run_preflight(tmp_path, 0, calls, plan=plan, liveness_plugin_path=tmp_path / "lp.py")
+    env = calls[0][2]
+    assert env[liveness.ASSAY_LIVENESS_EVENTS_ENV] != str(events)
+    assert not events.exists()
+
+
+def test_preflight_timeout_is_bounded_by_the_baseline_not_the_lane_budget(tmp_path: Path):
+    calls: list = []
+    _run_preflight(tmp_path, 0, calls, seconds=100.0)
+    assert 199.0 < calls[0][1] <= 200.0
+    calls.clear()
+    _run_preflight(tmp_path / "second", 0, calls, seconds=1.0)
+    assert 59.0 < calls[0][1] <= 60.0
+    assert runner._preflight_timeout(1000.0, 90.0) == 90.0
+
+
+def test_baseline_seconds_reads_the_recorded_span():
+    from types import SimpleNamespace
+
+    span = SimpleNamespace(
+        started="2026-01-01T00:00:00+00:00", ended="2026-01-01T00:01:30+00:00"
+    )
+    assert runner._baseline_seconds(span) == 90.0
+
+
+def test_preflight_refuses_a_command_that_fails_and_names_the_failing_test(tmp_path: Path):
     with pytest.raises(AssayError, match="false kill") as caught:
-        _run_preflight(tmp_path, 4, [])
+        _run_preflight(
+            tmp_path, 1, [],
+            stdout="..\nFAILED tests/test_a.py::test_needs_cov - fixture 'cov' not found\n",
+        )
     assert caught.value.reason_code is ReasonCode.BAD_LANE_CONFIG
+    assert "tests/test_a.py::test_needs_cov" in str(caught.value)
+    assert "exit 1" in str(caught.value)
+
+
+def test_preflight_refusal_without_a_failure_line_still_names_the_exit(tmp_path: Path):
+    with pytest.raises(AssayError, match="exit 4") as caught:
+        _run_preflight(tmp_path, 4, [], stdout="usage error\n")
+    assert caught.value.reason_code is ReasonCode.BAD_LANE_CONFIG
+    assert "FAILED" not in str(caught.value).split("exit 4", 1)[1].split(")", 1)[0]
+
+
+def test_first_failure_line_reads_stderr_when_stdout_has_none():
+    from types import SimpleNamespace
+
+    result = SimpleNamespace(stdout_tail=None, stderr_tail="x\nERROR tests/t.py::t - boom")
+    assert runner._first_failure_line(result) == "ERROR tests/t.py::t - boom"
+    assert runner._first_failure_line(SimpleNamespace(stdout_tail=None, stderr_tail=None)) is None
 
 
 _RUN_ARGV = ("pytest", "tests", "-q", "--cov=src")
@@ -260,7 +344,7 @@ def _seed_run_lane(git_repo: GitRepo):
     return base_rev, git_repo.commit_all("introduce a compare-swap site")
 
 
-def test_run_lane_applies_the_key_after_a_collect_only_preflight(git_repo: GitRepo):
+def test_run_lane_applies_the_key_after_a_full_candidate_preflight(git_repo: GitRepo):
     base_rev, head_rev = _seed_run_lane(git_repo)
     calls: list[tuple[str, ...]] = []
 
@@ -294,8 +378,10 @@ def test_run_lane_applies_the_key_after_a_collect_only_preflight(git_repo: GitRe
     assert len(verdict.claims[1].mutation.killed) == 1
     baseline, preflight, candidate = calls
     assert baseline == _RUN_ARGV
-    assert preflight[-2:] == ("--collect-only", "-q")
-    assert "-x" in candidate and "--collect-only" not in candidate
+    # the preflight is the exact candidate command, run to completion
+    assert "--collect-only" not in preflight
+    assert "-x" in preflight and "-x" in candidate
+    assert "no:pytest_cov" in preflight
     assert not any(token.startswith("--cov") for token in candidate)
 
 
@@ -311,6 +397,18 @@ _MOD = (
     "\n"
     "def untested(x):\n"
     "    return x >= 10\n"
+    "\n"
+    "def late(x):\n"
+    "    return x == 5\n"
+)
+# Sorts after test_mod.py, so a mutant of `late` is killed by the LAST test of
+# the run and `-x` truncates nothing before it; the other mutants die earlier.
+_LATE_TESTS = (
+    "from pkg.mod import late\n"
+    "\n"
+    "def test_late():\n"
+    "    assert late(5) is True\n"
+    "    assert late(4) is False\n"
 )
 _TESTS = (
     "from pkg.mod import sign\n"
@@ -326,16 +424,71 @@ _TESTS = (
 )
 
 
-def _real_sweep(tmp_path: Path, *, fail_fast: bool):
-    repo = _seed(
-        tmp_path,
-        {
-            "pkg/__init__.py": "",
-            "pkg/mod.py": _MOD,
-            "tests/test_mod.py": _TESTS,
-            ".gitignore": "cov.json\n__pycache__/\n.coverage\n.pytest_cache/\n",
-        },
+# --- the preflight against REAL pytest ---------------------------------------
+
+
+def _real_preflight(tmp_path: Path, files: dict[str, str]) -> None:
+    repo = _seed(tmp_path, files)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir(parents=True)
+    lane = make_lane(
+        argv=(
+            sys.executable, "-m", "pytest", "tests", "-q", "-p", "no:cacheprovider",
+            "--cov=pkg", "--cov-branch", "--cov-report=json:cov.json",
+        ),
+        env_passthrough=("PATH", "HOME"),
     )
+    plan = make_plan(lane, passthrough_source=dict(__import__("os").environ))
+    # the baseline (with coverage) is green in every case below
+    baseline = runner.execute_plan(plan, cwd=repo.path, timeout=120.0)
+    with prepared_snapshot(repo, scratch_root=scratch) as prepared:
+        runner._candidate_fail_fast_preflight(
+            prepared=prepared,
+            plan=plan,
+            deadline=make_deadline(budget_seconds=240.0),
+            process_runner=runner.default_process_runner,
+            clock=lambda: datetime.now(timezone.utc),
+            baseline_seconds=runner._baseline_seconds(baseline),
+        )
+
+
+def test_real_preflight_passes_on_a_healthy_suite(tmp_path: Path):
+    _real_preflight(tmp_path, dict(_REAL_BASE))
+
+
+def test_real_preflight_refuses_a_test_that_fails_only_at_setup_without_pytest_cov(
+    tmp_path: Path,
+):
+    needs_cov = (
+        "def test_uses_the_cov_fixture(cov):\n"
+        "    assert cov is not None\n"
+    )
+    with pytest.raises(AssayError, match="false kill") as caught:
+        _real_preflight(tmp_path, {**_REAL_BASE, "tests/test_needs_cov.py": needs_cov})
+    assert caught.value.reason_code is ReasonCode.BAD_LANE_CONFIG
+    assert "test_needs_cov.py::test_uses_the_cov_fixture" in str(caught.value)
+
+
+def test_real_preflight_refuses_addopts_that_need_pytest_cov(tmp_path: Path):
+    with pytest.raises(AssayError, match="false kill") as caught:
+        _real_preflight(
+            tmp_path,
+            {**_REAL_BASE, "pytest.ini": "[pytest]\naddopts = --cov=pkg --cov-fail-under=1\n"},
+        )
+    assert caught.value.reason_code is ReasonCode.BAD_LANE_CONFIG
+
+
+_REAL_BASE = {
+    "pkg/__init__.py": "",
+    "pkg/mod.py": _MOD,
+    "tests/test_mod.py": _TESTS,
+    "tests/test_zz_late.py": _LATE_TESTS,
+    ".gitignore": "cov.json\n__pycache__/\n.coverage\n.pytest_cache/\n",
+}
+
+
+def _real_sweep(tmp_path: Path, *, fail_fast: bool):
+    repo = _seed(tmp_path, dict(_REAL_BASE))
     scratch = tmp_path / "scratch"
     scratch.mkdir(parents=True)
     lane = make_lane(
@@ -355,7 +508,7 @@ def _real_sweep(tmp_path: Path, *, fail_fast: bool):
             plan=plan,
             deadline=make_deadline(budget_seconds=240.0),
             targets=(
-                MutationTarget(path="pkg/mod.py", text=_MOD, lines=frozenset({2, 4, 9})),
+                MutationTarget(path="pkg/mod.py", text=_MOD, lines=frozenset({2, 4, 9, 12})),
             ),
             adapter=PythonAdapter(),
             jobs=1,
@@ -379,9 +532,15 @@ def test_buckets_are_identical_with_and_without_fail_fast(tmp_path: Path):
     plain = _real_sweep(tmp_path / "plain", fail_fast=False)
     fast = _real_sweep(tmp_path / "fast", fail_fast=True)
     assert _identity(fast) == _identity(plain)
-    assert plain.total == fast.total >= 3
+    assert plain.total == fast.total >= 4
     # the fixture really exercises both outcomes
     assert plain.killed and plain.survived
+
+
+def test_a_mutant_killed_only_by_the_last_test_is_killed_with_fail_fast(tmp_path: Path):
+    fast = _real_sweep(tmp_path / "fast", fail_fast=True)
+    late = {m.lineno for m in fast.killed}
+    assert 12 in late
 
 
 def test_cold_witness_ignores_the_key_and_says_so():

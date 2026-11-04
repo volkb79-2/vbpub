@@ -1825,19 +1825,26 @@ keeps its coverage and runs the whole suite.
   `judge.language = "python"` and the argv literally invokes pytest, and refuses
   a coverage option assay cannot remove without guessing (for example
   `--cov-fail-under=90`).
-- **Collect-only preflight.** Every nonzero exit is a `killed` candidate, so an
-  option conflict would turn the whole sweep into false kills (the usual cause:
-  `addopts = --cov` in pytest configuration, which breaks once pytest-cov is
-  disabled). Before the first candidate, assay runs the candidate command once,
-  `--collect-only -q`, on the unmutated snapshot and refuses the lane
-  (`BAD_LANE_CONFIG`) unless it succeeds.
+- **Full-pass preflight.** Every nonzero exit is a `killed` candidate, so
+  anything that makes the candidate command fail on the UNMUTATED tree would turn
+  the whole sweep into false kills: an option conflict (`addopts = --cov` breaks
+  once pytest-cov is disabled) and also a test that fails only at setup or run
+  time without the plugin (for example a test that uses the `cov` fixture).
+  Before the first candidate, assay runs the exact candidate command (coverage
+  options removed, injected witness plugin, `-x -p no:pytest_cov`) once on the
+  unmutated snapshot and requires a full PASS (exit 0). Otherwise it refuses the
+  lane (`BAD_LANE_CONFIG`) with a message naming the exit and the first failing
+  test. The preflight costs one no-coverage suite run and has its own timeout,
+  twice the baseline's measured wall time (at least 60 s, never more than the
+  remaining lane budget).
 - **Verdict semantics are unchanged.** Buckets still come from the command's
   exit status. A fail-fast kill is as sound as a full-run kill (one failing test
   is the whole definition of killed); a survivor still passed the complete suite,
   because `-x` only matters after a failure. Nothing in the candidate path reads
   coverage, so no per-candidate coverage output is lost. The failed-call witness
-  stays on: the receipt plugin is injected before the fail-fast tokens and a
-  failed call simply ends the started prefix. Tests that fail only because of
+  stays on **only if the declared lane argv has no `-x`/`--maxfail`** (assay's own
+  `-x` is added after the witness decision): the receipt plugin is injected
+  before the fail-fast tokens and a failed call simply ends the started prefix. Tests that fail only because of
   test ORDER, or only when a later test runs, are the one place the buckets can
   differ; the suite's own baseline is green, so such a mutant is a kill either
   way.
@@ -1848,9 +1855,14 @@ keeps its coverage and runs the whole suite.
 - **`--cold-witness`** already stops each candidate at its first verified failure
   under a stricter proof, so the key is ignored there (with a diagnostic) and
   stays out of that run's identity.
-- A lane whose argv already carries `-x`/`--maxfail=1` gets the fail-fast effect
-  without the key, but still pays for coverage in every candidate and disables
-  the failed-call witness; the key is the better spelling.
+- **Do not combine the key with `-x` in the lane argv.** A user `-x` (or
+  `--maxfail=1`) in the declared argv makes `supports_sequential_pytest` refuse
+  ("fail-fast option"), which disables the failed-call witness and
+  `--cold-witness`/`--reuse-from` replay, and it also truncates the R0/R1
+  baseline on a failure. Adopting the key therefore means REMOVING `-x` from the
+  lane argv; assay adds its own `-x` to candidates only. A lane that keeps its
+  `-x` and omits the key still gets the fail-fast effect, but pays for coverage in
+  every candidate and has no witness.
 
 ### Native mutation score vocabulary (B098)
 
