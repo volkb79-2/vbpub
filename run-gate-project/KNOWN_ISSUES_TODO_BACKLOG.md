@@ -7627,7 +7627,15 @@ the cause. No product defect is claimed. **Next step:** when either test fails a
 
 ## RG-162 — load-sensitive flaky selftest tests: `test_lock_wait_does_not_consume_lane_budget` (1 s budget timing) and `test_reattach_adopts_recorded_session_stop_called_with_it` (`profiling: cgprofile ctl stop produced an unparsable response`)
 
-**Status:** OPEN (watch), 2026-11-05 (rigor-rgd-20261105). Related to RG-160 (same reattach test).
+**Status:** FIXED 2026-11-05 (rigor-rgd-20261105); test-only change, no product defect. Related to RG-160 (same reattach test; its cause is this one).
+
+**Root cause (reproduced, instrumented).** `_FakeCgprofileDaemon.close()` closed the listener while its accept thread was blocked in `accept()`; that does not wake the thread, and the freed fd number is
+reused by the next test's listener. The stale thread then accepted the NEXT test's connections and answered them from its own deleted plan directory (no plan file: close with 0 bytes), and the new daemon never
+saw the request (instrumentation showed a `stop` for the reattach test answered by the `test_wrong_contract_...` daemon's plan path). It also explains the doctor test (`[OK] profiler daemon` missing) and
+`basic`-instead-of-`daemon` failures in sibling tests. **Fix:** the accept loop polls with a 50 ms timeout and `close()` sets a stop event and joins the thread before releasing the fd. Assertions untouched.
+**Lock-wait test:** same oracle (lock wait alone exceeds the lane budget, lane still PASSes) with a 2 s budget, 0.5 s command and 2.2 s lock hold, so the command has 1.5 s headroom instead of 0.25 s.
+**Proof.** Before: the seven fake-daemon classes failed 1 to 2 tests in about 1 of 3 runs under 4 nice spinners. After: 25 consecutive such runs, 0 failures; each of the reattach, doctor-pressure and lock-wait tests run 20x alone, 0 failures.
+The remote `TestHistoryStoreReadableByTheReleasedReader` failure was the thin-bundle tag gap, fixed in remote-gate (branch remote-gate-20261105).
 
 **Evidence.** Three local `run-gate selftest` runs on the rgd branch each failed exactly one test of ~2886, and the failing test differed between runs, with no relation to the change under test:
 `TestRG78ClosedExitTable.test_lock_wait_does_not_consume_lane_budget` (its 1-second lane budget is exceeded by scheduler delay under host load) and

@@ -280,14 +280,27 @@ class _FakeCgprofileDaemon:
                                                run_gate.socket.SOCK_STREAM)
         self.listener.bind(self.path)
         self.listener.listen(16)
-        threading.Thread(target=self._accept_loop, daemon=True).start()
+        # RG-162: closing a listener while another thread is blocked in
+        # accept() does not wake it, and the freed fd NUMBER is reused by the
+        # next test's listener; the stale accept thread then accepted that
+        # test's connections and answered them from a deleted plan directory
+        # (a 0-byte reply). The loop therefore polls with a short timeout and
+        # `close()` stops and JOINS it before the fd is released.
+        self.listener.settimeout(0.05)
+        self._stopping = threading.Event()
+        self._acceptor = threading.Thread(target=self._accept_loop,
+                                          daemon=True)
+        self._acceptor.start()
 
     def _accept_loop(self) -> None:
-        while True:
+        while not self._stopping.is_set():
             try:
                 conn, _ = self.listener.accept()
+            except run_gate.socket.timeout:
+                continue
             except OSError:
                 return
+            conn.settimeout(None)
             threading.Thread(target=self._handle, args=(conn,),
                              daemon=True).start()
 
@@ -327,6 +340,8 @@ class _FakeCgprofileDaemon:
                 pass
 
     def close(self) -> None:
+        self._stopping.set()
+        self._acceptor.join(timeout=5)
         self.listener.close()
         shutil.rmtree(self.root, ignore_errors=True)
 
@@ -2093,8 +2108,8 @@ class TestRG78ClosedExitTable:
         (repo / ".gitignore").write_text(".run-gate/\n")
         commit_all(repo, "ignore run-gate state")
         proj = self._host_config(repo, tmp_path,
-                                 ["bash", "-c", "sleep 0.75"],
-                                 budget="1s", shared="rg78-wait-budget")
+                                 ["bash", "-c", "sleep 0.5"],
+                                 budget="2s", shared="rg78-wait-budget")
         lock_dir = tmp_path / "locks"
         lock_dir.mkdir()
         monkeypatch.setenv("RUN_GATE_LOCK_DIR", str(lock_dir))
@@ -2102,15 +2117,20 @@ class TestRG78ClosedExitTable:
         fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
         fcntl.flock(fd, fcntl.LOCK_EX)
         release = threading.Thread(
-            target=lambda: (time.sleep(0.4), fcntl.flock(fd, fcntl.LOCK_UN)))
+            target=lambda: (time.sleep(2.2), fcntl.flock(fd, fcntl.LOCK_UN)))
         release.start()
         started = time.monotonic()
         try:
-            proc = run_tool(proj, "suite", "--lock-wait", "2s", "--json")
+            proc = run_tool(proj, "suite", "--lock-wait", "30s", "--json")
         finally:
             release.join()
             os.close(fd)
-        assert time.monotonic() - started >= 1.0
+        # RG-162: the oracle is unchanged (the lock wait ALONE already exceeds
+        # the lane budget, yet the lane passes), but the command's own run time
+        # (0.5 s) now has 1.5 s of headroom under the 2 s budget instead of
+        # 0.25 s, so scheduler delay cannot turn the budget check into a
+        # false BUDGET_EXCEEDED.
+        assert time.monotonic() - started >= 2.2 + 0.5
         assert proc.returncode == 0, proc.stderr
         result = json.loads(proc.stdout.splitlines()[-1])
         assert result["verdict"] == "PASS"
