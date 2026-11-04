@@ -71,3 +71,15 @@ Golden unit test; `systemd-analyze verify` in a tester lane with systemd availab
 ## Dependencies and order
 
 After CP-41. Consumed by mdt-cockpit MDT-055. Independent of CP-43 except that the unit must not own `/run/cgprofile` (tmpfiles does).
+
+## 2.0 plan amendment (2026-11-04, operator-accepted defaults)
+
+- The renderer is `cgpd unit print|check` (not `cgprofile host-unit`); the templates ship in the wheel's package data. Unit design, limits table,
+  restart policy and hardening are in `docs/NATIVE-DEPLOYMENT.md` section 4; all numbers remain proposals until the measured table of that file's
+  section 4.3 exists.
+- `ReadWritePaths` gains `/sys/kernel/mm/damon` (DAMON sysfs writes) beyond the list above; confirm by test.
+- `OOMScoreAdjust` conflict recorded in `docs/NATIVE-DEPLOYMENT.md` section 4.4: the slice header says the watcher must not be the OOM victim, this
+  entry proposed +200. First 2.0.x release leaves it unset, as a template parameter; decide with the measurements.
+- The unit sets no `Environment=`: configuration is `/etc/cgprofile/cgpd.toml` (`CGPCTL-SPEC.md` section 3), `CGPROFILE_ALLOW_UIDS` becomes the
+  `allow_uids` key, and a leftover variable is refused.
+- Implementation rides CP-48 (package 3).

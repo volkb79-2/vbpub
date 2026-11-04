@@ -12,6 +12,11 @@ Started in RG-55 P6 C6 (socket carrier); `watch` (§8.2) and the stall policy
 (§8.4) landed in C7, placement (§8.3) in C8. Every verb, every `args` name
 and every error code below is live.
 
+> **Planned change (cgprofile 2.0.0).** Sections 1 to 9 describe the wire as shipped in 1.x and stay
+> accurate for every 1.x daemon. Section 10 specifies **ctl contract 2** (the `export` and `config`
+> operations, the removal of `report` and of the exec carrier, session ownership) and how 1.x and 2.x
+> peers recognise each other. The command-line half is [`CGPCTL-SPEC.md`](CGPCTL-SPEC.md).
+
 ## 1. Two carriers, one protocol (§8.1, design D-30)
 
 | carrier | how a request travels | who is authorised |
@@ -370,3 +375,153 @@ died), `daemon-error`.
 window; request handlers only open and read, so a slow window never delays
 another peer's answer. A window keeps running maxima and sums only. Open
 windows are not persisted: after a restart a close gets `window-lost`.
+
+## 10. ctl contract 2 (cgprofile 2.0.0)
+
+Specification. Contract 2 is the control-socket contract of the native `cgpd` daemon. It is additive for
+every verb that exists in contract 1 except one: the `report` verb is removed. The observer socket
+(sections 8 and 9, contracts 2 and 3) is a separate protocol with its own numbers and is not touched.
+
+### 10.1 Versioning and negotiation
+
+* The request line is unchanged (section 2); `contract` may now be `1` or `2`.
+* A 2.x daemon serves **both** contracts on the control socket. It stamps every response, error
+  included, with the contract number of the request it answers. An omitted `contract` is still assumed to
+  be `1`, so unmodified 1.x clients keep working without any change.
+* `version` is answered identically at both contracts and gains, additively, `contracts: [1, 2]` and
+  `daemon.version` (the installed distribution's version). A 1.x daemon answers `version` without
+  `contracts`; a client treats its absence as `[1]`. The `transports.exec` key is dropped from the
+  contract-2 reply of a 2.x daemon (the exec carrier no longer exists) and kept, `false`, in the
+  contract-1 reply so 1.x consumers that read it do not break.
+* `export` and `config` exist only at contract 2. At contract 1 they are refused with `bad-argument`
+  naming both numbers, exactly as a 1.x daemon refuses contract 2 today.
+* A contract-2 client always opens with `version` at contract 1 (every daemon understands it), reads
+  `contracts`, and uses contract 2 only when it is listed. Against a 1.x daemon, `cgpctl` therefore keeps
+  working for `status`, `host`, `start`, `stop`, `watch`, `prune` (all contract 1) and fails `report` and
+  `config show` with exit 3, cause `contract-unsupported`, naming the daemon version that provides them.
+* **How 1.x clients are told.** A 1.x client (run-gate's `_wire_args`, the 1.x in-image `ctl`) that sends
+  `report` to a 2.x daemon at contract 1 receives a normal contract-1 error, never a silent drop:
+  `{"ok": false, "contract": 1, "error": {"code": "report-removed", "message": "the daemon no longer
+  renders reports; export the session with contract 2 and render locally (cgpctl report <session>)"}}`.
+  `report-removed` is a new additive error code; a 1.x client that does not know it treats it like any
+  unknown error code (exit 2 over the old carrier). Nothing else changes for contract-1 callers, which is
+  why run-gate's socket-only change (RG-next) ships against 1.x and 2.x alike.
+* Contract numbers are never reused. A future contract 3 follows the same rule: the daemon serves the
+  previous contract for one major version after introducing the next.
+
+### 10.2 Removed operations and carriers
+
+* `report` (contract 1 only, answered with `report-removed` as above). The error codes `report-unavailable`
+  and `report-failed` and the 2-job report bound stay documented for 1.x; a 2.x daemon never produces
+  them. The daemon holds no pandas, plotly or matplotlib and runs no report subprocess.
+* The `exec` carrier. The daemon has no in-image client and no `docker exec` entry. A caller without
+  access to the socket has no fallback by design; `cgpctl doctor` names the remedy.
+
+### 10.3 `export`
+
+Streams the stored parts of a finished session so the caller can render a report locally.
+
+```json
+{"verb": "export", "args": {"session": "s-20261104T101500Z-9f01"}, "contract": 2}
+```
+
+| `args` key | type | required | notes |
+|---|---|---|---|
+| `session` | string | yes | a finished session id; a live session is `session-live`, an unknown one `unknown-session` |
+| `parts` | array of string \| null | no | subset of the names below; `null` or omitted = every part the session has |
+
+Parts: `summary.json`, `samples.jsonl.gz`, `damon.jsonl`, `events.jsonl`. A part the session does not
+have is omitted from the header, never an error. Binary-safe framing, because `samples.jsonl.gz` is gzip:
+
+1. one **header** line: `{"ok": true, "contract": 2, "session": "...", "parts": [{"name":
+   "summary.json", "bytes": 1234, "sha256": "<hex>"}, ...], "total_bytes": 123456, "owner_uid": 1003}`;
+2. zero or more **data** lines per part, in header order: `{"part": "samples.jsonl.gz", "seq": 0,
+   "data": "<base64>"}`, at most 49,152 raw bytes per line (65,536 base64 characters), `seq` counting from 0
+   per part;
+3. one **end** line: `{"event": "end", "status": "complete"}`.
+
+The caller verifies each part's byte count and sha256 against the header; a mismatch is the caller's
+failure. If the daemon cannot finish the stream (the session directory vanished, a read error) it sends
+`{"event": "end", "status": "aborted", "error": {"code": "export-failed", "message": "..."}}` and
+closes, and the caller discards the partial output. A header-less refusal is the ordinary one-line error
+response.
+
+Bounds and rules:
+
+* `export` is the second streaming verb: `STREAMING_VERBS = {watch, export}`. It has no overall
+  deadline, but a stalled reader is cut after 25 s without progress. At most 4 exports run at once
+  (separate from the 32 `watch` streams); beyond that, `busy`.
+* `total_bytes` over the configured `export_max_bytes` (default 256 MiB) is refused before any data with
+  `export-too-large`, naming the size and the key. The session is untouched.
+* Owner check: only the session's recorded owner uid or uid 0 may export (section 10.5); anyone else gets
+  `peer-refused`. Sessions with no recorded owner (recovered from a 1.x store) are uid 0 only.
+* Read-only: the daemon takes no lock on the session beyond a read, and a retention pass skips a session
+  that is being exported.
+* The streamed bytes are the files on disk, so no schema is added: `summary.json` keeps the Summary
+  schema v1.1 of `RG55-INTERFACE-CONTRACT.md` section 3.
+
+### 10.4 `status` and `start` additions, and `config`
+
+All additive within contract 2; contract-1 behaviour of the same verbs is unchanged.
+
+**`status`** gains `args.state`: `"live"` (default, the contract-1 behaviour), `"done"` or `"all"`. Each
+entry of `sessions` gains `owner_uid` (integer or `null`), `state` (`live` | `done` | `aborted`), and for
+non-live entries `ended_at` and `scope`. `status` with a `session` is unchanged. Sessions are returned
+newest first and capped at `keep_sessions`.
+
+**`start`** gains target kinds beside `containerid:<64hex>`:
+
+* `cgroup:<absolute cgroup path>`: a cgroup under `/sys/fs/cgroup`, canonicalized by the daemon, no `..`
+  component, must exist and be readable;
+* `slice:<name>.slice`: expanded by the daemon like the observed-slice names.
+
+Both use the new `scope` value `observe`, which means read-only observation: `place`, `memory_high`,
+`memory_max`, `cpu_weight` and `on_stall=kill` are refused with `bad-policy` (`kill` is only defined for
+exact gates-slice containers). Every other `start` argument keeps its meaning. A `scope` other than
+`observe` with a non-`containerid:` target, or `observe` with a `containerid:` target, is `bad-argument`.
+The manifest records `owner_uid` for every session (section 10.5).
+
+**`config`** (read-only):
+
+```json
+{"verb": "config", "args": {}, "contract": 2}
+```
+
+Response: `{"ok": true, "contract": 2, "config": {"file": "/etc/cgprofile/cgpd.toml", "digest":
+"sha256:<hex>", "loaded_at": "...", "reloads": 0, "last_reload_error": null, "keys": {"<key>": {"value":
+..., "source": "default" | "file", "reloadable": true}}}}`. The key set is `CGPCTL-SPEC.md` section 3.2.
+There is no write counterpart.
+
+**`version`** at contract 2 also carries `config: {"digest": "...", "last_reload_error": null}`, so
+`cgpctl status` and the host-setup check read the digest without a second call.
+
+### 10.5 Session ownership
+
+`start` records the peer's `SO_PEERCRED` uid in the session manifest as `owner_uid`. Then:
+
+| Operation | Allowed to |
+|---|---|
+| `status`, `watch`, `host`, `version`, `config` | every authorised peer (group plus `allow_uids`) |
+| `stop`, `export` | the session's `owner_uid`, or uid 0 |
+| `gc` | every authorised peer; removes only sessions the peer owns, uid 0 removes any |
+
+Anything else is `peer-refused` with a message naming the owner uid. Unreadable credentials fail closed
+for these operations even when no `allow_uids` is configured. This rule is hygiene, not a security
+boundary: on an mdt host the ctl group is the Docker relay group and therefore root-equivalent, which the
+product documentation states plainly. `on_stall=kill` keeps its separate, stricter rule (exact
+gates-slice container cgroups only, section 3). Contract-1 callers are subject to the same ownership
+rules: run-gate starts and stops its sessions as one uid, so nothing changes for it.
+
+### 10.6 New error codes
+
+Additive at contract 2: `report-removed` (also answered at contract 1), `session-live` (`export` of a
+live session), `export-too-large`, `export-failed` (only inside an aborted stream end line). `peer-refused`
+gains the ownership meaning of section 10.5. `busy` also covers the 4-export bound.
+
+### 10.7 Goldens
+
+Package 3 adds, under `tests/fixtures/rg55/socket/`: `export-request.json`, `export-response.ndjson`
+(header, one data line per part, end), `config-request.json`, `config-response.json`,
+`report-removed-response.json` (a contract-1 request answered by a 2.x daemon) and contract-2 variants of
+`version-response.json` and `status-response.json`. The existing contract-1 goldens stay byte-for-byte
+as the 1.x compatibility oracle.
