@@ -15,9 +15,18 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ### Added
 - host-setup `HOST_ROLE=dedicated-dev` load-tier ceilings made reachable (AD2-0; shared-prod byte-identical): `dev-gates.slice` / `dev-background.slice` MemoryMax = dev.slice
   MemoryHigh (dev's own RAM+swap Max is never reachable), MemorySwapMax = dev.slice swap max minus the protected tiers' MemoryLow sum (floor 256M); that sum now also counts the
-  new optional `DEV_CACHE_MEMORY_LOW` (future `dev-cache.slice`, default empty = 0). Pins still win (`DEV_{GATES,BACKGROUND}_MEMORY_{HIGH,MAX,SWAP_MAX}`). A lane with no swap left is
+  new optional `DEV_CACHE_MEMORY_LOW` (the `dev-cache.slice` Low, default empty = 0). Pins still win (`DEV_{GATES,BACKGROUND}_MEMORY_{HIGH,MAX,SWAP_MAX}`). A lane with no swap left is
   OOM-killed inside gates instead of thrashing (intended). `mdt-host-check.sh` verifies memory.max and memory.swap.max against the derivation. README "Load tiers yield first" and env example 4.0b updated;
   supersedes the MemoryMax/MemorySwapMax statements of the entry below.
+- host-setup `HOST_ROLE=dedicated-dev` shared tree cache (AD2-2, MDT-074; shared-prod byte-identical, owned units removed when the role is left): persistent
+  `dev-cache.slice` under dev.slice (`DEV_CACHE_MEMORY_LOW`, counted in dev.slice's MemoryLow and in the protected-Low sum that the gates/background MemoryHigh and MemorySwapMax subtract; MemoryMax is dev High and does not),
+  tmpfs mount units for `MDT_TREE_CACHE_ROOT` (`/srv/tree-cache`) and `MDT_TREE_UPPER_ROOT` (`/srv/tree-upper`) (`mode=2770 root:runner`, `nosuid,nodev,huge=never`,
+  sizes default 25 % / 10 % of RAM, inode bounds), a `tree_cache` block merged into `/etc/mdt/host-capacity.json`, and `mdt-tree-cache-gc.timer`
+  (idle, unleased, unmounted keys, stale builds, orphan uppers; documented directory/lease format in `mdt_tree_cache.py` and the README). Keys `MDT_TREE_*`,
+  `DEV_CACHE_*`; wizard, env example, README, `mdt-host-check.sh` and hermetic tests included. Optional convenience: the neutral host contract any host can meet
+  without mdt-cockpit is `libraries/cowtree/HOST-CONTRACT.md`. Hardened after review: the cache plan is validated before the installer's commit point, the GC
+  tolerates vanished/zombie processes and hostile `.lease` entries (symlink, FIFO) per entry, `render` refuses to overwrite a unit it does not own, and tree roots
+  may not overlap system directories.
 - host-setup `HOST_ROLE=dedicated-dev` load tiers yield first (MDT-TESTHOST-MEM-2; shared-prod byte-identical): `dev-gates.slice` and `dev-background.slice` MemoryHigh =
   dev.slice MemoryHigh minus (`DEV_INTERACTIVE_MEMORY_LOW` + `DEV_BUILDKITD_MEMORY_LOW`), MemoryMax derived the same way from dev.slice MemoryMax (floor 1G, never above
   dev.slice's, MemoryMax >= MemoryHigh); MemorySwapMax and CPU weights unchanged. `DEV_{GATES,BACKGROUND}_MEMORY_{HIGH,MAX}` are now pins on this role (`-`/`0` omit).

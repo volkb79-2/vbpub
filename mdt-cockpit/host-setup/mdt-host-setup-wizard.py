@@ -42,6 +42,7 @@ from __future__ import annotations
 import argparse
 from mdt_cli import MdtArgumentParser
 import mdt_capacity
+import mdt_tree_cache
 from decimal import Decimal
 import importlib.util
 import json
@@ -847,6 +848,17 @@ def _config_value_validators() -> dict[str, Validator]:
         "DEV_HOST_MEMORY_KEEP": mdt_capacity.validate_host_memory_keep,
         "DEV_HOST_PROTECTED_UNITS": mdt_capacity.validate_host_protected_units,
         "DEV_CACHE_MEMORY_LOW": mdt_capacity.validate_optional_size,
+        "DEV_CACHE_ZSWAP_WRITEBACK": validate_yes_no,
+        "MDT_TREE_CACHE_ROOT": mdt_tree_cache.validate_tree_path,
+        "MDT_TREE_UPPER_ROOT": mdt_tree_cache.validate_tree_path,
+        "MDT_TREE_CACHE_SIZE": mdt_tree_cache.validate_area_size,
+        "MDT_TREE_UPPER_SIZE": mdt_tree_cache.validate_area_size,
+        "MDT_TREE_CACHE_INODES": mdt_tree_cache.validate_inodes,
+        "MDT_TREE_UPPER_INODES": mdt_tree_cache.validate_inodes,
+        "MDT_TREE_CACHE_GROUP": mdt_tree_cache.validate_group,
+        "MDT_TREE_CACHE_GC_IDLE": mdt_tree_cache.validate_timespan,
+        "MDT_TREE_UPPER_GC_IDLE": mdt_tree_cache.validate_timespan,
+        "MDT_TREE_CACHE_GC_INTERVAL": mdt_tree_cache.validate_timespan,
         "IO_DEV_PATH": validate_io_dev_path,
         "DEV_STATIC_RIOPS": validate_positive_int,
         "DEV_STATIC_WIOPS": validate_positive_int,
@@ -2067,9 +2079,26 @@ def step_host_role(cfg_current: dict[str, str], example_defaults: dict[str, str]
             example_defaults,
             validate=mdt_capacity.validate_host_protected_units,
         )
+        out("Shared tree cache (AD2-2): dev-cache.slice plus a tree-cache tmpfs and an overlay-upper tmpfs; run-gate and assay use them to share one read-only tree between lanes. The mount roots, group, inode bounds and GC timing keep their host-setup.env.example defaults (edit the file to change them).")
+        cache_low = walk_key(
+            "Memory protected for the tree cache slice (DEV_CACHE_MEMORY_LOW: empty or `-` = none, or a size such as 512M)",
+            "DEV_CACHE_MEMORY_LOW",
+            cfg_current,
+            example_defaults,
+            validate=mdt_capacity.validate_optional_size,
+        )
+        cache_size = walk_key(
+            "Tree cache tmpfs size (MDT_TREE_CACHE_SIZE: empty = 25% of RAM, a size of at least 64M, or `-` = no tree cache at all)",
+            "MDT_TREE_CACHE_SIZE",
+            cfg_current,
+            example_defaults,
+            validate=mdt_tree_cache.validate_area_size,
+        )
         if walked is not None:
             walked["DEV_HOST_MEMORY_KEEP"] = keep
             walked["DEV_HOST_PROTECTED_UNITS"] = units
+            walked["DEV_CACHE_MEMORY_LOW"] = cache_low
+            walked["MDT_TREE_CACHE_SIZE"] = cache_size
     return role
 
 

@@ -1,0 +1,19 @@
+# RENDERED by host-setup/mdt_tree_cache.py (install.sh) from host-setup.env — do not edit the
+# installed copy; edit /etc/mdt/host-setup.env and re-run install.sh.
+# MDT-TREE-AREA @TREE_KIND@ owned: HOST_ROLE=dedicated-dev only (AD2-2).
+# The unit file name is the systemd path escape of Where= (mdt_tree_cache.mount_unit_name).
+[Unit]
+Description=mdt @TREE_KIND@ tmpfs (@TREE_WHERE@)
+Before=docker.service local-fs.target
+
+[Mount]
+What=tmpfs
+Where=@TREE_WHERE@
+Type=tmpfs
+# size/nr_inodes bound the area; mode 2770 root:<gid> (setgid) lets the gate-runner group publish
+# and lease; nosuid,nodev but NOT noexec (trees hold test binaries); huge=never keeps small files
+# from rounding up to 2 MiB pages; never `noswap` (cold pages move to zswap, charged to the owner).
+Options=size=@TREE_SIZE@,nr_inodes=@TREE_INODES@,mode=2770,gid=@TREE_GID@,nosuid,nodev,huge=never
+
+[Install]
+WantedBy=local-fs.target

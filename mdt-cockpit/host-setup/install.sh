@@ -1050,6 +1050,14 @@ fi
 # them here, not after the units are rendered. Only the writes remain after the commit point.
 provision_cgprofile_observer / preflight || exit $?
 
+# Tree cache plan (AD2-2, MDT-074): gid lookup, the half-of-RAM bound and path rules live in make_plan, not in
+# the wizard validators, so they are evaluated here, before the commit point (a refusal changes nothing).
+if [ "$MDT_DEDICATED_MEM" = 1 ]; then _tree_role=dedicated-dev; else _tree_role=other; fi
+if ! _tree_plan=$(python3 "$HERE/mdt_tree_cache.py" plan --config "$CANDIDATE_PATH" --role "$_tree_role"); then
+  echo "ERROR: the tree cache plan (MDT_TREE_* / DEV_CACHE_* keys) is not valid; nothing was changed." >&2
+  exit 2
+fi
+
 # === COMMIT POINT: nothing above this line mutates the host (MDT-HS-02) ===
 # Every refusal above has been evaluated. Only now are /etc/mdt, the buildx config
 # directory, the installed config and the guard confirmation record touched.
@@ -1099,6 +1107,14 @@ rm -f \
   /usr/local/sbin/mdt-container-caps.lib.sh \
   /usr/local/sbin/mdt-slice-audit.py
 
+# HOST_ROLE=dedicated-dev shared tree cache (AD2-2): the plan was validated in the pre-flight (before the
+# COMMIT POINT), so an invalid MDT_TREE_* / DEV_CACHE_* value changed nothing. Not dedicated-dev (or
+# MDT_TREE_CACHE_SIZE=-): the plan is "disabled" and render below removes whatever this installer owns of
+# it, so shared-prod stays byte-identical.
+case "$_tree_plan" in
+  *TREE_CACHE_ENABLED=1*) echo "HOST_ROLE=dedicated-dev tree cache: $(printf '%s' "$_tree_plan" | tr '\n' ' ')" ;;
+esac
+
 echo "== render + install units =="
 RENDER_VARS="DEV_CPU_QUOTA DEV_ZSWAP_WRITEBACK DEV_SWAP_MAX \
 DEV_MEMORY_LOW DEV_MEMORY_HIGH DEV_MEMORY_MAX \
@@ -1143,7 +1159,11 @@ render "$HERE/units/mdt-buildkitd.service.in"  /etc/systemd/system/mdt-buildkitd
 render "$HERE/buildkitd.toml.in"              /etc/mdt/buildkitd.toml
 [ "$(_mdt_files_digest "${MDT_BUILDKITD_FILES[@]}")" = "$_BK_DIGEST_BEFORE" ] && BUILDKITD_CHANGED=0 || BUILDKITD_CHANGED=1
 install -m 0755 "$HERE/scripts/mdt-buildkitd-stamp.sh" /usr/local/sbin/mdt-buildkitd-stamp.sh
-render "$HERE/units/mdt-dev-governance-reconcile.timer.in"  /etc/systemd/system/mdt-dev-governance-reconcile.timer
+# dev-cache.slice, the tree-cache/upper tmpfs mount units, the GC timer and the host-capacity.json block:
+# rendered (or removed, when the plan is disabled) by one implementation. Activation follows daemon-reload.
+install -m 0755 "$HERE/mdt_tree_cache.py" /usr/local/sbin/mdt_tree_cache.py
+python3 "$HERE/mdt_tree_cache.py" render --config "$CANDIDATE_PATH" --role "$_tree_role" --units-dir "$HERE/units" || exit 2
+render "$HERE/units/mdt-dev-governance-reconcile.timer.in" /etc/systemd/system/mdt-dev-governance-reconcile.timer
 install -m 0644 "$HERE/units/mdt-dev-governance-reconcile.service" /etc/systemd/system/mdt-dev-governance-reconcile.service
 if [ "${INOTIFY_OK:-}" = 1 ]; then
   install -m 0644 "$HERE/units/mdt-container-memory-inotify-watcher.service" /etc/systemd/system/mdt-container-memory-inotify-watcher.service
@@ -1320,6 +1340,7 @@ if [ -n "$SD_VER" ] && [ "$SD_VER" -lt 256 ] 2>/dev/null; then
     /etc/systemd/system/dev-background.slice \
     /etc/systemd/system/dev-gates.slice \
     /etc/systemd/system/dev-buildkitd.slice
+  [ -f /etc/systemd/system/dev-cache.slice ] && sed -i '/^MemoryZSwapWriteback=/d' /etc/systemd/system/dev-cache.slice
   echo "systemd $SD_VER < 256 — dropped MemoryZSwapWriteback= from dev.slice + every child (runtime raw-write fallback covers it)"
 fi
 
@@ -1472,6 +1493,8 @@ fi
 echo "verified Docker default cgroup parent: $DOCKER_DAEMON_CGROUP_PARENT (loaded, fragment=$_parent_fragment)"
 systemctl start dev.slice dev-interactive.slice dev-background.slice dev-memory_min_guaranteed.slice \
   dev-gates.slice dev-buildkitd.slice
+# dedicated-dev only: start dev-cache.slice, mount (or remount) the tree areas, enable the GC timer.
+python3 "$HERE/mdt_tree_cache.py" activate --config "$CANDIDATE_PATH" --role "$_tree_role" || exit 2
 systemctl enable mdt-dev-governance-reconcile.service          # boot-time apply
 systemctl enable --now mdt-dev-governance-reconcile.timer      # periodic sweep
 # PSI guard (MDT_PSI_GUARD): `off` stops it (it reverts anything it owns on stop); `report`

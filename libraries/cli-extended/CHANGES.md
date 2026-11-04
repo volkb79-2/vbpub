@@ -174,6 +174,22 @@ Behaviour changes a consumer can see:
 
 <!-- cmru: release history -->
 
+## [0.5.2] - 2026-11-04
+<!-- cmru: generated -->
+<!-- cmru: source-end=ce8bc97e94725293351b3966c347852b2f1a0336 -->
+
+### Added
+- feat(assay): R2 lanes declare jobs_max and run-gate jobs=auto (assay-jobs audit) (fe53428a8)
+
+### Changed
+- cli-extended, ciu: r2 lane cowtree path; ciu request base (601904faa)
+
+<!-- cmru: pending release notes begin -->
+### Fixed
+- `run-gate.toml` lane `r2` puts `libraries/cowtree/src` on `PYTHONPATH` next to `assay/src`, so `assay.cli run` no longer crashes with
+  `No module named 'cowtree'` when CoW isolation is on (no host-local patch needed).
+<!-- cmru: pending release notes end -->
+
 ## [0.5.1] - 2026-11-03
 <!-- cmru: generated -->
 <!-- cmru: source-end=bc1e0d5ac3ee3b44531b58bb211faa8437c991c8 -->
@@ -201,10 +217,6 @@ Behaviour changes a consumer can see:
 <!-- cmru: pending release notes end -->
 
 ## [Unreleased]
-
-### Fixed
-- `run-gate.toml` lane `r2` puts `libraries/cowtree/src` on `PYTHONPATH` next to `assay/src`, so `assay.cli run` no longer crashes with
-  `No module named 'cowtree'` when CoW isolation is on (no host-local patch needed).
 
 ## [0.5.0] - 2026-10-21
 <!-- cmru: generated -->

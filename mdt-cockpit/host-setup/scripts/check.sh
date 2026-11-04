@@ -1156,6 +1156,29 @@ else
   fi
 fi
 
+echo "== dev-cache.slice and the shared tree cache (AD2-2, HOST_ROLE=dedicated-dev) =="
+# One implementation (mdt_tree_cache.py check): slice exists with the configured MemoryLow, both tmpfs areas are
+# mounted with the configured size/inodes/gid/mode, the GC timer is active, host-capacity.json carries tree_cache.
+_TREE_PY="${TREE_CACHE_PY:-$(dirname "$0")/mdt_tree_cache.py}"
+[ -f "$_TREE_PY" ] || _TREE_PY="$(dirname "$0")/../mdt_tree_cache.py"
+if [ "$(_mdt_host_role)" != dedicated-dev ]; then
+  info "tree cache not applicable (HOST_ROLE is not dedicated-dev)"
+elif [ ! -f "$_TREE_PY" ]; then
+  warn "$_TREE_PY missing — cannot verify the tree cache; re-run install.sh"
+else
+  _tree_out=$(python3 "$_TREE_PY" check --config "$CONF" --role dedicated-dev 2>&1) || _tree_out="WARN the tree cache check failed to run: $_tree_out"
+  while IFS= read -r _line; do
+    case "$_line" in
+      OK\ *)   ok "${_line#OK }" ;;
+      FAIL\ *) fail "${_line#FAIL }" ;;
+      WARN\ *) warn "${_line#WARN }" ;;
+      INFO\ *) info "${_line#INFO }" ;;
+      "") ;;
+      *)       warn "tree cache check: $_line" ;;
+    esac
+  done <<<"$_tree_out"
+fi
+
 echo "== per-host CPU benchmark (HB-3) =="
 # The persisted /var/lib/mdt/host-facts/cpu-benchmark.json (measured once, never by this check): missing,
 # partial (no scores) or STALE (cpu_model / vCPU count changed) is a WARN with the command to run.
