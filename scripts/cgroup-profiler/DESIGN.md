@@ -430,19 +430,17 @@ class DamonSession:
     def collect(self) -> List[Dict] # classified regions + summary
 ```
 
-**Use `SysfsInterface` from `scripts/damon-analysis/lib/damon_analysis.py`
-directly — do not shell out to `damo`.** That venv's `damo` has a shebang
-pointing at a host path (`/home/vb/…/venv/bin/python3`) and is not executable
-from inside a container; `Monitor` in that library depends on it, so `Monitor`
-is unusable here. `SysfsInterface` and `Classifier` are pure sysfs/pure python
-and are the parts to reuse. Import via `sys.path` insertion relative to this
-file (`../../damon-analysis/lib`), guarded so the profiler still runs when
-damon-analysis is absent.
+**Use `SysfsInterface` from the vendored `cgprofile._damon.damon_analysis`
+directly — do not shell out to `damo`.** `Monitor` in that library depends on
+the `damo` executable, whose location is host-specific, so `Monitor` is
+unusable here. `SysfsInterface` and `Classifier` are pure sysfs/pure python
+and are the parts to reuse. The copy is byte-synced with
+`scripts/damon-analysis/lib/damon_analysis.py` by a test; DAMON stays optional
+evidence, so the profiler runs when the kernel facility is absent.
 
 DAMON is one shared kernel facility: acquire `nr_kdamonds`, and **always**
-release it on exit — including on `SIGINT`/`SIGTERM`. Verified working from the
-helper container: writing `1` to `nr_kdamonds` creates kdamond `0`, and writing
-`0` tears it down.
+release it on exit — including on `SIGINT`/`SIGTERM`. Writing `1` to
+`nr_kdamonds` creates kdamond `0`, and writing `0` tears it down.
 
 ### 4.8 `caps.py` (agent C)
 
