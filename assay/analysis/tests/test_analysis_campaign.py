@@ -299,6 +299,31 @@ def test_analysis_reads_an_archived_v17_verdict_and_writes_only_the_new_shape(tm
     assert result["campaign"]["completed_total"] == 2
 
 
+def test_an_archived_v17_verdict_is_shape_checked_field_by_field():
+    good = _archived_v17(_fixture_document("r2_pass"))
+    check = campaign_api._archived_verdict_failures
+    assert check(good) == []
+
+    def broken(**changes):
+        document = json.loads(json.dumps(good))
+        document.update(changes)
+        return check(document)
+
+    assert broken(lane="") == ["archived v17 verdict has no lane"]
+    assert broken(commit=None) == ["archived v17 verdict has no commit"]
+    assert broken(claims=[]) == ["archived v17 verdict has no claims"]
+    assert broken(judgment=None) == ["archived v17 verdict has no judgment object"]
+    assert broken(judgment={"r2": "x"}) == [
+        "archived v17 verdict judgment.r2 is not an object"
+    ]
+    for jobs in (0, True, "2"):
+        assert broken(judgment={"r2": {"producer": "native", "jobs": jobs}}) == [
+            "archived v17 verdict judgment.r2.jobs is not a positive integer"
+        ]
+    assert broken(judgment={"r2": {"producer": "ingested"}}) == []
+    assert broken(judgment={"r2": None}) == []
+
+
 def test_analysis_refuses_a_verdict_of_an_unknown_old_version(tmp_path, monkeypatch):
     document = _fixture_document("r2_pass")
     document["schema_version"] = 16
