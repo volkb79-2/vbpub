@@ -44,6 +44,26 @@ ACTIVATION_VERBS = ("bootstrap", "apply", "health", "rollback")
 # it; keeps the scp/tar bundle small. Overridable per host via bundle_excludes.
 DEFAULT_BUNDLE_EXCLUDES = [".git"]
 
+# Never pushed, whatever the host row says (CIU-175): ``.git`` is local state;
+# ``.ciu/`` holds the control host's materialised secrets (e.g. the registry
+# read token); ``ciu.env`` is the control host's machine facts. rsync patterns
+# without a leading slash match at any depth, so nested stacks' ``.ciu/`` are
+# covered; :func:`make_tarball` mirrors that for the tar+scp fallback.
+ALWAYS_BUNDLE_EXCLUDES = [".git", ".ciu/", "ciu.env"]
+
+
+def bundle_excludes_for(host_cfg: dict) -> list[str]:
+    """The exclude list for EVERY bundle push: the mandatory set plus the host's
+    ``bundle_excludes`` (a list of strings; the default adds nothing further)."""
+    extra = host_cfg.get("bundle_excludes")
+    if extra is None:
+        extra = []
+    if not isinstance(extra, list) or not all(isinstance(e, str) for e in extra):
+        raise ValueError("[S14.6] 'bundle_excludes' must be a list of strings.")
+    merged = list(ALWAYS_BUNDLE_EXCLUDES)
+    merged += [e for e in extra if e not in merged]
+    return merged
+
 # Name of the transient tarball dropped in bundle_dir by the scp/tar fallback.
 _REMOTE_TARBALL = ".ciu_bundle.tar.gz"
 
@@ -129,8 +149,14 @@ def make_tarball(local_dir: str, *, excludes: Optional[list[str]] = None) -> str
         rel = name[2:] if name.startswith("./") else name
         if not rel:
             return ti
-        first = rel.split("/", 1)[0]
-        if first in ex or rel in ex:
+        segments = rel.split("/")
+        first = segments[0]
+        if first in ex or rel in ex or first + "/" in ex:
+            return None
+        # rsync's slash-less/dir patterns match at any depth (CIU-175).
+        if ".ciu/" in ex and ".ciu" in segments:
+            return None
+        if "ciu.env" in ex and segments[-1] == "ciu.env":
             return None
         return ti
 
@@ -211,11 +237,7 @@ def push_bundle(
     Both strategies honour ``bundle_excludes`` so they ship an identical tree.
     """
     mode = str(host_cfg.get("push_mode", "auto")).lower()
-    excludes = host_cfg.get("bundle_excludes")
-    if excludes is None:
-        excludes = DEFAULT_BUNDLE_EXCLUDES
-    if not isinstance(excludes, list):
-        raise ValueError("[S14.6] 'bundle_excludes' must be a list of strings.")
+    excludes = bundle_excludes_for(host_cfg)
 
     if mode == "scp":
         return _push_scp(host_cfg, local_dir, remote_dir,

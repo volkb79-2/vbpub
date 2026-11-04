@@ -1111,7 +1111,7 @@ class TestCliUpHostRouting:
         sync_calls = []
         exec_calls = []
 
-        def fake_ssh_sync(host_cfg, local_dir, remote_dir, *, config, repo_root, admin=False):
+        def fake_ssh_sync(host_cfg, local_dir, remote_dir, *, config, repo_root, admin=False, excludes=None):
             sync_calls.append({"local": local_dir, "remote": remote_dir})
             return 0
 

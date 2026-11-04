@@ -283,6 +283,24 @@ def test_remote_down_dir_forwards_the_profile_that_declares_an_optional_stack(re
     assert seen["exec"][0][1] == [f"{BUNDLE}ciu down --profile admin --dir tools/dbg"]
 
 
+def test_remote_push_sync_passes_the_mandatory_and_host_excludes(remote, monkeypatch):
+    """CIU-175: the non-thin sync always excludes .git/.ciu//ciu.env plus bundle_excludes."""
+    seen, host = remote
+    host["bundle_excludes"] = ["ciu.instance.generated.toml"]
+    assert _run(monkeypatch, ["up", "--host", "web"]) == 0
+    assert seen["sync"][0][5]["excludes"] == [
+        ".git", ".ciu/", "ciu.env", "ciu.instance.generated.toml"]
+
+
+def test_remote_push_refuses_a_malformed_bundle_excludes_before_syncing(remote, monkeypatch, capsys):
+    """CIU-175: a non-list `bundle_excludes` is a config error (exit 2), nothing is sent."""
+    seen, host = remote
+    host["bundle_excludes"] = "ciu.env"
+    assert _run(monkeypatch, ["up", "--host", "web"]) == 2
+    assert seen["sync"] == []
+    assert "list of strings" in capsys.readouterr().err
+
+
 def test_remote_up_accepts_dir_with_host(remote, monkeypatch):
     """CIU-170: `up --host H --dir STACK` (SPEC S14.2) is not a mode conflict."""
     seen, _ = remote

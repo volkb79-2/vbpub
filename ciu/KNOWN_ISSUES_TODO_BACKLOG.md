@@ -6055,3 +6055,11 @@ the shared workspace registry, and the next create at that path refuses with "ph
 record and the remedy (`ciu worktree rm <name>`, and for a record whose path no longer exists, a prune such as `ciu worktree prune`/`rm --stale`).
 
 **Acceptance criteria.** Test: a forced preparation failure leaves no checkout or record (or a record that `ciu worktree rm` removes); after a manual `git worktree remove` the next create refuses with a text containing the remedy command, and that command succeeds.
+
+## CIU-175 — non-thin `ciu up --host` pushes `.ciu/` (host secrets), `ciu.env` and ignores the host's `bundle_excludes`
+
+**Status: FIXED 2026-11-05 on branch ciu-remote-deploy-20261105 (unreleased; local tests only, gate lane pending).** Found in the dstdns P8 review (finding 1), ciu 7.21.0. Severity: P1 (secret exposure). Every push (rsync, tar+scp, `--thin`) now excludes `.git`, `.ciu/` (any depth) and `ciu.env` unconditionally and applies `bundle_excludes` on top (`activate.bundle_excludes_for`, `cli._push_host`); SPEC S14.2/S14.6 and CHANGES updated. Tests: `tests/tests/test_ciu_bundle_excludes.py` (incl. a real rsync run against temp dirs) and the `remote_dispatch` pair.
+
+**Observed.** `cli._push_host` called `ssh_sync` with no `excludes`; only `--thin` honoured `bundle_excludes`, so a full-stack push shipped the control host's `.ciu/` (e.g. the GHCR read token) and `ciu.env`, and per-host protections such as the instance file were ignored.
+
+**Acceptance criteria.** The generated rsync command never transfers `.ciu/` and leaves a pre-existing target instance file named in `bundle_excludes` neither overwritten nor deleted.

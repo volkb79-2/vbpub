@@ -310,7 +310,16 @@ def _push_host(
     rc = _remote_preflight(host_cfg, host_label, config=config, repo_root=repo_root)
     if rc != 0:
         return "preflight", rc
-    rc = ssh_sync(host_cfg, str(repo_root), bundle_dir, config=config, repo_root=repo_root)
+    from .activate import bundle_excludes_for
+    try:
+        excludes = bundle_excludes_for(host_cfg)
+    except ValueError as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        return "sync", 2
+    # CIU-175: never ship `.ciu/` (materialised secrets), `ciu.env` or `.git`;
+    # the host's `bundle_excludes` apply on this path exactly as on `--thin`.
+    rc = ssh_sync(host_cfg, str(repo_root), bundle_dir, config=config,
+                  repo_root=repo_root, excludes=excludes)
     if rc != 0:
         return "sync", rc
     # Pass the whole command as ONE argv element: ssh space-joins remote

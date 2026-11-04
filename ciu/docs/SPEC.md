@@ -3941,7 +3941,7 @@ accepted for the user-global file). Keys:
 | `docker_optional` | No | Advisory flag: this host has no Docker; deploy it with `--thin` (S14.6). CIU nudges (stderr) if the docker `--host` path is used on it, but does not block. |
 | `activate` | Yes† | S14.6 activation contract — a string entrypoint (CIU appends the verb) or a per-verb table (`bootstrap`/`apply`/`health`/`rollback`). †Required only for `--thin`. |
 | `push_mode` | No | `auto` (default) \| `rsync` \| `scp`. `auto` tries rsync, falls back to tar+scp when rsync is absent on the control host or target (S14.6). |
-| `bundle_excludes` | No | List of top-level paths excluded from the pushed bundle (default `[".git"]`). Applied identically to the rsync and tar+scp paths. |
+| `bundle_excludes` | No | List of paths excluded from the pushed bundle IN ADDITION to the mandatory set `.git`, `.ciu/` (at any depth: materialised secrets) and `ciu.env`, which no host row can re-include (CIU-175). Applied identically to the rsync and tar+scp paths and to both `ciu up --host` and `--thin`; excluded paths already on the target are neither overwritten nor deleted (the sync never uses `--delete`). A non-list value is a configuration error (exit 2). |
 | `secrets` | No | S14.3a — host-scoped local secret directives subtable (ASK_EXTERNAL / GEN_LOCAL only). |
 
 Before any `--host` transport, CIU MUST load the repository's global
@@ -4024,7 +4024,7 @@ inventory + host-key pinning + Vault-key resolution; the *project* owns
 activation (supplied as shell via the `activate` host key). The default docker
 `--host` path (S14.2) is untouched — `--thin` is a parallel branch.
 
-**Push.** An artifact (the repo tree, minus `bundle_excludes`, default `.git`)
+**Push.** An artifact (the repo tree, minus the mandatory excludes `.git`/`.ciu/`/`ciu.env` and `bundle_excludes`, S14.2)
 is shipped to `bundle_dir`. Strategy is `push_mode`:
 
 - **S14.6a** `auto` (default) tries `rsync` (S14.2 machinery, `--exclude` per

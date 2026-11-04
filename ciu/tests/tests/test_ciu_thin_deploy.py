@@ -165,8 +165,9 @@ class TestPushBundle:
         rc = act.push_bundle({}, "/local", "/remote", config={}, repo_root=tmp_path)
         assert rc == 0
         assert "sync" in calls and "scp" not in calls
-        # default bundle_excludes applied
-        assert calls["sync"]["excludes"] == act.DEFAULT_BUNDLE_EXCLUDES
+        # default bundle_excludes applied (CIU-175: plus the mandatory secrets set)
+        assert calls["sync"]["excludes"] == act.ALWAYS_BUNDLE_EXCLUDES
+        assert set(act.DEFAULT_BUNDLE_EXCLUDES) <= set(calls["sync"]["excludes"])
 
     def test_auto_falls_back_when_control_rsync_missing(self, tmp_path, monkeypatch):
         def fake_sync(*a, **k):
@@ -222,7 +223,7 @@ class TestPushBundle:
                             lambda *a, excludes=None, **k: seen.setdefault("ex", excludes) or 0)
         act.push_bundle({"bundle_excludes": ["a", "b"]}, "/l", "/r",
                         config={}, repo_root=tmp_path)
-        assert seen["ex"] == ["a", "b"]
+        assert seen["ex"] == [*act.ALWAYS_BUNDLE_EXCLUDES, "a", "b"]
 
     def test_bad_bundle_excludes_type_raises(self, tmp_path):
         with pytest.raises(ValueError, match="must be a list"):
