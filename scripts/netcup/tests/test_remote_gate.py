@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import shutil
 import sys
 import subprocess
@@ -155,6 +156,70 @@ def test_head_already_on_the_host_needs_no_bundle(tmp_path):
     assert rg.cmd_run(ctx, run_args(tmp_path, "r1002", "/wt", "suite", "--detach", "--name", "t2")) == 0
     assert not any("bundle create" in " ".join(c[0]) for c in ctx.runner.calls)
     assert not any("in.bundle" in " ".join(c[0]) for c in ctx.runner.calls)
+
+
+TAG_A, TAG_B = "d" * 40, "e" * 40
+TAG_OUT = f"{TAG_A} run-gate-v24.3.0\n{TAG_B} assay-v7.2.0\nnot a tag line\n"
+
+
+def test_all_release_tags_ride_the_bundle_and_the_job_script(tmp_path):
+    ls = ("ls /home/runner/checkouts", rg.Result(0, SEED + "\n"))
+    ctx, _ = ctx_for(tmp_path, [("for-each-ref", rg.Result(0, TAG_OUT))] + git_handlers() + [psi(1, 1), ls])
+    assert rg.cmd_run(ctx, run_args(tmp_path, "v1001", "/wt", "suite", "--detach", "--name", "t3")) == 0
+    gitcalls = [c[0] for c in ctx.runner.calls]
+    fer = next(c for c in gitcalls if "for-each-ref" in c)
+    assert fer[-1] == "refs/tags/*-v[0-9]*"
+    bundle = next(c for c in gitcalls if "bundle" in c and "create" in c)
+    assert "HEAD" in bundle and "refs/tags/run-gate-v24.3.0" in bundle and "refs/tags/assay-v7.2.0" in bundle
+    assert f"^{SEED}" in bundle  # still thin
+    job = (tmp_path / "out" / "t3" / "job.sh").read_text()
+    assert f"{TAG_A} run-gate-v24.3.0\n{TAG_B} assay-v7.2.0\nTAGS_EOF" in job and "@@" not in job
+
+
+def test_tags_missing_on_a_seed_that_has_head_still_trigger_a_bundle(tmp_path):
+    ls = ("ls /home/runner/checkouts", rg.Result(0, SEED + "\n"))
+
+    def count(argv):  # HEAD is on the host (0) but the tagged commits are not (2)
+        return rg.Result(0, ("2" if TAG_A in argv else "0") + "\n")
+
+    handlers = [("for-each-ref", rg.Result(0, TAG_OUT)), ("rev-list --count", count)] + git_handlers() + [psi(1, 1), ls]
+    ctx, _ = ctx_for(tmp_path, handlers)
+    assert rg.cmd_run(ctx, run_args(tmp_path, "r1002", "/wt", "suite", "--detach", "--name", "t4")) == 0
+    assert any("bundle" in c[0] and "create" in c[0] for c in ctx.runner.calls)
+    assert json.loads((tmp_path / "out" / "t4" / "meta.json").read_text())["bundle"] is True
+
+
+def test_tags_already_on_the_seed_need_no_bundle_but_still_reach_the_job(tmp_path):
+    ls = ("ls /home/runner/checkouts", rg.Result(0, SEED + "\n"))
+    ctx, _ = ctx_for(tmp_path, [("for-each-ref", rg.Result(0, TAG_OUT))] + git_handlers(count="0") + [psi(1, 1), ls])
+    assert rg.cmd_run(ctx, run_args(tmp_path, "r1002", "/wt", "suite", "--detach", "--name", "t5")) == 0
+    assert not any("bundle" in c[0] and "create" in c[0] for c in ctx.runner.calls)
+    assert f"{TAG_A} run-gate-v24.3.0" in (tmp_path / "out" / "t5" / "job.sh").read_text()
+
+
+def test_job_tag_loop_adds_missing_tags_and_keeps_existing_ones(tmp_path):
+    def sh(*a, cwd):
+        return subprocess.run(a, cwd=cwd, check=True, capture_output=True, text=True, env={**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null",
+                              "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}).stdout.strip()
+
+    ck = tmp_path / "ck"
+    ck.mkdir()
+    sh("git", "init", "-q", cwd=ck)
+    sh("git", "commit", "-q", "--allow-empty", "-m", "one", cwd=ck)
+    c1 = sh("git", "rev-parse", "HEAD", cwd=ck)
+    sh("git", "commit", "-q", "--allow-empty", "-m", "two", cwd=ck)
+    c2 = sh("git", "rev-parse", "HEAD", cwd=ck)
+    sh("git", "tag", "-a", "-m", "m", "run-gate-v25.0.0", c1, cwd=ck)  # already present (annotated): must stay as is
+    before = sh("git", "rev-parse", "run-gate-v25.0.0", cwd=ck)
+    tags = f"{c1} run-gate-v25.0.0\n{c1} run-gate-v24.3.0\n{c2} assay-v7.2.0\n{'f' * 40} ghost-v1.0.0"
+    job = rg.render_job(hosts()["v1001"], "t6", {"sha": SHA, "base": None, "tags": [tuple(x.split()) for x in tags.splitlines()]}, "suite", ".", "", 60, [])
+    start = job.index("while read -r tsha tname")
+    end = job.index("TAGS_EOF\n", job.index("<<'TAGS_EOF'")) + len("TAGS_EOF\n")
+    log = f'CKDIR={ck}\nlog() {{ :; }}\n' + job[start:end] + "true\n"  # the job runs without -e; the last (ghost) tag legitimately ends the loop non-zero
+    subprocess.run(["bash", "-c", log], check=True, env={**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null"})
+    assert sh("git", "tag", "-l", cwd=ck).split() == sorted(["assay-v7.2.0", "run-gate-v24.3.0", "run-gate-v25.0.0"])
+    assert sh("git", "rev-parse", "run-gate-v25.0.0", cwd=ck) == before
+    assert sh("git", "rev-parse", "run-gate-v24.3.0^{commit}", cwd=ck) == c1
 
 
 def test_follow_collects_artifacts_and_prints_the_exact_verdict_line(tmp_path):

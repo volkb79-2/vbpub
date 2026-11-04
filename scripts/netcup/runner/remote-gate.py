@@ -190,8 +190,22 @@ def local_state(ctx: Ctx, wt: str, base: Optional[str]) -> dict:
     return {"top": top_path, "sha": sha, "base": base_sha, "prefix": prefix}
 
 
+TAG_GLOB = "refs/tags/*-v[0-9]*"  # release tags of every project (run-gate-v25.1.0, assay-v7.2.0, ...)
+TAG_FORMAT = "%(if)%(*objectname)%(then)%(*objectname)%(else)%(objectname)%(end) %(refname:short)"
+TAG_LINE_RE = re.compile(r"^([0-9a-f]{40,64}) (\S+)$")
+
+
+def release_tags(ctx: Ctx, st: dict) -> list:
+    """(peeled commit, name) for every release tag of the local repository."""
+    out = git(ctx, st["top"], "for-each-ref", f"--format={TAG_FORMAT}", TAG_GLOB).out
+    return [m.groups() for m in (TAG_LINE_RE.match(x.strip()) for x in out.splitlines()) if m]
+
+
 def build_bundle(ctx: Ctx, st: dict, have: list, dest: str) -> Optional[str]:
-    """Thin bundle of HEAD against the closest commit the host already holds; None when the host has HEAD's history."""
+    """Thin bundle of HEAD plus all release tags against the closest commit the host already holds.
+
+    Returns the seed checkout name ("" for none). No bundle file is written when the seed already holds
+    HEAD and every tagged commit; the tags themselves always travel in the job script (st["tags"])."""
     best = None
     for c in have:
         if git(ctx, st["top"], "cat-file", "-e", f"{c}^{{commit}}").rc != 0:
@@ -199,10 +213,16 @@ def build_bundle(ctx: Ctx, st: dict, have: list, dest: str) -> Optional[str]:
         n = git(ctx, st["top"], "rev-list", "--count", st["sha"], f"^{c}").out.strip()
         if n.isdigit() and (best is None or int(n) < best[0]):
             best = (int(n), c)
-    if best and best[0] == 0:
-        return best[1]  # HEAD already reachable from an existing checkout: no bundle needed
-    args = ["bundle", "create", dest, "HEAD"] + ([f"^{best[1]}"] if best else [])
-    r = git(ctx, st["top"], *args)
+    tags = st.get("tags", [])
+    if best:
+        need = best[0]
+        if need == 0 and tags:
+            n = git(ctx, st["top"], "rev-list", "--count", *sorted({t[0] for t in tags}), f"^{best[1]}").out.strip()
+            need = int(n) if n.isdigit() else 1
+        if need == 0:
+            return best[1]  # HEAD and every tagged commit already reachable from an existing checkout: no bundle needed
+    refs = ["HEAD"] + [f"refs/tags/{t[1]}" for t in tags]
+    r = git(ctx, st["top"], "bundle", "create", dest, *refs, *([f"^{best[1]}"] if best else []))
     if r.rc != 0:
         raise GateError(f"git bundle failed: {r.err.strip()[:300]}")
     return best[1] if best else ""
@@ -281,7 +301,19 @@ if [[ -n $SEED ]]; then
 else
   git -c init.defaultBranch=main init -q "$CKDIR"
 fi
-[[ -f $D/in.bundle ]] && git -C "$CKDIR" fetch -q "$D/in.bundle" HEAD
+if [[ -f $D/in.bundle ]]; then
+  git -C "$CKDIR" fetch -q "$D/in.bundle" HEAD
+  # release tags from the bundle (annotated ones intact); tags the host already has are left alone
+  git -C "$CKDIR" fetch -q "$D/in.bundle" 'refs/tags/*:refs/tags/*' || log "tag fetch from the bundle failed; falling back to the tag list"
+fi
+# every release tag of the source repository, so tag-dependent tests (run-gate RG-159) see the full set
+while read -r tsha tname; do
+  [[ -n $tname ]] || continue
+  git -C "$CKDIR" show-ref --verify -q "refs/tags/$tname" && continue
+  git -C "$CKDIR" cat-file -e "$tsha^{commit}" 2>/dev/null && git -C "$CKDIR" tag -- "$tname" "$tsha"
+done <<'TAGS_EOF'
+@@TAGS@@
+TAGS_EOF
 git -C "$CKDIR" checkout -q --detach "$SHA" || { rc=71; exit 71; }
 [[ $(git -C "$CKDIR" rev-parse HEAD) == "$SHA" ]] || { rc=71; exit 71; }
 if [[ -n $BASE_SHA ]]; then git -C "$CKDIR" cat-file -e "$BASE_SHA^{commit}" || { log "base $BASE_SHA missing on the host"; rc=72; exit 72; }; fi
@@ -312,7 +344,8 @@ def render_job(host: Host, name: str, st: dict, lane: str, proj: str, seed: str,
     sub = {"NAME": name, "SHORT": st["sha"][:12], "PROJ": shlex.quote(proj), "LANE": shlex.quote(lane),
            "COCKPIT": shlex.quote(host.cockpit), "IMAGE": shlex.quote(host.image), "SHA": st["sha"],
            "BASE": st["base"] or "''", "SEED": shlex.quote(seed), "PSI_LIMIT": f"{PSI_LIMIT:g}",
-           "PSI_WAIT": str(int(psi_wait)), "EXTRA": " ".join(shlex.quote(a) for a in extra)}
+           "PSI_WAIT": str(int(psi_wait)), "TAGS": "\n".join(f"{c} {n}" for c, n in st.get("tags", [])),
+           "EXTRA": " ".join(shlex.quote(a) for a in extra)}
     text = JOB_TEMPLATE
     for k, v in sub.items():
         text = text.replace(f"@@{k}@@", v)
@@ -356,7 +389,8 @@ def cmd_run(ctx: Ctx, a: argparse.Namespace) -> int:
         raise GateError(f"{host.name}: run {name} already exists on the host", 3)
     have = [x for x in r.out.split() if SHA_RE.match(x)]
     bundle = str(run_dir / "in.bundle")
-    seed = build_bundle(ctx, st, have, bundle)
+    st["tags"] = release_tags(ctx, st)
+    seed =build_bundle(ctx, st, have, bundle)
     need_bundle = os.path.exists(bundle)
     if need_bundle:
         r = remote(ctx, host, f"cat > {shlex.quote(rgd)}/in.bundle", stdin_path=bundle, timeout=1800)
