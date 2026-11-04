@@ -14191,3 +14191,13 @@ phase is fsync (compare `io_sync = relaxed` with an eatmydata image, and `durabl
 **Question to answer first.** Under the relaxed image, `strace -f -c -e trace=fsync,fdatasync,sync_file_range` on one short serial candidate: do the assay coordinator's fsyncs reach the kernel? The answer decides whether B209 option A or B is even distinguishable.
 
 **Acceptance.** A recorded strace count for strict and relaxed, and either a note in B209 and the run-gate README ("coordinator durability is unchanged by the preload") or a switch that makes `relaxed` honor the declared per-file table of B209.
+
+## B225 — `tests/core/test_isolation.py::test_further_external_or_incomplete_topologies_are_refused` hung ~18 minutes on a blocked `git rev-parse --absolute-git-dir` child outside the lane container
+
+**Status: OPEN (investigation, filed 2026-11-05).** Reported by the fix-assay-mat package: a local pytest of `assay/tests/core/test_isolation.py` on the bare devcontainer (not the lane container) stalled at about 43% of the file in this test (parametrized over `alternates-symlink`, `alternates-fifo`, `grafts`, `sha256`, `promisor`, test at line ~1320) with a blocked `git rev-parse --absolute-git-dir` child for about 18 minutes. The registered gate (lane container) was not affected in that run.
+
+**Hypotheses (unmeasured).** (1) The `alternates-fifo` case makes `objects/info/alternates` a FIFO with no writer; any git read of it (the `rev-parse` here, or the test's own setup) blocks on `open()` until a writer appears, so the hang is the hazard itself and the test needs a bounded subprocess timeout or a writer-less open guard. (2) The devcontainer's git environment (safe.directory, a hook, or an inherited `GIT_*` variable) differs from the lane's. Not established which case hung.
+
+**Question to answer first.** Run each parametrized case alone on the bare devcontainer under `timeout 60` and note which one blocks and what the child's `/proc/<pid>/stack`/`wchan` shows (`fifo_open`/`pipe_wait` points to hypothesis 1).
+
+**Acceptance.** The hanging case named; either the test (and the production code path that inspects `alternates`, if it can also block) opens the file non-blocking or with a timeout and refuses `fifo` alternates cleanly, or the lane-only requirement is documented; a regression test that completes in seconds with a bounded timeout.
