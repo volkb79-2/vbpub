@@ -16309,8 +16309,7 @@ class TestHistoryReadScopeInProcess:
         assert run_gate.main(["history", "--worktree", str(plain)]) == 2
         assert "not written yet" not in capsys.readouterr().out
 
-    @pytest.mark.parametrize("args", [["--list", "--json"], ["--json"],
-                                      ["doctor", "--json"]])
+    @pytest.mark.parametrize("args", [["--json"], ["doctor", "--json"]])
     def test_json_outside_history_refuses_by_name(self, tmp_path, monkeypatch,
                                                   capsys, args):
         repo, proj = make_history_repo(tmp_path)

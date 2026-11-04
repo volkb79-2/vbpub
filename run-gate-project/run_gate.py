@@ -8945,7 +8945,7 @@ def assay_import_resolution_required(args, declared_lanes: dict,
     """
     if args.check_env:
         return True
-    if args.list and args.json:
+    if args.list and getattr(args, "json", False):
         # R-55: the derived rigor of an imported lane is a judge fact.
         return True
     lane = args.lane
