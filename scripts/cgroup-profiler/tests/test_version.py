@@ -405,45 +405,19 @@ def test_dockerfile_requires_an_explicit_image_version_before_package_install():
     assert revision_arg < first_from < revision_builder_arg < revision_guard < first_package_install
 
 
-def test_direct_consumer_build_recipe_uses_development_identity():
-    consumers = (
-        Path(__file__).resolve().parents[1] / "docs" / "CONSUMERS.md"
-    ).read_text(encoding="utf-8")
-    recipe = consumers.split(
-        "For a local source build, use the identity-resolving wrapper", 1
-    )[1].split("The Dockerfile refuses", 1)[0]
-
-    assert "python3 build-push.py --build" in recipe
-    assert "docker buildx build" not in recipe
-    assert "CGPROFILE_VERSION=1.0.0" not in recipe
-    assert "0.0.0-dev" in consumers
-    assert "cgprofile:local" in consumers
-
-
-def test_all_public_docs_explain_tag_only_release_identity():
+def test_the_design_guide_explains_tag_only_release_identity():
+    # README and CONSUMERS describe the wheel (version from the installed
+    # distribution); the image-build identity rules are in the design guide.
     docs = Path(__file__).resolve().parents[1]
-    public_docs = (
-        docs / "README.md",
-        docs / "docs" / "DESIGN-GUIDE.md",
-        docs / "docs" / "CONSUMERS.md",
-    )
+    public_docs = (docs / "docs" / "DESIGN-GUIDE.md",)
     for path in public_docs:
         text = path.read_text(encoding="utf-8")
         assert "0.0.0-dev" in text
         assert "CGPROFILE_VERSION" in text
         assert "CMRU_RELEASE_COMMIT" in text
         assert "CMRU_RELEASE_TAG" in text
-    assert "requires clean cgprofile" in public_docs[0].read_text(encoding="utf-8")
-    assert "requires the cgprofile and sibling DAMON source contexts to be clean" in public_docs[2].read_text(encoding="utf-8")
-    assert "refuses changes in either local build context" in " ".join(public_docs[1].read_text(encoding="utf-8").split())
-    consumers = public_docs[-1].read_text(encoding="utf-8")
-    consumers_flat = " ".join(consumers.split())
-    assert "`--push` without CMRU's protected identity refuses before registry login" in consumers
-    assert "Use `cmru release` for publication" in consumers
-    assert "validated `CGPROFILE_VERSION`" not in consumers
-    assert "local tag both point at" in consumers
-    assert "A bare `docker buildx bake` refuses before package installation" in consumers_flat
-    design = public_docs[1].read_text(encoding="utf-8")
+    design = public_docs[0].read_text(encoding="utf-8")
+    assert "refuses changes in either local build context" in " ".join(design.split())
     design_flat = " ".join(design.split())
     assert "Ambient `CGPROFILE_VERSION` never creates release authority" in design
     assert "temporary full-repository worktree" in design

@@ -268,65 +268,30 @@ def test_user_docs_link_the_namespace_and_placement_rationale():
     target = "DESIGN-GUIDE.md#daemon-safety-and-placement"
     assert target in readme
     assert target in consumers
-    assert "The daemon alone uses" in readme
-    assert "host PID namespace so DAMON sysfs can resolve host" in readme
-    assert "the daemon never joins a host namespace" not in readme
-    assert "PID and cgroup namespaces remain private." not in readme
-    assert "consistency check, not host authentication" in readme
+    readme_flat = " ".join(readme.split())
+    assert "native systemd service" in readme_flat
+    assert "no Docker use by the daemon" in readme_flat
     assert "## Daemon safety and placement" in design
-    assert "host PID namespace" in design
-    assert "not an independent attestation" in design
-    assert "create_host_path: false" in design
-    assert (
-        "refuses a missing source rather than creating an empty directory"
-        in consumers_normalized
-    )
+    assert "host PID" in design
+    assert "consistency check" in design
+    assert "create_host_path" not in design
     assert "process-table/PID-operation authority" in " ".join(design.split())
-    assert "host-PID mode" in consumers
-    assert "not an independent proof" in consumers_normalized
+    assert "Host PID mode" in consumers
+    assert "no Docker socket" in consumers_normalized
     assert "it is not PID 1 in the host namespace" in defaults
     assert "never joins a host" not in dockerfile
     assert "This image does not" in dockerfile
-    assert (
-        "host cgroup bind is read-only because it does not perform daemon placement"
-        in " ".join(design.split())
-    )
     assert (
         "daemon's host cgroup-v2 bind is therefore writable"
         in " ".join(design.split())
     )
 
 
-def test_image_recipes_use_one_working_directory_and_build_before_ciu_up():
-    readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
-    pre_release = readme.split("Before the first CMRU release", 1)[1].split(
-        "The daemon's version response", 1
-    )[0]
-    assert "From the repository root" in pre_release
-    assert "cd scripts/cgroup-profiler" in pre_release
-    assert pre_release.index("python3 build-push.py --build") < pre_release.index(
-        "ciu up"
-    )
-
-    consumers = " ".join(
-        (PROJECT_ROOT / "docs" / "CONSUMERS.md")
-        .read_text(encoding="utf-8")
-        .split()
-    )
-    local_development = consumers.split(
-        "For local development after the release pin has been committed", 1
-    )[1].split("## ", 1)[0]
-    assert "From `scripts/cgroup-profiler/`" in local_development
-    assert local_development.index("python3 build-push.py --build") < (
-        local_development.index("ciu up --dir .")
-    )
-
-    start_daemon = consumers.split("## Start the host daemon", 1)[1].split(
-        "## ", 1
-    )[0]
-    assert "local development image" in start_daemon
-    assert "no `[cgprofile.image]` release override" in start_daemon
-    assert "`ciu up` selects the pinned GHCR image instead" in start_daemon
+def test_user_docs_no_longer_describe_a_ciu_or_image_bring_up():
+    for relative in ("README.md", "docs/CONSUMERS.md"):
+        text = (PROJECT_ROOT / relative).read_text(encoding="utf-8")
+        assert "ciu up" not in text, relative
+        assert "build-push.py --build" not in text, relative
 
 
 def _dist_name(requirement: str) -> str:
