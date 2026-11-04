@@ -238,7 +238,9 @@ in the [canonical CLI spec](docs/SPEC.md#s-cli9-canonical-cli-grammar-and-semant
 `cleanup` applies the configured remote asset policy: GitHub Release records and their
 assets, release tags covered by that policy, and GHCR package versions. `--policy` selects
 EVERY `<prefix>-v*` Release and tag of a project except `<prefix>-latest`, `keep_release_tags`
-and, only when `[cleanup] max_age_days` is set, Releases published within that window. Run it
+and, only when `[cleanup] max_age_days` is set, Releases published within that window. `--remove-assets AGE`
+is a different grammar: estate-wide, selected by `release_tag_prefixes` and the command-line `AGE`, and it
+ignores `max_age_days` (see the table in [CONSUMERS](docs/CONSUMERS.md#running-configured-steps-and-previewing-cleanup)). Run it
 only while no `cmru release` is in flight on the estate: `cleanup` takes no release lock
 (KI-101) and would treat a tag a release just pushed, whose Release does not exist yet, as a
 stale tag. Every mutating cleanup
