@@ -1329,3 +1329,16 @@ until measured: page-cache churn with little RAM, btrfs read amplification on `/
 dstdns `docs/testing/PARALLELISM-AND-PERFORMANCE.md`.
 **Acceptance.** A measurement (per-container `io.stat` rbytes vs. block-layer rbytes, cache hit ratio, `iostat`) on a dedicated host with the cap lifted;
 the result is recorded in the README observation and decides whether host-setup needs a change.
+
+## MDT-071 - host-setup cannot express "no IO limit"; dedicated-dev hosts need a pin above the device or a measurement (2026-11-05)
+
+**Status:** OPEN. Found lifting the 8000/4000 IOPS, 300M/250M pins on r1002 and v1001 (both `/dev/vda`, virtio, 512G disk, sole tenant).
+**Gap.** `DEV_IO_*_MAX` accepts only positive values ("0 is refused"), and on `HOST_ROLE=dedicated-dev` with no pin and no `/var/lib/iobench/result.json` the
+installer refuses (exit 2). `DEV_SUBSLICE_IOPS_PCT` is 1-100, so the gate/BuildKit sub-ceiling can only equal `dev.slice`, not vanish. The hosts have no iobench
+install and no result (MDT-063 is the producer), so the least-limiting expressible config is pins set above the measured device ceiling
+(applied: 2G / 1G bytes/s, 60000 / 40000 IOPS, `DEV_SUBSLICE_IOPS_PCT=100`; a 20 s fio probe outside dev.slice read 98k randread IOPS / 4.3 GB/s and wrote
+67k IOPS / 1.4 GB/s, burst-grade because of the hypervisor cache, so the pins are not sustained device facts).
+**Design.** Accept an explicit `unlimited` (renders `max`, skips the reconcile read-back mismatch) for the `dev.slice` pins and `DEV_SUBSLICE_IOPS_PCT=off`,
+only under `HOST_ROLE=dedicated-dev`; keep IOWeight and the PSI guard. Also: the installer reads `../../scripts/debian-install-v2/tools/` outside `host-setup/`, so a
+`host-setup/`-only copy fails midway (after rendering units) with "cannot stat iocost_coef_gen.py"; either vendor those two files or check for them up front.
+Also seen: the reconcile logs `Permission denied` writing `io.bfq.weight` on docker scopes (non-fatal, scheduler is not bfq).
